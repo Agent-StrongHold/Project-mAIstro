@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { loginAsPM, setupIfNeeded } from "./session";
 
@@ -97,5 +98,57 @@ test("current Design Studio parent surface is operable by keyboard without enabl
   await expect(
     page.getByText(/Nothing is submitted or simulated while this control is disabled/),
   ).toBeVisible();
+  await expect(page.getByText(/Keyboard: use Tab to move between artifact types/)).toBeVisible();
+  await expect(page.getByLabel("Describe the artifact")).toHaveAccessibleDescription(
+    /Enter a brief for the selected artifact/,
+  );
   expect(canvasRequests).toEqual([]);
+});
+
+test("every supported artifact mode is selectable in tab order and announced", async () => {
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+
+  const modes = page.getByRole("group", { name: "Design artifact types" });
+  const buttons = modes.getByRole("button");
+  const names = [
+    "Presentation / Deck",
+    "Poster",
+    "Infographic",
+    "Flyer",
+    "Social graphic",
+    "Card",
+    "Cover",
+    "Diagram / visual",
+    "Custom canvas",
+  ];
+  await expect(buttons).toHaveCount(names.length);
+
+  // Start from the browser's tab order, then use only keyboard activation for
+  // every mode. A pointer click or locator.focus would miss a removed tab stop.
+  for (
+    let step = 0;
+    step < 80 && !(await buttons.nth(0).evaluate((element) => document.activeElement === element));
+    step += 1
+  ) {
+    await page.keyboard.press("Tab");
+  }
+
+  for (let index = 0; index < names.length; index += 1) {
+    const button = buttons.nth(index);
+    await expect(button).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(button).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("status").first()).toHaveText(names[index]);
+    await expect(page.getByLabel("Describe the artifact")).toHaveAttribute(
+      "placeholder",
+      `Describe the ${names[index].toLowerCase()} you want to create…`,
+    );
+    if (index < names.length - 1) await page.keyboard.press("Tab");
+  }
+
+  const results = await new AxeBuilder({ page })
+    .include("main")
+    .disableRules(["color-contrast"])
+    .analyze();
+  expect(results.violations).toEqual([]);
 });

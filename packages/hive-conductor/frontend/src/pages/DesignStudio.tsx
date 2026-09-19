@@ -186,6 +186,7 @@ export default function DesignStudio() {
         <div
           role="group"
           aria-label="Design artifact types"
+          aria-describedby="design-artifact-types-help"
           style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}
         >
           {ARTIFACT_MODES.map((artifact) => {
@@ -213,6 +214,12 @@ export default function DesignStudio() {
             );
           })}
         </div>
+        <p
+          id="design-artifact-types-help"
+          style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", margin: "10px 0 0" }}
+        >
+          Keyboard: use Tab to move between artifact types, then press Enter or Space to select one. The selected type is announced as pressed.
+        </p>
       </div>
 
       <div className="card" style={{ marginBottom: 16, borderColor: catalogBorder }} aria-live="polite">
@@ -237,7 +244,11 @@ export default function DesignStudio() {
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 600, marginBottom: 4 }}>
+        <div
+          role="status"
+          aria-live="polite"
+          style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 600, marginBottom: 4 }}
+        >
           {mode.name}
         </div>
         <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginBottom: 12 }}>
@@ -251,8 +262,12 @@ export default function DesignStudio() {
         <label htmlFor="design-prompt" style={{ fontFamily: "var(--hand)", fontSize: 13, display: "block", marginBottom: 6 }}>
           Describe the artifact
         </label>
+        <p id="design-prompt-help" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", margin: "0 0 6px" }}>
+          Enter a brief for the selected artifact. Generation remains disabled until a durable execution path is connected.
+        </p>
         <textarea
           id="design-prompt"
+          aria-describedby="design-prompt-help"
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           placeholder={`Describe the ${mode.name.toLowerCase()} you want to create…`}
