@@ -42,6 +42,7 @@ pytestmark = pytest.mark.skipif(
 def test_agent_edits_are_isolated_from_host(tmp_path: Path) -> None:
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
     host_before = (tmp_path / "hello.py").read_text(encoding="utf-8")
 
     with ContainerBuilderSandbox(tmp_path) as sb:
@@ -63,6 +64,7 @@ def test_agent_edits_are_isolated_from_host(tmp_path: Path) -> None:
 def test_path_escape_blocked(tmp_path: Path) -> None:
     (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "f.py"], cwd=tmp_path, check=True)
     from maistro_bootstrap.builders.errors import SandboxEscapeError
 
     with ContainerBuilderSandbox(tmp_path) as sb:
@@ -105,6 +107,7 @@ def test_agent_commands_cannot_reach_any_network_by_default(tmp_path: Path) -> N
     default policy — external, DNS, link-local/metadata, or private."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         # The policy is the container's create-time config, not a filter the
@@ -135,6 +138,7 @@ def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
     only root can do."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         rc, out = sb.run_argv_status(["id", "-u"])
@@ -148,13 +152,31 @@ def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
 
 def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     """#77/#78: the seed must not carry the repo's ambient credential surface
-    into the container — `.git` config/hooks, dotenv files, root-level key
-    material — while the working tree itself (and nested test fixtures) still
-    arrives, and `git diff` keeps working off the seeded refs."""
+    into the container — `.git`, dotenv files, root-level key material, and
+    unrelated untracked host files — while indexed worktree files arrive. Builder
+    git tools use a sanitized in-container baseline."""
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
+    # Keep dotenv files indexed: the seed must exclude credential-shaped files
+    # even when a caller accidentally committed them.
+    (tmp_path / ".env").write_text("GITHUB_TOKEN=ambient-secret\n", encoding="utf-8")
+    (tmp_path / ".env.production").write_text(
+        "DATABASE_PASSWORD=ambient-secret\n", encoding="utf-8"
+    )
+    (tmp_path / ".envrc").write_text("export TOKEN=ambient-secret\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "hello.py"],
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "add",
+            "hello.py",
+            ".env",
+            ".env.production",
+            ".envrc",
+        ],
         cwd=tmp_path,
         check=True,
     )
@@ -163,27 +185,76 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         cwd=tmp_path,
         check=True,
     )
-    (tmp_path / ".env").write_text("GITHUB_TOKEN=ambient-secret\n", encoding="utf-8")
+    # Real worktrees may use a linked shared index; exercise the same
+    # production seed path that previously failed on sharedindex.* files.
+    subprocess.run(["git", "update-index", "--split-index"], cwd=tmp_path, check=True)
+    (tmp_path / "unrelated-host-secret.txt").write_text(
+        "HOST_SECRET=ambient-secret\n", encoding="utf-8"
+    )
     (tmp_path / "server.pem").write_text("PRIVATE KEY material\n", encoding="utf-8")
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "production-token.txt").write_text("TOKEN=ambient-secret\n", encoding="utf-8")
+    fixtures = tmp_path / "tests" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "fixture.pem").write_text("test fixture not a credential\n", encoding="utf-8")
+    nested_git = fixtures / "nested-repo" / ".git"
+    nested_git.mkdir(parents=True)
+    (nested_git / "config").write_text("credential.helper=leak\n", encoding="utf-8")
+
+    # A Gitlink is an indexed directory entry, but its checked-out contents are
+    # not part of the parent repository's index. A blind tar of the gitlink
+    # recurses into this untracked host material (the reopened #80 regression).
+    child = tmp_path / "vendor" / "child"
+    child.mkdir(parents=True)
+    (child / "README").write_text("child checkout\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=child, check=True)
+    subprocess.run(["git", "add", "README"], cwd=child, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=child@test",
+            "-c",
+            "user.name=child",
+            "commit",
+            "-qm",
+            "child",
+        ],
+        cwd=child,
+        check=True,
+    )
+    (child / "unrelated-host-secret.txt").write_text(
+        "SUBMODULE_HOST_SECRET=leaked\n", encoding="utf-8"
+    )
+    child_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=child, text=True).strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"160000,{child_sha},vendor/child"],
+        cwd=tmp_path,
+        check=True,
+    )
     with (tmp_path / ".git" / "config").open("a") as cfg:
         cfg.write("\tcredential.helper = !leak-token\n")
     (tmp_path / ".git" / "hooks" / "pre-commit").write_text(
         "#!/bin/sh\ncurl evil\n", encoding="utf-8"
     )
-    fixtures = tmp_path / "tests" / "fixtures"
-    fixtures.mkdir(parents=True)
-    (fixtures / "fixture.pem").write_text("test fixture not a credential\n", encoding="utf-8")
 
     with ContainerBuilderSandbox(tmp_path) as sb:
         # Ambient credential surface: absent inside.
         with pytest.raises(FileNotFoundError):
             sb.read_file(".env")
         with pytest.raises(FileNotFoundError):
+            sb.read_file(".env.production")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file(".envrc")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("unrelated-host-secret.txt")
+        with pytest.raises(FileNotFoundError):
             sb.read_file("server.pem")
-        rc, _ = sb.run_argv_status(["cat", "/workspace/.git/config"])
-        assert rc != 0, ".git/config (credential helpers, remote tokens) was seeded"
-        rc, _ = sb.run_argv_status(["cat", "/workspace/.git/hooks/pre-commit"])
-        assert rc != 0, ".git/hooks (host-authored scripts) was seeded"
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("secrets/production-token.txt")
+        rc, _ = sb.run_argv_status(["test", "!", "-e", "/workspace/.git"])
+        assert rc == 0, "host .git metadata was seeded"
 
         # Working tree: still seeded.
         assert "original" in sb.read_file("hello.py")
@@ -192,9 +263,134 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         # test failure beats a silent credential leak.
         with pytest.raises(FileNotFoundError):
             sb.read_file("tests/fixtures/fixture.pem")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("tests/fixtures/nested-repo/.git/config")
+        with pytest.raises(FileNotFoundError):
+            sb.read_file("vendor/child/unrelated-host-secret.txt")
 
-        # git diff still works off the seeded refs/objects (config stripped).
+        # Builder git tools use an in-container baseline, not host metadata.
         sb.edit_file("hello.py", "original", "EDITED")
         patch = sb.diff()
         assert "fatal" not in patch
         assert '+print("EDITED")' in patch
+
+
+def _repo_with_file(tmp_path: Path) -> None:
+    (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
+
+
+def test_container_environment_is_credential_default_deny(tmp_path: Path) -> None:
+    """Only the sandbox's deliberate HOME reaches candidate code."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        env = sb.run_command("env")
+
+    values = dict(line.split("=", 1) for line in env.splitlines() if "=" in line)
+    assert values.get("HOME") == "/tmp"
+    assert not set(values).intersection(
+        {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY"}
+    )
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "FTP_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "ftp_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        assert values.get(name, "") == "", f"Docker proxy leaked through {name}"
+
+
+def test_rootfs_and_writable_scope_are_explicit(tmp_path: Path) -> None:
+    """The live Docker config, not permissions in the image, sets the scope."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        inspect = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{.HostConfig.ReadonlyRootfs}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}",
+                sb._require_cid(),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert inspect == "true 2147483648 512"
+        rc, _ = sb.run_argv_status(["sh", "-c", "touch /usr/escape"])
+        assert rc != 0
+        assert sb.run_argv_status(["touch", "/workspace/allowed"])[0] == 0
+        assert sb.run_argv_status(["touch", "/tmp/scratch"])[0] == 0
+
+
+def test_process_namespace_devices_and_host_socket_are_not_reachable(tmp_path: Path) -> None:
+    """Exercise the Docker backend's namespace, device and socket surfaces."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, out = sb.run_argv_status(["sh", "-c", "ls /proc | grep -Ec '^[0-9]+$'"])
+        assert rc == 0 and int(out.strip()) < 20
+        assert (
+            sb.run_argv_status(
+                ["sh", "-c", "mkdir -p /workspace/m && mount -t tmpfs none /workspace/m"]
+            )[0]
+            != 0
+        )
+        assert sb.run_argv_status(["chroot", "/", "/bin/true"])[0] != 0
+        assert sb.run_argv_status(["test", "!", "-e", "/dev/kvm"])[0] == 0
+        assert sb.run_argv_status(["mknod", "/workspace/device", "b", "8", "0"])[0] != 0
+        assert sb.run_argv_status(["test", "!", "-e", "/var/run/docker.sock"])[0] == 0
+        assert sb.run_argv_status(["test", "!", "-e", "/run/docker.sock"])[0] == 0
+        rc, caps = sb.run_argv_status(["grep", "CapEff", "/proc/self/status"])
+        assert rc == 0 and caps.split()[-1].strip("0") == ""
+        rc, nnp = sb.run_argv_status(["grep", "NoNewPrivs", "/proc/self/status"])
+        assert rc == 0 and nnp.split()[-1] == "1"
+
+
+def test_timeout_kills_the_command_and_detached_descendants(
+    tmp_path: Path,
+) -> None:
+    """A timeout also kills a candidate that creates a detached session."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, _ = sb.run_argv_status(
+            [
+                "sh",
+                "-c",
+                "setsid sh -c 'echo $$ > /workspace/pid; exec sleep 30' & wait",
+            ],
+            timeout=1,
+        )
+        assert rc != 0
+        pid = sb.read_file("pid").strip()
+        assert sb.run_argv_status(["kill", "-0", pid])[0] != 0
+
+
+def test_context_cleanup_removes_the_container(tmp_path: Path) -> None:
+    """Exiting the sandbox force-removes its ephemeral container."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        cid = sb._require_cid()
+    assert subprocess.run(["docker", "inspect", cid], capture_output=True).returncode != 0
+
+
+def test_memory_exhaustion_is_contained_by_the_container_limit(tmp_path: Path) -> None:
+    """An allocation above the configured cgroup budget fails in the container."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, _ = sb.run_argv_status(
+            [
+                "python",
+                "-c",
+                "b=bytearray(3 * 1024 * 1024 * 1024); "
+                "[b.__setitem__(i, 1) for i in range(0, len(b), 4096)]",
+            ],
+            timeout=30,
+        )
+        assert rc != 0
