@@ -380,6 +380,19 @@ or placeholder-only section.
   source-only fix with no reachable regression test, the same shape as
   `#1413`.
 
+- **Routed pages are code-split instead of riding along in one bundle
+  (#1435).** The 24 pages behind `AppShell`'s routes were all statically
+  imported into `App.tsx`, so the production build warned on a ~600kB
+  chunk and every page paid for every other page's JS regardless of which
+  one it rendered. Each is now `React.lazy`-loaded behind a `Suspense`
+  boundary reusing the app-shell skeleton (`#1408`) as its fallback; the
+  main chunk drops to ~300kB and the build no longer warns. `Setup` and
+  `Login` stay eager — one of them is on the critical path for every
+  session's first paint. `tests/e2e/route-code-splitting.spec.ts` asserts
+  a cold load of `/dashboard` fetches only the Dashboard route's chunk,
+  not an unvisited route's; against the unfixed build the first assertion
+  fails, since no per-route chunk exists at all.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a
