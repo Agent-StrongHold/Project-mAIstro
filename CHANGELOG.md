@@ -413,6 +413,22 @@ or placeholder-only section.
   status number; against the unfixed build it fails on exactly that
   assertion.
 
+- **The shared API client times out and recovers, instead of leaving a
+  hung request's spinner up forever (#1423).** `lib/api.ts`'s `request()`
+  wrapped `fetch` with no timeout or `AbortController`; only Chat's own
+  streaming fetch and the dashboard assistant widget guarded against a
+  hung request, so the other ~28 pages that go through the shared client
+  did not. It now aborts after 30s, and — same class of bug as #1436 —
+  any transport-level failure (the abort, a dropped connection, offline,
+  CORS) is wrapped in the same human, retryable `ApiError` a bad HTTP
+  status gets, rather than surfacing as a raw `TypeError: Failed to
+  fetch` or `AbortError`. `tests/e2e/api-timeout.spec.ts` drives the
+  same try/catch/wrapping code the timeout path shares via
+  `route.abort()` (fast and deterministic — the real 30s budget isn't
+  practical to wait out inside this suite's own CI time limit) and
+  asserts the shown message has no raw error name; against the unfixed
+  build it fails on exactly that assertion.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a

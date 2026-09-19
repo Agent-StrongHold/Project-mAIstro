@@ -27,16 +27,46 @@ export function fallbackMessage(status: number): string {
   return "The request couldn't be completed. Try again.";
 }
 
+// A hung request used to leave spinners and empty states up forever: nothing
+// in the shared client ever gave up on one (#1423). CRUD calls through this
+// client complete in well under this; the two genuinely long-running
+// operations (chat streaming, the dashboard assistant) go through their own
+// fetch() with their own longer budgets, not this client.
+const DEFAULT_TIMEOUT_MS = 30_000;
+
 async function request<T>(
   path: string,
   init: RequestInit,
 ): Promise<{ data: T; status: number }> {
   const started = performance.now();
   const method = init.method ?? "GET";
-  const r = await fetch(`${API_BASE}${path}`, {
-    credentials: "same-origin",
-    ...init,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  let r: Response;
+  try {
+    r = await fetch(`${API_BASE}${path}`, {
+      credentials: "same-origin",
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    // Anything fetch() itself throws (the timeout abort below, a dropped
+    // connection, offline, CORS) is a transport failure with no HTTP
+    // response to read a `detail` from -- so it gets the same human
+    // treatment as a bad status (#1436), not a raw `TypeError: Failed to
+    // fetch` or `AbortError`.
+    const timedOut = err instanceof DOMException && err.name === "AbortError";
+    debugApi(method, path, 0, performance.now() - started, timedOut ? "timed out" : err);
+    throw new ApiError(
+      timedOut
+        ? "This took too long and was cancelled. Try again."
+        : "Couldn't reach the server. Check your connection and try again.",
+      0,
+      path,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
   const ms = performance.now() - started;
   let parsed: unknown;
   const text = await r.text();

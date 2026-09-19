@@ -17,6 +17,7 @@
 | `dashboard-reduced-motion.spec.ts` | **Yes** | Same job, same config. The Dashboard header's status dot only pulses when the OS has no reduced-motion preference (#1415). |
 | `route-code-splitting.spec.ts` | **Yes** | Same job, same config. A routed page's JS chunk is fetched only once its route is visited, not bundled into every cold load (#1435). |
 | `api-error-copy.spec.ts` | **Yes** | Same job, same config. A failed request with no backend `detail` shows a human sentence with a recovery hint, not the raw route and status code (#1436). |
+| `api-timeout.spec.ts` | **Yes** | Same job, same config. A request that fails at the transport level (the same code path a hung request's abort takes) shows a human, retryable message instead of a raw `TypeError`/`AbortError` name (#1423). |
 | `session.ts` | n/a | Not a spec (Playwright matches `*.spec.ts`). The setup-wizard and login helpers both UI specs share; every comment in it records a selector that has already gone wrong once. |
 | `test_pm_agent.py` | **No — permanently excluded** | Standalone script (no `def test_*`, not pytest-collectible), requires `pip install browser-use` (not vendored anywhere in this repo) plus a real `GOOGLE_API_KEY`. |
 | `test_pm_real_atlassian.py` | **No — permanently excluded** | Same `browser-use`/`GOOGLE_API_KEY` requirement, plus real Jira/Confluence credentials already saved in a running Hive instance. Not a CI-safe test under any circumstance. |
