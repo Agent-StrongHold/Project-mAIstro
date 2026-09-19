@@ -27,7 +27,10 @@ or placeholder-only section.
 
 - **anyio bumped 4.13.0 → 4.14.2 (and the 4.15.1 leg some members resolve
   separately), clearing CVE-2026-63374 and CVE-2026-64847 that fail every
-  fresh `pip-audit` run.** Lockfile-only change; no API or behavior delta.
+  fresh `pip-audit` run (no linked issue: caught by the required Supply
+  chain (pip-audit) check on #1502, the same class of reactive advisory fix
+  as the gitpython bump above).** Lockfile-only change; no API or behavior
+  delta.
 - **gitpython bumped 3.1.59 → 3.1.62, clearing five untriaged advisories that
   fail every fresh `pip-audit` run (#1493).** The lockfile carried
   `gitpython 3.1.59` (transitive via `cosmic-ray`), which `pip-audit --strict`
