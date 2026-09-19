@@ -13,11 +13,16 @@
 export const UI_STATE_KEYS = [
   { key: "hive_active_workspace_id", what: "The workspace tab you last had open" },
   { key: "hive_appearance", what: "Light or dark, when you chose one over the system setting" },
-  { key: "hive_ui_mode", what: "The Simple/Power toggle" },
   { key: "hive_onboarded", what: "That the welcome tour has been dismissed" },
 ] as const;
 
 const OWNER_KEY = "hive_ui_state_owner";
+
+// The Simple/Power toggle never gated anything observable and is gone
+// (#1409, #1411); a browser that stored it before this shipped still gets
+// it swept on the next clear, same as any other owned key, without a row
+// on the Profile page for a control that no longer exists.
+const _LEGACY_KEYS = ["hive_ui_mode"] as const;
 
 function read(key: string): string | null {
   try {
@@ -36,6 +41,7 @@ export function storedUiState(): { key: string; what: string; value: string | nu
 export function clearUiState(): void {
   try {
     for (const { key } of UI_STATE_KEYS) localStorage.removeItem(key);
+    for (const key of _LEGACY_KEYS) localStorage.removeItem(key);
     localStorage.removeItem(OWNER_KEY);
   } catch {
     // Storage unavailable (private window, blocked): nothing was kept.

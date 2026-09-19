@@ -2,7 +2,6 @@ import { type ReactNode, useState } from "react";
 import { clearUiState } from "../lib/uiState";
 import { NavLink, Outlet } from "react-router-dom";
 import { useUser } from "../App";
-import { ModeToggle } from "./ModeToggle";
 import { AppearanceToggle } from "./AppearanceToggle";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 import { WorkspaceShare } from "./WorkspaceShare";
@@ -63,7 +62,6 @@ async function logout() {
 export function AppShell({ children }: { children?: ReactNode }) {
   const user = useUser();
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const nav = fullNav;
   const shellTitle = "Hive Conductor";
 
   return (
@@ -81,7 +79,6 @@ export function AppShell({ children }: { children?: ReactNode }) {
       <nav className={`drawer${drawerOpen ? " open" : ""}`}>
         <div className="drawer-header">
           <span style={{ fontFamily: "var(--hand)", fontSize: 20, fontWeight: 700 }}>{shellTitle}</span>
-          <ModeToggle />
           <AppearanceToggle />
           <button className="drawer-close" onClick={() => setDrawerOpen(false)} aria-label="Close menu">&#x2715;</button>
         </div>
@@ -96,7 +93,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           </div>
         )}
         <div className="drawer-nav">
-          {nav.map((item) => (
+          {fullNav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -117,7 +114,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
       </nav>
 
       <nav className="icon-sidebar">
-        {nav.map((item) => (
+        {fullNav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
