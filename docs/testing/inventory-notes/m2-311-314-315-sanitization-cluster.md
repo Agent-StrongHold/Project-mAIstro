@@ -50,6 +50,6 @@ executed by the `hive-conductor-e2e-ui` compose job — and, with
 `E2E_SRC_ROOT`/`E2E_NODE_PATHS` set, from a worktree.
 
 #311 itself added nothing: the deck sanitizer and its browser proof landed
-with #752 and were re-verified green here (4 deck e2e tests against real
+with #752 and were re-verified green here (5 deck e2e tests against real
 Chromium) after the chat boundary change, since Deck Builder's chat surface
 rides `/v1/chat/complete`.
