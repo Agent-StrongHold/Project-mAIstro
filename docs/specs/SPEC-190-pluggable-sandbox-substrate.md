@@ -88,6 +88,18 @@ class SandboxSpec:
 `SHARED_KERNEL` (container/bubblewrap) < `USERSPACE_KERNEL` (gVisor) < `VM` (Kata/Firecracker).
 ADR-093 requires `VM` for untrusted code; callers handling untrusted input assert the minimum.
 
+#### Host-owned output capture
+
+`SandboxConfig.max_stdout_bytes` and `max_stderr_bytes` are per-stream retained-byte
+limits selected by the host. They are capped by a host policy ceiling; workload input
+cannot raise that ceiling. Every backend must drain stdout and stderr concurrently
+without using unbounded `communicate()`/`capture_output=True` buffering. The backend
+retains only the bounded prefix, marks the affected stream as truncated, sets
+`ExecResult.output_limit_exceeded`, and terminates the complete process group with the
+stable `OUTPUT_LIMIT_EXIT_CODE`. `ExecResult.stdout_bytes_retained` and
+`stderr_bytes_retained` report the exact retained byte counts (before text decoding).
+A wall-clock timeout uses the same bounded-drain and process-group termination path.
+
 ### Backends
 
 | Backend | isolation | runs OCI image? | kvm_required | phase |

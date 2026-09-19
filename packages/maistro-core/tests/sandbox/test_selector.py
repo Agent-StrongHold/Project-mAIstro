@@ -138,14 +138,13 @@ class TestBuildConfigClamping:
     Overrides may only tighten.
     """
 
-    def test_network_override_cannot_defeat_a_no_network_policy(self) -> None:
-        cfg = SandboxSelector().build_config(UNTRUSTED_CODE, network=True)
-        assert cfg.network is False
+    def test_network_override_is_rejected_instead_of_becoming_a_second_policy(self) -> None:
+        with pytest.raises(ValueError, match="network override is retired"):
+            SandboxSelector().build_config(UNTRUSTED_CODE, network=True)
 
-    def test_network_override_can_still_drop_network(self) -> None:
-        assert TRUSTED_TOOL.network_allowed is True
-        cfg = SandboxSelector().build_config(TRUSTED_TOOL, network=False)
-        assert cfg.network is False
+    def test_network_override_cannot_be_used_to_change_a_trusted_policy(self) -> None:
+        with pytest.raises(ValueError, match="network override is retired"):
+            SandboxSelector().build_config(TRUSTED_TOOL, network=False)
 
     def test_memory_override_above_the_ceiling_is_clamped(self) -> None:
         cfg = SandboxSelector().build_config(UNTRUSTED_CODE, memory_mb=999_999)
@@ -163,5 +162,5 @@ class TestBuildConfigClamping:
         cfg = SandboxSelector().build_config(BENCHMARK_EVAL)
         assert cfg.memory_mb == BENCHMARK_EVAL.max_memory_mb
         assert cfg.timeout_s == BENCHMARK_EVAL.max_timeout_s
-        assert cfg.network is False
+        assert cfg.egress.grants_network is False
         assert cfg.min_isolation == BENCHMARK_EVAL.min_tier

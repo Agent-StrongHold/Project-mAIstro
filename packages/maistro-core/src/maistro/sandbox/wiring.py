@@ -51,6 +51,21 @@ def build_selector(
     caps = capabilities if capabilities is not None else detect_host_capabilities(sandbox_config)
     selector = SandboxSelector()
 
+    if caps.supports("container"):
+        from maistro.sandbox.backends.container import (
+            ContainerSandboxBackend,
+            ContainerUnavailableError,
+        )
+
+        binary = caps.binaries.get("container")
+        if binary is not None:
+            try:
+                selector.register("container", ContainerSandboxBackend(binary=binary))
+            except ContainerUnavailableError:
+                logger.warning("sandbox_backend_unavailable tier=container despite detection")
+        else:
+            logger.warning("sandbox_backend_unavailable tier=container without a probed launcher")
+
     if caps.supports("bubblewrap"):
         from maistro.sandbox.backends.bubblewrap import (
             BubblewrapSandboxBackend,

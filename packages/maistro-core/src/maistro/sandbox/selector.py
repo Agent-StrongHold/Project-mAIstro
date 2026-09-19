@@ -108,21 +108,24 @@ class SandboxSelector:
         Overrides may only make the sandbox *tighter*. The policy fields are
         named ``max_memory_mb``, ``max_timeout_s`` and ``network_allowed`` —
         ceilings and a permission, not defaults — so an override is clamped
-        against them rather than replacing them. Without the clamp,
-        ``build_config(UNTRUSTED_CODE, network=True)`` would hand model-
-        generated code an egress-capable sandbox, against a policy whose
-        stated reason is that it must run behind a VM boundary.
+        against them rather than replacing them. Egress itself is copied only
+        from the policy; the retired ``SandboxConfig.network`` compatibility
+        input is never populated.
         """
+        if "network" in overrides:
+            raise ValueError(
+                "network override is retired; set an explicit EgressGrant on the policy"
+            )
         memory_mb = min(int(overrides.get("memory_mb", policy.max_memory_mb)), policy.max_memory_mb)
         timeout_s = min(int(overrides.get("timeout_s", policy.max_timeout_s)), policy.max_timeout_s)
-        network = bool(overrides.get("network", policy.network_allowed)) and policy.network_allowed
         # The grant is never taken from overrides: it is the policy's, decided
         # before the sandbox exists, so there is nothing for candidate code to
         # widen later.
         return SandboxConfig(
             memory_mb=memory_mb,
             timeout_s=timeout_s,
-            network=network and policy.egress.grants_network,
             min_isolation=policy.effective_min_tier,
             egress=policy.egress,
+            writable_paths=list(overrides.get("writable_paths", [])),
+            env=dict(overrides.get("env", {})),
         )
