@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Security
 
+- **Due-recovery failures never persist or log credential text (#1143).** A
+  node-resolver factory that fails while a due Run is being resumed now
+  terminalizes the Run with a stable `NodeResolverUnavailable` message (Run id
+  and exception type only) instead of the factory's raw error, and the
+  recovery log sanitizer also redacts quoted keys (`{'api_key': ...}`),
+  `Authorization`/`Bearer` headers, and provider-style key literals
+  (`sk-…`, `ghp_…`, `xox…`, `AKIA…`).
 - **gitpython bumped 3.1.59 → 3.1.62, clearing five untriaged advisories that
   fail every fresh `pip-audit` run (#1493).** The lockfile carried
   `gitpython 3.1.59` (transitive via `cosmic-ray`), which `pip-audit --strict`
@@ -165,6 +172,7 @@ or placeholder-only section.
   through the canonical object store by reference, and scrubbing secrets from
   payloads before persistence (#1159), remain open follow-up work this issue
   explicitly does not claim.
+
 ### Added
 
 - **The Workspace Agent interviews before it commits a Goal or CreativeBrief
