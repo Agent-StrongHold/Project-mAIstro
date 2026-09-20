@@ -22,4 +22,4 @@ pip-audit>=2.10.1        # Apache-2.0 — Python dependency CVEs
 checkov>=3.3.18          # Apache-2.0 — IaC / Dockerfile / GH-Actions misconfig
 cyclonedx-bom>=7.3.1    # Apache-2.0 — SBOM generation
 guarddog>=2.7.1        # Apache-2.0 — malicious-package / typosquat detection (PyPI + npm)
-yara-python>=4.5      # BSD-3 — malware signature matching
+yara-python>=4.5.4      # BSD-3 — malware signature matching
