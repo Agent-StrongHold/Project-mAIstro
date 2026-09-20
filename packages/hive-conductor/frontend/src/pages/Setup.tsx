@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiGet } from "../lib/api";
+import { apiGet, fallbackMessage } from "../lib/api";
 import { SecretField, TextField } from "../components/shared";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
@@ -159,7 +159,7 @@ export default function Setup() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail ?? `${res.status}`);
+        throw new Error(data.detail ?? fallbackMessage(res.status));
       }
       const data = await res.json();
       if (data.mnemonic) {

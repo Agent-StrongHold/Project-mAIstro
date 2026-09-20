@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { fallbackMessage } from "../lib/api";
 import { SecretField } from "./shared";
 
 interface ProviderRow {
@@ -49,7 +50,7 @@ export function LlmProviders() {
         body: JSON.stringify({ api_key: keys[name] || "" }),
       });
       const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(body.detail || fallbackMessage(r.status));
       setKeys((k) => ({ ...k, [name]: "" }));
       setNotice({ kind: "ok", text: `${name}: key stored in the encrypted vault.` });
       await load();
@@ -69,7 +70,7 @@ export function LlmProviders() {
         credentials: "same-origin",
       });
       const body = await r.json();
-      if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(body.detail || fallbackMessage(r.status));
       const model = body.first_model_call?.model ?? "";
       setNotice({ kind: "ok", text: `${name}: activated — first model call succeeded on ${model}.` });
       await load();

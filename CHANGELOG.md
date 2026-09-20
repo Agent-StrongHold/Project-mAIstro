@@ -352,6 +352,83 @@ or placeholder-only section.
   covers both steps by accessible role and name; against the unfixed
   build the first assertion fails.
 
+- **The Dashboard's template picker shows a real loading skeleton, not an
+  invisible div (#1421).** `TemplatePicker.tsx` rendered
+  `<div className="skeleton skeleton-card" />` while its
+  `/v1/dashboard/demos` fetch was in flight, but neither `.skeleton` nor
+  `.skeleton-card` had a matching CSS rule anywhere in the stylesheet — the
+  element existed with no size and no background. Both classes now resolve
+  to real rules, reusing the pulse animation the app-shell skeleton
+  (`#1408`) already defined. `tests/e2e/template-picker-skeleton.spec.ts`
+  slows the fetch and asserts the skeleton has a non-zero bounding box;
+  against the unfixed build it times out as hidden.
+
+- **Infinite pulse/spin/bounce animations respect
+  `prefers-reduced-motion`, and the shared switch control announces a name
+  (#1415, #1414).** Only the skeleton pulse (`#1408`) was guarded; the
+  dashboard status dot's `status-pulse` (2.2s), the chat typing
+  indicator's `bounce` (1.4s), and a running tool step's `loading-spin`
+  (1s) all looped forever regardless of the OS motion setting. All three
+  now sit in the same guarded block as the skeleton pulse.
+  `tests/e2e/dashboard-reduced-motion.spec.ts` asserts the status dot's
+  computed `animation-name` is `none` under a reduced-motion preference
+  and `status-pulse` without one; against the unfixed build the first
+  assertion fails. Also: `shared.tsx`'s `Toggle`'s `role="switch"` button
+  had no accessible name — its label text was a sibling, not associated —
+  so it now also carries `aria-label`; `Toggle` has no current consumer in
+  the frontend (confirmed via full git history search), so this is a
+  source-only fix with no reachable regression test, the same shape as
+  `#1413`.
+
+- **Routed pages are code-split instead of riding along in one bundle
+  (#1435).** The 24 pages behind `AppShell`'s routes were all statically
+  imported into `App.tsx`, so the production build warned on a ~600kB
+  chunk and every page paid for every other page's JS regardless of which
+  one it rendered. Each is now `React.lazy`-loaded behind a `Suspense`
+  boundary reusing the app-shell skeleton (`#1408`) as its fallback; the
+  main chunk drops to ~300kB and the build no longer warns. `Setup` and
+  `Login` stay eager — one of them is on the critical path for every
+  session's first paint. `tests/e2e/route-code-splitting.spec.ts` asserts
+  a cold load of `/dashboard` fetches only the Dashboard route's chunk,
+  not an unvisited route's; against the unfixed build the first assertion
+  fails, since no per-route chunk exists at all.
+
+- **API failures surface as human copy with a recovery hint, not raw
+  transport strings (#1436).** The shared request helper
+  (`lib/api.ts`) threw `` `${path}: ${detail}` ``, falling back to the
+  bare status code (e.g. `500`) when the backend gave no `detail` —
+  shown verbatim in toasts and inline errors across the app (an observed
+  case: `/v1/workspaces/…/members: Permission 'workspaces.write'
+  required...`). The thrown message is now the backend's `detail` alone
+  when present (already human copy in this API), or one of a small set
+  of status-family sentences with a recovery hint otherwise; the raw
+  path/status still travel on the new `ApiError`'s `.path`/`.status` for
+  developer diagnostics, not in the primary message. Three call sites
+  that bypass the shared helper with their own `fetch()` (`Setup.tsx`,
+  `Chat.tsx`'s stream, `LlmProviders.tsx`) reuse the same fallback
+  sentences; two others (`KnowledgeBase.tsx`, `Dashboard.tsx`'s
+  assistant) already discarded the raw error before display and needed
+  no change. `tests/e2e/api-error-copy.spec.ts` mocks a 500 with no
+  `detail` and asserts the toast contains neither the route nor a bare
+  status number; against the unfixed build it fails on exactly that
+  assertion.
+
+- **The shared API client times out and recovers, instead of leaving a
+  hung request's spinner up forever (#1423).** `lib/api.ts`'s `request()`
+  wrapped `fetch` with no timeout or `AbortController`; only Chat's own
+  streaming fetch and the dashboard assistant widget guarded against a
+  hung request, so the other ~28 pages that go through the shared client
+  did not. It now aborts after 30s, and — same class of bug as #1436 —
+  any transport-level failure (the abort, a dropped connection, offline,
+  CORS) is wrapped in the same human, retryable `ApiError` a bad HTTP
+  status gets, rather than surfacing as a raw `TypeError: Failed to
+  fetch` or `AbortError`. `tests/e2e/api-timeout.spec.ts` drives the
+  same try/catch/wrapping code the timeout path shares via
+  `route.abort()` (fast and deterministic — the real 30s budget isn't
+  practical to wait out inside this suite's own CI time limit) and
+  asserts the shown message has no raw error name; against the unfixed
+  build it fails on exactly that assertion.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a

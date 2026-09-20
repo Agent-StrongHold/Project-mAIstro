@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { fallbackMessage } from "../lib/api";
 import { randomId } from "../lib/ids";
 import { useWorkspaces } from "../context/WorkspaceContext";
 
@@ -337,7 +338,7 @@ export default function ChatPage() {
           // the brief interview instead of the model (SPEC-091726-7c2a).
           body: JSON.stringify({ model, messages: outbound, workspace_id: activeWorkspaceId ?? undefined }),
         });
-        if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`);
+        if (!res.ok || !res.body) throw new Error(fallbackMessage(res.status));
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();

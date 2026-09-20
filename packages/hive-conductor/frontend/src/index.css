@@ -536,7 +536,7 @@ a { color: var(--accent); }
 .prompt-btn { cursor: pointer; font-size: 14px; padding: 14px 18px; text-align: left; border-radius: 12px; border: 1px solid var(--rule); background: var(--paper); box-shadow: var(--shadow-xs); transition: border-color 0.15s var(--ease), background 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.15s var(--ease); }
 .prompt-btn:hover { background: var(--accent-light); border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
 .typing-indicator { display: flex; gap: 5px; padding: 14px 18px; }
-.typing-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pencil); animation: bounce 1.4s infinite ease-in-out; }
+.typing-indicator .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pencil); }
 .typing-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes bounce { 0%, 80%, 100% { transform: scale(0.6); } 40% { transform: scale(1); } }
@@ -646,7 +646,6 @@ input, select, textarea {
   border-radius: 50%;
   background: var(--ok);
   box-shadow: 0 0 0 rgba(22, 163, 74, 0.5);
-  animation: status-pulse 2.2s var(--ease) infinite;
 }
 @keyframes status-pulse {
   0%   { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.35); }
@@ -1320,10 +1319,33 @@ input, select, textarea {
   background: var(--rule);
   opacity: 0.35;
 }
+/* Generic skeleton placeholder (#1421): `.skeleton` alone is the pulse, a
+   shape modifier like `.skeleton-card` sizes it. `TemplatePicker.tsx` used
+   `.skeleton.skeleton-card` with no matching rule at all, so its loading
+   state rendered as an empty, invisible div. */
+.skeleton {
+  border-radius: var(--radius-sm, 8px);
+  background: var(--rule);
+  opacity: 0.35;
+}
+.skeleton-card {
+  height: 58px;
+  width: 100%;
+}
 @media (prefers-reduced-motion: no-preference) {
   .skeleton-nav-icon,
-  .skeleton-block {
+  .skeleton-block,
+  .skeleton {
     animation: hc-skeleton-pulse 1.4s ease-in-out infinite;
+  }
+  .typing-indicator .dot {
+    animation: bounce 1.4s infinite ease-in-out;
+  }
+  .dashboard-status-dot {
+    animation: status-pulse 2.2s var(--ease) infinite;
+  }
+  .tool-step--running .tool-step-icon {
+    animation: loading-spin 1s linear infinite;
   }
 }
 @keyframes hc-skeleton-pulse {
@@ -1341,7 +1363,7 @@ input, select, textarea {
         .tool-step--done { border-left: 3px solid var(--ok, #4caf50); }
         .tool-step--error { border-left: 3px solid var(--danger, #f44336); }
         .tool-step-icon { width: 14px; text-align: center; flex: none; }
-        .tool-step--running .tool-step-icon { display: inline-block; animation: loading-spin 1s linear infinite; }
+        .tool-step--running .tool-step-icon { display: inline-block; }
         .tool-step-name { font-weight: 600; flex: none; }
         .tool-step-args { color: var(--pencil, #888); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .tool-step-summary { margin-left: auto; flex: none; color: var(--ok, #4caf50); }
