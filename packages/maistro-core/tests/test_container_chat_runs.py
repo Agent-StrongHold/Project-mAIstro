@@ -661,3 +661,34 @@ async def test_a_race_to_terminal_during_compensation_is_logged_and_skipped(
 
     assert recovered == 0
     assert "could not be compensated" in caplog.text
+
+
+async def test_the_grace_window_is_judged_against_an_injected_now() -> None:
+    """`now` exists so an operator scheduler can drive the tick from a clock
+    it controls (ADR-019 shape): the grace window must be measured against
+    the injected moment, not the wall clock that keeps moving underneath."""
+    container = await _container()
+    stranded = await _stranded_running_chat_run(container, age=timedelta(minutes=10))
+
+    # An injected now 8 minutes back reads the backdated Run as 2 minutes
+    # old -- inside the 5-minute grace -- so the same durable state the
+    # default clock would compensate is left alone here.
+    recovered = await container.recover_stranded_chat_admissions(
+        now=datetime.now(UTC) - timedelta(minutes=8)
+    )
+    assert recovered == 0
+    current = await container.run_store.get_run(stranded.run_id)
+    assert current is not None
+    assert current.status is RunStatus.RUNNING
+
+    # An injected now 3 minutes back reads the very same Run as 7 minutes
+    # old -- past grace -- and the sweep compensates it, judged entirely by
+    # the injected clock.
+    recovered = await container.recover_stranded_chat_admissions(
+        now=datetime.now(UTC) - timedelta(minutes=3)
+    )
+    assert recovered == 1
+    current = await container.run_store.get_run(stranded.run_id)
+    assert current is not None
+    assert current.status is RunStatus.CANCELLED
+    assert current.error == EXECUTION_NEVER_STARTED

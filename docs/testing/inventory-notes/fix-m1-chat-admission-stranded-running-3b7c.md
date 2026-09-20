@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +8
+  packages/maistro-core/tests: +9
 ---
 # fix-m1-chat-admission-stranded-running-3b7c
 
@@ -17,4 +17,7 @@ only, idempotency across repeated sweeps, the `limit` bound across multiple
 stranded Runs in one tick, a NodeRun appearing between the sweep's two
 eligibility reads (the narrow race the immediate re-check exists to close),
 and a Run that races to terminal through another path during compensation
-being logged and skipped rather than re-litigated.
+being logged and skipped rather than re-litigated, plus the tick's `now`
+parameter being honored: the grace window is judged against the injected
+moment (the same Run reads as inside grace under one injected clock and past
+it under another), not against the wall clock.
