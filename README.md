@@ -64,6 +64,10 @@ uv run pytest                         # run the test suite
 docker compose up -d                  # full local stack (Postgres + LiteLLM + Langfuse)
 ```
 
+### Requirements
+
+- **Docker Engine 25+** (API 1.44+). The engine images embed the docker CLI v29, which only negotiates Docker API 1.44+ — the floor rose with the go1.26.8 toolchain rebuild that fixed CVE-2025-68121 (plus 21 HIGH-severity Go stdlib CVEs) in the previously embedded go1.22.11 CLI. `install.sh` enforces this before starting the stack and exits with an upgrade pointer; Engine ≤ 24 (API ≤ 1.43) daemons are unsupported. Upgrade via [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) or your distro's current `docker.io` package, then re-run `./install.sh`.
+
 The engine image applies migrations automatically before it starts the API.
 Migration runners serialize through a PostgreSQL advisory lock, so multiple
 replicas cannot race the schema. A migration failure keeps readiness down and
