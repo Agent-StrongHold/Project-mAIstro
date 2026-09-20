@@ -260,3 +260,137 @@ def test_memory_stats_with_entries(authed_client: Any) -> None:
     assert body["total"] == 2
     assert body["counts_by_namespace"] == {"a": 2}
     assert body["avg_accessed_count"] == 0.5
+
+
+# --------------------------------------------------------------------------- #
+# chat-completion memory tools — non-HTTP callers of the owned store
+# --------------------------------------------------------------------------- #
+
+
+def _entry(eid: str, user_id: str, value: str) -> MemoryEntry:
+    now = datetime.now(UTC)
+    return MemoryEntry(
+        id=eid,
+        user_id=user_id,
+        key=value[:60],
+        value=value,
+        namespace="general",
+        tags=[],
+        embedding=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+async def test_chat_memory_add_stamps_owner_and_stores_entry() -> None:
+    from services.chat_completion import _tool_memory_add
+
+    result = await _tool_memory_add({"content": "remember this"}, user_id="u-chat", jira_pat=None)
+    assert result["saved"] is True
+    stored = stores.memory_entries[result["id"]]
+    assert stored.user_id == "u-chat"
+    assert stored.value == "remember this"
+
+
+async def test_chat_memory_add_requires_content() -> None:
+    from services.chat_completion import _tool_memory_add
+
+    assert await _tool_memory_add({}, user_id="u-chat", jira_pat=None) == {
+        "error": "content is required"
+    }
+
+
+async def test_chat_memory_search_scopes_to_owner_and_filters() -> None:
+    from services.chat_completion import _tool_memory_search
+
+    stores.memory_entries["own"] = _entry("own", "u-chat", "alpha secret")
+    stores.memory_entries["foreign"] = _entry("foreign", "someone-else", "alpha private")
+
+    unfiltered = await _tool_memory_search({}, user_id="u-chat", jira_pat=None)
+    assert [e["id"] for e in unfiltered["results"]] == ["own"]
+    assert unfiltered["count"] == 1
+
+    own_match = await _tool_memory_search({"query": "secret"}, user_id="u-chat", jira_pat=None)
+    assert [e["id"] for e in own_match["results"]] == ["own"]
+
+    # A query matching only foreign content must not leak it.
+    foreign_only = await _tool_memory_search({"query": "private"}, user_id="u-chat", jira_pat=None)
+    assert foreign_only["results"] == []
+    assert stores.memory_entries["foreign"].value == "alpha private"
+
+
+async def test_chat_memory_delete_requires_entry_id() -> None:
+    from services.chat_completion import _tool_memory_delete
+
+    assert await _tool_memory_delete({}, user_id="u-chat", jira_pat=None) == {
+        "error": "entry_id required"
+    }
+
+
+async def test_chat_memory_delete_is_scoped() -> None:
+    from services.chat_completion import _tool_memory_delete
+
+    stores.memory_entries["own"] = _entry("own", "u-chat", "mine")
+    stores.memory_entries["foreign"] = _entry("foreign", "someone-else", "theirs")
+
+    assert await _tool_memory_delete({"entry_id": "foreign"}, user_id="u-chat", jira_pat=None) == {
+        "error": "not found"
+    }
+    assert "foreign" in stores.memory_entries
+
+    assert await _tool_memory_delete({"entry_id": "own"}, user_id="u-chat", jira_pat=None) == {
+        "deleted": True,
+        "id": "own",
+    }
+    assert "own" not in stores.memory_entries
+
+    assert await _tool_memory_delete({"entry_id": "missing"}, user_id="u-chat", jira_pat=None) == {
+        "error": "not found"
+    }
+
+
+async def test_chat_memory_edit_not_found_is_scoped() -> None:
+    from services.chat_completion import _tool_memory_edit
+
+    stores.memory_entries["foreign"] = _entry("foreign", "someone-else", "theirs")
+
+    assert await _tool_memory_edit(
+        {"entry_id": "missing", "value": "x"}, user_id="u-chat", jira_pat=None
+    ) == {"error": "not found"}
+    assert await _tool_memory_edit(
+        {"entry_id": "foreign", "value": "x"}, user_id="u-chat", jira_pat=None
+    ) == {"error": "not found"}
+    assert stores.memory_entries["foreign"].value == "theirs"
+
+
+async def test_chat_memory_edit_requires_entry_id_and_value() -> None:
+    from services.chat_completion import _tool_memory_edit
+
+    assert await _tool_memory_edit({}, user_id="u-chat", jira_pat=None) == {
+        "error": "entry_id and value required"
+    }
+    assert await _tool_memory_edit({"entry_id": "own"}, user_id="u-chat", jira_pat=None) == {
+        "error": "entry_id and value required"
+    }
+
+
+async def test_chat_memory_edit_updates_value_key_and_tags() -> None:
+    from services.chat_completion import _tool_memory_edit
+
+    stores.memory_entries["own"] = _entry("own", "u-chat", "before")
+
+    updated = await _tool_memory_edit(
+        {"entry_id": "own", "value": "after"}, user_id="u-chat", jira_pat=None
+    )
+    assert updated == {"updated": True, "id": "own", "value": "after"}
+    row = stores.memory_entries["own"]
+    assert row.value == "after"
+    assert row.key == "after"
+    assert row.user_id == "u-chat"
+
+    # The tags branch overwrites the tag list; without it, tags are preserved.
+    retagged = await _tool_memory_edit(
+        {"entry_id": "own", "value": "after", "tags": ["a"]}, user_id="u-chat", jira_pat=None
+    )
+    assert retagged["updated"] is True
+    assert stores.memory_entries["own"].tags == ["a"]
