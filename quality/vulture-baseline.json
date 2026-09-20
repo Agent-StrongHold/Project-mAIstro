@@ -600,7 +600,6 @@
         "packages/maistro-rsi/src/maistro_rsi/promotion_review.py::unused variable 'flagged_at'",
         "packages/maistro-rsi/src/maistro_rsi/quarantine.py::unused variable 'requires_adversarial_review'",
         "packages/maistro-rsi/src/maistro_rsi/rate_pacer.py::unused variable 'request_floor'",
-        "packages/maistro-rsi/src/maistro_rsi/scout.py::unused variable 'location'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'delta_coverage'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'delta_pass'",
         "packages/maistro-rsi/src/maistro_rsi/trace_notes.py::unused variable 'inventory'",
