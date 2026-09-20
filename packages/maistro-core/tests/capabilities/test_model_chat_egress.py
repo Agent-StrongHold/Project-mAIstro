@@ -658,3 +658,189 @@ async def test_denied_policy_refuses_before_setup_runs(
         )
 
     assert setup_ran is False
+
+
+# --- provider registration seam + structured-output payload (#1088) ---------
+
+
+async def test_register_provider_models_posts_each_model_and_strips_v1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registration goes through the gateway admin seam per model, stripping a
+    trailing ``/v1`` from the endpoint and carrying the transient key only in
+    the litellm_params body plus the endpoint's authorization header."""
+    from maistro.capabilities.providers.llm_gateway import register_provider_models
+
+    calls: list[tuple[str, dict[str, str], dict[str, Any]]] = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {"status": "ok"}
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, *, headers: Any = None, json: Any = None) -> _Resp:
+            calls.append((url, dict(headers or {}), dict(json or {})))
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    await register_provider_models(
+        GatewayEndpoint(base_url="http://gw:4000/v1/", api_key="master"),
+        models=("model-a", "model-b"),
+        api_key="transient-key",
+    )
+
+    assert [url for url, _h, _b in calls] == [
+        "http://gw:4000/model/new",
+        "http://gw:4000/model/new",
+    ]
+    assert calls[0][2] == {
+        "model_name": "model-a",
+        "litellm_params": {"model": "model-a", "api_key": "transient-key"},
+    }
+    assert calls[0][1]["Authorization"] == "Bearer master"
+
+
+async def test_register_provider_models_maps_http_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gateway rejection (>=400) becomes a ProviderRegistrationError naming
+    the model and status."""
+    from maistro.capabilities.providers.llm_gateway import (
+        ProviderRegistrationError,
+        register_provider_models,
+    )
+
+    class _Resp:
+        status_code = 403
+
+        def json(self) -> dict[str, Any]:
+            return {"error": "invalid admin key"}
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, *a: Any, **kw: Any) -> _Resp:
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    with pytest.raises(ProviderRegistrationError, match=r"model-a.*HTTP 403"):
+        await register_provider_models(
+            GatewayEndpoint(base_url="http://gw:4000", api_key="master"),
+            models=("model-a",),
+            api_key="k",
+        )
+
+
+async def test_register_provider_models_wraps_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable gateway (transport error) is a registration failure, not
+    a crash or an authorization verdict."""
+    from maistro.capabilities.providers.llm_gateway import (
+        ProviderRegistrationError,
+        register_provider_models,
+    )
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, *a: Any, **kw: Any) -> Any:
+            raise httpx.ConnectError("no route to gateway")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    with pytest.raises(ProviderRegistrationError, match="gateway unreachable"):
+        await register_provider_models(
+            GatewayEndpoint(base_url="http://gw:4000", api_key="master"),
+            models=("model-a",),
+            api_key="k",
+        )
+
+
+async def test_chat_payload_carries_structured_output_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A governed request's ``response_format`` passes through to the gateway
+    body; when absent, the key is absent (no implicit schema)."""
+
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return _OK_BODY
+
+    class _Client:
+        is_closed = False
+
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, *a: Any, **kw: Any) -> _Resp:
+            captured["json"] = kw.get("json")
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    effects = new_in_memory_effect_context()
+    registry = _registry()
+    egress = ModelChatEgress(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+    )
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "score", "schema": {"type": "object"}},
+    }
+
+    structured = await egress.complete(
+        binding=_binding(),
+        run_id="r1",
+        node_run_id="nr1",
+        attempt_id="a1",
+        effect_key="test:structured",
+        request=ModelChatRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            response_format=response_format,
+        ),
+    )
+    assert structured.model == "fast-model"
+    assert captured["json"]["response_format"] == response_format
+
+    captured.clear()
+    await egress.complete(
+        binding=_binding(),
+        run_id="r1",
+        node_run_id="nr1",
+        attempt_id="a2",
+        effect_key="test:unstructured",
+        request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+    )
+    assert "response_format" not in captured["json"]

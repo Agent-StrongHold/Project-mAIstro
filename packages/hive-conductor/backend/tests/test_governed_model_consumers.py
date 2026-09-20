@@ -473,3 +473,311 @@ async def test_provider_registration_failure_is_not_authorization_failure(
     )
     assert stored is not None
     assert stored.status is InvocationStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_ensure_binding_is_immutable_and_idempotent() -> None:
+    """Bindings register once: an identical re-registration returns the stored
+    record; a mutated one is refused as an authorization failure."""
+    from services.governed_model import control_plane_binding, ensure_binding
+
+    from maistro.capabilities.binding_store import BindingResolutionError
+
+    runtime, _run_store, _parent_run_id, project_id = await _correlated_runtime()
+    binding = control_plane_binding(
+        binding_id="immutable-binding",
+        workspace_id="ws-1",
+        project_id=project_id,
+        provider_name="judge-model",
+    )
+
+    stored = await ensure_binding(runtime, binding)
+    assert stored == binding
+    again = await ensure_binding(runtime, binding)
+    assert again == stored
+
+    mutated = binding.model_copy(update={"provider_name": "other-model"})
+    with pytest.raises(BindingResolutionError, match="immutable"):
+        await ensure_binding(runtime, mutated)
+
+
+@pytest.mark.asyncio
+async def test_runtime_fails_closed_without_container() -> None:
+    """The hive bridge refuses model egress when no core Container is bound —
+    degraded mode never fabricates a runtime."""
+    from services.governed_model import _runtime
+
+    with pytest.raises(RuntimeError, match="canonical model egress is unavailable"):
+        _runtime()
+
+
+@pytest.mark.asyncio
+async def test_runtime_wires_container_authorities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_runtime`` builds the governed runtime from the live container's
+    authorities and the gateway endpoint from the environment chain."""
+    from types import SimpleNamespace
+
+    import services.engine as engine_mod
+    from services.governed_model import _runtime
+
+    engine = engine_mod.get_engine()
+    scope, _project_id = await _canonical_scope()
+    run_store = InMemoryRunStore(project_store=scope)
+    registry = InMemoryProviderRegistry()
+    effects = new_in_memory_effect_context()
+    router = CostAwareRouter(registry)
+    container = SimpleNamespace(
+        capability_effects=effects,
+        provider_registry=registry,
+        llm_router=router,
+        project_scope_store=scope,
+        run_store=run_store,
+    )
+    monkeypatch.setattr(engine, "_agent_port", SimpleNamespace(container=container))
+    monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://env-gateway")
+    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "env-key")
+
+    runtime = _runtime()
+
+    assert runtime.effects is effects
+    assert runtime.registry is registry
+    assert runtime.router is router
+    assert runtime.project_scope_store is scope
+    assert runtime.run_store is run_store
+    assert runtime.endpoint.base_url == "http://env-gateway"
+    assert runtime.endpoint.api_key == "env-key"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_refuses_without_gateway_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No env endpoint and no configured settings is a fail-closed 503-class
+    error, never an implicit default endpoint."""
+    import config
+    from services.governed_model import ProviderActivationError, _endpoint
+
+    for var in (
+        "MAISTRO_LLM_BASE_URL",
+        "LITELLM_PROXY_URL",
+        "LITELLM_API_BASE",
+        "MAISTRO_LLM_API_KEY",
+        "LITELLM_API_KEY",
+        "LITELLM_PROXY_KEY",
+        "LITELLM_MASTER_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    settings = type("Settings", (), {"litellm_api_base": None, "litellm_api_key": None})()
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+
+    with pytest.raises(ProviderActivationError, match="LLM gateway is not configured"):
+        _endpoint()
+
+
+@pytest.mark.asyncio
+async def test_mint_refuses_without_canonical_run_store() -> None:
+    """Minting an operation without the canonical run store fails closed."""
+    import services.governed_model as governed_model
+
+    runtime = _plain_runtime()
+    with pytest.raises(RuntimeError, match="without the core Container run store"):
+        await governed_model.mint_operation_identity(
+            runtime,
+            operation="orphan-operation",
+            workspace_id="ws-1",
+            project_id="p-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_settle_rejects_unknown_outcome() -> None:
+    """Only completed/failed/cancelled are legal operation outcomes."""
+    import services.governed_model as governed_model
+
+    runtime, _run_store, parent_run_id, project_id = await _correlated_runtime()
+    identity = await governed_model.mint_operation_identity(
+        runtime,
+        operation="settle-check",
+        workspace_id="ws-1",
+        project_id=project_id,
+        parent_run_id=parent_run_id,
+    )
+    with pytest.raises(ValueError, match="unknown operation outcome"):
+        await governed_model.settle_operation_identity(runtime, identity, outcome="bogus")
+
+
+@pytest.mark.asyncio
+async def test_settle_records_failed_and_cancelled_operations() -> None:
+    """Failed and cancelled operations terminalize their canonical spine
+    truthfully (Run/NodeRun/Attempt), keeping authorization refusals
+    distinguishable from execution failures."""
+    import services.governed_model as governed_model
+
+    runtime, run_store, parent_run_id, project_id = await _correlated_runtime()
+    failed = await governed_model.mint_operation_identity(
+        runtime,
+        operation="op-failed",
+        workspace_id="ws-1",
+        project_id=project_id,
+        parent_run_id=parent_run_id,
+    )
+    cancelled = await governed_model.mint_operation_identity(
+        runtime,
+        operation="op-cancelled",
+        workspace_id="ws-1",
+        project_id=project_id,
+        parent_run_id=parent_run_id,
+    )
+
+    await governed_model.settle_operation_identity(
+        runtime, failed, outcome="failed", error="gateway exploded"
+    )
+    await governed_model.settle_operation_identity(
+        runtime, cancelled, outcome="cancelled", error="authorization refused"
+    )
+
+    failed_run = await run_store.get_run(failed.run_id)
+    cancelled_run = await run_store.get_run(cancelled.run_id)
+    assert failed_run is not None and failed_run.status is RunStatus.FAILED
+    assert failed_run.error == "gateway exploded"
+    assert cancelled_run is not None and cancelled_run.status is RunStatus.CANCELLED
+    failed_node = await run_store.get_node_run(failed.node_run_id)
+    assert failed_node is not None and failed_node.status is RunStatus.FAILED
+    cancelled_node = await run_store.get_node_run(cancelled.node_run_id)
+    assert cancelled_node is not None and cancelled_node.status is RunStatus.CANCELLED
+    failed_attempt = await run_store.get_attempt(failed.attempt_id)
+    assert failed_attempt is not None and failed_attempt.status is AttemptStatus.FAILED
+    cancelled_attempt = await run_store.get_attempt(cancelled.attempt_id)
+    assert cancelled_attempt is not None and cancelled_attempt.status is AttemptStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_benchmark_authorization_denial_settles_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A policy-deny on the judge call returns an authorization error kind and
+    settles the evaluation operation as CANCELLED."""
+    import services.benchmark_eval as benchmark_eval
+
+    async def deny(*args: Any, **kwargs: Any) -> PolicyVerdict:
+        del args, kwargs
+        return PolicyVerdict(Decision.DENY, reason="benchmark denied", rule="test-deny")
+
+    runtime, run_store, parent_run_id, project_id = await _correlated_runtime(policy_evaluator=deny)
+    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
+
+    score = await benchmark_eval.evaluate_code_output(
+        "task",
+        "plan",
+        "code",
+        run_id=parent_run_id,
+        workspace_id="ws-1",
+        project_id=project_id,
+        model="judge-model",
+    )
+
+    assert score["error_kind"] == "authorization"
+    assert score["pass"] is False
+    cancelled = await run_store.list_by_status(RunStatus.CANCELLED, limit=10)
+    children = [
+        run for run in cancelled if run.provenance.get("operation") == "benchmark-evaluation"
+    ]
+    assert len(children) == 1
+
+
+@pytest.mark.asyncio
+async def test_benchmark_transport_failure_settles_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable gateway is an evaluation failure (not authorization):
+    the error kind is ``evaluation`` and the operation settles FAILED."""
+    from contextlib import asynccontextmanager
+
+    import httpx
+    import services.benchmark_eval as benchmark_eval
+
+    runtime, run_store, parent_run_id, project_id = await _correlated_runtime()
+    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
+
+    class _DeadClient:
+        async def __aenter__(self) -> _DeadClient:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            del args
+
+        async def post(self, url: str, **kwargs: Any) -> Any:
+            del url, kwargs
+            raise httpx.ConnectError("gateway unreachable")
+
+    @asynccontextmanager
+    async def _dead_shared_client(*args: Any, **kwargs: Any):
+        del args, kwargs
+        yield _DeadClient()
+
+    monkeypatch.setattr(llm_gateway, "shared_client", _dead_shared_client)
+
+    score = await benchmark_eval.evaluate_code_output(
+        "task",
+        "plan",
+        "code",
+        run_id=parent_run_id,
+        workspace_id="ws-1",
+        project_id=project_id,
+        model="judge-model",
+    )
+
+    assert score["error_kind"] == "evaluation"
+    assert score["total"] == 0
+    failed = await run_store.list_by_status(RunStatus.FAILED, limit=10)
+    children = [run for run in failed if run.provenance.get("operation") == "benchmark-evaluation"]
+    assert len(children) == 1
+
+
+@pytest.mark.asyncio
+async def test_evaluate_dag_run_joins_aggregated_outputs(
+    monkeypatch: pytest.MonkeyPatch, fake_gateway: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """DAG-run evaluation judges the joined plan/code/review decomposition of
+    every successful node output, positionally."""
+    import services.benchmark_eval as benchmark_eval
+
+    from maistro.providers.types import ModelMetadata
+
+    runtime, _run_store, parent_run_id, project_id = await _correlated_runtime()
+    runtime.registry.register_model(
+        ModelMetadata(
+            name="gemini-3.5-flash",
+            provider="test-provider",
+            cost_per_1k_input=0.5,
+            cost_per_1k_output=1.0,
+            latency_p50_ms=100,
+        )
+    )
+    monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
+
+    result = {
+        "run_id": parent_run_id,
+        "workspace_id": "ws-1",
+        "project_id": project_id,
+        "node_results": {
+            "planner": {"response": "the-plan-text", "success": True},
+            "worker-1": {"response": "the-code-part-1", "success": True},
+            "worker-2": {"response": "the-code-part-2", "success": True},
+            "reviewer": {"response": "the-review-text", "success": True},
+            "skipped": {"response": "should-not-appear", "success": False},
+        },
+    }
+
+    score = await benchmark_eval.evaluate_dag_run(result, "build the thing")
+
+    assert score["total"] == 42
+    assert score["evaluation_run_id"]
+    user_message = fake_gateway[0][1]["messages"][-1]["content"]
+    assert "TASK:\nbuild the thing" in user_message
+    assert "PLAN:\nthe-plan-text" in user_message
+    assert "the-code-part-1\nthe-code-part-2" in user_message
+    assert "REVIEW:\nthe-review-text" in user_message
+    assert "should-not-appear" not in user_message
