@@ -96,12 +96,15 @@ COPY pyproject.toml uv.lock README.md ./
 # unrelated packages into a browser image. Named packages are still fine on uv
 # -- nothing local is built -- so the Playwright step below is unchanged.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# pydantic-ai-slim is deliberately NOT installed: ADR-094 cut pydantic-ai from
+# the codebase (zero src imports) and the CVE-2026-25580 fix line (>=1.56.0)
+# requires openai>=2, which cannot co-install with the openai pin below.
 RUN pip install --no-cache-dir \
     "./packages/maistro-core[llm,sandbox,observability]" \
     "./packages/maistro-server" \
     "alembic>=1.14" \
-    "pydantic-ai-slim[openai]>=0.1" \
     "openai>=1.40,<2" \
+    "anyio>=4.14.2" \
     "httpx>=0.27.0"
 
 # Install browser-use + Playwright + Chromium for the RESEARCH role's web tool.
