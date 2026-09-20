@@ -208,37 +208,57 @@ class BrowserNetworkGuard:
         req = request if request is not None else getattr(route, "request", None)
         url = str(getattr(req, "url", "") or "")
         resource_type = str(getattr(req, "resource_type", "") or "unknown")
-        decision_url = url
+        # Single-element cell: _follow_redirects advances it per hop, and the
+        # denial records below must name the URL that was being decided when
+        # the failure happened, not the original request URL.
+        decided = [url]
         try:
             fetch = getattr(route, "fetch", None)
             fulfill = getattr(route, "fulfill", None)
             if not callable(fetch) or not callable(fulfill):
                 raise RuntimeError("Playwright route lacks fetch/fulfill")
 
-            await self._decide(decision_url)
-            self._record(ALLOWED, decision_url, "", resource_type)
+            await self._decide(decided[0])
+            self._record(ALLOWED, decided[0], "", resource_type)
             response = await fetch(max_redirects=0)
-            for _ in range(MAX_REDIRECT_HOPS):
-                location = _redirect_location(response)
-                if not location:
-                    break
-                decision_url = urljoin(decision_url, location)
-                await self._decide(decision_url)
-                self._record(ALLOWED, decision_url, "", resource_type)
-                response = await fetch(url=decision_url, max_redirects=0)
-            else:
-                raise RuntimeError("redirect chain exceeded browser policy limit")
+            response = await self._follow_redirects(fetch, response, decided, resource_type)
             await fulfill(response=response)
         except SSRFBlockedError as exc:
             await _abort(route)
-            self._record(DENIED, decision_url, exc.reason or "policy", resource_type)
+            self._record(DENIED, decided[0], exc.reason or "policy", resource_type)
         except Exception as exc:
             # A resolver fault, malformed URL, unsupported route API, or
             # transport error cannot be shown safe, so it is denied. Log only
             # the exception type: Playwright errors may contain full URLs.
             logger.debug("browser_net_route_error", error_type=type(exc).__name__)
             await _abort(route)
-            self._record(DENIED, decision_url, "error", resource_type)
+            self._record(DENIED, decided[0], "error", resource_type)
+
+    async def _follow_redirects(
+        self,
+        fetch: Any,
+        response: Any,
+        decided: list[str],
+        resource_type: str,
+    ) -> Any:
+        """Follow each redirect hop through this guard, never the browser.
+
+        Chromium does not send every HTTP redirect hop back through a context
+        route handler, so each hop is fetched here with `max_redirects=0`:
+        the Location is re-decided against the snapshotted policy and only
+        then fetched. Returns the terminal response, or raises when the chain
+        exceeds `MAX_REDIRECT_HOPS` (refusing is safer than handing control
+        back to Chromium, whose hops would bypass governance).
+        """
+        for _ in range(MAX_REDIRECT_HOPS):
+            location = _redirect_location(response)
+            if not location:
+                return response
+            decided[0] = urljoin(decided[0], location)
+            await self._decide(decided[0])
+            self._record(ALLOWED, decided[0], "", resource_type)
+            response = await fetch(url=decided[0], max_redirects=0)
+        raise RuntimeError("redirect chain exceeded browser policy limit")
 
     async def handle_web_socket(self, ws_route: Any) -> None:
         """The `route_web_socket` handler: WebSocket upgrades are refused.
