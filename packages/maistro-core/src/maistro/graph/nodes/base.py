@@ -13,9 +13,11 @@ human.ask_question, ...) live in sibling modules and self-register via
 
 from __future__ import annotations
 
+import contextlib
 import time
-from datetime import UTC, datetime
-from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
+from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 
@@ -251,6 +253,7 @@ PAUSE_AWAITING_ROLE_DELEGATE = "awaiting_role_delegate"
 PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
 PAUSE_AWAITING_HARNESS = "awaiting_harness"
 PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
+PAUSE_AWAITING_DELEGATION_RECONCILIATION = "awaiting_delegation_reconciliation"
 
 #: Who each pause waits on. "human" means a person owes the next action and the
 #: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
@@ -264,6 +267,7 @@ PAUSE_REASON_OWNERS: dict[str, str] = {
     PAUSE_AWAITING_REMOTE_DELEGATION: "system",
     PAUSE_AWAITING_HARNESS: "system",
     PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
+    PAUSE_AWAITING_DELEGATION_RECONCILIATION: "system",
 }
 
 #: The reasons a *person* is owed an action, derived from the table above so
@@ -304,6 +308,14 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
     PAUSE_AWAITING_HARNESS: RESUME_ON_ANSWER,
     PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
+    # Reconciliation is the polling half of a delegation whose transport
+    # acceptance is unknown: re-entering re-reads the receipt sources (the
+    # local task map, the peer's reconciliation endpoint) instead of
+    # re-dispatching, which is the elapsed-timer contract, not the answer
+    # contract. It is a distinct reason from `awaiting_remote_delegation`
+    # precisely because that one re-dispatches on re-entry and this one must
+    # not.
+    PAUSE_AWAITING_DELEGATION_RECONCILIATION: RESUME_ON_ELAPSED,
 }
 
 #: The reasons a timer alone may re-enter, derived so the two cannot disagree.
@@ -332,7 +344,40 @@ def resumed_pause(ctx: NodeContext) -> dict[str, Any]:
     neither, which is what `wait_first_seen:` was.
     """
     carried = (ctx.metadata or {}).get(RESUMED_PAUSE_KEY)
-    return dict(carried) if isinstance(carried, dict) else {}
+    return dict(carried) if isinstance(carried, Mapping) else {}
+
+
+def hitl_resume_at(
+    ctx: NodeContext,
+    timeout_seconds: int,
+    *,
+    resumed: Mapping[str, Any] | None = None,
+) -> datetime | None:
+    """Return the authoritative HITL deadline for this reach.
+
+    A first reach admits a deadline from the node clock. A resumed reach must
+    reuse the deadline carried from the durable pause; it must never derive a
+    new one from wall-clock time after an answer arrives. The executor's
+    ``resumed_pause`` transport is authoritative when present; the canonical
+    answer record's ``_pause`` evidence is the fallback for resumed answers
+    produced by the durable stores.
+    """
+    metadata = ctx.metadata or {}
+    if RESUMED_PAUSE_KEY in metadata:
+        carried = resumed_pause(ctx)
+        raw = carried.get("resume_at")
+        if not isinstance(raw, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC)
+    if resumed is not None:
+        return preserved_hitl_deadline(dict(resumed), timeout_seconds=timeout_seconds)
+    return now_utc() + timedelta(seconds=timeout_seconds)
 
 
 def pause_until(
@@ -340,12 +385,16 @@ def pause_until(
     *,
     resume_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
-) -> None:
+) -> NoReturn:
     """Signal that the current node should pause and the run should checkpoint.
 
     Wait/HITL node `_execute` bodies call this to suspend execution. The
     runtime catches the signal, persists the run state, and resumes later
     (when the polled condition becomes true or the user supplies input).
+
+    Typed `NoReturn` rather than `None` because it never returns -- the raise
+    is unconditional -- and a caller that parks on it is entitled to have the
+    type checker know its own code after the call is unreachable.
     """
     raise _NodePaused(reason, resume_at=resume_at, metadata=metadata)
 
@@ -353,3 +402,34 @@ def pause_until(
 def now_utc() -> datetime:
     """Single source of truth for "now" so tests can monkeypatch."""
     return datetime.now(UTC)
+
+
+def preserved_hitl_deadline(resumed: dict[str, Any] | None, *, timeout_seconds: int) -> datetime:
+    """The durable deadline a malformed HITL re-pause must not silently reset (#1097).
+
+    `DurableRunStore.answer_record` stamps a node's own previous pause
+    verbatim onto every resumed answer under ``_pause`` -- valid or not --
+    before the node ever runs again, because it is the only server-side
+    record of what that pause was actually waiting for (see
+    `graph/durable_runs/stores.py::answer_record`). A verdict node that falls
+    through to a fresh pause because the answer was missing, blank, or not a
+    string reads that stamped evidence back so its deadline stays the one
+    admitted at the *original* pause, not `now + timeout_seconds` recomputed
+    on every malformed answer -- which would let repeated bad answers extend
+    a canonical HITL window indefinitely.
+
+    Falls back to the caller's configured timeout only when no ``_pause``
+    evidence is present at all, which means there is no earlier admitted
+    deadline to preserve -- the node's very first pause.
+    """
+    pause = (resumed or {}).get("_pause")
+    # `Mapping`, not `dict`: `GraphExecutionState` freezes its metadata, so a
+    # value read back through `NodeContext.metadata` is an immutable mapping
+    # rather than the plain dict `answer_record` wrote it as.
+    if isinstance(pause, Mapping):
+        raw = pause.get("resume_at")
+        if isinstance(raw, str):
+            with contextlib.suppress(ValueError):
+                parsed = datetime.fromisoformat(raw)
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return now_utc() + timedelta(seconds=timeout_seconds)

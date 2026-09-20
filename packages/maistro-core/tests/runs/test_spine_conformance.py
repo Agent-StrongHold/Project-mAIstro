@@ -24,11 +24,16 @@ import pytest
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope import ProjectNotEmpty
-from maistro.runs.lifecycle import StaleLeaseRenewal, UnearnedRunCompletion
+from maistro.runs.lifecycle import (
+    InvalidLifecycleTransition,
+    StaleLeaseRenewal,
+    UnearnedRunCompletion,
+)
 from maistro.runs.model import (
     AcceptedNodeOutcome,
     AttemptResult,
     AttemptStatus,
+    NodeRun,
     RunStatus,
     evidence_values_equal,
 )
@@ -75,6 +80,55 @@ async def _node_run(spine: Any) -> Any:
     store, _workspace, _project_id = spine
     run = await _run(spine)
     return await store.create_node_run(run.run_id, node_id="node-1")
+
+
+async def _complete_node_run(store: Any, node_run_id: str, *, result: Any = None) -> NodeRun:
+    """Complete a new fixture through the same physical-evidence store contract."""
+    attempt = await store.create_attempt(node_run_id)
+    await store.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    terminal = await store.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result=result
+    )
+    outcome = AcceptedNodeOutcome(
+        node_run_id=node_run_id,
+        attempt_result=AttemptResult.from_attempt(terminal),
+        result=result,
+    )
+    return await store.transition_node_run(
+        node_run_id, RunStatus.COMPLETED, result=result, accepted_outcome=outcome
+    )
+
+
+async def _load_legacy_node_fixture(store: Any, completed: NodeRun) -> NodeRun:
+    """Simulate a persisted pre-acceptance row, without reopening production writes.
+
+    New writes cannot create this shape after #1153. Only this historical repair
+    fixture strips the field in storage; all reads and repair transitions are real.
+    """
+    from maistro.runs.pg_store import PgRunStore
+    from maistro.runs.sqlite_store import SqliteRunStore
+    from maistro.runs.store import InMemoryRunStore
+
+    legacy = completed.model_copy(update={"accepted_outcome": None}, deep=True)
+    if isinstance(store, InMemoryRunStore):
+        store._node_runs[legacy.node_run_id] = legacy
+    elif isinstance(store, SqliteRunStore):
+        await store._conn.execute(
+            "UPDATE canonical_node_runs SET payload = ? WHERE node_run_id = ?",
+            (legacy.model_dump_json(), legacy.node_run_id),
+        )
+        await store._conn.commit()
+    elif isinstance(store, PgRunStore):
+        await store._pool.execute(
+            "UPDATE canonical_node_runs SET payload = $1::text::jsonb WHERE node_run_id = $2",
+            legacy.model_dump_json(),
+            legacy.node_run_id,
+        )
+    else:
+        raise AssertionError(f"unsupported historical fixture backend: {type(store)!r}")
+    reloaded = await store.get_node_run(legacy.node_run_id)
+    assert reloaded is not None and reloaded.accepted_outcome is None
+    return reloaded
 
 
 # ── identity round-trips ──────────────────────────────────────────
@@ -173,15 +227,19 @@ async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_ru
     terminal = await store.transition_attempt(
         attempt.attempt_id, AttemptStatus.COMPLETED, result={"answer": "ok"}
     )
-    completed = await store.transition_node_run(
-        node_run.node_run_id, RunStatus.COMPLETED, result=terminal.result
-    )
-    await store.transition_run(run.run_id, RunStatus.COMPLETED, result=completed.result)
     outcome = AcceptedNodeOutcome(
         node_run_id=node_run.node_run_id,
         attempt_result=AttemptResult.from_attempt(terminal),
-        result=completed.result,
+        result=terminal.result,
     )
+    completed = await store.transition_node_run(
+        node_run.node_run_id,
+        RunStatus.COMPLETED,
+        result=terminal.result,
+        accepted_outcome=outcome,
+    )
+    completed = await _load_legacy_node_fixture(store, completed)
+    await store.transition_run(run.run_id, RunStatus.COMPLETED, result=completed.result)
 
     migrated = await store.transition_node_run(
         node_run.node_run_id,
@@ -194,6 +252,46 @@ async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_ru
     assert migrated.status is RunStatus.COMPLETED
     assert migrated.accepted_outcome == outcome
     assert migrated.finished_at == completed.finished_at
+    assert migrated.started_at == completed.started_at
+    assert migrated.updated_at == completed.updated_at
+    assert migrated.result == completed.result
+    assert migrated.error == completed.error
+
+
+@pytest.mark.parametrize(
+    "alteration",
+    [
+        {"result": {"different": True}},
+        {"error": "different"},
+        {"logical_status": RunStatus.WAITING},
+    ],
+)
+async def test_legacy_evidence_backfill_cannot_rewrite_terminal_history(
+    spine: Any, alteration: dict[str, Any]
+) -> None:
+    store, _workspace, _project_id = spine
+    run = await _run(spine)
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    node_run = await store.create_node_run(run.run_id, node_id="node-1")
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    completed = await _complete_node_run(store, node_run.node_run_id, result={"original": True})
+    assert completed.accepted_outcome is not None
+    changed = completed.accepted_outcome.model_copy(update=alteration)
+    legacy = await _load_legacy_node_fixture(store, completed)
+    await store.transition_run(run.run_id, RunStatus.COMPLETED, result=legacy.result)
+
+    with pytest.raises(InvalidLifecycleTransition, match="legacy completed NodeRun"):
+        await store.transition_node_run(
+            legacy.node_run_id,
+            RunStatus.COMPLETED,
+            result=changed.result,
+            error=changed.error,
+            accepted_outcome=changed,
+        )
+
+    assert await store.get_node_run(legacy.node_run_id) == legacy
 
 
 async def test_a_child_run_cannot_cross_workspaces(spine: Any) -> None:
@@ -544,6 +642,30 @@ async def test_status_listing_decodes_the_same_evidence_as_get_run(spine: Any) -
     assert math.isnan(listed[0].result["nan"])
     assert listed[0].result["positive"] == float("inf")
     assert listed[0].result["nested"][0] == float("-inf")
+
+
+async def test_status_listing_can_filter_by_durable_admission_source(spine: Any) -> None:
+    """A consumer must spend its bounded page on owned Runs on every backend."""
+    store, workspace, project_id = spine
+    foreign = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "foreign-consumer"},
+        initial_status=RunStatus.QUEUED,
+    )
+    owned = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "owned-consumer"},
+        initial_status=RunStatus.QUEUED,
+    )
+
+    listed = await store.list_by_status(
+        RunStatus.QUEUED,
+        limit=1,
+        admission_source="owned-consumer",
+    )
+
+    assert [run.run_id for run in listed] == [owned.run_id]
+    assert foreign.run_id not in {run.run_id for run in listed}
 
 
 async def test_non_finite_evidence_survives_inside_a_container(spine: Any) -> None:
@@ -990,13 +1112,44 @@ def _occurrence(schedule_id: str = "sched-1", when: str = "2026-08-24T12:00:00+0
 
 async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     store, workspace, project_id = spine
-    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    first = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     with pytest.raises(DuplicateOccurrence) as caught:
         await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     assert caught.value.schedule_id == "sched-1"
     assert caught.value.scheduled_for == "2026-08-24T12:00:00+00:00"
+    resolved = await store.get_run_for_occurrence(
+        caught.value.schedule_id, caught.value.scheduled_for
+    )
+    assert resolved is not None
+    assert resolved.run_id == first.run_id
+
+
+async def test_concurrent_occurrence_claims_converge_on_one_run(spine: Any) -> None:
+    """A replica race has one winner, and every loser can resolve that winner."""
+    store, workspace, project_id = spine
+    results = await asyncio.gather(
+        *(
+            store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    duplicates = [result for result in results if isinstance(result, DuplicateOccurrence)]
+    unexpected = [
+        result
+        for result in results
+        if isinstance(result, BaseException) and not isinstance(result, DuplicateOccurrence)
+    ]
+    assert unexpected == []
+    assert len(winners) == 1
+    assert len(duplicates) == 7
+    resolved = await store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00")
+    assert resolved is not None
+    assert resolved.run_id == winners[0].run_id
 
 
 async def test_a_catch_up_fire_collides_with_the_on_time_one(spine: Any) -> None:
@@ -1523,7 +1676,7 @@ async def _assert_completion_over_a_failed_node_refused(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run, (failed, done) = await _two_node_running_run(spine)
     await store.transition_node_run(failed.node_run_id, RunStatus.FAILED, error="boom")
-    await store.transition_node_run(done.node_run_id, RunStatus.COMPLETED)
+    await _complete_node_run(store, done.node_run_id)
 
     with pytest.raises(UnearnedRunCompletion) as caught:
         await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})
@@ -1542,7 +1695,7 @@ async def _assert_failure_over_a_failed_node_allowed(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run, (failed, done) = await _two_node_running_run(spine)
     await store.transition_node_run(failed.node_run_id, RunStatus.FAILED, error="boom")
-    await store.transition_node_run(done.node_run_id, RunStatus.COMPLETED)
+    await _complete_node_run(store, done.node_run_id)
 
     settled = await store.transition_run(run.run_id, RunStatus.FAILED, error="node-1 failed")
 
@@ -1557,7 +1710,7 @@ async def _assert_cancellation_over_completed_nodes_allowed(spine: Any) -> None:
     store, _workspace, _project_id = spine
     run, (first, second) = await _two_node_running_run(spine)
     for node_run in (first, second):
-        await store.transition_node_run(node_run.node_run_id, RunStatus.COMPLETED)
+        await _complete_node_run(store, node_run.node_run_id)
 
     settled = await store.transition_run(run.run_id, RunStatus.CANCELLED, error="user asked")
 
@@ -1577,8 +1730,9 @@ async def _assert_a_retried_node_does_not_condemn_its_run(spine: Any) -> None:
     for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.FAILED):
         await store.transition_node_run(first.node_run_id, status)
     second = await store.create_node_run(run.run_id, node_id="node-1")
-    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED):
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING):
         await store.transition_node_run(second.node_run_id, status)
+    await _complete_node_run(store, second.node_run_id)
 
     assert second.ordinal > first.ordinal
     settled = await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})
@@ -1804,3 +1958,90 @@ async def test_an_unleased_attempt_is_never_reclaimed_in_memory(memory_spine: An
 @pytest.mark.ac("ADR-082526-b36a/AC-6")
 async def test_a_stale_token_cannot_renew_in_memory(memory_spine: Any) -> None:
     await _assert_a_stale_token_cannot_renew(memory_spine)
+
+
+# ── workspace-scoped status listing (#1240) ─────────────────────────
+
+
+async def test_status_listing_honors_the_workspace_boundary(spine: Any) -> None:
+    """A workspace-scoped listing returns only that Workspace's runs.
+
+    `workspace_id` exists so scoped callers (the HITL backlog) filter before
+    paging. The boundary only means something if a principal scoped to one
+    Workspace cannot enumerate another's rows — on every backend, including
+    the two that are systems of record.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    await store.transition_run(run.run_id, RunStatus.FAILED)
+
+    mine = await store.list_by_status(RunStatus.FAILED, workspace_id=workspace)
+    assert [item.run_id for item in mine] == [run.run_id]
+    assert await store.list_by_status(RunStatus.FAILED, workspace_id="workspace-nobody") == []
+
+
+# ── delegation reservation and receipt (#1090 review round) ──────────
+
+
+async def test_a_delegation_reservation_and_receipt_round_trip(spine: Any) -> None:
+    """The receipt-side identity the remote node leans on, on every backend.
+
+    `find_delegation_run` is how a retry adopts a concurrent replica's
+    reservation instead of minting a second child; `attach_delegation_receipt`
+    is how the transport's answer becomes durable evidence. Both must behave
+    identically where the run actually lives — memory in tests, SQLite or
+    PostgreSQL in production — including the refusal to overwrite an existing
+    receipt with a different task: two receipts for one logical hand-off is
+    the same "second lifecycle" the delegation node exists to prevent.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-round-trip"},
+    )
+
+    found = await store.find_delegation_run("key-round-trip")
+    assert found is not None
+    assert found.run_id == run.run_id
+    assert await store.find_delegation_run("key-unknown") is None
+
+    attached = await store.attach_delegation_receipt(
+        run.run_id, "task-1", target_agent="researcher"
+    )
+    assert attached.provenance["a2a_task_id"] == "task-1"
+    assert attached.provenance["target_agent"] == "researcher"
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["a2a_task_id"] == "task-1"
+
+    # Re-attaching the same task is idempotent; a different task is a conflict.
+    again = await store.attach_delegation_receipt(run.run_id, "task-1")
+    assert again.provenance["a2a_task_id"] == "task-1"
+    with pytest.raises(RunIntegrityError):
+        await store.attach_delegation_receipt(run.run_id, "task-2")
+
+
+async def test_the_transport_boundary_claim_is_one_winner(spine: Any) -> None:
+    """The CAS that keeps a lost receipt from becoming a second dispatch.
+
+    A replica adopts the reservation, then claims the one allowed transport
+    attempt before calling the peer. The claim must be a winner-take-all
+    transition that survives a reload — on every backend, because "the
+    boundary was already crossed" is exactly what a retry on another replica
+    (or another process against SQLite) must be able to observe.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-claim"},
+    )
+
+    assert await store.claim_delegation_transport_attempt(run.run_id) is True
+    assert await store.claim_delegation_transport_attempt(run.run_id) is False
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["transport_attempted"] is True
