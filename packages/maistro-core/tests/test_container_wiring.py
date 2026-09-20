@@ -9,6 +9,7 @@ connected, and reachable on the container.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -122,6 +123,222 @@ async def test_process_durable_events_delivers_to_matching_trigger() -> None:
     assert [t.trigger_id for t in triggers] == ["t1"]
     await container.set_durable_trigger_enabled("t1", False)
     assert not (await container.trigger_store.get("t1")).enabled  # type: ignore[union-attr]
+
+
+def _record_ids_caller(sink: list[int]):
+    async def _caller(trigger: object, event: Any) -> None:
+        sink.append(event.id)
+
+    return _caller
+
+
+async def test_durable_event_cursor_survives_a_restart(tmp_path: Path) -> None:
+    """#1163: a restart used to replay `durable_event_log` from zero every
+    time, because the cursor lived only as a plain `int` on the `Container`.
+    A fresh `Container` sharing the same durable SQLite database must instead
+    resume from the position the first container's tick durably committed.
+    """
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+    from maistro.events.trigger_store import TriggerDefinition
+
+    db_url = f"sqlite:///{tmp_path / 'events.db'}"
+    delivered_first: list[int] = []
+
+    container1 = await _container(database_url=db_url)
+    try:
+        container1.handler_caller = _record_ids_caller(delivered_first)  # type: ignore[assignment]
+        await container1.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        await container1.durable_event_log.append("agent.created")
+        await container1.durable_event_log.append("agent.created")
+        cursor1 = await container1.process_durable_events()
+        assert cursor1 == 2
+        assert delivered_first == [1, 2]
+        # Simulate the old process being gone: its lease is renewed to an
+        # already-expired one rather than left at the normal 300s, standing
+        # in for however long a real restart takes to notice and wait out.
+        await container1.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID,
+            holder=container1._durable_events_holder,
+            lease_seconds=-1.0,
+        )
+    finally:
+        if container1.db_pool is not None:
+            await container1.db_pool.close()
+
+    delivered_second: list[int] = []
+    container2 = await _container(database_url=db_url)
+    try:
+        # "Restart": a fresh Container/process (a different holder id), same
+        # underlying database, no tick performed yet. The durable position
+        # must already read back as 2, not 0 -- proving it is the store, not
+        # an in-process default, that answers the claim.
+        lease = await container2.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID, holder=container2._durable_events_holder
+        )
+        assert lease is not None
+        assert lease.position == 2
+
+        container2.handler_caller = _record_ids_caller(delivered_second)  # type: ignore[assignment]
+        await container2.trigger_store.add(
+            TriggerDefinition(trigger_id="t1", event_pattern="agent.*")
+        )
+        await container2.durable_event_log.append("agent.created")  # id 3
+        cursor2 = await container2.process_durable_events()
+
+        # Only the new event is redelivered -- restart did not replay ids 1-2.
+        assert cursor2 == 3
+        assert delivered_second == [3]
+    finally:
+        if container2.db_pool is not None:
+            await container2.db_pool.close()
+
+
+async def test_a_held_tick_lease_stops_a_second_replica_from_reticking() -> None:
+    """#1163: of several replicas that might tick the bridge at once, only
+    the lease holder should re-scan/redispatch this round -- ticking under a
+    live lease held by someone else must not repeat that work."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    container = await _container()
+
+    other_replica_lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder="other-replica"
+    )
+    assert other_replica_lease is not None
+
+    cursor = await container.process_durable_events()
+
+    assert cursor == container.durable_event_cursor == 0
+
+
+async def test_a_tick_with_nothing_new_does_not_advance_the_stored_cursor() -> None:
+    """#1163: `process_durable_events` must not write to the cursor store at
+    all when nothing new settled this round (`new_cursor == lease.position`)
+    -- only a real advance is worth a write."""
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    container = await _container()
+
+    cursor = await container.process_durable_events()
+    assert cursor == container.durable_event_cursor == 0
+
+    # A second claim (a different holder, after this container's own lease
+    # would need to have been renewed/expired) proves the store's own
+    # position is still untouched, not just the in-process cache.
+    lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder=container._durable_events_holder
+    )
+    assert lease is not None
+    assert lease.position == 0
+
+
+class _HidingLog:
+    """A durable log whose reads skip chosen ids -- PostgreSQL between a
+    `BIGSERIAL` allocation and that append's commit."""
+
+    def __init__(self, inner: Any, hidden: set[int]) -> None:
+        self._inner = inner
+        self.hidden = hidden
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def query(self, **kwargs: Any) -> Any:
+        return [e for e in await self._inner.query(**kwargs) if e.id not in self.hidden]
+
+
+async def _durable_position(container: Container) -> int:
+    from maistro.events.consumer_cursor import LEGACY_BRIDGE_CONSUMER_ID
+
+    lease = await container.consumer_cursor_store.claim(
+        LEGACY_BRIDGE_CONSUMER_ID, holder=container._durable_events_holder
+    )
+    assert lease is not None
+    return lease.position
+
+
+async def test_the_durable_cursor_waits_below_an_id_the_log_has_not_committed() -> None:
+    """#1163 review: PostgreSQL allocates `BIGSERIAL` ids before commit, so id 3
+    can be readable while id 2 is still in an open transaction. Persisting 3
+    would exclude 2 from every later ``id > cursor`` read, restart included.
+    The durable position must stop at 1 until 2 appears, while the work on 3
+    itself is not delayed."""
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    cursor = await container.process_durable_events()
+
+    assert delivered == [1, 3]
+    assert cursor == container.durable_event_cursor == 1
+    assert await _durable_position(container) == 1
+
+    # The append commits: id 2 becomes readable. The next tick resumes from
+    # below it, delivers it, dedupes 3 (already settled), and only now persists 3.
+    log.hidden.clear()
+    cursor = await container.process_durable_events()
+
+    assert delivered == [1, 3, 2]
+    assert cursor == container.durable_event_cursor == 3
+    assert await _durable_position(container) == 3
+
+
+async def test_a_hole_that_outlives_the_grace_is_an_aborted_append() -> None:
+    """An id that never commits (the append rolled back) must not pin the
+    resume point forever: once the hole has been seen for longer than
+    `durable_event_hole_grace_s`, the position moves past it."""
+    from maistro.events.trigger_store import TriggerDefinition
+
+    container = await _container()
+    delivered: list[int] = []
+    container.handler_caller = _record_ids_caller(delivered)  # type: ignore[assignment]
+    await container.trigger_store.add(TriggerDefinition(trigger_id="t1", event_pattern="agent.*"))
+    log = _HidingLog(container.durable_event_log, hidden={2})
+    container.durable_event_log = log  # type: ignore[assignment]
+    for _ in range(3):
+        await log.append("agent.created")
+
+    assert await container.process_durable_events() == 1
+    assert await _durable_position(container) == 1
+
+    # Still within grace on the next tick: the position holds, and 3 is
+    # redelivered idempotently (deduped by the invocation store, so no call).
+    assert await container.process_durable_events() == 1
+    assert delivered == [1, 3]
+
+    # The grace lapses with the hole still open.
+    container.durable_event_hole_grace_s = 0.0
+    cursor = await container.process_durable_events()
+
+    assert cursor == container.durable_event_cursor == 3
+    assert await _durable_position(container) == 3
+    assert delivered == [1, 3]
+
+
+async def test_each_hole_gets_its_own_grace() -> None:
+    """Two open appends: the first lapsing must not let the position jump
+    past a second hole that was only just noticed."""
+    container = await _container()
+    container.durable_event_hole_grace_s = 10.0
+
+    # First tick: only hole 2 is visible below the cursor.
+    assert container._gap_safe_position(3, (2,), now=100.0) == 1
+    # Later tick: 2 is still open (past grace) and a fresh hole at 5 appeared.
+    assert container._gap_safe_position(6, (2, 5), now=111.0) == 4
+    # Later still: 5 also lapses; the position moves to the cursor.
+    assert container._gap_safe_position(6, (2, 5), now=122.0) == 6
+    # A hole that fills is forgotten, so a re-opened id restarts its grace.
+    assert container._gap_safe_position(6, (), now=123.0) == 6
+    assert container._gap_safe_position(6, (2,), now=124.0) == 1
 
 
 # --- LLM providers (SPEC-070226-cb8d) -----------------------------------------

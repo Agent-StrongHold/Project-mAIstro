@@ -106,14 +106,14 @@ const btnBase: React.CSSProperties = {
   borderRadius: 4,
   padding: "4px 12px",
   fontFamily: "var(--mono)",
-  fontSize: 10,
+  fontSize: 12,
   cursor: "pointer",
 };
 
 const inputBase: React.CSSProperties = {
   width: "100%",
   fontFamily: "var(--mono)",
-  fontSize: 11,
+  fontSize: 12,
   padding: "6px 8px",
   border: "1.3px solid var(--rule)",
   borderRadius: 4,
@@ -288,13 +288,27 @@ export default function Missions() {
     const userMsg: ThreadMsg = { id: threadNextId.current++, role: "user", text, ts: Date.now() };
     setThread((prev) => [...prev, userMsg]);
     setThreadInput("");
+    if (!activeWorkspaceId) {
+      // Guidance is recorded within a workspace; with none selected the
+      // request would carry an empty id (#1427). Say so in the thread.
+      setThread((prev) => [
+        ...prev,
+        {
+          id: threadNextId.current++,
+          role: "agent",
+          text: "Select a workspace first: guidance is recorded within one.",
+          ts: Date.now(),
+        },
+      ]);
+      return;
+    }
     try {
       const res = await apiPost<{
         message?: string;
         queued_tasks?: { task_id: string }[];
         interview?: { complete?: boolean };
       }>(
-        `/v1/program/guidance?workspace_id=${encodeURIComponent(activeWorkspaceId ?? "")}`,
+        `/v1/program/guidance?workspace_id=${encodeURIComponent(activeWorkspaceId)}`,
         { text, task_id: active.id },
       );
       const n = res.queued_tasks?.length ?? 0;
@@ -353,7 +367,7 @@ export default function Missions() {
               <button
                 type="button"
                 className="btn"
-                style={{ fontSize: 9, padding: "2px 8px" }}
+                style={{ fontSize: 12, padding: "2px 8px" }}
                 onClick={() => void clearCompletedMissions()}
               >
                 Clear completed
@@ -363,13 +377,13 @@ export default function Missions() {
               <button
                 type="button"
                 className="btn"
-                style={{ fontSize: 9, padding: "2px 8px", color: "var(--danger)", borderColor: "var(--danger)" }}
+                style={{ fontSize: 12, padding: "2px 8px", color: "var(--danger)", borderColor: "var(--danger)" }}
                 onClick={() => void clearFailedMissions()}
               >
                 Clear failed
               </button>
             )}
-            <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setShowCreate(true)}>
+            <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setShowCreate(true)}>
               + new
             </button>
           </div>
@@ -389,7 +403,7 @@ export default function Missions() {
                 borderRadius: 3,
                 padding: "2px 8px",
                 fontFamily: "var(--mono)",
-                fontSize: 9,
+                fontSize: 12,
                 cursor: "pointer",
               }}
             >
@@ -435,7 +449,7 @@ export default function Missions() {
                 <Hex variant="muted">{m.priority}</Hex>
               </div>
               <div style={{ fontFamily: "var(--hand)", fontSize: 13 }}>{truncate(m.name, 28)}</div>
-              <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", marginTop: 2 }}>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>
                 {m.assigned_agents.length > 0 ? `${m.assigned_agents[0]} \u00B7 ` : ""}
                 {m.created_at ? new Date(m.created_at).toLocaleDateString() : ""}
               </div>
@@ -468,7 +482,7 @@ export default function Missions() {
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>{active.id}</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{active.id}</div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 24, fontWeight: 700, margin: "2px 0 4px" }}>{active.name}</div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 13, color: "var(--pencil)" }}>{active.description}</div>
                 {active.status === "failed" && typeof active.metadata?.error === "string" && (
@@ -480,7 +494,7 @@ export default function Missions() {
                       border: "1px solid var(--danger)",
                       borderRadius: 4,
                       fontFamily: "var(--mono)",
-                      fontSize: 9,
+                      fontSize: 12,
                       color: "var(--danger)",
                       lineHeight: 1.4,
                       wordBreak: "break-word",
@@ -529,8 +543,8 @@ export default function Missions() {
 
             <div style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textTransform: "uppercase" }}>Progress</span>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ink)" }}>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textTransform: "uppercase" }}>Progress</span>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)" }}>
                   {Math.round(active.progress * 100)}% &middot; {active.steps_completed}/{active.steps_total} steps
                 </span>
               </div>
@@ -547,7 +561,7 @@ export default function Missions() {
             </div>
 
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 8 }}>Timeline</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 8 }}>Timeline</div>
               {TIMELINE_STEPS.map((step, i) => {
                 const done = i <= timelineIndex(active);
                 return (
@@ -565,7 +579,7 @@ export default function Missions() {
                         <div style={{ width: 1.5, height: 20, background: done ? "var(--accent)" : "var(--rule)" }} />
                       )}
                     </div>
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: done ? "var(--ink)" : "var(--pencil)", paddingBottom: 12 }}>{step}</div>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: done ? "var(--ink)" : "var(--pencil)", paddingBottom: 12 }}>{step}</div>
                   </div>
                 );
               })}
@@ -574,7 +588,7 @@ export default function Missions() {
             <div style={{ display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap" }}>
               {active.assigned_agents.length > 0 && (
                 <div>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 4 }}>Agents</div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 4 }}>Agents</div>
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {active.assigned_agents.map((a) => <Hex key={a} variant="ok">{a}</Hex>)}
                   </div>
@@ -582,7 +596,7 @@ export default function Missions() {
               )}
               {active.tags.length > 0 && (
                 <div>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 4 }}>Tags</div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 4 }}>Tags</div>
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {active.tags.map((t) => <Hex key={t}>{t}</Hex>)}
                   </div>
@@ -605,7 +619,7 @@ export default function Missions() {
                   />
                   <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                     {["Proceed as planned", "Modify approach", "Abort mission"].map((opt) => (
-                      <label key={opt} style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 9, color: clarifyAnswer === opt ? "var(--accent)" : "var(--ink)" }}>
+                      <label key={opt} style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12, color: clarifyAnswer === opt ? "var(--accent)" : "var(--ink)" }}>
                         <input type="radio" name="clarify" checked={clarifyAnswer === opt} onChange={() => setClarifyAnswer(opt)} style={{ accentColor: "var(--accent)" }} />
                         {opt}
                       </label>
@@ -630,10 +644,10 @@ export default function Missions() {
             )}
 
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 8 }}>Guidance Thread</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 8 }}>Guidance Thread</div>
               <div style={{ border: "1.3px solid var(--rule)", borderRadius: 5, padding: 8, maxHeight: 200, overflowY: "auto", marginBottom: 6 }}>
                 {thread.length === 0 && (
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textAlign: "center", padding: 12 }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center", padding: 12 }}>
                     No messages yet. Send guidance to the agent.
                   </div>
                 )}
@@ -645,7 +659,7 @@ export default function Missions() {
                         borderRadius: msg.role === "user" ? "10px 10px 2px 10px" : "10px 10px 10px 2px",
                         background: msg.role === "user" ? "var(--accent)" : "rgba(0,0,0,0.05)",
                         color: msg.role === "user" ? "var(--paper)" : "var(--ink)",
-                        fontFamily: "var(--mono)", fontSize: 10,
+                        fontFamily: "var(--mono)", fontSize: 12,
                       }}
                     >
                       {msg.text}
@@ -660,7 +674,7 @@ export default function Missions() {
                   onChange={(e) => setThreadInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") sendThreadMsg(); }}
                   placeholder="Send guidance…"
-                  style={{ flex: 1, ...inputBase, fontSize: 10, padding: "5px 8px" }}
+                  style={{ flex: 1, ...inputBase, fontSize: 12, padding: "5px 8px" }}
                 />
                 <button
                   onClick={sendThreadMsg}
@@ -686,11 +700,11 @@ export default function Missions() {
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="New Mission" wide>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
-            <label style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Title *</label>
+            <label style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Title *</label>
             <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Mission title" style={inputBase} autoFocus />
           </div>
           <div>
-            <label style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Description *</label>
+            <label style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Description *</label>
             <textarea
               value={newDesc}
               onChange={(e) => setNewDesc(e.target.value)}
@@ -700,7 +714,7 @@ export default function Missions() {
             />
           </div>
           <div>
-            <label style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", display: "block", marginBottom: 5 }}>Priority</label>
+            <label style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", display: "block", marginBottom: 5 }}>Priority</label>
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               {PRIORITY_PILLS.map((p) => (
                 <button
@@ -713,7 +727,7 @@ export default function Missions() {
                     background: newPriority === p.value ? p.color : "transparent",
                     color: newPriority === p.value ? "#fff" : "var(--ink)",
                     fontFamily: "var(--mono)",
-                    fontSize: 9,
+                    fontSize: 12,
                     cursor: "pointer",
                   }}
                 >
@@ -723,7 +737,7 @@ export default function Missions() {
             </div>
           </div>
           <div>
-            <label style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Assign Agent</label>
+            <label style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", display: "block", marginBottom: 3 }}>Assign Agent</label>
             <select value={newAgent} onChange={(e) => setNewAgent(e.target.value)} style={inputBase}>
               <option value="">\u2014 none \u2014</option>
               {agents.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}

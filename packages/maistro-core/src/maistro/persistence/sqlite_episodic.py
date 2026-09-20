@@ -25,6 +25,7 @@ from maistro.persistence.episodic_rows import (
     from_row,
     to_row,
 )
+from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import REINFORCE_DELTA, DecaySweep, EpisodicMemory
 
 if TYPE_CHECKING:
@@ -119,31 +120,33 @@ class SqliteEpisodicStore:
         uses, and for the same reason: `ALTER TABLE ... ADD COLUMN` with a
         constant default is metadata-only, so this is cheap.
         """
-        await self._conn.execute(_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(episodic_memories)")
-        present = {row[1] for row in await cursor.fetchall()}
-        for column, ddl in (
-            ("project_id", "TEXT NOT NULL DEFAULT ''"),
-            ("decay_rate", "REAL NOT NULL DEFAULT 0.01"),
-            ("shared", "INTEGER NOT NULL DEFAULT 0"),
-            ("flagged_for_review", "INTEGER NOT NULL DEFAULT 0"),
-            # Nullable, matching the PostgreSQL column and migration 026's
-            # shape for the other record kinds: an empty-string default would
-            # make every pre-#64 row claim a Run with an empty id (#64).
-            ("run_id", "TEXT"),
-            ("node_run_id", "TEXT"),
-            ("attempt_id", "TEXT"),
-        ):
-            if column not in present:
-                await self._conn.execute(f"ALTER TABLE episodic_memories ADD COLUMN {column} {ddl}")
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_episodic_scope_weight "
-            "ON episodic_memories (org_id, scope, weight DESC)"
-        )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_episodic_memories_run_id ON episodic_memories (run_id)"
-        )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(episodic_memories)")
+            present = {row[1] for row in await cursor.fetchall()}
+            for column, ddl in (
+                ("project_id", "TEXT NOT NULL DEFAULT ''"),
+                ("decay_rate", "REAL NOT NULL DEFAULT 0.01"),
+                ("shared", "INTEGER NOT NULL DEFAULT 0"),
+                ("flagged_for_review", "INTEGER NOT NULL DEFAULT 0"),
+                # Nullable, matching the PostgreSQL column and migration 026's
+                # shape for the other record kinds: an empty-string default would
+                # make every pre-#64 row claim a Run with an empty id (#64).
+                ("run_id", "TEXT"),
+                ("node_run_id", "TEXT"),
+                ("attempt_id", "TEXT"),
+            ):
+                if column not in present:
+                    await self._conn.execute(
+                        f"ALTER TABLE episodic_memories ADD COLUMN {column} {ddl}"
+                    )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episodic_scope_weight "
+                "ON episodic_memories (org_id, scope, weight DESC)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episodic_memories_run_id ON episodic_memories (run_id)"
+            )
 
     async def store(self, memory: EpisodicMemory) -> str:
         """Store a memory, naming the execution that produced it.

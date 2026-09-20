@@ -75,14 +75,14 @@ class CapabilityEffectContext:
         return CredentialRouting(self.credentials)
 
 
-def new_in_memory_effect_context(
+def new_effect_context(
     *,
-    policy_evaluator: PolicyEvaluator | None = None,
-    credentials: CredentialRouter | None = None,
     invocation_store: InvocationStore | None = None,
     event_store: EventStore | None = None,
+    policy_evaluator: PolicyEvaluator | None = None,
+    credentials: CredentialRouter | None = None,
 ) -> CapabilityEffectContext:
-    """Build a canonical effect context for local/runtime composition.
+    """Build an isolated canonical effect context for local/runtime composition.
 
     ``credentials`` supplies the scoped credential pool for Provider selection
     (#58); omitted, the router exists but holds no credentials, so routed
@@ -126,11 +126,15 @@ def default_effect_context() -> CapabilityEffectContext:
     ledger. No default Binding is created here; absence remains a hard refusal.
     """
 
-    return new_in_memory_effect_context()
+    return new_effect_context()
+
+
+new_in_memory_effect_context = new_effect_context
 
 
 __all__ = [
     "CapabilityEffectContext",
     "default_effect_context",
+    "new_effect_context",
     "new_in_memory_effect_context",
 ]
