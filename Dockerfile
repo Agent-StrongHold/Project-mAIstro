@@ -42,6 +42,7 @@ RUN pip install --no-cache-dir \
       "alembic>=1.14" \
       "psycopg[binary]>=3.2" \
       "openai>=1.40,<2" \
+      "anyio>=4.14.2" \
       "httpx>=0.27.0"
 
 # ─── Wolfi runtime (-dev variant): low-CVE, has apk so `git` is available ───
