@@ -8,17 +8,19 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import AuthContext
 from maistro.security.auth_cookie import CookieAuthProvider
 
 
 class MockJWTProvider:
     async def authenticate(self, authorization, headers=None):
+        # Mirror the real JWT provider's exception taxonomy (fix #13, #1190).
         if not authorization or not authorization.startswith("Bearer "):
-            raise ValueError("bad")
+            raise CredentialNotApplicable("bad")
         token = authorization.removeprefix("Bearer ")
         if not token:
-            raise ValueError("bad")
+            raise AuthError("bad")
         return AuthContext(user_id="cookie_user")
 
 
@@ -54,16 +56,16 @@ class CookieAuthMachine(RuleBasedStateMachine):
     def no_headers_raises(self):
         try:
             asyncio.run(self.provider.authenticate(None))
-            raise AssertionError("Expected ValueError")
-        except ValueError:
+            raise AssertionError("Expected CredentialNotApplicable")
+        except CredentialNotApplicable:
             pass
 
     @invariant()
     def empty_cookie_header_raises(self):
         try:
             asyncio.run(self.provider.authenticate(None, headers={"cookie": ""}))
-            raise AssertionError("Expected ValueError")
-        except ValueError:
+            raise AssertionError("Expected CredentialNotApplicable")
+        except CredentialNotApplicable:
             pass
 
 
@@ -74,8 +76,8 @@ def test_no_headers_raises():
     provider = _make_cookie_provider()
     try:
         asyncio.run(provider.authenticate(None))
-        raise AssertionError("Expected ValueError")
-    except ValueError:
+        raise AssertionError("Expected CredentialNotApplicable")
+    except CredentialNotApplicable:
         pass
 
 
@@ -83,8 +85,8 @@ def test_no_cookie_header_raises():
     provider = _make_cookie_provider()
     try:
         asyncio.run(provider.authenticate(None, headers={}))
-        raise AssertionError("Expected ValueError")
-    except ValueError:
+        raise AssertionError("Expected CredentialNotApplicable")
+    except CredentialNotApplicable:
         pass
 
 
@@ -92,8 +94,8 @@ def test_missing_cookie_by_name_raises():
     provider = _make_cookie_provider()
     try:
         asyncio.run(provider.authenticate(None, headers={"cookie": "other=value"}))
-        raise AssertionError("Expected ValueError")
-    except ValueError:
+        raise AssertionError("Expected CredentialNotApplicable")
+    except CredentialNotApplicable:
         pass
 
 
@@ -115,8 +117,8 @@ def test_malformed_cookie_header_raises():
     provider = _make_cookie_provider()
     try:
         asyncio.run(provider.authenticate(None, headers={"cookie": ";;;==@@@;"}))
-        raise AssertionError("Expected ValueError")
-    except ValueError:
+        raise AssertionError("Expected CredentialNotApplicable")
+    except CredentialNotApplicable:
         pass
 
 
