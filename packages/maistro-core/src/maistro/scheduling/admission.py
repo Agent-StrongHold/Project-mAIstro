@@ -171,6 +171,40 @@ def _pointer(links: dict[datetime, str], fired: list[datetime]) -> str | None:
     return links.get(max(fired)) if fired else None
 
 
+def _dropped_moments(decision: ScheduleEvaluation) -> list[datetime]:
+    """The occurrences this evaluation *dropped* rather than deferred.
+
+    `_UNCONSUMED_SKIPS` draws the line and this reads it: BUFFERED and
+    TRUNCATED are occurrences still owed, so the cursor must not pass them.
+    Every other reason — overlap, disabled, exhausted, outside the catch-up
+    window — is a decision not to run that occurrence at all, and the cursor
+    consumes it.
+    """
+    return [skip.scheduled_for for skip in decision.skipped if skip.reason not in _UNCONSUMED_SKIPS]
+
+
+def _recovered_fires(claimed: list[datetime], recovered: frozenset[datetime]) -> int:
+    """How many of `claimed` count as firings this tick must record.
+
+    Recovered claims — the pre-horizon walk's, provably unrecorded — are the
+    dead ticker's earned count, recovered exactly once (#1059). Claims on
+    enumerated occurrences are not counted here: the ticker that won them
+    counts those itself (#1269), so counting them again would fire a
+    `max_runs` schedule short.
+    """
+    return sum(1 for moment in claimed if moment in recovered)
+
+
+def _due_cursor_changed(schedule: Schedule, next_due_at: datetime | None) -> bool:
+    """Whether the evaluation learned a due time the schedule does not carry.
+
+    A schedule that never records its first `next_due_at` stays selected by
+    `due()` on every tick until that occurrence arrives, however far off it is
+    (#1199); writing it only when it changed keeps an idle schedule free.
+    """
+    return next_due_at is not None and next_due_at != schedule.next_due_at
+
+
 @dataclass(frozen=True)
 class ScheduleAdmission:
     """What one evaluation of one schedule produced."""
@@ -732,21 +766,14 @@ class ScheduleRunAdmitter:
         """
         claims = claims or {}
         claimed = sorted(claims)
-        dropped = [
-            skip.scheduled_for for skip in decision.skipped if skip.reason not in _UNCONSUMED_SKIPS
-        ]
-        consumed = sorted(dropped + claimed)
+        consumed = sorted(_dropped_moments(decision) + claimed)
         # The due cursor moves only when nothing is owed (#1199). `due()`
         # selects on `next_due_at`, so advancing it past a buffered occurrence
         # would hide the schedule from the tick until the occurrence *after*
         # the one it still has to run.
         next_due_at = schedule.next_due_at if _owes(decision) else decision.next_due_at
         if consumed:
-            # Recovered claims — the pre-horizon walk's, provably unrecorded
-            # — are the dead ticker's earned count, recovered exactly once
-            # (#1059). Claims on enumerated occurrences are not counted: the
-            # winner's ticker counts those (#1269).
-            counted = [moment for moment in claimed if moment in recovered]
+            fires = _recovered_fires(claimed, recovered)
             recorded = await self._schedules.record_fire(
                 schedule.schedule_id,
                 fired_at=consumed[-1],
@@ -757,8 +784,8 @@ class ScheduleRunAdmitter:
                 # schedule produced" survive an occurrence that produced none.
                 run_id=_pointer({moment: claims[moment].run_id for moment in claimed}, claimed),
                 next_due_at=next_due_at,
-                fires=len(counted),
-                disable=self._exhausted_after(schedule, fires=len(counted)),
+                fires=fires,
+                disable=self._exhausted_after(schedule, fires=fires),
             )
             return ScheduleAdmission(
                 skipped=decision.skipped,
@@ -768,7 +795,7 @@ class ScheduleRunAdmitter:
                 active_run_id=active_run_id,
                 already_fired=tuple(claimed),
             )
-        if next_due_at is not None and next_due_at != schedule.next_due_at:
+        if _due_cursor_changed(schedule, next_due_at):
             # Nothing fired and nothing was dropped, but the evaluation still
             # learned when the next occurrence is — and a schedule that never
             # records it stays selected by `due()` on every tick until its
