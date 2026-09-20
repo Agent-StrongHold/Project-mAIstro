@@ -64,7 +64,9 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 # Static docker CLI only (talks to a mounted /var/run/docker.sock) — replaces the
 # heavyweight docker.io package and its containerd/runc dependency tree.
-COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+# 29-cli ships a binary built with go1.26.8; older 27-cli embedded go1.22.11
+# (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
+COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
