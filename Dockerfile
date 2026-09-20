@@ -33,13 +33,16 @@ COPY packages/maistro-server packages/maistro-server
 # workspace root, which this image never installs — it installs the two packages
 # by path — so without naming it here `alembic upgrade head` in the shipped
 # container stops at ModuleNotFoundError before it reaches the schema.
+# pydantic-ai-slim is deliberately NOT installed: ADR-094 cut pydantic-ai from
+# the codebase (zero src imports) and the CVE-2026-25580 fix line (>=1.56.0)
+# requires openai>=2, which cannot co-install with the openai pin below.
 RUN pip install --no-cache-dir \
       "./packages/maistro-core[identity,llm,sandbox,observability]" \
       "./packages/maistro-server" \
       "alembic>=1.14" \
       "psycopg[binary]>=3.2" \
-      "pydantic-ai-slim[openai]>=0.1" \
       "openai>=1.40,<2" \
+      "anyio>=4.14.2" \
       "httpx>=0.27.0"
 
 # ─── Wolfi runtime (-dev variant): low-CVE, has apk so `git` is available ───

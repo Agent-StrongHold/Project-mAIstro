@@ -57,6 +57,22 @@ const WorkspaceCtx = createContext<WorkspaceCtxValue>({
   refresh: () => Promise.resolve(),
 });
 
+/** Persona template (`data-theme`) for a stored workspace theme id. The
+ * templates are the Workspace design system's (greenhouse, slate, studio);
+ * "default" and the retired "dark" are greenhouse, and the retired "fantasia"
+ * is slate, the cool template closest to it. */
+export function personaTemplateFor(themeId: string | undefined | null): string | null {
+  switch (themeId) {
+    case "slate":
+    case "fantasia":
+      return "slate";
+    case "studio":
+      return "studio";
+    default:
+      return null;
+  }
+}
+
 const ACTIVE_WORKSPACE_KEY = "hive_active_workspace_id";
 
 /** Keep the current selection if it's still present and not archived;
@@ -127,15 +143,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
 
   useEffect(() => {
-    const themeId = activeWorkspace?.theme_id;
-    if (themeId && themeId !== "default") {
-      document.documentElement.dataset.theme = themeId;
+    // The workspace's persona template rides `data-theme`; light/dark is the
+    // separate `data-scheme` axis (lib/appearance.ts), so a theme never
+    // forces a scheme and clearing one never touches the other. Greenhouse is
+    // the tokens' `:root`, so it is the absence of the attribute. The two
+    // retired ids (#1490 replaced the hand-written dark and fantasia
+    // stylesheets) resolve to the nearest template so stored workspaces keep
+    // a look without a migration.
+    const template = personaTemplateFor(activeWorkspace?.theme_id);
+    if (template) {
+      document.documentElement.dataset.theme = template;
     } else {
-      // No workspace theme override -- fall back to the user's app-level
-      // light/dark appearance rather than always forcing light.
       delete document.documentElement.dataset.theme;
-      applyAppearance();
     }
+    applyAppearance();
   }, [activeWorkspace?.theme_id]);
 
   async function createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
@@ -149,14 +170,27 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setActiveWorkspaceId(id);
   }
 
+  // One mutation, one request (#1434, #1422): the response is the changed
+  // record, so it is patched into local state rather than followed by a
+  // refetch of the whole list. The active tab is re-picked from the patched
+  // list, so archiving the active workspace moves the selection off it and
+  // restoring one leaves the selection where it was.
   async function archiveWorkspace(id: string, active: boolean): Promise<void> {
-    await apiPatch<Workspace>(`/v1/workspaces/${id}`, { active });
-    await refresh();
+    const updated = await apiPatch<Workspace>(`/v1/workspaces/${id}`, { active });
+    setWorkspaces((prev) => {
+      const next = prev.map((w) => (w.id === id ? updated : w));
+      setActiveWorkspaceId((current) => nextActiveId(current, next));
+      return next;
+    });
   }
 
   async function deleteWorkspace(id: string): Promise<void> {
     await apiDelete(`/v1/workspaces/${id}`);
-    await refresh();
+    setWorkspaces((prev) => {
+      const next = prev.filter((w) => w.id !== id);
+      setActiveWorkspaceId((current) => nextActiveId(current, next));
+      return next;
+    });
   }
 
   return (
