@@ -230,9 +230,7 @@ async def test_a_node_built_without_a_store_fails_loudly_rather_than_reporting_s
     the NodeResult, not an output saying the dispatch was declined — naming
     the authority it was built without.
     """
-    node = AgentSynthDagNode(
-        sentinel=_compat_sentinel(), proportionality_judge=_AlwaysJustified()
-    )
+    node = AgentSynthDagNode(sentinel=_compat_sentinel(), proportionality_judge=_AlwaysJustified())
     result = await node.run({"objective": "plan a small feature"}, _ctx())
     assert result.status == "failed"
     assert result.success is False
@@ -563,6 +561,8 @@ async def test_bare_node_fails_closed_without_governed_permission() -> None:
     synthesizer = _CountingSynthesizer([_result(["scout", "coder"])])
     bare = AgentSynthDagNode(synthesizer=synthesizer)
 
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
     result = await bare.run({"objective": "x"}, _ctx())
 
     assert result.output.success is False
@@ -572,6 +572,11 @@ async def test_bare_node_fails_closed_without_governed_permission() -> None:
     granted = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         synthesizer=_CountingSynthesizer([_result(["scout", "coder"])]),
+        # Composition contract (#1193): the control must be buildable, i.e. it
+        # carries the stores the class declares as required. Dispatch is still
+        # declined here — this _ctx() is unscoped — so the assertion below
+        # isolates the permission decision exactly as before.
+        run_store=InMemoryDurableRunStore(),
     )
     ok = await granted.run({"objective": "x"}, _ctx())
     assert ok.output.success is True

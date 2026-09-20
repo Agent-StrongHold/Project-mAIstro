@@ -14,6 +14,7 @@ recreate the class of defect without failing this file.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import pytest
@@ -81,7 +82,7 @@ def test_registration_refuses_an_unknown_authority() -> None:
         kind: ClassVar[str] = "test.composition.unknown_authority"
         input_schema: ClassVar[type[BaseModel]] = _In
         output_schema: ClassVar[type[BaseModel]] = _In
-        required_authorities: ClassVar[dict[str, str]] = {"store": "not_an_authority"}
+        required_authorities: ClassVar[Mapping[str, str]] = {"store": "not_an_authority"}
 
         def __init__(self, store: object = None) -> None:
             self._store = store
@@ -98,7 +99,7 @@ def test_registration_refuses_a_keyword_the_constructor_does_not_take() -> None:
         kind: ClassVar[str] = "test.composition.unknown_keyword"
         input_schema: ClassVar[type[BaseModel]] = _In
         output_schema: ClassVar[type[BaseModel]] = _In
-        required_authorities: ClassVar[dict[str, str]] = {"store": "run_store"}
+        required_authorities: ClassVar[Mapping[str, str]] = {"store": "run_store"}
 
     with pytest.raises(ValueError, match="no parameter named 'store'"):
         register_node(_Wrong)
@@ -303,6 +304,20 @@ async def test_the_container_composed_node_admits_canonical_work(
     # composition supplied.
     monkeypatch.setattr(node, "_synthesizer", _OneStep())
     monkeypatch.setattr(node, "_proportionality_judge", _Justified())
+    # Same rationale as _compat_sentinel in test_agent_synth_dag: composition
+    # supplies no sentinel authority, so the resolved node carries the #1165
+    # fail-closed default (deny without a governed permission source). These
+    # assertions exercise canonical admission/dispatch mechanics, not
+    # permission-table misses (ADR-072726-0d6b), so the strategy seam is
+    # swapped for the deterministic compatibility sentinel.
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(
+        node,
+        "_sentinel",
+        Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True),
+    )
 
     result = await node.run(
         {"objective": "one canonical step"},
