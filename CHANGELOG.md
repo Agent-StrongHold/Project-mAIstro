@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Security
 
+- **pydantic-ai-slim removed from the API and research images, clearing
+  CVE-2026-25580 (HIGH) (#1515).** ADR-094 already cut pydantic-ai from the codebase
+  (zero `pydantic_ai` imports remain), but both Dockerfiles still installed
+  `"pydantic-ai-slim[openai]>=0.1"`, whose unbounded floor resolved to the
+  CVE'd 1.30.1 (dragging anyio 4.13.0 into the image with it). The fix line
+  (`>=1.56.0`) requires `openai>=2` and cannot co-install with the images'
+  `openai<2` pin, so the vestigial install lines are removed outright rather
+  than bumped; anyio then resolves to 4.15.1 via starlette/httpx (caught by the
+  required Supply chain (pip-audit) check; same reactive class as the anyio
+  entry below).
+
 - **anyio bumped 4.13.0 → 4.14.2 (and the 4.15.1 leg some members resolve
   separately), clearing CVE-2026-63374 and CVE-2026-64847 that fail every
   fresh `pip-audit` run (no linked issue: caught by the required Supply
