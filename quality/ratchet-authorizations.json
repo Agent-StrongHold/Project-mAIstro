@@ -61,6 +61,11 @@
     }
   },
   "vulture": {
+    "packages/maistro-core/src/maistro/container.py::unused method 'recover_stranded_chat_admissions'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "Container.recover_stranded_chat_admissions is the bounded, idempotent, operator-scheduled recovery entry point proposed by PR #1280 for #338. It compensates a chat Run left RUNNING with no NodeRun after a process crash between admission and the turn's first physical Attempt. The public API is intentionally called by an external operator scheduler rather than in-package code, matching the public recovery-tick pattern. Regression coverage belongs to packages/maistro-core/tests/test_container_chat_runs.py in #1280. This grant authorizes only this exact Vulture identity; it does not approve the implementation, prove shipped recovery wiring, or close #338."
+    },
     "packages/maistro-core/src/maistro/graph/nodes/agent_delegate_remote.py::unused class 'AgentDelegateRemoteNode'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#1193",
@@ -110,6 +115,21 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#56",
       "reason": "InvocationUsage._validate_usage is the framework-invoked pydantic @model_validator(mode='after') that #56's governed model egress relies on to keep usage accounting honest: it rejects blank units, negative input/output unit counts, and negative cost_cents before an Invocation can settle token and cost totals. Vulture reports it at 60% confidence as an unused method because no in-scan code calls a dunder-style hook by name -- pydantic invokes it on every InvocationUsage construction. Same banked-debt class as approval_store.py::_validate_state. maistro-core is a published library; deleting or renaming the validator to appease the scanner would remove the model's invariant enforcement on PR #1040's recorded-state surface."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused method '_validate_evidence'": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "InvocationReconciliationEvidence._validate_evidence is the framework-invoked pydantic @model_validator(mode='after') that #1310's invocation reconciliation relies on to keep provider-adapter evidence honest: it rejects blank source, actor, and reason before an evidence report can be applied to a stranded invocation. Vulture reports it at 60% confidence as an unused method because no in-scan code calls a dunder-style hook by name -- pydantic invokes it on every InvocationReconciliationEvidence construction. Same banked-debt class as invocation.py::_validate_usage (#56) and approval_store.py::_validate_state. Post-merge reconciliation: this identity reached trunk through #1310's merge before a vulture ledger row or grant existed, so merge-queue groups fail the trusted-base comparison (run 34798380137, job 103835854949). Landed via #1310 (invocation reconciliation); wiring/removal tracked -- deleting or renaming the validator to appease the scanner would remove the evidence record's invariant enforcement."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused method '_validate_reconciliation'": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "InvocationReconciliation._validate_reconciliation is the framework-invoked pydantic @model_validator(mode='after') that #1310's invocation reconciliation relies on to keep the durable audit record honest: it rejects blank source, actor, reason, run_id, node_run_id, attempt_id, or invocation_id before a reconciliation row can settle an ambiguous invocation. Vulture reports it at 60% confidence as an unused method because no in-scan code calls a dunder-style hook by name -- pydantic invokes it on every InvocationReconciliation construction. Same banked-debt class as invocation.py::_validate_usage (#56) and approval_store.py::_validate_state. Post-merge reconciliation: this identity reached trunk through #1310's merge before a vulture ledger row or grant existed, so merge-queue groups fail the trusted-base comparison (run 34798380137, job 103835854949). Landed via #1310 (invocation reconciliation); wiring/removal tracked -- deleting or renaming the validator to appease the scanner would remove the audit record's invariant enforcement."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused variable 'observed_at'": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "InvocationReconciliation.observed_at is a declarative pydantic model field (default_factory=datetime.now(UTC)), not a local variable: vulture's 60%-confidence 'unused variable' report misclassifies the schema declaration because the field is assigned by every constructor call and persisted with every reconciliation row rather than read by name in-scan. Same banked-debt class as the other pydantic-declarative-field rows. Post-merge reconciliation: this identity reached trunk through #1310's merge before a vulture ledger row or grant existed, so merge-queue groups fail the trusted-base comparison (run 34798380137, job 103835854949). Landed via #1310 (invocation reconciliation); wiring/removal tracked -- removing the field would drop the recorded time of every reconciliation from the durable audit surface."
     },
     "packages/maistro-core/src/maistro/personas/schema.py::unused variable 'tagline'": {
       "owner": "@BlakeMatthews-dev",
