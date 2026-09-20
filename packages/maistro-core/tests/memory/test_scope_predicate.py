@@ -120,6 +120,15 @@ class TestBothSpellingsAgree:
         assert "global-org-a" in await _sql_visible(corpus_db, caller)
 
     @pytest.mark.ac("SPEC-083026-ba26/AC-3")
+    async def test_an_org_bound_global_requires_caller_org_context(self, corpus_db: Any) -> None:
+        """Missing tenant context is not a wildcard for org-bound globals."""
+        caller: dict[str, str] = {}
+        assert "global-org-a" not in _python_visible(caller)
+        assert "global-org-a" not in await _sql_visible(corpus_db, caller)
+        assert "global-unowned" in _python_visible(caller)
+        assert "global-unowned" in await _sql_visible(corpus_db, caller)
+
+    @pytest.mark.ac("SPEC-083026-ba26/AC-3")
     async def test_a_team_in_another_org_is_refused_by_both(self, corpus_db: Any) -> None:
         """The second: team ids are not globally unique, so `team-1` names a
         different team in each org and matching on it alone crosses orgs."""
