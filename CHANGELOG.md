@@ -205,6 +205,21 @@ or placeholder-only section.
   declaring their authorities, and an accepted-outcome-required check on
   parked Run resume).
 
+- **Hive DAG execution (WebSocket run + optimizer) requires and carries a
+  canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
+  resolves a client-selected `workspace_id` through the canonical
+  `WorkspaceStore`/`ProjectScopeStore` — membership and active-presentation
+  state, not just existence — and returns a `DagExecutionScope`
+  (`workspace_id`, `project_id`, `user_id`) rather than a bare Workspace.
+  `GET /v1/ws/dags/{dag_id}/run` now requires an explicit, authorized
+  selection end-to-end (the prior transitional omitted-workspace path is
+  gone) and passes the resolved scope into `execute_dag`/`execute_dag_streaming`
+  so canonical execution carries real Workspace/Project identity instead of
+  none. `test_dag_execution_scope.py` covers unknown, non-member, and
+  archived-Workspace refusal (one shared close code, `1008`, so the boundary
+  stays a non-oracle) and the accepting path reaching the normal
+  DAG-not-found response.
+
 - **The Workspace Agent interviews before it commits a Goal or CreativeBrief
   (#774, #804, #53; SPEC-091726-7c2a).** `maistro.agents.brief_interview` is a
   deterministic requirements conversation: one required question at a time in
@@ -335,6 +350,33 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The body/front-matter status gate no longer exempts documents by the shape
+  of their status line (no linked issue: found while fixing the order-dependent
+  tests in `tests/test_check_adr_status_language.py`).** `#387`'s category-1
+  check matched only a bare `**Status:** X` line, so the 3 ADRs and 20 specs
+  that write the same declaration as a Markdown list item (`- **Status:** X`)
+  were outside the check entirely -- the form of the line, not its content,
+  decided whether a contradiction was visible. It also read only the first word
+  of the value, which reported `AC` against a front matter saying `AC Defined`.
+  Both forms are now read and the whole value is compared, which surfaced 19
+  specs whose body said `Active` while their canonical front matter said
+  `AC Defined`; those bodies are corrected to the front-matter value rather
+  than banked, so the baseline stays at the 28 legacy entries `#387` recorded.
+
+- **The stranded chat-admission sweep survives a vanished Run (#338).** Two
+  defects in the recovery tick #1280 shipped, both found by review after it
+  was already queued for merge. `list_node_runs()` raises
+  `RunNotFound` on all three stores, and `RunNotFound` is a `KeyError` that
+  neither `except` arm caught -- so a Run terminalized by another worker and
+  deleted by the chat retention sweeper before this tick's own lookup aborted
+  the whole sweep, leaving every later stranded Run uncompensated until the
+  next tick hit the same Run. It is now skipped as the settled race it is. The
+  scan also asked only for `RunStatus.RUNNING` and rejected foreign Runs
+  per-candidate, so an operator whose RUNNING set is mostly scheduled work paid
+  for hydrating all of them every tick; it now passes `admission_source` into
+  the query, which both SQL backends push down. The per-candidate source check
+  stays as defense in depth.
+
 - **The Simple/Power toggle is removed rather than left silently inert
   (#1409, #1411, #1410).** It promised "Power Mode (DAGs, prompts, topology)" but
   changed nothing observable: `AppShell.tsx`'s navigation never branched on
@@ -452,6 +494,15 @@ or placeholder-only section.
   practical to wait out inside this suite's own CI time limit) and
   asserts the shown message has no raw error name; against the unfixed
   build it fails on exactly that assertion.
+
+- **Toggling a schedule or editing a memory entry no longer costs two
+  round trips (#1422).** `Schedules.tsx` and `Memory.tsx` followed every
+  create/update/toggle/delete with a GET of the entire collection, the
+  same pattern `WorkspaceContext.tsx`'s archive/delete already fixed for
+  workspaces. Both pages now patch the changed record into local state
+  from the mutation's own response instead. `tests/e2e/optimistic-mutations.spec.ts`
+  asserts no collection GET follows a toggle, create, or delete; against
+  the unfixed build both specs fail on exactly that assertion.
 
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
