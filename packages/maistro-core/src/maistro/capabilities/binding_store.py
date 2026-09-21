@@ -94,8 +94,7 @@ def _scope_checked(
         )
     if binding.project_id != project_id:
         raise BindingScopeDenied(
-            f"Binding {binding_id!r} belongs to Project {binding.project_id!r}, "
-            f"not {project_id!r}"
+            f"Binding {binding_id!r} belongs to Project {binding.project_id!r}, not {project_id!r}"
         )
     if binding.node_id and binding.node_id != node_id:
         raise BindingScopeDenied(
@@ -267,9 +266,7 @@ class PgBindingStore:
         if persisted is None:
             raise RuntimeError(f"Binding {binding.binding_id!r} was not persisted")
         if persisted != binding:
-            raise ValueError(
-                f"Binding {binding.binding_id!r} is immutable and already registered"
-            )
+            raise ValueError(f"Binding {binding.binding_id!r} is immutable and already registered")
         return persisted
 
     async def get(self, binding_id: str) -> Binding | None:

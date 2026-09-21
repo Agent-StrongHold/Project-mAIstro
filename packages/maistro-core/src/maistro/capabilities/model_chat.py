@@ -171,9 +171,7 @@ class ModelChatEgress:
             base = provider.base
             if not isinstance(base, LlmGatewayProvider):
                 raise TypeError(f"credential routed a non-gateway provider: {base!r}")
-            endpoint = self._endpoint.model_copy(
-                update={"api_key": provider.credential.api_key}
-            )
+            endpoint = self._endpoint.model_copy(update={"api_key": provider.credential.api_key})
             return await execute_model_chat(base, payload, endpoint=endpoint)
 
         routing = self._effects.credential_routing()
