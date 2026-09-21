@@ -192,6 +192,34 @@ or placeholder-only section.
 
 ### Added
 
+- **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
+  execution (#735).** `maistro_canvas`'s durable generation runner is wired to
+  the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
+  generation-job progress through real `Run`/`NodeRun`/`Attempt` records
+  instead of a Canvas-local job shape, and `protocols.py` gains the store
+  surface the canonical path needs. `test_canonical_executor_integration.py`
+  and `test_store_scope_conformance.py` cover the wiring; the maistro-core
+  side lands alongside durable-runs executor and HITL-settlement hardening
+  from the same convergence work (resume-lease and HITL-deadline handling,
+  `human_approve_draft`/`human_delegate_to_role`/`human_review_and_edit`
+  declaring their authorities, and an accepted-outcome-required check on
+  parked Run resume).
+
+- **Hive DAG execution (WebSocket run + optimizer) requires and carries a
+  canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
+  resolves a client-selected `workspace_id` through the canonical
+  `WorkspaceStore`/`ProjectScopeStore` — membership and active-presentation
+  state, not just existence — and returns a `DagExecutionScope`
+  (`workspace_id`, `project_id`, `user_id`) rather than a bare Workspace.
+  `GET /v1/ws/dags/{dag_id}/run` now requires an explicit, authorized
+  selection end-to-end (the prior transitional omitted-workspace path is
+  gone) and passes the resolved scope into `execute_dag`/`execute_dag_streaming`
+  so canonical execution carries real Workspace/Project identity instead of
+  none. `test_dag_execution_scope.py` covers unknown, non-member, and
+  archived-Workspace refusal (one shared close code, `1008`, so the boundary
+  stays a non-oracle) and the accepting path reaching the normal
+  DAG-not-found response.
+
 - **The Workspace Agent interviews before it commits a Goal or CreativeBrief
   (#774, #804, #53; SPEC-091726-7c2a).** `maistro.agents.brief_interview` is a
   deterministic requirements conversation: one required question at a time in
@@ -321,6 +349,34 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **Every ADR body status line now agrees with its front matter, and the
+  body-status ratchet is empty (no linked issue: completes the `#387` cleanup
+  begun in the entry below).** The 28 legacy contradictions `#387` banked are
+  corrected rather than carried: 25 ADRs whose body said `Proposed` while
+  front matter said `Accepted`, 2 saying `Proposed` against `Deferred`, and
+  `ADR-001` saying `Accepted` against `Superseded` on a document whose own
+  banner already pointed at `ADR-095`. Readers of those 28 were being told a
+  weaker status than the lifecycle machine, the AC ladder and the citation
+  gate all act on. `quality/adr-status-language-baseline.json` is now `[]`, so
+  the gate has nothing left to tolerate and any contradiction it reports is
+  new by construction; refilling it is an expansion needing a landed grant
+  (`#534`). Two tests that sourced their fixture from the ledger being
+  non-empty now introduce and bank their own contradiction, so a clean corpus
+  no longer fails the suite that guards it.
+
+- **The body/front-matter status gate no longer exempts documents by the shape
+  of their status line (no linked issue: found while fixing the order-dependent
+  tests in `tests/test_check_adr_status_language.py`).** `#387`'s category-1
+  check matched only a bare `**Status:** X` line, so the 3 ADRs and 20 specs
+  that write the same declaration as a Markdown list item (`- **Status:** X`)
+  were outside the check entirely -- the form of the line, not its content,
+  decided whether a contradiction was visible. It also read only the first word
+  of the value, which reported `AC` against a front matter saying `AC Defined`.
+  Both forms are now read and the whole value is compared, which surfaced 19
+  specs whose body said `Active` while their canonical front matter said
+  `AC Defined`; those bodies are corrected to the front-matter value rather
+  than banked, so the baseline stays at the 28 legacy entries `#387` recorded.
 
 - **The stranded chat-admission sweep survives a vanished Run (#338).** Two
   defects in the recovery tick #1280 shipped, both found by review after it
@@ -453,6 +509,15 @@ or placeholder-only section.
   practical to wait out inside this suite's own CI time limit) and
   asserts the shown message has no raw error name; against the unfixed
   build it fails on exactly that assertion.
+
+- **Toggling a schedule or editing a memory entry no longer costs two
+  round trips (#1422).** `Schedules.tsx` and `Memory.tsx` followed every
+  create/update/toggle/delete with a GET of the entire collection, the
+  same pattern `WorkspaceContext.tsx`'s archive/delete already fixed for
+  workspaces. Both pages now patch the changed record into local state
+  from the mutation's own response instead. `tests/e2e/optimistic-mutations.spec.ts`
+  asserts no collection GET follows a toggle, create, or delete; against
+  the unfixed build both specs fail on exactly that assertion.
 
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
