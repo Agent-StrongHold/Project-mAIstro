@@ -67,6 +67,14 @@ class EloTournament:
     def __init__(self, k_factor: float = _K_FACTOR) -> None:
         self._ratings: dict[tuple[str, str], GenomeRating] = {}
         self._battles: list[GenomeBattle] = []
+        # Index of every battle published under a canonical (node_run_id,
+        # benchmark) identity, maintained alongside ``_battles`` (#1064).
+        # ``record_battle`` calls ``find_published_battle`` for every
+        # canonical battle it records, so a linear scan of ``_battles`` here
+        # made a long-running tournament's per-battle idempotency check cost
+        # O(n) -- 1 + 2 + ... + N history comparisons as the battle list
+        # grows, degrading quadratically even when no replay ever occurs.
+        self._published_battles: dict[tuple[str, str], GenomeBattle] = {}
         self._next_id: int = 1
         self._k_factor = k_factor
 
@@ -83,13 +91,11 @@ class EloTournament:
         NodeRun/Attempt identity is the idempotency key, not the pair or the
         benchmark alone, so a genuine later rematch of the same pair on the
         same benchmark (a different logical NodeRun) is never suppressed.
+        O(1) via ``_published_battles`` rather than scanning ``_battles``.
         """
         if not node_run_id:
             return None
-        for battle in self._battles:
-            if battle.node_run_id == node_run_id and battle.benchmark == benchmark:
-                return battle
-        return None
+        return self._published_battles.get((node_run_id, benchmark))
 
     def record_battle(
         self,
@@ -134,6 +140,8 @@ class EloTournament:
         )
         self._next_id += 1
         self._battles.append(battle)
+        if node_run_id:
+            self._published_battles[(node_run_id, benchmark)] = battle
 
         ra = self._get_rating(genome_a_id, benchmark)
         rb = self._get_rating(genome_b_id, benchmark)
@@ -259,6 +267,12 @@ class EloTournament:
                 "score_a": b.score_a,
                 "score_b": b.score_b,
                 "timestamp": b.timestamp,
+                # Canonical publication evidence (#1064): the NodeRun/Attempt
+                # this battle was recorded under, so the public API can
+                # actually confirm provenance instead of only carrying it
+                # internally on ``GenomeBattle``.
+                "node_run_id": b.node_run_id,
+                "attempt_id": b.attempt_id,
             }
             for b in filtered[-limit:]
         ]

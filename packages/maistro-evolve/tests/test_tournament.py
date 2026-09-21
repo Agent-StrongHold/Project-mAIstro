@@ -132,6 +132,28 @@ class TestEloTournament:
         ife_history = t.get_battle_history(benchmark="proxy_ifeval")
         assert len(ife_history) == 1
 
+    def test_battle_history_exposes_publication_identity(self):
+        """#1064: canonical publication evidence (``node_run_id``/
+        ``attempt_id``) must be inspectable through the same public method the
+        Hive ``/tournament/battles`` route serializes battles through --
+        otherwise it exists only on ``GenomeBattle`` and is never actually
+        reachable via the public API."""
+        t = EloTournament()
+        t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        # A library/direct caller with no canonical identity still gets a
+        # history row -- just with empty (not missing) provenance fields.
+        t.record_battle("proxy_bfcl", "g1", "g3", 0.5, 0.6)
+
+        history = t.get_battle_history(genome_id="g1")
+        assert len(history) == 2
+        by_benchmark = {row["benchmark"]: row for row in history}
+        assert by_benchmark["proxy_ifeval"]["node_run_id"] == "node-1"
+        assert by_benchmark["proxy_ifeval"]["attempt_id"] == "attempt-a"
+        assert by_benchmark["proxy_bfcl"]["node_run_id"] == ""
+        assert by_benchmark["proxy_bfcl"]["attempt_id"] == ""
+
     def test_stats(self):
         t = EloTournament()
         t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4)
@@ -205,3 +227,32 @@ class TestBattleIdempotency:
         found = t.find_published_battle("node-1", "proxy_ifeval")
         assert found is not None
         assert found.id == battle.id
+
+    def test_find_published_battle_is_indexed_not_a_linear_scan(self):
+        """#1064: ``record_battle`` calls ``find_published_battle`` for every
+        canonical battle it records, so a long-running tournament must not
+        pay an O(n) ``_battles`` scan on every one of them -- the index dict
+        is consulted directly instead."""
+        t = EloTournament()
+        for i in range(500):
+            t.record_battle(
+                "proxy_ifeval",
+                f"g{i}",
+                f"h{i}",
+                0.8,
+                0.4,
+                node_run_id=f"node-{i}",
+                attempt_id="attempt-a",
+            )
+        assert len(t._battles) == 500
+        assert len(t._published_battles) == 500
+
+        # The index, not ``_battles``, is what answers the lookup: emptying
+        # ``_battles`` (impossible for a real scan to still find anything in)
+        # must not change the answer, proving the index -- not a scan -- is
+        # authoritative here.
+        last = t._battles[-1]
+        t._battles.clear()
+        found = t.find_published_battle("node-499", "proxy_ifeval")
+        assert found is not None
+        assert found.id == last.id
