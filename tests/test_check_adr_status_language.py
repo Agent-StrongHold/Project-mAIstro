@@ -210,6 +210,24 @@ def test_a_list_item_status_line_is_not_exempt(sandbox) -> None:
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
 
 
+def test_a_status_line_with_nothing_after_it_declares_nothing(sandbox) -> None:
+    """An empty `**Status:**` is malformed markup, not a claim of any status.
+
+    Reporting it would name a status the document never asserts, and the
+    comparison itself would raise on the `None` rather than report the finding
+    it was in the middle of making. Driven through `audit()`, not the helper
+    alone: the guard lives in the audit loop, and a unit test of the parser
+    leaves the branch that consumes it unexercised.
+    """
+    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
+    patched, count = _replace_first_status_line(path.read_text(), "")
+    assert count == 1
+
+    path.write_text(patched)
+
+    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
 def test_the_claim_is_the_whole_value_not_its_first_word(sandbox) -> None:
     """The vocabulary has multi-word members, and the markup is presentation.
 

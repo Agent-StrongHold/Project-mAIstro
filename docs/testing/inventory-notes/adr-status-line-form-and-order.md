@@ -1,10 +1,10 @@
 ---
 inventory-delta:
-  tests/: +3
+  tests/: +4
 ---
 # adr-status-line-form-and-order
 
-Three tests added to `tests/test_check_adr_status_language.py`, all covering
+Four tests added to `tests/test_check_adr_status_language.py`, all covering
 gaps the order-dependence fix exposed rather than restating it:
 
 - `test_the_mutated_adr_is_chosen_the_same_way_whatever_the_filesystem_yields`
@@ -17,3 +17,7 @@ gaps the order-dependence fix exposed rather than restating it:
 - `test_the_claim_is_the_whole_value_not_its_first_word` covers reading the
   whole status value, including the no-claim branch, so `AC Defined` is not
   compared as `AC`.
+- `test_a_status_line_with_nothing_after_it_declares_nothing` drives that
+  no-claim branch through `audit()` rather than the parser alone. The guard
+  lives in the audit loop, and the diff-coverage gate caught that a unit test
+  of the parser left its consumer unexercised.
