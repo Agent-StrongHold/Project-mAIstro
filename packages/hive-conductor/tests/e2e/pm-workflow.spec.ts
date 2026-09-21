@@ -33,6 +33,21 @@ async function elevateDagWrites(page: Page, taskId: string) {
   expect(body.elevated_permissions).toContain("dags.write");
 }
 
+async function createWorkspace(page: Page, name: string): Promise<string> {
+  // DAG (and optimizer) execution now resolves a server-authorized
+  // DagExecutionScope (#766): an omitted Workspace selection is a refusal,
+  // not a fallback. Creating a workspace is an ordinary authenticated-user
+  // action — POST /v1/workspaces is exempted from task-scoped elevation in
+  // middleware/auth.py's _required_permission() — so each test that runs a
+  // DAG provisions its own rather than relying on any implicit default.
+  const response = await page.request.post("/v1/workspaces", {
+    data: { persona_template_id: "pm_fleet", name },
+  });
+  expect(response.status()).toBe(201);
+  const workspace = await response.json();
+  return workspace.id as string;
+}
+
 test.describe("PM Workflow — Full UI Walkthrough", () => {
   test.beforeEach(async ({ page }) => {
     await setupIfNeeded(page);
@@ -85,6 +100,7 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
   test("06 — PM can activate and run a DAG", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-run-dag");
+    const workspaceId = await createWorkspace(page, "E2E Run Test Workspace");
 
     const createResp = await page.request.post("/v1/dags", {
       data: { name: "E2E Run Test", description: "test" },
@@ -97,7 +113,9 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     const activated = await activateResp.json();
     expect(activated.status).toBe("active");
 
-    const runResp = await page.request.post(`/v1/dags/${dag.id}/run`);
+    const runResp = await page.request.post(`/v1/dags/${dag.id}/run`, {
+      data: { workspace_id: workspaceId },
+    });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
     expect(run.execution_id).toBeTruthy();
@@ -106,6 +124,7 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
   test("07 — PM can give thumbs feedback on a run", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-feedback-dag");
+    const workspaceId = await createWorkspace(page, "E2E Feedback Test Workspace");
 
     const createResp = await page.request.post("/v1/dags", {
       data: { name: "Feedback Test DAG", description: "test" },
@@ -115,7 +134,9 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
 
     const activateResp = await page.request.post(`/v1/dags/${dag.id}/activate`);
     expect(activateResp.status()).toBe(200);
-    const runResp = await page.request.post(`/v1/dags/${dag.id}/run`);
+    const runResp = await page.request.post(`/v1/dags/${dag.id}/run`, {
+      data: { workspace_id: workspaceId },
+    });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
     expect(run.execution_id).toBeTruthy();
@@ -129,6 +150,7 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
   test("08 — PM can trigger optimizer and see proposals", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-optimize-dag");
+    const workspaceId = await createWorkspace(page, "E2E Optimizer Test Workspace");
 
     const createResp = await page.request.post("/v1/dags", {
       data: { name: "Optimizer Test DAG", description: "test" },
@@ -136,7 +158,9 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     expect(createResp.status()).toBe(201);
     const dag = await createResp.json();
 
-    const optResp = await page.request.post(`/v1/optimizer/${dag.id}/run`);
+    const optResp = await page.request.post(`/v1/optimizer/${dag.id}/run`, {
+      params: { workspace_id: workspaceId },
+    });
     expect([200, 400]).toContain(optResp.status());
 
     const proposalsResp = await page.request.get(`/v1/optimizer/${dag.id}/proposals`);
