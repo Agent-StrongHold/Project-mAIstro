@@ -12,9 +12,12 @@ exercise one thread at a time, which is why both defects survived them.
 from __future__ import annotations
 
 import contextlib
+import multiprocessing
 import threading
 import time
+import traceback
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +31,28 @@ def state(tmp_path: Path):
     yield st
     with contextlib.suppress(Exception):
         st.close()
+
+
+requires_fork = pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="platform does not provide the fork start method (e.g. native Windows)",
+)
+
+
+def _initialize_worker(db_path: str, barrier: Any, results: Any) -> None:
+    """Run `PersistedStore.initialize()` from an independent process (#1528)."""
+    from maistro.state import PersistedStore, State
+
+    barrier.wait(timeout=10)
+    try:
+        st = State(db_path)
+        store = PersistedStore(st)
+        store.initialize()
+        st.close()
+    except BaseException:
+        results.put(("error", traceback.format_exc()))
+    else:
+        results.put(("ok", None))
 
 
 @pytest.mark.contract("behavioral")
@@ -295,3 +320,60 @@ def test_close_is_idempotent(state: State) -> None:
 
     assert state._writer is None
     assert state._writer_open is False
+
+
+@requires_fork
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+def test_independent_processes_apply_first_run_migrations_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """Codex review finding 3 (PR #1528): `run_migration` is guarded only by a
+    process-local `threading.Lock`, so two independent processes starting for
+    the first time against the same fresh database can both observe a
+    migration as not yet applied and race it. Before the fix, the loser
+    reliably failed with `MigrationFailedError` — a unique-constraint
+    violation on `schema_migrations.name`, or occasionally "database is
+    locked" during the connection's first-open WAL switch — and its whole
+    startup aborted (Hive's foundation treats that as STATE_UNAVAILABLE).
+
+    Reproduced against the pre-fix code before this test was added: 4 of 5
+    trials with 8 concurrent first-time processes failed this way; against
+    the fix, 0 of 30 trials with 10 processes failed.
+    """
+    db_path = tmp_path / "race.db"
+    context = multiprocessing.get_context("fork")
+    worker_count = 8
+    barrier = context.Barrier(worker_count)
+    results = context.Queue()
+    processes = [
+        context.Process(target=_initialize_worker, args=(str(db_path), barrier, results))
+        for _ in range(worker_count)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=25)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+        assert process.exitcode == 0
+
+    outcomes = [results.get(timeout=8) for _ in processes]
+    errors = [outcome for outcome in outcomes if outcome[0] != "ok"]
+    assert not errors, "a concurrent first-run initialize() failed:\n" + "\n".join(
+        message for _, message in errors
+    )
+
+    st = State(str(db_path))
+    reader = st.open_reader()
+    try:
+        names = [row[0] for row in reader.execute("SELECT name FROM schema_migrations").fetchall()]
+    finally:
+        reader.close()
+        st.close()
+
+    # Every migration recorded exactly once, no matter which process won it.
+    assert sorted(names) == sorted(set(names)), f"a migration was recorded more than once: {names}"
+    assert "kv_store_001" in names
+    assert "kv_unique_fields_001" in names

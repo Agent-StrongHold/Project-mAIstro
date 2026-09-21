@@ -161,6 +161,7 @@ class TestPersistedStore:
         assert state._writer.execute("SELECT name FROM schema_migrations").fetchall() == [
             ("kv_store_001",),
             ("kv_unique_fields_001",),
+            ("kv_users_username_unique_001",),
         ]
         state.close()
 
