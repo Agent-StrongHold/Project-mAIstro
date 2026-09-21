@@ -14,6 +14,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
     RunStatus,
@@ -26,17 +27,12 @@ from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
 from services.dag_agents import _container, get_run_store
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
+from services.scan_continuations import scan_continuation
 
 logger = logging.getLogger(__name__)
 _COMPAT_SCOPE = "hive-standalone-compat"
 _SCOUT_NODE_ID = "__hive_legacy_scout__"
 _SCOUT_EDGE_ID = "__hive_legacy_scout_to_entry__"
-# These are historical evolution tokens, not expressions in the canonical
-# predicate language. The shipped dependency-wave runner ignored edge
-# conditions entirely, so treating them as predicates would silently skip work
-# that ran before convergence. Preserve that behavior while retaining the token
-# as provenance on the canonical edge.
-_LEGACY_DEPENDENCY_CONDITIONS = frozenset({"success", "failure", "timeout"})
 
 
 def _raw_nodes(dag_data: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -206,14 +202,31 @@ def _execution_shape(
 
 
 def _canonical_condition(raw: Mapping[str, Any]) -> str | None:
-    """Translate a legacy edge condition without inventing new routing semantics."""
+    """Translate only syntactically canonical predicates; keep legacy labels as dependencies."""
     value = raw.get("condition")
     if value is None:
         return None
     condition = str(value).strip()
-    if not condition or condition.lower() in _LEGACY_DEPENDENCY_CONDITIONS:
+    if not condition:
         return None
-    return condition
+
+    # The shipped wave runner ignored this field, and the legacy CRUD surface
+    # accepted arbitrary human labels (for example ``if x``). Passing such a
+    # label to the canonical evaluator silently makes the edge ineligible. A
+    # condition becomes routing authority only when it is recognizably in the
+    # canonical safe predicate dialect: one supported operator and a dotted
+    # identifier path on the left. The original string remains provenance in
+    # ``legacy_condition`` either way.
+    for operator in CONDITION_OPERATORS:
+        if operator not in condition:
+            continue
+        lhs_text, rhs_text = condition.split(operator, 1)
+        lhs = lhs_text.strip()
+        rhs = rhs_text.strip()
+        if lhs and rhs and all(part.isidentifier() for part in lhs.split(".")):
+            return condition
+        return None
+    return None
 
 
 def _edge_metadata(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -279,6 +292,29 @@ def graph_from_legacy_dag(
     if legacy_id:
         graph_kwargs["graph_id"] = legacy_id
     return Graph(**graph_kwargs)
+
+
+async def resolve_execution_scope(
+    dag_data: Mapping[str, Any],
+    *,
+    workspace_id: str | None = None,
+    project_id: str | None = None,
+) -> tuple[str, str]:
+    """Resolve the Workspace/Project a legacy-DAG execution will be admitted into.
+
+    The projection writers that open a run's history BEFORE the execution
+    produces its canonical Run (the chat workflow tool) must record the same
+    scope the execution will resolve, so the projection row carries its
+    canonical Workspace from birth instead of being patched after the fact
+    (#1174). This is the resolver `execute_dag` itself uses -- a second call,
+    never a second mapping.
+    """
+    resolved_workspace, resolved_project, _ = await _scope(
+        dag_data,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+    return resolved_workspace, resolved_project
 
 
 async def _scope(
@@ -392,8 +428,13 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        admission_source="hive_legacy_dag",
         events=container.event_bus,
         limit=limit,
+        # Held across ticks: the scan is bounded per call, and only a tick
+        # that resumes where the last stopped crosses a foreign-owned QUEUED
+        # prefix longer than that bound (#1127).
+        scan=scan_continuation("recover_queued_graph_runs", container.run_store),
     )
 
 
@@ -418,6 +459,7 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
         events=container.event_bus,
         limit=limit,
+        scan=scan_continuation("resume_due_graph_runs", container.graph_run_store),
     )
 
 
@@ -450,6 +492,13 @@ def _project(record: Any, raw_by_id: Mapping[str, dict[str, Any]]) -> dict[str, 
     return {
         "status": status.value,
         "run_id": record.run_id,
+        # The canonical scope the Run was admitted into. The projection
+        # mirrors it verbatim (#1174): Hive inspection authorizes a run at
+        # the Workspace boundary the canonical Run already carries, so the
+        # result says where it ran rather than leaving every reader to
+        # re-derive -- or guess -- the mapping.
+        "workspace_id": record.run.workspace_id,
+        "project_id": record.run.project_id,
         "cycles": record.graph_state.cycle,
         "node_results": node_results,
         "annotations": dict(record.graph_state.blackboard_snapshot.get("node_annotations") or {}),

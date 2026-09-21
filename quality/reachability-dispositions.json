@@ -433,11 +433,12 @@
       "id": "security-unenforced-controls",
       "subsystem": "Warden / Sentinel / Gate",
       "disposition": "CONNECT",
-      "rationale": "Guardrails, trust-boundary checks, task policy and Warden flag response: controls that exist but sit off the product path. This is the gap SECURITY.md calls out and #66 closes \u2014 construction is not enforcement.",
+      "rationale": "Guardrails, trust-boundary checks, task policy, Warden flag response and administrative strike recovery: controls that exist but sit off the product path. This is the gap SECURITY.md calls out and #66 closes \u2014 construction is not enforcement.",
       "root": "the real Conductor chat and tool paths (#66)",
       "modules": [
         "maistro.security.guardrail",
         "maistro.security.secure_random",
+        "maistro.security.strike_recovery",
         "maistro.security.task_policy",
         "maistro.security.trust_boundary",
         "maistro.security.warden.flag_response"
@@ -609,6 +610,15 @@
       "rationale": "Inventories which `quality/**/*.json` state surfaces serialize otherwise-independent PRs (freezing the legacy set rather than migrating any of them) and is exercised only by loading the script itself with importlib.util.spec_from_file_location -- the same shape as ratchet-provenance-helper above: no static import edge exists for this gate to follow, because tests/test_branch_independence.py and tests/test_branch_independence_repository.py load the script by file path rather than importing it by name. Not yet run as a standalone CI step; the contract is enforced today entirely through those two pytest suites.",
       "modules": [
         "@tool/check-branch-independence"
+      ]
+    },
+    {
+      "id": "vulture-whitelist",
+      "subsystem": "Repo tooling",
+      "disposition": "LIBRARY",
+      "rationale": "packages/maistro-core/src/_vulture_whitelist.py is scan input for the vulture CLI, not application code: the `.github/workflows/quality.yml` vulture step globs packages/*/src, vulture itself walks that whole directory tree, and this file's fake references to otherwise-unused-looking names are what suppress vulture's false positives elsewhere in the tree. It has no reason to ever be imported by production code -- being unreachable from a process entry point is its permanent, correct state, not deferred wiring (#1142; a loose file directly under a src root, sibling to the package directories, was previously invisible to the reachability graph entirely rather than landing here honestly).",
+      "modules": [
+        "_vulture_whitelist"
       ]
     },
     {

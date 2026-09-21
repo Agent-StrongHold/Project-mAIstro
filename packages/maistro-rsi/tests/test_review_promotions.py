@@ -4,6 +4,7 @@ checkpoint-time RLPHD gate (promotion_review.py)."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -140,6 +141,38 @@ def test_last_reviewed_ref_advances_so_reviewed_commits_are_not_rescanned(tmp_pa
     loop._review_promotions(result, report_dir)
     assert loop._last_reviewed_ref != before
     assert loop._last_reviewed_ref == _git(loop._baseline, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_unavailable_judge_leaves_judge_score_none_in_review_evidence(tmp_path: Path) -> None:
+    # #307: a promotion whose regression judge was unavailable reaches the
+    # RLPHD reviewer with judge_score=None — never the old 0.7 default that
+    # laundered an unavailable judge into a "good" feature.
+    loop = _loop(tmp_path)
+    sha = _commit_file(loop, "unjudged.py", "x = 1\n", "cycle 1: judge was down")
+    result = LocalRsiResult(
+        cycles=[
+            CycleOutcome(
+                index=1,
+                changed=True,
+                tests_passed=True,
+                promoted=True,
+                target="unjudged.py",
+                composite=0.5,
+                sha=sha,
+                kind=ImprovementKind.FEATURE,
+                regression_judge_score=None,  # judge never ran / unavailable
+            )
+        ]
+    )
+    report_dir = Path(loop._config.report_dir)
+    loop._review_promotions(result, report_dir)
+
+    # Cold start reverts it (p=0.5 < theta=0.7) — and the saved evidence
+    # records the missing judge score as null, not 0.7.
+    meta = list((report_dir / "flagged").glob("*.json"))
+    assert len(meta) == 1
+    data = json.loads(meta[0].read_text(encoding="utf-8"))
+    assert data["features"]["judge_score"] is None
 
 
 def test_no_promotions_since_last_review_is_a_safe_noop(tmp_path: Path) -> None:

@@ -1,0 +1,97 @@
+{
+  "schema": "governed-magnitude/1",
+  "issue": 350,
+  "governance": "Independently governed expected magnitudes for the model router (maistro-core/router + its two RoutingConfig copies). This file states the values the implementation must produce; it is NOT generated from or imported by production code, so a mutation of a production constant cannot silently rewrite its own expectation. Changing a value here is a routing-policy change: it needs the same review as changing the production constant, plus the cited provenance updated in lockstep.",
+  "entries": {
+    "routing.default_weights": {
+      "value": {
+        "quality_weight": 0.6,
+        "cost_weight": 0.4,
+        "reserve_pct": 0.05
+      },
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/types/config.py:14-16 AND packages/maistro-core/src/maistro/config/settings.py:310-312 (two copies that must stay identical)",
+      "provenance": "shipped routing policy: quality-dominant with a real cost trade-off (score = quality^(qw*p) / (1+norm_cost)^cw); reserve_pct is the quota band held back from non-P0 traffic (filter.py)",
+      "protects": "which model serves production traffic: quality_weight/cost_weight set how hard cost pushes against quality; doubling quality_weight (0.6->1.2) makes every cheap-provider tier collapse onto quality ordering, halving cost_weight (0.4->0.2) halves the 2x-at-cw=1.0 cheap/expensive spread; doubling reserve_pct starves non-P0 traffic of 10% of quota",
+      "kills": "any mutation of either copy, and any drift between the two copies (types/config.py vs config/settings.py)"
+    },
+    "routing.default_priority_multipliers": {
+      "value": {
+        "P0": 1.5,
+        "P1": 1.2,
+        "P2": 1.0,
+        "P3": 0.9,
+        "P4": 0.8,
+        "P5": 0.7
+      },
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/types/config.py:18-25 AND packages/maistro-core/src/maistro/config/settings.py:313-320",
+      "provenance": "priority escalation of the quality exponent (quality^(qw * mult)): P0 gets the steepest quality push, P5 the gentlest; P2 is the neutral 1.0 anchor",
+      "protects": "urgent traffic earns stronger quality preference: P0=1.5 vs P2=1.0 at quality 0.9/qw 0.6 is a 0.9^0.3 (~7%) score edge; flattening the ladder (P0->1.0) silently removes priority routing, steepening it (P0->3.0) makes priority dominate cost entirely",
+      "kills": "any mutated multiplier in either copy, and drift between the copies"
+    },
+    "speed.SPEED_WEIGHTS": {
+      "value": {
+        "automation": 0.25,
+        "chat": 0.15,
+        "summarize": 0.1,
+        "search": 0.1,
+        "creative": 0.05,
+        "code": 0.0,
+        "reasoning": 0.0,
+        "trading": 0.0,
+        "image_gen": 0.0,
+        "embedding": 0.0
+      },
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/router/speed.py:11-22",
+      "provenance": "task-type speed policy: automation (voice) 0.25 fast-response-critical, chat 0.15, code/reasoning 0.0 quality-is-everything; module docstring states the same ladder",
+      "protects": "latency vs quality per task type: adjusted_quality = quality * (1 + weight * norm_speed); doubling automation to 0.5 lets a 2000-token/s low-quality model outscore a 0.3-better model in voice routing",
+      "kills": "any mutated weight, including 0.0 -> non-zero for code/reasoning (quality-is-everything) and reordering (automation must exceed chat)"
+    },
+    "speed._MAX_SPEED": {
+      "value": 2000.0,
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/router/speed.py:24",
+      "provenance": "speed normalisation anchor: norm_speed = min(1, speed/_MAX_SPEED) — the tokens/s that earns the FULL speed bonus",
+      "protects": "how fast a model must be to saturate the speed bonus; doubling to 4000 halves every model's speed bonus, halving to 1000 lets mediocre models saturate it",
+      "kills": "any magnitude mutation of the anchor (calibration: bonus at 2000 tok/s is exactly the task weight, at 1000 exactly half)"
+    },
+    "scorer.cost_band": {
+      "value": {
+        "raw_floor": 0.04825494243369465,
+        "raw_ceil": 0.2171472409516259,
+        "norm_cap_in_budget": 3.0
+      },
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/router/scorer.py:43-49 (_RAW_FLOOR = 1/ln(1e9), _RAW_CEIL = 1/ln(100), _NORM_CAP_IN_BUDGET)",
+      "provenance": "the realistic scarcity-cost band (1B-token budget barely used -> 10k budget at 99% consumed) the normalizer maps onto [0,1]; the old theoretical ceiling 1/ln(2) compressed every realistic cost to [0.03,0.15] and capped the cost term at ~10% of the score even at cost_weight=1.0 (repo-history task, measured 2026-07)",
+      "protects": "the contract that at cost_weight=1.0 a fresh huge-budget provider genuinely scores ~2x a nearly-exhausted small one; the band endpoints decide WHICH raw costs count as cheapest and most expensive",
+      "kills": "mutating 1e9->1e6 or 100->10 in the band formulas (derivation check: floor == 1/ln(1e9), ceil == 1/ln(100)) and any magnitude change of the in-budget cap"
+    },
+    "scorer.strength_mult": {
+      "value": 1.15,
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/router/scorer.py:105",
+      "provenance": "matched preferred-strength bonus: quality * 1.15 when the model's declared strengths intersect the intent's; the old 0.90 PENALTY for unmatched strengths made deleting the metadata field optimal",
+      "protects": "metadata presence must pay, slightly: a matched strength is a 15% quality edge — big enough to matter, small enough not to beat a genuinely better model; 1.15 -> 1.5 makes strength labels dominate real quality",
+      "kills": "any magnitude mutation (calibration: quality 0.8 with a matched strength scores exactly 0.92)"
+    },
+    "scarcity.OVER_QUOTA_FLOOR": {
+      "value": 2.4426950408889634,
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/router/scarcity.py:22 (1/ln(2) + 1)",
+      "provenance": "anchor just above the theoretical in-budget ceiling 1/ln(2): paid overage starts strictly above every free in-budget cost so free quota always wins while paygo stays rankable",
+      "protects": "free in-budget quota always beats paid overage on the router's cost-in-denominator score; lowering the floor below the in-budget band makes the router PREFER paying",
+      "kills": "any mutation of the floor (derivation check: floor == 1/ln(2) + 1, and floor > scorer._RAW_CEIL strictly)"
+    },
+    "scarcity.INELIGIBLE_COST": {
+      "value": 999.0,
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/router/scarcity.py:29",
+      "provenance": "sentinel returned for over-quota-without-paygo providers; the scorer FILTERS on it (returns None) rather than scoring it",
+      "protects": "a provider with no quota and no paygo is never selected; a sentinel inside the realistic band would let an unusable provider win on cheapness",
+      "kills": "any magnitude mutation (999 -> 9.99 would collide with the normalized paygo band and break the filter's shared-constant contract with scorer.py)"
+    }
+  }
+}

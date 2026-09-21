@@ -12,6 +12,12 @@ Nearly all of those modules already route through `maistro.http.shared_client`,
 so there is one seam that reaches them at once. This module is the policy layer
 at that seam.
 
+The seam is async because the engine is, and that left exactly one module
+outside it: the approvals CLI, which works on its own thread and its own
+synchronous client. A synchronous caller gets the same policy through
+`SyncGuardedTransport` and `maistro.http.sync_client` (#67) — a second wrapper
+around the same `OutboundPolicy` and the same validator, not a second policy.
+
 Why it is default-on with an allowlist
 --------------------------------------
 The obvious alternative is to guard only *caller-influenced* URLs — the ones an
@@ -61,7 +67,9 @@ Redirects
 httpx re-enters the transport for every hop, so a chain that starts at a public
 URL and lands on a private one is validated at the hop that matters, with no
 call-site change. That is the main reason the policy lives at the transport
-rather than in `shared_client`'s wrapper.
+rather than in `shared_client`'s wrapper. It holds for the synchronous wrapper
+too: a sync client re-enters its transport for each hop of a redirect the same
+way.
 
 Proxies
 -------
@@ -90,7 +98,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from maistro.security.ssrf import SSRFBlockedError, avalidate_outbound_url
+from maistro.security.ssrf import (
+    SSRFBlockedError,
+    avalidate_outbound_url,
+    validate_outbound_url,
+)
 
 #: Ports that need not be written out, so `http://host` and `http://host:80`
 #: are one origin rather than two.
@@ -263,6 +275,18 @@ async def enforce_outbound_policy(url: str) -> None:
     await avalidate_outbound_url(url)
 
 
+def enforce_outbound_policy_sync(url: str) -> None:
+    """`enforce_outbound_policy` for a caller on its own thread.
+
+    The one such caller is the approvals CLI, which is synchronous end to end
+    and cannot await. Blocking resolution is what it already does by being a
+    sync client; this adds the policy that goes with it.
+    """
+    if _policy.allows(url):
+        return
+    validate_outbound_url(url)
+
+
 class GuardedTransport(httpx.AsyncBaseTransport):
     """Applies the outbound policy to every request, including redirect hops."""
 
@@ -303,15 +327,52 @@ def guarded(transport: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
     return GuardedTransport(transport)
 
 
+class SyncGuardedTransport(httpx.BaseTransport):
+    """`GuardedTransport`, for the synchronous clients the CLI uses (#67).
+
+    Same policy object, same validator, same refusal type — the only thing that
+    differs is the transport protocol it wraps. `httpx.MockTransport`
+    implements both protocols, so one test double serves both seams.
+    """
+
+    def __init__(self, inner: httpx.BaseTransport) -> None:
+        self._inner = inner
+
+    @property
+    def inner(self) -> httpx.BaseTransport:
+        """The transport that does the work. Read by tests."""
+        return self._inner
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            enforce_outbound_policy_sync(str(request.url))
+        except SSRFBlockedError as exc:
+            raise OutboundBlockedError(exc.detail, request=request, reason=exc.reason) from exc
+        return self._inner.handle_request(request)
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+def guarded_sync(transport: httpx.BaseTransport) -> httpx.BaseTransport:
+    """`guarded`, for the synchronous seam. Same rules, same exceptions."""
+    if isinstance(transport, httpx.MockTransport | SyncGuardedTransport):
+        return transport
+    return SyncGuardedTransport(transport)
+
+
 __all__ = [
     "GuardedTransport",
     "OutboundBlockedError",
     "OutboundPolicy",
+    "SyncGuardedTransport",
     "configure_outbound_policy",
     "configured_endpoints",
     "current_outbound_policy",
     "enforce_outbound_policy",
+    "enforce_outbound_policy_sync",
     "guarded",
+    "guarded_sync",
     "outbound_origin",
     "reset_outbound_policy",
 ]

@@ -71,21 +71,31 @@ def action_class_for(kind: ImprovementKind) -> str:
 
 def extract_features(
     *, regression_judge_score: float | None, composite: float, kind: ImprovementKind
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     """Small, interpretable feature set — every weight RLPHD learns over these
     stays human-readable in the persisted JSON. ``bias`` is the standard
     constant term so the sigmoid isn't forced through the origin."""
     return {
         "bias": 1.0,
-        "judge_score": regression_judge_score if regression_judge_score is not None else 0.7,
+        # None means the judge never ran or was unavailable — stored as None
+        # explicitly, never coerced to a passing number (#307). The old 0.7
+        # default laundered an unavailable judge into a "good" feature.
+        "judge_score": regression_judge_score,
         "composite": composite,
         "is_spec_completion": 1.0 if kind == ImprovementKind.SPEC else 0.0,
         "is_feature": 1.0 if kind == ImprovementKind.FEATURE else 0.0,
     }
 
 
+def _known_features(features: dict[str, float | None]) -> dict[str, float]:
+    """RlphdModel is float-only: an unset (None) feature is NO evidence, so it
+    contributes nothing to the weighted sum and its weight learns nothing —
+    dropped before predict/update rather than coerced to any number (#307)."""
+    return {name: value for name, value in features.items() if value is not None}
+
+
 def explain_prediction(
-    features: dict[str, float], weights: dict[str, float]
+    features: dict[str, float | None], weights: dict[str, float]
 ) -> list[dict[str, Any]]:
     """Glass-box decomposition: how much did each feature contribute to p?
 
@@ -99,7 +109,8 @@ def explain_prediction(
     items: list[dict[str, Any]] = []
     for name, val in features.items():
         w = weights.get(name, 0.0)
-        items.append({"feature": name, "value": val, "weight": w, "contribution": w * val})
+        contribution = w * val if val is not None else 0.0
+        items.append({"feature": name, "value": val, "weight": w, "contribution": contribution})
     items.sort(key=lambda x: abs(x["contribution"]), reverse=True)
     return items
 
@@ -113,7 +124,7 @@ class PendingReview:
     target: str
     kind: str  # ImprovementKind.value — plain str for JSON round-tripping
     action_class: str
-    features: dict[str, float]
+    features: dict[str, float | None]
     predicted_p: float
     theta: float
     flagged_at: str
@@ -168,9 +179,14 @@ class RlphdStateStore:
     def theta_for(self, action_class: str) -> float:
         return self._thetas.get(action_class, COLD_START_THETA)
 
-    def predict(self, action_class: str, features: dict[str, float]) -> tuple[float, float]:
-        """Returns (p, theta) — does NOT persist; call after a decision to learn."""
-        return self.model_for(action_class).predict(features), self.theta_for(action_class)
+    def predict(self, action_class: str, features: dict[str, float | None]) -> tuple[float, float]:
+        """Returns (p, theta) — does NOT persist; call after a decision to learn.
+        None-valued features (e.g. judge_score when the judge was unavailable)
+        contribute nothing — see _known_features."""
+        return (
+            self.model_for(action_class).predict(_known_features(features)),
+            self.theta_for(action_class),
+        )
 
     # Theta moves only a small fraction as fast as the tool-call RLPHD
     # default (DEFAULT_SURPRISE_GAIN=0.3 / DEFAULT_CONFIRM_GAIN=0.03) — here,
@@ -184,7 +200,7 @@ class RlphdStateStore:
     def record_decision(
         self,
         action_class: str,
-        features: dict[str, float],
+        features: dict[str, float | None],
         predicted_p: float,
         theta: float,
         decision: Literal["approve", "deny"],
@@ -208,7 +224,7 @@ class RlphdStateStore:
         # Pass theta so the weight step scales with the confidence gap |p - theta|
         # (confident-wrong predictions teach the most); theta itself drifts via
         # update_theta below.
-        updated = model.update(features, decision, predicted_p, theta=theta)
+        updated = model.update(_known_features(features), decision, predicted_p, theta=theta)
         self._models[action_class] = updated
         new_theta = update_theta(
             theta,

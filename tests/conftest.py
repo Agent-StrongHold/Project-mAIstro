@@ -9,6 +9,17 @@ from pathlib import Path
 
 import pytest
 
+#: The trusted base the CI job named for itself, captured before any fixture
+#: can strip it. `RATCHET_BASE_REV` is exactly the kind of ambient field the
+#: autouse fixture below exists to neutralize: left visible, it makes
+#: otherwise-hermetic temp-repository tests resolve the *real* repository's
+#: integration base inside a throwaway git dir, where that SHA does not
+#: exist. Tests that audit the real repository's shipped state (the
+#: `check-*` gate self-checks) are the counter-case: they need that base, so
+#: they opt back in through the `real_repository_ratchet_base` fixture,
+#: which re-exports this captured value.
+_AMBIENT_RATCHET_BASE_REV = os.environ.get("RATCHET_BASE_REV", "").strip()
+
 # Force dry-run mode in tests to avoid real LLM calls
 os.environ.setdefault("MAISTRO_DRY_RUN", "1")
 
@@ -68,16 +79,47 @@ def _default_ac_state_ratchet_event(monkeypatch: pytest.MonkeyPatch) -> None:
     integration base. The default therefore keeps the historical pull-request
     event kind used by AC-state tests while removing every ambient field that
     can supply a real integration base or trigger CI-only materialization.
+    `RATCHET_BASE_REV` joins that set (#1235): a job-level base named for the
+    gate self-checks would otherwise leak into every temp-repository test,
+    whose `git -C <tmp>` cannot resolve the real repository's SHA and would
+    fail closed for the wrong reason.
 
     Pinning is a floor, not a ceiling: a test wanting GitHub event or Actions
     semantics sets the relevant variables in its own body, which runs after
-    this fixture and wins.
+    this fixture and wins. Tests auditing the real repository's shipped state
+    request `real_repository_ratchet_base` instead of re-reading the ambient
+    value themselves — capture had to happen at import time, before this
+    fixture strips it.
     """
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
     monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.delenv("GITHUB_REF", raising=False)
+    monkeypatch.delenv("RATCHET_BASE_REV", raising=False)
+
+
+@pytest.fixture()
+def real_repository_ratchet_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Name the CI job's own trusted base for a gate that audits the real repo.
+
+    The `check-*` shipped-state self-checks run a full ratchet against THIS
+    repository — not a fixture — so their trusted base must be the revision
+    the CI event is integrating against. On a push to `develop` the resolver's
+    local fallback (`origin/develop`) degenerates to HEAD, and a clean
+    worktree is exactly the self-referential state `#534` refuses: without a
+    named base these audits would exit non-zero for "cannot compare" instead
+    of "compared and failed", and every gate-expects-failure test would pass
+    vacuously. Jobs that run the root suite name the event's own base in
+    `RATCHET_BASE_REV`; this fixture re-exports that captured value to the
+    tests allowed to see it.
+
+    With no ambient value (a local run) it does nothing: the resolver keeps
+    its documented local semantics, and a clean develop checkout names its
+    own base explicitly when it wants the self-checks judged.
+    """
+    if _AMBIENT_RATCHET_BASE_REV:
+        monkeypatch.setenv("RATCHET_BASE_REV", _AMBIENT_RATCHET_BASE_REV)
 
 
 @pytest.fixture(autouse=True)

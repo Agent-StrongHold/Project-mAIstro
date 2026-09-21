@@ -109,6 +109,11 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
         effect_context=container.capability_effects,
         provider_registry=container.provider_registry,
         llm_router=container.llm_router,
+        # The durable graph store, which `agent.synth_dag` declares as
+        # required (#1193): without it the resolver refuses that kind instead
+        # of constructing one that reports success for a sub-graph nothing
+        # ran. Distinct from `run_store` on purpose — see get_run_store().
+        graph_run_store=container.graph_run_store,
     )
 
 

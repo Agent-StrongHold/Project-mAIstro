@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -86,7 +87,14 @@ class ProjectScopeStore(Protocol):
         ...
 
     async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
-        """Create or replace a Project-scoped membership."""
+        """Create or update the one canonical membership for this principal.
+
+        Keyed on `(project_id, principal_id)`, not on `membership_id`: a
+        second call for the same principal at the same Project replaces the
+        existing row -- carrying its original `membership_id` and
+        `created_at` forward -- rather than adding a second, independent
+        grant no later call can ever fully retract (#1148).
+        """
 
         ...
 
@@ -94,6 +102,15 @@ class ProjectScopeStore(Protocol):
         self, project_id: str, *, principal_id: str | None = None
     ) -> list[ProjectMembership]:
         """List memberships at one Project, optionally for one principal."""
+
+        ...
+
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+        """Revoke a principal's membership at one Project.
+
+        A no-op when the principal has no membership there: revocation is
+        idempotent the same way `WorkspaceStore.remove_membership` is.
+        """
 
         ...
 
@@ -132,6 +149,54 @@ class ProjectScopeStore(Protocol):
         ...
 
 
+@runtime_checkable
+class TransactionalProjectScopeStore(Protocol):
+    """A scope store whose Workspace-lifecycle writes can join one transaction.
+
+    A Workspace and its Root Project are two stores' rows, and the Workspace
+    stores used to write them in two transactions: commit the Workspace, then
+    `create_root`; commit the delete, then `purge_workspace`. In-process
+    compensation covered an exception between the halves and nothing covered
+    a crash there, which left a Workspace with no Root Project (a thing
+    `root_for_workspace` treats as impossible) or a Project tree with no
+    Workspace to reach it by (#1121).
+
+    The durable scope stores share a database with their Workspace store --
+    the same asyncpg pool, or the same aiosqlite connection -- so the fix is
+    one transaction, and this Protocol is the shape of it. `transaction()`
+    opens the scope store's own write transaction and yields the connection
+    handle it runs on; the Workspace store writes its rows on that handle and
+    calls the `_in` methods with it, and the whole lot commits or rolls back
+    together. The `transaction()` is the *scope store's* rather than the
+    Workspace store's because on SQLite the two write on one connection, and
+    a second lock over that connection is how "cannot start a transaction
+    within a transaction" happens; the scope store's critical section is the
+    only one there can be.
+
+    `ProjectScopeStore.create_root` and `purge_workspace` keep their
+    contracts: the durable stores implement each as its `_in` twin inside its
+    own `transaction()`. The in-memory reference does not implement this
+    Protocol -- it has no transaction to join -- and a Workspace store paired
+    with a non-transactional scope store falls back to compensating, which is
+    not crash-consistent by construction and says so where it does it.
+    """
+
+    def transaction(self) -> AbstractAsyncContextManager[Any]:
+        """Open this store's write transaction, yielding the connection it runs on."""
+
+        ...
+
+    async def create_root_in(self, conn: Any, workspace_id: str) -> Project:
+        """`create_root`, issued on the caller's open transaction."""
+
+        ...
+
+    async def purge_workspace_in(self, conn: Any, workspace_id: str) -> None:
+        """`purge_workspace`, issued on the caller's open transaction."""
+
+        ...
+
+
 class InMemoryProjectScopeStore:
     """Reference Project tree with downward-only scoped-resource visibility."""
 
@@ -140,7 +205,9 @@ class InMemoryProjectScopeStore:
 
         self._projects: dict[str, Project] = {}
         self._root_by_workspace: dict[str, str] = {}
-        self._memberships: dict[str, ProjectMembership] = {}
+        # Keyed on (project_id, principal_id), not membership_id: see
+        # `set_membership`'s docstring (#1148).
+        self._memberships: dict[tuple[str, str], ProjectMembership] = {}
         self._resources: dict[str, ProjectScopedResource] = {}
         # Set by the wiring once a Run store exists, so `delete()` refuses a
         # Project that owns Runs. A callable rather than the store itself: this
@@ -320,13 +387,21 @@ class InMemoryProjectScopeStore:
         return resolved
 
     async def set_membership(self, membership: ProjectMembership) -> ProjectMembership:
-        """Create or replace a membership after validating Project ownership."""
+        """Create or update the one canonical membership per (project, principal)."""
 
         project = self._require(membership.project_id)
         if project.workspace_id != membership.workspace_id:
             raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
-        updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
-        self._memberships[membership.membership_id] = updated
+        key = (membership.project_id, membership.principal_id)
+        existing = self._memberships.get(key)
+        updated = membership.model_copy(
+            update={
+                "membership_id": existing.membership_id if existing else membership.membership_id,
+                "created_at": existing.created_at if existing else membership.created_at,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._memberships[key] = updated
         return updated.model_copy(deep=True)
 
     async def memberships_for(
@@ -346,6 +421,11 @@ class InMemoryProjectScopeStore:
         ]
         memberships.sort(key=lambda item: (item.created_at, item.membership_id))
         return memberships
+
+    async def remove_membership(self, project_id: str, *, principal_id: str) -> None:
+        """Revoke a principal's membership at one Project, if any exists."""
+
+        self._memberships.pop((project_id, principal_id), None)
 
     async def put_resource(self, resource: ProjectScopedResource) -> ProjectScopedResource:
         """Create or replace a Project resource without crossing Workspaces."""
@@ -403,12 +483,12 @@ class InMemoryProjectScopeStore:
             for project in self._projects.values()
             if project.workspace_id == workspace_id
         }
-        for membership_id in [
-            membership_id
-            for membership_id, membership in self._memberships.items()
+        for key in [
+            key
+            for key, membership in self._memberships.items()
             if membership.workspace_id == workspace_id
         ]:
-            del self._memberships[membership_id]
+            del self._memberships[key]
         for resource_id in [
             resource_id
             for resource_id, resource in self._resources.items()
@@ -426,4 +506,4 @@ class InMemoryProjectScopeStore:
         return project
 
 
-__all__ = ["InMemoryProjectScopeStore", "ProjectScopeStore"]
+__all__ = ["InMemoryProjectScopeStore", "ProjectScopeStore", "TransactionalProjectScopeStore"]

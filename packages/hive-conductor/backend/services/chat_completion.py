@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -17,11 +18,30 @@ from typing import Any
 from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
 from adapters.telemetry_langfuse import telemetry
 from config import get_settings
+from fastapi import HTTPException
 from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
+from routes.audit import log_audit
 
 from maistro.http import shared_client
+from services.agent_materialization import (
+    AgentDefinitionRejected,
+    AgentScannerUnavailable,
+    ScanBudgetExceeded,
+    chat_agent_id,
+    delete_agent_definition,
+    materialize_runtime,
+    update_agent_definition,
+    upsert_agent_definition,
+)
 from services.airtable_cache import get_airtable_base_tables_json, get_airtable_records_json
+from services.chat_gate import (
+    gate_tool_dispatch,
+    gate_untrusted,
+    new_gate_id,
+    refusal_content,
+)
+from services.owned_records import Owner, owned_memory_entries
 from services.secrets import litellm_api_key as _resolve_litellm_api_key
 from services.tool_primitives import (
     AIRTABLE_PROVIDER_IDS,
@@ -32,6 +52,27 @@ from services.tool_primitives import (
 )
 
 logger = logging.getLogger("hive.chat")
+
+#: The Workspace the current chat turn belongs to, when its caller named one.
+#: `ChatCompletionRequest` deliberately allows extra fields -- the same
+#: mechanism `tools_scope` rides on -- so a trusted internal caller can scope
+#: a turn; the agent-button tools read this when they create/update/remove
+#: roster rows so a chat-created agent lands inside the workspace the chat was
+#: about instead of always leaking into the global roster. Unset, rows stay
+#: global, the scope they had before. Set unconditionally at the top of both
+#: entry points, so every request overwrites whatever the task saw before;
+#: direct `_execute_tool` calls outside a turn read the None default.
+_chat_workspace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "chat_tool_workspace_id", default=None
+)
+
+
+def _request_workspace_id(req: ChatCompletionRequest) -> str | None:
+    """The workspace this chat turn belongs to, when the caller names one."""
+    workspace = getattr(req, "workspace_id", None)
+    if isinstance(workspace, str) and workspace.strip():
+        return workspace.strip()
+    return None
 
 
 def build_llm_port() -> LLMPort:
@@ -108,45 +149,53 @@ def _get_jira_pat(user_id: str) -> str | None:
         return None
 
 
-def _get_airtable_creds(user_id: str) -> tuple[str | None, str | None]:  # noqa: C901  layered credential fallbacks
-    """Pull Airtable token + base_id from env (CI/CD) or credential store."""
+def _get_airtable_creds(user_id: str) -> tuple[str | None, str | None]:
+    """Pull Airtable credentials for exactly ``user_id``.
+
+    ``AIRTABLE_*`` environment credentials are retained only for an explicitly
+    enabled, single-user deployment with at most one stored principal. They are
+    never a fallback on an authenticated multi-user request.
+    """
     import os
 
-    env_token = os.environ.get("AIRTABLE_TOKEN") or os.environ.get("AIRTABLE_API_KEY")
-    env_base = os.environ.get("AIRTABLE_BASE_ID")
-    if env_token:
-        return env_token, env_base or ""
     try:
         import stores
 
         from services import user_credentials as cred_svc
+
+        if _single_user_airtable_env_enabled(user_id):
+            env_token = os.environ.get("AIRTABLE_TOKEN") or os.environ.get("AIRTABLE_API_KEY")
+            if env_token:
+                return env_token, os.environ.get("AIRTABLE_BASE_ID", "")
 
         store = cred_svc.get_credential_store()
         if store is None:
             return None, None
         context = ToolCallContext(user_id)
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(context, AIRTABLE_PROVIDER_IDS, include_dev_fallback=True)
+        token = resolver.first_secret(context, AIRTABLE_PROVIDER_IDS)
         if not token:
             return None, None
-        # base_id is in user_provider_config — try multiple user_id patterns
-        base_id = ""
-        for uid in context.candidate_user_ids(include_dev_fallback=True):
-            config_raw = stores.user_provider_config.get(f"{uid}:airtable")
-            if isinstance(config_raw, dict) and config_raw.get("base_id"):
-                base_id = config_raw["base_id"]
-                break
-        # If still not found, scan all keys for any airtable config
-        if not base_id:
-            for key in stores.user_provider_config:
-                if key.endswith(":airtable"):
-                    val = stores.user_provider_config.get(key)
-                    if isinstance(val, dict) and val.get("base_id"):
-                        base_id = val["base_id"]
-                        break
+        config_raw = stores.user_provider_config.get(f"{user_id}:airtable")
+        base_id = config_raw.get("base_id") if isinstance(config_raw, dict) else ""
         return token, base_id.split("/")[0] if base_id else ""
     except Exception:
         return None, None
+
+
+def _single_user_airtable_env_enabled(user_id: str) -> bool:
+    """Gate legacy process-wide Airtable env vars to an explicit one-user mode."""
+    import os
+
+    if os.environ.get("AIRTABLE_SINGLE_USER_MODE", "").lower() not in {"1", "true", "yes"}:
+        return False
+    try:
+        import stores
+
+        principals = tuple(stores.users.keys())
+        return len(principals) <= 1 and (not principals or user_id in principals)
+    except Exception:
+        return False
 
 
 def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prompt sections
@@ -960,19 +1009,22 @@ async def _tool_search_confluence(
 async def _tool_save_as_action(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
-    # Save as a real agent button on the Program page
+    # Save as a real agent button on the Program page. Stored only through the
+    # materialization service -- the one writer for `stores.agents` -- so the
+    # row is Warden-scanned (fail-closed) and provenance-stamped like every
+    # other definition, and its id is deterministic: re-saving the same action
+    # in the same workspace upserts instead of piling up random-suffixed rows.
     from datetime import UTC, datetime
-    from uuid import uuid4
 
-    import stores
     from models.schemas import Agent as AgentModel
 
-    agent_id = str(uuid4())[:8]
     name = args.get("name", "Saved Action")
     # Infer capability from conversation context
     capability = args.get("capability", "poll_jira")
-    stores.agents[agent_id] = AgentModel(
-        id=agent_id,
+    workspace_id = _chat_workspace_id.get()
+    agent = AgentModel(
+        id=chat_agent_id(workspace_id, str(name)),
+        workspace_id=workspace_id,
         name=name,
         description=args.get("description", "Saved from chat"),
         status="idle",
@@ -983,23 +1035,45 @@ async def _tool_save_as_action(
         created_at=datetime.now(UTC),
         config={},
     )
-    return {"saved": True, "agent_id": agent_id, "name": name}
+    try:
+        stored = await upsert_agent_definition(agent, source="chat-tool")
+    except AgentDefinitionRejected as exc:
+        return {"error": f"agent not saved: rejected by security scan ({exc})"}
+    except AgentScannerUnavailable:
+        return {"error": "agent not saved: the security scan could not run; nothing was stored"}
+    except ScanBudgetExceeded as exc:
+        return {"error": f"agent not saved: {exc}"}
+    # Runtime half + audit parity with Forge: the saved definition becomes a
+    # runtime agent when one exists (stamped non-dispatchable otherwise), and
+    # a roster-writing side effect lands in the audit log like every other one.
+    stored = await materialize_runtime(stored)
+    log_audit(
+        "agent_chat_created",
+        user_id,
+        target=stored.id,
+        detail={
+            "name": stored.name,
+            "capability": capability,
+            "dispatchable": stored.config.get("dispatchable"),
+        },
+    )
+    return {"saved": True, "agent_id": stored.id, "name": stored.name}
 
 
 async def _tool_create_agent_button(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     from datetime import UTC, datetime
-    from uuid import uuid4
 
-    import stores
     from models.schemas import Agent as AgentModel
 
-    agent_id = str(uuid4())[:8]
+    name = args.get("name", "New Agent")
     capability = args.get("capability", "poll_jira")
+    workspace_id = _chat_workspace_id.get()
     agent = AgentModel(
-        id=agent_id,
-        name=args.get("name", "New Agent"),
+        id=chat_agent_id(workspace_id, str(name)),
+        workspace_id=workspace_id,
+        name=name,
         description=args.get("description", ""),
         status="idle",
         model="gemini-3.5-flash",
@@ -1009,10 +1083,29 @@ async def _tool_create_agent_button(
         created_at=datetime.now(UTC),
         config={"default_payload": args.get("payload", {})},
     )
-    stores.agents[agent_id] = agent
+    try:
+        stored = await upsert_agent_definition(agent, source="chat-tool")
+    except AgentDefinitionRejected as exc:
+        return {"error": f"agent not created: rejected by security scan ({exc})"}
+    except AgentScannerUnavailable:
+        return {"error": "agent not created: the security scan could not run; nothing was stored"}
+    except ScanBudgetExceeded as exc:
+        return {"error": f"agent not created: {exc}"}
+    # Runtime half + audit parity with Forge, as in save_as_action above.
+    stored = await materialize_runtime(stored)
+    log_audit(
+        "agent_chat_created",
+        user_id,
+        target=stored.id,
+        detail={
+            "name": stored.name,
+            "capability": capability,
+            "dispatchable": stored.config.get("dispatchable"),
+        },
+    )
     return {
         "created": True,
-        "agent": {"id": agent_id, "name": agent.name, "capability": capability},
+        "agent": {"id": stored.id, "name": stored.name, "capability": capability},
     }
 
 
@@ -1026,8 +1119,7 @@ async def _tool_modify_agent_button(
         return {
             "error": f"Agent '{agent_id}' not found. Use list_agent_buttons to see available IDs."
         }
-    agent = stores.agents[agent_id]
-    updates = {}
+    updates: dict[str, Any] = {}
     if args.get("name"):
         updates["name"] = args["name"]
     if args.get("description"):
@@ -1035,14 +1127,15 @@ async def _tool_modify_agent_button(
     if args.get("capability"):
         updates["capabilities"] = [args["capability"]]
         updates["primary_capability"] = args["capability"]
-    if hasattr(agent, "model_copy"):
-        agent = agent.model_copy(update=updates)
-    else:
-        for k, v in updates.items():
-            if isinstance(agent, dict):
-                agent[k] = v
-    stores.agents[agent_id] = agent
-    return {"modified": True, "agent_id": agent_id, "updates": updates}
+    try:
+        stored = await update_agent_definition(agent_id, updates, source="chat-tool")
+    except AgentDefinitionRejected as exc:
+        return {"error": f"agent not modified: rejected by security scan ({exc})"}
+    except AgentScannerUnavailable:
+        return {"error": "agent not modified: the security scan could not run; nothing was stored"}
+    except ScanBudgetExceeded as exc:
+        return {"error": f"agent not modified: {exc}"}
+    return {"modified": True, "agent_id": stored.id, "updates": updates}
 
 
 async def _tool_remove_agent_button(
@@ -1053,8 +1146,9 @@ async def _tool_remove_agent_button(
     agent_id = args.get("agent_id", "")
     if agent_id not in stores.agents:
         return {"error": f"Agent '{agent_id}' not found."}
-    removed = stores.agents.pop(agent_id)
-    return {"removed": True, "agent_id": agent_id, "name": removed.get("name", "")}
+    removed = stores.agents.get(agent_id)
+    delete_agent_definition(agent_id)
+    return {"removed": True, "agent_id": agent_id, "name": getattr(removed, "name", "")}
 
 
 async def _tool_list_agent_buttons(
@@ -1165,9 +1259,7 @@ async def _tool_memory_add(
         created_at=t,
         updated_at=t,
     )
-    import stores
-
-    stores.memory_entries[eid] = entry
+    owned_memory_entries(Owner(id=user_id)).create(eid, entry)
     return {"saved": True, "id": eid, "content": content}
 
 
@@ -1207,10 +1299,8 @@ async def _tool_memory_search(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Search memories."""
-    import stores
-
     query = args.get("query", "").lower()
-    entries = [e for e in stores.memory_entries.values() if e.user_id == user_id]
+    entries = owned_memory_entries(Owner(id=user_id)).values()
     if query:
         entries = [
             e
@@ -1232,13 +1322,10 @@ async def _tool_memory_delete(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Delete a memory entry."""
-    import stores
-
     entry_id = args.get("entry_id", "")
     if not entry_id:
         return {"error": "entry_id required"}
-    if entry_id in stores.memory_entries and stores.memory_entries[entry_id].user_id == user_id:
-        del stores.memory_entries[entry_id]
+    if owned_memory_entries(Owner(id=user_id)).discard(entry_id):
         return {"deleted": True, "id": entry_id}
     return {"error": "not found"}
 
@@ -1247,21 +1334,21 @@ async def _tool_memory_edit(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Edit a memory entry."""
-    import stores
-
     entry_id = args.get("entry_id", "")
     value = args.get("value", "")
     if not entry_id or not value:
         return {"error": "entry_id and value required"}
-    if entry_id not in stores.memory_entries or stores.memory_entries[entry_id].user_id != user_id:
+    owned = owned_memory_entries(Owner(id=user_id))
+    try:
+        entry = owned.require(entry_id)
+    except HTTPException:
         return {"error": "not found"}
     from datetime import UTC, datetime
 
-    entry = stores.memory_entries[entry_id]
     updates: dict[str, Any] = {"value": value, "key": value[:60], "updated_at": datetime.now(UTC)}
     if "tags" in args:
         updates["tags"] = args["tags"]
-    stores.memory_entries[entry_id] = entry.model_copy(update=updates)
+    owned.update(entry_id, entry.model_copy(update=updates))
     return {"updated": True, "id": entry_id, "value": value}
 
 
@@ -1275,10 +1362,16 @@ async def _tool_create_dashboard_widget(
     `{"created": True}` whatever happened — so a chat that could not persist a
     widget still told the user it had made one. It now goes through the same
     durable path the API does (#340), and reports the failure it gets.
+
+    #314: the config a model proposes is constrained to the declarative
+    capability set before it is stored — and non-conforming fields are
+    *reported*, not silently dropped, so the model can correct the config
+    instead of believing a widget that was never created.
     """
     from uuid import uuid4
 
     from services import dashboard_layouts
+    from services.dashboard_safety import widget_config_violations
 
     if not user_id:
         # The old `user_id or "dev"` pooled every unidentified caller into one
@@ -1291,6 +1384,14 @@ async def _tool_create_dashboard_widget(
     size = args.get("size", "2")
     config = args.get("config", {})
     tab_name = args.get("tab", "")
+
+    violations = widget_config_violations(widget_type, config)
+    if violations:
+        return {
+            "created": False,
+            "error": "widget config was rejected by the declarative capability schema",
+            "violations": violations,
+        }
 
     # `effective`, not `load`: before a first save the route hands the user their
     # preset without storing it, so editing the empty record and saving it
@@ -1435,11 +1536,20 @@ async def _tool_run_workflow(
     # whether the graph itself finished, so only that decides the status.
     executed = False
     try:
+        from services.canonical_dag_runner import resolve_execution_scope
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
+        # The projection row opens before execution, so it must already carry
+        # the scope the execution will resolve -- resolved here by the same
+        # resolver `execute_dag` uses, never a second mapping (#1174).
+        workspace_id, project_id = await resolve_execution_scope(dag_data)
         store = get_dag_run_store()
-        await store.start_run(run_id=exec_id)
+        await store.start_run(
+            run_id=exec_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
         result = await execute_dag(dag_data, user_id=user_id)
         executed = True
 
@@ -1740,10 +1850,72 @@ _TOOL_HANDLERS["mutate_workflow"] = tool_mutate_workflow
 
 
 async def _execute_tool(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
-    """Execute a PM tool for real. No stubs. Calls Jira REST API directly."""
+    """Execute a PM tool for real. No stubs. Calls Jira REST API directly.
+
+    The #315 dispatch policy is enforced here rather than in each caller, so
+    every path that reaches a handler has crossed the same authorization:
+    privileged effects (destroy/mutate) need an approval the model cannot
+    mint, and networked effects need a principal. Handler-level tests that
+    monkeypatch this function replace the policy with the fake, exactly as
+    they replaced the dispatch before.
+    """
+    refusal = gate_tool_dispatch(tool_name, user_id)
+    if refusal is not None:
+        return {
+            "error": f"tool '{tool_name}' was not run: {refusal.reason}",
+            "blocked": True,
+        }
     jira_pat = _get_jira_pat(user_id)
     handler = _TOOL_HANDLERS.get(tool_name, _tool_poll_jira)
     return await handler(args, user_id, jira_pat)
+
+
+async def _gated_execute_tool(
+    tool_name: str, args: dict[str, Any], user_id: str, gate_id: str
+) -> tuple[dict[str, Any], str]:
+    """One model-authored tool call through the #315 boundaries.
+
+    The call (name + arguments) is untrusted model output and is scanned at
+    the user_input boundary before anything runs; the dispatch policy in
+    `_execute_tool` authorizes the effect; and the result is scanned at the
+    tool_result boundary before it is re-fed to the model, so an indirect
+    injection riding a tool result cannot reach the next turn. Returns the
+    result the model should see and the summary the stream should show —
+    blocked calls return an error result rather than executing.
+    """
+    call_gate = await gate_untrusted(
+        {"tool": tool_name, "args": args},
+        surface="chat_tool_call",
+        user_id=user_id,
+        gate_id=gate_id,
+        tool=tool_name,
+    )
+    if not call_gate.allowed:
+        return (
+            {"error": f"tool call refused by security gate ({call_gate.reason})", "blocked": True},
+            "Blocked by security gate",
+        )
+
+    try:
+        result = await _execute_tool(tool_name, args, user_id)
+    except Exception as tool_exc:
+        logger.warning("tool_execution_error name=%s error=%s", tool_name, tool_exc)
+        result = {"error": f"Tool '{tool_name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
+
+    result_gate = await gate_untrusted(
+        result,
+        boundary="tool_result",
+        surface="chat_tool_result",
+        user_id=user_id,
+        gate_id=gate_id,
+        tool=tool_name,
+    )
+    if not result_gate.allowed:
+        return (
+            {"error": "tool result withheld by security gate", "blocked": True},
+            "Result withheld by security gate",
+        )
+    return result, _summarize_result(result)
 
 
 # ─── Chat metrics (every chat IS a DAG run) ─────────────────────────────────
@@ -1822,9 +1994,25 @@ async def _run_chat_completion_inner(
 
     _t0 = _time.perf_counter()
 
+    # The inbound turn crosses the Warden input boundary before any model or
+    # tool dispatch (#315) — the same detector the route layer and the HITL
+    # door use. A refusal answers as an ordinary assistant message and never
+    # reaches the model or the tool loop.
+    gate_id = new_gate_id()
+    inbound = await gate_untrusted(
+        req.messages, surface="chat_turn", user_id=user_id, gate_id=gate_id
+    )
+    if not inbound.allowed:
+        from services.chat_gate import openai_refusal
+
+        return openai_refusal(inbound)
+
     s = get_settings()
     model = req.model or os.environ.get("CHAT_DEFAULT_MODEL") or s.chat_default_model
     llm = _llm or build_llm_port()
+    # Scope this turn: the agent-button tools tag the roster rows they write
+    # with the workspace the caller named (see `_chat_workspace_id`).
+    _chat_workspace_id.set(_request_workspace_id(req))
 
     # Build messages with PM system prompt
     messages: list[dict[str, Any]] = list(req.messages)
@@ -1867,11 +2055,7 @@ async def _run_chat_completion_inner(
                 args = {}
 
             logger.info("tool_call name=%s args=%s user=%s", name, args, user_id)
-            try:
-                result = await _execute_tool(name, args, user_id)
-            except Exception as tool_exc:
-                logger.warning("tool_execution_error name=%s error=%s", name, tool_exc)
-                result = {"error": f"Tool '{name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
+            result, _summary = await _gated_execute_tool(name, args, user_id, gate_id)
             logger.info(
                 "tool_result name=%s keys=%s",
                 name,
@@ -2062,6 +2246,9 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     """Streaming version — yields SSE events with real status updates."""
     s = get_settings()
     model = req.model or os.environ.get("CHAT_DEFAULT_MODEL") or s.chat_default_model
+    # Same workspace scoping as the non-streaming loop: the agent-button tools
+    # read this when they write roster rows.
+    _chat_workspace_id.set(_request_workspace_id(req))
     allowed_models = tuple(
         dict.fromkeys(
             candidate
@@ -2075,6 +2262,22 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     if not any(m.get("role") == "system" for m in messages):
         system_prompt = _build_system_prompt(user_id)
         messages.insert(0, {"role": "system", "content": system_prompt})
+
+    # Same boundary, same policy as the non-streaming loop (#315): a refused
+    # turn streams as an ordinary `done` answer and never reaches the model.
+    gate_id = new_gate_id()
+    inbound = await gate_untrusted(
+        req.messages, surface="chat_stream_turn", user_id=user_id, gate_id=gate_id
+    )
+    if not inbound.allowed:
+        yield {"type": "status", "message": "Checking input security…"}
+        yield {
+            "type": "done",
+            "content": refusal_content(inbound),
+            "model": "chat-gate",
+            "gate_reason": inbound.reason,
+        }
+        return
 
     for iteration in range(5):
         yield {
@@ -2201,8 +2404,12 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 metadata={"iteration": iteration, "tool_name": name},
                 allowed_tool_names=registered_tool_names,
             ):
-                result = await _execute_tool(name, args, user_id)
-            yield {"type": "tool_result", "tool": name, "summary": _summarize_result(result)}
+                # `_gated_execute_tool` scans the call, enforces the dispatch
+                # policy, executes, and scans the result at the tool_result
+                # boundary (#315) — indirect injection in a tool result is
+                # withheld before it reaches the next model turn.
+                result, summary = await _gated_execute_tool(name, args, user_id, gate_id)
+            yield {"type": "tool_result", "tool": name, "summary": summary}
 
             messages.append(
                 {

@@ -9,6 +9,7 @@ universal Event concerns and belong exclusively to :class:`EventEnvelope`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.events.envelope import EventEnvelope
@@ -84,6 +85,28 @@ class CanonicalEventSink(Protocol):
     async def emit(self, event: EventEnvelope) -> Any: ...
 
 
+def _recovery_event_id(event: RecoveryDispositionEvent) -> str:
+    """Return one stable canonical identity for a replayed recovery fact.
+
+    Recovery is deliberately at-least-once: process-loss reconciliation may
+    rediscover the same settled Attempt. Canonical event identity therefore
+    keys the logical disposition, not the delivery attempt, so replay cannot
+    allocate a second Workspace sequence or re-fire downstream consumers as a
+    new fact.
+    """
+    identity = "\x1f".join(
+        (
+            RECOVERY_EVENT_TYPE,
+            event.run_id,
+            event.node_run_id,
+            event.attempt_id,
+            event.disposition,
+            event.cancellation_cause,
+        )
+    )
+    return f"recovery-{sha256(identity.encode('utf-8')).hexdigest()}"
+
+
 class CanonicalRecoveryEventSink:
     """Adapt recovery-domain facts onto the canonical Event envelope."""
 
@@ -97,6 +120,7 @@ class CanonicalRecoveryEventSink:
             raise ValueError(f"recovery event references unknown Run {event.run_id!r}")
         envelope = EventEnvelope(
             type=RECOVERY_EVENT_TYPE,
+            event_id=_recovery_event_id(event),
             workspace_id=run.workspace_id,
             project_id=run.project_id,
             run_id=run.run_id,

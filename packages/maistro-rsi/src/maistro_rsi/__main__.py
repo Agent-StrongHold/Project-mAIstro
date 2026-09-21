@@ -186,6 +186,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "promotions pending human approve/deny (on by default).",
     )
     run.add_argument(
+        "--allow-test-inventory-shrink",
+        action="store_true",
+        help="Governance override (#306): let a candidate pass the protected-test-"
+        "inventory gate despite deleting/renaming/disabling tests. The shrink is "
+        "still logged (warning) and recorded on the promotion note — never "
+        "silent. A test-config edit that shrinks collection is NOT covered "
+        "(presumed hiding, always vetoed).",
+    )
+    run.add_argument(
         "--export-patches",
         default=None,
         help="After the run, export each promotion as a patch + manifest.json here "
@@ -753,6 +762,7 @@ def _run(args: argparse.Namespace) -> int:
         scout_fallback_models=scout_fallback_models,
         regression_judge=not args.no_regression_judge,
         promotion_review=not args.no_promotion_review,
+        allow_test_inventory_shrink=args.allow_test_inventory_shrink,
         export_patches=args.export_patches,
         report_every=args.report_every,
         report_dir=args.report_dir,

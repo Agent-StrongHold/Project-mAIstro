@@ -77,7 +77,8 @@ analogue in SkillOpt and none of which this review found wanting.
   its own frozen-target/optimizer-model split) and belongs in a separate spec
   if pursued — see Open questions.
 - Changes to `mutate_topology()`, `crossover()`, tournament selection, or the
-  `PopulationStore.promote()` approval gate.
+  promotion approval gate (`PopulationStore.promote_audited`'s
+  `approved_for_promotion` refusal).
 
 ## Decision
 

@@ -1,0 +1,58 @@
+{
+  "schema": "governed-magnitude/1",
+  "issue": 350,
+  "governance": "Independently governed expected magnitudes for episodic-memory dynamics (maistro-core: decay/reinforcement, tier bounds, consolidation). This file states the values the implementation must produce; it is NOT generated from or imported by production code, so a mutation of a production constant cannot silently rewrite its own expectation. Changing a value here is a memory-policy change: it needs the same review as changing the production constant, plus the cited SPEC/ADR updated in lockstep.",
+  "entries": {
+    "memory.decay_reinforce_constants": {
+      "value": {
+        "REINFORCE_DELTA": 0.05,
+        "CONTRADICT_DELTA": 0.05,
+        "DEFAULT_DECAY_RATE": 0.01,
+        "BOOST_RATE": 1.5,
+        "DROP_RATE": 0.5,
+        "SLOW_DECAY": 0.5,
+        "FAST_DECAY": 2.0
+      },
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/types/memory.py:50-58",
+      "provenance": "SPEC-240 (ADR-080 part A) states these exact constants: DEFAULT_DECAY_RATE 0.01 weight lost per hour at rate=1.0; thumbs-up boosts weight by REINFORCE_DELTA*BOOST_RATE and halves decay_rate (SLOW_DECAY); thumbs-down drops weight by REINFORCE_DELTA*DROP_RATE and doubles decay_rate (FAST_DECAY)",
+      "protects": "how fast memory forgets and how strongly feedback counts: one thumbs-up moves a weight +0.075 and one thumbs-down -0.025 (a 3:1 boost:drop ratio); doubling DEFAULT_DECAY_RATE makes an untouched memory hit its tier floor in hours instead of days; FAST_DECAY 2.0 -> 1.2 stops contradictions from ever accelerating forgetting",
+      "kills": "any magnitude mutation of the seven constants, verified against literal scenario values (up/down weight moves, decay_rate halves/doubles, 10-hour tick loss)"
+    },
+    "memory.promote_demote_thresholds": {
+      "value": {
+        "WISDOM_PROMOTE_THRESHOLD": 5,
+        "REGRET_DEMOTE_THRESHOLD": 5
+      },
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/types/memory.py:59-60",
+      "provenance": "SPEC-240: cumulative positive feedback (reinforcement_count >= 5) promotes to WISDOM; cumulative negative (contradiction_count >= 5) demotes to REGRET",
+      "protects": "how much consistent feedback a memory needs before it becomes structural wisdom (or regret) — the difference between a one-off opinion and earned doctrine; 5 -> 2 promotes noise, 5 -> 50 makes promotion unreachable in practice",
+      "kills": "any mutation, verified by literal boundary counts (4 ups do not promote, 5 do; 4 downs do not demote, 5 do)"
+    },
+    "memory.WEIGHT_BOUNDS": {
+      "value": {
+        "OBSERVATION": [0.1, 0.5],
+        "HYPOTHESIS": [0.2, 0.6],
+        "OPINION": [0.3, 0.8],
+        "LESSON": [0.5, 0.9],
+        "REGRET": [0.6, 1.0],
+        "AFFIRMATION": [0.6, 1.0],
+        "WISDOM": [0.9, 1.0]
+      },
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/types/memory.py:30-40",
+      "provenance": "ADR-016 7-tier bounds; SPEC-240 line 57: 'WISDOM/REGRET floors (0.9/0.6) are already structurally enforced by clamp_weight + WEIGHT_BOUNDS'; module docstring: 'REGRET weight cannot drop below 0.6 — structurally unforgettable'",
+      "protects": "regret is structurally unforgettable (floor 0.6) and wisdom never fades below 0.9 — a mutated REGRET floor of 0.06 lets the system forget its own mistakes; tier ordering must also stay nested so promotion never lowers a memory's guaranteed weight",
+      "kills": "any mutated bound, including a lowered REGRET/WISDOM floor that makes painful lessons decay away"
+    },
+    "consolidation.SIMILARITY_MERGE_THRESHOLD": {
+      "value": 0.85,
+      "mode": "exact",
+      "source": "packages/maistro-core/src/maistro/memory/episodic/consolidation.py:14",
+      "provenance": "SPEC-241 (ADR-080 part B): consolidate merges memories whose similarity_fn reaches the threshold; 0.85 is the shipped high-precision merge bar (implementation-tuned, no external number), so near-duplicates merge while merely-related memories stay distinct",
+      "protects": "what consolidation may absorb: halving to 0.4 merges loosely-related memories (destroying distinct content behind one survivor); raising to 0.99 lets true duplicates accumulate forever",
+      "kills": "any magnitude mutation, verified by the literal boundary (0.85 similarity merges, 0.84 does not)"
+    }
+  }
+}

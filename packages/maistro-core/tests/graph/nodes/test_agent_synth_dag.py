@@ -15,6 +15,18 @@ from maistro.graph.types import GraphConfig
 from maistro.security.dag_shape.proportionality import ProportionalityVerdict
 
 
+def _compat_sentinel():
+    """COMPATIBILITY construction (issue #1165): these tests exercise
+    synthesis, revision and dispatch mechanics, not permission-table misses.
+    The bare node's fail-closed default (deny without a governed permission
+    source) is pinned by test_bare_node_fails_closed_without_governed_permission
+    below; ADR-072726-0d6b documents the production semantics."""
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    return Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True)
+
+
 def _ctx(**overrides: Any) -> NodeContext:
     base = {"run_id": "r1", "dag_id": "d1", "node_id": "n1"}
     base.update(overrides)
@@ -75,12 +87,17 @@ def test_via_registry_default_constructible() -> None:
 
 
 async def test_default_rule_synthesizer_dry_run_approves() -> None:
-    node = AgentSynthDagNode()
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    node = AgentSynthDagNode(sentinel=_compat_sentinel(), run_store=InMemoryDurableRunStore())
     result = await node.run({"objective": "add a caching layer"}, _ctx())
     assert result.status == "completed"
     assert result.output.success is True
     assert result.output.synthesized_nodes == ["scout", "coder", "reviewer"]
-    assert "no llm_call provided" in result.output.run_output
+    # Role placeholders are not registered kinds, so the approved config is
+    # declined with the reason rather than dispatched.
+    assert result.output.dispatched is False
+    assert "not executed" in result.output.run_output
 
 
 async def test_depth_at_cap_refuses_without_synthesizing() -> None:
@@ -95,9 +112,15 @@ async def test_depth_at_cap_refuses_without_synthesizing() -> None:
 
 
 async def test_depth_below_cap_proceeds() -> None:
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
     synthesizer = _CountingSynthesizer([_result(["scout", "coder"])])
     node = AgentSynthDagNode(
-        synthesizer=synthesizer, proportionality_judge=_AlwaysJustified(), max_depth=3
+        sentinel=_compat_sentinel(),
+        synthesizer=synthesizer,
+        proportionality_judge=_AlwaysJustified(),
+        max_depth=3,
+        run_store=InMemoryDurableRunStore(),
     )
     ctx = _ctx()
     ctx.metadata["synth_depth"] = 2  # ORCHESTRATOR role at max_depth=3
@@ -115,7 +138,11 @@ async def test_hostile_rationale_blocks_without_revision_retry() -> None:
         ),
     )
     synthesizer = _CountingSynthesizer([hostile])
-    node = AgentSynthDagNode(synthesizer=synthesizer, proportionality_judge=_AlwaysJustified())
+    node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
+        synthesizer=synthesizer,
+        proportionality_judge=_AlwaysJustified(),
+    )
     result = await node.run({"objective": "do something"}, _ctx())
     assert result.output.success is False
     assert "blocked by security review" in result.output.error
@@ -123,11 +150,18 @@ async def test_hostile_rationale_blocks_without_revision_retry() -> None:
 
 
 async def test_needs_revision_retries_once_and_can_succeed() -> None:
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
     first = _result(["scout", "architect", "coder"])
     second = _result(["scout", "coder"])
     synthesizer = _CountingSynthesizer([first, second])
     judge = _RejectOnceThenApprove()
-    node = AgentSynthDagNode(synthesizer=synthesizer, proportionality_judge=judge)
+    node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
+        synthesizer=synthesizer,
+        proportionality_judge=judge,
+        run_store=InMemoryDurableRunStore(),
+    )
 
     result = await node.run({"objective": "implement a feature"}, _ctx())
 
@@ -140,7 +174,11 @@ async def test_needs_revision_retries_once_and_can_succeed() -> None:
 async def test_needs_revision_second_pass_still_rejected_reports_remaining_feedback() -> None:
     always_same = _result(["scout", "architect", "coder", "reviewer"])
     synthesizer = _CountingSynthesizer([always_same])
-    node = AgentSynthDagNode(synthesizer=synthesizer, proportionality_judge=_AlwaysRejects())
+    node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
+        synthesizer=synthesizer,
+        proportionality_judge=_AlwaysRejects(),
+    )
 
     result = await node.run({"objective": "trivial task"}, _ctx())
 
@@ -168,7 +206,9 @@ async def test_revision_note_fed_back_as_constraint() -> None:
             return _result(nodes)
 
     node = AgentSynthDagNode(
-        synthesizer=_RecordingSynthesizer(), proportionality_judge=_RejectOnceThenApprove()
+        sentinel=_compat_sentinel(),
+        synthesizer=_RecordingSynthesizer(),
+        proportionality_judge=_RejectOnceThenApprove(),
     )
     await node.run({"objective": "x", "constraints": ["must finish quickly"]}, _ctx())
 
@@ -179,27 +219,25 @@ async def test_revision_note_fed_back_as_constraint() -> None:
     assert any("drop" in c and "architect" in c for c in second_constraints)
 
 
-async def test_llm_call_without_a_store_declines_execution_honestly() -> None:
-    """The in-process GraphRun dispatch is retired (#520).
+async def test_a_node_built_without_a_store_fails_loudly_rather_than_reporting_success() -> None:
+    """The defect #1193 names, at the node.
 
-    An llm_call used to route the approved config into `run_graph`, executing
-    the whole subtree with no canonical Run/NodeRun/Attempt records. Without a
-    durable store the node now reports the synthesis and truthfully does not
-    execute, naming why.
+    This used to answer `success=True` with "execution skipped" / "not
+    executed": a Graph node reporting success for a sub-graph nothing ran,
+    which is exactly what the production resolver's generic construction
+    handed it (`run_store=None`). The in-process GraphRun path is retired
+    (#520) and there is no other way to run the work, so the *node* fails —
+    the NodeResult, not an output saying the dispatch was declined — naming
+    the authority it was built without.
     """
-
-    async def fake_llm_call(messages: list[dict[str, str]], **kwargs: Any) -> str:
-        return '{"summary": "ok", "subtasks": [], "estimated_files": []}'
-
-    node = AgentSynthDagNode(llm_call=fake_llm_call, proportionality_judge=_AlwaysJustified())
+    node = AgentSynthDagNode(sentinel=_compat_sentinel(), proportionality_judge=_AlwaysJustified())
     result = await node.run({"objective": "plan a small feature"}, _ctx())
-    assert result.status == "completed"
-    assert result.output.rationale
-    assert result.output.success is True
-    assert result.output.dispatched is False
-    assert result.output.child_run_id == ""
-    assert "not executed" in result.output.run_output
-    assert "durable run store" in result.output.run_output
+    assert result.status == "failed"
+    assert result.success is False
+    assert result.error_code == "NodeCompositionError"
+    assert result.error_message is not None
+    assert "graph_run_store" in result.error_message
+    assert result.output is None
 
 
 def test_agent_role_nodes_use_unit_cost_estimate() -> None:
@@ -258,6 +296,7 @@ async def test_registered_kind_config_dispatches_a_canonical_child_run() -> None
     store = InMemoryDurableRunStore()
     synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
         proportionality_judge=_AlwaysJustified(),
         run_store=store,
@@ -288,6 +327,7 @@ async def test_role_shaped_config_with_a_store_is_declined_with_the_reason() -> 
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
     )
@@ -306,6 +346,7 @@ async def test_unscoped_context_is_declined_rather_than_inventing_scope() -> Non
 
     synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
@@ -328,6 +369,7 @@ async def test_duplicate_kinds_are_declined_rather_than_dispatched() -> None:
         synthesized_kinds=[_ChildStep.kind, _ChildStep.kind],
     )
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=_CountingSynthesizer([synth]),
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
@@ -346,6 +388,7 @@ async def test_an_entry_outside_the_synthesized_nodes_is_declined() -> None:
     config = GraphConfig(nodes=[_ChildStep.kind], edges=[], entry="test.synthchild.elsewhere")
     synth = SynthResult(graph_config=config, rationale="fine", synthesized_kinds=[_ChildStep.kind])
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=_CountingSynthesizer([synth]),
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
@@ -392,6 +435,7 @@ async def test_kinds_outside_the_requested_allowlist_are_refused() -> None:
 
     synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
@@ -412,6 +456,7 @@ async def test_an_empty_allowlist_leaves_the_registry_as_the_only_bound() -> Non
 
     synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
@@ -444,6 +489,7 @@ async def test_an_entry_node_needing_inputs_is_declined_not_dispatched() -> None
         register_node(_NeedsNode)
 
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=_CountingSynthesizer([_result([_NeedsNode.kind])]),
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
@@ -468,6 +514,7 @@ async def test_the_child_is_built_with_the_callers_wired_resolver() -> None:
         return _ChildStep()
 
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=_CountingSynthesizer([_result([_ChildStep.kind])]),
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
@@ -489,6 +536,7 @@ async def test_the_child_does_not_share_the_parents_bounded_runtime() -> None:
 
     runtime = PythonExecutionRuntime(max_concurrency=1)
     node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
         synthesizer=_CountingSynthesizer([_result([_ChildStep.kind])]),
         proportionality_judge=_AlwaysJustified(),
         run_store=InMemoryDurableRunStore(),
@@ -501,3 +549,34 @@ async def test_the_child_does_not_share_the_parents_bounded_runtime() -> None:
     result = await asyncio.wait_for(node.run({"objective": "x"}, _scoped_ctx()), timeout=5)
 
     assert result.output.dispatched is True
+
+
+async def test_bare_node_fails_closed_without_governed_permission() -> None:
+    """Issue #1165 / ADR-072726-0d6b: a bare-constructed node carries no
+    governed permission source, so the shape review's Sentinel denies the
+    synth action instead of granting it by omission. The same objective
+    succeeds once an explicit decision exists (the compatibility sentinel the
+    mechanics tests inject) — proving the failure is the missing permission
+    decision, not the objective."""
+    synthesizer = _CountingSynthesizer([_result(["scout", "coder"])])
+    bare = AgentSynthDagNode(synthesizer=synthesizer)
+
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    result = await bare.run({"objective": "x"}, _ctx())
+
+    assert result.output.success is False
+    assert result.output.child_run_id == ""
+    assert synthesizer.calls == 2  # one original pass + the single bounded retry
+
+    granted = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
+        synthesizer=_CountingSynthesizer([_result(["scout", "coder"])]),
+        # Composition contract (#1193): the control must be buildable, i.e. it
+        # carries the stores the class declares as required. Dispatch is still
+        # declined here — this _ctx() is unscoped — so the assertion below
+        # isolates the permission decision exactly as before.
+        run_store=InMemoryDurableRunStore(),
+    )
+    ok = await granted.run({"objective": "x"}, _ctx())
+    assert ok.output.success is True

@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 from maistro.protocols.strikes import StrikeTracker
 from maistro.security.strikes import DISABLED, ELEVATED, LOCKED, InMemoryStrikeTracker
@@ -46,6 +46,7 @@ def _require_postgres() -> str:
         )
         raise RuntimeError(msg)
     pytest.skip("MAISTRO_TEST_DATABASE_URL is unset; the PostgreSQL leg needs a real server")
+    raise AssertionError("pytest.skip() should not return")
 
 
 @pytest.fixture(params=["memory", "postgres"])
@@ -102,8 +103,10 @@ class TestTheLadder:
         assert record.disabled is False
 
     async def test_the_third_strike_disables(self, tracker):
+        record = None
         for _ in range(3):
             record = await tracker.record_violation(user_id="u1", flags=("injection",))
+        assert record is not None
         assert record.strike_count == 3
         assert record.scrutiny_level == DISABLED
         assert record.disabled is True
@@ -204,3 +207,11 @@ class TestDurability:
         assert record is not None, "the lockout did not survive"
         assert record.is_locked is True
         assert record.strike_count == 2
+
+        unlocked = await reborn.unlock("u1")
+        assert unlocked is not None
+        assert unlocked.is_locked is False
+        after_recovery_restart = PgStrikeTracker(db_url=DATABASE_URL)
+        recovered = await after_recovery_restart.get("u1")
+        assert recovered is not None
+        assert recovered.is_locked is False

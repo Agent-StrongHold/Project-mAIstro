@@ -100,8 +100,16 @@ class PopulationStore:
             return None
         return max(scored, key=_fitness_key)
 
-    def promote(self, genome_id: str) -> PipelineGenome:
-        """Promote a tournament-winning genome to live traffic.
+    def _promote(self, genome_id: str) -> PipelineGenome:
+        """The raw promotion transition: approval gate + ``is_active`` flip.
+
+        Private (#342): ``promote_audited`` is the only sanctioned public
+        entrypoint, precisely so the active genome can never change without
+        a matching audit record. This method (and its ``_rollback`` twin) is
+        reachable only from inside the audited wrappers — including their
+        compensation paths — which is what makes "a state change without an
+        immutable audit record" impossible by construction rather than by
+        caller discipline.
 
         Fail closed: a genome that has not been explicitly marked
         ``approved_for_promotion`` (a human-approval gate — see
@@ -134,8 +142,10 @@ class PopulationStore:
                 return g
         return None
 
-    def rollback(self) -> PipelineGenome | None:
-        """Roll back the currently active (promoted) genome to its predecessor.
+    def _rollback(self) -> PipelineGenome | None:
+        """The raw rollback transition. Private for the same reason as
+        ``_promote`` (#342): ``rollback_audited`` is the only sanctioned
+        public entrypoint.
 
         Returns the genome that is active after rollback (the previous
         promotion target), or ``None`` if there was nothing to roll back to.
@@ -158,26 +168,27 @@ class PopulationStore:
         """Promote, with a mandatory audit record preceding and confirming
         the state change.
 
-        The "attempt" entry is recorded before ``promote()`` runs, so a
+        The "attempt" entry is recorded before the raw transition runs, so a
         failing sink there blocks the mutation entirely (fail-closed,
-        mirroring ``promote()``'s own approval-gate posture). The mutation
+        mirroring the transition's own approval-gate posture). The mutation
         itself can still complete before the "committed" entry is recorded
         — if logging *that* fails, the promotion is compensated (reverted
         to whichever genome was active before) and the exception re-raised,
         so the active genome can never observably change without a matching
         committed audit entry. There is no other entrypoint that can flip
-        ``is_active``/promote a genome with an audit guarantee — callers
-        must route every auditable promotion through this method, not
-        ``promote()`` directly.
+        ``is_active``/promote a genome with an audit guarantee — there is no
+        other entrypoint: the raw ``promote()``/``rollback()`` transitions
+        this wraps are private (#342), so an unaudited promotion cannot be
+        constructed, only forgotten.
         """
         await audit.record("promotion_attempt", genome_id)
         previous = self.get_active()
-        genome = self.promote(genome_id)
+        genome = self._promote(genome_id)
         try:
             await audit.record("promotion_committed", genome_id)
         except Exception:
             if previous is not None:
-                self.promote(previous.id)
+                self._promote(previous.id)
             else:
                 genome.is_active = False
                 self.add(genome)
@@ -198,7 +209,7 @@ class PopulationStore:
         """
         before = self.get_active()
         await audit.record("rollback_attempt", before.id if before is not None else "")
-        target = self.rollback()
+        target = self._rollback()
         try:
             await audit.record("rollback_committed", target.id if target is not None else "")
         except Exception:

@@ -27,18 +27,20 @@ from .continuation import (
     SqliteGraphContinuationStore,
 )
 from .execution_store import DurableRunExecutionStore
+from .fair_scan import ScanContinuation, cursor_time
 from .hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     HitlSettlementError,
     expire_hitl_pauses,
 )
+from .launch import durable_graph_launch_provenance
 from .legacy_archive import (
     ArchivedGraphRun,
     LegacyGraphRunArchive,
     LegacyRunNotResumable,
 )
-from .protocol import DurableRunStore
+from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .recovery import recover_queued_graph_runs, resume_due_graph_runs
 from .stores import InMemoryDurableRunStore, SqliteDurableRunStore
 from .types import DurableRunRecord
@@ -59,9 +61,13 @@ __all__ = [
     "LegacyGraphRunArchive",
     "LegacyRunNotResumable",
     "NodeResolver",
+    "RecoveryInfrastructureError",
     "RunStatus",
+    "ScanContinuation",
     "SqliteDurableRunStore",
     "SqliteGraphContinuationStore",
+    "cursor_time",
+    "durable_graph_launch_provenance",
     "expire_hitl_pauses",
     "recover_queued_graph_runs",
     "resume_due_graph_runs",

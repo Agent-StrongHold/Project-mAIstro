@@ -64,6 +64,26 @@ def test_json_round_trip() -> None:
     assert back.reward.mutation_score == 0.8
 
 
+def test_inventory_evidence_round_trips_and_stays_optional() -> None:
+    # #306: the promotion record carries the protected-inventory evidence
+    # (counts, capped deleted list, override flag). Older notes without it
+    # still parse, and the field stays None rather than fabricating a value.
+    note = _note(5, 0.5)
+    note.inventory = {
+        "base": 2,
+        "candidate": 1,
+        "deleted": ["tests/test_value.py::test_two"],
+        "deleted_count": 1,
+        "added": [],
+        "override": True,
+    }
+    back = TraceNote.from_json(note.to_json())
+    assert back.inventory == note.inventory
+
+    legacy = TraceNote.from_json(_note(1, 0.1).to_json())
+    assert legacy.inventory is None
+
+
 def test_from_json_tolerates_unknown_fields() -> None:
     # A note written by a newer schema must not crash an older reader.
     blob = '{"cycle": 1, "target": "x", "accepted": true, "kind": "doc", "model": "m",'

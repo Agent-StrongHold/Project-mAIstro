@@ -62,7 +62,7 @@ from contextlib import asynccontextmanager, contextmanager
 
 import httpx
 
-from maistro.security.outbound import guarded
+from maistro.security.outbound import guarded, guarded_sync
 
 #: The real class, captured before any test can rebind the name. Ten test
 #: modules replace `httpx.AsyncClient` with a double that answers requests
@@ -225,6 +225,24 @@ def _guard_built_transports(client: httpx.AsyncClient) -> httpx.AsyncClient:
     return client
 
 
+def _guard_built_sync_transports(client: httpx.Client) -> httpx.Client:
+    """`_guard_built_transports`, for the synchronous seam (#67).
+
+    Same construction-order reasoning, same proxy-mount reasoning, same two
+    private attributes — `httpx.Client` shares both with `AsyncClient`. The
+    constructor a sync caller uses is `sync_client`, below, and the module that
+    owns the async pool owning this one too is what keeps the census honest:
+    the one place a client construction happens is the one place the policy is
+    applied, so no other module can build itself an unguarded client.
+    """
+    client._transport = guarded_sync(client._transport)
+    client._mounts = {
+        pattern: None if mounted is None else guarded_sync(mounted)
+        for pattern, mounted in client._mounts.items()
+    }
+    return client
+
+
 def _current_loop() -> asyncio.AbstractEventLoop | None:
     try:
         return asyncio.get_running_loop()
@@ -292,6 +310,41 @@ def get_shared_client(
         if transport is not None:
             _transports[id(transport)] = transport
         return client
+
+
+def sync_client(
+    *,
+    timeout: httpx.Timeout | float | None = None,
+    base_url: str = "",
+    headers: Mapping[str, str] | None = None,
+    transport: httpx.BaseTransport | None = None,
+    follow_redirects: bool = False,
+    verify: bool = True,
+) -> httpx.Client:
+    """A synchronous client whose transports carry the outbound policy (#67).
+
+    Not pooled. The callers are short-lived CLI commands on their own thread,
+    and the pool is keyed by event loop by construction — a pooled sync client
+    would need its own cache for no reuse to measure. What a sync caller needs
+    from this module is not the pool but the invariant behind it: no client
+    this process builds goes anywhere the policy has not signed off on. A
+    client whose endpoint is operator-configured registers that origin itself
+    (`configure_outbound_policy`), exactly as `HomeAssistantIntegration` and
+    `OAuthService` do — this function deliberately does not auto-allow its own
+    `base_url`, because a caller-influenced base would then be an open door.
+
+    Close it when done; nothing here holds a reference.
+    """
+    return _guard_built_sync_transports(
+        httpx.Client(
+            base_url=base_url,
+            headers=dict(headers or {}),
+            timeout=timeout,
+            transport=transport,
+            follow_redirects=follow_redirects,
+            verify=verify,
+        )
+    )
 
 
 @asynccontextmanager

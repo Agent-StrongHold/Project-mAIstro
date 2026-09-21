@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable, ItemsView, Iterator, KeysView, ValuesView
 from typing import Any, Generic, TypeVar
 
@@ -69,9 +70,15 @@ class ModelStore(Generic[T]):
         return self._data[key]
 
     def __setitem__(self, key: str, value: T) -> None:
-        self._data[key] = value
         if self._persisted is not None:
+            # Acknowledged persistence BEFORE the in-memory mutation (#1238):
+            # PersistedStore.put blocks until the writer commits and raises on
+            # failure. A caller that receives the error must not find memory
+            # already showing a mutation the durable store refused — that
+            # mismatch is what made acknowledged writes vanish (or deleted
+            # records resurrect) after a restart.
             self._persisted.put(self._store_name, key, value)
+        self._data[key] = value
 
     def __contains__(self, key: str) -> bool:
         return key in self._data
@@ -123,6 +130,12 @@ class JsonStore:
         self._store_name = store_name
         self._data: dict[str, Any] = {}
         self._persisted = persisted
+        # Serializes `put_if_absent`'s check-then-insert (#1126). The durable
+        # half is already single-winner — SQLite's primary key decides. When no
+        # persisted backend is bound, this lock is the only guard preventing
+        # concurrent callers from observing the key as absent and spending it
+        # twice; it does not depend on CPython dict/GIL timing.
+        self._if_absent_lock = threading.Lock()
 
     def initialize(self) -> None:
         if self._persisted is None:
@@ -148,29 +161,39 @@ class JsonStore:
         return self._data[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
-        self._data[key] = value
         if self._persisted is not None:
+            # Persist before mutating memory (#1238) — see ModelStore.__setitem__.
             self._persisted.put_raw(self._store_name, key, json.dumps(value, default=str))
+        self._data[key] = value
 
     def put_if_absent(self, key: str, value: Any) -> bool:
-        """Insert once, using the durable backend's conflict decision when present."""
-        if key in self._data:
-            return False
-        document = json.dumps(value, default=str)
-        if self._persisted is not None:
-            put_once = getattr(self._persisted, "put_raw_if_absent", None)
-            if not callable(put_once):
-                raise RuntimeError("configured persistence cannot perform conflict-safe inserts")
-            if not bool(put_once(self._store_name, key, document)):
-                existing = self._persisted.get_raw(self._store_name, key)
-                if existing is None:
-                    raise RuntimeError("conflicting durable record could not be read")
-                # SECURITY-REVIEW: Durable JSON is untrusted at the
-                # deserialization boundary and is validated by the caller.
-                self._data[key] = json.loads(existing)
+        """Insert once, using the durable backend's conflict decision when present.
+
+        One critical section (#1126): the in-memory check-then-insert runs
+        under the store lock, so racing callers cannot all observe the key
+        absent — the same single-winner contract the durable half gets from
+        SQLite's ``ON CONFLICT DO NOTHING`` primary-key insert.
+        """
+        with self._if_absent_lock:
+            if key in self._data:
                 return False
-        self._data[key] = value
-        return True
+            document = json.dumps(value, default=str)
+            if self._persisted is not None:
+                put_once = getattr(self._persisted, "put_raw_if_absent", None)
+                if not callable(put_once):
+                    raise RuntimeError(
+                        "configured persistence cannot perform conflict-safe inserts"
+                    )
+                if not bool(put_once(self._store_name, key, document)):
+                    existing = self._persisted.get_raw(self._store_name, key)
+                    if existing is None:
+                        raise RuntimeError("conflicting durable record could not be read")
+                    # SECURITY-REVIEW: Durable JSON is untrusted at the
+                    # deserialization boundary and is validated by the caller.
+                    self._data[key] = json.loads(existing)
+                    return False
+            self._data[key] = value
+            return True
 
     def __contains__(self, key: str) -> bool:
         return key in self._data

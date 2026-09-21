@@ -19,12 +19,12 @@ absence of it). `run_test_selection()` produces the `TddEvidence` the loop fills
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.scorecard import MeasureKind, SignalScore
 
 _TEST_HINTS = ("test_", "_test.py", "/tests/", "conftest.py")
@@ -163,12 +163,17 @@ def run_test_selection(
 
     Used by the loop to build TddEvidence: run the candidate's changed tests
     against a baseline checkout (expect non-zero) and the candidate (expect zero).
+    Also the executor behind the mutation probe, so every pytest-over-candidate
+    run in the scorecard flows through here.
     """
-    # PYTHONDONTWRITEBYTECODE: red->green reverts a source file between two runs,
-    # often within the same second — a cached .pyc would make the baseline run
-    # reuse the candidate's bytecode and wrongly pass. -p no:cacheprovider drops
-    # pytest's own cache too.
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    # The candidate boundary env (#78): this executes the candidate's own
+    # tests — conftest, fixtures, declared plugins — so it must not inherit the
+    # harness's environment. PYTHONDONTWRITEBYTECODE rides in the boundary's
+    # base for the original reason: red->green reverts a source file between
+    # two runs, often within the same second, and a cached .pyc would make the
+    # baseline run reuse the candidate's bytecode and wrongly pass.
+    # -p no:cacheprovider drops pytest's own cache too.
+    env = candidate_env()
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *selectors],

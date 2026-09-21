@@ -26,6 +26,7 @@ import json
 import pathlib
 import sys
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -229,6 +230,28 @@ class TestAdminPolicySurface:
         assert "updated_by" in view
 
 
+def _park_in_store_window(monkeypatch: pytest.MonkeyPatch, seconds: float = 0.05) -> None:
+    """Hold `JsonStore.put_if_absent`'s check-to-write window open under racers.
+
+    `json.dumps` is the one step between the store's "key absent" check and
+    the write. Slowing it — for the redemption marker only, so the rest of
+    the request path runs at normal speed — parks every racing thread inside
+    that window with the GIL released, which makes the pre-#1126 unlocked
+    check-then-set fail deterministically instead of by timing luck: every
+    thread observes the redemption key absent before any of them writes it.
+    """
+    import services.model_store as model_store
+
+    real_dumps = json.dumps
+
+    def _parking_dumps(value: object, *args: object, **kwargs: object) -> str:
+        if isinstance(value, dict) and "redeemed_by_username" in value:
+            time.sleep(seconds)
+        return real_dumps(value, *args, **kwargs)  # type: ignore[return-value,arg-type]
+
+    monkeypatch.setattr(model_store.json, "dumps", _parking_dumps)
+
+
 class TestInvitations:
     """A valid invitation is the only anonymous path when the policy is closed."""
 
@@ -338,6 +361,89 @@ class TestInvitations:
 
         assert outcomes.count(200) == 1
         assert outcomes.count(403) == 3
+        assert len(stores.users) == before + 1
+
+    def test_concurrent_redeem_invitation_spends_the_token_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Eight threads, one token, the store window forced open: one winner (#1126).
+
+        `redeem_invitation` is the spend the register route relies on, and in
+        the in-memory Foundation fallback (`State unavailable — using
+        in-memory stores`) the durable half never runs: single use *is*
+        `JsonStore.put_if_absent`'s critical section. With every racer parked
+        between the "key absent" check and the write, exactly one insert may
+        succeed, and the surviving marker must be the winner's — not the last
+        writer's.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        import stores
+        from services import registration_policy as rp
+
+        token = rp.issue_invitation(actor="admin:test")["token"]
+        _park_in_store_window(monkeypatch)
+        barrier = threading.Barrier(8)
+
+        def redeem(i: int) -> bool:
+            barrier.wait(timeout=10)
+            return rp.redeem_invitation(token, username=f"racer-{i}")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outcomes = list(pool.map(redeem, range(8)))
+
+        assert outcomes.count(True) == 1
+        assert outcomes.count(False) == 7
+        winner = outcomes.index(True)
+        marker = stores.registration_invitations.get(f"used:{rp._token_id(token)}")
+        assert isinstance(marker, dict)
+        assert marker["redeemed_by_username"] == f"racer-{winner}"
+
+    def test_concurrent_register_race_through_the_open_window_mints_one_account(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The register route itself cannot spend one invitation twice (#1126).
+
+        The acceptance shape of #1126: in the in-memory Foundation fallback,
+        two requests that both clear `evaluate_registration` before either
+        redemption marker lands must still produce one account. Eight
+        requests run the real synchronous route in worker threads — the same
+        path FastAPI serves — with the store's check-to-write window held
+        open under them; one succeeds, seven are refused, one user exists.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        token = rp.issue_invitation(actor="admin:test")["token"]
+        _park_in_store_window(monkeypatch)
+        # A fresh register throttle: the module-level one is process-global,
+        # and failures earlier suites charged to the TestClient's bucket must
+        # not turn this race's losers into 429s.
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+
+        before = len(stores.users)
+        outcomes: list[int] = []
+        barrier = threading.Barrier(8)
+
+        def attempt(i: int) -> None:
+            client = TestClient(app)
+            barrier.wait(timeout=10)
+            r = client.post("/v1/auth/register", json=_register_body(f"forced-race-{i}", token))
+            outcomes.append(r.status_code)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(attempt, range(8)))
+
+        assert outcomes.count(200) == 1
+        assert outcomes.count(403) == 7
         assert len(stores.users) == before + 1
 
     def test_invitation_that_loses_the_redemption_race_is_refused(
@@ -484,7 +590,7 @@ class TestAdminSurfaceFailClosedOnLostWrites:
 
 
 class TestFirstSetupIsOneShot:
-    """Bootstrap: first owner via setup only, exactly once, retryably."""
+    """Bootstrap: first owner via setup only, exactly once, fail-closed."""
 
     @staticmethod
     def _fresh_instance(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -690,6 +796,38 @@ class TestSetupGuardEdges:
         assert "Setup already complete" in exc_info.value.detail
         assert len(stores.users) == 0
 
+    def test_setup_completed_between_check_and_lock_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Guard flipped mid-request: the deterministic shape of a failed
+        provisioner whose account writes landed after this request passed
+        the fast path. The in-lock re-check must refuse before the claim
+        insert — the whole reason the check is repeated under the same lock
+        as the claim is that passing it once, outside, proves nothing about
+        the state by the time the insert would run."""
+        import stores
+        from models.schemas import HiveUser
+        from routes import setup as setup_routes
+        from routes.setup import complete_setup
+        from services.model_store import ModelStore
+
+        guard_results = iter([False, True])
+        monkeypatch.setattr(
+            setup_routes,
+            "_is_setup_complete",
+            lambda: next(guard_results, True),
+        )
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 409
+        assert "Setup already complete" in exc_info.value.detail
+        # Refused before the claim insert, and before any account exists.
+        assert "__hive_setup_claim__" not in stores.sessions
+        assert len(stores.users) == 0
+
     def test_policy_closeout_that_cannot_persist_fails_setup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -711,7 +849,8 @@ class TestSetupGuardEdges:
 
         assert exc_info.value.status_code == 503
         assert "registration policy was not persisted" in str(exc_info.value.detail)
-        # The rollback released the claim: a failed first run stays retryable.
+        # This test uses an ephemeral store, so the failed run remains
+        # retryable; a persisted run retains the claim (covered below).
         assert "__hive_setup_claim__" not in stores.sessions
 
 
@@ -757,6 +896,17 @@ class TestPersistedSetupIsOneShot:
             # created: the record is present, so the answer is one-shot.
             assert setup_routes._is_setup_complete() is True
 
+            # A second State reader observes the marker before the original
+            # writer is closed. This catches a setup route that only enqueues
+            # the marker and reports success before it is durable.
+            reader_state = State(db_path=tmp_path / "one-shot.db")
+            reader_persisted = PersistedStore(reader_state)
+            reader_persisted.initialize()
+            reader_sessions = JsonStore("sessions", persisted=reader_persisted)
+            reader_sessions.initialize()
+            assert "__hive_setup__" in reader_sessions
+            reader_state.close()
+
             with pytest.raises(HTTPException) as exc_info:
                 setup_routes.complete_setup({**body, "admin_username": "second-run"})
             assert exc_info.value.status_code == 409
@@ -767,6 +917,192 @@ class TestPersistedSetupIsOneShot:
             stores.sessions = original_sessions
             state.flush()
             state.close()
+
+
+class TestLostSetupMarkerCannotReopenBootstrap:
+    def test_lost_marker_and_restart_cannot_take_over_persisted_accounts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """A marker fault after account writes must fail closed across restart."""
+        import stores
+        from models.schemas import HiveUser
+        from routes import setup as setup_routes
+        from services.model_store import JsonStore, ModelStore
+
+        from maistro.state import PersistedStore, State
+
+        original_users = stores.users
+        original_sessions = stores.sessions
+        state: State | None = None
+        restarted_state: State | None = None
+        try:
+            db = tmp_path / "lost-setup-marker.db"
+            state = State(db_path=db)
+            persisted = PersistedStore(state)
+            persisted.initialize()
+            first_users = ModelStore("users", HiveUser, persisted=persisted)
+            first_users.initialize()
+            first_sessions = JsonStore("sessions", persisted=persisted)
+            first_sessions.initialize()
+            stores.users = first_users
+            stores.sessions = first_sessions
+
+            real_put_raw = persisted.put_raw
+
+            def drop_setup_marker(store_name: str, key: str, document: str) -> None:
+                if store_name == "sessions" and key == "__hive_setup__":
+                    return
+                real_put_raw(store_name, key, document)
+
+            # Simulate the real failure shape: account writes are accepted and
+            # flushed, but the one-shot completion marker is silently lost.
+            monkeypatch.setattr(persisted, "put_raw", drop_setup_marker)
+            with pytest.raises(RuntimeError, match="not acknowledged"):
+                setup_routes.complete_setup(
+                    {
+                        "hardware_preset": "auto",
+                        "admin_username": "firstadmin",
+                        "admin_password": "s3cret-admin",
+                        "user_username": "firstuser",
+                        "user_password": "s3cret-user",
+                    }
+                )
+
+            state.close()
+            state = None
+
+            # Rehydrate the same stores as a fresh process would. The marker is
+            # absent, while both accounts and the retained claim are durable.
+            restarted_state = State(db_path=db)
+            restarted = PersistedStore(restarted_state)
+            restarted.initialize()
+            restarted_users = ModelStore("users", HiveUser, persisted=restarted)
+            restarted_users.initialize()
+            restarted_sessions = JsonStore("sessions", persisted=restarted)
+            restarted_sessions.initialize()
+            stores.users = restarted_users
+            stores.sessions = restarted_sessions
+
+            assert len(restarted_users) == 2
+            assert "__hive_setup__" not in restarted_sessions
+            assert "__hive_setup_claim__" in restarted_sessions
+
+            with pytest.raises(HTTPException) as exc_info:
+                setup_routes.complete_setup(
+                    {
+                        "hardware_preset": "auto",
+                        "admin_username": "attacker-admin",
+                        "admin_password": "s3cret-admin",
+                        "user_username": "attacker-user",
+                        "user_password": "s3cret-user",
+                    }
+                )
+            assert exc_info.value.status_code == 409
+            assert restarted_users["admin"].username == "firstadmin"
+        finally:
+            stores.users = original_users
+            stores.sessions = original_sessions
+            if state is not None:
+                state.close()
+            if restarted_state is not None:
+                restarted_state.close()
+
+
+class TestPersistedSetupMarkerBoundary:
+    def test_marker_flush_helper_uses_the_persisted_state_boundary(self) -> None:
+        """A persisted bootstrap marker must have an explicit drain boundary."""
+        import stores
+        from routes import setup as setup_routes
+
+        class _State:
+            def __init__(self) -> None:
+                self.timeouts: list[float] = []
+
+            def flush(self, *, timeout: float) -> None:
+                self.timeouts.append(timeout)
+
+        state = _State()
+
+        config = {"completed_at": "now", "admin_username": "admin"}
+
+        class _Persisted:
+            _state = state
+
+            @staticmethod
+            def get_raw(store_name: str, key: str) -> str:
+                assert (store_name, key) == ("sessions", "__hive_setup__")
+                return json.dumps(config, default=str)
+
+        class _Sessions:
+            _persisted = _Persisted()
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = _Sessions()._persisted
+        try:
+            setup_routes._flush_setup_marker(config)
+        finally:
+            stores.sessions._persisted = original_persisted
+
+        assert state.timeouts == [10.0]
+
+    def test_marker_flush_rejects_a_lost_write(self) -> None:
+        """A flush that leaves no marker must not acknowledge setup."""
+        import stores
+        from routes import setup as setup_routes
+
+        class _State:
+            def flush(self, *, timeout: float) -> None:
+                return None
+
+        class _Persisted:
+            _state = _State()
+
+            @staticmethod
+            def get_raw(store_name: str, key: str) -> None:
+                return None
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = _Persisted()
+        try:
+            with pytest.raises(RuntimeError, match="not acknowledged"):
+                setup_routes._flush_setup_marker({"admin_username": "admin"})
+        finally:
+            stores.sessions._persisted = original_persisted
+
+    def test_marker_flush_is_a_no_op_without_a_persisted_backend(self) -> None:
+        """No durable backend bound: the marker is memory-only and there is
+        nothing to acknowledge, so the helper must return without touching
+        an acknowledgement boundary that does not exist."""
+        import stores
+        from routes import setup as setup_routes
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = None
+        try:
+            setup_routes._flush_setup_marker({"admin_username": "admin"})
+        finally:
+            stores.sessions._persisted = original_persisted
+
+    def test_marker_flush_rejects_a_backend_without_a_boundary(self) -> None:
+        """A persisted backend that cannot drain-and-read-back must fail
+        loudly rather than be silently trusted to have landed the marker:
+        an acknowledgement boundary is the entire point of the helper."""
+        import stores
+        from routes import setup as setup_routes
+
+        class _State:
+            """PersistedState-shaped, but with no flush to call."""
+
+        class _Persisted:
+            _state = _State()  # no callable flush, no get_raw
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = _Persisted()
+        try:
+            with pytest.raises(RuntimeError, match="no acknowledgement boundary"):
+                setup_routes._flush_setup_marker({"admin_username": "admin"})
+        finally:
+            stores.sessions._persisted = original_persisted
 
 
 class TestCorruptedStateFailsClosed:

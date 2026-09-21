@@ -94,6 +94,21 @@ def _isolate_workspace_authority():
     reset_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _no_runtime_materialization_source():
+    """Each test starts with no runtime registered for definition
+    materialization (#840 Slice 4). The bridge's own start() registers the
+    runtime it built; tests that exercise runtime materialization register a
+    container-shaped fake explicitly. Resetting around every test keeps a
+    bridge-booted (or test-registered) runtime from leaking into a test that
+    expects the honest stub behavior -- stamped non-dispatchable, no Agent."""
+    import services.agent_materialization as materialization
+
+    materialization.reset_runtime_source()
+    yield
+    materialization.reset_runtime_source()
+
+
 def _set_canonical_workspace_members(workspace_id: str, roles: dict[str, str]) -> None:
     """Apply a legacy route-test member map through canonical Workspace authority."""
     from models.workspace import WorkspaceRole

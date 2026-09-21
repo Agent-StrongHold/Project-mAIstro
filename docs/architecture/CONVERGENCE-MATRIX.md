@@ -54,7 +54,7 @@ Three further rules follow from the columns' meanings. A `KEEP` column whose eve
 | Task queue and runner | `maistro.tasks` | Admission receipt | `tasks.queue` + `tasks.status` (second universal lifecycle) | `TaskRecord` upsert, best-effort (ADR-018) | `security.task_policy` (unreachable) |
 | A2A delegation | `maistro.a2a` | Child Run | `a2a.lifecycle` worker pool (third universal lifecycle) | — | `a2a.guest_peers` trust tiers |
 | Recurrence / schedules | `maistro.scheduling` | Trigger definition → Run | canonical: `evaluate()` decides, the Run owns execution | `scheduling.store` + `scheduling.pg_store` (PostgreSQL, SQLite, in-memory) | schedule's `actor_principal_id` |
-| Repo tooling | `scripts` | CI gate / ratchet ledger | the workflow step that runs it | `quality/*.json` ledgers | — |
+| Repo tooling | `scripts`, `_vulture_whitelist` | CI gate / ratchet ledger | the workflow step that runs it | `quality/*.json` ledgers | — |
 | Planning and wave orchestration | `maistro.orchestrator` | Graph synthesis | wave state in `orchestrator.waves` | — | — |
 | Builders pipeline | `maistro.builders` | Graph of spec→tests→code→review Nodes | `builders.runtime` (unreachable) + `builders.graph_executor` (unreachable; fourth universal lifecycle) | `builders.logger` (unreachable) | — |
 | Workspace / Project scope | `maistro.workspaces`, `maistro.projects` | Workspace, Project — the scope roots | n/a (scope, not execution) | `projects.store`, `projects.scope_store`, `workspaces.store` | `projects.authorization` |
@@ -164,10 +164,10 @@ A share rather than the `19/62` this column used to carry, because the denominat
 | Test scaffolding | test suites only | `all` | LIBRARY — unreachable by construction | ADR-065, ADR-032 | used by checked test suites | — |
 | maistro-server HTTP app | `maistro_server.main` | `none` | MIGRATE — task queue is receipt; chat front door now uses Container/Conduit | ADR-076, ADR-096, ADR-082426-2192 | `/v1/tasks` and `/v1/chat/completions` both yield canonical Run identity | #43, #234 |
 | Agent Conductor HTTP surface | `main` (uvicorn) | `few` | MIGRATE — product surface must read canonical stores | ADR-096, ADR-094 | Run views rendered from canonical stores and surviving restart | #65, #53 |
-| Agent Conductor services | route registration + background loops | `some` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
+| Agent Conductor services | route registration + background loops | `few` | MIGRATE — `dag_run_store`, scheduler and graph/product seams still duplicate canonical responsibilities | ADR-096 | DAG/scheduler/chat paths use canonical Runs and projections only | #53, #35, #231 |
 | Canvas ability | `maistro_canvas.canvas.routes`, `routes.canvas`, `maistro-canvas-frontend-server` | `some` | MIGRATE — pipeline stages become NodeRuns | ADR-045, ADR-040, ADR-067 | canvas stages visible as NodeRuns with retries as Attempts | #52 |
 | Open Design integration | `routes.design`, `services.design_service` | `few` | MIGRATE — renderers become Providers | ADR-061, ADR-100 | render effect recorded as Invocation | #52, #55 |
-| Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `few` | MIGRATE — cycle is Run, battle is NodeRun | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs | #51 |
+| Evolve tournament optimizer | `routes.evolution`, `services.evolution` | `few` | MIGRATE — cycle is canonical Run, battle is NodeRun; status/cycle admission is disabled or degraded without the engine Container | ADR-088, ADR-070126-6386, SPEC-070126-9d37 | tournament history reproducible from canonical Runs; `/status` distinguishes executable/degraded/unavailable and `/cycle` preserves terminal Run identity | #51, #465 |
 | RSI autorun | `maistro_rsi.cli`, `routes.rsi` | `few` | MIGRATE — cycles become Runs over authorized work source | ADR-088 | every RSI cycle has Run provenance; backlog through adapter | #50 |
 | Turing self-model | `maistro_turing.runtime`, turing backend `main` | `none` | MIGRATE — reachable paths only; cognition remains gated | ADR-081426-fb9f, ADR-070426-9f47 | reachable Turing execution carries Run/Invocation correlation | #54 |
 | ADR/spec registry CLI | `maistro_registry.cli` | `none` | KEEP — lifecycle relationships are now prospectively validated | ADR-031, ADR-062026-9b30, ADR-097 | strict registry validation + #239 lifecycle-evidence cases | #30, #239 |
@@ -187,5 +187,5 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - `quality/reachability-baseline.json` — ratcheted unreachable set.
 - `quality/reachability-dispositions.json` — CONNECT/LIBRARY/RETIRE classification per unreachable module (#33).
 - `quality/ac-state.json` — measured acceptance evidence and design coverage (#31/#166).
-- `quality/execution-lifecycles.json` — classified work-state enums (#36).
+- `quality/execution-lifecycles.json` — classified work-state Enum and status-shaped Literal vocabularies (#36/#1136).
 - `docs/quality-gates.md` — enforcement boundaries and known limitations.

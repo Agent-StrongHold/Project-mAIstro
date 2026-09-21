@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import UTC, datetime
@@ -9,6 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from maistro.security.passwords import (  # pyright: ignore[reportMissingImports]
+    validate_password as validate_canonical_password,
+)
 
 router = APIRouter(tags=["setup"])
 
@@ -50,7 +56,7 @@ def _init_vault_best_effort() -> bool:
     a loud log line and `vault_initialized: false` in the setup config, not a
     failed setup."""
     try:
-        from maistro.vault import init_vault
+        from maistro.vault import init_vault  # pyright: ignore[reportMissingImports]
 
         vault_path, identity_path = _vault_paths()
         init_vault(vault_path, identity_path)
@@ -68,7 +74,7 @@ def _persist_identity_root(mnemonic_words: list[str]) -> bool:
     (ADR-021 signing), unless the operator re-enters the once-shown mnemonic.
     """
     try:
-        from maistro.vault import Vault, init_vault
+        from maistro.vault import Vault, init_vault  # pyright: ignore[reportMissingImports]
 
         vault_path, identity_path = _vault_paths()
         init_vault(vault_path, identity_path)
@@ -90,24 +96,53 @@ def _get_kv() -> Any:
     return stores.sessions if stores.sessions._persisted else None
 
 
+def _flush_setup_marker(config: dict[str, Any]) -> None:
+    """Drain and read back the setup marker before reporting success.
+
+    ``JsonStore.__setitem__`` enqueues writes, so the in-memory marker can
+    appear complete while a crash still loses it. That would let a restart
+    retry setup and overwrite the first owner's credentials. A flush alone is
+    not an acknowledgement because the writer can fail or time out silently;
+    the marker must be read back from the authoritative store as well.
+    """
+    import stores
+
+    persisted = getattr(stores.sessions, "_persisted", None)
+    if persisted is None:
+        return
+    state = getattr(persisted, "_state", None)
+    flush = getattr(state, "flush", None)
+    read_raw = getattr(persisted, "get_raw", None)
+    if not callable(flush) or not callable(read_raw):
+        raise RuntimeError("persisted setup marker has no acknowledgement boundary")
+    flush(timeout=10.0)
+    expected = json.dumps(config, default=str)
+    if read_raw("sessions", _SETUP_KEY) != expected:
+        raise RuntimeError("persisted setup marker was not acknowledged")
+
+
 def _is_setup_complete() -> bool:
     """True once first-run setup has begun or finished and cannot re-run.
 
     In a persisted deployment the signals are the records setup itself writes:
     the claim (a first-run attempt is underway — a concurrent second attempt
-    must not also mint accounts) and the config record (setup finished). Users
-    alone do not count here, so the pre-existing retry-after-failure contract
-    holds: an attempt that died between creating accounts and persisting its
-    config left the instance retryable, exactly as before (#334's loud-failure
-    pattern). An unpersisted run has no durable marker to read, so any account
-    at all is the only "setup happened" signal this process can see — and
-    notably it is *not* the signal the register route consults; that inversion
-    is what #313 fixes.
+    must not also mint accounts) and the config record (setup finished). Any
+    account is also terminal evidence: if account writes landed but a later
+    setup marker write was lost, allowing an unauthenticated retry would let an
+    attacker replace the first credentials after restart. An unpersisted run
+    has no durable marker to read, so any account at all is likewise the only
+    "setup happened" signal this process can see. This is deliberately
+    fail-closed after partial initialization; a failed attempt with no account
+    remains retryable.
     """
     import stores
 
     if _get_kv() is not None:
-        return _SETUP_KEY in stores.sessions or _SETUP_CLAIM_KEY in stores.sessions
+        return (
+            _SETUP_KEY in stores.sessions
+            or _SETUP_CLAIM_KEY in stores.sessions
+            or len(stores.users) > 0
+        )
     if _SETUP_KEY in stores.sessions or _SETUP_CLAIM_KEY in stores.sessions:
         return True
     return len(stores.users) > 0
@@ -133,8 +168,51 @@ def setup_status() -> dict[str, Any]:
     }
 
 
-class SetupCompleteBody:
-    pass
+class SetupCompleteBody(BaseModel):
+    """Validated payload for the one-shot first-run provisioning endpoint."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    hardware_preset: str
+    admin_username: str = "admin"
+    admin_password: str
+    user_username: str = "user"
+    user_password: str
+    optional_modules: list[str] = Field(default_factory=list)
+    conductor_name: str = "Hive Conductor"
+    default_model: str | None = None
+
+    @field_validator("hardware_preset")
+    @classmethod
+    def validate_hardware_preset(cls, value: str) -> str:
+        if not value:
+            raise ValueError("hardware_preset required")
+        return value
+
+    @field_validator("admin_password", "user_password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return validate_canonical_password(value)
+
+
+def _validate_direct_setup_body(body: object) -> SetupCompleteBody:
+    """Validate direct Python calls too; HTTP calls are validated by FastAPI.
+
+    A few internal callers invoke the route function directly in tests. Keep
+    those calls on exactly the same Pydantic path instead of allowing a dict
+    compatibility path to bypass credential validation.
+    """
+    try:
+        return SetupCompleteBody.model_validate(body)
+    except ValidationError as exc:
+        missing = [
+            str(error["loc"][0])
+            for error in exc.errors()
+            if error.get("type") == "missing" and error.get("loc")
+        ]
+        if len(missing) == 1:
+            raise HTTPException(status_code=422, detail=f"{missing[0]} required") from exc
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
 def _maybe_generate_identity(
@@ -156,7 +234,7 @@ def _maybe_generate_identity(
     if "crypto_identity" not in modules:
         return None, None, False
     try:
-        from maistro.identity import ConductorSeed
+        from maistro.identity import ConductorSeed  # pyright: ignore[reportMissingImports]
 
         # The identity extra can also raise lazily at generate() time (the
         # module imports without bip_utils and defers the error) — keep
@@ -181,7 +259,7 @@ def _maybe_generate_identity(
 
 
 def _provision_first_run(
-    body: dict[str, Any],
+    body: SetupCompleteBody,
     *,
     hardware_preset: str,
     admin_username: str,
@@ -205,11 +283,11 @@ def _provision_first_run(
     """
     import stores
 
-    from maistro.security.passwords import hash_password
+    from maistro.security.passwords import hash_password  # pyright: ignore[reportMissingImports]
 
     now_ts = datetime.now(UTC)
 
-    modules = body.get("optional_modules", [])
+    modules = body.optional_modules
     vault_initialized = _init_vault_best_effort()
     user_did, config_mnemonic, identity_persisted = _maybe_generate_identity(modules)
 
@@ -241,11 +319,11 @@ def _provision_first_run(
     # cerebras- alias regardless of Setup choice).
     from config import get_settings
 
-    chosen_default_model = body.get("default_model") or get_settings().chat_default_model
+    chosen_default_model = body.default_model or get_settings().chat_default_model
     config = {
         "hardware_preset": hardware_preset,
         "optional_modules": modules,
-        "conductor_name": body.get("conductor_name", "Hive Conductor"),
+        "conductor_name": body.conductor_name,
         "default_model": chosen_default_model,
         "admin_username": admin_username,
         "user_username": user_username,
@@ -311,6 +389,9 @@ def _provision_first_run(
     kv = _get_kv()
     if kv is not None:
         kv[_SETUP_KEY] = config
+        # The marker is the durable one-shot boundary for persisted setup. Do
+        # not return success while this write is still only queued.
+        _flush_setup_marker(config)
     else:
         # Unpersisted run: the claim was only ever an in-flight lock —
         # "setup happened" in this mode is signalled by the accounts it
@@ -324,8 +405,14 @@ def _provision_first_run(
 
 
 @router.post("/complete")
-def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
+def complete_setup(body: SetupCompleteBody) -> dict[str, Any]:
     import stores
+
+    # Direct Python callers do not pass through FastAPI's model parsing. Keep
+    # those callers on the same validated model path rather than creating a
+    # second, weaker dictionary contract.
+    if isinstance(body, dict):
+        body = _validate_direct_setup_body(body)
 
     # /v1/setup/ is a PUBLIC (unauthenticated) prefix. Setup must be a one-shot
     # first-run operation — once complete, re-running it would let any
@@ -337,24 +424,28 @@ def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
             detail="Setup already complete. This endpoint is disabled after first-run provisioning.",
         )
 
-    hardware_preset = body.get("hardware_preset")
-    admin_username = body.get("admin_username", "admin")
-    admin_password = body.get("admin_password")
-    user_username = body.get("user_username", "user")
-    user_password = body.get("user_password")
-
-    if not hardware_preset:
-        raise HTTPException(status_code=422, detail="hardware_preset required")
-    if not admin_password:
-        raise HTTPException(status_code=422, detail="admin_password required")
-    if not user_password:
-        raise HTTPException(status_code=422, detail="user_password required")
+    hardware_preset = body.hardware_preset
+    admin_username = body.admin_username
+    admin_password = body.admin_password
+    user_username = body.user_username
+    user_password = body.user_password
 
     # Claim first-run BEFORE any account exists (#313). The insert is
     # conflict-safe at the durable layer, so two concurrent first-user
     # attempts produce exactly one owner: the loser is refused here, before
     # it can write an admin credential over the winner's.
     with _SETUP_LOCK:
+        # The first check is a fast path. Re-check while holding the same lock
+        # as the claim insert because a failed provisioner may have persisted
+        # accounts after this request passed the fast path.
+        if _is_setup_complete():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Setup already complete. This endpoint is disabled after "
+                    "first-run provisioning."
+                ),
+            )
         claimed = stores.sessions.put_if_absent(
             _SETUP_CLAIM_KEY, {"claimed_at": datetime.now(UTC).isoformat()}
         )
@@ -377,17 +468,21 @@ def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
             user_password=user_password,
         )
     except BaseException:
-        # Release the claim so a failed first run stays retryable: the failure
-        # modes inside (identity runtime missing, settings or policy not
-        # persisted) are operator-fixable, and a claimed-but-abandoned instance
-        # would lock bootstrap behind manual database surgery. The handler
-        # re-raises everything it catches — it is a rollback, not a swallow.
-        # The delete is enqueued, so a crash in the instant between failure
-        # and flush can resurrect the claim — fail-closed (setup stays locked,
-        # registration stays closed) rather than fail-open, which is the only
-        # direction this endpoint is allowed to fail in.
+        # A failure before any account exists remains retryable. In an
+        # unpersisted run, account state disappears with the process, so the
+        # claim can also be released; the in-memory account check still blocks
+        # a same-process overwrite. Once account writes have landed in a
+        # persisted store, retain the claim: releasing it would let a restart
+        # retry the public endpoint after a lost setup marker and overwrite the
+        # first owner's credentials. The handler re-raises everything it
+        # catches — this is rollback only where it cannot expose a takeover.
         with _SETUP_LOCK:
-            stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+            if len(stores.users) == 0 or _get_kv() is None:
+                stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+            else:
+                logger.error(
+                    "setup failed after account creation; retaining the durable setup claim"
+                )
         raise
 
     result = {"setup_complete": True, "config": config}
@@ -401,7 +496,7 @@ def complete_setup(body: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/presets")
 def list_presets() -> dict[str, Any]:
-    from maistro.config.presets import HARDWARE_PRESETS
+    from maistro.config.presets import HARDWARE_PRESETS  # pyright: ignore[reportMissingImports]
 
     return {
         "kind": "hardware_presets",
@@ -425,7 +520,7 @@ def list_presets() -> dict[str, Any]:
 
 @router.get("/presets/{preset_name}")
 def get_preset(preset_name: str) -> dict[str, Any]:
-    from maistro.config.presets import HARDWARE_PRESETS
+    from maistro.config.presets import HARDWARE_PRESETS  # pyright: ignore[reportMissingImports]
 
     p = HARDWARE_PRESETS.get(preset_name)
     if p is None:
@@ -435,7 +530,7 @@ def get_preset(preset_name: str) -> dict[str, Any]:
 
 @router.post("/presets/resolve")
 def resolve_preset_auto(body: dict[str, Any] | None = None) -> dict[str, Any]:
-    from maistro.config.presets import resolve_preset
+    from maistro.config.presets import resolve_preset  # pyright: ignore[reportMissingImports]
 
     body = body or {}
     name = body.get("name", "auto")

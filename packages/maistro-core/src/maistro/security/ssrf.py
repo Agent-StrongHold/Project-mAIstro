@@ -18,11 +18,11 @@ Two stages, and the order matters:
    lookup. This is a whitelist, not a blocklist: an unrecognised scheme is
    refused rather than passed through.
 2. **Resolution** — resolve the host and refuse if *any* returned address is
-   private, loopback, link-local, reserved, multicast or unspecified. This is
-   the stage that does the real work, because it normalises every way of
-   spelling an address: `2852039166`, `0x7f000001`, `127.1`,
-   `[::ffff:169.254.169.254]` and `metadata.google.internal` all arrive here as
-   the address they denote.
+   private, loopback, link-local, reserved, multicast, unspecified, or in the
+   RFC 6598 shared (CGNAT) range. This is the stage that does the real work,
+   because it normalises every way of spelling an address: `2852039166`,
+   `0x7f000001`, `127.1`, `[::ffff:169.254.169.254]` and
+   `metadata.google.internal` all arrive here as the address they denote.
 
 Stage 1 also refuses a host that *names* an internal endpoint — `localhost`,
 `metadata.google.internal`, in-cluster Kubernetes DNS — because whether those
@@ -100,6 +100,39 @@ _BLOCKED_HOSTNAME_SUFFIXES = (
     ".svc",
 )
 
+#: Address ranges the stdlib predicates do not refuse, and that this guard
+#: must (#67).
+#:
+#: `IPv4Address.is_private` is derived from the IANA special-purpose registry's
+#: *private* fragment, and the registry files `100.64.0.0/10` under a different
+#: name — shared address space — so no Python release this repo runs on calls an
+#: RFC 6598 address private, loopback, link-local, reserved or anything else
+#: this guard can hang a refusal on. Measured on 3.12: every predicate is False
+#: for `100.64.0.1`, and the same is true upstream. From behind this guard an
+#: RFC 6598 address is exactly as internal as an RFC 1918 one: carriers and
+#: enterprise networks run it as their own NAT and management plane, so an SSRF
+#: probe that lands there reaches infrastructure the public internet is not
+#: supposed to see.
+#:
+#: The other translation/embedding spellings are handled by normalization
+#: inside `_is_blocked_address` rather than by trusting the stdlib predicates:
+#: an IPv4-mapped IPv6 address is converted to the IPv4 address it embeds
+#: **before** the `_BLOCKED_NETWORKS` loop and before the predicates run, so a
+#: mapped spelling cannot slip past an IPv4-only range — which is exactly the
+#: bypass #67 was reopened over: `::ffff:100.64.0.1` passed every predicate
+#: (the embedded CGNAT address is not private by the stdlib's reading) and the
+#: IPv4 network membership check, which is version-checked to `False` for an
+#: IPv6 address. 6to4 (`2002:7f00:1::`) and NAT64 (`64:ff9b::7f00:1`) have no
+#: IPv4 form to normalize to and remain refused by the stdlib predicates
+#: (`is_private` / `is_reserved` respectively, pinned by tests so a Python
+#: upgrade that moves either is loud). A range belongs below only when a
+#: supported Python lets it through **in both spellings** — the mapped form is
+#: covered by construction the moment it is listed, because normalization
+#: happens before the loop that reads this tuple.
+_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 shared address space (CGNAT)
+)
+
 
 #: Why a URL was refused, as a value a caller can branch on (#368).
 #:
@@ -143,10 +176,31 @@ class SSRFBlockedError(ToolError):
 def _is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Whether `addr` names something outside the public internet.
 
+    An IPv4-mapped IPv6 address is first normalized to the IPv4 address it
+    embeds, and every rule below then runs on that address. This is the one
+    point both policy checks converge on — the `_BLOCKED_NETWORKS` loop and
+    the stdlib predicates — so normalizing here is normalizing for all of
+    them, and no other spelling of a target can reach either check unnormalized.
+
+    Why the predicates cannot be left to see through the mapping themselves:
+    they do for *some* embeddings on *some* Pythons — 3.12's `is_private` and
+    `is_loopback` inspect the embedded address, which is why `::ffff:127.0.0.1`
+    was refused all along — but not for all of them: `::ffff:100.64.0.1` passed
+    every predicate (the stdlib does not file RFC 6598 under *private*, which
+    is the entire reason `_BLOCKED_NETWORKS` exists), and `IPv4Network.__contains__`
+    answers `False` for an IPv6 address of any spelling rather than raising.
+    Relying on which embeddings the predicates happen to unwrap is how the
+    mapped-CGNAT bypass shipped (#67, reopened).
+
     `is_unspecified` is listed explicitly. `0.0.0.0` is not `is_reserved`, and
     on many stacks connecting to it reaches localhost — so leaving it to the
     other predicates would let the most quietly dangerous address through.
+    `_BLOCKED_NETWORKS` covers the ranges no predicate names; see its comment.
     """
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    if any(addr in network for network in _BLOCKED_NETWORKS):
+        return True
     return bool(
         addr.is_private
         or addr.is_loopback

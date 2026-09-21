@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -266,3 +268,126 @@ def test_json_store_put_if_absent_loads_durable_winner_on_conflict() -> None:
     s = JsonStore("js", persisted=p)
     with pytest.raises(RuntimeError, match="conflicting durable record"):
         s.put_if_absent("k", {"owner": "first"})
+
+
+class _SlowToSerialize:
+    """str() parks inside the check-to-write window `put_if_absent` opens.
+
+    `json.dumps(value, default=str)` calls `str()` on non-serializable
+    payloads, and `time.sleep` releases the GIL — so a racing thread holding
+    nothing (the pre-#1126 shape) sits between "key absent" and "key
+    written" long enough for every other thread to pass the same check.
+    """
+
+    def __str__(self) -> str:
+        time.sleep(0.05)
+        return "slow"
+
+
+def test_json_store_put_if_absent_is_atomic_under_in_memory_contention() -> None:
+    """One critical section, not GIL luck: exactly one racing insert wins (#1126).
+
+    Eight threads released together all claim the same key. The loser's
+    `put_if_absent` must return False without overwriting the winner's value
+    — the in-memory half of the contract the SQLite `ON CONFLICT DO NOTHING`
+    insert has always provided, and what invitation redemption (#1126)
+    depends on in the Foundation fallback where `persisted is None`.
+    """
+    from services.model_store import JsonStore
+
+    s = JsonStore("js")
+    outcomes: list[tuple[int, bool]] = []
+    barrier = threading.Barrier(8)
+
+    def claim(i: int) -> None:
+        barrier.wait()
+        outcomes.append(
+            (i, s.put_if_absent("claim", {"owner": f"t{i}", "payload": _SlowToSerialize()}))
+        )
+
+    threads = [threading.Thread(target=claim, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    winners = [i for i, won in outcomes if won]
+    assert len(winners) == 1, f"exactly one claim must win, got {len(winners)} of 8"
+    # Not just one True: the first writer's record is what survives — the
+    # losers must not have overwritten it on their way to returning False.
+    assert s["claim"]["owner"] == f"t{winners[0]}"
+
+
+# --- Refused writes stay coherent (#1238) -------------------------------
+
+
+class _FailingPersisted:
+    """Persisted double whose writes raise, as acknowledged PersistedStore
+    writes now do when the writer thread cannot commit (#1238)."""
+
+    def __init__(self) -> None:
+        self.put_calls: list[tuple[str, str, Any]] = []
+        self.put_raw_calls: list[tuple[str, str, str]] = []
+        self.delete_calls: list[tuple[str, str]] = []
+
+    def list_all(self, store_name: str, model_class: Any) -> list[Any]:
+        return []
+
+    def list_all_raw(self, store_name: str) -> list[tuple[str, str]]:
+        return []
+
+    def put(self, store_name: str, key: str, value: Any) -> None:
+        self.put_calls.append((store_name, key, value))
+        raise RuntimeError("simulated commit failure")
+
+    def put_raw(self, store_name: str, key: str, raw: str) -> None:
+        self.put_raw_calls.append((store_name, key, raw))
+        raise RuntimeError("simulated commit failure")
+
+    def delete(self, store_name: str, key: str) -> None:
+        self.delete_calls.append((store_name, key))
+        raise RuntimeError("simulated commit failure")
+
+
+def test_model_store_setitem_refused_write_leaves_memory_unchanged() -> None:
+    """A put that raised must not leave memory showing state disk refused (#1238).
+
+    Pre-fix the mutation happened in memory first and the (silently swallowed)
+    persistence failure followed, so a 200-response route could serve a value
+    that vanished — or a deleted record resurrected — after restart.
+    """
+    from services.model_store import ModelStore
+
+    p = _FailingPersisted()
+    s = ModelStore("ms", _Model, persisted=p)
+    with pytest.raises(RuntimeError, match="simulated commit failure"):
+        s["k"] = _Model(id="k", value=1)
+    assert "k" not in s
+    assert len(s) == 0
+    assert p.put_calls and p.put_calls[0][0] == "ms"
+
+
+def test_json_store_setitem_refused_write_leaves_memory_unchanged() -> None:
+    from services.model_store import JsonStore
+
+    p = _FailingPersisted()
+    s = JsonStore("js", persisted=p)
+    with pytest.raises(RuntimeError, match="simulated commit failure"):
+        s["k"] = {"a": 1}
+    assert "k" not in s
+    assert len(s) == 0
+    assert p.put_raw_calls
+
+
+def test_model_store_pop_refused_delete_keeps_record_addressable() -> None:
+    """A delete that raised leaves the parent in memory, addressable/retryable."""
+    from services.model_store import ModelStore
+
+    p = _FailingPersisted()
+    s = ModelStore("ms", _Model, persisted=p)
+    s._data["k"] = _Model(id="k", value=1)
+    with pytest.raises(RuntimeError, match="simulated commit failure"):
+        s.pop("k")
+    assert "k" in s
+    assert s["k"].value == 1
+    assert p.delete_calls == [("ms", "k")]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import time
 
 import pytest
@@ -12,6 +13,7 @@ pytest.importorskip("nacl")
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+import maistro.identity.lifecycle as lifecycle_module
 from maistro.identity import ConductorSeed
 from maistro.identity.lifecycle import (
     CapabilityToken,
@@ -273,6 +275,32 @@ async def test_recover_with_wrong_seed_raises(env: Env) -> None:
         await env.recover("agent-a", b"\x02" * 32)
 
 
+async def test_recover_uses_constant_time_seed_comparison(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed = b"\x01" * 32
+    await env.create("agent-a", seed=seed)
+    comparisons: list[tuple[str, str]] = []
+
+    def reject_comparison(candidate: str, stored: str) -> bool:
+        comparisons.append((candidate, stored))
+        return False
+
+    monkeypatch.setattr(lifecycle_module, "secret_equal", reject_comparison)
+    with pytest.raises(InvalidRecoverySeedError):
+        await env.recover("agent-a", seed)
+
+    assert comparisons == [(seed.hex(), seed.hex())]
+
+
+def test_recover_seed_source_guard_constant_time() -> None:
+    """Source guard: seed material must not regress to plain equality."""
+    source = inspect.getsource(lifecycle_module)
+    assert "!= stored_seed" not in source
+    assert "!= candidate_seed" not in source
+    assert source.count("secret_equal(") >= 1
+
+
 async def test_recover_with_bad_seed_length_raises(env: Env) -> None:
     await env.create("agent-a")
     with pytest.raises(InvalidRecoverySeedError):
@@ -283,6 +311,20 @@ async def test_recover_with_garbage_mnemonic_raises(env: Env) -> None:
     await env.create("agent-a")
     with pytest.raises(InvalidRecoverySeedError):
         await env.recover("agent-a", ["not", "a", "valid", "mnemonic"])
+
+
+async def test_recover_invalid_mnemonic_error_hides_secret_material(env: Env) -> None:
+    """Failure diagnostics must never echo the recovery mnemonic."""
+    await env.create("agent-a")
+    # 12 non-wordlist words: bip_utils embeds the full mnemonic in its error
+    # for this path ("Invalid language for mnemonic '...'").
+    bad_mnemonic = " ".join(["zzzz"] * 12)
+    with pytest.raises(InvalidRecoverySeedError) as excinfo:
+        await env.recover("agent-a", bad_mnemonic)
+    assert bad_mnemonic not in str(excinfo.value)
+    # Cause chain suppressed so a logged traceback cannot surface it either.
+    assert excinfo.value.__suppress_context__ is True
+    assert excinfo.value.__cause__ is None
 
 
 async def test_recover_unknown_agent_raises(env: Env) -> None:

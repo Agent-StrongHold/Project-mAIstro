@@ -333,3 +333,38 @@ TOOLS = {
     "browse_url": browse_url,
     "clarify": clarify,
 }
+
+
+async def dispatch_tool(tool_name: str, tool_args: dict[str, Any]) -> Any:
+    """The ``(tool_name, tool_args)`` dispatcher maistro's strategies call.
+
+    This is the executor half of the factory's tool seam (#840 Slice 5,
+    ADR-082526-3ca6: the runtime that owns the agents owns their tools): the
+    bridge passes this function to ``create_agents``, so an agent whose
+    manifest (or materialized definition) declares tools executes against the
+    REAL tool functions above instead of a silently-absent executor.
+
+    Only the tools that actually exist here are routed. An unknown name
+    returns the same refusal string react.py's un-guarded branch produces, so
+    a model sees one contract whether the executor is missing or the tool is:
+    ``Tool '<name>' not available`` — never a fabricated execution.
+    """
+    try:
+        if tool_name == "web_search":
+            return await web_search(
+                str(tool_args.get("query", "")),
+                int(tool_args.get("max_results", 5) or 5),
+            )
+        if tool_name == "browse_url":
+            return await browse_url(
+                str(tool_args.get("url", "")),
+                str(tool_args.get("task", "Extract key facts and quotes")),
+            )
+        if tool_name == "clarify":
+            return await clarify(
+                list(tool_args.get("questions", []) or []),
+                dict(tool_args.get("context", {}) or {}),
+            )
+    except (TypeError, ValueError) as exc:
+        return f"Error: bad arguments for tool '{tool_name}': {exc}"
+    return f"Tool '{tool_name}' not available"

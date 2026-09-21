@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 import uuid
@@ -43,6 +44,7 @@ from typing import Any
 
 import structlog
 
+from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
 from maistro_rsi.competitors import Competitor
 from maistro_rsi.contained_validation import (
@@ -51,6 +53,8 @@ from maistro_rsi.contained_validation import (
 )
 from maistro_rsi.merge import greedy_merge
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
+from maistro_rsi.regression_judge import JudgeVerdict, judge_regression_verdict
+from maistro_rsi.test_inventory import InventoryResult, collect_inventory
 
 logger = structlog.get_logger()
 
@@ -353,7 +357,12 @@ class LocalSandbox:
     async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
         def _run() -> tuple[int, str]:
             # shell=True: `command` is operator-supplied test/health config
-            # (e.g. "pytest -q && ruff check"), not agent-controlled input.
+            # (e.g. "pytest -q && ruff check"), not agent-controlled input —
+            # but what it *imports* is candidate code (pytest loads the
+            # worktree's conftest and plugins), so it runs behind the
+            # credential boundary (#78): minimal base env, no ambient
+            # inheritance, so the operator's/harness's secrets never reach a
+            # candidate-importing process.
             proc = subprocess.run(  # nosemgrep
                 command,
                 shell=True,  # nosemgrep
@@ -361,6 +370,7 @@ class LocalSandbox:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=candidate_env(),
             )
             return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
@@ -748,7 +758,14 @@ class _NoHostExecSandbox(LocalSandbox):
 
 @dataclass
 class LocalRsiConfig:
-    """Inputs for one capped local self-improvement run."""
+    """Inputs for one capped local self-improvement run.
+
+    Both test fields run behind the credential boundary (#78): the command's
+    process starts from a fixed minimal environment (PATH, locale, TERM —
+    nothing ambient), because its imports execute candidate code. A command
+    that needs a specific interpreter should name it absolutely or rely on
+    `python3` being on the base PATH, not on the operator's ambient PATH.
+    """
 
     repo_path: str
     #: The test command as a shell string. Kept for the CLI, where an operator
@@ -869,6 +886,14 @@ class LocalRsiConfig:
     # disable (e.g. a test exercising unrelated checkpoint mechanics that
     # never anticipated a revert).
     promotion_review: bool = True
+    # Governance override for the protected_test_inventory gate (#306): when
+    # True, a candidate that deletes/renames/disables tests still PASSES that
+    # gate — but never silently: the gate logs a warning and the promotion
+    # record carries the deleted node IDs. Default False: a candidate cannot
+    # shrink the oracle that judges it without this separately authorized
+    # change. Does NOT cover a test-config edit that shrinks the inventory
+    # (that is presumed hiding and always vetoes).
+    allow_test_inventory_shrink: bool = False
     # Checkpointing for long runs. Every ``report_every`` cycles (0 = only at the
     # end), write a progress report (markdown + JSON) into ``report_dir`` and
     # refresh a rolling, harvestable patch export of everything promoted so far.
@@ -1095,6 +1120,10 @@ class LocalRsiLoop:
         self._injected_apply = apply_patch
         self._baseline = Path(config.work_root) / "baseline"
         self._baseline_cov: float | None = None  # cached; invalidated on promote
+        # Protected test inventory of the current baseline (#306): cached the
+        # same way as coverage — collection only (cheap), invalidated on
+        # promote so the next cycle diffs against what was actually kept.
+        self._baseline_test_inventory_cache: InventoryResult | None = None
         self._start_ref: str | None = None  # baseline sha before any promotion
         # Checkpoint-time RLPHD review (promotion_review.py) scans only commits
         # since the LAST review pass — set to _start_ref once the baseline is
@@ -1173,6 +1202,22 @@ class LocalRsiLoop:
                 pytest_args=self._config.coverage_pytest_args,
             )
         return self._baseline_cov
+
+    def _baseline_test_inventory(self) -> InventoryResult | None:
+        """The baseline's protected test inventory (#306), cached per cycle.
+
+        Collection only — no test execution — computed once per baseline state
+        (mirroring ``_baseline_coverage``) and reused by every candidate this
+        cycle scores. None when fitness is off: the inventory gate lives in the
+        Scorecard, which only the fitness path composes.
+        """
+        if not self._config.use_fitness:
+            return None
+        if self._baseline_test_inventory_cache is None:
+            self._baseline_test_inventory_cache = collect_inventory(
+                self._baseline, shlex.split(self._config.coverage_pytest_args)
+            )
+        return self._baseline_test_inventory_cache
 
     def _uncovered_for(self, target: str) -> list[int]:
         """The baseline's uncovered line numbers for ``target`` (empty = fully
@@ -1793,24 +1838,60 @@ class LocalRsiLoop:
                     note=note,
                 )
 
-            promote_branch, composite, files, kept_n, judge_score = self._select_and_merge(
-                index, target, accepted, created
+            promote_branch, composite, files, kept_n, judge_score, promoted_trace = (
+                self._select_and_merge(index, target, accepted, created)
             )
+            pre_promotion_sha = _git(self._baseline, "rev-parse", "HEAD").stdout.strip()
             _git(self._baseline, "merge", "--ff-only", promote_branch)
             promoted_sha = _git(self._baseline, "rev-parse", "HEAD").stdout.strip()
+            note = (
+                f"tournament: {len(competitors)} competitor(s), {len(accepted)} passed, "
+                f"kept {kept_n} (composite={composite})"
+            )
+            if not self._annotate_promotion(
+                promoted_sha,
+                index,
+                target,
+                accepted[0],
+                composite,
+                files,
+                note,
+                trace=promoted_trace,
+            ):
+                # The git-notes trace is the promotion's durable audit record
+                # (#342): a promotion that landed without it would be exactly
+                # the unaudited state change the formal conformance model
+                # forbids. Roll the fast-forward back and report the cycle as
+                # not promoted — the ratchet only advances with its evidence.
+                _git(self._baseline, "reset", "--hard", pre_promotion_sha)
+                logger.error(
+                    "rsi_local_promotion_audit_write_failed",
+                    index=index,
+                    sha=promoted_sha,
+                    target=target,
+                )
+                return CycleOutcome(
+                    index,
+                    changed=True,
+                    tests_passed=True,
+                    promoted=False,
+                    files_touched=files,
+                    target=target,
+                    composite=composite,
+                    note="promotion audit record failed to write — promotion rolled back",
+                    kind=accepted[0].kind,
+                    regression_judge_score=judge_score,
+                )
             self._record_scout_success(self._last_scout_model)
             # Baseline advanced — recompute coverage/uncovered/spec-gaps next
             # cycle (a promotion may have covered lines or claimed AC gaps).
             self._baseline_cov = None
             self._baseline_missing = {}
             self._spec_gaps = None
-            note = (
-                f"tournament: {len(competitors)} competitor(s), {len(accepted)} passed, "
-                f"kept {kept_n} (composite={composite})"
-            )
-            self._annotate_promotion(
-                promoted_sha, index, target, accepted[0], composite, files, note
-            )
+            # ...and the protected test inventory (#306): the next cycle must
+            # diff against the suite as it NOW stands, not the one this cycle
+            # started from.
+            self._baseline_test_inventory_cache = None
             logger.info(
                 "rsi_local_cycle_promoted",
                 index=index,
@@ -2051,9 +2132,13 @@ class LocalRsiLoop:
         target: str,
         accepted: list[_VariantResult],
         created: list[tuple[str, Path]],
-    ) -> tuple[str, float, int, int, float | None]:
+    ) -> tuple[str, float, int, int, float | None, dict[str, Any]]:
         """Combine passing candidates (highest-composite first). Returns
-        ``(promote_branch, composite, files_touched, kept_count, regression_judge_score)``.
+        ``(promote_branch, composite, files_touched, kept_count,
+        regression_judge_score, trace)`` — the trace being the promoted tree's
+        acceptance evidence (the merge's when a combination won, the top
+        candidate's own when one did), so the promotion record describes what
+        was actually promoted.
 
         One winner promotes its branch directly (identical to the classic cycle).
         A 2+ combination keeps only non-conflicting diffs (complementary), is
@@ -2061,7 +2146,14 @@ class LocalRsiLoop:
         """
         if len(accepted) == 1:
             top = accepted[0]
-            return top.branch, top.composite, top.files_touched, 1, top.regression_judge_score
+            return (
+                top.branch,
+                top.composite,
+                top.files_touched,
+                1,
+                top.regression_judge_score,
+                top.trace,
+            )
 
         merge_branch = f"rsi/cycle-{index}-m-{uuid.uuid4().hex[:6]}"
         merge_dir = Path(self._config.work_root) / f"cycle-{index}-m"
@@ -2082,7 +2174,14 @@ class LocalRsiLoop:
             # one won. 0 kept: nothing applied cleanly onto the merge worktree —
             # fall back to the top candidate, which is committed and validated.
             top = kept[0] if kept else accepted[0]
-            return top.branch, top.composite, top.files_touched, 1, top.regression_judge_score
+            return (
+                top.branch,
+                top.composite,
+                top.files_touched,
+                1,
+                top.regression_judge_score,
+                top.trace,
+            )
         changed_files = self._changed_files(merge_dir)
         _git(merge_dir, "add", "-A")
         _git(
@@ -2094,7 +2193,7 @@ class LocalRsiLoop:
             f"RSI cycle {index}: merged {len(kept)} complementary fix(es) of {target}",
         )
         if self._config.use_fitness:
-            m_ok, m_comp, reason, _tp, m_judge, _trace = self._fitness_decision(
+            m_ok, m_comp, reason, _tp, m_judge, m_trace = self._fitness_decision(
                 index, merge_dir, changed_files
             )
             if not m_ok:
@@ -2105,8 +2204,9 @@ class LocalRsiLoop:
                     kept[0].files_touched,
                     1,
                     kept[0].regression_judge_score,
+                    kept[0].trace,
                 )
-            return merge_branch, m_comp, len(changed_files), len(kept), m_judge
+            return merge_branch, m_comp, len(changed_files), len(kept), m_judge, m_trace
         # No fitness: each kept candidate passed its own tests in isolation, but
         # the COMBINATION was never tested — two non-conflicting patches can still
         # interact and break the suite. Retest the merged worktree; fall back to
@@ -2118,6 +2218,7 @@ class LocalRsiLoop:
                 len(changed_files),
                 len(kept),
                 kept[0].regression_judge_score,
+                kept[0].trace,
             )
         logger.info("rsi_local_merge_untested_regressed", index=index)
         return (
@@ -2126,19 +2227,35 @@ class LocalRsiLoop:
             kept[0].files_touched,
             1,
             kept[0].regression_judge_score,
+            kept[0].trace,
         )
 
-    def _judge_regression(self, diff_text: str, target: str) -> tuple[float, str]:
-        """Second-opinion LLM regression check — see regression_judge.py. Never
-        raises: an unavailable/erroring gateway must not block promotion."""
+    def _judge_regression(self, diff_text: str, target: str) -> JudgeVerdict:
+        """Second-opinion LLM regression check — see regression_judge.py.
+
+        Fail-closed (#307): an unavailable judge (gateway error, timeout,
+        unparsable reply, oversized diff) is returned as a verdict with
+        ``score=None`` and fails the candidate's regression-judge gate —
+        never a fail-open 0.7. Never raises: a judge that cannot even be
+        constructed is itself an unavailable verdict. The failure cause is
+        logged at warning level; the diff text never reaches the logs.
+        """
         try:
             from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
-            from maistro_rsi.regression_judge import judge_regression
 
             llm = ResponsesAPICallable(model=self._config.scout_model or self._config.model)
-            return judge_regression(diff_text, target, llm)
+            verdict = judge_regression_verdict(diff_text, target, llm)
         except Exception:
-            return 0.7, "judge unavailable"
+            verdict = JudgeVerdict(
+                status="unavailable",
+                score=None,
+                rationale="judge could not be constructed",
+                cause="gateway_error",
+            )
+        if verdict.status == "unavailable":
+            # Cause only — the diff (candidate code) must never be logged.
+            logger.warning("rsi_regression_judge_unavailable", cause=verdict.cause)
+        return verdict
 
     def _fitness_decision(
         self, index: int, cycle_dir: Path, changed_files: list[str], *, target: str = ""
@@ -2163,6 +2280,8 @@ class LocalRsiLoop:
             timeout=self._config.test_timeout,
             regression_judge_fn=self._judge_regression if self._config.regression_judge else None,
             target=target,
+            baseline_inventory=self._baseline_test_inventory(),
+            allow_test_inventory_shrink=self._config.allow_test_inventory_shrink,
         )
         logger.info(
             "rsi_local_scorecard",
@@ -2177,7 +2296,9 @@ class LocalRsiLoop:
             (g.detail.get("score") for g in scorecard.gates if g.name == "no_flagged_regression"),
             None,
         )
-        # detail is dict[str, object]; the regression judge stores a float score.
+        # detail is dict[str, object]; the judge gate stores verdict.score —
+        # None when the judge was unavailable (fail closed, #307). That None
+        # must survive to the promotion evidence, never coerced to a number.
         judge_score = float(judge_raw) if isinstance(judge_raw, int | float) else None
         mut_raw = next(
             (g.detail.get("score") for g in scorecard.gates if g.name == "tests_pin_behavior"),
@@ -2188,6 +2309,14 @@ class LocalRsiLoop:
             "composite": scorecard.composite,
             "mutation_score": float(mut_raw) if isinstance(mut_raw, int | float) else None,
         }
+        # Inventory evidence rides the promotion record (#306): the gate's
+        # counts and (capped) deleted/added lists, including the override flag
+        # when a governance-authorized shrink passed — never silent.
+        inv_detail = next(
+            (g.detail for g in scorecard.gates if g.name == "protected_test_inventory"), None
+        )
+        if inv_detail:
+            trace["inventory"] = dict(inv_detail)
         return (
             scorecard.accepted,
             scorecard.composite,
@@ -2206,15 +2335,28 @@ class LocalRsiLoop:
         composite: float,
         files: int,
         summary: str,
-    ) -> None:
+        trace: dict[str, Any] | None = None,
+    ) -> bool:
         """Attach a git-notes trace record to a just-promoted commit (SPEC: the
-        HORIZON-style acceptance/reward substrate). Best-effort — write_trace_note
-        never raises — so annotating the ratchet can never fail a landed promotion.
-        The record makes the promotion reconstructable from git alone: its verdict
-        (per-gate pass/fail) and reward vector (pass/composite/mutation/judge)."""
+        HORIZON-style acceptance/reward substrate) and report whether it landed
+        (#342). The note is the promotion's durable audit record — who (model),
+        what (target/kind/files), when (the commit it annotates), outcome
+        (verdict + reward) — and carries no diff text. ``write_trace_note``
+        never raises; it returns False on failure, and the caller rolls the
+        promotion back on False rather than letting state advance without its
+        evidence: annotating the ratchet is load-bearing, not best-effort
+        observability. The record makes the promotion reconstructable from git
+        alone: its verdict (per-gate pass/fail) and reward vector
+        (pass/composite/mutation/judge), plus — #306 — the
+        protected-test-inventory evidence (base/candidate counts, deleted/added
+        lists, and the override flag when a governance-authorized shrink
+        passed). ``trace`` is the promoted tree's evidence (the merge's when a
+        combination won); it defaults to the top variant's for single-winner
+        cycles."""
         from maistro_rsi.trace_notes import RewardVector, TraceNote, write_trace_note
 
-        gates = top.trace.get("gates") or {"tests_pass": top.tests_passed}
+        source = trace if trace is not None else top.trace
+        gates = source.get("gates") or {"tests_pass": top.tests_passed}
         trace_note = TraceNote(
             cycle=index,
             target=target,
@@ -2225,13 +2367,14 @@ class LocalRsiLoop:
             reward=RewardVector(
                 delta_pass=1.0 if top.tests_passed else 0.0,
                 composite=composite,
-                mutation_score=top.trace.get("mutation_score"),
+                mutation_score=source.get("mutation_score"),
                 regression_judge=top.regression_judge_score,
             ),
             gates={str(k): bool(v) for k, v in gates.items()},
             note=summary,
+            inventory=source.get("inventory"),
         )
-        write_trace_note(self._baseline, sha, trace_note)
+        return write_trace_note(self._baseline, sha, trace_note)
 
     def _sandbox_for(self, cycle_dir: Path) -> MicroVmSandbox:
         """The sandbox handed to the apply function for one cycle.
@@ -2291,17 +2434,24 @@ class LocalRsiLoop:
         if self._config.test_argv:
             # No shell: the vector was chosen from server-side policy, and a
             # metacharacter in any token stays a character in an argument.
+            # Behind the credential boundary (#78): the candidate's conftest
+            # and plugins run in this process tree, so it gets the minimal
+            # base env — never the operator's/harness's ambient secrets.
             proc = subprocess.run(
                 list(self._config.test_argv),
                 cwd=str(cycle_dir),
                 capture_output=True,
                 text=True,
                 timeout=self._config.test_timeout,
+                env=candidate_env(),
             )
         else:
             # shell=True: the CLI path, where `test_command` is what an operator
             # typed at a terminal. Every non-terminal caller supplies test_argv
             # above instead -- see #305 for why that distinction is load-bearing.
+            # Same credential boundary as the argv path: an operator's shell
+            # carries their credentials, and the candidate code this command
+            # imports must not inherit them (#78).
             proc = subprocess.run(  # nosemgrep
                 self._config.test_command,
                 shell=True,  # nosemgrep
@@ -2309,6 +2459,7 @@ class LocalRsiLoop:
                 capture_output=True,
                 text=True,
                 timeout=self._config.test_timeout,
+                env=candidate_env(),
             )
         if proc.returncode != 0:
             logger.info("rsi_local_tests_failed", tail=(proc.stdout + proc.stderr)[-500:])

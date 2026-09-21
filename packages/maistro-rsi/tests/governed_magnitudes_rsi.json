@@ -1,0 +1,65 @@
+{
+  "schema": "governed-magnitude/1",
+  "issue": 350,
+  "governance": "Independently governed expected magnitudes for the RSI promotion-decision family (maistro-rsi). This file states the values the implementation must produce; it is NOT generated from or imported by production code, so a mutation of a production constant cannot silently rewrite its own expectation. Changing a value here is a policy change: it needs the same review as changing the production constant, plus the cited provenance (issue/ADR) updated in lockstep. 'exact' entries kill every magnitude mutation of the constant; 'range' entries are cost/record-shape knobs that are tunable within stated safe bounds (documented, not over-pinned).",
+  "entries": {
+    "regression_judge.REJECT_BELOW": {
+      "value": 0.4,
+      "mode": "exact",
+      "source": "packages/maistro-rsi/src/maistro_rsi/regression_judge.py:37",
+      "provenance": "#307 fail-closed regression judge; the judge's system prompt states the same 0.4 cutoff so model and gate cannot drift apart",
+      "protects": "a parsed judge score below 0.4 is a flagged regression whose verdict is 'reject' and which vetoes promotion; >= 0.4 is 'pass'",
+      "kills": "0.4 -> 0.04 promotes flagged regressions (security hole); 0.4 -> 0.9 rejects nearly every clean candidate; 0.4 -> 0.45 shifts the verdict mapping off the documented cutoff"
+    },
+    "regression_judge._MAX_DIFF_CHARS": {
+      "value": 8000,
+      "mode": "exact",
+      "source": "packages/maistro-rsi/src/maistro_rsi/regression_judge.py:41",
+      "provenance": "bounded prompt cost for the second-opinion judge; exact value pinned because the retention boundary (2x cap) is the correctness-bearing fail-closed point",
+      "protects": "how much diff the judge may see per consultation; together with _MIN_RETAINED_FRACTION it decides when a diff is 'too large to judge whole'",
+      "kills": "any change moves the 16000/16001-char fail-closed boundary, which the boundary test pins exactly"
+    },
+    "regression_judge._MIN_RETAINED_FRACTION": {
+      "value": 0.5,
+      "mode": "exact",
+      "source": "packages/maistro-rsi/src/maistro_rsi/regression_judge.py:44",
+      "provenance": "#307: the judge must never rule on a partial view that hides most of the change; at least half the diff must survive the cap",
+      "protects": "a truncated diff retaining < 50% of its characters yields an 'unavailable' verdict that FAILS the promotion gate (fail closed) instead of a confident ruling on a hidden change",
+      "kills": "0.5 -> 0.1 lets the judge 'pass' a diff it saw 10% of; 0.5 -> 0.9 refuses nearly every large-but-judgeable diff"
+    },
+    "candidate_fitness._MUTATION_KILL_THRESHOLD": {
+      "value": 0.5,
+      "mode": "exact",
+      "source": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py:74",
+      "provenance": "anti-reward-hacking veto: deliberately lenient at half so only changes whose tests miss the MAJORITY of introduced-behavior mutations are rejected",
+      "protects": "the tests_pin_behavior gate: a candidate whose own tests kill fewer than half the diff-scoped mutants is under-verified and must not promote",
+      "kills": "0.5 -> 0.05 promotes overfit/reward-hacked candidates; 0.5 -> 0.9 rejects honest work over equivalent mutants; 0.5 -> 0.499 flips the 499/1000 boundary case"
+    },
+    "candidate_fitness._MUTATION_MAX_MUTANTS": {
+      "value": 6,
+      "mode": "range",
+      "range": [2, 20],
+      "source": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py:78",
+      "provenance": "cost cap only: each mutant reruns the changed tests once, so this bounds probe cost; the site list is truncated deterministically. Tunable within the stated bounds - a cap below 2 makes the probe statistically meaningless, above 20 it can dominate cycle wall-clock",
+      "protects": "bounded mutation-probe cost per candidate",
+      "kills": "out-of-range caps (e.g. 0 or 500) that make the probe meaningless or unaffordable"
+    },
+    "candidate_fitness._DELETED_TRACE_CAP": {
+      "value": 20,
+      "mode": "range",
+      "range": [5, 100],
+      "source": "packages/maistro-rsi/src/maistro_rsi/candidate_fitness.py:84",
+      "provenance": "record-shape knob: how many deleted node IDs the protected-inventory gate's reason/detail/trace carry; the full count always rides along as deleted_count. Tunable within bounds - below 5 a realistic deletion list is truncated, above 100 a hostile mass-deletion bloats the promotion record",
+      "protects": "legibility of the #306 shrink veto without unbounded record growth",
+      "kills": "out-of-range caps that either hide deletions or enable record bloat"
+    },
+    "free_router.pick_attempt_multiplier": {
+      "value": 4,
+      "mode": "exact",
+      "source": "packages/maistro-rsi/src/maistro_rsi/free_router.py:202",
+      "provenance": "de-dup headroom for _pick_distinct: the free catalog is finite and the router/cache repeats picks, so up to 4x count attempts are made to find count DISTINCT free aliases before falling back to the default",
+      "protects": "bounded OpenRouter resolution calls per roster sentinel (each attempt is a live HTTP call), while still giving the router enough tries to de-duplicate",
+      "kills": "4 -> 40 multiplies gateway/OpenRouter resolution traffic 10x per sentinel; 4 -> 1 collapses distinct-pick rosters to one alias"
+    }
+  }
+}

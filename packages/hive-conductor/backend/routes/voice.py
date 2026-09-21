@@ -3,10 +3,17 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from models.schemas import ChatCompletionRequest
 from pydantic import BaseModel, ConfigDict
 from services.chat_completion import build_llm_port, conversation_only
+from services.chat_gate import (
+    REASON_BUDGET_EXCEEDED,
+    REASON_SCANNER_ERROR,
+    REASON_SCANNER_TIMEOUT,
+    REFUSAL_TEXT,
+    gate_untrusted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +42,15 @@ class VoiceIntentResponse(BaseModel):
     `intent` is narrowed to the two values the service can distinguish. It was
     documented as naming the first tool invoked, which it has never done. The
     two remaining values report whether the model said anything, which is the
-    only classification available while tools are contained.
+    only classification available while tools are contained. A Warden refusal
+    (#315) also answers `unknown`: the utterance was refused before the model,
+    so the route understood nothing from it.
 
-    Restoring a real action record is #315's, together with the Warden
-    input/tool-result/output boundary that has to gate the tools before any of
-    them may run again. That is a security boundary, not a response field, so
-    it is not smuggled in here.
+    Restoring a real action record is #315's remaining half, together with
+    re-enabling model-driven tools behind the dispatch policy — the input
+    boundary and the tool-result boundary now exist (`services.chat_gate`).
+    That is a security boundary, not a response field, so it is not smuggled
+    in here.
     """
 
     understood: bool
@@ -75,8 +85,31 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
     if body.person:
         context_parts.append(f"(speaker: {body.person})")
 
+    utterance = " ".join(context_parts)
+
+    # The spoken utterance is untrusted input like any other, and crosses the
+    # same Warden boundary chat does before anything is dispatched (#315) —
+    # same detector, same explicit failure policy, no voice-specific check.
+    decision = await gate_untrusted(utterance, surface="voice_intent", user_id=user_id)
+    if not decision.allowed:
+        if decision.reason == REASON_BUDGET_EXCEEDED:
+            raise HTTPException(
+                status_code=413, detail="utterance exceeds the security scan budget"
+            )
+        if decision.reason in (REASON_SCANNER_TIMEOUT, REASON_SCANNER_ERROR):
+            raise HTTPException(
+                status_code=503, detail="security scanner unavailable; utterance refused"
+            )
+        logger.warning(
+            "voice intent refused: user=%s room=%r reason=%s",
+            user_id or "unknown",
+            body.room,
+            decision.reason,
+        )
+        return VoiceIntentResponse(understood=False, intent="unknown", reply=REFUSAL_TEXT)
+
     req = conversation_only(
-        ChatCompletionRequest(messages=[{"role": "user", "content": " ".join(context_parts)}])
+        ChatCompletionRequest(messages=[{"role": "user", "content": utterance}])
     )
 
     result = await build_llm_port().complete(req)

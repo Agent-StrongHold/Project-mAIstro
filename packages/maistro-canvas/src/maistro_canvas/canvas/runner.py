@@ -75,7 +75,9 @@ class CanvasJobRunner:
             if job.status == JobStatus.FAILED:
                 error = RuntimeError(job.error_message or "canvas worker lease expired")
                 job.error_message = await terminal_failure(job, error)
-                await self._store.update_job(job)
+                # Scope rides the receipt (#857): the reaper reconciles the
+                # job under the org it was admitted in, never a global one.
+                await self._store.update_job(job, org_id=job.org_id)
         return reaped
 
     async def tick_once(self) -> bool:
@@ -129,5 +131,5 @@ class CanvasJobRunner:
                 job.leased_by = None
                 job.lease_expires_at = None
 
-        await self._store.update_job(job)
+        await self._store.update_job(job, org_id=job.org_id)
         return True

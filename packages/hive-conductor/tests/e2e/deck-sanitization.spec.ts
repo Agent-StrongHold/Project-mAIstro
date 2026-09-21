@@ -26,6 +26,11 @@ import { join } from "node:path";
 
 const ATTACKER = "attacker.invalid";
 
+// CI mounts the repo at /tests (tests/Dockerfile.playwright); locally the
+// worktree can point the harness at the real sources instead.
+const SRC_ROOT = process.env.E2E_SRC_ROOT || "/tests";
+const NODE_PATHS = [process.env.E2E_NODE_PATHS || "/tests/node_modules"];
+
 let context: BrowserContext;
 let page: Page;
 let server: Server;
@@ -49,8 +54,8 @@ async function startHarness(browser: Browser): Promise<void> {
     entry,
     `import React from "react";
 import { createRoot } from "react-dom/client";
-import DeckBuilder from "/tests/frontend/src/pages/DeckBuilder.tsx";
-import { sanitizeDeckMarkup } from "/tests/frontend/src/lib/deckSanitizer.ts";
+import DeckBuilder from "${SRC_ROOT}/frontend/src/pages/DeckBuilder.tsx";
+import { sanitizeDeckMarkup } from "${SRC_ROOT}/frontend/src/lib/deckSanitizer.ts";
 
 declare global {
   interface Window { __sanitizeDeckMarkup: (markup: string) => string; __deckPwned?: number; }
@@ -69,7 +74,7 @@ createRoot(document.getElementById("root")!).render(<DeckBuilder />);
     format: "iife",
     jsx: "automatic",
     define: { "process.env.NODE_ENV": '"test"' },
-    nodePaths: ["/tests/node_modules"],
+    nodePaths: NODE_PATHS,
     logLevel: "silent",
   });
 

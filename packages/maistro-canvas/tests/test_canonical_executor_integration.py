@@ -30,8 +30,13 @@ pytestmark = pytest.mark.asyncio
 
 
 class _CanvasStore:
+    #: The one org this deployment's rows belong to (#857).
+    ORG = "org-1"
+
     def __init__(self) -> None:
-        self.canvas = CanvasRecord(id="canvas-1", name="Canvas", width=64, height=64)
+        self.canvas = CanvasRecord(
+            id="canvas-1", name="Canvas", width=64, height=64, org_id=self.ORG
+        )
         self.layer = LayerRecord(
             id="layer-1",
             canvas_id=self.canvas.id,
@@ -42,13 +47,19 @@ class _CanvasStore:
         self.fail_create = False
         self.reaped: list[GenerationJobRecord] = []
 
-    async def get_canvas(self, canvas_id: str) -> CanvasRecord | None:
+    async def get_canvas(self, canvas_id: str, *, org_id: str) -> CanvasRecord | None:
+        if org_id != self.ORG:
+            return None
         return self.canvas if canvas_id == self.canvas.id else None
 
-    async def get_layer(self, layer_id: str) -> LayerRecord | None:
+    async def get_layer(self, layer_id: str, *, org_id: str) -> LayerRecord | None:
+        if org_id != self.ORG:
+            return None
         return self.layer if layer_id == self.layer.id else None
 
-    async def active_job_for_layer(self, layer_id: str) -> GenerationJobRecord | None:
+    async def active_job_for_layer(
+        self, layer_id: str, *, org_id: str
+    ) -> GenerationJobRecord | None:
         return next(
             (
                 job
@@ -58,16 +69,16 @@ class _CanvasStore:
             None,
         )
 
-    async def create_job(self, job: GenerationJobRecord) -> GenerationJobRecord:
+    async def create_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
         if self.fail_create:
             raise RuntimeError("receipt store unavailable")
         self.jobs[job.id] = job
         return job
 
-    async def get_job(self, job_id: str) -> GenerationJobRecord | None:
+    async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None:
         return self.jobs.get(job_id)
 
-    async def update_job(self, job: GenerationJobRecord) -> GenerationJobRecord:
+    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
         self.jobs[job.id] = job
         return job
 
@@ -169,6 +180,7 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     )
 
     job = await executor.start_job(
+        org_id=_CanvasStore.ORG,
         canvas_id="canvas-1",
         layer_id="layer-1",
         action=JobAction.GENERATE,
@@ -185,7 +197,7 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     runner = CanvasJobRunner(store=store, executor=executor)
     assert await runner.tick_once() is True
 
-    receipt = await store.get_job(job.id)
+    receipt = await store.get_job(job.id, org_id=_CanvasStore.ORG)
     assert receipt is not None
     assert receipt.status == JobStatus.DONE
     assert receipt.result_paths == ["image://generated"]
@@ -216,6 +228,7 @@ async def test_receipt_persistence_failure_compensates_admitted_run() -> None:
 
     with pytest.raises(RuntimeError, match="receipt store unavailable"):
         await executor.start_job(
+            org_id=_CanvasStore.ORG,
             canvas_id="canvas-1",
             layer_id="layer-1",
             action=JobAction.GENERATE,
@@ -240,9 +253,18 @@ async def test_claimed_job_rejects_missing_or_unbound_canonical_correlation() ->
         layer_id="layer-1",
         canvas_id="canvas-1",
         model_id="draft-model",
+        org_id=_CanvasStore.ORG,
     )
     with pytest.raises(RuntimeError, match="no Run correlation"):
         await configured._execute_claimed(missing)
+    scopeless = GenerationJobRecord(
+        id="job-no-scope",
+        layer_id="layer-1",
+        canvas_id="canvas-1",
+        model_id="draft-model",
+    )
+    with pytest.raises(RuntimeError, match="no org scope"):
+        await configured._execute_claimed(scopeless)
     with pytest.raises(RuntimeError, match="no Run correlation"):
         await configured._execute_stage(missing, "generate", lambda: _async_value([]))
 
@@ -257,6 +279,7 @@ async def test_claimed_job_rejects_missing_or_unbound_canonical_correlation() ->
         layer_id="layer-1",
         canvas_id="canvas-1",
         model_id="draft-model",
+        org_id=_CanvasStore.ORG,
     )
     correlate_run(correlated.params, "run-orphan")
     with pytest.raises(RuntimeError, match="no adapter is bound"):
@@ -267,7 +290,7 @@ async def test_claimed_job_rejects_missing_or_unbound_canonical_correlation() ->
         await unbound.fail_job_execution(correlated, RuntimeError("503"))
     store.jobs[correlated.id] = correlated
     with pytest.raises(RuntimeError, match="no adapter is bound"):
-        await unbound.cancel_job(correlated.id)
+        await unbound.cancel_job(correlated.id, org_id=_CanvasStore.ORG)
 
 
 async def test_runner_refuses_real_executor_without_canonical_binding_before_claim() -> None:

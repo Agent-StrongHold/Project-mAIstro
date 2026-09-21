@@ -303,6 +303,22 @@ def _instantiate(identity: AgentIdentity, *, agent_resolver: Any = None, **deps:
     )
 
 
+def instantiate_agent(identity: AgentIdentity, *, agent_resolver: Any = None, **deps: Any) -> Agent:
+    """Build one runtime Agent from a ready identity -- the factory's single
+    construction path, without the filesystem walk.
+
+    ``create_agents`` seeds a roster from manifests; materialization paths that
+    already HOLD a definition (hive-conductor's agent materialization service
+    turning a stored definition into a dispatchable runtime agent, #840) need
+    the same construction -- strategy resolution through the registry and the
+    tool-executor wiring rule -- rather than a second one that drifts. Strategy
+    registration is ensured here so a caller outside the seeding flow resolves
+    strategies exactly as a full factory run would.
+    """
+    _register_custom_strategies()
+    return _instantiate(identity, agent_resolver=agent_resolver, **deps)
+
+
 def _build_persist_registry(sa_engine: Any) -> Any:
     """Construct a ``PgAgentRegistry`` for write-back, or ``None`` if unavailable."""
     if not sa_engine:

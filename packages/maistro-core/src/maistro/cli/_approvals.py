@@ -5,9 +5,14 @@ Moved from the original argparse cli.py. Preserves exact behavior.
 
 from __future__ import annotations
 
+import os
+
 import httpx
 from rich.console import Console
 from typer import Typer
+
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
 
 _DEFAULT_BASE = "http://127.0.0.1:8101"
 
@@ -16,12 +21,16 @@ app = Typer(help="Manage the HITL approval inbox.")
 
 
 def _client() -> httpx.Client:
-    import os
-
     base = os.environ.get("MAISTRO_API_URL", _DEFAULT_BASE)
     token = os.environ.get("MAISTRO_API_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    return httpx.Client(base_url=base, headers=headers, timeout=10.0)
+    # The conductor base is operator configuration (env var or the default), so
+    # it is registered as its exact origin before the client is built — the
+    # same allowance `HomeAssistantIntegration` and `OAuthService` make for a
+    # URL that settings do not carry. Everything else this client could be
+    # asked to reach stays behind the guard `sync_client` applies (#67).
+    configure_outbound_policy(base)
+    return sync_client(base_url=base, headers=headers, timeout=10.0)
 
 
 @app.command("list")

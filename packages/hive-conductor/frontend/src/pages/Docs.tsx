@@ -55,7 +55,7 @@ Each agent has:
 - A **strategy** — how it approaches problems (see Strategies below)
 - **Capabilities** — what kinds of tasks it can handle
 
-You can create new agents, edit their behavior, or forge them using the step-by-step Builder.
+You can create new agents, edit their behavior, or forge new ones with the step-by-step Builder. Forging is real agent creation, not a draft: capabilities are derived from your description, every field is security-scanned before anything is stored (a flagged or failed scan forges nothing), and the finished agent — with its scan provenance — lands straight in the roster, ready to run.
 
 **Intent Map**: Shows which agent handles which type of request. For example, "research" requests go to the Researcher agent.`,
   },
@@ -280,7 +280,7 @@ export default function Docs() {
       <div className="page-header">
         <div>
           <h1 style={{ fontFamily: "var(--hand)", fontSize: 28, fontWeight: 700 }}>Documentation</h1>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--pencil)", marginTop: 4 }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
             Everything you need to know about Hive Conductor
           </div>
         </div>
@@ -309,7 +309,7 @@ export default function Docs() {
               {isOpen && (
                 <div style={{
                   padding: "0 4px 14px",
-                  fontFamily: "var(--mono)", fontSize: 11,
+                  fontFamily: "var(--mono)", fontSize: 12,
                   lineHeight: 1.7, color: "var(--ink)",
                   whiteSpace: "pre-wrap",
                 }}>

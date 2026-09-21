@@ -6,16 +6,29 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from argon2 import PasswordHasher
+    from argon2 import PasswordHasher  # pyright: ignore[reportMissingImports]
 
 logger = logging.getLogger("maistro.security.passwords")
 
 _ARGON2_PREFIX = "$argon2"
 _BCRYPT_PREFIX = "$2"
+PASSWORD_MIN_LENGTH = 8
+
+
+def validate_password(password: str) -> str:
+    """Validate the canonical password policy used by account creation.
+
+    Validation intentionally measures the password as supplied. Callers may
+    choose their own display/input normalization, but authentication and
+    account creation must agree on the exact credential bytes they hash.
+    """
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise ValueError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters.")
+    return password
 
 
 def _hasher() -> PasswordHasher:
-    from argon2 import PasswordHasher
+    from argon2 import PasswordHasher  # pyright: ignore[reportMissingImports]
 
     # OWASP-aligned defaults for interactive login (64 MiB, 3 iterations).
     return PasswordHasher(
@@ -40,7 +53,10 @@ def verify_password(plain: str, stored: str) -> bool:
         # decoded ("Decoding failed"). Catching only the mismatch let a corrupt
         # column escape as a 500 from the login route instead of a denial —
         # still fail-closed, but an error where a decision belonged.
-        from argon2.exceptions import InvalidHashError, VerificationError
+        from argon2.exceptions import (  # pyright: ignore[reportMissingImports]
+            InvalidHashError,
+            VerificationError,
+        )
 
         try:
             _hasher().verify(stored, plain)

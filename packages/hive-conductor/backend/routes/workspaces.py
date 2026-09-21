@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 from models.persona_feedback import PersonaFeedback, Thumb
 from models.workspace import AgentToolBinding, Workspace, WorkspaceRole
 from pydantic import BaseModel, ConfigDict, Field
-from services.agent_materialization import materialize_workspace_agents, workspace_agents
+from services.agent_materialization import delete_workspace_agents, materialize_workspace_agents
 from services.persona_authoring import (
     PersonaTemplateIdConflict,
     all_persona_templates,
@@ -364,5 +364,8 @@ async def delete_workspace(workspace_id: str, request: Request) -> None:
     if await member_role(requester, workspace_id) != "owner":
         raise HTTPException(status_code=403, detail="only an owner can delete this workspace")
     await delete_canonical_workspace(workspace_id)
-    for agent in workspace_agents(workspace_id):
-        stores.agents.pop(agent.id, None)
+    # The workspaces store's pop hook (registered in
+    # `services.agent_materialization`) already cascades this deletion; call
+    # it explicitly rather than re-implementing the pop inline -- a second
+    # delete authority for rows the hook owns is how drift starts.
+    delete_workspace_agents(workspace_id)

@@ -212,7 +212,7 @@ export default function DagRuns() {
                   }}
                 >
                   <div style={{ fontFamily: "monospace", fontSize: 12 }}>{r.id.slice(0, 8)}…</div>
-                  <div style={{ fontSize: 11, color: "#6b7280" }}>
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>
                     {new Date(r.started_at * 1000).toLocaleTimeString()} · {r.event_count} events
                   </div>
                 </button>

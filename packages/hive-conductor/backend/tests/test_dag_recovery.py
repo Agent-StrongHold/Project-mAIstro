@@ -97,6 +97,7 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
     assert captured["run_store"] is run_store
     assert captured["limit"] == 7
     assert captured["events"] is event_bus
+    assert captured["admission_source"] == "hive_legacy_dag"
 
     owned, _ = _queued_run(source="hive_legacy_dag")
     foreign, _ = _queued_run(source="some_other_consumer")
@@ -129,7 +130,15 @@ async def test_admitted_run_persists_execution_mode_needed_after_restart(
         seen["execute"] = kwargs
         return SimpleNamespace(
             run_id="run-1",
-            run=SimpleNamespace(status=RunStatus.WAITING, error=None),
+            run=SimpleNamespace(
+                status=RunStatus.WAITING,
+                error=None,
+                # The scope the fake `_scope` admitted the run into -- real
+                # `Run` records always carry both, and `_project` mirrors
+                # them (#1174).
+                workspace_id="ws-1",
+                project_id="project-1",
+            ),
             node_runs=(),
             graph_state=SimpleNamespace(cycle=0, blackboard_snapshot={"node_annotations": {}}),
         )

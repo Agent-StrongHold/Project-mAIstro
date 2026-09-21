@@ -21,6 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.scorecard import GateResult, MeasureKind, SignalScore
 
 
@@ -61,6 +62,12 @@ def measure_coverage_detailed(
     whenever coverage data can't be produced.
     """
     cwd = str(repo_dir)
+    # The pytest run executes the candidate's own code (conftest, plugins),
+    # so it runs behind the credential boundary (#78) — minimal base env,
+    # no ambient inheritance. The `coverage json` call only parses the data
+    # file the run produced, but it parses candidate-produced bytes, so it
+    # gets the same boundary rather than an exemption nobody asked for.
+    env = candidate_env()
     try:
         subprocess.run(
             [
@@ -77,6 +84,7 @@ def measure_coverage_detailed(
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         # Even if some tests fail, coverage data may still exist — read it anyway.
         report = subprocess.run(
@@ -85,6 +93,7 @@ def measure_coverage_detailed(
             capture_output=True,
             text=True,
             timeout=120,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None, {}

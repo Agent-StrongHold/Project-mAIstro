@@ -24,6 +24,7 @@ from maistro.security.outbound import (
     GuardedTransport,
     OutboundBlockedError,
     OutboundPolicy,
+    SyncGuardedTransport,
     configure_outbound_policy,
     configured_endpoints,
     current_outbound_policy,
@@ -399,7 +400,146 @@ async def test_a_refusal_is_an_httpx_transport_error() -> None:
     with pytest.raises(httpx.TransportError):
         await _get("http://169.254.169.254/latest/meta-data/", inner)
 
+
+# --- the synchronous seam (#67) ---------------------------------------------
+#
+# The pool is async because the engine is; the approvals CLI is not, and its
+# private `httpx.Client` was the one maistro-core module the seam could not
+# reach. `sync_client` puts the same policy in front of the sync transports,
+# and these hold it to the same properties the async half is held to.
+
+
+class _SyncRecording(httpx.BaseTransport):
+    """`_Recording`, for the synchronous protocol."""
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append(str(request.url))
+        return httpx.Response(200, request=request)
+
+    def close(self) -> None:
+        return None
+
+
+def _sync_get(url: str, transport: httpx.BaseTransport, **kwargs: object) -> httpx.Response:
+    from maistro.http import sync_client
+
+    with sync_client(timeout=5.0, transport=transport, **kwargs) as client:  # type: ignore[arg-type]
+        return client.get(url)  # type: ignore[union-attr]
+
+
+def test_the_sync_seam_refuses_a_private_target() -> None:
+    inner = _SyncRecording()
+
+    with pytest.raises(SSRFBlockedError):
+        _sync_get("http://127.0.0.1:8080/admin", inner)
+
+    assert inner.seen == [], "the request reached the transport before being checked"
+
+
+def test_the_sync_seam_refuses_the_cgnat_range() -> None:
+    """The validator's newest refusal class, at the seam it is enforced from."""
+    inner = _SyncRecording()
+
+    with pytest.raises(SSRFBlockedError):
+        _sync_get("http://100.64.0.1/", inner)
+
     assert inner.seen == []
+
+
+def test_the_sync_seam_reaches_a_public_target() -> None:
+    inner = _SyncRecording()
+
+    response = _sync_get("https://example.com/x", inner)
+
+    assert response.status_code == 200
+    assert inner.seen == ["https://example.com/x"]
+
+
+def test_a_sync_redirect_into_a_private_target_is_refused_at_that_hop() -> None:
+    """A sync client re-enters its transport per hop, exactly like the pool."""
+
+    class _Redirector(httpx.BaseTransport):
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            self.seen.append(str(request.url))
+            if request.url.host == "example.com":
+                return httpx.Response(
+                    302, headers={"Location": "http://169.254.169.254/latest/"}, request=request
+                )
+            return httpx.Response(200, request=request)
+
+        def close(self) -> None:
+            return None
+
+    inner = _Redirector()
+
+    with pytest.raises(SSRFBlockedError):
+        _sync_get("https://example.com/start", inner, follow_redirects=True)
+
+    assert inner.seen == ["https://example.com/start"]
+
+
+def test_a_sync_allowance_is_honoured_and_does_not_widen() -> None:
+    inner = _SyncRecording()
+    configure_outbound_policy("http://127.0.0.1:8101")
+
+    response = _sync_get("http://127.0.0.1:8101/v1/capabilities/approvals", inner)
+
+    assert response.status_code == 200
+    with pytest.raises(SSRFBlockedError):
+        _sync_get("http://127.0.0.1:8102/", inner)
+
+
+def test_the_sync_seam_wraps_every_transport_and_is_idempotent() -> None:
+    from maistro.http import sync_client
+    from maistro.security.outbound import guarded_sync
+
+    client = sync_client(timeout=1.0)
+    try:
+        assert isinstance(client._transport, SyncGuardedTransport)  # type: ignore[attr-defined]
+        mounted = [t for t in client._mounts.values() if t is not None]  # type: ignore[attr-defined]
+        assert all(isinstance(t, SyncGuardedTransport) for t in mounted)
+    finally:
+        client.close()
+
+    once = guarded_sync(_SyncRecording())
+    assert guarded_sync(once) is once
+
+
+def test_a_sync_mock_transport_is_left_alone() -> None:
+    from maistro.security.outbound import guarded_sync
+
+    mock = httpx.MockTransport(lambda r: httpx.Response(200))
+
+    assert guarded_sync(mock) is mock
+
+
+def test_the_approvals_cli_client_is_guarded_and_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one module that could not use the pool, held to the seam anyway.
+
+    Its base URL is operator configuration, so `_client` registers that exact
+    origin — the narrow allow policy — and builds through `sync_client`, so the
+    conductor is reachable and nothing beside it is.
+    """
+    from maistro.cli._approvals import _client
+
+    monkeypatch.setenv("MAISTRO_API_URL", "http://127.0.0.1:8101")
+    client = _client()
+    try:
+        assert isinstance(client._transport, SyncGuardedTransport)  # type: ignore[attr-defined]
+    finally:
+        client.close()
+
+    assert current_outbound_policy().allows("http://127.0.0.1:8101/v1/anything")
+    assert not current_outbound_policy().allows("http://127.0.0.1:8102/")
+    assert not current_outbound_policy().allows("http://169.254.169.254/")
 
 
 async def test_a_refusal_is_still_an_ssrf_blocked_error() -> None:

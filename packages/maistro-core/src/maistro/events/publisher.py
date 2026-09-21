@@ -8,18 +8,34 @@ a projection carrying that already-persisted identity and sequence.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from maistro.events.bus import Event, EventBus, EventCategory
-from maistro.events.envelope import EventEnvelope, EventStore
+from maistro.events.envelope import (
+    EventAppendDispositionStore,
+    EventEnvelope,
+    EventStore,
+)
 
 CANONICAL_EVENT_METADATA = "_canonical_event"
 
 
 class CanonicalEventPublisher:
-    """Persist a canonical envelope, then notify compatibility consumers."""
+    """Persist a canonical envelope, then notify compatibility consumers.
+
+    Compatibility delivery is intentionally at-most-once with respect to one
+    canonical ``event_id``: only the append call that actually inserts the Event
+    projects it. A process loss after persistence but before legacy delivery can
+    therefore lose that compatibility notification; the legacy bus is not made
+    into a second durable delivery authority to close that crash window.
+    """
 
     def __init__(self, store: EventStore, *, legacy_bus: EventBus | None = None) -> None:
+        if legacy_bus is not None and not isinstance(store, EventAppendDispositionStore):
+            raise TypeError(
+                "legacy EventBus projection requires an EventStore with atomic append disposition"
+            )
         self._store = store
         self._legacy_bus = legacy_bus
 
@@ -30,10 +46,20 @@ class CanonicalEventPublisher:
 
     async def emit(self, event: EventEnvelope) -> EventEnvelope:
         """Persist ``event`` before any compatibility consumer can observe it."""
-        persisted = await self._store.append(event)
-        if self._legacy_bus is not None:
-            await self._legacy_bus.emit(project_legacy_event(persisted))
-        return persisted
+        if self._legacy_bus is None:
+            return await self._store.append(event)
+
+        # __init__ proves this structural capability before the publisher can be
+        # used. Keep the local check for static narrowing and fail closed if an
+        # exotic mutable proxy changes shape after construction.
+        if not isinstance(self._store, EventAppendDispositionStore):
+            raise TypeError(
+                "legacy EventBus projection requires an EventStore with atomic append disposition"
+            )
+        outcome = await self._store.append_with_disposition(event)
+        if outcome.inserted:
+            await self._legacy_bus.emit(project_legacy_event(outcome.event))
+        return outcome.event
 
 
 def project_legacy_event(event: EventEnvelope) -> Event:
@@ -54,7 +80,10 @@ def project_legacy_event(event: EventEnvelope) -> Event:
     except ValueError:
         category = EventCategory.SYSTEM
 
-    payload: dict[str, Any] = dict(event.payload)
+    # Compatibility consumers are deliberately mutable. Never expose nested
+    # objects shared with the persisted canonical envelope: one old handler
+    # must not be able to rewrite historical Event facts in an in-memory store.
+    payload: dict[str, Any] = copy.deepcopy(event.payload)
     payload[CANONICAL_EVENT_METADATA] = {
         "event_id": event.event_id,
         "stream_id": event.stream_id,

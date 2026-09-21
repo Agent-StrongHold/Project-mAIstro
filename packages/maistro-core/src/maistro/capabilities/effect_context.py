@@ -77,9 +77,7 @@ class CapabilityEffectContext:
 
 def new_effect_context(
     *,
-    binding_store: BindingStore,
-    invocation_store: InvocationStore,
-    event_store: EventStore,
+    invocation_store: InvocationStore | None = None,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
 ) -> CapabilityEffectContext:
@@ -90,9 +88,17 @@ def new_effect_context(
     :func:`new_in_memory_effect_context`. Keeping the service construction here
     means durability changes storage lifetime only; it cannot create a second
     policy or Invocation execution path.
+
+    ``binding_store``/``event_store`` remain in-memory even when
+    ``invocation_store`` is durable: #1133 durable-izes those separately, and
+    this constructor's job here is only the Invocation authority #1091 needed
+    for governed model egress.
     """
 
-    invocation_service = InvocationExecutionService(store=invocation_store)
+    binding_store = InMemoryBindingStore()
+    store = invocation_store or InMemoryInvocationStore()
+    event_store = InMemoryEventStore()
+    invocation_service = InvocationExecutionService(store=store)
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
@@ -101,84 +107,9 @@ def new_effect_context(
     return CapabilityEffectContext(
         bindings=binding_store,
         invocations=governed,
-        invocation_store=invocation_store,
+        invocation_store=store,
         event_store=event_store,
         credentials=credentials or CredentialRouter(),
-    )
-
-
-async def new_backend_effect_context(
-    *,
-    pg_pool: Any = None,
-    db_pool: Any = None,
-    policy_evaluator: PolicyEvaluator | None = None,
-    credentials: CredentialRouter | None = None,
-) -> CapabilityEffectContext:
-    """Select canonical effect stores from the Container's persistence backend.
-
-    PostgreSQL is the shared replica-safe authority and SQLite is the supported
-    single-instance durable authority. A deployment that deliberately selected
-    no durable backend keeps the explicit in-memory implementation. The policy
-    and Invocation execution service are identical in all three cases; only the
-    lifetime and sharing semantics of their stores change.
-    """
-
-    if pg_pool is not None:
-        from maistro.capabilities.binding_store import PgBindingStore
-        from maistro.capabilities.invocation_store import PgInvocationStore
-        from maistro.events.pg_envelope import PgEventStore
-
-        event_store = PgEventStore(pg_pool)
-        await event_store.ensure_schema()
-        return new_effect_context(
-            binding_store=PgBindingStore(pg_pool),
-            invocation_store=PgInvocationStore(pg_pool),
-            event_store=event_store,
-            policy_evaluator=policy_evaluator,
-            credentials=credentials,
-        )
-    if db_pool is not None:
-        from maistro.capabilities.binding_store import SqliteBindingStore
-        from maistro.capabilities.invocation_store import SqliteInvocationStore
-        from maistro.events.envelope import SqliteEventStore
-
-        binding_store = SqliteBindingStore(db_pool)
-        invocation_store = SqliteInvocationStore(db_pool)
-        event_store = SqliteEventStore(db_pool)
-        await binding_store.ensure_schema()
-        await invocation_store.ensure_schema()
-        await event_store.ensure_schema()
-        return new_effect_context(
-            binding_store=binding_store,
-            invocation_store=invocation_store,
-            event_store=event_store,
-            policy_evaluator=policy_evaluator,
-            credentials=credentials,
-        )
-    return new_in_memory_effect_context(
-        policy_evaluator=policy_evaluator,
-        credentials=credentials,
-    )
-
-
-def new_in_memory_effect_context(
-    *,
-    policy_evaluator: PolicyEvaluator | None = None,
-    credentials: CredentialRouter | None = None,
-) -> CapabilityEffectContext:
-    """Build an isolated canonical effect context for explicit ephemeral use.
-
-    ``credentials`` supplies the scoped credential pool for Provider selection
-    (#58); omitted, the router exists but holds no credentials, so routed
-    acquisitions fail closed until one is registered in the requesting scope.
-    """
-
-    return new_effect_context(
-        binding_store=InMemoryBindingStore(),
-        invocation_store=InMemoryInvocationStore(),
-        event_store=InMemoryEventStore(),
-        policy_evaluator=policy_evaluator,
-        credentials=credentials,
     )
 
 
@@ -193,13 +124,15 @@ def default_effect_context() -> CapabilityEffectContext:
     backend-specific context explicitly.
     """
 
-    return new_in_memory_effect_context()
+    return new_effect_context()
+
+
+new_in_memory_effect_context = new_effect_context
 
 
 __all__ = [
     "CapabilityEffectContext",
     "default_effect_context",
-    "new_backend_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
 ]

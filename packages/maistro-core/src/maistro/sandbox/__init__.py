@@ -1,6 +1,12 @@
 """Sandbox subsystem — protocol, policy, selector, backends."""
 
 from maistro.sandbox.commit import fenced_commit
+from maistro.sandbox.credential_boundary import (
+    CANDIDATE_BASE_ENV,
+    candidate_env,
+    grant_from_credential,
+    redact_env,
+)
 from maistro.sandbox.detect import HostCapabilities, detect_host_capabilities
 from maistro.sandbox.fence import (
     SandboxFence,
@@ -36,6 +42,7 @@ from maistro.sandbox.wiring import build_selector
 __all__ = [
     "BENCHMARK_EVAL",
     "BROWSER_AUTOMATION",
+    "CANDIDATE_BASE_ENV",
     "DENY_ALL",
     "DEV_ONLY",
     "MODE_FLOORS",
@@ -58,8 +65,11 @@ __all__ = [
     "WorkloadPolicy",
     "assert_fence_is_current",
     "build_selector",
+    "candidate_env",
     "detect_host_capabilities",
     "fenced_commit",
     "floor_for_mode",
+    "grant_from_credential",
+    "redact_env",
     "tier_satisfies",
 ]

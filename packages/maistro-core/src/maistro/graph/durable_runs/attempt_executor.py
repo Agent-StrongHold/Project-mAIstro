@@ -15,7 +15,13 @@ from typing import Any
 
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
-from maistro.graph.nodes.base import NodeContext, NodeResult
+from maistro.graph.nodes.base import (
+    PAUSE_RESUME_CONDITIONS,
+    RESUME_ON_ANSWER,
+    RESUME_ON_ELAPSED,
+    NodeContext,
+    NodeResult,
+)
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
 from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
@@ -28,21 +34,15 @@ from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
 from .execution_store import DurableRunExecutionStore
-from .protocol import DurableRunStore
+from .launch import require_admitted_launch_state
+from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .spine import mirror_lifecycle
 from .types import DurableRunRecord
 
-# Where resume-side dispositions say they came from when they reach the
-# canonical Event stream (#62).
 _RESUME_DISPOSITION_SOURCE = "maistro.graph.durable_runs.attempt_executor"
 
 NodeResolver = traversal.NodeResolver
 
-# Durable Graph execution always opts into the canonical lease/fence recovery
-# contract. The claim is deliberately longer than one lease renewal window:
-# continuation recovery may notice an elapsed claim while a long-running
-# Attempt is still alive, but the Attempt lease is the stronger physical-work
-# proof and makes that recovery worker yield.
 GRAPH_ATTEMPT_LEASE_TTL = timedelta(seconds=30)
 GRAPH_RECOVERY_CLAIM_TTL = timedelta(seconds=60)
 
@@ -106,37 +106,21 @@ async def run_durable_graph(
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
-    ``parent_run_id``/``parent_node_run_id`` make the launched Run a child of
-    the Run (and NodeRun) that produced it — delegation and sub-graph work
-    say "work is happening" as a child Run, not a second lifecycle.
-
-    ``provenance`` records what admitted the work, and is accepted here as
-    well as in the traversal executor so the two entry points cannot disagree
-    about whether a Run remembers where it came from (#145).
-
-    ``blackboard_metadata`` seeds the child's blackboard metadata. A parent
-    dispatching a sub-graph threads facts the child cannot derive — the
-    recursion depth its own `synth_depth` cap enforces (#520) — without the
-    parent's whole blackboard leaking across the Run boundary.
-
-    ``run_store`` converges the Run's identity onto the canonical spine (#44,
-    ADR-082826-d9f5). With it, checkpoint 1 is persisted while the already
-    admitted Run is still QUEUED; the canonical resume seam then claims it.
-    That ordering makes process death before/after the continuation write
-    rediscoverable. Without a spine, the pre-convergence in-memory mint is
-    unchanged.
-
-    ``events`` is the optional recovery sink a resume-through-recovery caller
-    threads so crash dispositions reach the canonical Event stream (#62). It
-    is deliberately not required: a caller that starts fresh work has no
-    dispositions to report, and refusing to run without a listener would make
-    the events path load-bearing for execution it only observes.
+    Against a canonical ``run_store``, any non-empty launch inputs or blackboard
+    metadata must already be snapshotted on the admitted Run. That makes a
+    process loss after admission but before checkpoint 1 reconstruct the same
+    work rather than silently substituting empty launch state.
     """
     if run_store is not None:
         run = await _validated_admitted_run(
             graph,
             run_store=run_store,
             run_id=traversal._require_admitted(run_id),
+        )
+        require_admitted_launch_state(
+            run,
+            inputs=inputs,
+            blackboard_metadata=blackboard_metadata,
         )
     else:
         run = traversal._new_run(
@@ -187,12 +171,7 @@ async def resume_durable_graph(
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
 ) -> DurableRunRecord:
-    """Claim and resume persisted Graph work through canonical physical evidence.
-
-    ``events`` carries the crash-recovery dispositions this resume applies onto
-    the canonical Event stream (#62). Without a sink the resume behaves exactly
-    as before; the dispositions themselves are persisted facts either way.
-    """
+    """Claim and resume persisted Graph work through canonical physical evidence."""
     record = await store.get(run_id)
     if record is None:
         raise KeyError(f"no such run: {run_id!r}")
@@ -225,9 +204,6 @@ async def resume_durable_graph(
                     canonical = await spine.transition_run(run.run_id, step)
                 stepped = canonical
         if stepped is None:
-            # No spine row to walk stepwise (no spine, or the row was purged
-            # mid-resume): advance the record's own lifecycle instead, the
-            # pre-convergence behavior, rather than attribute-error here.
             record = traversal._replace_record(
                 record,
                 run=transition_run(run, RunStatus.RUNNING),
@@ -301,9 +277,19 @@ def _requires_continuation_redispatch(
     """Whether accepted pause evidence now requires a fresh physical try."""
     if result.status != "paused":
         return False
-    if traversal._is_human_pause(result):
+
+    reason = str((result.metadata or {}).get("paused_reason") or "")
+    resume_condition = PAUSE_RESUME_CONDITIONS.get(reason)
+    if resume_condition == RESUME_ON_ANSWER:
         return node_id in record.hitl_answers
-    return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
+    if resume_condition == RESUME_ON_ELAPSED:
+        return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
+    # Pre-taxonomy durable records and compatibility nodes could carry only a
+    # timestamp. Preserve their historical timer semantics without treating a
+    # known answer-gated reason as elapsed-resumable.
+    if not reason:
+        return result.resume_at is not None and result.resume_at <= datetime.now(UTC)
+    return False
 
 
 async def _walk(
@@ -326,13 +312,6 @@ async def _walk(
     )
     steps = 0
 
-    # The Run record is already in hand here, so binding its Workspace and
-    # Project costs no read — the exact "outer bind supplies them for free
-    # where they are known" case ADR-083026-1cb1 reserved this seam for. Until
-    # now nothing on any real path bound them at all: `execute_node` holds only
-    # `run_id`, and the HTTP seam holds only `request_id`, so an event emitted
-    # inside a durable execution filled `project_id` only if its producer set
-    # it by hand, and a log line named a Run with no Workspace (#63).
     with bind_execution_context(
         run_id=record.run_id,
         workspace_id=record.run.workspace_id,
@@ -431,6 +410,11 @@ async def _walk_frontier(
         await asyncio.shield(
             _persist_cancelled_run(record.run_id, store=store, run_store=run_store)
         )
+        raise
+    except RecoveryInfrastructureError:
+        # A classified store/session failure is infrastructure wide: reloading
+        # the record or terminalizing the Run would itself go through the
+        # broken store. Let it reach the recovery boundary untouched.
         raise
     except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)

@@ -40,6 +40,15 @@ type IntentRow = {
   strategy: Strategy;
 };
 
+// The validation provenance the backend stores inside a forged agent's
+// config (#294): what was generated from and the security-scan verdict the
+// artifact was allowed to be stored with.
+type ForgeProvenance = {
+  spec?: number;
+  generated_from?: { description?: string; strategy?: string; model?: string };
+  scan?: { boundary?: string; status?: string; findings?: string[]; scanned_at?: string };
+};
+
 const MODELS = [
   "gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet", "claude-3.5-haiku",
   "gemini-3.5-flash", "gemini-3.5-pro", "qwen-2.5-coder-32b",
@@ -78,22 +87,26 @@ const DEFAULT_INTENTS: IntentRow[] = [
   { intent: "exploration", agent: "Phantom", model: "gemini-3.5-flash", strategy: "react" },
 ];
 
-const STEP_LABELS = ["Describe", "Strategy", "Model", "Generate", "Review", "Scan", "Save"];
+// Forging stores the real artifact at the Forge step (#294): derived
+// capabilities, security-scanned before it lands, provenance kept on the
+// record. The remaining steps review what was stored — they do not create a
+// second agent the way the old "Save" step's plain POST /v1/agents did.
+const STEP_LABELS = ["Describe", "Strategy", "Model", "Forge", "Review", "Provenance", "Done"];
 
 const inp = {
-  width: "100%", padding: "6px 10px", fontFamily: "var(--mono)", fontSize: 10,
+  width: "100%", padding: "6px 10px", fontFamily: "var(--mono)", fontSize: 12,
   background: "var(--paper-2, #f5f5f0)", border: "1.3px solid var(--rule)",
   borderRadius: 4, color: "var(--ink)", boxSizing: "border-box" as const,
 };
 
 const lbl = {
-  fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)",
+  fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)",
   textTransform: "uppercase" as const, marginBottom: 3, display: "block" as const,
 };
 
 const btn = {
   padding: "5px 14px", borderRadius: 4, cursor: "pointer" as const,
-  fontFamily: "var(--mono)", fontSize: 10, border: "1.3px solid",
+  fontFamily: "var(--mono)", fontSize: 12, border: "1.3px solid",
 };
 
 function agentRole(a: Agent): Role {
@@ -127,7 +140,7 @@ function soulExcerpt(a: Agent): string {
 function SBadge({ s }: { s: Strategy }) {
   return (
     <span style={{
-      padding: "2px 8px", borderRadius: 3, fontSize: 8,
+      padding: "2px 8px", borderRadius: 3, fontSize: 12,
       fontFamily: "var(--mono)", fontWeight: 600,
       background: `${STRATEGY_COLORS[s]}22`, color: STRATEGY_COLORS[s],
       border: `1px solid ${STRATEGY_COLORS[s]}44`,
@@ -139,7 +152,7 @@ function SBadge({ s }: { s: Strategy }) {
 
 export default function Agents() {
   const toast = useToast();
-  const { activeWorkspaceId } = useWorkspaces();
+  const { activeWorkspaceId, ready } = useWorkspaces();
   const [tab, setTab] = useState(0);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -158,6 +171,10 @@ export default function Agents() {
   const [bStrat, setBStrat] = useState<Strategy>("react");
   const [bModel, setBModel] = useState("gpt-4o");
   const [bConfig, setBConfig] = useState("");
+  // The stored artifact returned by POST /v1/agents/forge — read-only from
+  // here on; editing a stored agent is the roster drawer's job, not the
+  // wizard's.
+  const [bArtifact, setBArtifact] = useState<Agent | null>(null);
   const [bBusy, setBBusy] = useState(false);
   // Three states, not two. `null` is "not run yet"; the discriminated union
   // separates "ran, here is what it found" from "did not run". Holding this
@@ -180,6 +197,10 @@ export default function Agents() {
   const [cBusy, setCBusy] = useState(false);
 
   const load = useCallback(async () => {
+    // Not before the workspace list has resolved (#1427): until then the
+    // active id is null on a first session, and the roster would be fetched
+    // unscoped and then again scoped a moment later.
+    if (!ready) return;
     try {
       setLoading(true);
       // Persona/Workspace system: scope to the active workspace's own
@@ -194,7 +215,7 @@ export default function Agents() {
     } finally {
       setLoading(false);
     }
-  }, [toast, activeWorkspaceId]);
+  }, [toast, activeWorkspaceId, ready]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -288,27 +309,44 @@ export default function Agents() {
   const handleForge = useCallback(async () => {
     setBBusy(true);
     try {
+      // The backend forges the real artifact here: derives capabilities,
+      // Warden-scans every field, and stores it with validation provenance
+      // (config.forge) before answering (#294). Re-running with the same
+      // inputs is idempotent — same agent, not another draft.
       const res = await apiPost<Record<string, unknown>>("/v1/agents/forge", {
         description: bDesc, strategy: bStrat, model: bModel,
         ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
       });
+      const artifact = res as unknown as Agent;
+      setBArtifact(artifact);
       setBConfig(JSON.stringify(res, null, 2));
       setBStep(4);
-    } catch {
-      toast("Forge failed", "error");
+    } catch (e) {
+      // A rejected forge (flagged content, unknown strategy, scanner down)
+      // stored nothing — say why rather than "Forge failed" generically.
+      const msg = e instanceof Error ? e.message : "forge did not run";
+      toast(`Forge rejected — nothing was stored: ${msg}`, "error");
     } finally {
       setBBusy(false);
     }
   }, [bDesc, bStrat, bModel, toast, activeWorkspaceId]);
 
+  const bProvenance: ForgeProvenance | null = (() => {
+    if (!bArtifact) return null;
+    const cfg = bArtifact.config as Record<string, unknown>;
+    return ((cfg.forge ?? null) as ForgeProvenance | null);
+  })();
+
   const handleBuilderScan = useCallback(async () => {
+    if (!bArtifact) return;
     setBBusy(true);
     // Clear first: whatever the previous run said is no longer true of this
     // one, and leaving it up through the request is the same stale-green.
     setBScan(null);
     try {
-      const config = JSON.parse(bConfig);
-      const res = await apiPost<{ findings?: string[] }>("/v1/agents/scan", config);
+      // Re-scan the *stored* artifact (the by-id route walks the saved
+      // record), on top of the scan provenance it was stored with.
+      const res = await apiPost<{ findings?: string[] }>(`/v1/agents/${bArtifact.id}/scan`);
       if (!Array.isArray(res.findings)) {
         // A 200 whose body is not a findings list is a scan that did not
         // report, not a scan that found nothing.
@@ -321,25 +359,12 @@ export default function Agents() {
     } finally {
       setBBusy(false);
     }
-  }, [bConfig, toast]);
+  }, [bArtifact, toast]);
 
-  const handleBuilderSave = useCallback(async () => {
-    setBBusy(true);
-    try {
-      const config = JSON.parse(bConfig);
-      await apiPost("/v1/agents", {
-        ...config,
-        ...(activeWorkspaceId ? { workspace_id: activeWorkspaceId } : {}),
-      });
-      toast("Agent created from forge");
-      setBStep(0); setBDesc(""); setBConfig(""); setBScan(null);
-      await load();
-    } catch {
-      toast("Forge save failed", "error");
-    } finally {
-      setBBusy(false);
-    }
-  }, [bConfig, load, toast, activeWorkspaceId]);
+  const handleBuilderFinish = useCallback(async () => {
+    setBStep(0); setBDesc(""); setBConfig(""); setBScan(null); setBArtifact(null);
+    await load();
+  }, [load]);
 
   const toggleCap = (cap: string) => {
     setCCaps((prev) => prev.includes(cap) ? prev.filter((c) => c !== cap) : [...prev, cap]);
@@ -377,27 +402,27 @@ export default function Agents() {
                       <span style={{ fontSize: 22 }}>{ROLE_ICONS[role]}</span>
                       <div>
                         <div style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 700 }}>{a.name}</div>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 2 }}>{a.model}</div>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>{a.model}</div>
                       </div>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                         <StatusDot status={STATUS_MAP[a.status]} pulse={a.status === "busy"} />
-                        <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>{a.status}</span>
+                        <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{a.status}</span>
                       </div>
                       <SBadge s={strategy} />
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: 12, marginTop: 8, fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>
+                  <div style={{ display: "flex", gap: 12, marginTop: 8, fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>
                     <span>{a.tasks_completed} tasks</span>
                     <span>{Math.round(a.avg_response_time_ms)}ms avg</span>
                   </div>
                   {a.current_mission && (
-                    <div style={{ marginTop: 6, padding: "4px 8px", background: "rgba(212,160,23,0.1)", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 9 }}>
+                    <div style={{ marginTop: 6, padding: "4px 8px", background: "rgba(212,160,23,0.1)", borderRadius: 3, fontFamily: "var(--mono)", fontSize: 12 }}>
                       mission: {a.current_mission}
                     </div>
                   )}
-                  <div style={{ marginTop: 6, fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", fontStyle: "italic" }}>
+                  <div style={{ marginTop: 6, fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", fontStyle: "italic" }}>
                     {soulExcerpt(a)}
                   </div>
                 </div>
@@ -413,7 +438,7 @@ export default function Agents() {
             {STEP_LABELS.map((label, i) => (
               <div key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
                 <div style={{ width: 10, height: 10, borderRadius: "50%", background: i <= bStep ? "var(--accent)" : "var(--rule)" }} />
-                <span style={{ fontFamily: "var(--mono)", fontSize: 7, color: i <= bStep ? "var(--ink)" : "var(--pencil)" }}>{label}</span>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: i <= bStep ? "var(--ink)" : "var(--pencil)" }}>{label}</span>
               </div>
             ))}
           </div>
@@ -439,7 +464,7 @@ export default function Agents() {
                     background: bStrat === s.key ? `${STRATEGY_COLORS[s.key]}11` : "var(--paper)",
                   }}>
                     <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 700, color: STRATEGY_COLORS[s.key] }}>{s.label}</div>
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 4 }}>{s.desc}</div>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>{s.desc}</div>
                   </div>
                 ))}
               </div>
@@ -466,10 +491,10 @@ export default function Agents() {
           {bStep === 3 && (
             <div style={{ maxWidth: 500, margin: "0 auto", textAlign: "center" }}>
               <div style={{ fontFamily: "var(--hand)", fontSize: 18, marginBottom: 16 }}>Ready to forge</div>
-              <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--pencil)", marginBottom: 20 }}>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 20 }}>
                 Strategy: {bStrat} \u00B7 Model: {bModel}
               </div>
-              <button disabled={bBusy} onClick={handleForge} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", padding: "8px 24px", fontSize: 11 }}>
+              <button disabled={bBusy} onClick={handleForge} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", padding: "8px 24px", fontSize: 12 }}>
                 {bBusy ? "Forging..." : "\u2692\uFE0F Forge Agent"}
               </button>
               <div style={{ marginTop: 12 }}>
@@ -480,19 +505,36 @@ export default function Agents() {
 
           {bStep === 4 && (
             <div style={{ maxWidth: 600, margin: "0 auto" }}>
-              <label style={lbl}>Generated config</label>
-              <textarea value={bConfig} onChange={(e) => setBConfig(e.target.value)} rows={16} style={{ ...inp, resize: "vertical" as const, fontFamily: "var(--mono)", fontSize: 9 }} />
+              <label style={lbl}>Forged artifact — stored in the roster</label>
+              {/* Read-only: this is the stored record, not a draft to edit and
+                  re-post. Editing a saved agent is the roster drawer's job. */}
+              <pre style={{ ...inp, margin: 0, padding: "8px 10px", whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "var(--mono)", fontSize: 12 }}>{bConfig}</pre>
               <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between" }}>
                 <button onClick={() => setBStep(3)} style={{ ...btn, background: "var(--paper)", color: "var(--ink)", borderColor: "var(--rule)" }}>\u2190 Back</button>
-                <button onClick={() => { setBScan(null); setBStep(5); }} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Scan \u2192</button>
+                <button onClick={() => { setBScan(null); setBStep(5); }} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Provenance \u2192</button>
               </div>
             </div>
           )}
 
           {bStep === 5 && (
             <div style={{ maxWidth: 500, margin: "0 auto" }}>
-              <button disabled={bBusy} onClick={handleBuilderScan} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", padding: "8px 24px", fontSize: 11 }}>
-                {bBusy ? "Scanning..." : "\uD83D\uDEE1\uFE0F Run Security Scan"}
+              <div style={{ marginBottom: 12, borderRadius: 4, padding: 10, background: "rgba(90,154,74,0.08)", border: "1px solid rgba(90,154,74,0.3)" }}>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textTransform: "uppercase", marginBottom: 4 }}>Stored validation provenance</div>
+                {bProvenance?.scan ? (
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "#5a9a4a" }}>
+                    \u2713 Security scan: {bProvenance.scan.status} \u00B7 boundary {bProvenance.scan.boundary} \u00B7 {bProvenance.scan.scanned_at}
+                  </div>
+                ) : (
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "#c4452a" }}>\u26A0 This record carries no forge provenance.</div>
+                )}
+                {bProvenance?.generated_from && (
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
+                    Forged from: strategy {bProvenance.generated_from.strategy} \u00B7 model {bProvenance.generated_from.model} \u00B7 capabilities {bArtifact?.capabilities.join(", ")}
+                  </div>
+                )}
+              </div>
+              <button disabled={bBusy} onClick={handleBuilderScan} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", padding: "8px 24px", fontSize: 12 }}>
+                {bBusy ? "Scanning..." : "\uD83D\uDEE1\uFE0F Re-scan saved agent"}
               </button>
               {bScan !== null && (
                 <div style={{
@@ -503,35 +545,35 @@ export default function Agents() {
                   {/* Never green on failure: a scan that did not run is its own
                       state, and it reads as neither clean nor flagged. */}
                   {!bScan.ok
-                    ? <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)" }}>\u2014 Scan did not run: {bScan.error}</div>
+                    ? <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)" }}>\u2014 Scan did not run: {bScan.error}</div>
                     : bScan.findings.length === 0
-                      ? <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "#5a9a4a" }}>\u2713 No issues found</div>
-                      : bScan.findings.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#c4452a" }}>\u26A0 {f}</div>)
+                      ? <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "#5a9a4a" }}>\u2713 No issues found</div>
+                      : bScan.findings.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 12, color: "#c4452a" }}>\u26A0 {f}</div>)
                   }
                 </div>
               )}
               <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between" }}>
                 <button onClick={() => setBStep(4)} style={{ ...btn, background: "var(--paper)", color: "var(--ink)", borderColor: "var(--rule)" }}>\u2190 Back</button>
-                <button onClick={() => setBStep(6)} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Next \u2192 Save</button>
+                <button onClick={() => setBStep(6)} style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)" }}>Done \u2192</button>
               </div>
             </div>
           )}
 
           {bStep === 6 && (
             <div style={{ maxWidth: 500, margin: "0 auto", textAlign: "center" }}>
-              <div style={{ fontFamily: "var(--hand)", fontSize: 18, marginBottom: 16 }}>Save forged agent</div>
-              {bScan?.ok === false && (
-                <div style={{ background: "rgba(140,140,140,0.10)", border: "1px solid rgba(140,140,140,0.35)", borderRadius: 4, padding: 10, marginBottom: 12, textAlign: "left" }}>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ink)" }}>\u2014 Saving without a completed scan: {bScan.error}</div>
+              <div style={{ fontFamily: "var(--hand)", fontSize: 18, marginBottom: 16 }}>Forged agent saved</div>
+              {bArtifact && (
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>
+                  {bArtifact.name} \u00B7 {bArtifact.id}
                 </div>
               )}
-              {bScan?.ok && bScan.findings.length > 0 && (
-                <div style={{ background: "rgba(196,69,42,0.08)", border: "1px solid rgba(196,69,42,0.3)", borderRadius: 4, padding: 10, marginBottom: 12, textAlign: "left" }}>
-                  {bScan.findings.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#c4452a" }}>\u26A0 {f}</div>)}
+              {bProvenance?.scan && (
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "#5a9a4a", marginBottom: 12 }}>
+                  \u2713 Scanned {bProvenance.scan.status} before it was stored \u00B7 ready for the roster
                 </div>
               )}
-              <button disabled={bBusy} onClick={handleBuilderSave} style={{ ...btn, background: "#5a9a4a", color: "var(--paper)", borderColor: "#5a9a4a", padding: "8px 24px", fontSize: 11 }}>
-                {bBusy ? "Saving..." : "\uD83D\uDCBE Save Agent"}
+              <button disabled={bBusy} onClick={handleBuilderFinish} style={{ ...btn, background: "#5a9a4a", color: "var(--paper)", borderColor: "#5a9a4a", padding: "8px 24px", fontSize: 12 }}>
+                {bBusy ? "Finishing..." : "\uD83D\uDCBE Finish"}
               </button>
               <div style={{ marginTop: 12 }}>
                 <button onClick={() => setBStep(5)} style={{ ...btn, background: "var(--paper)", color: "var(--ink)", borderColor: "var(--rule)" }}>\u2190 Back</button>
@@ -542,13 +584,13 @@ export default function Agents() {
       )}
 
       {tab === 2 && (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--mono)", fontSize: 10 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--mono)", fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: "1.3px solid var(--rule)" }}>
-              <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase" }}>Intent</th>
-              <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase" }}>Agent</th>
-              <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase" }}>Model</th>
-              <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase" }}>Strategy</th>
+              <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase" }}>Intent</th>
+              <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase" }}>Agent</th>
+              <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase" }}>Model</th>
+              <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase" }}>Strategy</th>
             </tr>
           </thead>
           <tbody>
@@ -607,11 +649,11 @@ export default function Agents() {
             <StatCard label="Avg Latency" value={`${Math.round(selected.avg_response_time_ms)}ms`} />
           </div>
           <label style={lbl}>Config (JSON)</label>
-          <textarea value={editConfig} onChange={(e) => setEditConfig(e.target.value)} rows={8} style={{ ...inp, resize: "vertical" as const, fontFamily: "var(--mono)", fontSize: 9 }} />
+          <textarea value={editConfig} onChange={(e) => setEditConfig(e.target.value)} rows={8} style={{ ...inp, resize: "vertical" as const, fontFamily: "var(--mono)", fontSize: 12 }} />
           <label style={{ ...lbl, marginTop: 10 }}>SOUL.md</label>
-          <textarea value={editSoul} onChange={(e) => setEditSoul(e.target.value)} rows={5} style={{ ...inp, resize: "vertical" as const, fontFamily: "var(--mono)", fontSize: 9 }} />
+          <textarea value={editSoul} onChange={(e) => setEditSoul(e.target.value)} rows={5} style={{ ...inp, resize: "vertical" as const, fontFamily: "var(--mono)", fontSize: 12 }} />
           <label style={{ ...lbl, marginTop: 10 }}>RULES.md</label>
-          <textarea value={editRules} onChange={(e) => setEditRules(e.target.value)} rows={5} style={{ ...inp, resize: "vertical" as const, fontFamily: "var(--mono)", fontSize: 9 }} />
+          <textarea value={editRules} onChange={(e) => setEditRules(e.target.value)} rows={5} style={{ ...inp, resize: "vertical" as const, fontFamily: "var(--mono)", fontSize: 12 }} />
           {scanFindings !== null && (
             <div style={{
               marginTop: 10, borderRadius: 4, padding: 8,
@@ -619,8 +661,8 @@ export default function Agents() {
               border: `1px solid ${scanFindings.length > 0 ? "rgba(196,69,42,0.3)" : "rgba(90,154,74,0.3)"}`,
             }}>
               {scanFindings.length === 0
-                ? <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#5a9a4a" }}>\u2713 No issues found</div>
-                : scanFindings.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 9, color: "#c4452a" }}>\u26A0 {f}</div>)
+                ? <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "#5a9a4a" }}>\u2713 No issues found</div>
+                : scanFindings.map((f, i) => <div key={i} style={{ fontFamily: "var(--mono)", fontSize: 12, color: "#c4452a" }}>\u26A0 {f}</div>)
               }
             </div>
           )}
@@ -663,7 +705,7 @@ export default function Agents() {
             <label style={lbl}>Capabilities</label>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {CAPABILITIES.map((cap) => (
-                <label key={cap} style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10 }}>
+                <label key={cap} style={{ display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12 }}>
                   <input type="checkbox" checked={cCaps.includes(cap)} onChange={() => toggleCap(cap)} />
                   {cap}
                 </label>
@@ -676,7 +718,7 @@ export default function Agents() {
               {STRATEGIES.map((s) => (
                 <label key={s.key} style={{
                   display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer",
-                  fontFamily: "var(--mono)", fontSize: 10,
+                  fontFamily: "var(--mono)", fontSize: 12,
                   color: cStrat === s.key ? STRATEGY_COLORS[s.key] : "var(--pencil)",
                   fontWeight: cStrat === s.key ? 600 : 400,
                 }}>

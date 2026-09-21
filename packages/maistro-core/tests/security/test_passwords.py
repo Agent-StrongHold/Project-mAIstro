@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
+import pytest
+
 from maistro.security.passwords import hash_password, needs_rehash, verify_password
+
+
+def test_validate_password_rejects_seven_characters() -> None:
+    from maistro.security.passwords import validate_password
+
+    with pytest.raises(ValueError, match="8"):
+        validate_password("1234567")
+
+
+@pytest.mark.parametrize("password", ["12345678", "a longer password"])
+def test_validate_password_accepts_boundary_and_longer_values(password: str) -> None:
+    from maistro.security.passwords import validate_password
+
+    assert validate_password(password) == password
 
 
 def test_argon2_hash_and_verify() -> None:

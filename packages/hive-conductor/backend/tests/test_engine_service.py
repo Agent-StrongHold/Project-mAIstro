@@ -183,6 +183,52 @@ async def test_start_with_no_router_key_uses_stub_agent_port(
     assert type(svc._backend).__name__ == "MaistroServerTaskBackend"
 
 
+async def test_bridge_start_degradation_keeps_evolve_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured bridge that fails must take the same truthful stub path."""
+    from adapters.maistro_core import MaistroCoreBridge
+    from services.engine import EngineService
+
+    class _Settings:
+        maistro_router_api_key = "router-key"
+        maistro_base_url = "http://localhost:8000"
+        hive_mode = "production"
+        hive_default_workspace_id = "default"
+
+    async def _fail_start(self: MaistroCoreBridge, settings: Any) -> None:
+        del self, settings
+        raise RuntimeError("synthetic bridge startup failure")
+
+    monkeypatch.setattr(MaistroCoreBridge, "start", _fail_start)
+    svc = EngineService()
+    await svc.start(_Settings())  # type: ignore[arg-type]
+    assert type(svc._agent_port).__name__ == "StubAgentPort"
+
+    import services.engine as engine_module
+    import services.evolution as evolution_module
+
+    monkeypatch.setattr(engine_module, "get_engine", lambda: svc)
+    scheduled: list[Any] = []
+
+    def _capture(coro: Any) -> None:
+        scheduled.append(coro)
+        coro.close()
+
+    monkeypatch.setattr(evolution_module.asyncio, "ensure_future", _capture)
+    await evolution_module.start_evolution()
+    try:
+        assert scheduled == []
+        assert evolution_module._service is not None
+        status = evolution_module._service.status()
+        assert status["running"] is False
+        assert status["execution_available"] is False
+        assert status["availability"] == "degraded"
+        assert status["domain_state_only"] is True
+    finally:
+        await evolution_module.stop_evolution()
+
+
 async def test_start_in_demo_mode_uses_local_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -580,3 +626,35 @@ async def test_schedule_admitter_exposes_the_container_seam_when_bridged() -> No
     svc._agent_port = _Bridge()
 
     assert svc.schedule_admitter == "the-admitter"
+
+
+def test_agent_port_is_none_before_a_bridge_is_bound() -> None:
+    """Unconfigured engine: the boot seams read None off the port accessor,
+    the same answer `schedule_admitter` gives without a bridge."""
+    from services.engine import EngineService
+
+    svc = EngineService()
+
+    assert svc.agent_port is None
+
+
+def test_agent_port_exposes_the_bound_runtime() -> None:
+    """The property is the one read-side of `_bind_agent_port`: boot seams
+    (the roster materializer) get the port object itself back, not a copy."""
+    from services.engine import EngineService
+
+    class _Bridge:
+        async def route(
+            self,
+            messages: list[dict[str, Any]],
+            *,
+            session_id: str | None = None,
+            intent_hint: str = "",
+        ) -> dict[str, Any]:
+            return {}
+
+    port = _Bridge()
+    svc = EngineService()
+    svc._agent_port = port
+
+    assert svc.agent_port is port

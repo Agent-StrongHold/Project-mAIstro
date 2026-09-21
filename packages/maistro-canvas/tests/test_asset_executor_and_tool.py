@@ -74,6 +74,10 @@ class FakeImageGenClient:
         ]
 
 
+#: The org every executor/store interaction in this module runs under (#857).
+ORG = "org-1"
+
+
 def _world_style() -> WorldStyle:
     return WorldStyle(
         era="modern",
@@ -97,7 +101,7 @@ def gen() -> FakeImageGenClient:
 
 @pytest.fixture
 def executor(store: InMemoryAssetStore, gen: FakeImageGenClient) -> AssetExecutor:
-    return AssetExecutor(store, gen)
+    return AssetExecutor(store, gen, org_id=ORG)
 
 
 @pytest.fixture
@@ -525,3 +529,15 @@ async def test_tool_complex_scene_round_trip(tool: AssetTool) -> None:
         },
     )
     assert len(render_out["results"]) == 2
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Org-scope guard (#857): the executor is constructed with the scope
+# every action runs under; constructing without one fails closed.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_executor_requires_org_scope() -> None:
+    store = InMemoryAssetStore()
+    with pytest.raises(ValueError, match="requires the org scope"):
+        AssetExecutor(store, FakeImageGenClient(), org_id="")  # type: ignore[arg-type]

@@ -184,3 +184,36 @@ def test_denylist_covers_the_ambient_credential_surfaces() -> None:
         "*.key",
     ):
         assert pattern in _SEED_EXCLUDES
+
+
+def _env_assignments(argv: list[str]) -> list[str]:
+    """Every `-e`/`--env` value in a docker argv (create or exec)."""
+    out: list[str] = []
+    for i, tok in enumerate(argv):
+        if tok in ("-e", "--env") and i + 1 < len(argv):
+            out.append(argv[i + 1])
+        elif tok.startswith("--env="):
+            out.append(tok[len("--env=") :])
+        elif tok in ("--env-file",):
+            out.append(f"__ENV_FILE__{argv[i + 1]}")
+    return out
+
+
+def test_container_env_is_home_and_nothing_else(recorder: _Recording, tmp_path: Path) -> None:
+    """#78: no ambient host environment crosses into the container. Docker
+    does not inherit the client's env by default, and that default is the
+    security property — this pins it so a future edit cannot quietly add an
+    `-e` passthrough, an `--env` spread, or an `--env-file` that hauls the
+    operator's shell (credentials included) into the candidate's container.
+    HOME is the one exception, pointed at /tmp — not the operator's home."""
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        sb.read_file("x.py")
+        sb.run_command("ls")
+
+    for argv in _docker_calls(recorder):
+        envs = _env_assignments(argv)
+        # HOME=/tmp is the ONLY env assignment anywhere — create and execs
+        # alike. (The pre-seed root chown sets none at all, which is fine.)
+        assert all(e == f"HOME={csbx_mod._AGENT_HOME}" for e in envs), argv
+        if argv[1] == "run":
+            assert envs == [f"HOME={csbx_mod._AGENT_HOME}"], argv
