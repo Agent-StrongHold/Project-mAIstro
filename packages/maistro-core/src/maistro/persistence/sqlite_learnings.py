@@ -125,9 +125,6 @@ class SqliteLearningStore:
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
             )
             await self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
-            )
-            await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope_axes "
                 "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
