@@ -693,6 +693,26 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
+      "key": "packages/maistro-core/src/maistro/tasks/idempotency.py::_ClaimFlow.claim",
+      "path": "packages/maistro-core/src/maistro/tasks/idempotency.py",
+      "line": 517,
+      "name": "claim",
+      "classname": "_ClaimFlow",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "#1176 repair rounds (graft of auto-41 onto the 038/039 chain): the claim template method classifies the four-way admission outcome — fresh claim, ambiguous resolution race, pending lease, replayed receipt — through the one read-and-classify path both store dialects delegate to; the branches ARE the claim protocol's outcome table, and splitting the classifier from the classify-and-write would duplicate the ambiguity window's ordering constraints across the two. Ratchet at 11 pending the post-merge code-health sweep."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/tasks/queue.py::TaskQueue._submit_idempotent",
+      "path": "packages/maistro-core/src/maistro/tasks/queue.py",
+      "line": 277,
+      "name": "_submit_idempotent",
+      "classname": "TaskQueue",
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "#1176 repair rounds (graft of auto-41 onto the 038/039 chain): the idempotent submit path walks the full claim lifecycle — claim, begin, admit, reconcile the ambiguous window, replay — with compensation at each seam, so the branches are the lifecycle's outcome table rather than incidental nesting. Ratchet at 12 pending the post-merge code-health sweep."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/tools/browser/client.py::BrowserClient._parse_search_output",
       "path": "packages/maistro-core/src/maistro/tools/browser/client.py",
       "line": 220,
