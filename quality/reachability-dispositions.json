@@ -630,6 +630,16 @@
       "modules": [
         "@tool/build-evidence"
       ]
+    },
+    {
+      "id": "graph-pre-durable-retirement",
+      "subsystem": "Graph execution",
+      "disposition": "LIBRARY",
+      "rationale": "What is left of the pre-durable executor after #1154 retired maistro.graph.run_graph. That wrapper built an ephemeral GraphRun and started it, recording no canonical Run/NodeRun/Attempt evidence and no restart recovery, and it was the only import edge into either module: the canonical durable executor in maistro.graph.durable_runs never imported GraphRun, the two executors shared a name rather than code. maistro.graph.executor now holds only execute_with_resilience (ADR-066 / SPEC-070226-af02 P1 retry), and maistro.graph.run holds GraphRun, the ADR-062 traversal the ADR-065 / SPEC-224 test harness drives. maistro-core is a published library (AGENTS.md) and both are importable surfaces for downstream products; holding either reachable by re-exporting a wrapper nothing called would make this gate measure a fiction. LIBRARY rather than CONNECT deliberately: neither is waiting to be wired to a root, and GraphRun is explicitly not an execution authority. maistro.graph.executor is expected to leave the baseline when a shipped caller adopts the P1 retry seam.",
+      "modules": [
+        "maistro.graph.executor",
+        "maistro.graph.run"
+      ]
     }
   ]
 }
