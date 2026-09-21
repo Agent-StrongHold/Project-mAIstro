@@ -43,6 +43,21 @@ all 4:
    apply gate failures" ordering, instead of mutating ``run.context``
    synchronously inside the failing node's own coroutine while a slower
    sibling in the same ``asyncio.gather`` batch could still be running.
+   A follow-up review (2026-09-21) found the ledger's own ``flush()`` was
+   still being called from inside each stage's ``_execute()`` -- safe only
+   if every stage in a wave suspends before another one finishes, which an
+   immediate/fast dispatcher does not guarantee. ``flush()`` now runs once
+   per frontier, from the canonical node resolver (see :func:`_resolver`),
+   which is only ever invoked by the durable walk's synchronous per-frontier
+   prep loop -- strictly after the previous frontier's whole
+   ``asyncio.gather`` batch has returned, and strictly before any member of
+   the new one starts executing. The same review also found the transient
+   "stale guard" skip marker was never cleared before a stage's real
+   redispatch, so a stage that failed for real after an earlier stale defer
+   was misreported as SKIPPED instead of FAILED (:func:`_project_stage`
+   reads ``run.skipped_stages`` before consulting NodeRun status); the
+   marker is now cleared as soon as a stage passes the stale guard, before
+   any real work is attempted.
 2. A gated node with ``revise_target=None`` revises itself (already fixed
    on ``develop`` before this audit landed, by an unrelated commit —
    ``target = node.revise_target or node.name`` here and in
@@ -211,13 +226,29 @@ class _RevisionLedger:
 
     * A failed gate's invalidation is *queued*, not applied, by
       :func:`_gate_decision`. :meth:`flush` applies every queued
-      invalidation exactly once, at the very start of the next stage
-      dispatched -- by construction that is always a *later* frontier, so
-      ``asyncio.gather`` for the wave that produced the invalidation has
-      already returned every one of its coroutines and nothing more can
-      write to the entries being cleared. This reproduces legacy's "gather
-      everything, then apply gate failures" ordering at frontier
-      granularity instead of node granularity.
+      invalidation exactly once, from :func:`_resolver`'s ``resolve``
+      closure -- the canonical durable walk's ``node_resolver`` callback,
+      which ``attempt_executor._execute_frontier`` calls synchronously, once
+      per frontier member, in a plain loop that runs entirely *before* that
+      frontier's ``asyncio.gather`` batch is even created (see
+      ``_execute_frontier``'s ``prepared`` loop). Walk steps are themselves
+      sequential (``_walk_until_settled`` awaits one ``_walk_frontier`` call
+      to completion before starting the next), so by the time ``resolve``
+      is invoked for a frontier, every coroutine from the *previous*
+      frontier's ``asyncio.gather`` has already returned -- nothing more can
+      write to the entries a flush is about to clear. Flushing from
+      ``resolve`` instead of from each stage's own ``_execute`` matters
+      because two stages *in the same wave* both go through ``_execute``
+      too, and with a fast/immediate dispatcher one can run to completion --
+      including queuing its own gate failure -- before a sibling dispatched
+      in the very same ``asyncio.gather`` batch has even started; a flush
+      called from inside ``_execute`` would then apply that invalidation to
+      a wave-mate that hasn't been dispatched yet, failing it out of the
+      wave instead of giving it the dispatch legacy semantics require every
+      admitted wave member to receive. Flushing once per frontier from
+      ``resolve`` reproduces legacy's "gather everything, then apply gate
+      failures" ordering at true frontier granularity instead of node
+      granularity.
     * :attr:`satisfied` mirrors legacy's ``completed | skipped`` set.
       :meth:`ready` answers the same question legacy's own ``ready()``
       asked before ever dispatching a node: are this node's dependencies
@@ -413,14 +444,26 @@ class _StageNode(BaseNode[_StageInput, _StageOutput]):
         self._ledger = ledger
 
     async def _execute(self, inputs: _StageInput, ctx: NodeContext) -> _StageOutput:
-        # Safe here, and only here: by the time any *new* stage is dispatched,
-        # the frontier that produced any queued revision has fully settled
-        # (see _RevisionLedger).
-        self._ledger.flush(self._run)
-
+        # Ledger invalidation is flushed once per frontier from _resolver's
+        # `resolve` closure, not here -- see _RevisionLedger's docstring for
+        # why a per-task flush inside _execute is unsafe against a
+        # fast/immediate dispatcher.
         guard = _stale_guard_output(self._node, self._run, self._ledger)
         if guard is not None:
             return guard
+
+        # Past the stale guard: this is a genuine attempt at this stage's
+        # real terminal work (a real skip, or a real dispatch), not another
+        # transient defer. Clear the transient marker now, before that real
+        # work is attempted, not only after it succeeds -- otherwise a stage
+        # that hit the guard earlier and then genuinely fails here (dispatch
+        # error, timeout, budget exhaustion, a failing on_complete hook)
+        # never reaches _route_stage_result's _unmark_skipped, and
+        # _project_stage -- which checks run.skipped_stages before NodeRun
+        # status -- reports it SKIPPED even though it canonically FAILED.
+        # _skip_output immediately re-marks it if this stage genuinely does
+        # skip, so this is never a false negative.
+        _unmark_skipped(self._run, self._node.name)
 
         skipped = _skip_output(self._node, self._run, self._dispatcher, self._ledger)
         if skipped is not None:
@@ -568,6 +611,15 @@ def _resolver(
     }
 
     def resolve(node_id: str, _canonical_graph: Graph) -> BaseNode[Any, Any]:
+        # `attempt_executor._execute_frontier` calls this once per frontier
+        # member, synchronously, for the *whole* frontier, before creating
+        # that frontier's `asyncio.gather` batch -- and only after the
+        # previous frontier's own batch has fully returned (walk steps are
+        # sequential). That makes this the one place a same-wave revision's
+        # queued invalidation can be applied without a race against a
+        # still-running (or not-yet-started) wave-mate: see
+        # _RevisionLedger's docstring.
+        ledger.flush(run)
         if node_id == _START_NODE_ID:
             return start
         name = _stage_name(node_id)
@@ -699,18 +751,48 @@ def _derived_max_steps(graph: PipelineGraph, budget: IterationBudget) -> int:
     from a Builders pipeline's own size or iteration policy (#1067's defect
     3). A real dispatch always consumes exactly one unit of ``budget``
     (``_reserve_iteration``), so ``budget.max_iterations`` alone already
-    bounds every step that does real work; a skip-only frontier or the
-    multi-root fan-out control frontier (``_entry_frontier``) does not
-    consume the budget, so add one "free" step per graph node plus one for
-    the control frontier -- generous enough that a pipeline Builders' own
-    policy allows is never silently truncated by an unrelated generic
-    ceiling, without handing the walk an unbounded one. ``max()`` against the
-    durable executor's own default keeps small pipelines exactly as bounded
-    as before.
+    bounds every step that does real work.
+
+    A skip-only frontier -- a ``skip_if`` node, the multi-root fan-out
+    control frontier (``_entry_frontier``), or a revision target settling
+    back through its own stale descendants (``_stale_guard_output``) --
+    does not consume the budget, but it is *not* bounded at one free step
+    per graph node for the whole run the way an earlier version of this
+    function assumed. Every gated node's own revision loop (``_gate_decision``
+    / ``max_revisions``) can re-walk its ``revise_target``'s entire stale
+    chain -- target plus every descendant up to the gate itself -- once per
+    failed attempt, and a real dispatch check (``_reserve_iteration``) only
+    ever happens once that whole chain has re-settled. So each of the
+    (at most) ``budget.max_iterations`` real dispatches the budget allows can
+    be preceded by up to ``len(graph) - 1`` free frontiers replaying that
+    chain -- not by one free frontier total. A 100-node pipeline with a
+    single always-skipped root, one always-failing gated child revising it,
+    and 98 unrelated always-skipped roots demonstrates the gap concretely:
+    with the old ``budget.max_iterations + len(graph) + 1`` formula and the
+    default ``max_iterations=300`` the derived bound was 401, but the walk
+    needs roughly ``2 * 300`` steps (one free root-settle frontier
+    alternating with one budget-consuming gate frontier) to legitimately
+    exhaust the 300-iteration budget -- so it hit ``StepBudgetExhausted``
+    after only ~200 real dispatches instead of reaching genuine budget
+    exhaustion.
+
+    Bounding by ``budget.max_iterations * len(graph)`` instead is sound
+    for any topology: every step is either one of the (at most)
+    ``budget.max_iterations`` budget-consuming dispatches, or a free
+    settle-frontier for some node revisited by a revision -- and a single
+    uninterrupted stretch of free frontiers between two real dispatches can
+    touch each of the graph's own nodes at most once (a node cannot be
+    revisited a second time without an intervening gated dispatch, since
+    only a gate's own failure re-queues an invalidation), so it is bounded
+    by ``len(graph)``. ``+ len(graph) + 1`` covers the initial free settle
+    before the first real dispatch and the multi-root control frontier.
+    ``max()`` against the durable executor's own default keeps small,
+    non-revising pipelines exactly as bounded as before.
     """
     from maistro.graph.durable_runs import DEFAULT_MAX_STEPS
 
-    return max(DEFAULT_MAX_STEPS, budget.max_iterations + len(graph) + 1)
+    size = len(graph)
+    return max(DEFAULT_MAX_STEPS, budget.max_iterations * size + size + 1)
 
 
 class CanonicalGraphPipelineExecutor:

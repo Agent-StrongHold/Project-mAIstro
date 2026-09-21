@@ -409,6 +409,114 @@ async def test_revision_dominates_a_concurrent_wave_after_it_settles() -> None:
 
 
 @pytest.mark.asyncio
+async def test_revision_dominates_a_concurrent_wave_with_an_immediate_dispatcher() -> None:
+    """#1067 follow-up (Codex review, 2026-09-21): flush must be per-frontier, not per-task.
+
+    ``test_revision_dominates_a_concurrent_wave_after_it_settles`` only
+    reproduces the wave-ordering race by *delaying* ``gate`` just enough to
+    let ``sibling`` start its own real dispatch first. It does not exercise
+    the version of the race that matters most: with a fast/immediate
+    dispatcher (no artificial delay at all, as here), ``gate`` -- the first
+    task ``asyncio.gather`` steps in this wave -- can run to full completion,
+    including queuing its own gate failure with ``_RevisionLedger``, before
+    ``sibling`` -- its wave-mate in the very same ``asyncio.gather`` batch --
+    ever gets its own first turn. A flush applied from inside each stage's
+    own ``_execute`` (as an earlier version of the #1067 fix did) would then
+    apply that invalidation to ``sibling`` *before* ``sibling`` was ever
+    dispatched, failing it out of the stale guard and silently eating its
+    legacy-mandated real dispatch instead of giving every member of the
+    admitted wave a genuine chance to run -- undoing defect 1's own fix.
+    """
+    graph = PipelineGraph(
+        [
+            _node("plan"),
+            _node(
+                "gate",
+                ("plan",),
+                gate=lambda ctx: str(ctx.get("gate", "")).startswith("OK"),
+                revise_target="plan",
+                max_revisions=2,
+            ),
+            _node("sibling", ("plan",)),
+            _node("successor", ("sibling",)),
+        ]
+    )
+    dispatcher = ScriptedDispatcher(
+        outputs={
+            "gate": ["VIOLATION", "OK"],
+            "sibling": ["sibling-v1", "sibling-v2"],
+            "successor": "successor output",
+        },
+        # No delays at all: gate resolves immediately.
+    )
+
+    canonical_run, _record, _owner = await _canonical(graph, dispatcher)
+
+    assert canonical_run.status == "completed"
+    # `sibling` must be genuinely dispatched twice: once as an ordinary
+    # member of the wave that also contained `gate` (before the revision
+    # was ever decided), and once for real once the revision settles --
+    # never silently skipped out of its first, legitimate dispatch.
+    assert dispatcher.calls.count("sibling") == 2
+    assert dispatcher.calls.count("successor") == 1
+    assert canonical_run.context["sibling"] == "sibling-v2"
+    assert canonical_run.context["successor"] == "successor output"
+    assert canonical_run.skipped_stages == []
+
+
+@pytest.mark.asyncio
+async def test_stale_guard_defer_does_not_survive_a_genuine_later_failure() -> None:
+    """#1067 follow-up (Codex review, 2026-09-21): the transient guard marker must not stick.
+
+    ``successor`` is prematurely routed into a frontier riding on
+    ``sibling``'s stale/incomplete wave (the same setup as
+    ``test_revision_dominates_a_concurrent_wave_after_it_settles``), so it
+    hits ``_stale_guard_output`` and is transiently added to
+    ``run.skipped_stages``. Its later, *genuine* redispatch (once `sibling`
+    truly re-completes) is made to fail for real. Before this fix, nothing
+    ever reached ``_route_stage_result``'s ``_unmark_skipped`` for that real
+    failure, so the transient marker outlived it and
+    ``_project_stage`` -- which checks ``run.skipped_stages`` before NodeRun
+    status -- reported ``successor`` as SKIPPED even though the canonical
+    Run and its NodeRun both genuinely FAILED there.
+    """
+    graph = PipelineGraph(
+        [
+            _node("plan"),
+            _node(
+                "gate",
+                ("plan",),
+                gate=lambda ctx: str(ctx.get("gate", "")).startswith("OK"),
+                revise_target="plan",
+                max_revisions=2,
+            ),
+            _node("sibling", ("plan",)),
+            _node("successor", ("sibling",)),
+        ]
+    )
+    dispatcher = ScriptedDispatcher(
+        outputs={
+            "gate": ["VIOLATION", "OK"],
+            "sibling": ["sibling-v1", "sibling-v2"],
+        },
+        fail={"successor"},
+        delays={"gate": 0.01, "sibling": 0.03},
+    )
+
+    run, record, _owner = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.FAILED
+    assert run.status == "failed at successor"
+    assert run.failed_stage_error == "successor broke"
+    # The transient stale-guard defer must not linger once `successor`'s
+    # real (failing) dispatch has run.
+    assert "successor" not in run.skipped_stages
+    successor_stage = next(stage for stage in run.stages if stage.name == "successor")
+    assert successor_stage.status is StageStatus.FAILED
+    assert successor_stage.error == "successor broke"
+
+
+@pytest.mark.asyncio
 async def test_gate_without_revise_target_reoffers_itself_and_records_new_evidence() -> None:
     graph = PipelineGraph([_node("review", gate=lambda _ctx: False, max_revisions=1)])
     dispatcher = ScriptedDispatcher()
@@ -820,6 +928,53 @@ def test_derived_max_steps_covers_a_representative_wide_pipeline() -> None:
     # Every real dispatch consumes exactly one unit of `budget`
     # (_reserve_iteration), so the bound must cover the whole budget too.
     assert bound >= budget.max_iterations
+
+
+def test_derived_max_steps_covers_repeated_revision_driven_free_frontiers() -> None:
+    """#1067 follow-up (Codex review, 2026-09-21): one free step per node isn't enough.
+
+    Concrete counterexample from the review: a 100-node graph with one
+    always-skipped root, one always-failing gated child that revises that
+    root, and 98 other unrelated always-skipped roots. The prior formula
+    (``budget.max_iterations + len(graph) + 1``) assumed a skip-only
+    frontier happens at most once per node for the whole run, but a
+    revision can replay an already-skipped node's frontier once per failed
+    attempt: the walker alternates one free skipped-root frontier with one
+    budget-consuming gate frontier, so legitimately exhausting the default
+    300-iteration budget needs roughly ``2 * 300`` steps, not the ``401``
+    the old formula derived -- it used to hit ``StepBudgetExhausted`` after
+    only ~200 real executions.
+
+    This does not run the walk end to end (see
+    ``test_derived_max_steps_covers_a_representative_wide_pipeline`` for why
+    that is impractically slow); it proves the derived bound itself now
+    comfortably covers the steps such a run would legitimately need.
+    """
+    size = 100
+    nodes = [_node("root", skip_if=lambda _ctx: True)]
+    nodes.append(
+        _node(
+            "gate",
+            ("root",),
+            gate=lambda _ctx: False,
+            revise_target="root",
+            max_revisions=1000,
+        )
+    )
+    nodes.extend(_node(f"padding-{i}", skip_if=lambda _ctx: True) for i in range(size - 2))
+    graph = PipelineGraph(nodes)
+    budget = IterationBudget(max_iterations=300)
+
+    bound = _derived_max_steps(graph, budget)
+    old_formula_bound = budget.max_iterations + len(graph) + 1
+
+    # The walker alternates one free `root`-settle frontier with one
+    # budget-consuming `gate` frontier, so it needs roughly 2 steps per
+    # allowed real dispatch (plus a small constant for the initial control
+    # frontier) to legitimately exhaust the budget.
+    required = 2 * budget.max_iterations + 2
+    assert old_formula_bound < required, "counterexample must actually defeat the old formula"
+    assert bound >= required
 
 
 @pytest.mark.asyncio

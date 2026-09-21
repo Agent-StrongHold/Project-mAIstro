@@ -366,7 +366,22 @@ or placeholder-only section.
   (4) two stages failing in the same concurrent wave now project one
   consistent authoritative failed stage and error, derived from canonical's
   own selected failure, instead of a reversed `NodeRun` scan paired with a
-  separately racing shared error variable.
+  separately racing shared error variable. A follow-up review found three
+  correctness gaps in that same fix before merge: the revision ledger's
+  `flush()` was applied once per *stage dispatch* rather than once per
+  *frontier*, so a fast/immediate dispatcher could still fail a genuine
+  wave-mate out of its own admitted wave (the flush now runs from the
+  canonical node resolver, which only ever fires once per frontier, strictly
+  after the previous frontier's whole dispatch batch has returned); the
+  transient "stale guard" skip marker was not cleared before a stage's real
+  redispatch, so a stage that failed for real after an earlier stale defer
+  was misreported `SKIPPED` instead of `FAILED` (now cleared as soon as the
+  stale guard is passed, before any real work is attempted); and the derived
+  step bound assumed a skip-only frontier happens at most once per graph
+  node for the whole run, undercounting a revision that repeatedly replays
+  an already-skipped node's frontier (now scales the free-frontier
+  allowance by graph size per real dispatch, not by a flat one-per-node
+  total).
 
 - **Every ADR body status line now agrees with its front matter, and the
   body-status ratchet is empty (no linked issue: completes the `#387` cleanup
