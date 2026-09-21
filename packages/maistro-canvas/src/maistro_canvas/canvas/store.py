@@ -717,6 +717,110 @@ class PgCanvasStore:
             rows = result.mappings().all()
             return [_coerce_job(r) for r in rows]
 
+    async def claim_next_pending(
+        self, worker_id: str, lease_seconds: int
+    ) -> GenerationJobRecord | None:
+        """Atomically claim the oldest pending receipt for one worker lease."""
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        async with AsyncSession(self._engine) as session:
+            claimed = await session.execute(
+                text("""
+                    WITH candidate AS (
+                        SELECT j.id
+                        FROM generation_jobs j
+                        JOIN layers l ON l.id = j.layer_id
+                        JOIN canvases c ON c.id = l.canvas_id
+                        WHERE j.status = 'pending'
+                        ORDER BY j.created_at ASC
+                        FOR UPDATE OF j SKIP LOCKED
+                        LIMIT 1
+                    )
+                    UPDATE generation_jobs AS j
+                    SET status = 'running',
+                        attempts = j.attempts + 1,
+                        leased_by = :worker,
+                        lease_expires_at = now() + (:lease_seconds * INTERVAL '1 second'),
+                        started_at = COALESCE(j.started_at, now())
+                    FROM candidate
+                    WHERE j.id = candidate.id
+                    RETURNING j.id
+                """),
+                {"worker": worker_id, "lease_seconds": lease_seconds},
+            )
+            row = claimed.first()
+            if row is None:
+                return None
+            result = await session.execute(
+                text("""
+                    SELECT j.*, c.org_id
+                    FROM generation_jobs j
+                    JOIN layers l ON l.id = j.layer_id
+                    JOIN canvases c ON c.id = l.canvas_id
+                    WHERE j.id = :id
+                """),
+                {"id": row[0]},
+            )
+            job_row = result.mappings().first()
+            if job_row is None:
+                raise JobNotFoundError(str(row[0]))
+            await session.commit()
+            return _coerce_job(job_row)
+
+    async def reap_expired_leases(self) -> list[GenerationJobRecord]:
+        """Requeue expired leases or terminalize receipts at their retry ceiling."""
+        async with AsyncSession(self._engine) as session:
+            reaped = await session.execute(
+                text("""
+                    WITH expired AS (
+                        SELECT j.id
+                        FROM generation_jobs j
+                        WHERE j.status = 'running'
+                          AND j.lease_expires_at IS NOT NULL
+                          AND j.lease_expires_at < now()
+                        FOR UPDATE OF j SKIP LOCKED
+                    )
+                    UPDATE generation_jobs AS j
+                    SET status = CASE
+                            WHEN j.attempts >= j.max_attempts THEN 'failed'
+                            ELSE 'pending'
+                        END,
+                        error_message = CASE
+                            WHEN j.attempts >= j.max_attempts
+                                THEN COALESCE(j.error_message,
+                                    'Generation failed: worker lost (lease expired).')
+                            ELSE j.error_message
+                        END,
+                        completed_at = CASE
+                            WHEN j.attempts >= j.max_attempts THEN now()
+                            ELSE j.completed_at
+                        END,
+                        leased_by = NULL,
+                        lease_expires_at = NULL
+                    FROM expired
+                    WHERE j.id = expired.id
+                    RETURNING j.id
+                """),
+            )
+            ids = [row[0] for row in reaped]
+            if not ids:
+                await session.commit()
+                return []
+            result = await session.execute(
+                text("""
+                    SELECT j.*, c.org_id
+                    FROM generation_jobs j
+                    JOIN layers l ON l.id = j.layer_id
+                    JOIN canvases c ON c.id = l.canvas_id
+                    WHERE j.id = ANY(:ids)
+                    ORDER BY j.created_at ASC
+                """),
+                {"ids": ids},
+            )
+            rows = result.mappings().all()
+            await session.commit()
+            return [_coerce_job(row) for row in rows]
+
     # ── Composites ────────────────────────────────────────────────────
 
     async def save_composite(self, result: CompositeResult, *, org_id: str) -> CompositeResult:
