@@ -350,6 +350,24 @@ or placeholder-only section.
 
 ### Fixed
 
+- **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
+  predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
+  keyword argument, with a default, when `Schedule.recovered_occurrences`
+  recovery landed (#1059) -- but the admitter named it on every call
+  regardless of whether there was anything to credit, so an external
+  `ScheduleStore` implementation using the previously valid
+  `record_fire(self, schedule_id, *, fired_at, run_id, next_due_at,
+  fires=None, disable=False)` signature raised `TypeError: unexpected
+  keyword argument 'recovered'` on every ordinary recurring fire after
+  upgrading, not merely a recovering one. `recovered=` is now passed only
+  when the set is non-empty, which keeps the common, no-recovery case
+  working unchanged against an older store; a genuinely recovered claim
+  still names it, and a store that cannot accept it still fails loudly
+  rather than silently losing the credit. `maistro-core`'s own
+  implementations (the protocol, `InMemoryScheduleStore`,
+  `SqliteScheduleStore`, `PgScheduleStore`) already accept the keyword and
+  are unaffected.
+
 - **Every ADR body status line now agrees with its front matter, and the
   body-status ratchet is empty (no linked issue: completes the `#387` cleanup
   begun in the entry below).** The 28 legacy contradictions `#387` banked are

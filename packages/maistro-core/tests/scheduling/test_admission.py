@@ -143,6 +143,66 @@ class _FailingOccurrenceLookup:
         return await self._inner.get_run_for_occurrence(schedule_id, scheduled_for)
 
 
+class _CountingRunStore:
+    """A run store that records every occurrence-claim lookup it receives,
+    singular and batched, so a test can tell which path a caller took without
+    reaching into the admitter's internals (#1533)."""
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self.single_calls: list[tuple[str, str]] = []
+        self.batch_calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        self.single_calls.append((schedule_id, scheduled_for))
+        return await self._inner.get_run_for_occurrence(schedule_id, scheduled_for)
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Any
+    ) -> dict[str, Run]:
+        batch = tuple(scheduled_fors)
+        self.batch_calls.append((schedule_id, batch))
+        return await self._inner.get_runs_for_occurrences(schedule_id, batch)
+
+
+class _LegacyScheduleStore:
+    """A `ScheduleStore` predating `recovered` (#1533): its `record_fire`
+    declares no such parameter at all, matching what an external
+    implementer's method signature looked like before #1059 added it. Any
+    call naming `recovered=` explicitly — whatever value it carries — raises
+    `TypeError` here, the same as it would against a real implementation
+    frozen at the old contract.
+    """
+
+    def __init__(self, inner: InMemoryScheduleStore) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def record_fire(
+        self,
+        schedule_id: str,
+        *,
+        fired_at: datetime | None,
+        run_id: str | None,
+        next_due_at: datetime | None,
+        fires: int | None = None,
+        disable: bool = False,
+    ) -> Schedule | None:
+        return await self._inner.record_fire(
+            schedule_id,
+            fired_at=fired_at,
+            run_id=run_id,
+            next_due_at=next_due_at,
+            fires=fires,
+            disable=disable,
+        )
+
+
 class TestProvenance:
     async def test_the_run_names_the_schedule_that_fired_it(self, harness) -> None:
         """#46's "provenance retained **on the Run**", which is the whole point.
@@ -1453,6 +1513,89 @@ class TestTruncatedOccurrencesAreStillProbedForClaims:
         assert live is not None and live.status not in TERMINAL_RUN_STATUSES
 
 
+class TestTruncatedClaimsAreProbedInOneBatch:
+    """Codex review on #1533: probing every truncated occurrence one at a
+    time — the fix above put them back in the claim lookup — turns a single
+    recovery tick into one awaited Run-store query per truncated occurrence,
+    serially. `_enumerate_due` can truncate tens of thousands of them on a
+    schedule stuck far longer than its cadence allows, so that fix needed its
+    own fix: the dropped tail is now probed through one batched call, bounded
+    by `_MAX_TRUNCATED_CLAIM_PROBES`."""
+
+    async def test_the_truncated_tail_costs_one_batched_call_not_one_per_occurrence(
+        self, harness
+    ) -> None:
+        _admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            cron="* * * * *",
+            overlap_policy=OverlapPolicy.ALLOW,
+            last_fired_at=NOON - timedelta(minutes=1),
+            catchup_window_seconds=600 * 60.0,
+        )
+        # Same 600-due / 88-truncated shape as the fix above's own test.
+        crashed_at = NOON + timedelta(minutes=10)
+        await _crashed_before_record_fire(harness, schedule, crashed_at)
+
+        counting = _CountingRunStore(runs)  # type: ignore[arg-type]
+        spying = ScheduleRunAdmitter(counting, templates, schedules)  # type: ignore[arg-type]
+
+        later = await spying.admit_due(
+            schedule, now=NOON + timedelta(minutes=600), active_run=False
+        )
+
+        assert crashed_at in later.already_fired, "the missing-winner fix still holds"
+        assert crashed_at.isoformat() not in {call[1] for call in counting.single_calls}, (
+            "the truncated occurrence must not reach the one-at-a-time path"
+        )
+        assert len(counting.batch_calls) == 1, "one batched query for the whole tail"
+        assert len(counting.batch_calls[0][1]) == 88, "all 88 truncated occurrences, in one call"
+        assert crashed_at.isoformat() in counting.batch_calls[0][1]
+
+    async def test_a_very_large_truncated_tail_is_bounded_and_batched(self, harness) -> None:
+        """Bounded to `_MAX_TRUNCATED_CLAIM_PROBES`, not the whole tail — the
+        newest of the dropped occurrences, closest to what `evaluate()` kept,
+        are probed first."""
+        _admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            cron="* * * * *",
+            overlap_policy=OverlapPolicy.ALLOW,
+            last_fired_at=NOON - timedelta(minutes=1),
+            # 1600 due, 512 kept -> 1088 truncated, well past the 512-probe
+            # bound.
+            catchup_window_seconds=1600 * 60.0,
+        )
+        # The newest truncated occurrence: inside the bounded, batched probe.
+        found_winner = NOON + timedelta(minutes=1088)
+        await _crashed_before_record_fire(harness, schedule, found_winner)
+        # The oldest truncated occurrence: past the bound, never probed.
+        unreachable_winner = NOON + timedelta(minutes=1)
+        await _crashed_before_record_fire(harness, schedule, unreachable_winner)
+
+        counting = _CountingRunStore(runs)  # type: ignore[arg-type]
+        spying = ScheduleRunAdmitter(counting, templates, schedules)  # type: ignore[arg-type]
+
+        later = await spying.admit_due(
+            schedule, now=NOON + timedelta(minutes=1600), active_run=False
+        )
+
+        assert len(counting.batch_calls) == 1
+        assert len(counting.batch_calls[0][1]) == 512, "bounded to _MAX_TRUNCATED_CLAIM_PROBES"
+        assert found_winner in later.already_fired
+        assert unreachable_winner not in later.already_fired, (
+            "beyond the bound is the documented, known limit -- not a silent scan"
+        )
+        # Both Runs still exist; only the *reporting* of the older one missed
+        # it, not the firing itself.
+        assert (
+            await runs.get_run_for_occurrence(schedule.schedule_id, unreachable_winner.isoformat())
+            is not None
+        )
+
+
 class TestConsumedOccurrencesKeepTheirOwnRunId:
     """Codex review on #1269: `consumed` and its Run ids must stay paired
     even when a seeded (off-batch) claim sits chronologically *after* one of
@@ -1488,6 +1631,115 @@ class TestConsumedOccurrencesKeepTheirOwnRunId:
         linked = await runs.get_run(stored.last_run_id)
         assert linked is not None
         assert linked.provenance[SCHEDULED_FOR_KEY] == stored.last_fired_at.isoformat()
+
+
+class TestRecoveryCreditSurvivesAMissedClaim:
+    """Codex review on #1533: a rival ticker's claim lookup can transiently
+    fail on exactly the pre-horizon occurrence another ticker later
+    discovers. The cursor-position dedup this store used to rely on treated
+    "the cursor already moved past it" as proof the occurrence was credited
+    — true only when the writer that moved the cursor also saw the claim.
+    Here it does not: that writer's own, unrelated due fire is what carries
+    `last_fired_at` past the crashed winner, with no idea the winner exists.
+    """
+
+    async def test_a_missed_claim_is_still_credited_once_a_rival_finds_it(self, harness) -> None:
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.ALLOW)
+        # A winner crashed before recording NOON, well behind the default
+        # one-hour catchup window three hours later — a pre-horizon claim
+        # only the recovery walk, not ordinary enumeration, will see.
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        blind = ScheduleRunAdmitter(
+            _FailingOccurrenceLookup(  # type: ignore[arg-type]
+                runs, failing=(schedule.schedule_id, NOON.isoformat())
+            ),
+            templates,
+            schedules,
+        )
+        now = NOON + timedelta(hours=3)
+
+        # Ticker A: its probe of NOON's claim fails transiently, but it still
+        # has the NOON+3h occurrence due, so its own `record_fire` carries
+        # `last_fired_at` straight past NOON without ever learning the
+        # crashed winner exists.
+        first = await blind.admit_due(schedule, now=now, active_run=False)
+        assert len(first.run_ids) == 1
+        assert first.already_fired == (), "NOON's claim was never seen by this ticker"
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_fired_at == now, "the cursor jumped straight past NOON"
+        assert stored.runs_so_far == 1, "NOON's crashed winner is not credited yet"
+
+        # Ticker B: the *same* stale snapshot `schedule` (last_fired_at still
+        # NOON-1h in this Python object), a working occurrence lookup. Its
+        # own recovery walk finds NOON's claim and wants to credit it, even
+        # though the store's cursor has already moved past it.
+        second = await admitter.admit_due(schedule, now=now, active_run=False)
+
+        assert NOON in second.already_fired
+        final = await schedules.get(schedule.schedule_id)
+        assert final is not None
+        assert final.runs_so_far == 2, "NOON's crashed winner is credited exactly once, not lost"
+        assert NOON in final.recovered_occurrences
+        assert await runs.get_run(winner) is not None, "the crashed winner's Run is untouched"
+
+
+class TestRecordFireStaysCompatibleWithAnOlderScheduleStore:
+    """Codex review on #1533: `ScheduleRunAdmitter` named `record_fire`'s
+    `recovered=` keyword on every call, recovering or not. An external
+    `ScheduleStore` implementation using the previously valid signature —
+    with no `recovered` parameter at all — raised `TypeError` on every
+    ordinary recurring fire after upgrading, not merely a recovering one.
+    """
+
+    async def test_an_ordinary_fire_needs_no_recovered_parameter(self, harness) -> None:
+        _admitter, runs, templates, schedules, project_id = harness
+        legacy = _LegacyScheduleStore(schedules)  # type: ignore[arg-type]
+        legacy_admitter = ScheduleRunAdmitter(runs, templates, legacy)  # type: ignore[arg-type]
+        schedule = await _schedule(schedules, project_id)
+
+        result = await legacy_admitter.admit_due(schedule, now=NOON)
+
+        assert len(result.run_ids) == 1
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 1
+
+    async def test_the_due_cursor_only_path_already_needed_no_recovered_parameter(
+        self, harness
+    ) -> None:
+        """`_consume_without_firing`'s due-cursor-only write never named
+        `recovered` even before this fix — asserted so a future change to it
+        cannot regress this call site silently."""
+        _admitter, runs, templates, schedules, project_id = harness
+        legacy = _LegacyScheduleStore(schedules)  # type: ignore[arg-type]
+        legacy_admitter = ScheduleRunAdmitter(runs, templates, legacy)  # type: ignore[arg-type]
+        # Nothing due yet: only the due cursor moves.
+        schedule = await _schedule(schedules, project_id, last_fired_at=NOON, next_due_at=None)
+
+        result = await legacy_admitter.admit_due(schedule, now=NOON + timedelta(minutes=1))
+
+        assert result.run_ids == ()
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.next_due_at == NOON + timedelta(hours=1)
+
+    async def test_a_genuinely_recovered_claim_still_fails_loudly_against_it(self, harness) -> None:
+        """The honest outcome: a store that cannot accept a recovered credit
+        must not silently lose it. This is a real gap in that store, not a
+        bug this admitter should paper over."""
+        _admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.ALLOW)
+        await _crashed_before_record_fire(harness, schedule, NOON)
+        legacy = _LegacyScheduleStore(schedules)  # type: ignore[arg-type]
+        legacy_admitter = ScheduleRunAdmitter(runs, templates, legacy)  # type: ignore[arg-type]
+
+        with pytest.raises(TypeError, match="recovered"):
+            await legacy_admitter.admit_due(
+                schedule, now=NOON + timedelta(hours=3), active_run=False
+            )
 
 
 class TestAdmissionState:
