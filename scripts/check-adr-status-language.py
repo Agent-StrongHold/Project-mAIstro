@@ -35,10 +35,17 @@ Run:  python scripts/check-adr-status-language.py
 Bank: python scripts/check-adr-status-language.py --update
 
 The baseline is per-identity for the legacy `**Status:**` lines written before
-front matter was canonical (28 of them at #387's filing, all "body says an
-older status"): a new one fails, and a fixed one must shrink the ledger in the
-same change. Category-2 and category-3 contradictions are *not* baselined —
-they were zero at filing, so any occurrence is new.
+front matter was canonical: a new one fails, and a fixed one must shrink the
+ledger in the same change. Category-2 and category-3 contradictions are *not*
+baselined — they were zero at filing, so any occurrence is new.
+
+**The ledger is now empty.** #387 banked 28 legacy lines it could see; the
+19 list-form spec lines it could not see were corrected when the category
+learned that spelling, and the 28 were corrected after. Every body status
+line in the corpus now agrees with its front matter, so the ratchet has
+nothing left to tolerate and any contradiction this gate reports is new by
+construction. Refilling it is an expansion, which the provenance adapter
+requires a landed grant for (#534) — prefer fixing the document.
 """
 
 from __future__ import annotations
@@ -208,7 +215,9 @@ def _write_baseline(problems: list[StatusProblem]) -> None:
             "Legacy body '**Status:**' lines written before front matter was canonical (#379). "
             "Body status language is checked per-identity (#387): a new contradiction fails, "
             "and a fixed one must shrink this ledger in the same change. Banner and "
-            "status-assertion contradictions are never baselined."
+            "status-assertion contradictions are never baselined. This ledger is empty: the "
+            "whole corpus now agrees with its front matter, so an entry here would be a "
+            "tolerance nothing currently needs — fix the document instead."
         ),
         "known": sorted({p.identity for p in problems}),
         "details": {p.identity: p.detail for p in sorted(problems, key=lambda p: p.identity)},

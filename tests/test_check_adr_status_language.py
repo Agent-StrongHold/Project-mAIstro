@@ -241,18 +241,26 @@ def test_the_claim_is_the_whole_value_not_its_first_word(sandbox) -> None:
 
 
 def test_fixing_a_baselined_body_status_line_requires_pruning(sandbox, capsys) -> None:
-    """A fixed contradiction must shrink the ledger in the same change."""
-    ledgered = next(
-        line.strip().strip('"')
-        for line in sandbox.LEDGER.read_text().splitlines()
-        if " :: body-status-line" in line
-    )
-    filename = ledgered.split(" ::")[0].split("/")[-1]
-    path = sandbox.DOC_ROOTS[0] / filename
+    """A fixed contradiction must shrink the ledger in the same change.
+
+    The contradiction is introduced and banked here rather than borrowed from
+    the committed ledger. It used to read whichever identity the real ledger
+    happened to carry, which made the test a hostage of the corpus's legacy
+    debt: draining that ledger to zero left this `next(...)` with nothing to
+    find and the ratchet's central rule untested exactly when the corpus was
+    finally clean.
+    """
+    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
     status = _front_matter_status(path)
-    patched, count = _replace_first_status_line(path.read_text(), status)
-    assert count == 1, f"{filename} has no body status line to fix"
-    path.write_text(patched)
+    contradicted, count = _replace_first_status_line(
+        path.read_text(), "Proposed" if status != "Proposed" else "Accepted"
+    )
+    assert count == 1
+    path.write_text(contradicted)
+    assert sandbox.main(["--update"]) == 0, "the contradiction is banked first"
+    capsys.readouterr()
+
+    path.write_text(_replace_first_status_line(contradicted, status)[0])
 
     assert sandbox.main([]) == 1
     assert "no longer found" in capsys.readouterr().out
@@ -392,10 +400,19 @@ def test_a_missing_ledger_means_no_known_exceptions(sandbox) -> None:
 
 def test_update_banks_the_current_state_and_then_passes(sandbox, capsys) -> None:
     """`--update` is how a reviewed legacy exception is banked: it writes
-    exactly what the audit found, and the next ordinary run passes."""
+    exactly what the audit found, and the next ordinary run passes.
+
+    The state to bank is introduced here. Asserting that the *corpus* carries
+    contradictions made a clean corpus fail this test, which inverts what the
+    suite is for — the gate's banking behavior is the subject, not how much
+    legacy debt happens to be outstanding.
+    """
+    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
+    other = "Proposed" if _front_matter_status(path) != "Proposed" else "Accepted"
+    path.write_text(_replace_first_status_line(path.read_text(), other)[0])
     sandbox.LEDGER.unlink()
     found = {p.identity for p in sandbox.audit()}
-    assert found, "the sandbox corpus carries the legacy contradictions"
+    assert found, "the introduced contradiction is what --update must bank"
 
     assert sandbox.main(["--update"]) == 0
     out = capsys.readouterr().out

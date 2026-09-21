@@ -211,6 +211,19 @@ or placeholder-only section.
   Invocation with Run/NodeRun/Attempt correlation, and incorrect Workspace
   scope is rejected before the physical transport is invoked).
 
+- **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
+  execution (#735).** `maistro_canvas`'s durable generation runner is wired to
+  the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
+  generation-job progress through real `Run`/`NodeRun`/`Attempt` records
+  instead of a Canvas-local job shape, and `protocols.py` gains the store
+  surface the canonical path needs. `test_canonical_executor_integration.py`
+  and `test_store_scope_conformance.py` cover the wiring; the maistro-core
+  side lands alongside durable-runs executor and HITL-settlement hardening
+  from the same convergence work (resume-lease and HITL-deadline handling,
+  `human_approve_draft`/`human_delegate_to_role`/`human_review_and_edit`
+  declaring their authorities, and an accepted-outcome-required check on
+  parked Run resume).
+
 - **Hive DAG execution (WebSocket run + optimizer) requires and carries a
   canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
   resolves a client-selected `workspace_id` through the canonical
@@ -355,6 +368,21 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **Every ADR body status line now agrees with its front matter, and the
+  body-status ratchet is empty (no linked issue: completes the `#387` cleanup
+  begun in the entry below).** The 28 legacy contradictions `#387` banked are
+  corrected rather than carried: 25 ADRs whose body said `Proposed` while
+  front matter said `Accepted`, 2 saying `Proposed` against `Deferred`, and
+  `ADR-001` saying `Accepted` against `Superseded` on a document whose own
+  banner already pointed at `ADR-095`. Readers of those 28 were being told a
+  weaker status than the lifecycle machine, the AC ladder and the citation
+  gate all act on. `quality/adr-status-language-baseline.json` is now `[]`, so
+  the gate has nothing left to tolerate and any contradiction it reports is
+  new by construction; refilling it is an expansion needing a landed grant
+  (`#534`). Two tests that sourced their fixture from the ledger being
+  non-empty now introduce and bank their own contradiction, so a clean corpus
+  no longer fails the suite that guards it.
 
 - **The body/front-matter status gate no longer exempts documents by the shape
   of their status line (no linked issue: found while fixing the order-dependent

@@ -235,6 +235,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1162",
       "reason": "SqliteEventOutbox.dead_letters is the #1162 public read surface for the terminal dead-letter disposition: it returns the rows whose durable append exhausted the attempt bound, oldest first, with their failure evidence (attempts, last_error, failed_at). No production entry point in this repository drains it yet - pending_count() deliberately excludes dead-lettered rows and points at this accessor, and the readers today are the test suite (test_outbox.py asserts its contents and ordering; invisible to the src-only scan) plus downstream consumers of the SQLite outbox, for which maistro-core is a published library. Expected to gain an in-repo reader when a shipped process surfaces dead-letter evidence, at which point the entry leaves the baseline."
+    },
+    "packages/maistro-core/src/maistro/state.py::unused method 'put_model_unique'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1248",
+      "reason": "PersistedStore.put_model_unique is the #1248 concurrency-safe write primitive behind the username-registration race fix: it claims a row in the new unique_fields table inside the same write transaction as the model row, so two concurrent registrations for the same username can no longer both succeed. Its only caller, ModelStore.__setitem__ (packages/hive-conductor/backend/services/model_store.py), reaches it through getattr(self._persisted, \"put_model_unique\", None) duck-typed indirection so the same ModelStore works against non-PersistedStore backends in tests; Vulture's static analysis cannot trace a getattr-dispatched call, hence the 60% confidence. Exercised directly by packages/maistro-core/tests/state/test_persisted_store.py::TestPutModelUnique and indirectly by packages/hive-conductor/backend/tests/test_registration_policy.py's concurrent-registration tests."
+    },
+    "packages/maistro-core/src/maistro/state.py::unused method 'put_model_if_unique'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1248",
+      "reason": "PersistedStore.put_model_if_unique is put_model_unique's non-raising twin, returning False instead of raising when the unique claim is already held -- the primitive ModelStore.put_if_unique needs to report a conflict as a normal return rather than an exception. Reached the same way, through ModelStore.__setitem__/put_if_unique's getattr(self._persisted, \"put_model_if_unique\", None) duck-typed indirection, invisible to Vulture's static call graph. Exercised directly by packages/maistro-core/tests/state/test_persisted_store.py::TestPutModelIfUnique and indirectly by packages/hive-conductor/backend/tests/test_registration_policy.py's concurrent-registration tests."
     }
   },
   "model-egress": {
