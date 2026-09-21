@@ -549,6 +549,63 @@ class TestInvitations:
         assert len(stores.users) == before + 1
         assert [u.username for u in stores.users.values()].count("same-username") == 1
 
+    def test_durable_claim_loses_after_the_in_memory_check_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`put_if_unique` is authoritative even when `_username_taken` said yes (#1248).
+
+        `_username_taken` reads the in-memory dict; `put_if_unique` makes the
+        durable claim. A process that lost the durable race after its own
+        in-memory check passed (e.g. it was serving a stale snapshot, or
+        another writer's row landed between the two calls) must still be
+        refused — the route falls through to the `put_if_unique` branch's own
+        409, not the earlier `_username_taken` one, and the throttle still
+        charges the failure.
+        """
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        rp.set_mode("open", actor="admin:test")
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+        real_put_if_unique = stores.users.put_if_unique
+        calls: list[tuple[str, str]] = []
+
+        def losing_put_if_unique(key: str, value: Any, field_name: str) -> bool:
+            # `_username_taken` has already returned False for this name (it's
+            # not in the dict yet) by the time this runs — this simulates the
+            # durable backend discovering the claim is not actually free.
+            calls.append((key, field_name))
+            return False
+
+        monkeypatch.setattr(stores.users, "put_if_unique", losing_put_if_unique)
+        before = len(stores.users)
+        before_failures = {
+            key: len(times)
+            for key, times in auth_routes._REGISTER_THROTTLE._store._failures.items()
+        }
+
+        client = TestClient(app)
+        response = client.post("/v1/auth/register", json=_register_body("durable-race-loser"))
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Username is already taken."
+        assert calls, "put_if_unique must have been reached"
+        assert len(stores.users) == before
+        assert "durable-race-loser" not in [u.username for u in stores.users.values()]
+        after_failures = {
+            key: len(times)
+            for key, times in auth_routes._REGISTER_THROTTLE._store._failures.items()
+        }
+        assert after_failures != before_failures
+
+        monkeypatch.setattr(stores.users, "put_if_unique", real_put_if_unique)
+
     def test_independent_process_writers_publish_one_username(self, tmp_path: pathlib.Path) -> None:
         """The SQLite uniqueness claim survives separate application processes (#1248)."""
         from models.schemas import HiveUser

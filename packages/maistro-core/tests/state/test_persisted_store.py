@@ -252,3 +252,211 @@ class TestMultipleStores:
 
         assert store.get("missions", "k1", SampleModel) is None
         assert store.get("agents", "k1", SampleModel) is not None
+
+
+class TwoFieldModel(BaseModel):
+    """A model with two candidate unique fields, for testing multi-field claims."""
+
+    id: str
+    name: str
+    email: str
+
+
+class TestPutModelUnique:
+    """PersistedStore.put_model_unique (#1248/#1259) — the transactional upsert
+    that keeps a record's durable uniqueness claim(s) consistent with its row.
+
+    The claim table (``unique_fields``) is normalized-value keyed per
+    (store_name, field_name); a write that would collide with a claim held by
+    a *different* record key is rejected before either table is touched.
+    """
+
+    def test_new_record_claims_the_field_and_persists(self, state_with_store) -> None:
+        state, store = state_with_store
+        model = SampleModel(id="u1", name="alice")
+
+        assert store.put_model_unique("users", "u1", model, ("name",)) is True
+
+        got = store.get("users", "u1", SampleModel)
+        assert got is not None
+        assert got.name == "alice"
+
+        reader = state.open_reader()
+        try:
+            row = reader.execute(
+                "SELECT record_key FROM unique_fields "
+                "WHERE store_name = ? AND field_name = ? AND normalized_value = ?",
+                ("users", "name", "alice"),
+            ).fetchone()
+        finally:
+            reader.close()
+        assert row is not None
+        assert row[0] == "u1"
+
+    def test_resaving_the_same_key_updates_without_conflict(self, state_with_store) -> None:
+        """The claim belongs to the row's own key, so re-upserting it is not
+        a collision (`existing[0] != key` is False) — it takes the DELETE +
+        re-INSERT path and still lands the new field values."""
+        state, store = state_with_store
+        store.put_model_unique("users", "u1", SampleModel(id="u1", name="alice"), ("name",))
+
+        assert (
+            store.put_model_unique(
+                "users", "u1", SampleModel(id="u1", name="alice", value=7), ("name",)
+            )
+            is True
+        )
+
+        got = store.get("users", "u1", SampleModel)
+        assert got.value == 7
+        reader = state.open_reader()
+        try:
+            count = reader.execute(
+                "SELECT COUNT(*) FROM unique_fields WHERE store_name = ? AND record_key = ?",
+                ("users", "u1"),
+            ).fetchone()[0]
+        finally:
+            reader.close()
+        assert count == 1
+
+    def test_second_key_with_same_normalized_value_is_rejected(self, state_with_store) -> None:
+        state, store = state_with_store
+        store.put_model_unique("users", "u1", SampleModel(id="u1", name="alice"), ("name",))
+
+        # Casefold-equal, not identical — the claim compares normalized values.
+        rejected = store.put_model_unique(
+            "users", "u2", SampleModel(id="u2", name="Alice"), ("name",)
+        )
+
+        assert rejected is False
+        assert store.get("users", "u2", SampleModel) is None
+        reader = state.open_reader()
+        try:
+            count = reader.execute(
+                "SELECT COUNT(*) FROM unique_fields WHERE store_name = ? AND record_key = ?",
+                ("users", "u2"),
+            ).fetchone()[0]
+        finally:
+            reader.close()
+        assert count == 0
+
+    def test_second_unique_field_collision_also_rejects(self, state_with_store) -> None:
+        """Every field in `unique_fields` is a separate claim; a collision on
+        the second one is enough to refuse the whole write, and the first
+        field's still-free value must not be claimed either (the loop returns
+        before any INSERT)."""
+        state, store = state_with_store
+        store.put_model_unique(
+            "users",
+            "u1",
+            TwoFieldModel(id="u1", name="alice", email="a@example.com"),
+            ("name", "email"),
+        )
+
+        rejected = store.put_model_unique(
+            "users",
+            "u2",
+            TwoFieldModel(id="u2", name="bob", email="a@example.com"),
+            ("name", "email"),
+        )
+
+        assert rejected is False
+        assert store.get("users", "u2", TwoFieldModel) is None
+        reader = state.open_reader()
+        try:
+            row = reader.execute(
+                "SELECT record_key FROM unique_fields "
+                "WHERE store_name = ? AND field_name = ? AND normalized_value = ?",
+                ("users", "name", "bob"),
+            ).fetchone()
+        finally:
+            reader.close()
+        # The `name` field was free, but must not have been claimed on a
+        # write that was refused for the `email` collision.
+        assert row is None
+
+    def test_bad_field_name_surfaces_as_runtime_error(self, state_with_store) -> None:
+        """An attribute error inside the writer thread's transaction is
+        caught, rolled back, and re-raised on the calling thread — never
+        left to hang or to silently drop the write."""
+        _, store = state_with_store
+        model = SampleModel(id="u1", name="alice")
+
+        with pytest.raises(RuntimeError, match="unique model write failed"):
+            store.put_model_unique("users", "u1", model, ("does_not_exist",))
+
+        assert store.get("users", "u1", SampleModel) is None
+
+
+class TestPutModelIfUnique:
+    """PersistedStore.put_model_if_unique (#1248/#1259) — check-then-insert as
+    one transaction, so two independent process writers cannot both publish a
+    UUID-keyed record for the same field value (the registration race)."""
+
+    def test_inserts_when_the_field_value_is_available(self, state_with_store) -> None:
+        _, store = state_with_store
+
+        assert (
+            store.put_model_if_unique("users", "u1", SampleModel(id="u1", name="alice"), "name")
+            is True
+        )
+
+        got = store.get("users", "u1", SampleModel)
+        assert got is not None
+        assert got.name == "alice"
+
+    def test_rejects_when_the_field_value_is_already_claimed(self, state_with_store) -> None:
+        _, store = state_with_store
+        store.put_model_if_unique("users", "u1", SampleModel(id="u1", name="alice"), "name")
+
+        rejected = store.put_model_if_unique(
+            "users", "u2", SampleModel(id="u2", name="ALICE"), "name"
+        )
+
+        assert rejected is False
+        assert store.get("users", "u2", SampleModel) is None
+
+    def test_rejected_insert_leaves_the_original_record_untouched(self, state_with_store) -> None:
+        _, store = state_with_store
+        store.put_model_if_unique(
+            "users", "u1", SampleModel(id="u1", name="alice", value=1), "name"
+        )
+
+        store.put_model_if_unique(
+            "users", "u2", SampleModel(id="u2", name="alice", value=2), "name"
+        )
+
+        original = store.get("users", "u1", SampleModel)
+        assert original.value == 1
+
+    def test_kv_row_collision_after_a_successful_claim_surfaces_as_runtime_error(
+        self, state_with_store
+    ) -> None:
+        """The claim insert and the kv_store insert are one transaction. If the
+        claim insert succeeds (the field value is free) but the *key* already
+        has a row in ``kv_store`` from outside this method (no ``ON CONFLICT``
+        clause here, unlike ``put``), the second INSERT raises — and the whole
+        transaction, claim included, must roll back rather than leave an
+        orphaned claim with no matching record."""
+        state, store = state_with_store
+        # A pre-existing row for this key, written directly (bypassing the
+        # unique-claim machinery) — the situation a migration or an older
+        # code path could leave behind.
+        store.put("users", "u1", SampleModel(id="u1", name="preexisting"))
+
+        with pytest.raises(RuntimeError, match="unique model insert failed"):
+            store.put_model_if_unique("users", "u1", SampleModel(id="u1", name="newclaim"), "name")
+
+        # The row is unchanged, and the claim insert was rolled back with it.
+        got = store.get("users", "u1", SampleModel)
+        assert got.name == "preexisting"
+        reader = state.open_reader()
+        try:
+            row = reader.execute(
+                "SELECT record_key FROM unique_fields "
+                "WHERE store_name = ? AND field_name = ? AND normalized_value = ?",
+                ("users", "name", "newclaim"),
+            ).fetchone()
+        finally:
+            reader.close()
+        assert row is None
