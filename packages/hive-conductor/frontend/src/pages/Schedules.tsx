@@ -34,28 +34,31 @@ export default function Schedules() {
   async function createSchedule() {
     if (!form.name.trim()) return;
     try {
-      await apiPost<Schedule>("/v1/schedules", { name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true });
+      const created = await apiPost<Schedule>("/v1/schedules", { name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true });
+      setSchedules((prev) => [...prev, created]);
       setCreating(false);
       setForm({ name: "", description: "", cron_expression: "0 * * * *", mission_template_id: "" });
-      await load();
       toast("Schedule created", "ok");
     } catch { toast("Failed to create schedule", "error"); }
   }
 
+  // One mutation, one request (matches WorkspaceContext.tsx's #1422 fix): the
+  // response is the changed record, so it is patched into local state rather
+  // than followed by a refetch of the whole collection.
   async function updateSchedule() {
     if (!editing) return;
     try {
-      await apiPut<Schedule>(`/v1/schedules/${editing.id}`, editForm);
+      const updated = await apiPut<Schedule>(`/v1/schedules/${editing.id}`, editForm);
+      setSchedules((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
       setEditing(null);
-      await load();
       toast("Schedule updated", "ok");
     } catch { toast("Failed to update schedule", "error"); }
   }
 
   async function toggleSchedule(s: Schedule) {
     try {
-      await apiPut<Schedule>(`/v1/schedules/${s.id}`, { enabled: !s.enabled });
-      await load();
+      const updated = await apiPut<Schedule>(`/v1/schedules/${s.id}`, { enabled: !s.enabled });
+      setSchedules((prev) => prev.map((sc) => (sc.id === updated.id ? updated : sc)));
       toast(s.enabled ? "Disabled" : "Enabled", "ok");
     } catch { toast("Failed to toggle", "error"); }
   }
@@ -63,7 +66,7 @@ export default function Schedules() {
   async function deleteSchedule(id: string) {
     try {
       await apiDelete(`/v1/schedules/${id}`);
-      await load();
+      setSchedules((prev) => prev.filter((s) => s.id !== id));
       toast("Schedule deleted", "ok");
     } catch { toast("Failed to delete", "error"); }
     setDeleteTarget(null);
@@ -71,8 +74,8 @@ export default function Schedules() {
 
   async function runNow(s: Schedule) {
     try {
-      await apiPost<Schedule>(`/v1/schedules/${s.id}/run`);
-      await load();
+      const updated = await apiPost<Schedule>(`/v1/schedules/${s.id}/run`);
+      setSchedules((prev) => prev.map((sc) => (sc.id === updated.id ? updated : sc)));
       toast("Schedule triggered", "ok");
     } catch { toast("Failed to trigger", "error"); }
   }

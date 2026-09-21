@@ -180,7 +180,7 @@ tested modules with no call path, so "the code is there" is not the bar.
 |---|---|---|
 | `maistro-server` — tasks, OpenAI-compatible chat, webhooks, WS, `/metrics` | **Complete** | Webhooks fail closed without a secret. |
 | Conductor `/v1/*` — the surfaces marked Complete above | **Complete** | |
-| `/v1/design/*` | **Complete** | No UI consumes it. |
+| `/v1/design/*` | **Partial** | Project generation is available; server-side rendering returns 501 until a canonical worker, durable artifact store, and output-serving route exist (`quality/shipped-surface-truth.json`, #286). |
 | `/v1/harness/*` (inbound foreign-harness API) | **Complete** | Lets another orchestrator drive this instance. |
 | `/v1/models` | **Partial** | Four hardcoded pseudo-models. |
 | `/v2/canvas` | **TODO** | Every route 503s — nothing injects the canvas store. |
