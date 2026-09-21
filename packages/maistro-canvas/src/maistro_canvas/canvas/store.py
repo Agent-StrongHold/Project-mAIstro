@@ -683,26 +683,48 @@ class PgCanvasStore:
             "leased_by": job.leased_by,
             "lease_expires_at": job.lease_expires_at,
         }
-        fence_clause = ""
-        if expected_leased_by is not None:
-            fence_clause = " AND leased_by = :expected_leased_by"
-            params["expected_leased_by"] = expected_leased_by
+        # Two literal statements rather than one f-string-assembled one: the
+        # fence clause never carries caller data (it's either absent or this
+        # fixed bind-parameterized text), but a literal is still the better
+        # answer than a `# nosemgrep` on python.sqlalchemy.security.audit.
+        # avoid-sqlalchemy-text — it's greppable, mypy/semgrep can see there's
+        # nothing but bind params in either statement, and (#857) the org
+        # predicate stays inline in this method's own source for
+        # ``test_every_canvas_read_and_mutation_predicates_on_org``.
         async with AsyncSession(self._engine) as session:
-            result = await session.execute(
-                text(f"""
-                    UPDATE generation_jobs SET
-                        status = :status, result_paths = CAST(:paths AS jsonb),
-                        selected_index = :sel, error_message = :err,
-                        started_at = :start, completed_at = :done,
-                        attempts = :attempts, max_attempts = :max_attempts,
-                        leased_by = :leased_by, lease_expires_at = :lease_expires_at
-                    WHERE id = :id AND layer_id IN
-                        (SELECT l.id FROM layers l
-                         JOIN canvases c ON c.id = l.canvas_id
-                         WHERE c.org_id = :org){fence_clause}
-                """),
-                params,
-            )
+            if expected_leased_by is not None:
+                params["expected_leased_by"] = expected_leased_by
+                result = await session.execute(
+                    text("""
+                        UPDATE generation_jobs SET
+                            status = :status, result_paths = CAST(:paths AS jsonb),
+                            selected_index = :sel, error_message = :err,
+                            started_at = :start, completed_at = :done,
+                            attempts = :attempts, max_attempts = :max_attempts,
+                            leased_by = :leased_by, lease_expires_at = :lease_expires_at
+                        WHERE id = :id AND layer_id IN
+                            (SELECT l.id FROM layers l
+                             JOIN canvases c ON c.id = l.canvas_id
+                             WHERE c.org_id = :org) AND leased_by = :expected_leased_by
+                    """),
+                    params,
+                )
+            else:
+                result = await session.execute(
+                    text("""
+                        UPDATE generation_jobs SET
+                            status = :status, result_paths = CAST(:paths AS jsonb),
+                            selected_index = :sel, error_message = :err,
+                            started_at = :start, completed_at = :done,
+                            attempts = :attempts, max_attempts = :max_attempts,
+                            leased_by = :leased_by, lease_expires_at = :lease_expires_at
+                        WHERE id = :id AND layer_id IN
+                            (SELECT l.id FROM layers l
+                             JOIN canvases c ON c.id = l.canvas_id
+                             WHERE c.org_id = :org)
+                    """),
+                    params,
+                )
             if cast(CursorResult[Any], result).rowcount == 0:
                 if expected_leased_by is not None:
                     still_present = await session.execute(
