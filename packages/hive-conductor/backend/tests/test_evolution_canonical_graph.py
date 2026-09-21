@@ -1121,3 +1121,46 @@ async def test_finalize_fault_after_partial_mutation_blocks_automatic_retry() ->
     recovered_ctx = ctx.model_copy(update={"attempt_id": "attempt-after-recovery"})
     with pytest.raises(FinalizeReconciliationRequired):
         await _finalize_cycle(cycle, population, config, None, recovered_ctx)
+
+
+@pytest.mark.asyncio
+async def test_finalize_cycle_without_node_context_skips_marker_bookkeeping() -> None:
+    """#1064: ``_finalize_cycle`` is also called directly (no durable graph
+    Attempt) by callers that never pass ``ctx`` -- its default. With no
+    NodeRun to key an idempotency marker on, ``marker_id`` stays ``None``
+    and all three ``marker_id is not None`` checks take their False branch:
+    finalize still runs and returns a real output, it just records nothing
+    into the population's cycle-marker store."""
+    genome_a, genome_b = _Genome("g1"), _Genome("g2")
+    genome_a.eval_scores["proxy"] = 0.5
+    genome_b.eval_scores["proxy"] = 0.7
+    population = _Population([genome_a, genome_b])
+    cycle = _Cycle(harness=_Harness(), tournament=_Tournament())
+    config = _config(population_size=3, eval_batch_size=2)
+
+    output = await _finalize_cycle(cycle, population, config, None)
+
+    assert output.population_size == len(population.list_all())
+    assert population.get_cycle_marker("finalize:anything") is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_cycle_fault_without_node_context_propagates_without_marker() -> None:
+    """Same fault as the partial-mutation test above, but with no ``ctx``:
+    the exception still propagates to the caller (finalize is not made
+    idempotent for callers outside a durable graph Attempt), and -- since
+    ``marker_id`` is ``None`` -- the except block's own guard also takes its
+    False branch, so no faulted marker is recorded anywhere to reconcile."""
+
+    class _FaultingCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            raise RuntimeError("synthetic mid-finalize fault")
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    cycle = _FaultingCycle(harness=_Harness(), tournament=_Tournament())
+    config = _config(population_size=2, eval_batch_size=2)
+
+    with pytest.raises(RuntimeError, match="synthetic mid-finalize fault"):
+        await _finalize_cycle(cycle, population, config, None)
+
+    assert population.get_cycle_marker("finalize:finalize-node-1") is None

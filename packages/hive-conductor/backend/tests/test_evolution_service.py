@@ -563,6 +563,34 @@ def test_build_llm_call_swallows_exceptions(
     assert s._build_llm_call() is None
 
 
+def test_build_llm_call_public_accessor_delegates_to_private_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1064: ``build_llm_call`` is the public accessor a restart-recovery
+    resolver uses to reconstruct the same llm_call a live cycle would have
+    built (it has no other way to reach the private builder). Prove it
+    actually delegates, both when the builder succeeds and when it
+    declines (no base URL configured)."""
+    from services.evolution import _EvolutionService
+
+    class _NoBase:
+        maistro_llm_base_url = ""
+        litellm_api_base = ""
+        maistro_llm_api_key = ""
+        litellm_api_key = ""
+        chat_default_model = "stub"
+
+    import config
+
+    monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
+    s = _EvolutionService()
+    assert s.build_llm_call() is None
+
+    sentinel = object()
+    monkeypatch.setattr(s, "_build_llm_call", lambda: sentinel)
+    assert s.build_llm_call() is sentinel
+
+
 async def test_build_llm_call_real_call_posts_and_extracts_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

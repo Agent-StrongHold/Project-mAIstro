@@ -265,6 +265,97 @@ def test_recovery_resolver_succeeds_when_population_matches(
     assert node.kind == "evolve.plan_tournament_pairs"
 
 
+def test_recovery_resolver_falls_back_to_graph_metadata_when_provenance_omits_the_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1065: a Run whose provenance dict never recorded the frozen
+    membership/battle-capacity fields (an older Run predating provenance
+    freezing, or a rehydrated Run whose provenance lost them) falls back to
+    the Graph's own frozen metadata -- set once by ``_build_graph`` at
+    admission -- rather than treating the plan as empty."""
+    import services.evolution as evolution_module
+    import services.evolution_graph as evolution_graph_module
+    from services.evolution_graph import _build_graph
+
+    import maistro_evolve.tournament as tournament_module
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    service = evolution_module._EvolutionService.__new__(evolution_module._EvolutionService)
+    service._population = population
+    service._tournament = tournament_module.EloTournament()
+    monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
+    monkeypatch.setattr(evolution_module._EvolutionService, "build_llm_call", lambda self: None)
+
+    graph = _build_graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        population=population,
+        config=SimpleNamespace(eval_batch_size=2),
+        membership_ids=["g1", "g2"],
+    )
+    assert graph.metadata["evolve_membership_ids"] == ["g1", "g2"]
+    assert graph.metadata["evolve_battle_capacity"] == 1
+
+    captured: dict[str, Any] = {}
+
+    def _fake_resolver(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return lambda node_id, graph: None
+
+    monkeypatch.setattr(evolution_graph_module, "_resolver", _fake_resolver)
+
+    run = SimpleNamespace(
+        run_id="run-1",
+        graph=SimpleNamespace(materialize=lambda: graph),
+        provenance={},  # neither frozen-plan field was recorded
+    )
+
+    evolution_graph_module._recovery_resolver(run)  # type: ignore[arg-type]
+
+    assert captured["membership_ids"] == ["g1", "g2"]
+    assert captured["battle_slots"] == 1
+
+
+def test_recovery_resolver_computes_battle_capacity_when_wholly_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1065: when neither provenance nor the Graph's own metadata records a
+    battle capacity, the resolver falls back to deriving it the same way
+    ``_build_graph`` originally did: half the frozen membership."""
+    import services.evolution as evolution_module
+    import services.evolution_graph as evolution_graph_module
+
+    import maistro_evolve.tournament as tournament_module
+
+    population = _Population([_Genome("g1"), _Genome("g2"), _Genome("g3")])
+    service = evolution_module._EvolutionService.__new__(evolution_module._EvolutionService)
+    service._population = population
+    service._tournament = tournament_module.EloTournament()
+    monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
+    monkeypatch.setattr(evolution_module._EvolutionService, "build_llm_call", lambda self: None)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_resolver(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return lambda node_id, graph: None
+
+    monkeypatch.setattr(evolution_graph_module, "_resolver", _fake_resolver)
+
+    run = SimpleNamespace(
+        run_id="run-1",
+        # Membership is present (from provenance), but battle capacity is
+        # missing from BOTH provenance and the Graph's own metadata.
+        graph=SimpleNamespace(materialize=lambda: SimpleNamespace(metadata={})),
+        provenance={"evolve_membership_ids": ["g1", "g2", "g3"]},
+    )
+
+    evolution_graph_module._recovery_resolver(run)  # type: ignore[arg-type]
+
+    assert captured["membership_ids"] == ["g1", "g2", "g3"]
+    assert captured["battle_slots"] == 1  # len(membership_ids) // 2
+
+
 # --- end-to-end recovery seam ------------------------------------------------
 
 
