@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from maistro.observability import metrics as metrics_module
@@ -299,7 +301,11 @@ def test_prometheus_exposition_formats_bool_gauge_as_numeric() -> None:
 
 
 def test_empty_registry_exposes_only_uptime(monkeypatch: pytest.MonkeyPatch) -> None:
-    monotonic_values = iter((10.0, 12.34))
+    # Script the two readings the assertions consume, then hold the last value:
+    # a late monotonic() read (finalizer, sibling registry) during teardown must
+    # not raise StopIteration inside the patched callable -- PEP 479 turns that
+    # into RuntimeError and fails the test after its assertions passed.
+    monotonic_values = iter(itertools.chain((10.0, 12.34), itertools.repeat(12.34)))
     monkeypatch.setattr(metrics_module.time, "monotonic", lambda: next(monotonic_values))
     reg = MetricsRegistry()
 

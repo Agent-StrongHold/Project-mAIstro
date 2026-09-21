@@ -293,33 +293,13 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
-      "line": 60,
-      "name": "JiraPollNode",
-      "classname": null,
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode._execute",
       "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
       "line": 75,
       "name": "_execute",
       "classname": "JiraPollNode",
       "rank": "C",
-      "complexity": 15,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::_fetch_subtask_statuses",
-      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py",
-      "line": 132,
-      "name": "_fetch_subtask_statuses",
-      "classname": null,
-      "rank": "C",
-      "complexity": 12,
+      "complexity": 13,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {

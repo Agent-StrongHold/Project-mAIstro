@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -62,17 +62,7 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
         self._effects = effect_context or default_effect_context()
 
     async def _execute(self, inputs: WaitForSubtasksIn, ctx: NodeContext) -> WaitForSubtasksOut:
-        if not inputs.binding_id.strip():
-            raise BindingNotFound(
-                "jira.wait_for_subtasks requires a pre-authorized Binding before any request"
-            )
-        binding = await self._effects.bindings.resolve(
-            inputs.binding_id,
-            workspace_id=str(ctx.workspace_id or ""),
-            project_id=str(ctx.project_id or ""),
-            node_id=ctx.node_id,
-            capability=JIRA_SUBTASKS_CAPABILITY,
-        )
+        binding = await _resolved_binding(inputs, ctx, self._effects)
         pause = resumed_pause(ctx)
         poll_number = int(pause.get("poll_number", 0) or 0)
         statuses = await _fetch_subtask_statuses(
@@ -118,13 +108,7 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
             )
             return WaitForSubtasksOut(parent_key=inputs.parent_key)
 
-        try:
-            from datetime import datetime as _dt
-
-            first = _dt.fromisoformat(first_seen)
-        except Exception:
-            first = now
-        if (now - first).total_seconds() >= inputs.timeout_seconds:
+        if _deadline_exceeded(first_seen, now, inputs.timeout_seconds):
             return WaitForSubtasksOut(
                 parent_key=inputs.parent_key,
                 subtask_keys=list(statuses.keys()),
@@ -144,6 +128,36 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
             },
         )
         return WaitForSubtasksOut(parent_key=inputs.parent_key)
+
+
+async def _resolved_binding(
+    inputs: WaitForSubtasksIn,
+    ctx: NodeContext,
+    effects: CapabilityEffectContext,
+) -> Any:
+    """Resolve the node's pre-authorized Binding, or refuse before any request."""
+
+    if not inputs.binding_id.strip():
+        raise BindingNotFound(
+            "jira.wait_for_subtasks requires a pre-authorized Binding before any request"
+        )
+    return await effects.bindings.resolve(
+        inputs.binding_id,
+        workspace_id=str(ctx.workspace_id or ""),
+        project_id=str(ctx.project_id or ""),
+        node_id=ctx.node_id,
+        capability=JIRA_SUBTASKS_CAPABILITY,
+    )
+
+
+def _deadline_exceeded(first_seen: str, now: datetime, timeout_seconds: int) -> bool:
+    """True when the pause chain's first observation is older than `timeout_seconds`."""
+
+    try:
+        first = datetime.fromisoformat(first_seen)
+    except Exception:  # carried timestamp unparseable -- treat the poll as just started
+        first = now
+    return (now - first).total_seconds() >= timeout_seconds
 
 
 def _first_seen(ctx: NodeContext) -> Any:
