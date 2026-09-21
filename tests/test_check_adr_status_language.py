@@ -87,6 +87,7 @@ def test_adr_046_is_no_longer_a_contradiction() -> None:
 # --- category 1: body status lines -------------------------------------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-1")
 def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
     """The retirement itself, asserted against the real corpus.
 
@@ -103,6 +104,7 @@ def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
     assert offenders == []
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-2")
 def test_a_body_status_line_fails_even_when_it_agrees(sandbox) -> None:
     """Absence, not agreement — the rule that makes the retirement durable.
 
@@ -119,6 +121,7 @@ def test_a_body_status_line_fails_even_when_it_agrees(sandbox) -> None:
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
 def test_a_disagreeing_body_status_line_still_fails(sandbox) -> None:
     """The original #387 shape keeps failing under the retirement rule."""
     path = _an_adr(sandbox.DOC_ROOTS[0])
@@ -130,6 +133,7 @@ def test_a_disagreeing_body_status_line_still_fails(sandbox) -> None:
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
 def test_a_list_item_status_line_is_not_exempt(sandbox) -> None:
     """`- **Status:** X` is the same declaration as the bare `**Status:** X`.
 
@@ -148,6 +152,7 @@ def test_a_list_item_status_line_is_not_exempt(sandbox) -> None:
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
 def test_a_status_line_dressed_up_with_trailing_prose_is_still_caught(sandbox) -> None:
     """Decoration is not an exemption.
 
@@ -171,6 +176,7 @@ def test_a_status_line_dressed_up_with_trailing_prose_is_still_caught(sandbox) -
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
 def test_an_empty_status_line_is_still_a_retired_line(sandbox) -> None:
     """`**Status:**` with no value is reported too.
 
@@ -265,6 +271,7 @@ def test_fixing_a_banked_body_status_line_requires_pruning(sandbox, capsys) -> N
 # --- category 2: replacement banners -----------------------------------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_a_banner_naming_a_different_replacement_fails(sandbox) -> None:
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
     text = path.read_text().replace(
@@ -285,6 +292,7 @@ def test_a_banner_naming_a_different_replacement_fails(sandbox) -> None:
 # --- category 3: status-asserting prose --------------------------------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_unqualified_status_stays_prose_on_a_superseded_adr_fails(sandbox) -> None:
     """The ADR-046 defect, verbatim shape, on any Superseded document."""
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
@@ -303,6 +311,7 @@ def test_unqualified_status_stays_prose_on_a_superseded_adr_fails(sandbox) -> No
     )
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_wrapped_status_stays_prose_still_matches(sandbox) -> None:
     """The phrase that hides across a line break in flowing prose."""
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
@@ -350,6 +359,7 @@ def test_a_reintroduced_body_status_line_is_not_absorbed_by_the_baseline(sandbox
 # --- category 2, the other half: a banner with nothing behind it -------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_a_banner_on_a_document_with_no_superseded_by_fails(sandbox) -> None:
     """The banner claims a replacement the front matter never records.
 

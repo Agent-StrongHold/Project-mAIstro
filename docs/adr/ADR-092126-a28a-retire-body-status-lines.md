@@ -19,6 +19,11 @@ contracts:
   - behavioral
 tests:
   - tests/test_check_adr_status_language.py
+ac-modules:
+  AC-1: '@tool/check-adr-status-language'
+  AC-2: '@tool/check-adr-status-language'
+  AC-3: '@tool/check-adr-status-language'
+  AC-4: '@tool/check-adr-status-language'
 layer: Governance
 owners:
   - '@BlakeMatthews-dev'
@@ -123,13 +128,16 @@ registration all continue to apply unchanged.
 
 ## Acceptance criteria
 
-- [x] No file under `docs/adr/` or `docs/specs/` contains a body
-      `**Status:**` line, in either spelling.
-- [x] `scripts/check-adr-status-language.py` reports a `body-status-line`
-      finding for any body status line, agreeing or not, and
-      `tests/test_check_adr_status_language.py` drives that rule with both
-      spellings and with a line that agrees with its front matter.
-- [x] Categories 2 and 3 keep their existing behavior, each still driven
-      independently by its own test.
-- [x] `quality/adr-status-language-baseline.json` stays empty and the
-      provenance adapter reports no candidate-approved expansion.
+- [x] **AC-1** No file under `docs/adr/` or `docs/specs/` carries a body
+      `**Status:**` line, in either the bare or the list-item spelling.
+- [x] **AC-2** The gate reports a `body-status-line` finding for a body status
+      line that *agrees* with its front matter. This is the criterion that
+      makes the retirement durable rather than a one-time sweep, and the case
+      the previous agreement check let through.
+- [x] **AC-3** The gate reports the same finding whatever form or value the
+      line carries: the list-item spelling, a disagreeing value, a value
+      dressed up with trailing prose, and an empty one.
+- [x] **AC-4** Categories 2 and 3 are unchanged — a banner naming a
+      replacement the front matter does not record, and unqualified
+      status-asserting prose on a superseded document, each still fail on
+      their own, driven independently.
