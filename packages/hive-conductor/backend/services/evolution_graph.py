@@ -24,9 +24,15 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from maistro.graph.definitions import Edge, Graph, Node
-from maistro.graph.durable_runs import DurableRunRecord, run_durable_graph
+from maistro.graph.durable_runs import (
+    DurableRunRecord,
+    NodeResolver,
+    recover_queued_graph_runs,
+    resume_due_graph_runs,
+    run_durable_graph,
+)
 from maistro.graph.nodes.base import BaseNode, NodeContext
-from maistro.runs.model import RunStatus
+from maistro.runs.model import Run, RunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,40 @@ class CanonicalExecutionUnavailable(RuntimeError):
     def __init__(self, message: str, *, availability: str = "unavailable") -> None:
         super().__init__(message)
         self.availability = availability
+
+
+class EvolveRecoveryBlocked(RuntimeError):
+    """A stranded/due Evolve Run cannot be safely resumed by this process (#1064).
+
+    Evolve's population/tournament/cycle domain state is process-local (an
+    in-memory ``PopulationStore``/``EloTournament`` unless a deployment opts a
+    SQLite ``db_path`` into ``PopulationStore``, which this app does not).
+    There is therefore no durable cross-process domain state a genuinely
+    different process could reconstruct. Raising this — rather than silently
+    resuming against a fabricated fresh population/tournament (silent domain
+    corruption) — is the honest disposition. See ``_recovery_resolver``'s
+    docstring for exactly how each recovery seam disposes of this: a Run
+    already RUNNING/WAITING reaches a terminal FAILED Run with this
+    diagnostic; a Run still QUEUED is isolated and retried on a later tick,
+    never resumed against the wrong population and never faked as success.
+    """
+
+
+class FinalizeReconciliationRequired(RuntimeError):
+    """A prior finalize Attempt mutated domain state but never committed (#1064).
+
+    ``_finalize_cycle`` cannot stage its many mutations (cull, breed,
+    self-improve, migrate, lineage) on a private copy the way evaluation
+    stages a single genome, so a fault partway through leaves population/
+    tournament state partially advanced with no committed NodeRun evidence.
+    Blindly retrying would redo mutations already applied (double cull,
+    double breed, a second paid self-improve pass); silently succeeding on
+    retry would hide that the first attempt's effects are unaccounted for.
+    Neither is safe, so a retry of a NodeRun found in this state fails
+    closed with this diagnostic instead, requiring explicit operator
+    reconciliation of the affected population before the cycle can be
+    retried as a new logical Run.
+    """
 
 
 class _EvaluateInput(BaseModel):
@@ -89,6 +129,11 @@ class _BattleOutput(BaseModel):
     genome_b_id: str
     benchmarks: list[str] = Field(default_factory=list)
     has_more: bool = False
+    # The logical NodeRun this battle was published under. Canonical
+    # publication evidence (#1064), mirroring evaluation's
+    # evaluation_node_run_id: lets later inspection confirm which NodeRun a
+    # domain GenomeBattle came from without re-deriving it from timing.
+    battle_node_run_id: str = ""
 
 
 class _FinalizeOutput(BaseModel):
@@ -266,7 +311,7 @@ class _TournamentWork:
             has_battles=bool(pairs),
         )
 
-    def run_pair(self, inputs: _BattleInput) -> _BattleOutput:
+    def run_pair(self, inputs: _BattleInput, ctx: NodeContext | None = None) -> _BattleOutput:
         if inputs.pair_index < 0 or inputs.pair_index >= len(inputs.pairs):
             raise RuntimeError(
                 "tournament graph requested a battle outside its persisted pair plan"
@@ -290,14 +335,25 @@ class _TournamentWork:
         if genome_a is None or genome_b is None:
             raise ValueError("a tournament genome disappeared after pair selection")
 
+        node_run_id = ctx.node_run_id if ctx is not None else None
+        attempt_id = ctx.attempt_id if ctx is not None else None
         common = sorted(set(genome_a.eval_scores) & set(genome_b.eval_scores))
         for benchmark in common:
+            # Idempotent per (node_run_id, benchmark): a recovered Attempt for
+            # the same logical NodeRun that already published this
+            # benchmark's battle is a no-op here rather than a second
+            # win/loss/Elo update (#1064). Each benchmark commits
+            # independently, so a fault partway through this loop on retry
+            # only replays the benchmarks that never published, not the ones
+            # that did.
             self._cycle.tournament.record_battle(
                 benchmark=benchmark,
                 genome_a_id=genome_a.id,
                 genome_b_id=genome_b.id,
                 score_a=genome_a.eval_scores[benchmark],
                 score_b=genome_b.eval_scores[benchmark],
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
             )
 
         next_index = inputs.pair_index + 1
@@ -308,6 +364,7 @@ class _TournamentWork:
             genome_b_id=genome_b.id,
             benchmarks=common,
             has_more=next_index < len(inputs.pairs),
+            battle_node_run_id=node_run_id or "",
         )
 
 
@@ -355,7 +412,7 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
             )
         # Validate graph capacity before recording tournament evidence so a
         # malformed immutable graph cannot leave a domain battle half-applied.
-        return self._tournament_work.run_pair(inputs)
+        return self._tournament_work.run_pair(inputs, ctx)
 
 
 def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]]:
@@ -398,13 +455,71 @@ def _publish_tournament_elos(cycle: Any, population: Any) -> None:
             population.add(genome)
 
 
+def _finalize_marker_id(node_run_id: str) -> str:
+    return f"finalize:{node_run_id}"
+
+
 async def _finalize_cycle(
     cycle: Any,
     population: Any,
     config: Any,
     llm_call: Any,
+    ctx: NodeContext | None = None,
 ) -> _FinalizeOutput:
-    """Run post-tournament domain semantics without creating another lifecycle."""
+    """Run post-tournament domain semantics without creating another lifecycle.
+
+    Idempotent publication mirrors ``_evaluate_one`` (#1064): before mutating
+    anything, check whether this logical NodeRun already committed. Unlike
+    evaluation, finalize cannot stage its many mutations (cull, breed,
+    self-improve, migrate, lineage) on a private copy and commit them
+    atomically at the end -- ``PopulationStore``/``IslandPopulation`` mutate
+    in place. So a fault *partway through* this function is recorded as an
+    explicit "faulted" marker rather than left to a blind retry, which would
+    otherwise double-apply whatever already committed. A later Attempt for
+    the same NodeRun that finds a faulted marker fails closed with
+    ``FinalizeReconciliationRequired`` instead of silently re-mutating or
+    silently succeeding.
+    """
+    marker_id = _finalize_marker_id(ctx.node_run_id) if ctx is not None else None
+    if marker_id is not None:
+        marker = population.get_cycle_marker(marker_id)
+        if marker is not None:
+            status = marker.get("status")
+            if status == "committed":
+                return _FinalizeOutput.model_validate(marker["output"])
+            raise FinalizeReconciliationRequired(
+                f"finalize NodeRun {ctx.node_run_id!r} previously faulted after "
+                "partially mutating domain state; refusing to retry automatically"
+            )
+        population.record_cycle_marker(marker_id, {"status": "in_progress"})
+
+    try:
+        new_ids = await _apply_finalize_mutations(cycle, population, config, llm_call)
+    except Exception:
+        if marker_id is not None:
+            population.record_cycle_marker(marker_id, {"status": "faulted"})
+        raise
+
+    output = _FinalizeOutput(
+        population_size=len(population.list_all()),
+        new_genome_ids=new_ids,
+    )
+    if marker_id is not None:
+        population.record_cycle_marker(
+            marker_id, {"status": "committed", "output": output.model_dump()}
+        )
+    return output
+
+
+async def _apply_finalize_mutations(
+    cycle: Any, population: Any, config: Any, llm_call: Any
+) -> list[str]:
+    """The actual cull/breed/self-improve/migrate/lineage mutation sequence.
+
+    Split out of ``_finalize_cycle`` purely so that function's fault-marker
+    try/except stays a thin, readable wrapper around this -- not a behavior
+    change. Returns the sorted ids of genomes created by this finalize.
+    """
     from maistro_evolve.population import IslandPopulation, migrate_islands
 
     before = {genome.id for genome in population.list_all()}
@@ -441,11 +556,7 @@ async def _finalize_cycle(
         if refs:
             genome.harness_params["source_evaluation_runs"] = refs
             population.add(genome)
-
-    return _FinalizeOutput(
-        population_size=len(population.list_all()),
-        new_genome_ids=new_ids,
-    )
+    return new_ids
 
 
 class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
@@ -474,6 +585,7 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
             self._population,
             self._config,
             self._llm_call,
+            ctx,
         )
 
 
@@ -798,4 +910,158 @@ async def run_canonical_evolution_cycle(
     )
 
 
-__all__ = ["run_canonical_evolution_cycle"]
+def _recovery_resolver(run: Run) -> NodeResolver:
+    """Rebuild an Evolve node resolver from durable Run facts for one candidate.
+
+    Evolve's node resolver has always been a closure over LIVE domain objects
+    (``EvolutionCycle``, ``PopulationStore``, ``EloTournament``, config,
+    llm_call) built fresh inside ``run_canonical_evolution_cycle`` and handed
+    straight to ``run_durable_graph`` (#1064) -- nothing reconstructs it for a
+    persisted Run at startup/recovery. This is the shipped resolver that
+    closes that gap.
+
+    What it can honestly reconstruct: the frozen membership/battle-capacity
+    plan (durable Run provenance, #1065) and the *default* config/harness this
+    app always uses for a cycle (``services.evolution._run_one_cycle_locked``
+    hardcodes both, so replaying them here is not a guess). What it cannot
+    reconstruct: the live ``PopulationStore``/``EloTournament`` themselves --
+    this app's ``PopulationStore`` is in-memory only (no ``db_path``), so
+    there is no durable cross-process domain state to rebuild from. A
+    genuinely different process (or this process before
+    ``services.evolution.start_evolution`` has run) has nothing to resume
+    against.
+
+    Rather than silently resuming against a *fabricated* fresh population/
+    tournament (which would corrupt the domain with a different logical
+    population under the same Run), this raises :class:`EvolveRecoveryBlocked`
+    whenever the prerequisites are not durably available *in this process*.
+    What the shared recovery seam (``maistro.graph.durable_runs.recovery``)
+    does with that failure depends on which half of recovery called it:
+
+    * ``resume_due_graph_runs`` (a RUNNING/WAITING Run whose Attempt lease or
+      timed wait has elapsed -- the crash-mid-node case this issue is really
+      about) defers resolver construction into the executor's own failure
+      boundary (``_lazy_resolver``), which turns this into a terminal FAILED
+      Run carrying a stable, sanitized diagnostic. Never an indefinite hang.
+    * ``recover_queued_graph_runs`` (a Run stranded before its first NodeRun
+      even started) calls the resolver eagerly and, finding nothing yet
+      claimed, isolates the failure as candidate-local and leaves the Run
+      QUEUED for a later tick -- the identical documented contract the
+      legacy DAG adapter's own resolver already gets there. That is a
+      bounded, observable retry (logged every tick), not silent progress and
+      never resumption against the wrong population; it resolves itself once
+      this process's Evolve service finishes starting, or stays visibly
+      retried (never faked as success) if it never will.
+
+    Either way, only a process that still holds the exact frozen membership
+    this Run was admitted against may resume it; every other process
+    (including a genuine second replica) fails closed the same way, which is
+    what keeps concurrent recovery attempts from two replicas from both
+    publishing the same NodeRun mutation.
+    """
+    from maistro_evolve.cycle import EvolutionConfig, EvolutionCycle
+    from maistro_evolve.harness import EvalHarness
+    from services.evolution import EvolutionServiceNotStarted, get_evolution_service
+
+    graph = run.graph.materialize()
+    membership_ids = [str(item) for item in run.provenance.get("evolve_membership_ids") or []]
+    if not membership_ids:
+        membership_ids = [str(item) for item in graph.metadata.get("evolve_membership_ids") or []]
+    battle_slots = run.provenance.get("evolve_battle_capacity")
+    if battle_slots is None:
+        battle_slots = graph.metadata.get("evolve_battle_capacity")
+    if battle_slots is None:
+        battle_slots = len(membership_ids) // 2
+
+    try:
+        service = get_evolution_service()
+    except EvolutionServiceNotStarted as exc:
+        raise EvolveRecoveryBlocked(
+            f"Evolve Run {run.run_id!r} cannot be recovered: the Evolve service has not "
+            "started in this process"
+        ) from exc
+
+    population = service.population
+    tournament = service.tournament
+    if population is None or tournament is None:
+        raise EvolveRecoveryBlocked(
+            f"Evolve Run {run.run_id!r} cannot be recovered: this process has no live "
+            "population/tournament domain state"
+        )
+
+    missing = [genome_id for genome_id in membership_ids if population.get(genome_id) is None]
+    if missing:
+        raise EvolveRecoveryBlocked(
+            f"Evolve Run {run.run_id!r} cannot be recovered: this process's live population "
+            f"is missing {len(missing)} of its {len(membership_ids)} frozen member genome(s) "
+            "-- it is not the population this Run was admitted against"
+        )
+
+    config = EvolutionConfig(self_improve=True, self_improve_top_n=3)
+    harness = EvalHarness(benchmark_fidelity="proxy")
+    cycle = EvolutionCycle(harness=harness, tournament=tournament)
+    llm_call = service.build_llm_call()
+
+    return _resolver(
+        cycle=cycle,
+        population=population,
+        config=config,
+        llm_call=llm_call,
+        membership_ids=membership_ids,
+        battle_slots=battle_slots,
+    )
+
+
+def _admitted_by_evolve(run: Run) -> bool:
+    return run.provenance.get("admission_source") == _ADMISSION_SOURCE
+
+
+async def recover_stranded_evolution_runs(*, limit: int = 100) -> int:
+    """Recover only canonical Runs admitted by this Evolve adapter (#1064).
+
+    Mirrors ``services.canonical_dag_runner.recover_stranded_dag_runs``: bring
+    a Run stranded around checkpoint 1 (admitted QUEUED, never reached
+    RUNNING) back onto the executor. A Run this process cannot honestly
+    resume terminalizes FAILED via ``_recovery_resolver`` rather than staying
+    stuck (see its docstring).
+    """
+    try:
+        owner = canonical_execution_owner()
+    except CanonicalExecutionUnavailable:
+        return 0
+    return await recover_queued_graph_runs(
+        store=owner.graph_run_store,
+        run_store=owner.run_store,
+        node_resolver_factory=_recovery_resolver,
+        eligible=_admitted_by_evolve,
+        admission_source=_ADMISSION_SOURCE,
+        limit=limit,
+    )
+
+
+async def wake_due_evolution_runs(*, limit: int = 100) -> int:
+    """Wake elapsed Evolve continuations through the canonical resume seam (#1064).
+
+    Mirrors ``services.canonical_dag_runner.wake_due_dag_runs``. The resolver
+    is rebuilt per Run from durable facts every time -- which node
+    implementation resumes a Run is never this process's memory of a prior
+    call, only what the Run itself durably records.
+    """
+    try:
+        owner = canonical_execution_owner()
+    except CanonicalExecutionUnavailable:
+        return 0
+    return await resume_due_graph_runs(
+        store=owner.graph_run_store,
+        run_store=owner.run_store,
+        node_resolver_factory=_recovery_resolver,
+        eligible=_admitted_by_evolve,
+        limit=limit,
+    )
+
+
+__all__ = [
+    "recover_stranded_evolution_runs",
+    "run_canonical_evolution_cycle",
+    "wake_due_evolution_runs",
+]

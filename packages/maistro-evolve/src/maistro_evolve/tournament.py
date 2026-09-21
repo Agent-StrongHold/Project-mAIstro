@@ -43,6 +43,12 @@ class GenomeBattle:
         score_a: Score achieved by the first genome.
         score_b: Score achieved by the second genome.
         timestamp: Time when the battle was recorded.
+        node_run_id: The logical canonical NodeRun this battle was published
+            under, or "" for a caller that does not carry canonical identity
+            (e.g. a direct/library call). This is the idempotency key
+            ``record_battle`` checks before mutating ratings again (#1064) —
+            not merely provenance.
+        attempt_id: The canonical Attempt that committed this battle, or "".
     """
 
     id: int = 0
@@ -53,6 +59,8 @@ class GenomeBattle:
     score_a: float = 0.0
     score_b: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    node_run_id: str = ""
+    attempt_id: str = ""
 
 
 class EloTournament:
@@ -68,6 +76,21 @@ class EloTournament:
             self._ratings[key] = GenomeRating(genome_id=genome_id, benchmark=benchmark)
         return self._ratings[key]
 
+    def find_published_battle(self, node_run_id: str, benchmark: str) -> GenomeBattle | None:
+        """Return the battle already published under this logical NodeRun, if any.
+
+        Mirrors the evaluation node's recovery pattern (#1064): a canonical
+        NodeRun/Attempt identity is the idempotency key, not the pair or the
+        benchmark alone, so a genuine later rematch of the same pair on the
+        same benchmark (a different logical NodeRun) is never suppressed.
+        """
+        if not node_run_id:
+            return None
+        for battle in self._battles:
+            if battle.node_run_id == node_run_id and battle.benchmark == benchmark:
+                return battle
+        return None
+
     def record_battle(
         self,
         benchmark: str,
@@ -75,7 +98,22 @@ class EloTournament:
         genome_b_id: str,
         score_a: float,
         score_b: float,
+        *,
+        node_run_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> GenomeBattle:
+        # Process-loss recovery creates a fresh Attempt beneath the same
+        # NodeRun. If the prior process committed this benchmark's battle but
+        # died before its Attempt could be terminalized, the persisted battle
+        # is the idempotency evidence: return it unchanged instead of
+        # re-applying wins/losses/Elo a second time (#1064). A caller that
+        # passes no node_run_id (library/direct use) always records fresh,
+        # exactly as before this fix.
+        if node_run_id:
+            published = self.find_published_battle(node_run_id, benchmark)
+            if published is not None:
+                return published
+
         if score_a > score_b:
             winner_id = genome_a_id
         elif score_b > score_a:
@@ -91,6 +129,8 @@ class EloTournament:
             winner_id=winner_id,
             score_a=score_a,
             score_b=score_b,
+            node_run_id=node_run_id or "",
+            attempt_id=attempt_id or "",
         )
         self._next_id += 1
         self._battles.append(battle)

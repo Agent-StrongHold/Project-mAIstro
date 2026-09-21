@@ -193,6 +193,13 @@ class EngineService:
 
         start_dag_recovery()
 
+        # Same rationale as legacy-DAG recovery above, for canonical Evolve
+        # Runs (#1064): a process lost after admission must not leave the
+        # Run stuck QUEUED/RUNNING with nothing looking at it again.
+        from services.evolution_recovery import start_evolution_recovery
+
+        start_evolution_recovery()
+
         try:
             if settings.hive_mode == "demo":
                 from adapters.task_backend import LocalTaskBackend
@@ -288,6 +295,9 @@ class EngineService:
         from services.dag_recovery import stop_dag_recovery
 
         await stop_dag_recovery()
+        from services.evolution_recovery import stop_evolution_recovery
+
+        await stop_evolution_recovery()
         if self._backend is not None:
             import contextlib
 

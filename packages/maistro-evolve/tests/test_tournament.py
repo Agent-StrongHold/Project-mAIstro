@@ -140,3 +140,68 @@ class TestEloTournament:
         assert stats["total_battles"] == 2
         assert stats["total_genomes_rated"] == 2
         assert stats["benchmarks_tracked"] == 2
+
+
+class TestBattleIdempotency:
+    """#1064: a recovered Attempt for the same logical NodeRun must not
+    re-apply wins/losses/Elo a second time."""
+
+    def test_no_node_run_id_always_records_fresh(self):
+        """Library/direct callers (no canonical identity) are unaffected."""
+        t = EloTournament()
+        first = t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4)
+        second = t.record_battle("proxy_ifeval", "g1", "g2", 0.8, 0.4)
+        assert first.id != second.id
+        assert t.get_stats()["total_battles"] == 2
+
+    def test_same_node_run_id_and_benchmark_is_idempotent(self):
+        t = EloTournament()
+        first = t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        elo_after_first = t.get_elo("g1", "proxy_ifeval")
+
+        replay = t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-b"
+        )
+
+        assert replay.id == first.id
+        assert replay.attempt_id == "attempt-a"  # the original publication, not the replay
+        assert t.get_stats()["total_battles"] == 1
+        assert t.get_elo("g1", "proxy_ifeval") == elo_after_first
+
+    def test_same_node_run_id_different_benchmark_records_independently(self):
+        """Idempotency is keyed by (node_run_id, benchmark): a multi-benchmark
+        battle NodeRun that faults after recording benchmark A must be able
+        to record benchmark B on retry without re-recording A."""
+        t = EloTournament()
+        t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        t.record_battle(
+            "proxy_bfcl", "g1", "g2", 0.3, 0.7, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        assert t.get_stats()["total_battles"] == 2
+
+    def test_different_node_run_id_is_a_genuine_new_battle(self):
+        """A real later rematch of the same pair/benchmark (a different
+        logical NodeRun) must never be suppressed by idempotency."""
+        t = EloTournament()
+        t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.2, 0.9, node_run_id="node-2", attempt_id="attempt-b"
+        )
+        assert t.get_stats()["total_battles"] == 2
+
+    def test_find_published_battle(self):
+        t = EloTournament()
+        assert t.find_published_battle("node-1", "proxy_ifeval") is None
+        assert t.find_published_battle("", "proxy_ifeval") is None
+        battle = t.record_battle(
+            "proxy_ifeval", "g1", "g2", 0.8, 0.4, node_run_id="node-1", attempt_id="attempt-a"
+        )
+        found = t.find_published_battle("node-1", "proxy_ifeval")
+        assert found is not None
+        assert found.id == battle.id

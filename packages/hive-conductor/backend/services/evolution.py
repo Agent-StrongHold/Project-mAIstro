@@ -279,6 +279,12 @@ class _EvolutionService:
         )
         return record.run_id
 
+    def build_llm_call(self):
+        """Public accessor so a restart-recovery resolver can reconstruct the
+        same llm_call this service would have built for a live cycle (#1064).
+        """
+        return self._build_llm_call()
+
     def _build_llm_call(self):
         try:
             from config import get_settings
