@@ -322,6 +322,20 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The stranded chat-admission sweep survives a vanished Run (#338).** Two
+  defects in the recovery tick #1280 shipped, both found by review after it
+  was already queued for merge. `list_node_runs()` raises
+  `RunNotFound` on all three stores, and `RunNotFound` is a `KeyError` that
+  neither `except` arm caught -- so a Run terminalized by another worker and
+  deleted by the chat retention sweeper before this tick's own lookup aborted
+  the whole sweep, leaving every later stranded Run uncompensated until the
+  next tick hit the same Run. It is now skipped as the settled race it is. The
+  scan also asked only for `RunStatus.RUNNING` and rejected foreign Runs
+  per-candidate, so an operator whose RUNNING set is mostly scheduled work paid
+  for hydrating all of them every tick; it now passes `admission_source` into
+  the query, which both SQL backends push down. The per-candidate source check
+  stays as defense in depth.
+
 - **The Simple/Power toggle is removed rather than left silently inert
   (#1409, #1411, #1410).** It promised "Power Mode (DAGs, prompts, topology)" but
   changed nothing observable: `AppShell.tsx`'s navigation never branched on
