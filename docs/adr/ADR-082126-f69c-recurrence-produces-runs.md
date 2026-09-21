@@ -39,7 +39,6 @@ history:
 
 # ADR-082126-f69c: Recurrence produces Runs
 
-**Status:** Accepted
 **Date:** 2026-08-21
 **Supersedes:** [ADR-046](ADR-046-scheduler.md)
 

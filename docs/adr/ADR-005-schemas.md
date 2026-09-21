@@ -28,7 +28,6 @@ history:
 
 # ADR-005: Pydantic schemas + SCHEMA_REGISTRY
 
-**Status:** Accepted
 **Date:** 2026-04-26
 **Tranche:** T1
 **Depends on:** ADR-004

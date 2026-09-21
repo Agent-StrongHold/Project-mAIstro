@@ -59,7 +59,6 @@ history:
 
 # ADR-063: Credential Pool and Automatic Key Rotation
 
-**Status:** Accepted
 **Date:** 2026-05-20
 **Tranche:** T4
 **Depends on:** IMP-001 (error classifier, `maistro/resilience/classifier`)

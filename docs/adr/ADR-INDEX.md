@@ -101,6 +101,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-091226-1341 | v1 | Accepted | 2026-09-12 | 2026-09-12 | 2026-09-12 12:11 CDT | Gates Ran evaluates path-scoped execution evidence from measured changed files; ambiguous scope fails closed. |
 | ADR-091626-ba4f | v1 | Accepted | 2026-09-16 | 2026-09-16 | 2026-09-16 | The Workspace design system is a first-party Tier-1 bundled Open Design system: shared token schema plus a fixed actor quartet, four state faces, honest undo outcomes and a 12px floor; personas rebind four values only. |
 | ADR-091726-7c2a | v1 | Accepted | 2026-09-17 | 2026-09-17 | 2026-09-17 | A requirements interview precedes every Goal and CreativeBrief commit: one plain question at a time, the record answers first, free text, defaults only where defensible, nothing written until the person confirms; the draft carries every field's source. |
+| ADR-092126-a28a | v1 | Accepted | 2026-09-21 | 2026-09-21 | 2026-09-21 | A document's status lives in front matter and nowhere else: the duplicated body `**Status:**` line is removed from all 83 ADRs and specs that carried one, and the gate's first category becomes absence rather than agreement, because a body line that agrees today is a second place to edit tomorrow. |
 
 *Turing-specific ADRs (autonoetic self-model) are tracked as a separate set — see `OUT-OF-SCOPE.md`
 §Turing and `DECISION-BACKLOG.md` §Turing. ADR-061 (maistro-design-package) and ADR-100 (its

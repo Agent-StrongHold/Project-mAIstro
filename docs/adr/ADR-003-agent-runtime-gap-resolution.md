@@ -29,7 +29,6 @@ history:
 
 # ADR-003: Agent runtime gap analysis (archived branch resolution)
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T0  
 **Depends on:** ADR-001
