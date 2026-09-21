@@ -433,16 +433,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/memory/learnings/store.py::InMemoryLearningStore.find_relevant",
-      "path": "packages/maistro-core/src/maistro/memory/learnings/store.py",
-      "line": 60,
-      "name": "find_relevant",
-      "classname": "InMemoryLearningStore",
-      "rank": "C",
-      "complexity": 14,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_experience_context",
       "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
       "line": 94,

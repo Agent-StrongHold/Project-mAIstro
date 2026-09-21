@@ -133,28 +133,9 @@ class PgLearningStore:
             attempt_id=learning.attempt_id,
         )
         async with self._pool.acquire() as conn:
-            existing = await conn.fetch(
-                """SELECT id, trigger_keys FROM learnings
-                   WHERE tool_name = $1 AND org_id = $2
-                     AND team_id = $3 AND user_id IS NOT DISTINCT FROM $4
-                     AND agent_id = $5 AND status = 'active'""",
-                learning.tool_name,
-                learning.org_id or "",
-                learning.team_id or "",
-                learning.user_id,
-                learning.agent_id or "",
-            )
-            for row in existing:
-                existing_keys = set(_load_keys(row["trigger_keys"]))
-                new_keys = set(learning.trigger_keys)
-                if new_keys and existing_keys:
-                    overlap = len(new_keys & existing_keys) / len(new_keys)
-                    if overlap >= 0.5:
-                        await conn.execute(
-                            "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
-                            row["id"],
-                        )
-                        return int(row["id"])
+            duplicate_id = await self._duplicate_id(conn, learning)
+            if duplicate_id is not None:
+                return duplicate_id
 
             row = await conn.fetchrow(
                 # source_query, team_id and hit_count are written, not
@@ -193,6 +174,42 @@ class PgLearningStore:
                 *provenance.as_columns(),
             )
             return int(row["id"]) if row else 0
+
+    async def _duplicate_id(
+        self,
+        conn: asyncpg.Connection,
+        learning: Learning,
+    ) -> int | None:
+        """Return the id of the active same-scope row sharing enough keys.
+
+        Resolved before the insert so the probe and the write cannot disagree
+        about what counts as a duplicate; the overlap rule matches the SQLite
+        twin (`>= 0.5` containment, not the in-memory store's Jaccard) because
+        the two probes answer the same product question.
+        """
+        existing = await conn.fetch(
+            """SELECT id, trigger_keys FROM learnings
+               WHERE tool_name = $1 AND org_id = $2
+                 AND team_id = $3 AND user_id IS NOT DISTINCT FROM $4
+                 AND agent_id = $5 AND status = 'active'""",
+            learning.tool_name,
+            learning.org_id or "",
+            learning.team_id or "",
+            learning.user_id,
+            learning.agent_id or "",
+        )
+        new_keys = set(learning.trigger_keys)
+        for row in existing:
+            existing_keys = set(_load_keys(row["trigger_keys"]))
+            if new_keys and existing_keys:
+                overlap = len(new_keys & existing_keys) / len(new_keys)
+                if overlap >= 0.5:
+                    await conn.execute(
+                        "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
+                        row["id"],
+                    )
+                    return int(row["id"])
+        return None
 
     async def text_of(self, learning_id: int) -> str:
         """The learning text as it is actually stored.

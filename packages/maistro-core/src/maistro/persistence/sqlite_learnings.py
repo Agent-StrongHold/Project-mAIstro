@@ -144,31 +144,9 @@ class SqliteLearningStore:
         # for org A could match org B's row, bump B's hit_count and return B's
         # id to A — a cross-scope write and an id leak, not merely a missed
         # insert.
-        cursor = await self._conn.execute(
-            "SELECT id, trigger_keys FROM learnings "
-            "WHERE tool_name = ? AND org_id = ? AND team_id IS ? "
-            "AND user_id IS ? AND agent_id IS ? AND status = 'active'",
-            (
-                learning.tool_name,
-                learning.org_id or "",
-                learning.team_id or "",
-                learning.user_id,
-                learning.agent_id or "",
-            ),
-        )
-        existing = await cursor.fetchall()
-        new_keys = set(learning.trigger_keys)
-        for row in existing:
-            existing_keys = set(json.loads(row[1]))
-            if new_keys and existing_keys:
-                overlap = len(new_keys & existing_keys) / len(new_keys)
-                if overlap >= 0.5:
-                    await self._conn.execute(
-                        "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = ?",
-                        (row[0],),
-                    )
-                    await self._conn.commit()
-                    return int(row[0])
+        duplicate_id = await self._duplicate_id(learning)
+        if duplicate_id is not None:
+            return duplicate_id
 
         insert_cursor = await self._conn.execute(
             """INSERT INTO learnings
@@ -200,6 +178,41 @@ class SqliteLearningStore:
         )
         await self._conn.commit()
         return insert_cursor.lastrowid or 0
+
+    async def _duplicate_id(self, learning: Learning) -> int | None:
+        """Return the id of the active same-scope row sharing enough keys.
+
+        Resolved before the insert path so the probe and the write cannot
+        disagree about what counts as a duplicate; the overlap rule matches the
+        PostgreSQL twin (`>= 0.5` containment, not the in-memory store's
+        Jaccard) because the two probes answer the same product question.
+        """
+        cursor = await self._conn.execute(
+            "SELECT id, trigger_keys FROM learnings "
+            "WHERE tool_name = ? AND org_id = ? AND team_id IS ? "
+            "AND user_id IS ? AND agent_id IS ? AND status = 'active'",
+            (
+                learning.tool_name,
+                learning.org_id or "",
+                learning.team_id or "",
+                learning.user_id,
+                learning.agent_id or "",
+            ),
+        )
+        existing = await cursor.fetchall()
+        new_keys = set(learning.trigger_keys)
+        for row in existing:
+            existing_keys = set(json.loads(row[1]))
+            if new_keys and existing_keys:
+                overlap = len(new_keys & existing_keys) / len(new_keys)
+                if overlap >= 0.5:
+                    await self._conn.execute(
+                        "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = ?",
+                        (row[0],),
+                    )
+                    await self._conn.commit()
+                    return int(row[0])
+        return None
 
     async def find_relevant(
         self,

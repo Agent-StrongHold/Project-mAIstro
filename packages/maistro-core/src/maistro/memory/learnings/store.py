@@ -45,6 +45,25 @@ class InMemoryLearningStore:
         learning.run_id = provenance.run_id
         learning.node_run_id = provenance.node_run_id
         learning.attempt_id = provenance.attempt_id
+        duplicate = self._duplicate_of(learning)
+        if duplicate is not None:
+            return duplicate.id or 0
+
+        if len(self._learnings) >= self._max:
+            self._learnings.pop(0)
+
+        learning.id = self._next_id
+        self._next_id += 1
+        self._learnings.append(learning)
+        return learning.id
+
+    def _duplicate_of(self, learning: Learning) -> Learning | None:
+        """Return the active same-scope learning whose keys overlap enough.
+
+        The caller supplies the mutation: the overwrite that dedup means here
+        replaces the surviving row's text, keys and producer in one move, so
+        this scan only decides *which* row wins (Codex, #709).
+        """
         new_keys = set(learning.trigger_keys)
         for existing in self._learnings:
             if existing.tool_name != learning.tool_name:
@@ -77,15 +96,8 @@ class InMemoryLearningStore:
                 existing.run_id = learning.run_id
                 existing.node_run_id = learning.node_run_id
                 existing.attempt_id = learning.attempt_id
-                return existing.id or 0
-
-        if len(self._learnings) >= self._max:
-            self._learnings.pop(0)
-
-        learning.id = self._next_id
-        self._next_id += 1
-        self._learnings.append(learning)
-        return learning.id
+                return existing
+        return None
 
     async def find_relevant(
         self,
