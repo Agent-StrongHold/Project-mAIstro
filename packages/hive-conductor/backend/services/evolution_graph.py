@@ -13,10 +13,11 @@ second execution lifecycle alongside Run/NodeRun/Attempt.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import random
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from copy import deepcopy
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -32,7 +33,8 @@ from maistro.graph.durable_runs import (
     run_durable_graph,
 )
 from maistro.graph.nodes.base import BaseNode, NodeContext
-from maistro.runs.model import Run, RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from services.scan_continuations import scan_continuation
 
 logger = logging.getLogger(__name__)
 
@@ -997,6 +999,29 @@ def _recovery_resolver(run: Run) -> NodeResolver:
             "-- it is not the population this Run was admitted against"
         )
 
+    # The live membership must equal the frozen plan exactly, not merely
+    # contain it (#1064). ``_apply_finalize_mutations`` operates over
+    # ``population.list_all()`` wholesale -- cull/breed/self-improve/migrate
+    # all see every genome currently in the store, never just the ones this
+    # Run's node resolver was handed. On the live path that is safe only
+    # because ``_cycle_lock`` keeps ``seed_population``/a later cycle from
+    # adding genomes while a cycle is in flight; recovery holds that same
+    # lock (see the module-level docstring above), but a seed request that
+    # landed and released the lock *before* a stranded Run was noticed can
+    # still have added genomes this Run's plan never admitted. Accepting
+    # that drift here would let recovered finalization cull, breed from,
+    # self-improve, or migrate genomes that were never part of this Run.
+    live_ids = {str(genome.id) for genome in population.list_all()}
+    extra = sorted(live_ids - set(membership_ids))
+    if extra:
+        raise EvolveRecoveryBlocked(
+            f"Evolve Run {run.run_id!r} cannot be recovered: this process's live population "
+            f"has {len(extra)} genome(s) outside its {len(membership_ids)} frozen member "
+            "genome(s) -- a later seed or cycle added members after this Run was admitted, "
+            "and recovered finalization must never touch genomes that were not part of this "
+            "Run's plan"
+        )
+
     config = EvolutionConfig(self_improve=True, self_improve_top_n=3)
     harness = EvalHarness(benchmark_fidelity="proxy")
     cycle = EvolutionCycle(harness=harness, tournament=tournament)
@@ -1016,6 +1041,86 @@ def _admitted_by_evolve(run: Run) -> bool:
     return run.provenance.get("admission_source") == _ADMISSION_SOURCE
 
 
+def _current_evolution_service() -> Any | None:
+    """The live ``_EvolutionService`` singleton, or ``None`` if not started.
+
+    ``None`` is a real, expected answer here (unlike inside
+    ``_recovery_resolver``, which must fail a *candidate* closed): a recovery
+    tick that finds no service yet has nothing to serialize against and
+    nothing to reconcile -- every candidate it touches will fail closed on
+    its own via ``_recovery_resolver`` raising ``EvolveRecoveryBlocked``.
+    """
+    from services.evolution import EvolutionServiceNotStarted, get_evolution_service
+
+    try:
+        return get_evolution_service()
+    except EvolutionServiceNotStarted:
+        return None
+
+
+@contextlib.asynccontextmanager
+async def _serialized_against_live_cycles(service: Any | None) -> AsyncIterator[None]:
+    """Hold the same lock ``seed_population``/a live cycle hold while mutating (#1064).
+
+    Both recovery seams execute evaluate/battle/finalize graph nodes
+    immediately, exactly like a live cycle, against the same
+    ``PopulationStore``/``EloTournament`` that ``seed_population`` and
+    ``_run_one_cycle_locked`` already serialize through
+    ``_EvolutionService._cycle_lock``. Without holding that same lock here, a
+    recovery tick that overlaps a live cycle or a seed request could
+    interleave evaluation, battle, and finalize node execution with culling,
+    breeding, and rating updates, corrupting the shared domain state despite
+    the normal execution path's own serialization.
+
+    No live service means nothing can mutate through this seam either --
+    every candidate's resolver fails closed with ``EvolveRecoveryBlocked``
+    before touching any domain object -- so there is nothing to serialize.
+    """
+    if service is None:
+        yield
+        return
+    async with service.cycle_lock:
+        yield
+
+
+async def _reconcile_recovered_runs(service: Any, run_store: Any, run_ids: Sequence[str]) -> None:
+    """Fold recovery's dispositions into the service state ``/evolution/status`` reads (#1064).
+
+    ``recover_queued_graph_runs``/``resume_due_graph_runs`` mutate this
+    Run's population/tournament domain state directly but return only a
+    count, bypassing the ``cycle_count``/``last_run_id``/``last_run_status``
+    bookkeeping ``_run_one_cycle_locked`` performs for a live cycle. Without
+    this, a stranded/due Run recovered to a terminal status left
+    ``/evolution/status`` reporting the prior cycle's facts, and the next
+    live admission could reuse the recovered cycle's ``cycle_number``. Only a
+    Run this tick actually attempted (a resolver was built for it) and that
+    is now terminal is folded in; a Run left QUEUED/WAITING (isolated for a
+    later tick) has nothing new to report.
+    """
+    for run_id in run_ids:
+        run = await run_store.get_run(run_id)
+        if run is None or run.status not in TERMINAL_RUN_STATUSES:
+            continue
+        service.record_recovered_run(run_id, run.status, error=run.error)
+
+
+def _tracking_recovery_resolver_factory(sink: list[str]) -> Any:
+    """Wrap ``_recovery_resolver`` to record which Runs this tick attempted.
+
+    ``node_resolver_factory`` is the only per-candidate seam the shared
+    recovery primitive exposes; recording each candidate's ``run_id`` here is
+    how the tick later knows which Runs to reconcile status for, without
+    changing ``recover_queued_graph_runs``/``resume_due_graph_runs`` (shared
+    with the legacy DAG adapter) to return more than a count.
+    """
+
+    def factory(run: Run) -> NodeResolver:
+        sink.append(run.run_id)
+        return _recovery_resolver(run)
+
+    return factory
+
+
 async def recover_stranded_evolution_runs(*, limit: int = 100) -> int:
     """Recover only canonical Runs admitted by this Evolve adapter (#1064).
 
@@ -1029,14 +1134,26 @@ async def recover_stranded_evolution_runs(*, limit: int = 100) -> int:
         owner = canonical_execution_owner()
     except CanonicalExecutionUnavailable:
         return 0
-    return await recover_queued_graph_runs(
-        store=owner.graph_run_store,
-        run_store=owner.run_store,
-        node_resolver_factory=_recovery_resolver,
-        eligible=_admitted_by_evolve,
-        admission_source=_ADMISSION_SOURCE,
-        limit=limit,
-    )
+    service = _current_evolution_service()
+    attempted: list[str] = []
+    async with _serialized_against_live_cycles(service):
+        recovered = await recover_queued_graph_runs(
+            store=owner.graph_run_store,
+            run_store=owner.run_store,
+            node_resolver_factory=_tracking_recovery_resolver_factory(attempted),
+            eligible=_admitted_by_evolve,
+            admission_source=_ADMISSION_SOURCE,
+            limit=limit,
+            events=owner.event_bus,
+            # Held across ticks, mirroring the legacy-DAG wrapper (#1127):
+            # the scan is bounded per call, so without one, at least `limit`
+            # earlier unrecoverable candidates would be reselected on every
+            # tick and starve every later queued Run.
+            scan=scan_continuation("recover_queued_graph_runs", owner.run_store),
+        )
+        if service is not None and attempted:
+            await _reconcile_recovered_runs(service, owner.run_store, attempted)
+    return recovered
 
 
 async def wake_due_evolution_runs(*, limit: int = 100) -> int:
@@ -1051,13 +1168,21 @@ async def wake_due_evolution_runs(*, limit: int = 100) -> int:
         owner = canonical_execution_owner()
     except CanonicalExecutionUnavailable:
         return 0
-    return await resume_due_graph_runs(
-        store=owner.graph_run_store,
-        run_store=owner.run_store,
-        node_resolver_factory=_recovery_resolver,
-        eligible=_admitted_by_evolve,
-        limit=limit,
-    )
+    service = _current_evolution_service()
+    attempted: list[str] = []
+    async with _serialized_against_live_cycles(service):
+        resumed = await resume_due_graph_runs(
+            store=owner.graph_run_store,
+            run_store=owner.run_store,
+            node_resolver_factory=_tracking_recovery_resolver_factory(attempted),
+            eligible=_admitted_by_evolve,
+            limit=limit,
+            events=owner.event_bus,
+            scan=scan_continuation("resume_due_graph_runs", owner.graph_run_store),
+        )
+        if service is not None and attempted:
+            await _reconcile_recovered_runs(service, owner.run_store, attempted)
+    return resumed
 
 
 __all__ = [
