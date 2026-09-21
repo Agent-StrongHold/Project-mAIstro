@@ -924,6 +924,223 @@ async def test_recovery_returns_running_job_with_queued_run_to_pending() -> None
     assert job.completed_at is None
 
 
+async def test_recovery_leaves_a_live_leased_running_receipt_alone() -> None:
+    """A worker's live RUNNING lease survives even a momentarily-QUEUED Run.
+
+    With multiple runners, one can hold a valid RUNNING lease on its receipt
+    while the canonical Run is still QUEUED -- the narrow window just before
+    `_execute_stage` advances it. Reconciliation must not flip that receipt
+    back to PENDING: `claim_next_pending` selects by status and would
+    immediately re-claim it, dispatching the provider a second time. Compare
+    against `test_recovery_returns_running_job_with_queued_run_to_pending`,
+    whose job carries no `lease_expires_at` and is correctly requeued --
+    only a *live*, unexpired lease is protected.
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-live-lease")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-live-lease",
+        run_id,
+        status=JobStatus.RUNNING,
+        leased_by="live-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=30),
+    )
+    store.jobs[("job-live-lease", "org-1")] = job
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.RUNNING
+    assert job.leased_by == "live-worker"
+    assert store.updates == []
+
+
+async def test_recovery_requeues_a_running_receipt_whose_lease_expired() -> None:
+    """An *expired* lease is not live: recovery may still requeue it.
+
+    Only the lease reaper decides a worker is lost in the ordinary case; this
+    proves the fix is a liveness check, not a blanket "never touch RUNNING".
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-expired-lease")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-expired-lease",
+        run_id,
+        status=JobStatus.RUNNING,
+        leased_by="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    store.jobs[("job-expired-lease", "org-1")] = job
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.PENDING
+
+
+async def test_reconcile_admissions_pages_past_the_first_batch_of_healthy_canvas_runs() -> None:
+    """A missing receipt behind a full first page must still be reached.
+
+    Before the fix, one bounded `list_by_status(status, limit=N)` call read
+    only the oldest `N` rows of a status and never paged further: a status
+    with more than `N` already-healthy Canvas admissions ahead of a broken
+    one left the broken one permanently unreconciled on every future tick.
+    """
+    adapter, _runs, _project = await _adapter()
+    store = _ReceiptStore()
+    for i in range(3):
+        healthy_run_id = await _admit_with_receipt(adapter, f"job-healthy-{i}")
+        store.jobs[(f"job-healthy-{i}", "org-1")] = _correlated_job(
+            f"job-healthy-{i}", healthy_run_id
+        )
+    # Admitted after (and so ordered after) all three healthy rows above, and
+    # its receipt was never persisted -- the same crash shape every other
+    # reconciliation test in this module exercises.
+    await _admit_with_receipt(adapter, "job-starved")
+
+    repaired = await adapter.reconcile_admissions(store, limit=2)
+
+    assert "job-starved" in {job.id for job in repaired}
+
+
+async def test_reconcile_admissions_ignores_a_matching_job_id_in_another_status() -> None:
+    """The `admission_source` filter is pushed into the query, not merely
+    applied after it -- a page must never be crowded out by non-Canvas rows
+    sharing the same status."""
+    adapter, _runs, project = await _adapter()
+    for i in range(3):
+        await _non_canvas_run(adapter, project, f"job-other-{i}")
+    await _admit_with_receipt(adapter, "job-real")
+    store = _ReceiptStore()
+
+    repaired = await adapter.reconcile_admissions(store, limit=2)
+
+    assert {job.id for job in repaired} == {"job-real"}
+
+
+async def test_concurrent_admission_race_adopts_the_winner_instead_of_orphaning_a_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two admitters racing the same idempotency key end up with one Run.
+
+    Simulates the race by admitting the winner first, then forcing a second
+    admit's *own* pre-admission lookup to miss it -- exactly what a second
+    worker's concurrent scan would do before either insert lands. What
+    prevents a second, orphaned Run is the durable `canvas_job_id` claim
+    (migration 039 / `InMemoryRunStore`'s mirror of it) refusing the second
+    insert, not the scan: the loser's `create_run` raises, and `admit`
+    re-reads to adopt the winner instead of leaving its own Run behind.
+    """
+    adapter, runs, _project = await _adapter()
+    winner_run_id = await _admit_with_receipt(adapter, "job-race", operation_id="op-race")
+
+    original_find_admitted = adapter._find_admitted
+    calls = 0
+
+    async def racy_find_admitted(*, job_id: str, operation_id: str | None) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # The racing worker's own lookup, which ran before the winner's
+            # insert was visible to it.
+            return None
+        return await original_find_admitted(job_id=job_id, operation_id=operation_id)
+
+    monkeypatch.setattr(adapter, "_find_admitted", racy_find_admitted)
+
+    loser_run_id = await adapter.admit(
+        job_id="job-race",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+        operation_id="op-race",
+        receipt=_generation_receipt(),
+    )
+
+    assert loser_run_id == winner_run_id
+    assert calls == 2
+    all_canvas_runs = [
+        run
+        for status in RunStatus
+        for run in await runs.list_by_status(
+            status, limit=100, admission_source="canvas_generation"
+        )
+    ]
+    assert len(all_canvas_runs) == 1
+
+
+async def test_concurrent_admission_race_with_different_inputs_still_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine race does not launder a conflicting retry.
+
+    The recovery path taken when the durable claim refuses a concurrent
+    insert must apply the same receipt-fingerprint comparison as the
+    ordinary pre-admission lookup, not skip it.
+    """
+    adapter, _runs, _project = await _adapter()
+    await _admit_with_receipt(adapter, "job-race-conflict", operation_id="op-race-conflict")
+
+    original_find_admitted = adapter._find_admitted
+    calls = 0
+
+    async def racy_find_admitted(*, job_id: str, operation_id: str | None) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return await original_find_admitted(job_id=job_id, operation_id=operation_id)
+
+    monkeypatch.setattr(adapter, "_find_admitted", racy_find_admitted)
+    changed_receipt = {**_generation_receipt(), "prompt": "a different landscape"}
+    with pytest.raises(RunIntegrityError, match="retried with different inputs"):
+        await adapter.admit(
+            job_id="job-race-conflict",
+            canvas_id="canvas-1",
+            layer_id="layer-1",
+            action="generate",
+            actor_principal_id="user-1",
+            operation_id="op-race-conflict",
+            receipt=changed_receipt,
+        )
+
+
+async def test_admission_fingerprint_rejects_a_different_resource_under_the_same_key() -> None:
+    """The persisted admission fingerprint must name its own resource.
+
+    If admission crashed before the Canvas job was inserted and the same
+    org/key is retried for a *different* canvas or layer with otherwise
+    identical generation inputs, the deterministic job id still finds the
+    original Run -- so the fingerprint compared against the retry must
+    include `canvas_id`/`layer_id`, or two different resources correlate to
+    one Run whose graph and provenance still name the first.
+    """
+    adapter, _runs, _project = await _adapter()
+    await adapter.admit(
+        job_id="job-cross-resource",
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action="generate",
+        actor_principal_id="user-1",
+        operation_id="op-cross-resource",
+        receipt={**_generation_receipt(), "canvas_id": "canvas-1", "layer_id": "layer-1"},
+    )
+
+    with pytest.raises(RunIntegrityError, match="retried with different inputs"):
+        await adapter.admit(
+            job_id="job-cross-resource",
+            canvas_id="canvas-2",
+            layer_id="layer-2",
+            action="generate",
+            actor_principal_id="user-1",
+            operation_id="op-cross-resource",
+            receipt={**_generation_receipt(), "canvas_id": "canvas-2", "layer_id": "layer-2"},
+        )
+
+
 async def _failing_stage() -> list[str]:
     raise RuntimeError("stage exploded")
 

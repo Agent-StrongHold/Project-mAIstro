@@ -600,6 +600,12 @@ class InMemoryRunStore:
         # scanning them, because the check is on the hot admission path and a
         # scan would be linear in every Run the store holds.
         self._occurrences: dict[tuple[str, str], str] = {}
+        # `canvas_job_id` -> run_id (#1055 review, migration 039). Same shape
+        # as `_occurrences`: two workers racing the same Canvas idempotency
+        # key both compute the same deterministic `canvas_job_id` before
+        # either inserts, and this is the claim that refuses the second one
+        # rather than leaving two Runs that agree on one job id.
+        self._canvas_job_claims: dict[str, str] = {}
 
     def _prune_terminal_runs(self) -> None:
         """Evict the oldest terminal Runs once the store exceeds its bound.
@@ -655,6 +661,13 @@ class InMemoryRunStore:
         occurrence = occurrence_key(forgotten.provenance)
         if occurrence is not None and self._occurrences.get(occurrence) == run_id:
             del self._occurrences[occurrence]
+        canvas_job_id = forgotten.provenance.get("canvas_job_id")
+        if (
+            isinstance(canvas_job_id, str)
+            and canvas_job_id
+            and self._canvas_job_claims.get(canvas_job_id) == run_id
+        ):
+            del self._canvas_job_claims[canvas_job_id]
         node_run_ids = {
             node_run_id
             for node_run_id, node_run in self._node_runs.items()
@@ -718,6 +731,21 @@ class InMemoryRunStore:
             if occurrence in self._occurrences:
                 raise DuplicateOccurrence(*occurrence)
             self._occurrences[occurrence] = run.run_id
+        canvas_job_id = run.provenance.get("canvas_job_id")
+        if (
+            isinstance(canvas_job_id, str)
+            and canvas_job_id
+            and run.provenance.get(ADMISSION_SOURCE) == "canvas_generation"
+        ):
+            # Same no-await claim as the occurrence check above, mirrored by a
+            # real unique index on the durable backends (migration 039).
+            # Scoped to `admission_source == "canvas_generation"` too: the
+            # field name alone is not exclusively Canvas-owned, and a Run from
+            # an unrelated source that happens to carry the same string in its
+            # own provenance must not be able to block a real admission.
+            if canvas_job_id in self._canvas_job_claims:
+                raise RunIntegrityError(f"a Run already claims Canvas job {canvas_job_id!r}")
+            self._canvas_job_claims[canvas_job_id] = run.run_id
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return run.model_copy(deep=True)

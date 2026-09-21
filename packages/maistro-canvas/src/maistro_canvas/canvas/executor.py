@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, TypeVar
 
+from maistro.runs.store import RunIntegrityError
 from maistro_canvas.canvas.canonical_execution import (
     CanvasCanonicalExecution,
     canonical_run_id,
@@ -62,6 +63,59 @@ class _ModelRegistryProtocol:
 
     def get_default_draft(self) -> str:
         raise NotImplementedError
+
+
+def _admission_fingerprint(
+    *,
+    action: str,
+    model_id: str,
+    prompt: str,
+    canvas_id: str,
+    layer_id: str,
+    count: int,
+    seed: int | None,
+    negative_prompt: str,
+    region: str,
+    strength: float,
+) -> tuple[object, ...]:
+    """The comparable identity of one generation request's client-meaningful inputs.
+
+    Used at every point an idempotency key can resolve to an existing job
+    instead of admitting a new one: an in-flight (active) job returned early
+    before canonical admission is even attempted, and a durable terminal
+    receipt read back after it. Both must reject a same-key retry whose
+    inputs changed rather than silently answering it with someone else's
+    result -- the same requirement, so one fingerprint shape answers both.
+    """
+    return (
+        action,
+        model_id,
+        prompt,
+        canvas_id,
+        layer_id,
+        count,
+        seed,
+        negative_prompt,
+        region,
+        strength,
+    )
+
+
+def _job_fingerprint(job: GenerationJobRecord) -> tuple[object, ...]:
+    """The same fingerprint shape, read back off an already-admitted job."""
+    params = job.params
+    return _admission_fingerprint(
+        action=job.action,
+        model_id=job.model_id,
+        prompt=job.prompt,
+        canvas_id=job.canvas_id,
+        layer_id=job.layer_id,
+        count=params.get("count", 1),
+        seed=params.get("seed"),
+        negative_prompt=params.get("negative_prompt", ""),
+        region=params.get("region", "full"),
+        strength=params.get("strength", 0.6),
+    )
 
 
 def _sanitise_error(exc: Exception) -> str:
@@ -201,12 +255,32 @@ class CanvasExecutor:
         operation_id = idempotency_key.strip() if idempotency_key is not None else None
         if operation_id == "":
             operation_id = None
+        requested_fingerprint = _admission_fingerprint(
+            action=action,
+            model_id=resolved_model,
+            prompt=prompt,
+            canvas_id=canvas_id,
+            layer_id=layer_id,
+            count=count,
+            seed=seed,
+            negative_prompt=negative_prompt,
+            region=region,
+            strength=strength,
+        )
         active = await self._store.active_job_for_layer(layer_id, org_id=org_id)
         if active is not None:
             if (
                 operation_id is not None
                 and active.params.get("canvas_operation_id") == operation_id
             ):
+                # A same-key retry of a still-pending/running operation must be
+                # rejected the same way a terminal retry with changed inputs
+                # already is -- otherwise whether a payload mismatch is caught
+                # depends on how fast the first attempt finishes.
+                if _job_fingerprint(active) != requested_fingerprint:
+                    raise RunIntegrityError(
+                        f"Canvas operation {operation_id!r} was retried with different inputs"
+                    )
                 return active
             raise JobInProgressError(
                 f"layer {layer_id!r} already has an active job ({active.id!r})"
@@ -240,11 +314,29 @@ class CanvasExecutor:
         if self._canonical_execution is None:
             return await self._store.create_job(job, org_id=org_id)
 
+        # A deterministic job_id names an idempotent retry before canonical
+        # admission is even attempted: if the durable receipt already exists
+        # (the common terminal-retry case, or a concurrent admitter that won
+        # the race between this lookup and admission), validate and return it
+        # directly rather than admitting a Run that would then be orphaned --
+        # correlated to nothing, while the returned receipt still names the
+        # original Run.
+        if operation_id is not None:
+            existing = await self._store.get_job(job.id, org_id=org_id)
+            if existing is not None:
+                if _job_fingerprint(existing) != requested_fingerprint:
+                    raise RunIntegrityError(
+                        f"Canvas operation {operation_id!r} was retried with different inputs"
+                    )
+                return existing
+
         receipt = {
             "action": job.action,
             "model_id": job.model_id,
             "prompt": job.prompt,
             "params": dict(job.params),
+            "canvas_id": canvas_id,
+            "layer_id": layer_id,
             "org_id": org_id,
         }
         run_id = await self._canonical_execution.admit(

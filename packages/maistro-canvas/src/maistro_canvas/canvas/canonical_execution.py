@@ -28,7 +28,7 @@ from maistro.runs.model import (
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
 from maistro.runs.service import RunExecutionService
 from maistro.runs.sources import ADMISSION_SOURCE
-from maistro.runs.store import RunIntegrityError, RunStore
+from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
 
 _CANONICAL_RUN_PARAM = "canonical_run_id"
@@ -119,16 +119,23 @@ class CanvasCanonicalExecution:
         admission and receipt creation. The receipt is a separate projection;
         if the process dies before it is written, ``reconcile_admissions``
         rebuilds it from this durable provenance.
+
+        The pre-admission lookup below is a scan, not a lock: two workers
+        racing the same ``Idempotency-Key`` can both pass it before either
+        inserts. What makes admission atomic anyway is ``canvas_job_id``
+        itself -- deterministic from ``(org_id, operation_id)`` before this
+        is ever called -- carrying a real unique claim on every backend
+        (migration 039 for PostgreSQL/SQLite; the in-memory store's own claim
+        dict for tests and the homelab). The loser's insert is refused, and
+        it re-reads the durable scan to adopt the winner instead of leaving a
+        second, orphaned Run behind.
         """
 
         existing = await self._find_admitted(job_id=job_id, operation_id=operation_id)
         if existing is not None:
-            recorded = existing.provenance.get(_CANVAS_RECEIPT)
-            if receipt is not None and recorded is not None and recorded != receipt:
-                raise RunIntegrityError(
-                    f"Canvas operation {operation_id or job_id!r} was retried with different inputs"
-                )
-            return existing.run_id
+            return self._adopt_or_reject(
+                existing, receipt=receipt, operation_id=operation_id, job_id=job_id
+            )
 
         stages = _stages(action)
         nodes = [
@@ -173,13 +180,45 @@ class CanvasCanonicalExecution:
             # admission inputs in canonical provenance makes the Run alone
             # sufficient to reconstruct a missing Canvas receipt.
             provenance[_CANVAS_RECEIPT] = dict(receipt)
-        run = await self._service.create_run(
-            graph,
-            actor_principal_id=actor_principal_id,
-            provenance=provenance,
-            initial_status=RunStatus.QUEUED,
-        )
+        try:
+            run = await self._service.create_run(
+                graph,
+                actor_principal_id=actor_principal_id,
+                provenance=provenance,
+                initial_status=RunStatus.QUEUED,
+            )
+        except Exception:
+            # The durable canvas_job_id claim (migration 039) refused a
+            # concurrent winner's insert, or the in-memory store's mirror of
+            # it did. Re-read rather than assume: a genuine, unrelated
+            # failure has no winner to find and re-raises unchanged.
+            winner = await self._find_admitted(job_id=job_id, operation_id=operation_id)
+            if winner is None:
+                raise
+            return self._adopt_or_reject(
+                winner, receipt=receipt, operation_id=operation_id, job_id=job_id
+            )
         return run.run_id
+
+    @staticmethod
+    def _adopt_or_reject(
+        existing: Run,
+        *,
+        receipt: dict[str, Any] | None,
+        operation_id: str | None,
+        job_id: str,
+    ) -> str:
+        """Reuse an already-admitted Run, or refuse a conflicting retry.
+
+        Shared by the pre-admission lookup and the post-conflict re-read, so
+        the two answer a retried operation identically whichever path found it.
+        """
+        recorded = existing.provenance.get(_CANVAS_RECEIPT)
+        if receipt is not None and recorded is not None and recorded != receipt:
+            raise RunIntegrityError(
+                f"Canvas operation {operation_id or job_id!r} was retried with different inputs"
+            )
+        return existing.run_id
 
     async def _find_admitted(
         self,
@@ -211,20 +250,42 @@ class CanvasCanonicalExecution:
         a completed Run is projected as successful only when completed Attempt
         evidence supplies its result paths. Thus a recovery tick cannot invent
         a successful Canvas result.
+
+        The store's own ``admission_source`` filter is pushed into the query,
+        so a page is Canvas-admitted rows only -- never crowded out by other
+        sources' Runs in the same status. And within one status this walks
+        every matching page via the store's oldest-first cursor (mirroring
+        `Container.execute_admitted_runs`), not only the first: a fixed
+        ``limit``-sized read of just the first page left a missing receipt
+        past it permanently unreconciled once enough older, already-healthy
+        rows sat ahead of it (#666-shaped starvation).
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
         seen: set[str] = set()
         repaired: list[Any] = []
         for status in RunStatus:
-            runs = await self._runs.list_by_status(status, limit=limit, project_id=self._project_id)
-            for run in runs:
-                if run.run_id in seen or run.provenance.get(ADMISSION_SOURCE) != _CANVAS_SOURCE:
-                    continue
-                seen.add(run.run_id)
-                job = await self._reconcile_admission(run, canvas_store)
-                if job is not None:
-                    repaired.append(job)
+            after: RunCursor | None = None
+            while True:
+                runs = await self._runs.list_by_status(
+                    status,
+                    limit=limit,
+                    project_id=self._project_id,
+                    admission_source=_CANVAS_SOURCE,
+                    after=after,
+                )
+                if not runs:
+                    break
+                for run in runs:
+                    after = run_cursor_key(run)
+                    if run.run_id in seen:
+                        continue
+                    seen.add(run.run_id)
+                    job = await self._reconcile_admission(run, canvas_store)
+                    if job is not None:
+                        repaired.append(job)
+                if len(runs) < limit:
+                    break
         return repaired
 
     async def _reconcile_admission(self, run: Run, canvas_store: Any) -> Any | None:
@@ -305,6 +366,20 @@ class CanvasCanonicalExecution:
                 if job.result_paths != paths:
                     job.result_paths = paths
                     changed = True
+        elif (
+            job.status is JobStatus.RUNNING
+            and job.lease_expires_at is not None
+            and job.lease_expires_at > datetime.now(UTC)
+        ):
+            # A worker can hold a live RUNNING lease while its canonical Run
+            # is still momentarily QUEUED/CREATED -- the narrow window before
+            # `_execute_stage` advances it. Flipping the receipt back to
+            # PENDING here, without checking the lease, is exactly what would
+            # let `claim_next_pending` hand the same job to a second worker
+            # and dispatch the provider twice. Only the lease reaper
+            # (`reap_expired_leases`) may decide a worker is lost; recovery
+            # leaves a live lease alone.
+            target = job.status
         else:
             # Only CREATED/QUEUED are admission states. Once canonical work is
             # RUNNING, recovery must not turn an owned Canvas lease back into
