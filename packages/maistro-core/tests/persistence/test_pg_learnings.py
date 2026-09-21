@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.vectors import EMBEDDING_DIMENSIONS
 from maistro.persistence.pg_learnings import (
     _PG_INSERT_FIELDS,
     PgLearningStore,
@@ -62,6 +63,18 @@ class FakeConnection:
     async def execute(self, query: str, *args: Any) -> str:
         self.calls.append(Call("execute", query, args))
         return self._execute_results.pop(0) if self._execute_results else "OK"
+
+    def transaction(self) -> _TransactionCtx:
+        """Fakes asyncpg.Connection.transaction() for `async with conn.transaction()."""
+        return _TransactionCtx()
+
+
+class _TransactionCtx:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
 
 
 class FakePool:
@@ -669,3 +682,91 @@ def test_a_malformed_trigger_keys_row_costs_that_row_and_no_others() -> None:
     assert _load_keys("not json at all") == []
     assert _load_keys('{"not": "an array"}') == []
     assert _load_keys(object()) == []
+
+
+# --------------------------------------------------------------------------
+# find_similar()
+# --------------------------------------------------------------------------
+
+
+async def test_find_similar_rejects_a_wrong_dimension_query(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetch([])
+
+    with pytest.raises(ValueError, match="vector"):
+        await store.find_similar([0.0] * (EMBEDDING_DIMENSIONS + 1))
+
+    assert conn.calls == []  # refused before any SQL runs
+
+
+async def test_find_similar_binds_every_requested_scope_axis(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetch(
+        [
+            {
+                "id": 7,
+                "category": "general",
+                "trigger_keys": ["foo"],
+                "learning": "closest match",
+                "tool_name": "t",
+                "source_query": "q",
+                "agent_id": "scribe",
+                "user_id": "u1",
+                "org_id": "org-1",
+                "team_id": "team-a",
+                "scope": "agent",
+                "hit_count": 0,
+                "status": "active",
+                "rca_category": None,
+                "rca_prevention": "",
+                "success_after_use": 0,
+                "failure_after_use": 0,
+                "run_id": None,
+                "node_run_id": None,
+                "attempt_id": None,
+            }
+        ]
+    )
+
+    results = await store.find_similar(
+        [0.0] * EMBEDDING_DIMENSIONS,
+        org_id="org-1",
+        team_id="team-a",
+        user_id="u1",
+        agent_id="scribe",
+        max_results=3,
+    )
+
+    # The iterative-scan pragma must run inside the same transaction as the
+    # fetch, or the scope-filtered ranking guarantee does not hold.
+    set_local = conn.calls[0]
+    assert "SET LOCAL hnsw.iterative_scan" in set_local.query
+    fetch = conn.calls[1]
+    assert "team_id = $3" in fetch.query
+    assert "user_id = $4" in fetch.query
+    assert "agent_id = $5" in fetch.query
+    assert "LIMIT $6" in fetch.query
+    vector_literal, org_id, team_id, user_id, agent_id, limit = fetch.args
+    assert vector_literal.count(",") == EMBEDDING_DIMENSIONS - 1
+    assert (org_id, team_id, user_id, agent_id, limit) == ("org-1", "team-a", "u1", "scribe", 3)
+    assert [lr.learning for lr in results] == ["closest match"]
+
+
+async def test_find_similar_omits_unrequested_axes(
+    store: PgLearningStore, conn: FakeConnection
+) -> None:
+    conn.queue_fetch([])
+
+    await store.find_similar([0.0] * EMBEDDING_DIMENSIONS)
+
+    fetch = conn.calls[1]
+    assert "team_id" not in fetch.query
+    assert "user_id" not in fetch.query
+    assert "agent_id" not in fetch.query
+    # org_id stays bound even when defaulted: an unscoped read is a global
+    # read, never a wildcard.
+    vector_literal, org_id, limit = fetch.args
+    assert vector_literal.count(",") == EMBEDDING_DIMENSIONS - 1
+    assert (org_id, limit) == ("", 10)
