@@ -69,8 +69,9 @@ COPY alembic/ alembic/
 COPY alembic.ini .
 COPY pyproject.toml uv.lock README.md ./
 # Static docker CLI (talks to a mounted /var/run/docker.sock) — a single static
-# binary, no daemon.
-COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+# binary, no daemon. 29-cli ships a binary built with go1.26.8; older 27-cli
+# binaries embedded go1.22.11 (CVE-2025-68121 crypto/tls + 21 HIGHs, trivy).
+COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 EXPOSE 8000
 STOPSIGNAL SIGTERM
 # Drop to an unprivileged numeric uid for runtime.
