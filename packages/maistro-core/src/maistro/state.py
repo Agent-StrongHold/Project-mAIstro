@@ -551,6 +551,8 @@ class PersistedStore:
         key: str,
         model: BaseModel,
         unique_fields: tuple[str, ...],
+        *,
+        timeout: float = 30.0,
     ) -> bool:
         """Upsert a model while preserving its durable uniqueness claims.
 
@@ -605,7 +607,7 @@ class PersistedStore:
                 completed.set()
 
         self._state.submit(_upsert)
-        if not completed.wait(timeout=30.0):
+        if not completed.wait(timeout=timeout):
             raise TimeoutError("timed out waiting for unique model write")
         if errors:
             raise RuntimeError("unique model write failed") from errors[0]
@@ -617,6 +619,8 @@ class PersistedStore:
         key: str,
         model: BaseModel,
         field_name: str,
+        *,
+        timeout: float = 30.0,
     ) -> bool:
         """Insert a model only if its field claim is still available.
 
@@ -655,7 +659,7 @@ class PersistedStore:
                 completed.set()
 
         self._state.submit(_insert_once)
-        if not completed.wait(timeout=30.0):
+        if not completed.wait(timeout=timeout):
             raise TimeoutError("timed out waiting for unique model insert")
         if errors:
             raise RuntimeError("unique model insert failed") from errors[0]

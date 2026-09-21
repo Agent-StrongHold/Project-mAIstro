@@ -389,6 +389,20 @@ class TestPutModelUnique:
 
         assert store.get("users", "u1", SampleModel) is None
 
+    def test_times_out_when_the_writer_never_runs_the_transaction(
+        self, state_with_store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bounded like every other write in this module (`put_raw_if_absent`
+        has the same `completed.wait(timeout=...)` guard): a writer that never
+        drains the queue must not hang the caller forever."""
+        state, store = state_with_store
+        monkeypatch.setattr(state, "submit", lambda _fn: None)
+
+        with pytest.raises(TimeoutError, match="timed out waiting for unique model write"):
+            store.put_model_unique(
+                "users", "u1", SampleModel(id="u1", name="alice"), ("name",), timeout=0.01
+            )
+
 
 class TestPutModelIfUnique:
     """PersistedStore.put_model_if_unique (#1248/#1259) — check-then-insert as
@@ -462,6 +476,19 @@ class TestPutModelIfUnique:
         finally:
             reader.close()
         assert row is None
+
+    def test_times_out_when_the_writer_never_runs_the_transaction(
+        self, state_with_store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bounded like every other write in this module: a writer that never
+        drains the queue must not hang the caller forever."""
+        state, store = state_with_store
+        monkeypatch.setattr(state, "submit", lambda _fn: None)
+
+        with pytest.raises(TimeoutError, match="timed out waiting for unique model insert"):
+            store.put_model_if_unique(
+                "users", "u1", SampleModel(id="u1", name="alice"), "name", timeout=0.01
+            )
 
 
 class UserLikeModel(BaseModel):
