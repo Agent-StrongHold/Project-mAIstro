@@ -8,6 +8,16 @@ twins or be deliberately classified as generated.
 
 from __future__ import annotations
 
+# The contract names are the module's public surface: the SQL twins consume the
+# field sets, and the conformance tests pin the disposition partition. Vulture
+# only sees the src-side readers, so without ``__all__`` it mistakes the
+# test-pinned partition for dead code.
+__all__ = [
+    "LEARNING_FIELD_DISPOSITIONS",
+    "LEARNING_GENERATED_FIELDS",
+    "LEARNING_PERSISTED_FIELDS",
+]
+
 # ``id`` is assigned by each store's identity mechanism. Every other declared
 # Learning field is durable and must be represented by both SQL twins.
 LEARNING_GENERATED_FIELDS = frozenset({"id"})
