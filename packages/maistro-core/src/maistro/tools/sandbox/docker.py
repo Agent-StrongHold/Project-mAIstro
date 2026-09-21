@@ -24,13 +24,31 @@ from maistro.tools.sandbox.workspace import CONTAINER_WORKSPACE, ensure_workspac
 logger = structlog.get_logger()
 
 
-def _shell_quote(s: str) -> str:
-    """Compatibility helper; command execution itself never uses a shell."""
-    return shlex.quote(s)
-
-
 class CommandContractError(ValueError):
     """The command is outside the structured sandbox command language."""
+
+
+_SHELL_OPERATOR_CHARS = frozenset(";&|<>`$")
+_SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "fish"})
+
+
+def _argv_from_string(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError as exc:
+        raise CommandContractError("invalid command quoting") from exc
+
+
+def _validate_argv(argv: list[str]) -> None:
+    if not argv or any(not isinstance(part, str) or not part for part in argv):
+        raise CommandContractError("command argv must contain non-empty strings")
+
+
+def _reject_shell_syntax(argv: list[str], *, from_string: bool) -> None:
+    if from_string and any(any(char in part for char in _SHELL_OPERATOR_CHARS) for part in argv):
+        raise CommandContractError("shell operators are not allowed; provide structured argv")
+    if argv[0].rsplit("/", 1)[-1] in _SHELL_INTERPRETERS or "-c" in argv[1:]:
+        raise CommandContractError("shell interpreters are not allowed")
 
 
 def parse_command(command: str | Sequence[str]) -> list[str]:
@@ -40,22 +58,34 @@ def parse_command(command: str | Sequence[str]) -> list[str]:
     into argv and never passed to a shell. Shell operators and shell launchers
     are rejected rather than treated as an isolation boundary.
     """
-    from_string = isinstance(command, str)
-    if isinstance(command, str):
-        try:
-            argv = shlex.split(command)
-        except ValueError as exc:
-            raise CommandContractError("invalid command quoting") from exc
-    else:
-        argv = list(command)
-    if not argv or any(not isinstance(part, str) or not part for part in argv):
-        raise CommandContractError("command argv must contain non-empty strings")
-    shell_chars = frozenset(";&|<>`$")
-    if from_string and any(any(char in part for char in shell_chars) for part in argv):
-        raise CommandContractError("shell operators are not allowed; provide structured argv")
-    if argv[0].rsplit("/", 1)[-1] in {"sh", "bash", "zsh", "fish"} or "-c" in argv[1:]:
-        raise CommandContractError("shell interpreters are not allowed")
+    argv = _argv_from_string(command) if isinstance(command, str) else list(command)
+    _validate_argv(argv)
+    _reject_shell_syntax(argv, from_string=isinstance(command, str))
     return argv
+
+
+async def _run_argv(
+    container_id: str,
+    argv: list[str],
+    *,
+    timeout: int,
+    input_data: str | bytes | None,
+) -> tuple[int, str]:
+    """Run argv via ``docker exec`` and collect output; no shell involved."""
+    proc = await asyncio.create_subprocess_exec(
+        "docker",
+        "exec",
+        container_id,
+        *argv,
+        stdin=asyncio.subprocess.PIPE if input_data is not None else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    payload = input_data.encode() if isinstance(input_data, str) else input_data
+    communicate = proc.communicate() if payload is None else proc.communicate(payload)
+    stdout, _ = await asyncio.wait_for(communicate, timeout=timeout)
+    output = stdout.decode("utf-8", errors="replace") if stdout else ""
+    return proc.returncode or 0, output
 
 
 class SandboxContainer:
@@ -110,20 +140,7 @@ class SandboxContainer:
             return 1, f"Command blocked by safety filter: {', '.join(dangers[:3])}"
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "exec",
-                self.container_id,
-                *argv,
-                stdin=asyncio.subprocess.PIPE if input_data is not None else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            payload = input_data.encode() if isinstance(input_data, str) else input_data
-            communicate = proc.communicate() if payload is None else proc.communicate(payload)
-            stdout, _ = await asyncio.wait_for(communicate, timeout=timeout)
-            output = stdout.decode("utf-8", errors="replace") if stdout else ""
-            return proc.returncode or 0, output
+            return await _run_argv(self.container_id, argv, timeout=timeout, input_data=input_data)
         except TimeoutError:
             return 124, f"Command timed out after {timeout}s"
         except FileNotFoundError:

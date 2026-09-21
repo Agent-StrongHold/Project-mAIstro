@@ -146,6 +146,23 @@ async def test_sandbox_exec_blocks_dangerous_command() -> None:
     mock_get.assert_not_called()
 
 
+async def test_sandbox_exec_rejects_shell_operators_before_container() -> None:
+    with patch("maistro.tools.sandbox.server._get_or_create", new=AsyncMock()) as mock_get:
+        result = await sandbox_exec("/ws", "cat report; rm -rf /")
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_command_contract"
+    assert "shell operators" in result["stdout"]
+    mock_get.assert_not_called()
+
+
+async def test_sandbox_exec_rejects_shell_interpreter_before_container() -> None:
+    with patch("maistro.tools.sandbox.server._get_or_create", new=AsyncMock()) as mock_get:
+        result = await sandbox_exec("/ws", "bash -c 'echo hi'")
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_command_contract"
+    mock_get.assert_not_called()
+
+
 async def test_sandbox_exec_success() -> None:
     fake = _FakeContainer()
     fake.exec_result = (0, "hello")

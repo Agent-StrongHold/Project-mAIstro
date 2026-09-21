@@ -282,12 +282,6 @@ class Agent:
             host_tools=host_tools if not callable(host_tools) else None,
         )
         self._host_tools = host_tools
-        # Kept as a compatibility seam for callers that inspect the runtime;
-        # each handle() derives a fresh authority from the current principal.
-        self._tool_authority = self._declared_tool_authority
-        self._governed_tool_executor = (
-            self._tool_authority.wrap(tool_executor) if callable(tool_executor) else None
-        )
         self._tool_registry = tool_registry
         self._tracer = tracer
         # Resolves a sub-agent name -> Agent for delegation. Callable or mapping.

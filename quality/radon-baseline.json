@@ -63,16 +63,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py::BuildersLearningStrategy._run_pr_diagnostics",
-      "path": "packages/maistro-core/src/maistro/agents/strategies/builders_learning.py",
-      "line": 207,
-      "name": "_run_pr_diagnostics",
-      "classname": "BuildersLearningStrategy",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/agents/work_items.py::apply_clarifying_answers",
       "path": "packages/maistro-core/src/maistro/agents/work_items.py",
       "line": 166,

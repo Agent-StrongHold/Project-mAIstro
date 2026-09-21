@@ -1,4 +1,4 @@
-"""Tests for BuildersLearningStrategy: Frank/Mason recon + diagnosis + react loop."""
+"""Tests for BuildersLearningStrategy: role context over the canonical ReAct boundary."""
 
 from __future__ import annotations
 
@@ -73,68 +73,18 @@ async def test_frank_worker_with_tool_executor_runs_recon(messages: list[dict[st
     assert calls == []
 
 
-async def test_check_repository_state_no_executor_returns_empty(
-    messages: list[dict[str, Any]],
-) -> None:
+def test_strategy_owns_no_tool_execution_surface() -> None:
+    """#847: a strategy must not carry its own recon/diagnostics executors."""
     strategy = BuildersLearningStrategy()
 
-    result = await strategy._check_repository_state()
-
-    assert result == {"code": [], "tests": [], "failed_prs": []}
-
-
-async def test_check_repository_state_handles_tool_exception() -> None:
-    async def boom(_name: str, _args: dict[str, Any]) -> str:
-        raise RuntimeError("shell unavailable")
-
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._check_repository_state(tool_executor=boom)
-
-    assert result == {"code": [], "tests": [], "failed_prs": []}
-
-
-async def test_check_repository_state_splits_lines_from_tool_output() -> None:
-    async def fake(name: str, _args: dict[str, Any]) -> str:
-        return "a.py\nb.py" if "find src" in _args["command"] else "test_a.py"
-
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._check_repository_state(tool_executor=fake)
-
-    assert result == {"code": [], "tests": [], "failed_prs": []}
-
-
-async def test_analyze_failure_patterns_no_executor_returns_empty() -> None:
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._analyze_failure_patterns()
-
-    assert result == {"similar_issues": [], "failures": [], "reasons": [], "lessons": []}
-
-
-async def test_analyze_failure_patterns_handles_exception() -> None:
-    async def boom(_name: str, _args: dict[str, Any]) -> str:
-        raise RuntimeError("github unavailable")
-
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._analyze_failure_patterns(tool_executor=boom)
-
-    assert result == {"similar_issues": [], "failures": [], "reasons": [], "lessons": []}
-
-
-async def test_analyze_failure_patterns_truncates_to_ten_lines() -> None:
-    lines = "\n".join(f"issue {i}" for i in range(20))
-
-    async def fake(_name: str, _args: dict[str, Any]) -> str:
-        return lines
-
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._analyze_failure_patterns(tool_executor=fake)
-
-    assert result == {"similar_issues": [], "failures": [], "reasons": [], "lessons": []}
+    for legacy_executor_name in (
+        "_check_repository_state",
+        "_analyze_failure_patterns",
+        "_run_pr_diagnostics",
+        "_store_frank_learning",
+        "_store_mason_learning",
+    ):
+        assert not hasattr(strategy, legacy_executor_name)
 
 
 async def test_mason_worker_no_critical_issues_stores_learning(
@@ -185,109 +135,6 @@ async def test_mason_worker_execution_mode_fix_when_frank_diagnostic_has_code(
     )
 
     assert result.response == "mason fixed it"
-
-
-async def test_run_pr_diagnostics_no_executor_returns_all_passed() -> None:
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._run_pr_diagnostics()
-
-    assert result == {
-        "all_passed": False,
-        "issues": [],
-        "has_critical_issues": False,
-        "not_run": True,
-    }
-
-
-async def test_run_pr_diagnostics_each_tool_exception_recorded_as_issue() -> None:
-    async def boom(_name: str, args: dict[str, Any]) -> str:
-        raise RuntimeError(f"failed: {args['command'][:5]}")
-
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._run_pr_diagnostics(tool_executor=boom)
-
-    assert result == {
-        "all_passed": False,
-        "issues": [],
-        "has_critical_issues": False,
-        "not_run": True,
-    }
-
-
-async def test_run_pr_diagnostics_clean_all_passed() -> None:
-    async def fake(_name: str, _args: dict[str, Any]) -> str:
-        return "all good"
-
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._run_pr_diagnostics(tool_executor=fake)
-
-    assert result == {
-        "all_passed": False,
-        "issues": [],
-        "has_critical_issues": False,
-        "not_run": True,
-    }
-
-
-async def test_run_pr_diagnostics_mypy_error_flagged() -> None:
-    async def fake(_name: str, args: dict[str, Any]) -> str:
-        if "mypy" in args["command"]:
-            return "src/maistro/x.py:1: error: bad type"
-        return "clean"
-
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._run_pr_diagnostics(tool_executor=fake)
-
-    assert result["not_run"] is True
-    assert result["issues"] == []
-
-
-async def test_run_pr_diagnostics_pytest_failed_flagged() -> None:
-    async def fake(_name: str, args: dict[str, Any]) -> str:
-        if "pytest" in args["command"]:
-            return "3 failed, 10 passed"
-        return "clean"
-
-    strategy = BuildersLearningStrategy()
-
-    result = await strategy._run_pr_diagnostics(tool_executor=fake)
-
-    assert result["not_run"] is True
-    assert result["issues"] == []
-
-
-def test_utc_now_returns_timezone_aware_datetime() -> None:
-    from datetime import UTC
-
-    strategy = BuildersLearningStrategy()
-
-    now = strategy._utc_now()
-
-    assert now.tzinfo == UTC
-
-
-async def test_store_frank_learning_does_not_raise() -> None:
-    from maistro.types.agent import ReasoningResult
-
-    strategy = BuildersLearningStrategy()
-
-    await strategy._store_frank_learning(
-        {"code": ["a.py"], "tests": []}, {"failures": []}, ReasoningResult(response="x")
-    )
-
-
-async def test_store_mason_learning_does_not_raise() -> None:
-    from maistro.types.agent import ReasoningResult
-
-    strategy = BuildersLearningStrategy()
-
-    await strategy._store_mason_learning(
-        {"all_passed": True, "issues": []}, ReasoningResult(response="x", tool_history=[])
-    )
 
 
 def test_init_sets_defaults() -> None:

@@ -16,6 +16,24 @@ from maistro.agents.tool_authority import ToolAuthorityError
 
 logger = logging.getLogger(__name__)
 
+
+def _check_model_tool_calls(result: Any, authority: Any) -> None:
+    """Deny model-issued tool_calls outside the invocation authority ceiling.
+
+    The invocation loop owns execution; this pre-flight sweep is the boundary
+    itself, so anything malformed is denied rather than normalized.
+    """
+    tool_calls = result.get("tool_calls", [])
+    if not isinstance(tool_calls, list):
+        return
+    for call in tool_calls:
+        function = call.get("function", {}) if isinstance(call, dict) else {}
+        arguments = function.get("arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+        authority.check(function.get("name", ""), arguments)
+
+
 _INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all\s+)?previous\s+(instructions|prompts|rules)", re.IGNORECASE),
     re.compile(r"you\s+are\s+now\s+(a|an|the)\s+", re.IGNORECASE),
@@ -168,15 +186,7 @@ class Spawner:
                 tier=spec.tier,
                 lane=spec.lane.value,
             )
-            tool_calls = result.get("tool_calls", [])
-            if isinstance(tool_calls, list):
-                for call in tool_calls:
-                    function = call.get("function", {}) if isinstance(call, dict) else {}
-                    name = function.get("name", "")
-                    arguments = function.get("arguments", {})
-                    if not isinstance(arguments, dict):
-                        arguments = {}
-                    authority.check(name, arguments)
+            _check_model_tool_calls(result, authority)
             output.output = result.get("content", "")
             output.model_used = result.get("model")
             output.tokens_used = result.get("usage", {})

@@ -62,8 +62,13 @@ async def test_agent_callback_is_narrowed_to_identity_tools() -> None:
         tool_executor=executor,
     )
 
-    assert await agent._governed_tool_executor("read_file", {}) == "ok"
-    assert "not in the Agent" in await agent._governed_tool_executor("github", {})
+    # Compose the invocation seam exactly as Agent._run_strategy does: the
+    # declared envelope narrowed by host policy, wrapping the sentinel-gated
+    # executor closure handed to the strategy.
+    governed = agent._authority_for(None).wrap(agent._sentinel_governed_executor(None, {}))
+
+    assert await governed("read_file", {}) == "ok"
+    assert "not in the Agent" in await governed("github", {})
     assert calls == ["read_file"]
 
 

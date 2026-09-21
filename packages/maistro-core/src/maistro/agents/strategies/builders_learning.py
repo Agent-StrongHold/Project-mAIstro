@@ -7,8 +7,6 @@ shell or GitHub operations itself through an arbitrary callback.
 
 from __future__ import annotations
 
-import logging
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.agents.strategies.react import ReactStrategy
@@ -17,8 +15,6 @@ from maistro.types.agent import ReasoningResult
 if TYPE_CHECKING:
     from maistro.protocols.llm import LLMClient
     from maistro.protocols.tracing import Trace
-
-logger = logging.getLogger("maistro.strategy.builders_learning")
 
 
 class BuildersLearningStrategy:
@@ -75,48 +71,3 @@ class BuildersLearningStrategy:
             context=context,
             **kwargs,
         )
-
-    async def _check_repository_state(self, **_kwargs: Any) -> dict[str, Any]:
-        """Compatibility projection; repository reads belong to a governed node."""
-        return {"code": [], "tests": [], "failed_prs": []}
-
-    async def _analyze_failure_patterns(self, **_kwargs: Any) -> dict[str, Any]:
-        """Compatibility projection; GitHub reads belong to a governed node."""
-        return {"similar_issues": [], "failures": [], "reasons": [], "lessons": []}
-
-    async def _run_pr_diagnostics(self, **_kwargs: Any) -> dict[str, Any]:
-        """Compatibility projection; command execution is not strategy-owned."""
-        return {
-            "all_passed": False,
-            "issues": [],
-            "has_critical_issues": False,
-            "not_run": True,
-        }
-
-    async def _store_frank_learning(
-        self,
-        repo_state: dict[str, Any],
-        failure_patterns: dict[str, Any],
-        result: ReasoningResult,
-    ) -> None:
-        logger.info(
-            "Frank learning: %d code files, %d test files, %d failures found",
-            len(repo_state.get("code", [])),
-            len(repo_state.get("tests", [])),
-            len(failure_patterns.get("failures", [])),
-        )
-
-    async def _store_mason_learning(
-        self,
-        diagnostics: dict[str, Any],
-        result: ReasoningResult,
-    ) -> None:
-        logger.info(
-            "Mason learning: gates_passed=%s, issues=%d, tools_used=%d",
-            diagnostics.get("all_passed"),
-            len(diagnostics.get("issues", [])),
-            len(getattr(result, "tool_history", [])),
-        )
-
-    def _utc_now(self) -> datetime:
-        return datetime.now(UTC)

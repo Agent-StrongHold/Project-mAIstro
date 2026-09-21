@@ -472,7 +472,23 @@ class TestHandleToolCall:
         assert result_str == "Error: malformed arguments for tool 'write_file'"
 
     @pytest.mark.asyncio
-    async def test_oversized_args_returns_error(self) -> None:
+    async def test_non_object_json_args_are_denied_before_execution(self) -> None:
+        strategy = ArtificerStrategy()
+        tc = {"id": "call_1", "function": {"name": "write_file", "arguments": "[1, 2, 3]"}}
+
+        tool_args, result_str = await strategy._handle_tool_call(
+            tc,
+            tools=_tools_for("write_file"),
+            tool_executor=_echo_executor,
+            trace=None,
+            status=_noop_status,
+            sentinel=None,
+            auth=None,
+            warden=None,
+        )
+
+        assert tool_args == {}
+        assert result_str == "Error: malformed arguments for tool 'write_file'"
         strategy = ArtificerStrategy()
         big_value = "x" * 40_000
         tc = {

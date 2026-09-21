@@ -276,20 +276,14 @@ class ReactStrategy:
         tool_result: Any = error_result
         tool_blocked = error_result is not None
 
-        tool_schema: dict[str, Any] | None = None
         try:
             tool_schema = _find_tool_schema(tools, tool_name)
         except ToolSchemaError as exc:
             tool_result = f"Error: {exc}"
             tool_blocked = True
+            tool_schema = None
 
-        if (
-            tool_schema is not None
-            and not tool_blocked
-            and not security_pipeline
-            and sentinel is not None
-            and auth is not None
-        ):
+        if self._sentinel_should_run(tool_schema, tool_blocked, security_pipeline, sentinel, auth):
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
             if not sentinel_verdict.allowed:
                 tool_result = f"Error: Permission denied for tool '{tool_name}'"
@@ -316,3 +310,20 @@ class ReactStrategy:
             security_pipeline=security_pipeline,
         )
         return tool_args, tool_result_str
+
+    @staticmethod
+    def _sentinel_should_run(
+        tool_schema: dict[str, Any] | None,
+        tool_blocked: bool,
+        security_pipeline: bool,
+        sentinel: Any,
+        auth: Any,
+    ) -> bool:
+        """The sentinel pre-call only runs for an unblocked, governed call."""
+        return bool(
+            tool_schema is not None
+            and not tool_blocked
+            and not security_pipeline
+            and sentinel is not None
+            and auth is not None
+        )

@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from maistro.config.settings import SandboxSettings
-from maistro.tools.sandbox.docker import SandboxContainer, _shell_quote, create_sandbox
+from maistro.tools.sandbox.docker import (
+    CommandContractError,
+    SandboxContainer,
+    create_sandbox,
+    parse_command,
+)
 
 
 class _FakeProc:
@@ -27,8 +32,18 @@ class _FakeProc:
         return self._stdout, self._stderr
 
 
-def test_shell_quote_escapes_dangerous_characters() -> None:
-    assert _shell_quote("a; rm -rf /") == "'a; rm -rf /'"
+def test_parse_command_string_input_is_tokenized_and_shell_syntax_rejected() -> None:
+    assert parse_command("pytest -q tests/") == ["pytest", "-q", "tests/"]
+    with pytest.raises(CommandContractError, match="shell operators"):
+        parse_command("cat file; rm -rf /")
+
+
+def test_parse_command_structured_argv_rejects_interpreters_and_empty_parts() -> None:
+    assert parse_command(["pytest", "-q"]) == ["pytest", "-q"]
+    with pytest.raises(CommandContractError, match="shell interpreters"):
+        parse_command(["/bin/bash", "-lc", "echo hi"])
+    with pytest.raises(CommandContractError, match="non-empty strings"):
+        parse_command(["pytest", ""])
 
 
 def test_expired_false_when_within_ttl() -> None:
