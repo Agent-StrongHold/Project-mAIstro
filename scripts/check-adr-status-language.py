@@ -13,8 +13,11 @@ status claims at all.
 This gate reads the structured status markers a body can carry and requires
 each to agree with the front matter:
 
-1. `**Status:** X` lines — 60 ADRs carry one; it is a status declaration, not
-   prose, so it must equal the front-matter status.
+1. `**Status:** X` lines — 63 ADRs and 20 specs carry one, written either bare
+   or as a Markdown list item (`- **Status:** X`); either way it is a status
+   declaration, not prose, so it must equal the front-matter status. The whole
+   value is read, because the vocabulary has multi-word members (`AC Defined`,
+   `In Progress`, `Will Not Implement`) that a first-word match would mangle.
 2. `**Superseded by [ID](...)`` banners — when present on a Superseded
    document, every ID it names must be in the front matter's `superseded-by`
    (and the canonical spelling is the one to fix, because front matter feeds
@@ -55,9 +58,16 @@ from maistro_registry.validator import validate_file  # noqa: E402
 DOC_ROOTS = (ROOT / "docs" / "adr", ROOT / "docs" / "specs")
 LEDGER = ROOT / "quality" / "adr-status-language-baseline.json"
 
-#: `**Status:** Accepted` — the body status line many ADRs carry. Trailing
-#: markup or dates are tolerated; the first word is the claim.
-_BODY_STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*\*{0,2}([A-Za-z]+)\b", re.M)
+#: `**Status:** Accepted` — the body status line many documents carry, either
+#: bare or as a Markdown list item (`- **Status:** Accepted`). Both forms are a
+#: status declaration; matching only the bare one exempted 3 ADRs and all 20
+#: specs that carry the line from this category entirely. The rest of the line
+#: is the claim: statuses are multi-word (`AC Defined`), so reading only the
+#: first word reported `AC` against a front matter saying `AC Defined`. A line
+#: that trails prose after the status therefore claims all of it — the corpus
+#: writes none that way, and a status *declaration* that needs a qualifier is
+#: the reader-confusion shape this gate exists to name.
+_BODY_STATUS_RE = re.compile(r"^(?:[-*+]\s+)?\*\*Status:\*\*(.*)$", re.M)
 
 #: `**Superseded by [ADR-xxx](...)`` — the banner naming the replacement.
 #: `^`-anchored per line, tolerating the blockquote and emphasis markup the
@@ -124,8 +134,10 @@ def _audit_file(path: Path) -> list[StatusProblem]:
     problems: list[StatusProblem] = []
 
     for match in _BODY_STATUS_RE.finditer(body):
-        claimed = match[1].capitalize()
-        if claimed != front_matter.status.value:
+        claimed = _claimed_status(match[1])
+        if claimed is None:
+            continue  # `**Status:**` with nothing after it declares nothing
+        if claimed.casefold() != front_matter.status.value.casefold():
             problems.append(
                 StatusProblem(
                     path,
@@ -164,6 +176,15 @@ def _audit_file(path: Path) -> list[StatusProblem]:
             )
         )
     return problems
+
+
+def _claimed_status(raw: str) -> str | None:
+    """The status a body line declares, with the corpus's markup stripped.
+
+    Trailing emphasis (`**Accepted**`) and the two-space Markdown hard break
+    both appear in the corpus and are presentation, not claim.
+    """
+    return raw.strip().strip("*").strip() or None
 
 
 def _body_without_front_matter(path: Path) -> str:

@@ -322,6 +322,19 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The body/front-matter status gate no longer exempts documents by the shape
+  of their status line (no linked issue: found while fixing the order-dependent
+  tests in `tests/test_check_adr_status_language.py`).** `#387`'s category-1
+  check matched only a bare `**Status:** X` line, so the 3 ADRs and 20 specs
+  that write the same declaration as a Markdown list item (`- **Status:** X`)
+  were outside the check entirely -- the form of the line, not its content,
+  decided whether a contradiction was visible. It also read only the first word
+  of the value, which reported `AC` against a front matter saying `AC Defined`.
+  Both forms are now read and the whole value is compared, which surfaced 19
+  specs whose body said `Active` while their canonical front matter said
+  `AC Defined`; those bodies are corrected to the front-matter value rather
+  than banked, so the baseline stays at the 28 legacy entries `#387` recorded.
+
 - **The stranded chat-admission sweep survives a vanished Run (#338).** Two
   defects in the recovery tick #1280 shipped, both found by review after it
   was already queued for merge. `list_node_runs()` raises
