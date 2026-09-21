@@ -322,6 +322,21 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Every ADR body status line now agrees with its front matter, and the
+  body-status ratchet is empty (no linked issue: completes the `#387` cleanup
+  begun in the entry below).** The 28 legacy contradictions `#387` banked are
+  corrected rather than carried: 25 ADRs whose body said `Proposed` while
+  front matter said `Accepted`, 2 saying `Proposed` against `Deferred`, and
+  `ADR-001` saying `Accepted` against `Superseded` on a document whose own
+  banner already pointed at `ADR-095`. Readers of those 28 were being told a
+  weaker status than the lifecycle machine, the AC ladder and the citation
+  gate all act on. `quality/adr-status-language-baseline.json` is now `[]`, so
+  the gate has nothing left to tolerate and any contradiction it reports is
+  new by construction; refilling it is an expansion needing a landed grant
+  (`#534`). Two tests that sourced their fixture from the ledger being
+  non-empty now introduce and bank their own contradiction, so a clean corpus
+  no longer fails the suite that guards it.
+
 - **The body/front-matter status gate no longer exempts documents by the shape
   of their status line (no linked issue: found while fixing the order-dependent
   tests in `tests/test_check_adr_status_language.py`).** `#387`'s category-1
