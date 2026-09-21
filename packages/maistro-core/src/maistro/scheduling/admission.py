@@ -400,7 +400,6 @@ class ScheduleRunAdmitter:
                 failures=(exc,),
             )
 
-        run_ids: list[str] = []
         # The cursor's last_run_id follows the newest consumed occurrence, not
         # merely the newest Run created by this admitter. A duplicate claim may
         # be the winning Run from another ticker (or before this process
@@ -411,21 +410,107 @@ class ScheduleRunAdmitter:
         # skip can sit *after* its fire — so sorting one list and not the
         # other can pair a timestamp with a different occurrence's Run.
         consumed_links: list[tuple[datetime, str]] = []
-        admitted: list[FireDecision] = []
-        already_fired: list[datetime] = []
         failures: list[Exception] = []
         already_fired, seeded_run_ids, seeded = self._seed_off_fire_claims(claims, decision)
         consumed_links.extend(zip(seeded, seeded_run_ids, strict=True))
-        # Whether every one of `decision.fires` was resolved, admitted or
-        # found already-fired, rather than cut short by a real failure. Used
-        # for `complete` below instead of comparing lengths against
-        # `consumed`: a seeded recovered claim (off this batch entirely) can
-        # pad `consumed` to the same length as `decision.fires` even when a
-        # later fire in the batch failed and was never reached (Codex review,
+        # `batch_completed` (see `_admit_batch`) is what `complete` below is
+        # computed from, rather than comparing lengths against
+        # `consumed_links`: a seeded recovered claim (off this batch
+        # entirely) can pad `consumed_links` to the same length as
+        # `decision.fires` even when a later fire in the batch failed and was
+        # never reached (Codex review, #1059) — the length coincidence says
+        # nothing about whether *this* batch actually finished.
+        run_ids, admitted_count, batch_completed = await self._admit_batch(
+            schedule,
+            template,
+            decision.fires,
+            already_fired=already_fired,
+            consumed_links=consumed_links,
+            failures=failures,
+        )
+
+        consumed_links.sort(key=lambda link: link[0])
+
+        if not consumed_links:
+            return ScheduleAdmission(
+                skipped=decision.skipped,
+                next_due_at=decision.next_due_at,
+                cancel_active_run=decision.cancel_active_run,
+                active_run_id=active_run_id,
+                failures=tuple(failures),
+            )
+
+        # `next_due_at` is recomputed only when the whole batch landed and
+        # nothing was held back. A partial batch leaves occurrences owed, and
+        # `evaluate()`'s answer assumed all of them fired; a buffered
+        # occurrence is owed the same way (#1199).
+        complete = batch_completed and not _owes(decision)
+        recorded = await self._schedules.record_fire(
+            schedule.schedule_id,
+            # The newest occurrence *admitted*, not `now`. This value becomes
+            # the lower bound of the next enumeration, so `now` would carry the
+            # cursor past occurrences this batch stopped short of and lose them
+            # permanently — the exact failure the ordering above prevents.
+            fired_at=consumed_links[-1][0],
+            # The newest Run, matching the cursor being the newest fire.
+            # `Schedule.last_run_id` is a pointer to the latest occurrence, not
+            # a history of them; the history is on the Runs, each naming this
+            # schedule.
+            # The newest consumed occurrence may have been claimed by another
+            # admitter. Its resolved winner is the truthful linkage; leaving an
+            # older id in place makes `_canonical_active_run()` lie about live
+            # work after a crash between Run creation and this write.
+            run_id=consumed_links[-1][1],
+            next_due_at=decision.next_due_at if complete else schedule.next_due_at,
+            # Certain: each of this batch's admitted Runs is this call's own,
+            # protected by the RunStore's own occurrence uniqueness. Recovered
+            # claims are credited separately, deduplicated by the store itself
+            # against a rival ticker crediting the same claim (#1059 review).
+            fires=admitted_count,
+            recovered=recovered_moments,
+        )
+        disabled = recorded is not None and not recorded.enabled
+        return ScheduleAdmission(
+            run_ids=tuple(run_ids),
+            skipped=decision.skipped,
+            next_due_at=decision.next_due_at,
+            disabled=disabled,
+            cancel_active_run=decision.cancel_active_run,
+            active_run_id=active_run_id,
+            already_fired=tuple(sorted(already_fired)),
+            failures=tuple(failures),
+        )
+
+    async def _admit_batch(
+        self,
+        schedule: Schedule,
+        template: GraphTemplate,
+        fires: tuple[FireDecision, ...],
+        *,
+        already_fired: list[datetime],
+        consumed_links: list[tuple[datetime, str]],
+        failures: list[Exception],
+    ) -> tuple[list[str], int, bool]:
+        """Admit each due occurrence in order, stopping at the first real failure.
+
+        `already_fired`, `consumed_links`, and `failures` arrive already
+        seeded from `_seed_off_fire_claims` and are extended in place, the
+        same lists `admit_due` goes on to use. Returns this batch's own Run
+        ids, how many of `fires` were actually admitted (as opposed to merely
+        resolved as a duplicate), and whether the batch ran to completion.
+        """
+        run_ids: list[str] = []
+        admitted_count = 0
+        # Whether every one of `fires` was resolved, admitted or found
+        # already-fired, rather than cut short by a real failure. `admit_due`
+        # uses this instead of comparing lengths against `consumed_links`: a
+        # seeded recovered claim (off this batch entirely) can pad
+        # `consumed_links` to the same length as `fires` even when a later
+        # fire in the batch failed and was never reached (Codex review,
         # #1059) — the length coincidence says nothing about whether *this*
         # batch actually finished.
         batch_completed = True
-        for fire in decision.fires:
+        for fire in fires:
             try:
                 # A clean slate, not just a fresh id: this loop runs on the
                 # background tick loop, sharing an event loop with whatever
@@ -438,7 +523,7 @@ class ScheduleRunAdmitter:
                     run_id = await self._admit_one(schedule, template, fire)
                 run_ids.append(run_id)
                 consumed_links.append((fire.scheduled_for, run_id))
-                admitted.append(fire)
+                admitted_count += 1
             except DuplicateOccurrence as exc:
                 # The unique claim proves that a canonical Run exists, but the
                 # exception alone does not identify it. Resolve through the
@@ -483,58 +568,7 @@ class ScheduleRunAdmitter:
                 failures.append(exc)
                 batch_completed = False
                 break
-
-        consumed_links.sort(key=lambda link: link[0])
-
-        if not consumed_links:
-            return ScheduleAdmission(
-                skipped=decision.skipped,
-                next_due_at=decision.next_due_at,
-                cancel_active_run=decision.cancel_active_run,
-                active_run_id=active_run_id,
-                failures=tuple(failures),
-            )
-
-        # `next_due_at` is recomputed only when the whole batch landed and
-        # nothing was held back. A partial batch leaves occurrences owed, and
-        # `evaluate()`'s answer assumed all of them fired; a buffered
-        # occurrence is owed the same way (#1199).
-        complete = batch_completed and not _owes(decision)
-        recorded = await self._schedules.record_fire(
-            schedule.schedule_id,
-            # The newest occurrence *admitted*, not `now`. This value becomes
-            # the lower bound of the next enumeration, so `now` would carry the
-            # cursor past occurrences this batch stopped short of and lose them
-            # permanently — the exact failure the ordering above prevents.
-            fired_at=consumed_links[-1][0],
-            # The newest Run, matching the cursor being the newest fire.
-            # `Schedule.last_run_id` is a pointer to the latest occurrence, not
-            # a history of them; the history is on the Runs, each naming this
-            # schedule.
-            # The newest consumed occurrence may have been claimed by another
-            # admitter. Its resolved winner is the truthful linkage; leaving an
-            # older id in place makes `_canonical_active_run()` lie about live
-            # work after a crash between Run creation and this write.
-            run_id=consumed_links[-1][1],
-            next_due_at=decision.next_due_at if complete else schedule.next_due_at,
-            # Certain: each of `admitted`'s Runs is this call's own, protected
-            # by the RunStore's own occurrence uniqueness. Recovered claims
-            # are credited separately, deduplicated by the store itself
-            # against a rival ticker crediting the same claim (#1059 review).
-            fires=len(admitted),
-            recovered=recovered_moments,
-        )
-        disabled = recorded is not None and not recorded.enabled
-        return ScheduleAdmission(
-            run_ids=tuple(run_ids),
-            skipped=decision.skipped,
-            next_due_at=decision.next_due_at,
-            disabled=disabled,
-            cancel_active_run=decision.cancel_active_run,
-            active_run_id=active_run_id,
-            already_fired=tuple(sorted(already_fired)),
-            failures=tuple(failures),
-        )
+        return run_ids, admitted_count, batch_completed
 
     @staticmethod
     def _seed_off_fire_claims(
