@@ -299,6 +299,57 @@ def test_service_properties_initial_state() -> None:
     assert s._running is False
 
 
+# --- record_recovered_run bookkeeping (#1064 finding 4) -----------------
+
+
+def test_record_recovered_run_completed_increments_cycle_count() -> None:
+    from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
+
+    s = _EvolutionService()
+    assert s.cycle_count == 0
+
+    s.record_recovered_run("recovered-run-1", RunStatus.COMPLETED)
+
+    assert s.cycle_count == 1
+    assert s.last_run_id == "recovered-run-1"
+    assert s.status()["last_run_status"] == RunStatus.COMPLETED.value
+    assert s.status()["last_error"] is None
+
+
+def test_record_recovered_run_failed_does_not_increment_cycle_count() -> None:
+    """The non-COMPLETED branch: a recovered Run that terminalized FAILED
+    (or CANCELLED/TIMED_OUT) must not be counted as a completed cycle, and
+    must surface an error — mirroring _run_one_cycle_locked's own semantics
+    for a live cycle that fails."""
+    from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
+
+    s = _EvolutionService()
+
+    s.record_recovered_run("recovered-run-2", RunStatus.FAILED, error="boom")
+
+    assert s.cycle_count == 0
+    assert s.last_run_id == "recovered-run-2"
+    assert s.status()["last_run_status"] == RunStatus.FAILED.value
+    assert s.status()["last_error"] == "boom"
+
+
+def test_record_recovered_run_failed_without_explicit_error_uses_default_message() -> None:
+    from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
+
+    s = _EvolutionService()
+
+    s.record_recovered_run("recovered-run-3", RunStatus.CANCELLED)
+
+    assert s.cycle_count == 0
+    assert s.status()["last_error"] == "canonical Run ended cancelled"
+
+
 # --- run_loop import-failure path ---------------------------------------
 
 

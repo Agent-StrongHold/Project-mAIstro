@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +7
+  packages/hive-conductor/backend/tests: +10
   packages/maistro-evolve/tests: +2
 ---
 # fix-m1-1064-1065-evolve-replay-and-plan-integrity-4f8e
@@ -66,3 +66,18 @@ was still set, not merely that both eventually happened.
 proves `EngineService.start()` alone (the call application startup makes
 *before* `start_evolution()` runs) no longer starts the Evolve cadence at
 all — closing exactly the ordering gap the finding named.
+
+Follow-up (+3 more in `test_evolution_service.py`, coverage-gate fix): the
+new `_EvolutionService.record_recovered_run()` method (finding 4's status
+bookkeeping) had its `if status is RunStatus.COMPLETED: ... else: ...`
+branch only ever exercised on the COMPLETED arm by the recovery integration
+tests above — the non-COMPLETED arm (a recovered Run that terminalized
+FAILED/CANCELLED/etc.) was diff-coverage-uncovered. Added 3 direct unit
+tests calling `record_recovered_run` on a bare `_EvolutionService` instance:
+`test_record_recovered_run_completed_increments_cycle_count` (the already-
+covered arm, for symmetry), `test_record_recovered_run_failed_does_not_increment_cycle_count`
+(the previously-uncovered arm: `cycle_count` must stay put and the explicit
+`error` must surface), and
+`test_record_recovered_run_failed_without_explicit_error_uses_default_message`
+(the `error or f"canonical Run ended {status.value}"` fallback when no
+explicit error is given).
