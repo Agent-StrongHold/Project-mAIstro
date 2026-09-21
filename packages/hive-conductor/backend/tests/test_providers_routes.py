@@ -140,6 +140,28 @@ def _deny_policy() -> Any:
     return deny
 
 
+class _FakeVault:
+    """In-memory vault stand-in for the activation error-path tests.
+
+    The fault these tests inject lives at the runtime/policy/HTTP seams, not
+    in the vault, so faking the vault keeps them meaningful on runners where
+    the age toolchain is absent — notably the quality workflow's coverage
+    job, which installs no age and therefore skips every ``_needs_age``
+    test (the diff-coverage gate then measures execution paths nothing ran).
+    """
+
+    def __init__(self, api_key: str = "sk-groq") -> None:
+        self._api_key = api_key
+
+    def has(self, name: str) -> bool:
+        assert name == "GROQ_API_KEY"
+        return True
+
+    def use(self, name: str, callback: Any) -> Any:
+        assert name == "GROQ_API_KEY"
+        return callback(self._api_key)
+
+
 class _HttpOk:
     """Minimal successful gateway JSON response."""
 
@@ -275,9 +297,9 @@ class TestKeyAndActivate:
         The governed runtime is injected the same way every deployed
         activation has one; the socket alone is pinned unreachable."""
         import httpx
+        import routes.providers as providers_mod
 
-        _needs_age()
-        admin_client.put("/v1/providers/groq/key", json={"api_key": "sk-groq"})
+        monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _runtime, run_store = _wire_governed_runtime(monkeypatch, endpoint="http://127.0.0.1:9")
 
         async def refuse(url: str, body: dict[str, Any]) -> Any:
@@ -299,8 +321,9 @@ class TestKeyAndActivate:
     ) -> None:
         """Degraded mode (no core Container on the agent port) is an honest
         503 — the route refuses instead of faking a gateway verdict."""
-        _needs_age()
-        admin_client.put("/v1/providers/groq/key", json={"api_key": "sk-groq"})
+        import routes.providers as providers_mod
+
+        monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         r = admin_client.post("/v1/providers/groq/activate")
         assert r.status_code == 503
         assert "canonical model egress is unavailable" in r.json()["detail"]
@@ -310,8 +333,9 @@ class TestKeyAndActivate:
     ) -> None:
         """A runtime without the canonical scope tree refuses: activation must
         correlate to a real Workspace/Project, never invent one."""
-        _needs_age()
-        admin_client.put("/v1/providers/groq/key", json={"api_key": "sk-groq"})
+        import routes.providers as providers_mod
+
+        monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _wire_governed_runtime(monkeypatch, endpoint="http://gateway", project_scope_store=False)
         r = admin_client.post("/v1/providers/groq/activate")
         assert r.status_code == 503
@@ -322,10 +346,10 @@ class TestKeyAndActivate:
     ) -> None:
         """A canonical Run that fails identity correlation is a 403, and no
         operation is minted."""
+        import routes.providers as providers_mod
         from services import governed_model
 
-        _needs_age()
-        admin_client.put("/v1/providers/groq/key", json={"api_key": "sk-groq"})
+        monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _wire_governed_runtime(monkeypatch, endpoint="http://gateway")
 
         async def refuse_identity(*args: Any, **kwargs: Any) -> Any:
@@ -369,8 +393,9 @@ class TestKeyAndActivate:
     ) -> None:
         """A policy-deny on the health probe settles CANCELLED and surfaces as
         403 — egress denied is an authorization verdict, not a transport one."""
-        _needs_age()
-        admin_client.put("/v1/providers/groq/key", json={"api_key": "sk-groq"})
+        import routes.providers as providers_mod
+
+        monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _runtime, run_store = _wire_governed_runtime(
             monkeypatch, endpoint="http://gateway", policy_evaluator=_deny_policy()
         )
@@ -385,9 +410,9 @@ class TestKeyAndActivate:
         """Registration that succeeds followed by a chat probe that cannot
         reach the gateway is a 502 with the operation settled FAILED."""
         import httpx
+        import routes.providers as providers_mod
 
-        _needs_age()
-        admin_client.put("/v1/providers/groq/key", json={"api_key": "sk-groq"})
+        monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _runtime, run_store = _wire_governed_runtime(monkeypatch, endpoint="http://gateway")
 
         async def half_up(url: str, body: dict[str, Any]) -> Any:
