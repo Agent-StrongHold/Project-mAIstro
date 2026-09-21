@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import runpy
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
@@ -39,7 +41,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A copy of the real corpus, with the baseline pointed at a copy too.
 
     A copy rather than a synthetic corpus: the check under test is agreement
-    between *real* front matter and real body text, and 60 ADRs carry a body
+    between *real* front matter and real body text, and 63 ADRs carry a body
     status line the synthetic case would never reproduce.
     """
     module = _gate()
@@ -79,20 +81,70 @@ def test_adr_046_is_no_longer_a_contradiction() -> None:
 
 
 def test_a_body_status_line_disagreeing_with_front_matter_fails(sandbox) -> None:
-    path = next(p for p in sandbox.DOC_ROOTS[0].glob("*.md") if not p.name.startswith("ADR-INDEX"))
-    text = path.read_text()
+    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
     front_matter_status = _front_matter_status(path)
     other = "Proposed" if front_matter_status != "Proposed" else "Accepted"
-    patched, count = _replace_first_status_line(text, other)
-    assert count == 1 or "**Status:**" not in text
-    if count == 0:
-        # No body line to mutate; append one under the title instead.
-        patched = text + f"\n**Status:** {other}\n"
+    patched, count = _replace_first_status_line(path.read_text(), other)
+    assert count == 1, f"{path.name} lost the body status line its selection promised"
     path.write_text(patched)
 
     problems = sandbox.audit()
 
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+def test_the_mutated_adr_is_chosen_the_same_way_whatever_the_filesystem_yields(sandbox) -> None:
+    """Every test that mutates an ADR must pick the same one on any checkout.
+
+    `Path.glob` yields in `os.scandir` order, which varies by filesystem. When
+    the corpus was walked raw, the document the category-1 tests mutated was
+    whichever one the checkout happened to hand over first — and on a
+    filesystem yielding one of the three list-form ADRs, the bare-form-only
+    rewrite helper matched nothing, so both
+    `test_a_body_status_line_disagreeing_with_front_matter_fails` and the
+    baseline-ratchet test that calls it failed. CI was green only because its
+    order yielded `ADR-000-template.md`, which carries no body status line at
+    all: the escape clause fired and an appended synthetic line was tested
+    instead of the corpus.
+
+    So the selection is by property, not position: any order must produce a
+    document that satisfies both requirements the mutation makes of it.
+    """
+    forward = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
+    backward = _an_adr_whose_body_status_agrees(
+        sandbox.DOC_ROOTS[0], order=lambda paths: sorted(paths, reverse=True)
+    )
+
+    assert forward == _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
+    assert forward != backward, "a corpus of one would not prove order-independence"
+    for chosen in (forward, backward):
+        assert _body_status_claim(chosen.read_text()) == _front_matter_status(chosen)
+        assert _replace_first_status_line(chosen.read_text(), "Proposed")[1] == 1
+
+
+def _an_adr_whose_body_status_agrees(
+    root: Path, *, order: Callable[[Iterable[Path]], list[Path]] = sorted
+) -> Path:
+    """An ADR carrying a body status line that agrees with its front matter.
+
+    Both properties are what the mutation tests need, so both are selected for
+    rather than hoped for. A **body status line** — bare or in the list-item
+    form (`- **Status:** X`) three ADRs use — is what there is to mutate.
+    **Agreement today** is what makes the mutation a *new* contradiction:
+    mutating a site the baseline already records would reuse that entry's
+    identity, and the ratchet would rightly stay silent.
+
+    `order` exists so a test can prove the choice does not depend on the
+    filesystem's iteration order. A corpus that stops carrying a qualifying
+    ADR raises here, loudly, instead of quietly degrading the tests into
+    proving nothing.
+    """
+    for path in order(p for p in root.glob("*.md") if not p.name.startswith("ADR-INDEX")):
+        text = path.read_text()
+        claim = _body_status_claim(text)
+        if claim is not None and claim == _front_matter_status(path):
+            return path
+    raise AssertionError(f"no ADR under {root} carries a body status line agreeing with its own")
 
 
 def _front_matter_status(path: Path) -> str:
@@ -102,16 +154,90 @@ def _front_matter_status(path: Path) -> str:
     raise AssertionError(f"no status line in {path}")
 
 
-def _replace_first_status_line(text: str, value: str) -> tuple[str, int]:
+#: A body status declaration in either form the corpus writes: bare, or as a
+#: Markdown list item. Group 1 is the list bullet (so a rewrite can preserve
+#: it), group 2 the claim.
+_BODY_STATUS_LINE_RE = re.compile(r"^([-*+]\s+)?\*\*Status:\*\*(.*)$")
+
+
+def _body_status_claim(text: str) -> str | None:
+    """What the first body status line claims, or `None` if there is none."""
+    for line in text.splitlines():
+        match = _BODY_STATUS_LINE_RE.match(line)
+        if match is not None:
+            return match[2].strip().strip("*").strip() or None
+    return None
+
+
+def _replace_first_status_line(
+    text: str, value: str, *, bullet: str | None = None
+) -> tuple[str, int]:
+    """Rewrite the first body status line, keeping the form it was written in.
+
+    `bullet` overrides that form, so a test can write the list-item spelling
+    onto a document that used the bare one.
+    """
     lines = text.splitlines()
     for index, line in enumerate(lines):
-        if line.startswith("**Status:**"):
-            replaced = f"**Status:** {value}"
-            if line.endswith("  "):
-                replaced += "  "
-            lines[index] = replaced
-            return "\n".join(lines) + "\n", 1
+        match = _BODY_STATUS_LINE_RE.match(line)
+        if match is None:
+            continue
+        replaced = f"{bullet if bullet is not None else match[1] or ''}**Status:** {value}"
+        if line.endswith("  "):
+            replaced += "  "
+        lines[index] = replaced
+        return "\n".join(lines) + "\n", 1
     return text, 0
+
+
+def test_a_list_item_status_line_is_not_exempt(sandbox) -> None:
+    """`- **Status:** X` is the same declaration as the bare `**Status:** X`.
+
+    The gate matched only the bare spelling, so the 3 ADRs and 20 specs that
+    write the line as a Markdown list item were exempt from this category
+    outright — the *form* of the line, not its content, decided whether a
+    contradiction could be seen at all.
+    """
+    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
+    other = "Proposed" if _front_matter_status(path) != "Proposed" else "Accepted"
+    patched, count = _replace_first_status_line(path.read_text(), other, bullet="- ")
+    assert count == 1
+    assert "\n- **Status:**" in patched, "the mutation must write the list form"
+    path.write_text(patched)
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+def test_a_status_line_with_nothing_after_it_declares_nothing(sandbox) -> None:
+    """An empty `**Status:**` is malformed markup, not a claim of any status.
+
+    Reporting it would name a status the document never asserts, and the
+    comparison itself would raise on the `None` rather than report the finding
+    it was in the middle of making. Driven through `audit()`, not the helper
+    alone: the guard lives in the audit loop, and a unit test of the parser
+    leaves the branch that consumes it unexercised.
+    """
+    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
+    patched, count = _replace_first_status_line(path.read_text(), "")
+    assert count == 1
+
+    path.write_text(patched)
+
+    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
+
+
+def test_the_claim_is_the_whole_value_not_its_first_word(sandbox) -> None:
+    """The vocabulary has multi-word members, and the markup is presentation.
+
+    Reading only the first word reported `AC` against a front matter saying
+    `AC Defined` — a contradiction that was not one, on the single document
+    whose list-item line already agreed.
+    """
+    assert sandbox._claimed_status(" AC Defined") == "AC Defined"
+    assert sandbox._claimed_status(" **Accepted**  ") == "Accepted"
+    assert sandbox._claimed_status("   ") is None
 
 
 def test_fixing_a_baselined_body_status_line_requires_pruning(sandbox, capsys) -> None:
