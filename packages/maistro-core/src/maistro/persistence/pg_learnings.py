@@ -63,6 +63,11 @@ def similarity_query(
     filter, rather than Python applying it after an unscoped fetch -- is only
     visible in the plan, and a plan check against a hand-copied query proves
     nothing about the query that actually runs.
+
+    Each requested axis admits its shared bucket: a row whose value on that
+    axis is the empty string belongs to the whole org, so an agent- or
+    team-scoped read must still see it (the migration suite pins this for the
+    agent axis). `org_id` stays exact -- it is a scope, not a wildcard.
     """
     clauses = [
         "status = 'active'",
@@ -76,7 +81,7 @@ def similarity_query(
         (scoped_to_agent, "agent_id"),
     ):
         if enabled:
-            clauses.append(f"{column} = ${next_placeholder}")
+            clauses.append(f"({column} = ${next_placeholder} OR {column} = '')")
             next_placeholder += 1
     return (
         "SELECT * FROM learnings WHERE "
@@ -330,11 +335,14 @@ class PgLearningStore:
     ) -> list[Learning]:
         """Find relevant learnings by keyword match within the requested scope.
 
-        The org predicate is always exact, including for an empty `org_id`,
-        and optional team, user and agent predicates are exact as well. All
-        predicates run in PostgreSQL before keyword scoring: these results are
-        interpolated into the agent's system prompt, so scope filtering is an
-        authorization boundary rather than a presentation filter.
+        The org predicate is always exact, including for an empty `org_id`.
+        Optional team, user and agent predicates each admit the org's shared
+        bucket: a row whose value on the requested axis is empty belongs to
+        the whole org, so narrowing to one agent must not hide shared
+        learnings. All predicates run in PostgreSQL before keyword scoring:
+        these results are interpolated into the agent's system prompt, so
+        scope filtering is an authorization boundary rather than a
+        presentation filter.
         """
         scope_sql, scope_params = learning_scope_predicate(
             org_id=org_id,

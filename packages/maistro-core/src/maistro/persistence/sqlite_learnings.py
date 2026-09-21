@@ -228,9 +228,11 @@ class SqliteLearningStore:
 
         The org predicate is always exact, including for an empty `org_id`, so
         an unscoped caller cannot read another org's instruction. Optional
-        team, user and agent predicates are also exact and are applied in SQL
-        before keyword scoring. This matters because a learning is an
-        instruction interpolated into the agent's *system* prompt, not a datum.
+        team, user and agent predicates each admit the org's shared bucket — a
+        row whose value on the requested axis is empty belongs to the whole
+        org — and are applied in SQL before keyword scoring. This matters
+        because a learning is an instruction interpolated into the agent's
+        *system* prompt, not a datum.
 
         The predicate is shared with `InMemoryLearningStore`; keeping one
         visibility rule prevents the backends from drifting again.

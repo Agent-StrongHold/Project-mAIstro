@@ -495,6 +495,62 @@ async def test_relevant_learnings_apply_org_team_and_user_scope(learning_store: 
     assert [item.learning for item in found] == ["target"]
 
 
+async def test_scoped_reads_still_see_the_orgs_shared_rows(learning_store: Any) -> None:
+    """A requested axis admits the org's shared bucket on that axis.
+
+    ``''`` on team/user/agent is the shared-within-org bucket: narrowing a
+    read to one agent must not hide the learnings the org shares, or shared
+    learnings silently vanish from every scoped system prompt. The migration
+    suite pins this for the pg similarity read; this pins it for the keyword
+    read in every backend, so the visibility rule cannot drift again. org
+    itself stays exact — there is no global bucket.
+    """
+    await learning_store.store(
+        _learning(learning="shared", org_id="org-a", team_id="", user_id="", agent_id="")
+    )
+    await learning_store.store(
+        _learning(
+            learning="mine", org_id="org-a", team_id="team-a", user_id="user-a", agent_id="agent-a"
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other agent",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-b",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other team", org_id="org-a", team_id="team-b", user_id="user-a", agent_id=""
+        )
+    )
+    await learning_store.store(
+        _learning(learning="other org", org_id="org-b", team_id="", user_id="", agent_id="")
+    )
+
+    by_agent = await learning_store.find_relevant(
+        "please deploy", org_id="org-a", agent_id="agent-a"
+    )
+    # Shared rows are visible; another agent's row is not. "other team" is
+    # shared on the agent axis, and this caller asked nothing about teams.
+    assert sorted(item.learning for item in by_agent) == ["mine", "other team", "shared"]
+
+    by_team = await learning_store.find_relevant("please deploy", org_id="org-a", team_id="team-a")
+    # No agent axis requested, so "other agent" is in scope for this caller.
+    assert sorted(item.learning for item in by_team) == ["mine", "other agent", "shared"]
+
+    unscoped_axes = await learning_store.find_relevant("please deploy", org_id="org-a")
+    assert sorted(item.learning for item in unscoped_axes) == [
+        "mine",
+        "other agent",
+        "other team",
+        "shared",
+    ]
+
+
 async def test_promoted_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
     """Prompt-ready learnings must use the same scope boundary as matching reads."""
     await learning_store.store(
