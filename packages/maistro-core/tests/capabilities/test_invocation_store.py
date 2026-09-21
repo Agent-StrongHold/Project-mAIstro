@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import aiosqlite
 import pytest
 
-from maistro.capabilities.binding import Binding, ResolvedBinding
+from maistro.capabilities.binding import Binding
 from maistro.capabilities.invocation import (
-    Invocation,
     InvocationExecutionService,
     InvocationStatus,
     UnsafeEffectRetry,
 )
-from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
+from maistro.capabilities.invocation_store import SqliteInvocationStore
 from maistro.container import _wire_capability_invocations
 
 
@@ -164,139 +162,10 @@ async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen
     assert persisted.result == {"written": {"value": 1}}
 
 
-# --- PgInvocationStore: same InvocationStore contract, over an asyncpg-shaped
-# pool (#1091). Distinct from `maistro.capabilities.pg_invocation_store`,
-# which the container actually wires for PostgreSQL -- this class stays
-# public API (`__all__`) so it is tested directly rather than through the
-# container's composition. -------------------------------------------------
-
-
-def _resolved_binding(binding_id: str = "binding-1") -> ResolvedBinding:
-    binding = Binding(
-        binding_id=binding_id,
-        workspace_id="ws-1",
-        project_id="project-1",
-        capability="external_write",
-    )
-    return ResolvedBinding.from_provider(binding, _Provider())
-
-
-def _invocation(**overrides: Any) -> Invocation:
-    defaults: dict[str, Any] = {
-        "invocation_id": "inv-1",
-        "run_id": "run-1",
-        "node_run_id": "node-run-1",
-        "attempt_id": "attempt-1",
-        "binding": _resolved_binding(),
-        "effect_key": "test:pg-store",
-    }
-    defaults.update(overrides)
-    return Invocation(**defaults)
-
-
-class _FakePgInvocationPool:
-    """Records the exact INSERT/UPDATE/SELECT shape `PgInvocationStore`
-    issues, standing in for a live asyncpg pool the way `_FakePgBindingPool`
-    does for `PgBindingStore` in `test_binding_invocation.py`."""
-
-    def __init__(self) -> None:
-        self._rows: dict[str, str] = {}
-
-    async def fetchval(self, query: str, *args: Any) -> str | None:
-        if "INSERT INTO" in query:
-            invocation_id, payload_json = args[0], args[-1]
-            if invocation_id in self._rows:
-                return None
-            self._rows[invocation_id] = payload_json
-            return invocation_id
-        if "UPDATE capability_invocations" in query:
-            payload_json, invocation_id = args[-2], args[-1]
-            if invocation_id not in self._rows:
-                return None
-            self._rows[invocation_id] = payload_json
-            return invocation_id
-        if "SELECT payload_json" in query:
-            return self._rows.get(args[0])
-        raise AssertionError(f"unexpected query: {query!r}")
-
-    async def fetch(self, _query: str, *args: Any) -> list[dict[str, Any]]:
-        run_id, node_run_id, binding_id, effect_key = args
-        matches = []
-        for payload_json in self._rows.values():
-            row = Invocation.model_validate_json(payload_json)
-            if (
-                row.run_id == run_id
-                and row.node_run_id == node_run_id
-                and row.binding.binding_id == binding_id
-                and row.effect_key == effect_key
-            ):
-                matches.append({"payload_json": payload_json})
-        return matches
-
-    def seed(self, invocation: Invocation) -> None:
-        self._rows[invocation.invocation_id] = invocation.model_dump_json()
-
-
-async def test_pg_invocation_store_create_persists_and_get_round_trips() -> None:
-    store = PgInvocationStore(_FakePgInvocationPool())
-    invocation = _invocation()
-
-    created = await store.create(invocation)
-
-    assert created.invocation_id == invocation.invocation_id
-    fetched = await store.get(invocation.invocation_id)
-    assert fetched is not None
-    assert fetched.invocation_id == invocation.invocation_id
-    assert fetched.effect_key == invocation.effect_key
-    assert await store.get("inv-absent") is None
-
-
-async def test_pg_invocation_store_create_conflict_raises_value_error() -> None:
-    pool = _FakePgInvocationPool()
-    pool.seed(_invocation())
-    store = PgInvocationStore(pool)
-
-    with pytest.raises(ValueError, match="already exists"):
-        await store.create(_invocation())
-
-
-async def test_pg_invocation_store_save_updates_and_returns_copy() -> None:
-    pool = _FakePgInvocationPool()
-    store = PgInvocationStore(pool)
-    await store.create(_invocation())
-
-    updated = await store.save(_invocation(status=InvocationStatus.RUNNING))
-
-    assert updated.status is InvocationStatus.RUNNING
-    persisted = await store.get("inv-1")
-    assert persisted is not None
-    assert persisted.status is InvocationStatus.RUNNING
-
-
-async def test_pg_invocation_store_save_of_missing_invocation_raises_key_error() -> None:
-    store = PgInvocationStore(_FakePgInvocationPool())
-
-    with pytest.raises(KeyError, match="does not exist"):
-        await store.save(_invocation())
-
-
-async def test_pg_invocation_store_list_effect_filters_and_orders_rows() -> None:
-    pool = _FakePgInvocationPool()
-    store = PgInvocationStore(pool)
-    await store.create(_invocation(invocation_id="inv-1", effect_key="test:pg-store"))
-    await store.create(
-        _invocation(
-            invocation_id="inv-2",
-            binding=_resolved_binding("binding-2"),
-            effect_key="test:other-effect",
-        )
-    )
-
-    history = await store.list_effect(
-        run_id="run-1",
-        node_run_id="node-run-1",
-        binding_id="binding-1",
-        effect_key="test:pg-store",
-    )
-
-    assert [item.invocation_id for item in history] == ["inv-1"]
+# Coverage for `maistro.capabilities.pg_invocation_store.PgInvocationStore` --
+# the actual PostgreSQL store the container wires (#1079 Finding 3) -- lives
+# in `test_pg_invocation_store.py`. This module used to also define and test
+# a duplicate `PgInvocationStore` here; it wrote columns (`payload_json`, a
+# `datetime` timestamp) that never matched Alembic revision 035's real DDL
+# (`payload` JSONB, `created_at` a float) and nothing in production wired it,
+# so it was removed rather than fixed.

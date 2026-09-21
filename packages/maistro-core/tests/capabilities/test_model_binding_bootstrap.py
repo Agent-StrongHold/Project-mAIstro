@@ -23,6 +23,7 @@ from maistro.capabilities.providers.llm_gateway import (
     MODEL_GATEWAY_CREDENTIAL_PROVIDER,
 )
 from maistro.types.config import AgentConfig, ModelBindingConfig
+from maistro.types.errors import ConfigError
 
 
 def _config(*, litellm_key: str = "", bindings: tuple[ModelBindingConfig, ...] = ()) -> AgentConfig:
@@ -57,9 +58,32 @@ async def test_bootstrap_defaults_credential_refs_when_none_declared() -> None:
     assert record.api_key == "sk-gateway"
 
 
-async def test_bootstrap_preserves_explicit_credential_refs() -> None:
-    """Arc 60 False: an operator who already named refs is never silently
-    widened to the default just because a gateway key also exists."""
+async def test_bootstrap_preserves_explicit_default_credential_ref() -> None:
+    """Arc 60 False: an operator who already named the default ref explicitly
+    is never silently rewritten -- the exact declared tuple survives."""
+
+    effects = new_in_memory_effect_context()
+    config = _config(
+        litellm_key="sk-gateway",
+        bindings=(
+            ModelBindingConfig(
+                binding_id="b1",
+                project_id="p1",
+                credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+            ),
+        ),
+    )
+
+    loaded = await bootstrap_model_bindings(config, effects)
+
+    assert loaded[0].credential_refs == (DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,)
+
+
+async def test_bootstrap_refuses_a_custom_credential_ref_nothing_can_register() -> None:
+    """#1079 Finding 4: production has no surface that registers a credential
+    under any ref but the default gateway one -- a Binding naming a custom ref
+    must fail fast at startup, not authorize a call that can only ever reach
+    CredentialScopeError at runtime."""
 
     effects = new_in_memory_effect_context()
     config = _config(
@@ -69,9 +93,24 @@ async def test_bootstrap_preserves_explicit_credential_refs() -> None:
         ),
     )
 
-    loaded = await bootstrap_model_bindings(config, effects)
+    with pytest.raises(ConfigError, match="custom-ref"):
+        await bootstrap_model_bindings(config, effects)
 
-    assert loaded[0].credential_refs == ("custom-ref",)
+
+async def test_bootstrap_refuses_a_custom_credential_ref_even_without_a_gateway_key() -> None:
+    """The refusal does not depend on a physical ``litellm_key`` being set --
+    a custom ref is unregistrable either way, so the failure must be just as
+    fast and just as clear when no gateway key exists at all."""
+
+    effects = new_in_memory_effect_context()
+    config = _config(
+        bindings=(
+            ModelBindingConfig(binding_id="b1", project_id="p1", credential_refs=("custom-ref",)),
+        ),
+    )
+
+    with pytest.raises(ConfigError, match="custom-ref"):
+        await bootstrap_model_bindings(config, effects)
 
 
 async def test_bootstrap_skips_credential_registration_without_a_gateway_key() -> None:

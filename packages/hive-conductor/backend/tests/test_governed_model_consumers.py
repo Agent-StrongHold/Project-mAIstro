@@ -507,6 +507,81 @@ async def test_ensure_binding_is_immutable_and_idempotent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_control_plane_binding_reregistration_preserves_credential_cooldown() -> None:
+    """#1079 Finding 2: consecutive control-plane calls reusing the same
+    Workspace/Project (e.g. repeated benchmark evaluations or provider
+    activations) must not reset a credential's tracked cooldown/blocked
+    state -- `control_plane_binding` re-registers the runtime's gateway
+    credential on every call, and that re-registration must not undo the
+    outcome-driven backoff `record_outcome` already recorded for it."""
+
+    from services.governed_model import control_plane_binding
+
+    runtime = _plain_runtime()
+
+    # First control-plane call: registers the credential and authorizes it.
+    control_plane_binding(
+        runtime,
+        binding_id="benchmark-evaluation:run-1",
+        workspace_id="ws-1",
+        project_id="provider-project",
+        provider_name="judge-model",
+    )
+
+    from maistro.capabilities.providers.llm_gateway import (
+        DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+        MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    )
+
+    class _UnauthorizedError(Exception):
+        """A real HTTP-401-shaped error, the same status the credentials
+        classifier reads off `status_code`/`response.status_code`."""
+
+        def __init__(self) -> None:
+            super().__init__("401 Unauthorized")
+            self.status_code = 401
+            self.response = type("Resp", (), {"status_code": 401, "headers": {}})
+
+    # A real provider outcome (401) blocks that credential -- e.g. the
+    # gateway key was rotated out from under this deployment.
+    await runtime.effects.credentials.record_outcome(
+        workspace_id="ws-1",
+        project_id="provider-project",
+        provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+        key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+        error=_UnauthorizedError(),
+    )
+    pool = runtime.effects.credentials.pool_for(
+        workspace_id="ws-1",
+        project_id="provider-project",
+        provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    )
+    assert pool is not None
+    blocked_entry = next(
+        e for e in pool._entries if e.key_id == DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF
+    )
+    assert blocked_entry.blocked is True
+
+    # A second, unrelated control-plane call reuses the same Workspace/Project
+    # (same scope `control_plane_binding` registers the credential into).
+    control_plane_binding(
+        runtime,
+        binding_id="benchmark-evaluation:run-2",
+        workspace_id="ws-1",
+        project_id="provider-project",
+        provider_name="judge-model",
+    )
+
+    still_blocked_entry = next(
+        e for e in pool._entries if e.key_id == DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF
+    )
+    assert still_blocked_entry.blocked is True, (
+        "re-registering the gateway credential must not clear the cooldown/"
+        "block state an earlier 401 already set for it"
+    )
+
+
+@pytest.mark.asyncio
 async def test_runtime_fails_closed_without_container() -> None:
     """The hive bridge refuses model egress when no core Container is bound —
     degraded mode never fabricates a runtime."""

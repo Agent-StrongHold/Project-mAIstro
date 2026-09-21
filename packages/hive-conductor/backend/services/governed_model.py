@@ -123,8 +123,12 @@ def control_plane_binding(
     """Build the explicit operator-scoped Binding used by control-plane effects.
 
     Registers the runtime's own gateway credential in this Binding's scope
-    (idempotent -- ``CredentialRouter.add`` replaces rather than duplicates a
-    re-registered key id) and authorizes it by ref, mirroring
+    (idempotent -- ``CredentialRouter.add`` refreshes the same ``key_id`` in
+    place rather than duplicating it, and -- since #1079 Finding 2 -- without
+    discarding any ``blocked``/``cooldown_until``/error-counter health state a
+    prior 401/403/429 already set for it; consecutive control-plane calls
+    reusing the same Workspace/Project must not reset a backoff decision this
+    call didn't make) and authorizes it by ref, mirroring
     ``bootstrap_model_bindings`` (#1248, #1091, Binding-scoped credential
     routing): the physical model call refuses with ``CredentialScopeError``
     before any HTTP unless the Binding names a credential actually registered
