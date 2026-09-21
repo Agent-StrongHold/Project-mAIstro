@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 from services.dag_execution_scope import (
+    DagExecutionScope,
     DagWorkspaceSelectionError,
     authorize_hive_dag_scope,
     authorize_hive_dag_workspace,
@@ -38,9 +39,7 @@ async def _canonical_workspace(
 
 
 def _make_workspace(workspace_id: str, *, member_user_id: str, active: bool = True) -> None:
-    asyncio.run(
-        _canonical_workspace(workspace_id, member_user_id=member_user_id, active=active)
-    )
+    asyncio.run(_canonical_workspace(workspace_id, member_user_id=member_user_id, active=active))
 
 
 @pytest.mark.asyncio
@@ -144,3 +143,65 @@ def test_dag_run_socket_refuses_omitted_workspace(admin_client: TestClient) -> N
     ):
         ws.receive_json()
     assert exc.value.code == POLICY_VIOLATION
+
+
+def test_dag_execution_scope_rejects_a_blank_workspace_id() -> None:
+    with pytest.raises(ValueError, match="workspace_id must be non-empty"):
+        DagExecutionScope(workspace_id=" ", project_id="project-a", user_id="user-a")
+
+
+def test_dag_execution_scope_rejects_a_blank_project_id() -> None:
+    with pytest.raises(ValueError, match="project_id must be non-empty"):
+        DagExecutionScope(workspace_id="workspace-a", project_id=" ", user_id="user-a")
+
+
+def test_dag_execution_scope_rejects_a_blank_user_id() -> None:
+    with pytest.raises(ValueError, match="user_id must be non-empty"):
+        DagExecutionScope(workspace_id="workspace-a", project_id="project-a", user_id=" ")
+
+
+@pytest.mark.asyncio
+async def test_dag_scope_accepts_an_explicit_root_project_selection() -> None:
+    """An explicit Project id matching the Workspace's own Root Project is honored."""
+    await _canonical_workspace("scope-explicit-project", member_user_id="user-a")
+    store = canonical_store_for_tests()
+    root = await store.project_store.root_for_workspace("scope-explicit-project")
+
+    scope = await authorize_hive_dag_scope(
+        workspace_id="scope-explicit-project",
+        user_id="user-a",
+        project_id=root.project_id,
+    )
+
+    assert scope.project_id == root.project_id
+    assert scope.workspace_id == "scope-explicit-project"
+
+
+@pytest.mark.asyncio
+async def test_dag_scope_rejects_an_unknown_project_id() -> None:
+    await _canonical_workspace("scope-project-unknown", member_user_id="user-a")
+
+    with pytest.raises(DagWorkspaceSelectionError, match="Project not found"):
+        await authorize_hive_dag_scope(
+            workspace_id="scope-project-unknown",
+            user_id="user-a",
+            project_id="does-not-exist",
+        )
+
+
+@pytest.mark.asyncio
+async def test_dag_scope_rejects_a_project_id_from_another_workspace() -> None:
+    """A Project that exists but belongs to a different Workspace is refused,
+    the same non-oracle way as an unknown one — it never confirms the
+    project's real owner."""
+    await _canonical_workspace("scope-project-owner", member_user_id="user-a")
+    await _canonical_workspace("scope-project-foreign", member_user_id="user-a")
+    store = canonical_store_for_tests()
+    foreign = await store.project_store.root_for_workspace("scope-project-foreign")
+
+    with pytest.raises(DagWorkspaceSelectionError, match="Project not found"):
+        await authorize_hive_dag_scope(
+            workspace_id="scope-project-owner",
+            user_id="user-a",
+            project_id=foreign.project_id,
+        )

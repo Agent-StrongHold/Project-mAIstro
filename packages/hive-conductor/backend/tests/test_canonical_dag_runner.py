@@ -391,6 +391,65 @@ async def test_scope_rejects_scope_mismatch(
         await runner._scope({}, scope=scope, workspace_id="other", project_id=None)
 
 
+@pytest.mark.asyncio
+async def test_scope_rejects_project_id_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    scope = DagExecutionScope(workspace_id="ws", project_id="project", user_id="user")
+    monkeypatch.setattr(runner, "_container", lambda: None)
+
+    with pytest.raises(ValueError, match="project_id does not match authorized scope"):
+        await runner._scope({}, scope=scope, workspace_id=None, project_id="other-project")
+
+
+@pytest.mark.asyncio
+async def test_scope_rejects_a_missing_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    monkeypatch.setattr(runner, "_container", lambda: None)
+
+    with pytest.raises(ValueError, match="authorized DAG execution scope is required"):
+        await runner._scope({}, scope=None, workspace_id=None, project_id=None)
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_rejects_a_missing_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    with pytest.raises(ValueError, match="authorized DAG execution scope is required"):
+        await runner.execute_dag(
+            {"id": "no-scope", "name": "no-scope", "nodes": [_safe_node("a")], "edges": []},
+            llm_builder=_fake_llm_builder(),
+            scope=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_rejects_a_user_id_that_does_not_match_the_scope(
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    with pytest.raises(ValueError, match="user_id does not match authorized scope"):
+        await runner.execute_dag(
+            {
+                "id": "mismatched-user",
+                "name": "mismatched-user",
+                "nodes": [_safe_node("a")],
+                "edges": [],
+            },
+            user_id="someone-else",
+            llm_builder=_fake_llm_builder(),
+            scope=execution_scope,
+        )
+
+
 def test_request_credentials_reach_nodes_as_scoped_env_keys() -> None:
     """The legacy adapter consumed USER_CRED_* env keys; admission must still
     forward request-time credentials under that contract without persisting

@@ -186,6 +186,37 @@ def test_run_dag_success_uses_canonical_run_id(
     assert projection["event_count"] == 1
 
 
+def test_activate_then_run_dag_with_a_selected_workspace_succeeds(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replicates the PM-workflow e2e spec's "activate and run a DAG" step
+    (tests/e2e/pm-workflow.spec.ts #06) at the HTTP layer: create, activate,
+    then run with an explicit Workspace selection. Before #766's Workspace
+    scope selection was wired into the e2e spec, this same sequence without a
+    ``workspace_id`` got a 403 (see `test_run_dag_missing_scope_fails_before_execution`
+    above) — this is the corresponding success path the fix restores."""
+    import services.graph_runner as graph_runner
+
+    async def ok(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
+        return _completed_result("run-activate-then-run")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", ok)
+
+    create = admin_client.post("/v1/dags", json={"name": "E2E Run Test", "description": "test"})
+    assert create.status_code == 201
+    dag_id = create.json()["id"]
+
+    activate = admin_client.post(f"/v1/dags/{dag_id}/activate")
+    assert activate.status_code == 200
+    assert activate.json()["status"] == "active"
+
+    workspace_id = _workspace(admin_client)
+    run = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
+    assert run.status_code == 200
+    body = run.json()
+    assert body["execution_id"]
+
+
 def test_run_dag_canonical_failure_stays_failed(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
