@@ -25,7 +25,16 @@ class _WorkspaceCreateKwargs(TypedDict):
 class WorkspaceStore(Protocol):
     #: The Project tree paired with this Workspace authority.  Workspace
     #: admission resolves the existing Root Project through this same object.
-    project_store: ProjectScopeStore
+    #:
+    #: Declared as a read-only property, not a plain attribute: concrete
+    #: stores (`PgWorkspaceStore`, `SqliteWorkspaceStore`) hold a
+    #: `TransactionalProjectScopeStore` here, a distinct (wider) Protocol
+    #: than `ProjectScopeStore`. A mutable Protocol attribute is invariant —
+    #: it would demand that exact type back — but every consumer only reads
+    #: this field, so a covariant read-only property is both correct and
+    #: what concrete stores' plain instance attributes already satisfy.
+    @property
+    def project_store(self) -> ProjectScopeStore: ...
 
     async def create(
         self,

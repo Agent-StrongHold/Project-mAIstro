@@ -44,7 +44,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
-from maistro.projects.scope_store import TransactionalProjectScopeStore
+from maistro.projects.scope_store import DurableProjectScopeStore, TransactionalProjectScopeStore
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 from maistro.workspaces.model import (
     Workspace,
@@ -112,7 +112,12 @@ class SqliteWorkspaceStore:
             )
             raise TypeError(msg)
         self._conn = conn
-        self.project_store: TransactionalProjectScopeStore = project_store
+        self._project_store: DurableProjectScopeStore = project_store
+
+    @property
+    def project_store(self) -> ProjectScopeStore:
+        """The paired Project store, satisfying `WorkspaceStore`'s read-only contract."""
+        return self._project_store
 
     async def ensure_schema(self) -> None:
         """Create the Workspace tables and their indexes."""
@@ -126,7 +131,7 @@ class SqliteWorkspaceStore:
         store's, because the connection is shared and a second lock over it
         is the "cannot start a transaction within a transaction" failure
         (#1121)."""
-        async with self.project_store.transaction() as conn:
+        async with self._project_store.transaction() as conn:
             yield conn
 
     async def create(
@@ -159,7 +164,7 @@ class SqliteWorkspaceStore:
         async with self._write_transaction() as conn:
             await self._insert_workspace(workspace)
             await self._write_membership(owner)
-            await self.project_store.create_root_in(conn, workspace.workspace_id)
+            await self._project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 
     async def get(self, workspace_id: str) -> Workspace | None:
@@ -196,7 +201,7 @@ class SqliteWorkspaceStore:
         # `WorkspaceNotFound` from the row delete rolls the purge back with
         # it, so deleting an absent Workspace touches nothing.
         async with self._write_transaction() as conn:
-            await self.project_store.purge_workspace_in(conn, workspace_id)
+            await self._project_store.purge_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
