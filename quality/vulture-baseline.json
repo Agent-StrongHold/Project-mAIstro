@@ -1288,6 +1288,8 @@
         "packages/maistro-core/src/maistro/state.py::unused method 'backup'",
         "packages/maistro-core/src/maistro/state.py::unused method 'contains'",
         "packages/maistro-core/src/maistro/state.py::unused method 'get_raw'",
+        "packages/maistro-core/src/maistro/state.py::unused method 'put_model_if_unique'",
+        "packages/maistro-core/src/maistro/state.py::unused method 'put_model_unique'",
         "packages/maistro-core/src/maistro/state.py::unused method 'put_raw'",
         "packages/maistro-core/src/maistro/state.py::unused method 'put_raw_if_absent'",
         "packages/maistro-core/src/maistro/tasks/lanes.py::unused method 'held'",
