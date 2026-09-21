@@ -350,6 +350,24 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Builders' canonical pipeline executor no longer disagrees with legacy
+  gate/revision, step-budget, and failure-reporting semantics (#1067).** A
+  post-merge audit of #734/#744 found 4 parity defects in
+  `CanonicalGraphPipelineExecutor`, two of which could silently mark a Run
+  `COMPLETED` while a gate was still failing or dropping a same-wave
+  sibling's stale output into a revised stage's input: (1) a same-wave gate
+  revision now invalidates its stale descendants only after the whole ready
+  frontier settles, instead of racing a slower sibling's own commit inside
+  the failing node's coroutine; (2) a gated stage with no `revise_target`
+  already re-offered itself correctly (fixed on `develop` before this audit
+  landed); (3) the durable walk's step bound is now derived from Builders'
+  own admitted pipeline size and iteration budget instead of inheriting an
+  unrelated generic 256-step ceiling that could fail a large valid pipeline;
+  (4) two stages failing in the same concurrent wave now project one
+  consistent authoritative failed stage and error, derived from canonical's
+  own selected failure, instead of a reversed `NodeRun` scan paired with a
+  separately racing shared error variable.
+
 - **Every ADR body status line now agrees with its front matter, and the
   body-status ratchet is empty (no linked issue: completes the `#387` cleanup
   begun in the entry below).** The 28 legacy contradictions `#387` banked are
