@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
 
@@ -159,6 +160,15 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     """Pause the DAG while another agent session runs a delegated subgraph."""
 
     kind: ClassVar[str] = "agent.delegate_remote"
+    # Optional rather than required, pinned by ADR-082526-3ca6/AC-2: a caller
+    # supplying nothing gets an unwired node whose *NodeResult* fails with "no
+    # a2a_delegator configured" — the misconfiguration is visible as the node
+    # failing, never as the target agent declining.
+    optional_authorities: ClassVar[Mapping[str, str]] = {
+        "a2a_delegator": "a2a_delegator",
+        "guest_peers": "guest_peers",
+        "run_store": "run_store",
+    }
     kind_category: ClassVar = "wait"
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
     output_schema: ClassVar[type[BaseModel]] = DelegateRemoteOut
