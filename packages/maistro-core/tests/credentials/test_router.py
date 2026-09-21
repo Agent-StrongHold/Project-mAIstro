@@ -135,7 +135,6 @@ class TestScopedAcquisition:
         stats = router.stats(workspace_id=WS, project_id=PROJECT, provider=PROVIDER)
         assert stats is not None and stats.total_keys == 1
 
-    @pytest.mark.ac("ADR-063/AC-1079-F2")
     async def test_re_registering_a_key_id_preserves_cooldown_and_block_state(self):
         """#1079 Finding 2: a re-register (e.g. a repeated control-plane
         Binding call reusing the same Workspace/Project) must not undo a
@@ -164,7 +163,6 @@ class TestScopedAcquisition:
         assert entry.error_count == 1
         assert not entry.is_available
 
-    @pytest.mark.ac("ADR-063/AC-1079-F2")
     async def test_re_registering_a_blocked_key_id_keeps_it_blocked(self):
         router = _router(["a"])
         await router.record_outcome(
