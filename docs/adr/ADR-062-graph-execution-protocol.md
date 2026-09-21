@@ -307,6 +307,18 @@ class GraphEvent(BaseModel):
 
 ### Top-level API (replaces `run_graph`)
 
+> **Retired by #1154.** The `run_graph` entry point below is no longer exported
+> from `maistro.graph` and no longer exists in `maistro.graph.executor`. It is
+> recorded here as the decision this ADR made, not as a supported execution
+> path: it carried no canonical Run/NodeRun/Attempt evidence and no restart
+> recovery, so physical Graph work reached through it could never be
+> re-derived by any recovery sweep. Canonical durable execution is
+> `maistro.graph.durable_runs`, which shares no code with this design — it does
+> not import `GraphRun`. `GraphRun` survives in `maistro.graph.run` as
+> Graph-domain traversal driven by the test harness, not as an execution
+> authority.
+
+
 ```python
 async def run_graph(
     task: GraphTask,

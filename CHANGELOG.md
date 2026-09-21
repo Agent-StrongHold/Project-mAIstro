@@ -320,6 +320,23 @@ or placeholder-only section.
   explicitly and are unaffected; a caller that omits it now gets a
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
+### Removed
+
+- **The pre-durable `run_graph` execution API is retired from `maistro.graph` (#1154).**
+  `maistro.graph.run_graph` and `maistro.graph.executor.run_graph` are gone.
+  The wrapper built an ephemeral `GraphRun` and started it, recording no
+  canonical Run/NodeRun/Attempt evidence and no restart recovery, so physical
+  Graph work reached through it was invisible to every recovery sweep — a
+  second execution universe beside the durable one. It had no non-test callers.
+  Importers use `maistro.graph.durable_runs` for canonical execution, which
+  shares no code with the retired path — it never imported `GraphRun`.
+  `GraphRun` is still importable from `maistro.graph.run` as Graph-domain
+  traversal, but it is not an execution authority and is no longer re-exported
+  as one; with the wrapper gone it and `maistro.graph.executor` are reachable
+  only from tests. The private
+  `_ensure_node_configs` helper went with it — set `NodeConfig.beam_width`
+  directly instead of passing `parallel_generations`.
+
 ### Fixed
 
 - **The stranded chat-admission sweep survives a vanished Run (#338).** Two

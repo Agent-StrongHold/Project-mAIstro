@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from maistro.graph.executor import run_graph
 from maistro.graph.node import IterationBudget, NodeRun
 from maistro.graph.phases import TERMINAL_GRAPH_PHASES, TERMINAL_NODE_PHASES, GraphPhase, NodePhase
 from maistro.graph.run import GraphRun, evaluate_condition
@@ -26,6 +25,7 @@ from maistro.graph.types import (
     GraphEdge,
     GraphTask,
     HyperagentOutput,
+    NodeConfig,
     PlanOutput,
     ReviewOutput,
     ScoutOutput,
@@ -837,21 +837,20 @@ class TestGraphRun:
         assert run.success_rate() == 1.0
 
 
-class TestRunGraphBackwardCompat:
-    @pytest.mark.asyncio
-    async def test_existing_signature(self):
-        llm = _RecordingLlm([_make_plan_json()])
-        task = GraphTask(
-            description="task",
-            workspace="/tmp",
-            graph_config=GraphConfig(nodes=[AgentRole.PLANNER]),
-        )
-        result = await run_graph(task, llm, model="test-model")
-        assert result is not None
-        assert isinstance(result, HyperagentOutput)
+class TestBeamWidth:
+    """Beam width is a traversal property, driven through `GraphRun` directly.
+
+    This used to reach the pre-durable `run_graph` wrapper, which backfilled a
+    `NodeConfig` per role and set `beam_width` from a `parallel_generations`
+    argument. That wrapper is retired (#1154), and stating the `NodeConfig` here
+    is the more honest fixture anyway: the behaviour under test is the traversal
+    generating and scoring several candidates, not a convenience argument being
+    translated into one. `GraphRun` is Graph-domain traversal, not an execution
+    authority -- nothing here claims canonical Run/NodeRun/Attempt evidence.
+    """
 
     @pytest.mark.asyncio
-    async def test_parallel_generations(self):
+    async def test_a_beam_keeps_the_best_of_several_generations(self):
         llm = _RecordingLlm(
             [
                 _make_plan_json("weak", 1),
@@ -859,13 +858,13 @@ class TestRunGraphBackwardCompat:
                 _make_plan_json("ok", 2),
             ]
         )
-        task = GraphTask(
-            description="task",
-            workspace="/tmp",
-            graph_config=GraphConfig(nodes=[AgentRole.PLANNER]),
-        )
-        result = await run_graph(task, llm, parallel_generations=3)
-        assert result is not None
+        config = GraphConfig(nodes=[AgentRole.PLANNER])
+        config.node_configs[AgentRole.PLANNER] = NodeConfig(role=AgentRole.PLANNER, beam_width=3)
+        task = GraphTask(description="task", workspace="/tmp", graph_config=config)
+
+        result = await GraphRun(task=task, config=config).start(llm)
+
+        assert isinstance(result, HyperagentOutput)
         assert result.success is True
 
 

@@ -218,7 +218,8 @@ as-built design instead adds a distinct seam:
   normalizing either envelope shape (OpenAI `choices` or flat `content`) into `HarnessOutput`, and
   raising `HarnessExecutionError` on `Unavailable` so the node's retry/circuit plumbing records it.
 - **Wiring** — a per-role `node_executors: dict[str, NodeExecutor]` map is threaded through
-  `GraphRun` and `run_graph()`; when a node's role matches, it runs via the executor. A foreign
+  `GraphRun`; when a node's role matches, it runs via the executor. (The `run_graph()` wrapper
+  this also named is retired — #1154 — leaving `GraphRun` as the traversal seam.) A foreign
   harness node thus cannot exceed the shared `IterationBudget` and records `NodeRun` telemetry
   identically to a native node.
 
