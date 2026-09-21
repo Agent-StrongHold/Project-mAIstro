@@ -211,6 +211,21 @@ or placeholder-only section.
   Invocation with Run/NodeRun/Attempt correlation, and incorrect Workspace
   scope is rejected before the physical transport is invoked).
 
+- **Hive DAG execution (WebSocket run + optimizer) requires and carries a
+  canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
+  resolves a client-selected `workspace_id` through the canonical
+  `WorkspaceStore`/`ProjectScopeStore` — membership and active-presentation
+  state, not just existence — and returns a `DagExecutionScope`
+  (`workspace_id`, `project_id`, `user_id`) rather than a bare Workspace.
+  `GET /v1/ws/dags/{dag_id}/run` now requires an explicit, authorized
+  selection end-to-end (the prior transitional omitted-workspace path is
+  gone) and passes the resolved scope into `execute_dag`/`execute_dag_streaming`
+  so canonical execution carries real Workspace/Project identity instead of
+  none. `test_dag_execution_scope.py` covers unknown, non-member, and
+  archived-Workspace refusal (one shared close code, `1008`, so the boundary
+  stays a non-oracle) and the accepting path reaching the normal
+  DAG-not-found response.
+
 - **The Workspace Agent interviews before it commits a Goal or CreativeBrief
   (#774, #804, #53; SPEC-091726-7c2a).** `maistro.agents.brief_interview` is a
   deterministic requirements conversation: one required question at a time in

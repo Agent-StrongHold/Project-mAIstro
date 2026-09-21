@@ -197,6 +197,20 @@ class TransactionalProjectScopeStore(Protocol):
         ...
 
 
+@runtime_checkable
+class DurableProjectScopeStore(ProjectScopeStore, TransactionalProjectScopeStore, Protocol):
+    """A Project store that is both the full canonical interface and joinable.
+
+    `PgWorkspaceStore`/`SqliteWorkspaceStore` need both roles at once: the
+    canonical `ProjectScopeStore` surface `WorkspaceStore.project_store`
+    exposes to callers, and the `TransactionalProjectScopeStore` surface they
+    use internally to write the Workspace, its membership, and its Root
+    Project on one connection (#1121). Naming that intersection once here,
+    rather than at each call site, is what lets the field keep a single
+    static type that is honestly a subtype of `ProjectScopeStore`.
+    """
+
+
 class InMemoryProjectScopeStore:
     """Reference Project tree with downward-only scoped-resource visibility."""
 
@@ -506,4 +520,9 @@ class InMemoryProjectScopeStore:
         return project
 
 
-__all__ = ["InMemoryProjectScopeStore", "ProjectScopeStore", "TransactionalProjectScopeStore"]
+__all__ = [
+    "DurableProjectScopeStore",
+    "InMemoryProjectScopeStore",
+    "ProjectScopeStore",
+    "TransactionalProjectScopeStore",
+]
