@@ -33,6 +33,29 @@ The adapter lives in this module rather than one of its own because a new
 module identity would register as new unreachable-module debt against the
 trusted-base reachability ratchet, and #734 defers reachability bookkeeping
 to #49; it already shares this module's private dispatch helpers.
+
+A post-merge audit of #734/#744 (2026-09-07) found 4 concrete parity defects
+between the canonical adapter and the legacy semantics above; #1067 fixes
+all 4:
+
+1. A same-wave revision now folds *after* the whole frontier settles
+   (:class:`_RevisionLedger`), matching legacy's "gather everything, then
+   apply gate failures" ordering, instead of mutating ``run.context``
+   synchronously inside the failing node's own coroutine while a slower
+   sibling in the same ``asyncio.gather`` batch could still be running.
+2. A gated node with ``revise_target=None`` revises itself (already fixed
+   on ``develop`` before this audit landed, by an unrelated commit —
+   ``target = node.revise_target or node.name`` here and in
+   :func:`_revision_edges`).
+3. :meth:`CanonicalGraphPipelineExecutor.execute` now derives the durable
+   walk's step bound from Builders' own admitted pipeline size and
+   iteration policy (:func:`_derived_max_steps`) instead of silently
+   inheriting the durable executor's generic 256-step default.
+4. The compatibility receipt (:func:`_project_canonical_record`) now
+   derives the failed stage *and* its message together from canonical's
+   own selected failure (the first exhausted failure in frontier order),
+   instead of a reversed ``NodeRun`` scan paired with a separately, and
+   racily, mutated ``run.failed_stage_error``.
 """
 
 from __future__ import annotations
@@ -40,7 +63,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -159,7 +182,83 @@ def _mark_skipped(run: Any, stage_name: str) -> None:
         run.skipped_stages.append(stage_name)
 
 
-def _gate_decision(graph: PipelineGraph, node: PipelineNode, run: Any) -> _GateDecision:
+def _unmark_skipped(run: Any, stage_name: str) -> None:
+    if stage_name in run.skipped_stages:
+        run.skipped_stages.remove(stage_name)
+
+
+@dataclass
+class _RevisionLedger:
+    """Per-run bookkeeping that folds a same-wave revision after the wave settles.
+
+    Legacy ``GraphPipelineExecutor`` dispatched a whole ready wave concurrently,
+    gathered every outcome, recorded same-wave completions, and only *then*
+    applied gate failures -- so a revision's invalidation of its stale
+    descendants always landed after every sibling in that wave had already
+    written its result (see the graph_executor module docstring's #734 entry
+    and issue #1067). The canonical adapter's per-node ``_StageNode._execute``
+    used to apply that invalidation eagerly, inside the *failing* node's own
+    coroutine, while a slower sibling dispatched in the very same
+    ``asyncio.gather`` batch (see ``attempt_executor._execute_frontier``)
+    could still be running and write its own (now stale) output back into the
+    just-cleared ``run.context`` afterward -- and the generic durable fold
+    would then route that sibling's ordinary successor forward in the very
+    same frontier as the revision, before the revision target had a chance to
+    redo the work the sibling's output actually depended on.
+
+    This ledger fixes both halves without teaching Builders to re-implement
+    canonical traversal:
+
+    * A failed gate's invalidation is *queued*, not applied, by
+      :func:`_gate_decision`. :meth:`flush` applies every queued
+      invalidation exactly once, at the very start of the next stage
+      dispatched -- by construction that is always a *later* frontier, so
+      ``asyncio.gather`` for the wave that produced the invalidation has
+      already returned every one of its coroutines and nothing more can
+      write to the entries being cleared. This reproduces legacy's "gather
+      everything, then apply gate failures" ordering at frontier
+      granularity instead of node granularity.
+    * :attr:`satisfied` mirrors legacy's ``completed | skipped`` set.
+      :meth:`ready` answers the same question legacy's own ``ready()``
+      asked before ever dispatching a node: are this node's dependencies
+      *genuinely* done. A stage the canonical fold routed to only because a
+      stale sibling's ordinary (unconditioned) edge fired in the same
+      frontier as the revision finds its own dependency missing from
+      ``satisfied`` and defers instead of running against missing or stale
+      input; canonical's ordinary edges re-offer it for real, with a fresh
+      NodeRun, once its true predecessor genuinely re-completes.
+    """
+
+    satisfied: set[str] = field(default_factory=set)
+    _pending: list[tuple[frozenset[str], str, str]] = field(default_factory=list)
+
+    def mark_satisfied(self, name: str) -> None:
+        self.satisfied.add(name)
+
+    def ready(self, node: PipelineNode) -> bool:
+        return all(dep in self.satisfied for dep in node.depends_on)
+
+    def queue_revision(self, stale: frozenset[str], feedback_key: str, feedback: str) -> None:
+        self._pending.append((stale, feedback_key, feedback))
+
+    def flush(self, run: Any) -> None:
+        if not self._pending:
+            return
+        for stale, feedback_key, feedback in self._pending:
+            self.satisfied -= stale
+            run.skipped_stages[:] = [name for name in run.skipped_stages if name not in stale]
+            for name in stale:
+                run.context.pop(name, None)
+            run.context[feedback_key] = feedback
+        self._pending.clear()
+
+
+def _gate_decision(
+    graph: PipelineGraph,
+    node: PipelineNode,
+    run: Any,
+    ledger: _RevisionLedger,
+) -> _GateDecision:
     """Apply Builders gate domain semantics without owning canonical lifecycle."""
     used = int(run.revisions.get(node.name, 0))
     if used >= node.max_revisions:
@@ -176,25 +275,44 @@ def _gate_decision(graph: PipelineGraph, node: PipelineNode, run: Any) -> _GateD
     # canonical graph therefore gets a real conditional back-edge instead of
     # silently treating the failed gate as terminal.
     target = node.revise_target or node.name
-    stale = {target} | set(graph.descendants(target))
-    run.skipped_stages[:] = [name for name in run.skipped_stages if name not in stale]
-
+    stale = frozenset({target} | set(graph.descendants(target)))
     feedback = run.context.get(node.name, "")
-    for name in stale:
-        run.context.pop(name, None)
-    run.context[f"{node.name}_feedback"] = feedback
+    # Queued, not applied: see _RevisionLedger.
+    ledger.queue_revision(stale, f"{node.name}_feedback", feedback)
     return _GateDecision(route="revise")
+
+
+def _stale_guard_output(
+    node: PipelineNode,
+    run: Any,
+    ledger: _RevisionLedger,
+) -> _StageOutput | None:
+    """Defer a stage the fold routed to before its own dependency truly settled.
+
+    Only reachable once a revision has actually invalidated one of this
+    node's dependencies (see ``_RevisionLedger``); on every ordinary
+    dispatch ``ledger.ready`` is vacuously true. Deliberately does *not*
+    mark the node satisfied -- it must stay eligible for this same check on
+    its own downstream dependents, and for a genuine re-dispatch once its
+    real predecessor re-completes.
+    """
+    if ledger.ready(node):
+        return None
+    _mark_skipped(run, node.name)
+    return _StageOutput(stage_name=node.name, skipped=True)
 
 
 def _skip_output(
     node: PipelineNode,
     run: Any,
     dispatcher: PipelineDispatcher,
+    ledger: _RevisionLedger,
 ) -> _StageOutput | None:
     should_skip = node.skip_if is not None and node.skip_if(run.context)
     if not should_skip and dispatcher.supports(node.agent_name, node.name):
         return None
     _mark_skipped(run, node.name)
+    ledger.mark_satisfied(node.name)
     return _StageOutput(stage_name=node.name, skipped=True)
 
 
@@ -246,13 +364,21 @@ def _route_stage_result(
     node: PipelineNode,
     run: Any,
     result: Any,
+    ledger: _RevisionLedger,
 ) -> _StageOutput:
     if node.gate is None or node.gate(run.context):
+        _unmark_skipped(run, node.name)
+        ledger.mark_satisfied(node.name)
         return _StageOutput(stage_name=node.name, text=result.output)
 
-    decision = _gate_decision(graph, node, run)
+    decision = _gate_decision(graph, node, run, ledger)
     if decision.halt_error is not None:
         raise RuntimeError(decision.halt_error)
+    if decision.route == "proceed":
+        # gate_exhausted == "continue": the gate never passed, but the run
+        # moves on as if it had.
+        _unmark_skipped(run, node.name)
+        ledger.mark_satisfied(node.name)
     return _StageOutput(
         stage_name=node.name,
         text=result.output,
@@ -277,22 +403,33 @@ class _StageNode(BaseNode[_StageInput, _StageOutput]):
         run: Any,
         dispatcher: PipelineDispatcher,
         budget: IterationBudget,
+        ledger: _RevisionLedger,
     ) -> None:
         self._graph = graph
         self._node = node
         self._run = run
         self._dispatcher = dispatcher
         self._budget = budget
+        self._ledger = ledger
 
     async def _execute(self, inputs: _StageInput, ctx: NodeContext) -> _StageOutput:
-        skipped = _skip_output(self._node, self._run, self._dispatcher)
+        # Safe here, and only here: by the time any *new* stage is dispatched,
+        # the frontier that produced any queued revision has fully settled
+        # (see _RevisionLedger).
+        self._ledger.flush(self._run)
+
+        guard = _stale_guard_output(self._node, self._run, self._ledger)
+        if guard is not None:
+            return guard
+
+        skipped = _skip_output(self._node, self._run, self._dispatcher, self._ledger)
         if skipped is not None:
             return skipped
 
         _reserve_iteration(self._run, self._budget)
         result = await _dispatch_stage(self._node, self._run, self._dispatcher, ctx)
         await _commit_stage_result(self._node, self._run, result)
-        return _route_stage_result(self._graph, self._node, self._run, result)
+        return _route_stage_result(self._graph, self._node, self._run, result, self._ledger)
 
 
 def _roots(graph: PipelineGraph) -> list[PipelineNode]:
@@ -415,6 +552,9 @@ def _resolver(
 ) -> Callable[[str, Graph], BaseNode[Any, Any]]:
     stages = {node.name: node for node in graph}
     start = _StartNode()
+    # One ledger shared by every stage of this run: revision invalidation and
+    # dependency-readiness are properties of the whole wave, not one node.
+    ledger = _RevisionLedger()
     stage_nodes = {
         name: _StageNode(
             graph=graph,
@@ -422,6 +562,7 @@ def _resolver(
             run=run,
             dispatcher=dispatcher,
             budget=budget,
+            ledger=ledger,
         )
         for name, node in stages.items()
     }
@@ -446,19 +587,57 @@ def _latest_stage_runs(record: DurableRunRecord) -> dict[str, Any]:
     return latest
 
 
-def _failed_stage(record: DurableRunRecord) -> str | None:
-    for node_run in reversed(record.node_runs):
+#: Every Builders stage failure path -- dispatch failure, timeout, gate
+#: exhaustion, iteration-budget exhaustion, and a status-setting on_complete
+#: hook -- raises ``RuntimeError(message)`` (see _dispatch_stage,
+#: _gate_decision, _reserve_iteration, _commit_stage_result). BaseNode.run
+#: captures that uniformly as ``error_code=type(exc).__name__`` and
+#: ``error_message=str(exc)``, and canonical's own logical fold then stores
+#: ``f"{error_code}: {error_message}"`` on the NodeRun (see
+#: authoritative_fold._logical_outcome). Stripping this fixed, always-present
+#: prefix recovers the exact domain message Builders raised.
+_RUNTIME_ERROR_PREFIX = "RuntimeError: "
+
+
+def _stage_failure_message(node_run: Any) -> str:
+    """Recover the bare Builders failure message from canonical NodeRun evidence."""
+    error = str(node_run.error or "")
+    if error.startswith(_RUNTIME_ERROR_PREFIX):
+        return error[len(_RUNTIME_ERROR_PREFIX) :]
+    return error
+
+
+def _failed_stage(record: DurableRunRecord) -> tuple[str, str] | None:
+    """The stage name and message canonical Run itself selected as authoritative.
+
+    Canonical's own ``first_exhausted_failure`` (see
+    ``durable_runs.executor``) picks the *first* exhausted failure in
+    frontier order -- every Builders stage policy is ``max_attempts: 1`` (see
+    ``_canonical_stage_nodes``), so every stage failure is exhausted
+    immediately and this is always the failure that terminalized the Run.
+    Scanning ``record.node_runs`` forward (not reversed) for the first
+    failure, and reading its own error text rather than the separately
+    mutated ``run.failed_stage_error``, is what makes the projected stage
+    name and its error come from the *same* selected failure instead of two
+    different concurrent dispatchers' writes (issue #1067).
+    """
+    for node_run in record.node_runs:
         name = _stage_name(node_run.node_id)
         if name is not None and node_run.status is RunStatus.FAILED:
-            return name
+            return name, _stage_failure_message(node_run)
     return None
 
 
-def _project_run_status(run: Any, record: DurableRunRecord, failed_stage: str | None) -> None:
+def _project_run_status(
+    run: Any,
+    record: DurableRunRecord,
+    failure: tuple[str, str] | None,
+) -> None:
     if record.run.status is RunStatus.COMPLETED:
         run.status = "completed"
-    elif failed_stage is not None:
-        if "iteration budget exhausted" in run.failed_stage_error:
+    elif failure is not None:
+        failed_stage, message = failure
+        if "iteration budget exhausted" in message:
             run.status = f"halted at {failed_stage}: iteration budget exhausted"
         else:
             run.status = f"failed at {failed_stage}"
@@ -466,7 +645,12 @@ def _project_run_status(run: Any, record: DurableRunRecord, failed_stage: str | 
         run.status = record.run.status.value
 
 
-def _project_stage(run: Any, stage: Any, node_run: Any, failed_stage: str | None) -> None:
+def _project_stage(
+    run: Any,
+    stage: Any,
+    node_run: Any,
+    failure: tuple[str, str] | None,
+) -> None:
     if stage.name in run.skipped_stages:
         stage.status = _stage_status("skipped")
     elif node_run is None:
@@ -481,17 +665,22 @@ def _project_stage(run: Any, stage: Any, node_run: Any, failed_stage: str | None
         RunStatus.TIMED_OUT,
     }:
         stage.status = _stage_status("failed")
-        if stage.name == failed_stage:
-            stage.error = run.failed_stage_error or str(node_run.error or "")
+        if failure is not None and stage.name == failure[0]:
+            stage.error = failure[1]
 
 
 def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
     """Refresh the compatibility receipt from canonical execution evidence."""
     latest_by_stage = _latest_stage_runs(record)
-    failed_stage = _failed_stage(record)
-    _project_run_status(run, record, failed_stage)
+    failure = _failed_stage(record)
+    if failure is not None:
+        # Overwrite whichever concurrently-dispatched stage last raced to set
+        # this: the receipt's error must come from the same selected failure
+        # as run.status, not from an unrelated stage's write (#1067).
+        run.failed_stage_error = failure[1]
+    _project_run_status(run, record, failure)
     for stage in getattr(run, "stages", ()):
-        _project_stage(run, stage, latest_by_stage.get(stage.name), failed_stage)
+        _project_stage(run, stage, latest_by_stage.get(stage.name), failure)
 
 
 def _stage_status(value: str) -> Any:
@@ -499,6 +688,29 @@ def _stage_status(value: str) -> Any:
     from maistro.builders.pipeline import StageStatus
 
     return StageStatus(value)
+
+
+def _derived_max_steps(graph: PipelineGraph, budget: IterationBudget) -> int:
+    """Bound the durable walk by what Builders' own iteration policy allows.
+
+    ``run_durable_graph`` counts walk *steps* (frontiers), not node
+    dispatches, and its generic default (256) is a ceiling picked for
+    callers with no domain-specific bound of their own -- not one derived
+    from a Builders pipeline's own size or iteration policy (#1067's defect
+    3). A real dispatch always consumes exactly one unit of ``budget``
+    (``_reserve_iteration``), so ``budget.max_iterations`` alone already
+    bounds every step that does real work; a skip-only frontier or the
+    multi-root fan-out control frontier (``_entry_frontier``) does not
+    consume the budget, so add one "free" step per graph node plus one for
+    the control frontier -- generous enough that a pipeline Builders' own
+    policy allows is never silently truncated by an unrelated generic
+    ceiling, without handing the walk an unbounded one. ``max()`` against the
+    durable executor's own default keeps small pipelines exactly as bounded
+    as before.
+    """
+    from maistro.graph.durable_runs import DEFAULT_MAX_STEPS
+
+    return max(DEFAULT_MAX_STEPS, budget.max_iterations + len(graph) + 1)
 
 
 class CanonicalGraphPipelineExecutor:
@@ -606,6 +818,7 @@ class CanonicalGraphPipelineExecutor:
             run_id=run.canonical_run_id,
             provenance=provenance,
             run_store=self._run_store,
+            max_steps=_derived_max_steps(graph, budget),
         )
         _project_canonical_record(run, record)
         return record

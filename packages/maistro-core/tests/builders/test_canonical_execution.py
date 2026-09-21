@@ -11,10 +11,12 @@ import pytest
 
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
+    _DEFAULT_EXECUTIONS_PER_NODE,
     CanonicalGraphPipelineExecutor,
     DispatchResult,
     _build_prompt,
     _canonical_graph,
+    _derived_max_steps,
     _mark_skipped,
     _project_canonical_record,
     _resolver,
@@ -53,12 +55,18 @@ class ScriptedDispatcher:
         fail: set[str] | None = None,
         unsupported: set[str] | None = None,
         delay: float = 0.0,
+        delays: dict[str, float] | None = None,
     ) -> None:
         self._outputs = outputs or {}
         self._fail = fail or set()
         self._unsupported = unsupported or set()
         self._delay = delay
+        self._delays = delays or {}
         self.calls: list[str] = []
+        # A snapshot of `context` (copied, since it's a live shared dict) at
+        # the moment each dispatch began -- lets a test assert what a stage
+        # actually saw, not just what it output.
+        self.contexts: dict[str, list[dict[str, Any]]] = {}
         self.in_flight = 0
         self.max_in_flight = 0
 
@@ -75,11 +83,13 @@ class ScriptedDispatcher:
         context: RunContext,
     ) -> DispatchResult:
         self.calls.append(node_name)
+        self.contexts.setdefault(node_name, []).append(dict(context))
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         try:
-            if self._delay:
-                await asyncio.sleep(self._delay)
+            delay = self._delays.get(node_name, self._delay)
+            if delay:
+                await asyncio.sleep(delay)
             if node_name in self._fail:
                 return DispatchResult(ok=False, error=f"{node_name} broke")
             scripted = self._outputs.get(node_name, f"{node_name} output")
@@ -335,6 +345,70 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
 
 
 @pytest.mark.asyncio
+async def test_revision_dominates_a_concurrent_wave_after_it_settles() -> None:
+    """#1067 defect 1: legacy gathers a whole wave, *then* applies gate failures.
+
+    ``plan`` is the revise target. ``gate`` and ``sibling`` are both direct,
+    concurrent children of ``plan`` -- one ready wave. ``sibling`` is the
+    slower of the two, so its dispatch (and its write into ``run.context``)
+    lands after ``gate``'s failed-gate decision would, under the old
+    eager/synchronous invalidation, already have cleared ``run.context`` for
+    the stale set -- reproducing the exact race the old code lost. Against
+    unpatched code this test fails: the stale ``sibling-v1`` write survives
+    into ``plan``'s second dispatch, and ``successor`` (which depends only on
+    ``sibling``, one hop further out) gets dispatched *twice* -- once
+    prematurely, riding on the stale/incomplete wave, and once for real.
+    """
+    graph = PipelineGraph(
+        [
+            _node("plan"),
+            _node(
+                "gate",
+                ("plan",),
+                gate=lambda ctx: str(ctx.get("gate", "")).startswith("OK"),
+                revise_target="plan",
+                max_revisions=2,
+            ),
+            _node("sibling", ("plan",)),
+            _node("successor", ("sibling",)),
+        ]
+    )
+    dispatcher = ScriptedDispatcher(
+        outputs={
+            "gate": ["VIOLATION", "OK"],
+            "sibling": ["sibling-v1", "sibling-v2"],
+            "successor": "successor output",
+        },
+        # `gate` also gets a (smaller) delay so its coroutine actually
+        # suspends and lets `sibling`'s coroutine start (and begin its own
+        # real dispatch) before `gate`'s gate-failure decision fires --
+        # otherwise a zero-delay gate can run to completion, decision and
+        # all, before `sibling` gets its first turn at all, which changes
+        # which race this test is exercising.
+        delays={"gate": 0.01, "sibling": 0.03},
+    )
+
+    canonical_run, _record, _owner = await _canonical(graph, dispatcher)
+
+    assert canonical_run.status == "completed"
+    # `sibling` genuinely re-ran once the revision settled (real dispatch
+    # twice). `successor` must have run for real exactly once -- under the
+    # old eager-invalidation bug it runs twice: once too early (a premature
+    # echo riding on `sibling`'s stale/incomplete wave), once for real.
+    assert dispatcher.calls.count("sibling") == 2
+    assert dispatcher.calls.count("successor") == 1
+    assert canonical_run.context["sibling"] == "sibling-v2"
+    assert canonical_run.context["successor"] == "successor output"
+    # The only real dispatch of `successor` must have seen the *fresh*
+    # sibling output, never the stale or missing one.
+    assert dispatcher.contexts["successor"][0].get("sibling") == "sibling-v2"
+    # Right after the wave settles (`plan`'s revision redispatch), the stale
+    # sibling output must be gone from run.context, not merely overwritten
+    # later.
+    assert "sibling" not in dispatcher.contexts["plan"][1]
+
+
+@pytest.mark.asyncio
 async def test_gate_without_revise_target_reoffers_itself_and_records_new_evidence() -> None:
     graph = PipelineGraph([_node("review", gate=lambda _ctx: False, max_revisions=1)])
     dispatcher = ScriptedDispatcher()
@@ -383,6 +457,43 @@ async def test_dispatch_failure_fails_canonical_run_and_never_starts_downstream(
     assert node_runs[0].status is RunStatus.FAILED
     attempts = await owner.run_store.list_attempts(node_runs[0].node_run_id)
     assert len(attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_stage_failures_project_one_consistent_authoritative_failure() -> None:
+    """#1067 defect 4: the projected stage and its error must come from the same failure.
+
+    ``alpha`` and ``beta`` are independent roots dispatched in the same
+    concurrent wave and both fail. Against unpatched code, ``failed_stage``
+    (a reversed scan) and ``run.failed_stage_error`` (a shared mutable var
+    each concurrent dispatcher writes) can each end up naming a *different*
+    one of the two failures. The receipt must instead name one failure and
+    carry *its* message -- and it must be the one canonical's own
+    ``first_exhausted_failure`` selected (the first in frontier order; every
+    Builders stage is ``max_attempts: 1``, so both failures are immediately
+    exhausted).
+    """
+    graph = PipelineGraph([_node("alpha"), _node("beta")])
+    # `alpha` is slower, so under the old racy code `beta`'s exception (and
+    # its write to the shared `run.failed_stage_error`) lands first and
+    # `alpha`'s overwrites it last -- while the old reversed-scan
+    # `_failed_stage` names `beta` (last in frontier position) regardless of
+    # timing. That mismatch is exactly the bug: two different failures
+    # supply the stage name and the error message.
+    dispatcher = ScriptedDispatcher(fail={"alpha", "beta"}, delays={"alpha": 0.01})
+
+    run, record, _owner = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.FAILED
+    assert run.status == "failed at alpha"
+    assert run.failed_stage_error == "alpha broke"
+    stage_by_name = {stage.name: stage for stage in run.stages}
+    assert stage_by_name["alpha"].status is StageStatus.FAILED
+    assert stage_by_name["alpha"].error == "alpha broke"
+    # beta also failed, but is not the authoritative failure -- it must not
+    # be credited with (or blamed for) alpha's message, or vice versa.
+    assert stage_by_name["beta"].status is StageStatus.FAILED
+    assert stage_by_name["beta"].error != "alpha broke"
 
 
 @pytest.mark.asyncio
@@ -583,11 +694,18 @@ def test_projection_maps_running_queued_and_non_failed_terminal_node_runs() -> N
         [_node("implement"), _node("tests", ("implement",)), _node("review", ("tests",))]
     )
 
-    def _record(run_status: RunStatus, node_runs: list[tuple[str, RunStatus]]) -> Any:
+    def _record(
+        run_status: RunStatus,
+        node_runs: list[tuple[str, RunStatus]],
+        errors: dict[str, str] | None = None,
+    ) -> Any:
+        errors = errors or {}
         return SimpleNamespace(
             run=SimpleNamespace(status=run_status),
             node_runs=tuple(
-                SimpleNamespace(node_id=f"builders-stage:{name}", status=status, error=None)
+                SimpleNamespace(
+                    node_id=f"builders-stage:{name}", status=status, error=errors.get(name)
+                )
                 for name, status in node_runs
             ),
         )
@@ -625,6 +743,16 @@ def test_projection_maps_running_queued_and_non_failed_terminal_node_runs() -> N
         StageStatus.PENDING,
     ]
 
+    # Two stages failed in the same concurrent frontier (#1067 defect 4).
+    # canonical's own selected failure is the *first* one in frontier order
+    # (every Builders stage is max_attempts=1, so any failure is immediately
+    # exhausted -- see durable_runs.executor.first_exhausted_failure). The
+    # receipt must name that same stage and carry *its* error, never a
+    # different stage's -- and must derive it from the NodeRun evidence
+    # rather than trust whatever a differently-raced write already left on
+    # `failed_stage_error` (deliberately pre-set here to the *other*,
+    # non-authoritative stage's message to prove the projection overrides
+    # it rather than trusting it).
     failed = _run(graph, run_id="projection-failed")
     failed.failed_stage_error = "review broke"
     _project_canonical_record(
@@ -636,14 +764,19 @@ def test_projection_maps_running_queued_and_non_failed_terminal_node_runs() -> N
                 ("tests", RunStatus.FAILED),
                 ("review", RunStatus.FAILED),
             ],
+            errors={
+                "tests": "RuntimeError: tests broke",
+                "review": "RuntimeError: review broke",
+            },
         ),
     )
-    assert failed.status == "failed at review"
+    assert failed.status == "failed at tests"
+    assert failed.failed_stage_error == "tests broke"
     stage_by_name = {stage.name: stage for stage in failed.stages}
-    assert stage_by_name["review"].status is StageStatus.FAILED
-    assert stage_by_name["review"].error == "review broke"
     assert stage_by_name["tests"].status is StageStatus.FAILED
-    assert stage_by_name["tests"].error == ""
+    assert stage_by_name["tests"].error == "tests broke"
+    assert stage_by_name["review"].status is StageStatus.FAILED
+    assert stage_by_name["review"].error == ""
 
 
 @pytest.mark.asyncio
@@ -661,3 +794,74 @@ async def test_execute_rejects_an_invalid_pipeline_graph_before_any_run() -> Non
 
     with pytest.raises(ValueError, match="invalid Builders pipeline graph"):
         await executor.execute(graph, run)
+
+
+def test_derived_max_steps_covers_a_representative_wide_pipeline() -> None:
+    """#1067 defect 3: the derived bound must comfortably exceed the generic default.
+
+    A representative >256-node linear Builders pipeline (cheap to
+    *construct* -- see test_execute_derives_and_passes_a_sufficient_max_steps
+    for proof that ``execute()`` actually passes this value on, and
+    test_public_entry_point_honors_an_explicit_max_steps_override in
+    ``test_executor_gaps.py`` for proof the durable walk actually honors it;
+    neither runs a real >256-step walk end to end, since the canonical
+    durable store's own per-checkpoint cost -- unrelated to this issue --
+    makes that impractically slow for a unit test).
+    """
+    size = 300
+    nodes = [_node("stage-0")]
+    nodes.extend(_node(f"stage-{i}", (f"stage-{i - 1}",)) for i in range(1, size))
+    graph = PipelineGraph(nodes)
+    budget = IterationBudget(max_iterations=_DEFAULT_EXECUTIONS_PER_NODE * len(graph))
+
+    bound = _derived_max_steps(graph, budget)
+
+    assert bound > 256
+    # Every real dispatch consumes exactly one unit of `budget`
+    # (_reserve_iteration), so the bound must cover the whole budget too.
+    assert bound >= budget.max_iterations
+
+
+@pytest.mark.asyncio
+async def test_execute_derives_and_passes_a_sufficient_max_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1067 defect 3: ``execute()`` must derive, not hardcode, the walk's step bound.
+
+    Against unpatched code, ``execute()`` calls ``run_durable_graph`` with no
+    ``max_steps`` at all, so the durable walk silently falls back to its
+    generic 256-step default regardless of the admitted pipeline's own size
+    -- this spy captures exactly what ``execute()`` passes, without paying
+    for the (slow -- see test_derived_max_steps_covers_a_representative_wide_pipeline)
+    cost of a real 300-step walk.
+    """
+    size = 300
+    nodes = [_node("stage-0")]
+    nodes.extend(_node(f"stage-{i}", (f"stage-{i - 1}",)) for i in range(1, size))
+    graph = PipelineGraph(nodes)
+
+    captured: dict[str, Any] = {}
+
+    class _Captured(Exception):
+        pass
+
+    async def _spy(*_args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        raise _Captured
+
+    monkeypatch.setattr("maistro.builders.graph_executor.run_durable_graph", _spy)
+
+    owner = await _owner()
+    executor = CanonicalGraphPipelineExecutor(
+        ScriptedDispatcher(),
+        run_store=owner.run_store,
+        durable_store=owner.durable_store,
+        workspace_id=owner.workspace_id,
+        project_id=owner.project_id,
+    )
+    run = _run(graph, run_id="wide-pipeline-run")
+
+    with pytest.raises(_Captured):
+        await executor.execute(graph, run)
+
+    assert captured["max_steps"] > 256
