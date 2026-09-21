@@ -440,6 +440,15 @@ or placeholder-only section.
   asserts the shown message has no raw error name; against the unfixed
   build it fails on exactly that assertion.
 
+- **Toggling a schedule or editing a memory entry no longer costs two
+  round trips (#1422).** `Schedules.tsx` and `Memory.tsx` followed every
+  create/update/toggle/delete with a GET of the entire collection, the
+  same pattern `WorkspaceContext.tsx`'s archive/delete already fixed for
+  workspaces. Both pages now patch the changed record into local state
+  from the mutation's own response instead. `tests/e2e/optimistic-mutations.spec.ts`
+  asserts no collection GET follows a toggle, create, or delete; against
+  the unfixed build both specs fail on exactly that assertion.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a

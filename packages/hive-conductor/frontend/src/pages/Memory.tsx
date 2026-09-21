@@ -29,21 +29,24 @@ export default function Memory() {
   async function createEntry() {
     if (!form.key.trim()) return;
     try {
-      await apiPost("/v1/memory/entries", { key: form.key.trim(), value: form.value, namespace: form.namespace, tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean) });
+      const created = await apiPost<Entry>("/v1/memory/entries", { key: form.key.trim(), value: form.value, namespace: form.namespace, tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean) });
+      setEntries((prev) => [...prev, created]);
       setCreating(false);
       setForm({ key: "", value: "", namespace: "general", tags: "" });
-      await load();
       toast("Entry created", "ok");
     } catch { toast("Failed to create", "error"); }
   }
 
+  // One mutation, one request (matches WorkspaceContext.tsx's #1422 fix): the
+  // response is the changed record, so it is patched into local state rather
+  // than followed by a refetch of the whole collection.
   async function updateEntry() {
     if (!sel) return;
     try {
       const updated = await apiPut<Entry>(`/v1/memory/entries/${sel.id}`, { key: editForm.key || undefined, value: editForm.value || undefined, tags: editForm.tags ? editForm.tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined });
+      setEntries((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
       setSel(updated);
       setEditing(false);
-      await load();
       toast("Entry updated", "ok");
     } catch { toast("Failed to update", "error"); }
   }
@@ -51,8 +54,8 @@ export default function Memory() {
   async function deleteEntry(id: string) {
     try {
       await apiDelete(`/v1/memory/entries/${id}`);
+      setEntries((prev) => prev.filter((e) => e.id !== id));
       if (sel?.id === id) setSel(null);
-      await load();
       toast("Entry deleted", "ok");
     } catch { toast("Failed to delete", "error"); }
     setDeleteTarget(null);
