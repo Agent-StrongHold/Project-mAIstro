@@ -132,7 +132,18 @@ class TestTheRoutesPassItDown:
         assert raised.value.status_code == 404
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
-    @pytest.mark.ac("M1-465/AC-design-render-unavailable")
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-7")
+    async def test_rendering_without_persistence_refuses_before_any_probe(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No configured store means 503, and no project-id probe can run."""
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 503
+        assert "DATABASE_URL" in str(raised.value.detail)
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-7")
     async def test_rendering_reports_unavailable_without_creating_a_pending_job(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -159,7 +170,7 @@ class TestTheRoutesPassItDown:
         assert preview_calls == []
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
-    @pytest.mark.ac("M1-465/AC-design-render-unavailable")
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-7")
     async def test_polling_render_status_reports_unavailable(self) -> None:
         """Polling cannot expose a made-up pending state or output URL."""
         with pytest.raises(HTTPException) as raised:
