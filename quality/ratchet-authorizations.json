@@ -58,6 +58,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1142",
       "reason": "packages/maistro-core/src/_vulture_whitelist.py is scan input for the vulture CLI (the quality.yml vulture step globs packages/*/src, and vulture itself walks the whole tree it is given), not application code -- it has no reason to ever be imported by production code. It was previously invisible to the reachability graph entirely: a loose .py file directly under a src root, sibling to the package directories rather than inside one, was declared source but never became a module node, so it was counted in the source-universe total and never surfaced as unreachable at the same time (#1142). Fixing that discovery gap makes this file newly visible to the ratchet for the first time; it is dispositioned LIBRARY in quality/reachability-dispositions.json (group vulture-whitelist) because being unreachable from a process entry point is its permanent, correct state, not deferred wiring. This grant authorizes exactly that one newly-discovered, pre-existing file; it does not authorize any other new reachability debt."
+    },
+    "maistro.graph.executor": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1154",
+      "reason": "Holds execute_with_resilience (ADR-066 / SPEC-070226-af02 P1 retry), whose only importer is packages/maistro-core/tests/resilience/test_p1.py. The module was reachable only because maistro.graph.__init__ imported run_graph from it; #1154 retires that wrapper as a second execution universe with no canonical Run/NodeRun/Attempt evidence. maistro-core is a published library and this is an importable surface for downstream products; keeping the re-export alive purely to hold the import edge would be the gate measuring a fiction. Expected to leave the baseline when a shipped caller adopts the P1 retry seam."
+    },
+    "maistro.graph.run": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1154",
+      "reason": "Holds GraphRun, the ADR-062 Graph-domain traversal (phase machine, iteration budget, beam scoring). Its only src importer is maistro.testing.harness, the shipped test harness of ADR-065 / SPEC-224. The canonical durable executor in maistro.graph.durable_runs never imported it -- the two executors shared a name, not code -- so retiring run_graph in #1154 removes the single import edge that made this module reachable. Traversal semantics are still exercised by packages/maistro-core/tests/graph/; canonical execution coverage is separate and untouched."
     }
   },
   "vulture": {
@@ -235,6 +245,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1162",
       "reason": "SqliteEventOutbox.dead_letters is the #1162 public read surface for the terminal dead-letter disposition: it returns the rows whose durable append exhausted the attempt bound, oldest first, with their failure evidence (attempts, last_error, failed_at). No production entry point in this repository drains it yet - pending_count() deliberately excludes dead-lettered rows and points at this accessor, and the readers today are the test suite (test_outbox.py asserts its contents and ordering; invisible to the src-only scan) plus downstream consumers of the SQLite outbox, for which maistro-core is a published library. Expected to gain an in-repo reader when a shipped process surfaces dead-letter evidence, at which point the entry leaves the baseline."
+    },
+    "packages/maistro-core/src/maistro/testing/harness.py::unused method 'run_graph'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1154",
+      "reason": "The fifth method of HarnessEnvironment (ADR-065 / SPEC-224), beside send_prompt, get_events, get_last_response and assert_event_type -- all four already reviewed in quality/vulture-baseline.json under core-public-api-surface, all four equally uncalled from packages/*/src because the harness API's callers are tests, which this scan does not read. run_graph was absent from that ledger only because the retired top-level maistro.graph.executor.run_graph shared its name and satisfied Vulture's name match. #1154 removes that wrapper, so the method is now measured on its own terms and joins its siblings. Not new dead code: no call site changed."
+    },
+    "packages/maistro-core/src/maistro/config/models.py::unused variable 'parallel_generations'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1154",
+      "reason": "A declared TierConfig field (SPEC-177: beam search when parallel_generations > 1; ADR-004/ADR-009 place the Ultra Think paths at T9), assigned at its two construction sites and read by nothing in src today. It surfaces now for the same name-match reason as the harness method: the retired run_graph carried a parallel_generations parameter. The field is a documented per-tier setting for an unwired feature, not residue of #1154 -- deleting it would drop a spec'd config surface, so it is banked in pydantic-declarative-field where 424 analogous declared-but-unread model fields already sit."
     }
   },
   "model-egress": {
