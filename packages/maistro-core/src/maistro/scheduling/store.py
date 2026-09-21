@@ -133,6 +133,7 @@ class ScheduleStore(Protocol):
         next_due_at: datetime | None,
         fires: int | None = None,
         disable: bool = False,
+        recovered: frozenset[datetime] = frozenset(),
     ) -> Schedule | None:
         """Advance the cursors after an evaluation, and disable on exhaustion.
 
@@ -141,9 +142,12 @@ class ScheduleStore(Protocol):
         cursor stays where it is and only `next_due_at` (the due cursor) is
         recorded (#1199). `fires` follows it when omitted: one fire for a
         consumed occurrence, none when nothing was consumed, so a due-cursor
-        write can never spend a bounded schedule's run. Implementations
-        serialize the read-then-write so two callers advancing one schedule
-        cannot lose each other's update.
+        write can never spend a bounded schedule's run. `recovered` is
+        credited separately, and only for the occurrences the freshly-read
+        row still shows as behind its cursor — a rival ticker's identical
+        write for the same pre-horizon claim must not double the count
+        (#1059). Implementations serialize the read-then-write so two callers
+        advancing one schedule cannot lose each other's update.
         """
         ...
 
@@ -224,11 +228,32 @@ def _advance(
     next_due_at: datetime | None,
     fires: int | None,
     disable: bool,
+    recovered: frozenset[datetime] = frozenset(),
 ) -> Schedule:
-    """The cursor advance, shared by every implementation so they cannot drift."""
+    """The cursor advance, shared by every implementation so they cannot drift.
+
+    `recovered` is the pre-horizon claims (#1059) this call wants credited —
+    kept separate from `fires` because two callers can independently walk the
+    *same* stale snapshot and both discover the *same* crashed winner as
+    "unrecorded": the row lock this runs under serializes their writes but
+    does not by itself deduplicate what they each believe they earned. A
+    recovered occurrence only ever sits behind the enumeration cursor
+    (`last_fired_at`) at the moment it is genuinely new — once any writer
+    (this one or a rival) has recorded a newer cursor, that occurrence is
+    provably already covered, and crediting it again would count one Run
+    twice toward `runs_so_far`. `fires` carries no such risk and is always
+    added as given: it is either this call's own newly-admitted Runs (each
+    protected by the RunStore's own occurrence uniqueness) or a delta a
+    caller computed with certainty.
+    """
     if fires is None:
         fires = 0 if fired_at is None else 1
-    runs_so_far = schedule.runs_so_far + fires
+    recovered_fires = sum(
+        1
+        for moment in recovered
+        if schedule.last_fired_at is None or moment > schedule.last_fired_at
+    )
+    runs_so_far = schedule.runs_so_far + fires + recovered_fires
     # `disable` is computed from an admitter's snapshot. A concurrent ticker
     # may have admitted the remaining occurrences since that snapshot, so the
     # store must enforce exhaustion from the serialized counter as well.
@@ -349,6 +374,7 @@ class InMemoryScheduleStore:
         next_due_at: datetime | None,
         fires: int | None = None,
         disable: bool = False,
+        recovered: frozenset[datetime] = frozenset(),
     ) -> Schedule | None:
         schedule = self._schedules.get(schedule_id)
         if schedule is None:
@@ -360,6 +386,7 @@ class InMemoryScheduleStore:
             next_due_at=next_due_at,
             fires=fires,
             disable=disable,
+            recovered=recovered,
         )
         self._schedules[schedule_id] = advanced
         return advanced
@@ -567,6 +594,7 @@ class SqliteScheduleStore:
         next_due_at: datetime | None,
         fires: int | None = None,
         disable: bool = False,
+        recovered: frozenset[datetime] = frozenset(),
     ) -> Schedule | None:
         """Advance the cursors inside one write-critical section (#1199).
 
@@ -586,6 +614,7 @@ class SqliteScheduleStore:
                 next_due_at=next_due_at,
                 fires=fires,
                 disable=disable,
+                recovered=recovered,
             )
             await self._upsert(advanced)
             return advanced
