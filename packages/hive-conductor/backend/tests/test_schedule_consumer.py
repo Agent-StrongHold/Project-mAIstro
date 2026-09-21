@@ -199,11 +199,14 @@ async def test_admitted_schedule_runs_stranded_until_the_consumer_tick_drains_th
         assert _ScheduleTickNode.calls == 0
 
         # The consumer cadence is the missing half: it drains the producer's
-        # stranded admission through the canonical tick.
+        # stranded admission through the canonical tick. The drain runs on its
+        # own task now, so the test joins it before asserting the effects.
         import services.schedule_consumer as cadence
 
         monkeypatch.setattr(cadence, "_wired_container", lambda: container)
-        assert await cadence.tick_schedule_consumer() == (1, 0)
+        await cadence.tick_schedule_consumer()
+        assert cadence._drain_task is not None
+        await asyncio.wait_for(cadence._drain_task, timeout=5.0)
         assert _ScheduleTickNode.calls == 1
         for run_id in stranded:
             run = await container.run_store.get_run(run_id)
@@ -303,18 +306,37 @@ async def test_tick_is_a_noop_without_a_wired_container(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Standalone/demo Conductor keeps today's behavior: no bridge, no
-    canonical spine, no fabricated consumption."""
+    canonical spine, no fabricated consumption — and no half tasks spawned."""
     import services.schedule_consumer as cadence
 
     monkeypatch.setattr(cadence, "_wired_container", lambda: None)
-    assert await cadence.tick_schedule_consumer() == (0, 0)
+    assert await cadence.tick_schedule_consumer() is None
+    assert cadence._drain_task is None
+    assert cadence._wake_task is None
+
+
+def test_consumer_disabled_reads_the_effective_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The off switch is one predicate shared by every execution path, read
+    live from the effective interval."""
+    import services.schedule_consumer as cadence
+
+    monkeypatch.setattr(cadence, "_interval_s", lambda: 10)
+    assert cadence.consumer_disabled() is False
+    monkeypatch.setattr(cadence, "_interval_s", lambda: 0)
+    assert cadence.consumer_disabled() is True
+    monkeypatch.setattr(cadence, "_interval_s", lambda: -5)
+    assert cadence.consumer_disabled() is True
 
 
 async def test_drain_failure_does_not_silence_the_wake_half(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The two halves answer different questions about the same store; one
-    failing is reported and the sibling still runs in the same tick."""
+    failing is reported in its own task and the sibling still completes."""
+    import logging
+
     import services.schedule_consumer as cadence
 
     calls: list[str] = []
@@ -329,35 +351,51 @@ async def test_drain_failure_does_not_silence_the_wake_half(
             return 1
 
     monkeypatch.setattr(cadence, "_wired_container", lambda: _Container())
-    assert await cadence.tick_schedule_consumer() == (0, 1)
-    assert calls == ["drain", "wake"]
+    with caplog.at_level(logging.WARNING, logger="hive.schedule_consumer"):
+        await cadence.tick_schedule_consumer()
+        assert cadence._drain_task is not None
+        assert cadence._wake_task is not None
+        drained = await asyncio.wait_for(cadence._drain_task, timeout=1.0)
+        resumed = await asyncio.wait_for(cadence._wake_task, timeout=1.0)
+    assert "drain" in calls and "wake" in calls
+    assert (drained, resumed) == (0, 1)
+    assert any("schedule_consumer_drain_failed" in r.getMessage() for r in caplog.records)
 
 
 async def test_cadence_ticks_both_halves_and_stops(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The started cadence is one task that reports productive ticks and is
-    joined — not leaked — on stop."""
+    """The started cadence is one poll loop over two half tasks that report
+    their own productivity, and stop joins all three."""
     import logging
 
     import services.schedule_consumer as cadence
 
-    ticked = asyncio.Event()
+    drained = asyncio.Event()
+    woken = asyncio.Event()
 
-    async def _tick() -> tuple[int, int]:
-        ticked.set()
-        return (2, 1)
+    class _Container:
+        async def execute_admitted_runs(self) -> int:
+            drained.set()
+            return 2
+
+        async def resume_parked_runs(self) -> int:
+            woken.set()
+            return 1
 
     await cadence.stop_schedule_consumer()
-    monkeypatch.setattr(cadence, "tick_schedule_consumer", _tick)
+    monkeypatch.setattr(cadence, "_wired_container", lambda: _Container())
     monkeypatch.setattr(cadence, "_interval_s", lambda: 3600)
 
     with caplog.at_level(logging.INFO, logger="hive.schedule_consumer"):
         await cadence.start_schedule_consumer()
-        assert cadence._task is not None
-        await asyncio.wait_for(ticked.wait(), timeout=1.0)
-        await asyncio.sleep(0.05)  # let the loop body reach its log line
-    assert any("drained=2 resumed=1" in r.getMessage() for r in caplog.records)
+        await asyncio.wait_for(asyncio.gather(drained.wait(), woken.wait()), timeout=1.0)
+        assert cadence._drain_task is not None
+        assert cadence._wake_task is not None
+        assert await asyncio.wait_for(cadence._drain_task, timeout=1.0) == 2
+        assert await asyncio.wait_for(cadence._wake_task, timeout=1.0) == 1
+    assert any("drained=2" in r.getMessage() for r in caplog.records)
+    assert any("resumed=1" in r.getMessage() for r in caplog.records)
 
     await cadence.stop_schedule_consumer()
     assert cadence._task is None
@@ -372,29 +410,116 @@ async def test_cadence_survives_a_failing_tick(
 
     import services.schedule_consumer as cadence
 
-    ticks = {"count": 0}
+    lookups = {"count": 0}
     recovered = asyncio.Event()
 
-    async def _tick() -> tuple[int, int]:
-        ticks["count"] += 1
-        if ticks["count"] == 1:
+    class _Container:
+        async def execute_admitted_runs(self) -> int:
+            recovered.set()
+            return 3
+
+        async def resume_parked_runs(self) -> int:
+            return 0
+
+    def _wired() -> Any:
+        lookups["count"] += 1
+        if lookups["count"] == 1:
             raise RuntimeError("engine not wired yet")
-        recovered.set()
-        return (3, 0)
+        return _Container()
 
     await cadence.stop_schedule_consumer()
-    monkeypatch.setattr(cadence, "tick_schedule_consumer", _tick)
+    monkeypatch.setattr(cadence, "_wired_container", _wired)
     monkeypatch.setattr(cadence, "_interval_s", lambda: 0.001)
 
     await cadence.start_schedule_consumer()
     with caplog.at_level(logging.INFO, logger="hive.schedule_consumer"):
         await asyncio.wait_for(recovered.wait(), timeout=5.0)
+        assert cadence._drain_task is not None
+        assert await asyncio.wait_for(cadence._drain_task, timeout=1.0) == 3
 
     assert any("schedule_consumer_tick_failed" in r.getMessage() for r in caplog.records)
-    assert any("drained=3 resumed=0" in r.getMessage() for r in caplog.records)
+    assert any("drained=3" in r.getMessage() for r in caplog.records)
 
     await cadence.stop_schedule_consumer()
     assert cadence._task is None
+
+
+async def test_cadence_keeps_waking_while_a_claimed_node_runs_long(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The drain decoupling (Codex P1, #1260): node work inside a claimed Run
+    executes inline through the canonical executor with no default timeout, so
+    the cadence must never await it. While one drain is stuck, later cadence
+    iterations keep coming and the wake half keeps polling — timer-paused Runs
+    in this process still resume — and no second drain stacks on the stuck one."""
+    import services.schedule_consumer as cadence
+
+    drain_started = asyncio.Event()
+    release = asyncio.Event()
+    drain_calls = {"count": 0}
+    wakes: list[int] = []
+
+    class _Container:
+        async def execute_admitted_runs(self) -> int:
+            drain_calls["count"] += 1
+            drain_started.set()
+            await release.wait()  # the claimed node never returns on its own
+            return 1  # pragma: no cover - released only by teardown
+
+        async def resume_parked_runs(self) -> int:
+            wakes.append(1)
+            return 0
+
+    await cadence.stop_schedule_consumer()
+    monkeypatch.setattr(cadence, "_wired_container", lambda: _Container())
+    monkeypatch.setattr(cadence, "_interval_s", lambda: 0.001)
+
+    await cadence.start_schedule_consumer()
+    try:
+        await asyncio.wait_for(drain_started.wait(), timeout=1.0)
+        stuck = cadence._drain_task
+        assert stuck is not None
+        # Several bounded cadence iterations pass while the drain is stuck:
+        # the wake half progresses instead of starving behind the drain.
+        await asyncio.sleep(0.05)
+        assert not stuck.done()
+        assert len(wakes) >= 2
+        assert cadence._drain_task is stuck  # never a second stacked drain
+        assert drain_calls["count"] == 1
+    finally:
+        release.set()
+        await cadence.stop_schedule_consumer()
+    assert cadence._drain_task is None
+
+
+async def test_stop_cancels_half_tasks_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shutdown owns its in-flight halves: stop cancels and joins the drain
+    task, leaving the claimed Run to ordinary recovery — and no task leaked."""
+    import services.schedule_consumer as cadence
+
+    drain_started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _Container:
+        async def execute_admitted_runs(self) -> int:
+            drain_started.set()
+            await release.wait()
+            return 1  # pragma: no cover - released only by teardown
+
+        async def resume_parked_runs(self) -> int:
+            return 0
+
+    monkeypatch.setattr(cadence, "_wired_container", lambda: _Container())
+    await cadence.tick_schedule_consumer()
+    await asyncio.wait_for(drain_started.wait(), timeout=1.0)
+    drain = cadence._drain_task
+    assert drain is not None
+
+    await cadence.stop_schedule_consumer()
+
+    assert cadence._drain_task is None
+    assert cadence._wake_task is None
+    assert drain.cancelled()
 
 
 async def test_starting_the_cadence_twice_keeps_one_task(

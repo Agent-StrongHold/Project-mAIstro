@@ -192,9 +192,16 @@ class _ScheduleRunner:
 
         # Admission is the submission for schedule work. The same configured
         # process owns the bounded canonical consumer tick, so a Run admitted
-        # above cannot remain QUEUED merely because no task receipt exists.
+        # above cannot remain QUEUED merely because no task receipt exists —
+        # unless the consumer's documented off switch is set: this drain and
+        # the cadence task gate on the same effective-interval answer
+        # (`consumer_disabled`), so `SCHEDULE_CONSUMER_INTERVAL_S <= 0`
+        # quiesces every execution path and admitted Runs stay QUEUED exactly
+        # as the startup warning says (Codex P1, #1260).
+        from services.schedule_consumer import consumer_disabled
+
         container = self._canonical_container()
-        if container is not None:
+        if container is not None and not consumer_disabled():
             try:
                 executed = await container.execute_admitted_runs()
                 if executed:

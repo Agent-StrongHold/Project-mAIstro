@@ -210,6 +210,36 @@ def test_tick_swallows_evaluation_errors(monkeypatch: pytest.MonkeyPatch) -> Non
     asyncio.run(_ScheduleRunner()._tick())  # must not raise
 
 
+def test_tick_drain_honors_the_consumer_disable_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`SCHEDULE_CONSUMER_INTERVAL_S <= 0` is the documented off switch for
+    every path that executes admitted schedule Runs — not only the cadence
+    task (Codex P1, #1260): the scheduler's own drain gates on the same
+    effective-interval answer (`consumer_disabled`), so the switch truly
+    leaves admitted Runs QUEUED while the producer keeps admitting them."""
+    import services.schedule_consumer as cadence
+    from services.scheduler import _ScheduleRunner
+
+    drained: list[int] = []
+
+    class _Container:
+        async def execute_admitted_runs(self) -> int:
+            drained.append(1)
+            return 1
+
+    monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: _Container()))
+    monkeypatch.setitem(sys.modules, "stores", SimpleNamespace(schedules={}))
+
+    monkeypatch.setattr(cadence, "_interval_s", lambda: 0)  # the off switch
+    asyncio.run(_ScheduleRunner()._tick())
+    assert drained == []
+
+    monkeypatch.setattr(cadence, "_interval_s", lambda: 10)
+    asyncio.run(_ScheduleRunner()._tick())
+    assert drained == [1]
+
+
 def test_evaluate_fires_a_due_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 
