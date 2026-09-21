@@ -134,6 +134,7 @@ RECIPES: dict[str, Recipe] = {
     "packages/maistro-server/tests": Recipe(args=[]),
     "packages/maistro-turing/tests": Recipe(args=[]),
     "packages/maistro-design/tests": Recipe(args=[]),
+    "packages/maistro-automaton/tests": Recipe(args=[]),
     "packages/maistro-bootstrap/tests": Recipe(args=[]),
     "packages/maistro-canvas/tests": Recipe(args=[]),
     "packages/maistro-turing/backend/tests": Recipe(args=[]),

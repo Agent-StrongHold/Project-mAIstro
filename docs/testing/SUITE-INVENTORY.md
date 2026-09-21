@@ -114,6 +114,7 @@ file per change, alongside the delta itself.
 |---|---|
 | `packages/maistro-core/tests` | `ci.yml` |
 | `packages/maistro-evolve/tests` | `ci.yml` |
+| `packages/maistro-automaton/tests` | `ci.yml` |
 | `packages/maistro-rsi/tests` | `ci.yml` |
 | `packages/maistro-server/tests` | `ci.yml` |
 | `packages/maistro-turing/tests` | `ci.yml` |
