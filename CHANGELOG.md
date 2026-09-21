@@ -192,6 +192,19 @@ or placeholder-only section.
 
 ### Added
 
+- **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
+  execution (#735).** `maistro_canvas`'s durable generation runner is wired to
+  the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
+  generation-job progress through real `Run`/`NodeRun`/`Attempt` records
+  instead of a Canvas-local job shape, and `protocols.py` gains the store
+  surface the canonical path needs. `test_canonical_executor_integration.py`
+  and `test_store_scope_conformance.py` cover the wiring; the maistro-core
+  side lands alongside durable-runs executor and HITL-settlement hardening
+  from the same convergence work (resume-lease and HITL-deadline handling,
+  `human_approve_draft`/`human_delegate_to_role`/`human_review_and_edit`
+  declaring their authorities, and an accepted-outcome-required check on
+  parked Run resume).
+
 - **Hive DAG execution (WebSocket run + optimizer) requires and carries a
   canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
   resolves a client-selected `workspace_id` through the canonical

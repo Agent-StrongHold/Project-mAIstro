@@ -481,9 +481,16 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
         # PostgreSQL round trips can consume most of a short test window, while
         # the explicit recovery clock below makes expiry itself deterministic.
+        # The deadline is generous wall-clock rather than a multiple of the
+        # heartbeat interval: on a coverage-instrumented CI runner, leaked
+        # background threads and disk stalls can starve this loop's cooperative
+        # tasks for whole seconds while loop.time() keeps advancing, so a tight
+        # budget can expire without the heartbeat ever getting a turn (seen as
+        # a flaky "not renewed by the heartbeat" on the no-services coverage
+        # job -- same head, adjacent pass and fail runs).
         loop = asyncio.get_running_loop()
         live = await store.get_attempt(resumed.attempt_id)
-        renewal_deadline = loop.time() + 5.0
+        renewal_deadline = loop.time() + 15.0
         while (
             live is None
             or live.execution_lease is None
