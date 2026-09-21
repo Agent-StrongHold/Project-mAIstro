@@ -69,6 +69,32 @@ class ProviderRegistrationError(RuntimeError):
     """The gateway rejected or could not receive provider registration."""
 
 
+class LlmAuthError(PermissionError):
+    """The gateway rejected the request as unauthenticated/unauthorized.
+
+    Carries ``status_code`` so :func:`maistro.credentials.router._status_from_error`
+    and :func:`maistro.resilience.classifier.classify_error` can read the real
+    HTTP status directly from the exception (both check ``status_code`` first)
+    instead of falling through to an unclassified error that never cools or
+    blocks the offending credential (#1079 finding 5).
+    """
+
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class LlmHttpError(RuntimeError):
+    """The gateway rejected the request with a non-auth HTTP error status.
+
+    Carries ``status_code`` for the same reason as :class:`LlmAuthError`.
+    """
+
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class LlmGatewayProvider:
     """Slot-specific resolved Provider handle for one model-chat call.
 
@@ -139,11 +165,15 @@ def _checked_body(response: Any) -> dict[str, object]:
     """Map gateway statuses to the error shapes the shipped model paths raise."""
 
     if response.status_code == 401:
-        raise PermissionError("llm_auth_failed status=401 (check gateway credentials)")
+        raise LlmAuthError(
+            "llm_auth_failed status=401 (check gateway credentials)", status_code=401
+        )
     if response.status_code == 429:
-        raise RuntimeError("llm_rate_limited status=429")
+        raise LlmHttpError("llm_rate_limited status=429", status_code=429)
     if response.status_code >= 400:
-        raise RuntimeError(f"llm_http_error status={response.status_code}")
+        raise LlmHttpError(
+            f"llm_http_error status={response.status_code}", status_code=response.status_code
+        )
     body = response.json()
     if not isinstance(body, dict):
         raise RuntimeError("model gateway returned a non-object response body")
@@ -222,7 +252,9 @@ __all__ = [
     "MODEL_CHAT_CAPABILITY",
     "MODEL_GATEWAY_CREDENTIAL_PROVIDER",
     "GatewayEndpoint",
+    "LlmAuthError",
     "LlmGatewayProvider",
+    "LlmHttpError",
     "ModelChatRequest",
     "ProviderRegistrationError",
     "execute_model_chat",
