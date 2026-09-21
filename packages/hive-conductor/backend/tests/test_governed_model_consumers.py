@@ -239,6 +239,7 @@ async def test_provider_health_registration_keeps_secret_out_of_invocation(
 
     runtime = _plain_runtime()
     binding = control_plane_binding(
+        runtime,
         binding_id="provider-binding",
         workspace_id="ws-1",
         project_id="provider-project",
@@ -299,6 +300,7 @@ async def test_provider_health_policy_denial_causes_zero_http(
         endpoint=GatewayEndpoint(base_url="http://gateway", api_key="master"),
     )
     binding = control_plane_binding(
+        runtime,
         binding_id="denied-provider-binding",
         workspace_id="ws-1",
         project_id="provider-project",
@@ -349,6 +351,7 @@ async def test_provider_health_with_minted_identity_completes_operation(
 
     runtime, run_store, _parent_run_id, project_id = await _correlated_runtime()
     binding = control_plane_binding(
+        runtime,
         binding_id="provider-activation:judge",
         workspace_id="ws-1",
         project_id=project_id,
@@ -440,6 +443,7 @@ async def test_provider_registration_failure_is_not_authorization_failure(
 
     runtime = _plain_runtime()
     binding = control_plane_binding(
+        runtime,
         binding_id="registration-failure-binding",
         workspace_id="ws-1",
         project_id="provider-project",
@@ -485,6 +489,7 @@ async def test_ensure_binding_is_immutable_and_idempotent() -> None:
 
     runtime, _run_store, _parent_run_id, project_id = await _correlated_runtime()
     binding = control_plane_binding(
+        runtime,
         binding_id="immutable-binding",
         workspace_id="ws-1",
         project_id=project_id,

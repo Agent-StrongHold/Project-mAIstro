@@ -623,7 +623,7 @@ async def test_setup_hook_runs_after_authorization_before_model_http(
     """
 
     order: list[str] = []
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
 
     async def _setup() -> None:
@@ -860,7 +860,7 @@ async def test_chat_payload_carries_structured_output_shape(
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
     egress = ModelChatEgress(
         effects,

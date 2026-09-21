@@ -25,12 +25,15 @@ from maistro.capabilities.governed_invocation import (
 )
 from maistro.capabilities.model_chat import ModelCallResult, ModelChatEgress
 from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
+    MODEL_GATEWAY_CREDENTIAL_PROVIDER,
     GatewayEndpoint,
     ModelChatRequest,
     ProviderRegistrationError,
     register_provider_models,
 )
+from maistro.credentials.types import CredentialRecord
 from maistro.graph.definitions import Graph, Node
 from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 from maistro.runs.lifecycle import transition_path
@@ -110,10 +113,34 @@ def _endpoint() -> GatewayEndpoint:
 
 
 def control_plane_binding(
-    *, binding_id: str, workspace_id: str, project_id: str, provider_name: str = ""
+    runtime: GovernedModelRuntime,
+    *,
+    binding_id: str,
+    workspace_id: str,
+    project_id: str,
+    provider_name: str = "",
 ) -> Binding:
-    """Build the explicit operator-scoped Binding used by control-plane effects."""
+    """Build the explicit operator-scoped Binding used by control-plane effects.
 
+    Registers the runtime's own gateway credential in this Binding's scope
+    (idempotent -- ``CredentialRouter.add`` replaces rather than duplicates a
+    re-registered key id) and authorizes it by ref, mirroring
+    ``bootstrap_model_bindings`` (#1248, #1091, Binding-scoped credential
+    routing): the physical model call refuses with ``CredentialScopeError``
+    before any HTTP unless the Binding names a credential actually registered
+    in its own Workspace/Project scope, and a control-plane Binding built with
+    no ``credential_refs`` at all would always refuse.
+    """
+
+    runtime.effects.credentials.add(
+        workspace_id=workspace_id,
+        project_id=project_id,
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key=runtime.endpoint.api_key,
+        ),
+    )
     return Binding(
         binding_id=binding_id,
         workspace_id=workspace_id,
@@ -121,6 +148,7 @@ def control_plane_binding(
         node_id="control-plane",
         capability=MODEL_CHAT_CAPABILITY,
         provider_name=provider_name,
+        credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
     )
 
 

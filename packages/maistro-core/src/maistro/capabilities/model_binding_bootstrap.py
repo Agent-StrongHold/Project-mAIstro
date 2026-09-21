@@ -7,6 +7,8 @@ loaded here; no Provider registry entry auto-authorizes itself.
 
 from __future__ import annotations
 
+from typing import Any
+
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import CapabilityEffectContext
 from maistro.capabilities.providers.llm_gateway import (
@@ -59,7 +61,7 @@ async def bootstrap_model_bindings(
                 credential_refs = (DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,)
 
         existing = await effects.bindings.get(declared.binding_id)
-        values = {
+        values: dict[str, Any] = {
             "binding_id": declared.binding_id,
             "workspace_id": workspace_id,
             "project_id": declared.project_id,
