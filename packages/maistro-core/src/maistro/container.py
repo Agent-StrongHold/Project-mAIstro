@@ -64,7 +64,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
-from maistro.runs.store import RunIntegrityError, RunStore
+from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
     wire_chat_admission,
@@ -949,6 +949,7 @@ class Container:
         of RUNNING Runs that are all ineligible must not stall the tick before
         it reaches the one that is not.
         """
+        from maistro.runs.sources import CHAT_SOURCE
         from maistro.runs.store import run_cursor_key
 
         moment = now if now is not None else datetime.now(UTC)
@@ -956,7 +957,20 @@ class Container:
         recovered = 0
         after = None
         while recovered < limit:
-            page = await self.run_store.list_by_status(RunStatus.RUNNING, limit=limit, after=after)
+            # Ask the store for the ownership fact rather than hydrating every
+            # RUNNING Run and rejecting most of them here: `list_by_status`
+            # takes `admission_source`, and both SQL backends push it into the
+            # query. A deployment whose RUNNING set is mostly scheduled work
+            # would otherwise make this bounded tick read unboundedly many rows
+            # that can never be eligible. The predicate narrows what is read;
+            # it does not replace the per-candidate check, which still
+            # re-derives eligibility from the record it is handed.
+            page = await self.run_store.list_by_status(
+                RunStatus.RUNNING,
+                limit=limit,
+                after=after,
+                admission_source=CHAT_SOURCE,
+            )
             if not page:
                 break
             for run in page:
@@ -970,10 +984,12 @@ class Container:
     async def _compensate_if_stranded(self, run: Run, *, cutoff: datetime) -> bool:
         """Cancel `run` if it is a stranded chat admission; say whether it did.
 
-        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun --
-        checked twice, once before touching the store and once immediately
-        before the write, which is the only window a turn that starts between
-        the two reads can still close.
+        Eligibility is `CHAT_SOURCE`, older than `cutoff`, and no NodeRun. The
+        source is re-checked here even though the listing query already filters
+        on it: the predicate narrows what the tick reads, and a store that
+        ignored it must still not get a foreign Run cancelled. The NodeRun
+        absence is read twice, the second immediately before the write, which
+        is the only window a turn starting between the two reads can close.
         """
         from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 
@@ -981,9 +997,9 @@ class Container:
             return False
         if run.updated_at > cutoff:
             return False
-        if await self.run_store.list_node_runs(run.run_id):
-            return False
         try:
+            if await self.run_store.list_node_runs(run.run_id):
+                return False
             if await self.run_store.list_node_runs(run.run_id):
                 return False
             await self.run_store.transition_run(
@@ -991,6 +1007,14 @@ class Container:
                 RunStatus.CANCELLED,
                 error=EXECUTION_NEVER_STARTED,
             )
+        except RunNotFound:
+            # The Run vanished between the page that listed it and this lookup:
+            # another worker terminalized it and retention swept it away. That
+            # is an already-settled race, and `RunNotFound` is a `KeyError`, so
+            # letting it out would abort the whole tick -- abandoning every
+            # later stranded Run for one that no longer needs recovering.
+            logger.info("stranded chat Run %s disappeared during recovery", run.run_id)
+            return False
         except (RunIntegrityError, InvalidLifecycleTransition):
             # Settled by another path -- the turn finished, or another sweep
             # got here first -- between the check above and this write. Not

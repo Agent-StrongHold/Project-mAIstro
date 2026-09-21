@@ -25,6 +25,7 @@ from maistro.runs.chat_admission import (
 )
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
+from maistro.runs.store import RunNotFound
 from maistro.types.config import AgentConfig
 
 
@@ -692,3 +693,117 @@ async def test_the_grace_window_is_judged_against_an_injected_now() -> None:
     assert current is not None
     assert current.status is RunStatus.CANCELLED
     assert current.error == EXECUTION_NEVER_STARTED
+
+
+async def test_the_sweep_asks_the_store_for_chat_runs_only() -> None:
+    """The ownership fact goes into the query, not just the per-candidate check.
+
+    Both SQL backends push `admission_source` down, so a deployment whose
+    RUNNING set is mostly scheduled work must not make this bounded tick read
+    every one of those rows before rejecting them (Codex review).
+    """
+    container = await _container()
+    await _stranded_running_chat_run(container)
+    sources: list[str | None] = []
+
+    class _RecordsTheFilter:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def list_by_status(self, status, **kwargs):
+            sources.append(kwargs.get("admission_source"))
+            return await self._inner.list_by_status(status, **kwargs)
+
+    container.run_store = _RecordsTheFilter(container.run_store)  # type: ignore[assignment]
+
+    await container.recover_stranded_chat_admissions()
+
+    assert sources and set(sources) == {CHAT_SOURCE}
+
+
+async def test_a_store_that_ignores_the_source_filter_still_spares_a_foreign_run() -> None:
+    """The per-candidate source check is defense in depth, not a duplicate.
+
+    The query filters, but a backend that ignored the predicate must still not
+    get a schedule Run cancelled with `execution_never_started`.
+    """
+    from maistro.graph import Graph, Node
+
+    container = await _container()
+    project_id = (await container.project_scope_store.create_root("ignores-filter")).project_id
+    graph = Graph(
+        workspace_id="ignores-filter",
+        project_id=project_id,
+        name="g",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    foreign = await container.run_store.create_run(graph, provenance={ADMISSION_SOURCE: "schedule"})
+    at = datetime.now(UTC) - timedelta(minutes=10)
+    await container.run_store.transition_run(foreign.run_id, RunStatus.QUEUED, at=at)
+    await container.run_store.transition_run(foreign.run_id, RunStatus.RUNNING, at=at)
+
+    class _IgnoresTheFilter:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def list_by_status(self, status, **kwargs):
+            kwargs.pop("admission_source", None)
+            return await self._inner.list_by_status(status, **kwargs)
+
+    container.run_store = _IgnoresTheFilter(container.run_store)  # type: ignore[assignment]
+
+    recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 0
+    current = await container.run_store.get_run(foreign.run_id)
+    assert current is not None
+    assert current.status is RunStatus.RUNNING
+    assert current.error is None
+
+
+async def test_a_run_deleted_mid_tick_does_not_abort_the_rest_of_the_sweep(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`RunNotFound` is a `KeyError`, so letting it out abandoned every later
+    candidate for one Run that no longer needed recovering (Codex review).
+
+    Another worker terminalizes a listed Run and retention deletes it before
+    this tick's own lookup reaches it. That is a settled race; the Runs behind
+    it are still stranded and still this tick's to compensate.
+    """
+    container = await _container()
+    vanished = await _stranded_running_chat_run(container)
+    survivor = await _stranded_running_chat_run(container)
+
+    class _VanishesOnLookup:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def list_node_runs(self, run_id):
+            if run_id == vanished.run_id:
+                raise RunNotFound(run_id)
+            return await self._inner.list_node_runs(run_id)
+
+    container.run_store = _VanishesOnLookup(container.run_store)  # type: ignore[assignment]
+
+    with caplog.at_level(logging.INFO):
+        recovered = await container.recover_stranded_chat_admissions()
+
+    assert recovered == 1
+    assert "disappeared during recovery" in caplog.text
+    settled = await container.run_store.get_run(survivor.run_id)
+    assert settled is not None
+    assert settled.status is RunStatus.CANCELLED
+    assert settled.error == EXECUTION_NEVER_STARTED
+    still_there = await container.run_store.get_run(vanished.run_id)
+    assert still_there is not None
+    assert still_there.status is RunStatus.RUNNING
