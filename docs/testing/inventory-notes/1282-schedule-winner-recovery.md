@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +9
+  packages/hive-conductor/backend/tests: +1
 ---
 
 Adds the recovery half of the duplicate-winner linkage residue (#1059 review, ported from the superseded #1282 branch onto develop's reactive design from #1269).
@@ -10,3 +11,5 @@ Adds the recovery half of the duplicate-winner linkage residue (#1059 review, po
 `TestRecoveryBeyondTheCatchUpHorizon` (6 tests) pins the pre-horizon recovery walk: winners that crashed behind the catch-up horizon are never enumerated, so the admitter walks occurrence claims forward from the cursor up to the enumeration start — recovering linkage for SKIP/BUFFER_ONE/CANCEL_OTHER alike, counting the provably-unrecorded walk claims exactly once (they can exhaust `max_runs`), bounding the walk at the first occurrence without a Run, and costing an idle tick zero lookups beyond the enumeration probes it already made.
 
 A shared `_crashed_before_record_fire` helper reproduces the torn state: the Run exists, the cursor was never stamped.
+
+`test_the_tick_reports_a_live_run_the_cursor_did_not_name` (hive-conductor) closes the scheduler-side seam: a real tick over real in-memory stores, seeded with a crashed winner via the admitter's own `_admit_one`, reaches `_evaluate_canonical` with `active_run_id` set — the tick logs the live Run the pointer missed (with the cancel flag), links `last_run_id` to the winner, and creates no second Run.
