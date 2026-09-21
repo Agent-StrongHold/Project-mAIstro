@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests: +11
+  tests/: +11
 ---
 
 Pins the shape of every `RATCHET_BASE_REV` declaration in `.github/workflows/`, after three of the five had drifted into handing a topic-branch push `github.event.before`.
