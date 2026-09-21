@@ -21,7 +21,7 @@ from maistro.types.agent import AgentIdentity
 logger = logging.getLogger("maistro.persistence.pg_agents")
 
 # Columns persisted as JSON text (lists become tuples / dicts on read).
-_LIST_FIELDS = ("tools", "skills", "model_fallbacks")
+_LIST_FIELDS = ("tools", "write_scopes", "skills", "model_fallbacks")
 _DICT_FIELDS = ("model_constraints", "memory_config")
 
 # Full column set the registry both writes and reads, keeping the INSERT and
@@ -35,6 +35,7 @@ _COLUMNS = (
     "model_fallbacks",
     "model_constraints",
     "tools",
+    "write_scopes",
     "skills",
     "rules",
     "trust_tier",
@@ -52,12 +53,12 @@ _INSERT_SQL = text(
     """
     INSERT INTO agents (
         name, version, description, soul, model,
-        model_fallbacks, model_constraints, tools, skills, rules,
+        model_fallbacks, model_constraints, tools, write_scopes, skills, rules,
         trust_tier, priority_tier, max_tool_rounds, reasoning_strategy,
         memory_config, provenance, active, created_at, updated_at
     ) VALUES (
         :name, :version, :description, :soul, :model,
-        :model_fallbacks, :model_constraints, :tools, :skills, :rules,
+        :model_fallbacks, :model_constraints, :tools, :write_scopes, :skills, :rules,
         :trust_tier, :priority_tier, :max_tool_rounds, :reasoning_strategy,
         :memory_config, :provenance, :active, :created_at, :updated_at
     )
@@ -69,6 +70,7 @@ _INSERT_SQL = text(
         model_fallbacks = EXCLUDED.model_fallbacks,
         model_constraints = EXCLUDED.model_constraints,
         tools = EXCLUDED.tools,
+        write_scopes = EXCLUDED.write_scopes,
         skills = EXCLUDED.skills,
         rules = EXCLUDED.rules,
         trust_tier = EXCLUDED.trust_tier,
@@ -182,6 +184,7 @@ def _to_params(record: AgentIdentity | Mapping[str, Any]) -> dict[str, Any]:
             "model_fallbacks": list(record.model_fallbacks),
             "model_constraints": dict(record.model_constraints),
             "tools": list(record.tools),
+            "write_scopes": list(record.write_scopes),
             "skills": list(record.skills),
             "rules": "\n".join(record.rules),
             "trust_tier": record.trust_tier,
@@ -209,6 +212,7 @@ def _to_params(record: AgentIdentity | Mapping[str, Any]) -> dict[str, Any]:
         "model_fallbacks": json.dumps(_as_iterable(source.get("model_fallbacks"))),
         "model_constraints": json.dumps(dict(source.get("model_constraints") or {})),
         "tools": json.dumps(_as_iterable(source.get("tools"))),
+        "write_scopes": json.dumps(_as_iterable(source.get("write_scopes"))),
         "skills": json.dumps(_as_iterable(source.get("skills"))),
         "rules": rules or "",
         "trust_tier": source.get("trust_tier", "t4"),
@@ -246,6 +250,7 @@ def _coerce_row(row: Any) -> AgentIdentity:
 
     fallbacks = _decode_json(data.get("model_fallbacks"), [])
     tools = _decode_json(data.get("tools"), [])
+    write_scopes = _decode_json(data.get("write_scopes"), [])
     skills = _decode_json(data.get("skills"), [])
     constraints = _decode_json(data.get("model_constraints"), {})
     memory_config = _decode_json(data.get("memory_config"), {})
@@ -263,6 +268,7 @@ def _coerce_row(row: Any) -> AgentIdentity:
         model_fallbacks=tuple(fallbacks),
         model_constraints=dict(constraints),
         tools=tuple(tools),
+        write_scopes=tuple(write_scopes),
         skills=tuple(skills),
         rules=rules,
         trust_tier=data.get("trust_tier") or "t4",

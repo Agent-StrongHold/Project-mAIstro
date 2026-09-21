@@ -7,12 +7,12 @@ network isolation, and environment sanitization.
 from __future__ import annotations
 
 import asyncio
-import base64
 import posixpath
 import shlex
 import subprocess
 import time
 import uuid
+from collections.abc import Sequence
 
 import structlog
 
@@ -25,8 +25,37 @@ logger = structlog.get_logger()
 
 
 def _shell_quote(s: str) -> str:
-    """Shell-quote a string for safe interpolation into bash commands."""
+    """Compatibility helper; command execution itself never uses a shell."""
     return shlex.quote(s)
+
+
+class CommandContractError(ValueError):
+    """The command is outside the structured sandbox command language."""
+
+
+def parse_command(command: str | Sequence[str]) -> list[str]:
+    """Parse the narrow command language used by the Docker backend.
+
+    Strings remain a compatibility input for existing callers, but are parsed
+    into argv and never passed to a shell. Shell operators and shell launchers
+    are rejected rather than treated as an isolation boundary.
+    """
+    from_string = isinstance(command, str)
+    if isinstance(command, str):
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            raise CommandContractError("invalid command quoting") from exc
+    else:
+        argv = list(command)
+    if not argv or any(not isinstance(part, str) or not part for part in argv):
+        raise CommandContractError("command argv must contain non-empty strings")
+    shell_chars = frozenset(";&|<>`$")
+    if from_string and any(any(char in part for char in shell_chars) for part in argv):
+        raise CommandContractError("shell operators are not allowed; provide structured argv")
+    if argv[0].rsplit("/", 1)[-1] in {"sh", "bash", "zsh", "fish"} or "-c" in argv[1:]:
+        raise CommandContractError("shell interpreters are not allowed")
+    return argv
 
 
 class SandboxContainer:
@@ -59,10 +88,18 @@ class SandboxContainer:
     async def __aexit__(self, *_: object) -> None:
         await self.destroy()
 
-    async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
-        """Execute a command in the container. Returns (exit_code, output)."""
-        # Check for dangerous commands before execution
-        dangers = is_dangerous_command(command)
+    async def exec(
+        self,
+        command: str | Sequence[str],
+        timeout: int = 60,
+        input_data: str | bytes | None = None,
+    ) -> tuple[int, str]:
+        """Execute validated argv in the container; never invoke a shell."""
+        try:
+            argv = parse_command(command)
+        except CommandContractError as exc:
+            return 1, f"Command blocked: {exc}"
+        dangers = is_dangerous_command(" ".join(shlex.quote(part) for part in argv))
         if dangers:
             await logger.awarn(
                 "dangerous_command_blocked",
@@ -77,13 +114,14 @@ class SandboxContainer:
                 "docker",
                 "exec",
                 self.container_id,
-                "bash",
-                "-c",
-                command,
+                *argv,
+                stdin=asyncio.subprocess.PIPE if input_data is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            payload = input_data.encode() if isinstance(input_data, str) else input_data
+            communicate = proc.communicate() if payload is None else proc.communicate(payload)
+            stdout, _ = await asyncio.wait_for(communicate, timeout=timeout)
             output = stdout.decode("utf-8", errors="replace") if stdout else ""
             return proc.returncode or 0, output
         except TimeoutError:
@@ -108,7 +146,7 @@ class SandboxContainer:
     async def read_file(self, path: str) -> str:
         """Read a file from the container workspace."""
         full_path = self._safe_path(self.workspace_container, path)
-        exit_code, output = await self.exec(f"cat -- {_shell_quote(full_path)}")
+        exit_code, output = await self.exec(["cat", "--", full_path])
         if exit_code != 0:
             raise FileNotFoundError(f"Cannot read {path}: {output}")
         return output
@@ -116,14 +154,12 @@ class SandboxContainer:
     async def write_file(self, path: str, content: str) -> None:
         """Write a file in the container workspace."""
         full_path = self._safe_path(self.workspace_container, path)
-        parent = "/".join(full_path.rsplit("/", 1)[:-1])
+        parent = posixpath.dirname(full_path)
         if parent:
-            await self.exec(f"mkdir -p -- {_shell_quote(parent)}")
-        # Use base64 encoding to safely transfer arbitrary content
-        encoded = base64.b64encode(content.encode()).decode()
-        exit_code, output = await self.exec(
-            f"echo {_shell_quote(encoded)} | base64 -d > {_shell_quote(full_path)}"
-        )
+            exit_code, output = await self.exec(["mkdir", "-p", "--", parent])
+            if exit_code != 0:
+                raise OSError(f"Cannot write {path}: {output}")
+        exit_code, output = await self.exec(["tee", "--", full_path], input_data=content)
         if exit_code != 0:
             raise OSError(f"Cannot write {path}: {output}")
 

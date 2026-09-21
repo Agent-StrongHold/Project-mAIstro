@@ -6,6 +6,7 @@ Repairs common hallucination patterns: fuzzy enum match, type coercion, defaults
 
 from __future__ import annotations
 
+import re
 from difflib import get_close_matches
 from typing import Any
 
@@ -170,6 +171,21 @@ def validate_and_repair(
 
         if _repair_type(field_name, value, field_schema, repaired, violations):
             was_repaired = True
+
+        pattern = field_schema.get("pattern")
+        if (
+            isinstance(pattern, str)
+            and isinstance(repaired.get(field_name), str)
+            and re.fullmatch(pattern, repaired[field_name]) is None
+        ):
+            violations.append(
+                Violation(
+                    boundary="system_to_tool",
+                    rule="pattern_mismatch",
+                    severity="error",
+                    detail=f"'{field_name}' does not match the declared argument grammar",
+                )
+            )
 
     has_errors = any(v.severity == "error" for v in violations)
     if has_errors:

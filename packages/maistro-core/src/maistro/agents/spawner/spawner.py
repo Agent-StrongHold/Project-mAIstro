@@ -12,6 +12,7 @@ from maistro.agents.spawner.variant_selector import VariantSelector
 from maistro.agents.spec.agent_spec import AgentOutput, AgentSpec, ErrorType
 from maistro.agents.spec.schemas import resolve_schema
 from maistro.agents.spec.structured_output import StructuredOutputParser
+from maistro.agents.tool_authority import ToolAuthorityError
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +66,21 @@ class Spawner:
         langfuse_tracer: object | None = None,
         variant_selector: VariantSelector | None = None,
         recipe_registry: RecipeRegistry | None = None,
+        host_tools: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self._llm = llm_caller
         self._pm: _PromptManager | None = prompt_manager
         self._tracer = langfuse_tracer
         self._vs = variant_selector
         self._rr = recipe_registry
+        self._host_tools = host_tools
         self._parser = StructuredOutputParser(max_retries=2)
 
     async def spawn(self, spec: AgentSpec) -> AgentOutput:
         spec = spec.with_defaults()
+        # Resolve the declaration/host intersection at the spawn boundary so
+        # these fields are consumed by the runtime rather than being metadata.
+        authority = spec.effective_tool_authority(host_tools=self._host_tools)
         self._apply_recipe(spec)
         result_type = resolve_schema(spec.result_type) if spec.result_type else None
         output = AgentOutput(
@@ -88,7 +94,7 @@ class Spawner:
         )
         span_id = self._open_span(spec, output)
         try:
-            await self._execute(spec, result_type, output)
+            await self._execute(spec, result_type, output, authority=authority)
         finally:
             output.mark_complete()
             self._close_span(spec, span_id, output)
@@ -142,7 +148,12 @@ class Spawner:
             logger.debug("Langfuse span close failed: %s", exc)
 
     async def _execute(
-        self, spec: AgentSpec, result_type: type | None, output: AgentOutput
+        self,
+        spec: AgentSpec,
+        result_type: type | None,
+        output: AgentOutput,
+        *,
+        authority: Any,
     ) -> None:
         try:
             system_prompt, user_prompt = self._build_prompts(spec)
@@ -157,6 +168,15 @@ class Spawner:
                 tier=spec.tier,
                 lane=spec.lane.value,
             )
+            tool_calls = result.get("tool_calls", [])
+            if isinstance(tool_calls, list):
+                for call in tool_calls:
+                    function = call.get("function", {}) if isinstance(call, dict) else {}
+                    name = function.get("name", "")
+                    arguments = function.get("arguments", {})
+                    if not isinstance(arguments, dict):
+                        arguments = {}
+                    authority.check(name, arguments)
             output.output = result.get("content", "")
             output.model_used = result.get("model")
             output.tokens_used = result.get("usage", {})
@@ -164,6 +184,8 @@ class Spawner:
             output.output_parsed = self._parse_output(output.output, result_type)
         except TimeoutError as exc:
             output.mark_error(f"Timeout: {exc}", ErrorType.TIMEOUT)
+        except ToolAuthorityError as exc:
+            output.mark_error(str(exc), ErrorType.TOOL_VIOLATION)
         except Exception as exc:
             error_str = str(exc)
             if "safety" in error_str.lower() or "policy" in error_str.lower():

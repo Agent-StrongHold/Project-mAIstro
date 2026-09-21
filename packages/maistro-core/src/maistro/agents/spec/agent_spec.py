@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from maistro.agents.tool_authority import ToolAuthority
+
 
 class Lane(StrEnum):
     LIVE = "live-chat"
@@ -131,6 +133,22 @@ class AgentSpec(BaseModel):
         if self.prompt_name is None:
             self.prompt_name = _PROMPT_NAME_MAP.get(self.role)
         return self
+
+    def effective_tool_authority(
+        self, *, host_tools: list[str] | tuple[str, ...] | None = None
+    ) -> ToolAuthority:
+        """Derive the host-narrowed envelope used by an invocation runtime.
+
+        AgentSpec is a transport envelope, not an executor. Keeping this
+        derivation here prevents consumers from treating ``tools_allowed`` or
+        ``write_scopes`` as independent grants.
+        """
+        spec = self.with_defaults()
+        return ToolAuthority(
+            spec.tools_allowed,
+            write_scopes=spec.write_scopes,
+            host_tools=host_tools,
+        )
 
 
 class AgentOutput(BaseModel):

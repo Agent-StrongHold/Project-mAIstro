@@ -58,6 +58,20 @@ class FakeLLM:
         return self.response
 
 
+@pytest.mark.asyncio
+async def test_spawn_rejects_model_tool_call_outside_spec_envelope() -> None:
+    llm = FakeLLM(
+        response={
+            "content": "",
+            "tool_calls": [{"function": {"name": "github", "arguments": {}}}],
+        }
+    )
+    output = await Spawner(llm, host_tools=["read_file"]).spawn(_spec(tools_allowed=["read_file"]))
+
+    assert output.success is False
+    assert output.error_type is ErrorType.TOOL_VIOLATION
+
+
 # ─── module-level helpers: injection detection / sanitization ───────────
 
 
