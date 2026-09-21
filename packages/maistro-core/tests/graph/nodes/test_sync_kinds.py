@@ -46,8 +46,14 @@ async def llm_binding_id() -> str:
 
     from maistro.capabilities.binding import Binding
     from maistro.capabilities.effect_context import default_effect_context
+    from maistro.capabilities.providers.llm_gateway import (
+        DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+        MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    )
+    from maistro.credentials.types import CredentialRecord
 
-    await default_effect_context().bindings.put(
+    effects = default_effect_context()
+    await effects.bindings.put(
         Binding(
             # fixed created_at keeps the idempotent re-put legal across tests
             created_at=datetime(2026, 9, 1, tzinfo=UTC),
@@ -55,7 +61,20 @@ async def llm_binding_id() -> str:
             workspace_id="w1",
             project_id="p1",
             capability="model.chat",
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
         )
+    )
+    # Binding-scoped credential routing (#1091): the governed egress refuses
+    # with CredentialScopeError before any call reaches the gateway unless a
+    # credential is registered in this exact Workspace/Project/provider scope.
+    effects.credentials.add(
+        workspace_id="w1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
     )
     return "llm-summarize-test-binding"
 
@@ -440,7 +459,10 @@ async def test_llm_summarize_against_litellm_response_shape(
     assert seen["body"]["model"] == "gemini-3.1-flash-lite"
     assert seen["body"]["temperature"] == 0.2
     assert seen["body"]["max_tokens"] == 256
-    assert seen["headers"]["Authorization"] == "Bearer fake-key"
+    # The routed Binding-scoped credential replaces the env-derived key on
+    # the physical call (#1091) — MAISTRO_LLM_API_KEY only seeds the base
+    # endpoint, which api_key is then overridden from.
+    assert seen["headers"]["Authorization"] == "Bearer test-litellm-key"
 
 
 # --- dashboard.append_section ---------------------------------------------

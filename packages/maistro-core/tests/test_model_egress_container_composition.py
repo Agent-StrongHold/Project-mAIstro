@@ -90,6 +90,13 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     container = await _container(
         workspace_id="ws-prod",
         provider_config_path=str(provider_config),
+        # `litellm_key` is what makes `bootstrap_model_bindings` register the
+        # deployment's default gateway credential and backfill this Binding's
+        # empty `credential_refs` with it (see its docstring); omitted, the
+        # Binding authorizes no credential and the governed egress refuses
+        # with `CredentialScopeError` before any call reaches the fake
+        # transport below.
+        litellm_key="test-litellm-key",
         model_bindings=[
             {
                 "binding_id": "model-prod",
