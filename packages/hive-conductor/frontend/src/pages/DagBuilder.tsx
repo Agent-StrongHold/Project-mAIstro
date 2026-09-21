@@ -70,7 +70,7 @@ const inp = {
   width: "100%",
   padding: "6px 10px",
   fontFamily: "var(--mono)" as const,
-  fontSize: 10,
+  fontSize: 12,
   background: "var(--paper-2, #f5f5f0)",
   border: "1.3px solid var(--rule)",
   borderRadius: 4,
@@ -80,7 +80,7 @@ const inp = {
 
 const lbl = {
   fontFamily: "var(--mono)" as const,
-  fontSize: 9,
+  fontSize: 12,
   color: "var(--pencil)",
   textTransform: "uppercase" as const,
   marginBottom: 3,
@@ -92,7 +92,7 @@ const btn = {
   borderRadius: 4,
   cursor: "pointer" as const,
   fontFamily: "var(--mono)" as const,
-  fontSize: 10,
+  fontSize: 12,
   border: "1.3px solid",
 };
 
@@ -521,7 +521,7 @@ export default function DagBuilder() {
         </text>
         <text
           x={pos.x + 30} y={pos.y + 38}
-          style={{ fontFamily: "var(--mono)", fontSize: 8, fill: "var(--pencil)" }}
+          style={{ fontFamily: "var(--mono)", fontSize: 12, fill: "var(--pencil)" }}
         >
           {node.model || "no model"}
         </text>
@@ -548,12 +548,12 @@ export default function DagBuilder() {
               display: "flex", justifyContent: "space-between", alignItems: "center",
               padding: "10px 12px", borderBottom: "1.3px solid var(--rule)",
             }}>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--pencil)" }}>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--pencil)" }}>
                 DAG PIPELINES
               </span>
               <button
                 onClick={() => setShowCreate(true)}
-                style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", fontSize: 9, padding: "3px 10px" }}
+                style={{ ...btn, background: "var(--accent)", color: "var(--paper)", borderColor: "var(--accent)", fontSize: 12, padding: "3px 10px" }}
               >
                 New +
               </button>
@@ -570,7 +570,7 @@ export default function DagBuilder() {
                       padding: "10px 12px", cursor: "pointer",
                       borderBottom: "1px solid var(--rule)",
                       borderLeft: selectedId === d.id ? "3px solid var(--accent)" : "3px solid transparent",
-                      background: selectedId === d.id ? "rgba(var(--accent-rgb, 212,160,23),0.06)" : "transparent",
+                      background: selectedId === d.id ? "var(--accent-soft)" : "transparent",
                     }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -579,7 +579,7 @@ export default function DagBuilder() {
                       </span>
                       <Hex variant={statusVariant(d.status)}>{d.status}</Hex>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>
                       <span>{d.nodes.length} nodes</span>
                       <span>{fmtRelative(d.updated_at)}</span>
                     </div>
@@ -623,7 +623,7 @@ export default function DagBuilder() {
                     {execState.running ? "\u23F3 Running..." : "\u25B6 Run DAG"}
                   </button>
                   {execState.log.length > 0 && (
-                    <div style={{ position: "absolute", top: 38, right: 0, width: 320, maxHeight: 200, overflow: "auto", background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 4, padding: 6, zIndex: 10, fontFamily: "var(--mono)", fontSize: 9 }}>
+                    <div style={{ position: "absolute", top: 38, right: 0, width: 320, maxHeight: 200, overflow: "auto", background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 4, padding: 6, zIndex: 10, fontFamily: "var(--mono)", fontSize: 12 }}>
                       {execState.log.map((line, i) => (
                         <div key={i} style={{ color: line.startsWith("Error") || line.startsWith("Failed") ? "var(--danger, #c4452a)" : "var(--ink)" }}>{line}</div>
                       ))}
@@ -696,7 +696,7 @@ export default function DagBuilder() {
                         display: "flex", justifyContent: "space-between", alignItems: "center",
                         padding: "6px 12px", borderBottom: "1px solid var(--rule)",
                       }}>
-                        <span style={{ fontFamily: "var(--mono)", fontSize: 9, fontWeight: 700, color: "var(--pencil)", textTransform: "uppercase" }}>
+                        <span style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700, color: "var(--pencil)", textTransform: "uppercase" }}>
                           Node Properties \u2014 {node.name}
                         </span>
                         <button
@@ -738,7 +738,7 @@ export default function DagBuilder() {
                                 <label key={s} style={{
                                   display: "inline-flex", alignItems: "center", gap: 3,
                                   padding: "3px 8px", borderRadius: 3, cursor: "pointer",
-                                  fontFamily: "var(--mono)", fontSize: 9,
+                                  fontFamily: "var(--mono)", fontSize: 12,
                                   background: editStrategy === s ? "var(--accent)" : "var(--paper-2, #f5f5f0)",
                                   color: editStrategy === s ? "var(--paper)" : "var(--ink)",
                                   border: `1px solid ${editStrategy === s ? "var(--accent)" : "var(--rule)"}`,
@@ -803,7 +803,7 @@ export default function DagBuilder() {
                                         onClick={() => handleAddEdge(n.id)}
                                         style={{
                                           padding: "6px 10px", cursor: "pointer",
-                                          fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)",
+                                          fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)",
                                           borderBottom: "1px solid var(--rule)",
                                         }}
                                         onMouseEnter={(e) => (e.currentTarget.style.background = "var(--paper-2, #f5f5f0)")}
@@ -828,7 +828,7 @@ export default function DagBuilder() {
                     style={{
                       height: 28, borderTop: "1.3px solid var(--rule)", background: "var(--paper)",
                       display: "flex", alignItems: "center", justifyContent: "center",
-                      cursor: "pointer", fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)",
+                      cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)",
                     }}
                   >
                     {"\u25B2 Show Properties"}
