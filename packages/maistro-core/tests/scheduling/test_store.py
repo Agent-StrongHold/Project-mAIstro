@@ -170,6 +170,41 @@ async def test_disable_on_exhaustion_stops_the_schedule_being_due(
     assert await store.due(now=NOON + timedelta(days=1)) == []
 
 
+async def test_serialized_fire_count_disables_after_concurrent_admissions(
+    store: ScheduleStore,
+) -> None:
+    """Exhaustion must use the stored count, not either ticker's snapshot.
+
+    Two admitters can each claim a different occurrence from the same stale
+    schedule snapshot. Neither local ``disable`` decision reaches ``max_runs``
+    alone, but the serialized store writes do.
+    """
+    schedule = await store.put(_schedule(max_runs=2))
+
+    await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-1",
+        next_due_at=NOON + timedelta(hours=1),
+        fires=1,
+        disable=False,
+    )
+    await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON + timedelta(hours=1),
+        run_id="run-2",
+        next_due_at=NOON + timedelta(hours=2),
+        fires=1,
+        disable=False,
+    )
+
+    exhausted = await store.get(schedule.schedule_id)
+    assert exhausted is not None
+    assert exhausted.runs_so_far == 2
+    assert exhausted.enabled is False
+    assert exhausted.next_due_at is None
+
+
 async def test_record_fire_on_unknown_schedule_returns_none(store: ScheduleStore) -> None:
     assert (await store.record_fire("nope", fired_at=NOON, run_id=None, next_due_at=None)) is None
 
@@ -268,6 +303,205 @@ def test_every_implementation_satisfies_the_protocol() -> None:
 
     assert isinstance(InMemoryScheduleStore(), ScheduleStore)
     assert isinstance(PgScheduleStore(None), ScheduleStore)  # type: ignore[arg-type]
+
+
+HOUR = timedelta(hours=1)
+
+
+class TestFireReservation:
+    """`reserve_fire` / `settle_fire` (#1119): the quota claimed before the Run.
+
+    Conformance across memory, SQLite, and PostgreSQL: the claim is atomic
+    against concurrent callers, a release is a real undo, and a confirmation
+    records the Run without moving the recurrence cursor.
+    """
+
+    async def test_a_reservation_counts_the_run_and_leaves_the_cursor_alone(
+        self, store: ScheduleStore
+    ) -> None:
+        from maistro.scheduling.store import FireReservation
+
+        schedule = await store.put(
+            _schedule(max_runs=3, last_fired_at=NOON, next_due_at=NOON + HOUR)
+        )
+
+        reserved = await store.reserve_fire(schedule.schedule_id)
+
+        assert reserved is not None
+        current, reservation = reserved
+        assert isinstance(reservation, FireReservation)
+        assert current.runs_so_far == 1
+        assert current.enabled is True
+        assert current.last_fired_at == NOON
+        assert current.next_due_at == NOON + HOUR
+        assert reservation.disabled is False
+        assert await store.get(schedule.schedule_id) == current
+
+    async def test_the_last_reservation_disables_and_a_release_undoes_it(
+        self, store: ScheduleStore
+    ) -> None:
+        schedule = await store.put(
+            _schedule(max_runs=1, last_fired_at=NOON, next_due_at=NOON + HOUR)
+        )
+
+        reserved = await store.reserve_fire(schedule.schedule_id)
+        assert reserved is not None
+        current, reservation = reserved
+        assert current.enabled is False
+        assert current.next_due_at is None
+        assert reservation.disabled is True
+
+        released = await store.settle_fire(schedule.schedule_id, reservation, run_id=None)
+
+        assert released is not None
+        assert released.runs_so_far == 0
+        assert released.enabled is True
+        assert released.next_due_at == NOON + HOUR
+        assert released == schedule, "a release leaves no trace, updated_at included"
+
+    async def test_a_confirmation_records_the_run_without_moving_the_cursor(
+        self, store: ScheduleStore
+    ) -> None:
+        schedule = await store.put(_schedule(last_fired_at=NOON, next_due_at=NOON + HOUR))
+        reserved = await store.reserve_fire(schedule.schedule_id)
+        assert reserved is not None
+        _current, reservation = reserved
+
+        confirmed = await store.settle_fire(schedule.schedule_id, reservation, run_id="run-1")
+
+        assert confirmed is not None
+        assert confirmed.last_run_id == "run-1"
+        assert confirmed.runs_so_far == 1
+        assert confirmed.last_fired_at == NOON
+        assert confirmed.next_due_at == NOON + HOUR
+
+    async def test_an_exhausted_schedule_cannot_be_reserved(self, store: ScheduleStore) -> None:
+        from maistro.scheduling.store import ScheduleExhausted
+
+        schedule = await store.put(_schedule(max_runs=1, runs_so_far=1))
+
+        with pytest.raises(ScheduleExhausted, match="all 1 of its runs"):
+            await store.reserve_fire(schedule.schedule_id)
+        assert await store.get(schedule.schedule_id) == schedule
+
+    async def test_concurrent_reservations_never_exceed_max_runs(
+        self, store: ScheduleStore
+    ) -> None:
+        from maistro.scheduling.store import ScheduleExhausted
+
+        schedule = await store.put(_schedule(max_runs=2))
+
+        outcomes = await asyncio.gather(
+            *(store.reserve_fire(schedule.schedule_id) for _ in range(5)),
+            return_exceptions=True,
+        )
+
+        claimed = [item for item in outcomes if isinstance(item, tuple)]
+        refused = [item for item in outcomes if isinstance(item, ScheduleExhausted)]
+        assert len(claimed) == 2 and len(refused) == 3
+        recorded = await store.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.runs_so_far == 2
+        assert recorded.enabled is False
+
+    async def test_an_unknown_schedule_reserves_and_settles_to_none(
+        self, store: ScheduleStore
+    ) -> None:
+        from maistro.scheduling.store import FireReservation
+
+        assert await store.reserve_fire("missing") is None
+        reservation = FireReservation(
+            schedule_id="missing",
+            fires=1,
+            disabled=False,
+            next_due_at_before=None,
+            updated_at_before=NOON,
+            stamped_at=NOON,
+        )
+        assert await store.settle_fire("missing", reservation, run_id=None) is None
+
+
+class _FakeTransaction:
+    async def __aenter__(self) -> _FakeTransaction:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _FakeConnection:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+        self.executed: list[tuple[str, tuple[object, ...]]] = []
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
+
+    async def fetchval(self, _query: str, _schedule_id: str) -> object:
+        return self.payload
+
+    async def execute(self, query: str, *args: object) -> None:
+        self.executed.append((query, args))
+
+
+class _FakeAcquire:
+    def __init__(self, connection: _FakeConnection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self) -> _FakeConnection:
+        return self.connection
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _FakePool:
+    def __init__(self, payload: object) -> None:
+        self.connection = _FakeConnection(payload)
+
+    def acquire(self) -> _FakeAcquire:
+        return _FakeAcquire(self.connection)
+
+
+async def test_postgres_reservation_and_settlement_use_locked_transactions() -> None:
+    """The PG adapter's new quota methods issue both row-lock reads and writes."""
+    from maistro.runs.evidence_json import json_of
+    from maistro.scheduling.pg_store import PgScheduleStore
+
+    schedule = _schedule(max_runs=2)
+    pool = _FakePool(json_of(schedule))
+    store = PgScheduleStore(pool)  # type: ignore[arg-type]
+
+    reserved = await store.reserve_fire(schedule.schedule_id)
+    assert reserved is not None
+    current, reservation = reserved
+    assert current.runs_so_far == 1
+
+    settled = await store.settle_fire(schedule.schedule_id, reservation, run_id="run-1")
+    assert settled is not None
+    assert settled.last_run_id == "run-1"
+    assert len(pool.connection.executed) == 2
+    assert all("UPDATE schedules" in query for query, _args in pool.connection.executed)
+
+
+async def test_postgres_reservation_and_settlement_return_none_for_missing_rows() -> None:
+    from maistro.scheduling.pg_store import PgScheduleStore
+    from maistro.scheduling.store import FireReservation
+
+    pool = _FakePool(None)
+    store = PgScheduleStore(pool)  # type: ignore[arg-type]
+    reservation = FireReservation(
+        schedule_id="missing",
+        fires=1,
+        disabled=False,
+        next_due_at_before=None,
+        updated_at_before=NOON,
+        stamped_at=NOON,
+    )
+
+    assert await store.reserve_fire("missing") is None
+    assert await store.settle_fire("missing", reservation, run_id=None) is None
+    assert pool.connection.executed == []
 
 
 # --- the due cursor without a fire (#1199) ------------------------------------
