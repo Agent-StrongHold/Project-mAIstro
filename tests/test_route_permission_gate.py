@@ -83,6 +83,27 @@ def test_live_backend_route_trees_are_classified(gate, application: str) -> None
     assert gate._route_entry_failures(application, discovered, entries, gate.date(2026, 9, 8)) == []
 
 
+@pytest.mark.parametrize("built_assets", [False, True])
+def test_conductor_spa_registration_is_classified_with_or_without_assets(
+    gate, monkeypatch, tmp_path, built_assets: bool
+) -> None:
+    import importlib
+
+    gate._load_application("conductor")
+    main = importlib.import_module("main")
+    assets = tmp_path / "dist"
+    if built_assets:
+        assets.mkdir()
+        (assets / "index.html").write_text("<title>fixture</title>")
+    monkeypatch.setattr(main, "STATIC_DIR", assets)
+    discovered = gate.registered_routes(main.create_app())
+    assert ("GET", "/{full_path:path}") in discovered
+    entries = json.loads(gate.ROUTE_REGISTRY.read_text())["routes"]["conductor"]
+    assert gate._route_entry_failures("conductor", discovered, entries, gate.date(2026, 9, 8)) == []
+    # Exact registered identity, never a wildcard approval for other handlers.
+    assert route_policy(tuple(entries), "GET", "/unrelated/invoke") is None
+
+
 def test_live_backend_route_trees_include_protected_and_public_examples(
     gate, application: str
 ) -> None:
@@ -94,14 +115,33 @@ def test_live_backend_route_trees_include_protected_and_public_examples(
 
 
 def test_both_apps_fail_when_a_new_route_has_no_declaration(gate, application: str) -> None:
-    failures = gate._route_entry_failures(
-        application,
-        [("GET", "/v1/newly-registered")],
-        [_permission()],
-        gate.date(2026, 9, 8),
-    )
+    app = gate._load_application(application)
+    original_routes = list(app.router.routes)
+    try:
+        app.add_api_route("/v1/newly-registered", lambda: {}, methods=["GET"])
+        entries = json.loads(gate.ROUTE_REGISTRY.read_text())["routes"][application]
+        failures = gate._route_entry_failures(
+            application, gate.registered_routes(app), entries, gate.date(2026, 9, 8)
+        )
+        assert any(
+            "/v1/newly-registered: registered route has no declaration" in f for f in failures
+        )
+    finally:
+        app.router.routes = original_routes
 
-    assert any("has no declaration" in failure for failure in failures)
+
+def test_application_import_failure_is_not_silently_skipped(gate, application, monkeypatch):
+    original_import = gate.import_module
+    target = "main" if application == "conductor" else "backend.main"
+
+    def unavailable(name):
+        if name == target:
+            raise ImportError("fixture backend is unavailable")
+        return original_import(name)
+
+    monkeypatch.setattr(gate, "import_module", unavailable)
+    with pytest.raises(RuntimeError, match=f"could not import {application} backend"):
+        gate.audit_registered_routes()
 
 
 def test_both_apps_reject_an_expired_exemption(gate, application: str) -> None:
@@ -146,6 +186,20 @@ def test_route_policy_ratchet_rejects_unreviewed_weakening(gate) -> None:
     assert any("without trusted authorization" in failure for failure in failures)
 
 
+@pytest.mark.parametrize("access", ["public", "exempt"])
+def test_route_policy_ratchet_rejects_new_bypasses(gate, access) -> None:
+    current = {("turing", "GET", "/v1/new-bypass", "exact"): (access, "")}
+    assert any(
+        "needs already-landed authorization" in failure
+        for failure in gate._route_policy_failures({}, current, {})
+    )
+
+
+def test_route_policy_ratchet_allows_exemption_removal(gate) -> None:
+    base = {("turing", "GET", "/v1/retired", "exact"): ("exempt", "")}
+    assert gate._route_policy_failures(base, {}, {}) == []
+
+
 def test_route_policy_ratchet_allows_an_already_landed_authorization(gate) -> None:
     key = ("turing", "GET", "/v1/state", "prefix")
     base = {key: ("permission", "turing.vault_read")}
@@ -176,12 +230,19 @@ def test_shared_runtime_matcher_uses_exact_over_boundary_prefix(gate) -> None:
     assert route_policy(entries, "GET", "/v1/items/current")["access"] == "public"
 
 
-def test_suffix_lookalike_is_not_a_public_route(gate, application: str) -> None:
-    # A declaration for /invoke cannot authorize the unrelated sibling
-    # /invoke-history; this is the regression against suffix-based bypasses.
+@pytest.mark.parametrize(
+    "path", ["/v1/invoke-history", "/v1/unrelated/invoke", "/v1/unrelated/feedback"]
+)
+def test_suffix_lookalike_is_not_a_public_route(gate, application: str, path: str) -> None:
+    # Neither a similar name nor an ending /invoke or /feedback can borrow
+    # another registered endpoint's explicit public declaration.
+    from fastapi import FastAPI
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_api_route(path, lambda: {}, methods=["GET"])
     failures = gate._route_entry_failures(
         application,
-        [("GET", "/v1/invoke-history")],
+        gate.registered_routes(app),
         [_public("/v1/invoke")],
         gate.date(2026, 9, 8),
     )

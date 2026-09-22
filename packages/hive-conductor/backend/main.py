@@ -394,39 +394,41 @@ def create_app() -> FastAPI:
     _include_optional_router(app, "routes.evolution", prefix="/v1/evolution")
     _include_optional_router(app, "routes.rsi", prefix="/v1/rsi")
 
-    if STATIC_DIR.is_dir():
-        from starlette.responses import FileResponse
+    from starlette.responses import FileResponse
 
-        static_root = STATIC_DIR.resolve()
+    static_root = STATIC_DIR.resolve()
 
-        @app.get("/{full_path:path}")
-        async def spa_fallback(full_path: str):
-            # Do not return the SPA shell for unknown API paths (avoids JSON parse errors in the UI).
-            if full_path.startswith("v1/"):
-                from starlette.responses import JSONResponse
+    # Keep the registered surface identical in source-only and built images.
+    # Without assets the same declared handler returns 404, not a phantom
+    # registry entry that disappears from app.routes during CI discovery.
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        # Do not return the SPA shell for unknown API paths (avoids JSON parse errors in the UI).
+        if full_path == "v1" or full_path.startswith("v1/") or not static_root.is_dir():
+            from starlette.responses import JSONResponse
 
-                return JSONResponse(status_code=404, content={"detail": "Not Found"})
-            # SECURITY: this route is UNAUTHENTICATED — AuthMiddleware only gates
-            # paths starting with "/v1/" (middleware/auth.py), and this catch-all
-            # matches everything else. So `full_path` is fully attacker-controlled
-            # and must be contained to static_root before anything is served.
-            #
-            # Containment cannot be done by inspecting the string: `Path.__truediv__`
-            # DISCARDS the left operand when the right one is absolute, so
-            # `STATIC_DIR / "/etc/passwd"` is `/etc/passwd` — no dot-segments needed,
-            # and the "v1/" guard above never fires for such a path. `..` traversal
-            # is the other half. resolve() collapses both (and any symlink escape),
-            # and is_relative_to() is the actual boundary check.
-            # Two boundary checks on purpose: the normalized string check is
-            # the containment a scanner can follow, and `resolve()` closes the
-            # symlink escape the string check cannot see.
-            root_text = os.path.normpath(str(static_root))
-            candidate = os.path.normpath(os.path.join(root_text, full_path))
-            if candidate.startswith(root_text + os.sep):
-                fp = Path(candidate).resolve()
-                if fp.is_relative_to(static_root) and fp.is_file():
-                    return FileResponse(fp)
-            return FileResponse(static_root / "index.html")
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        # SECURITY: this exact handler's non-API static serving is an explicit
+        # route-policy exemption. It must not authorize other non-API handlers.
+        # `full_path` is fully attacker-controlled and must be contained to
+        # static_root before anything is served.
+        #
+        # Containment cannot be done by inspecting the string: `Path.__truediv__`
+        # DISCARDS the left operand when the right one is absolute, so
+        # `STATIC_DIR / "/etc/passwd"` is `/etc/passwd` — no dot-segments needed,
+        # and the "v1/" guard above never fires for such a path. `..` traversal
+        # is the other half. resolve() collapses both (and any symlink escape),
+        # and is_relative_to() is the actual boundary check.
+        # Two boundary checks on purpose: the normalized string check is
+        # the containment a scanner can follow, and `resolve()` closes the
+        # symlink escape the string check cannot see.
+        root_text = os.path.normpath(str(static_root))
+        candidate = os.path.normpath(os.path.join(root_text, full_path))
+        if candidate.startswith(root_text + os.sep):
+            fp = Path(candidate).resolve()
+            if fp.is_relative_to(static_root) and fp.is_file():
+                return FileResponse(fp)
+        return FileResponse(static_root / "index.html")
 
     return app
 

@@ -1,6 +1,6 @@
 """The SPA catch-all must not serve files outside the static root.
 
-`AuthMiddleware` only authenticates paths starting with `/v1/`
+`AuthMiddleware` permits the declared non-API static handler
 (`middleware/auth.py`), so `main.py`'s `@app.get("/{full_path:path}")` fallback
 is reachable **unauthenticated**. Before the containment check, it did:
 
@@ -31,9 +31,8 @@ from starlette.testclient import TestClient
 def static_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """An app whose SPA fallback serves from a real, isolated static root.
 
-    `spa_fallback` is only registered when `STATIC_DIR.is_dir()`, and the route
-    closes over the resolved root at registration time — so the patch has to
-    land before `create_app()` runs.
+    The route closes over the resolved root at registration time, whether or
+    not assets exist — so the patch has to land before `create_app()` runs.
     """
     static_root = tmp_path / "dist"
     static_root.mkdir()
@@ -69,6 +68,38 @@ def test_unknown_path_still_falls_back_to_the_spa_shell(static_app):
 
     assert response.status_code == 200
     assert "<title>spa</title>" in response.text
+
+
+def test_spa_exemption_does_not_serve_unknown_api_paths(static_app):
+    client, _static_root, _secret = static_app
+    response = client.get("/v1/undeclared/invoke")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Route authorization declaration required"
+
+
+def test_spa_exemption_requires_its_declaration(static_app, monkeypatch):
+    from middleware.auth import AuthMiddleware
+
+    client, _static_root, _secret = static_app
+    # Build the middleware stack, then simulate a missing deployment entry.
+    assert client.get("/app.js").status_code == 200
+    middleware = client.app.middleware_stack
+    while not isinstance(middleware, AuthMiddleware):
+        middleware = middleware.app
+    monkeypatch.setattr(
+        middleware,
+        "_route_policy",
+        tuple(e for e in middleware._route_policy if e["path"] != "/{full_path:path}"),
+    )
+    assert client.get("/app.js").status_code == 403
+
+
+def test_source_only_spa_handler_is_registered_but_returns_404(monkeypatch, tmp_path):
+    main = importlib.import_module("main")
+    monkeypatch.setattr(main, "STATIC_DIR", tmp_path / "absent-dist")
+    app = main.create_app()
+    assert _spa_fallback_handler(app) is not None
+    assert TestClient(app).get("/some/client/side/route").status_code == 404
 
 
 def _spa_fallback_handler(app):

@@ -20,6 +20,7 @@ from routes import setup as setup_routes
 from services import voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
+from starlette.routing import Match
 
 from maistro.security.http_routes import load_route_policy, locate_route_registry, route_policy
 
@@ -181,11 +182,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
             return await call_next(request)
 
-        # The declaration gate covers the HTTP API. Non-API paths include the
-        # product's static SPA fallback, which has its own public serving
-        # boundary and is not a principal-bearing backend route.
+        # Only the declared SPA handler may serve anonymous non-API paths.
+        # A newly registered non-API endpoint must not inherit that exemption.
         if policy is None:
-            if not path.startswith("/v1/"):
+            if self._is_declared_spa_request(request):
                 return await call_next(request)
             return JSONResponse(
                 status_code=403,
@@ -235,6 +235,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+    def _is_declared_spa_request(self, request: Request) -> bool:
+        if _matches_public_prefix(request.url.path, "/v1"):
+            return False
+        identity = "/{full_path:path}"
+        declaration = route_policy(self._route_policy, request.method, identity)
+        if declaration is None or declaration.get("access") != "exempt":
+            return False
+        # Follow the router's first full match, not just the existence of a
+        # fallback somewhere in app.routes. A preceding endpoint wins dispatch
+        # and cannot borrow the static handler's exemption.
+        for route in request.app.routes:
+            match, _ = route.matches(request.scope)
+            if match == Match.FULL:
+                return getattr(route, "path", None) == identity
+        return False
 
     def _setup_complete(self) -> bool:
         try:

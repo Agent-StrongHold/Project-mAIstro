@@ -57,6 +57,8 @@ def temp_route() -> Iterator[object]:
             return {"reached": True}
 
         app.add_api_route(path, _handler, methods=["GET"])
+        # Insert before the SPA catch-all, just as production API routers are.
+        app.router.routes.insert(0, app.router.routes.pop())
         added.append(path)
 
     yield _add
@@ -171,12 +173,12 @@ class TestUnauthenticatedProtectedPaths:
         r = c.get("/v1/tasks")
         assert r.status_code == 401
 
-    def test_non_v1_unregistered_path_is_not_backend_auth_gated(self, temp_route) -> None:
-        """The declaration gate covers protected API paths, not the SPA shell."""
+    def test_non_v1_undeclared_handler_cannot_borrow_spa_exemption(self, temp_route) -> None:
         temp_route("/not-versioned-at-all")
         c = TestClient(app)
         r = c.get("/not-versioned-at-all")
-        assert r.status_code == 200
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Route authorization declaration required"
 
 
 class TestInvokeSubstringCarveOutBoundary:
@@ -241,11 +243,44 @@ class TestProtectedOpsPermissionMatrix:
         assert r.status_code == 200, r.text
         return c
 
-    def test_get_settings_without_permission_is_403(self) -> None:
-        c = self._writer("get-settings-1", perms=[])
-        r = c.get("/v1/settings")
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/v1/settings",
+            "/v1/audit",
+            "/v1/providers",
+            "/v1/skills",
+            "/v1/schedules",
+            "/v1/dags",
+            "/v1/optimizer/proposals",
+        ],
+    )
+    def test_existing_reads_need_a_session_not_write_elevation(self, path: str) -> None:
+        assert TestClient(app).get(path).status_code == 401
+        c = self._writer("read-" + path.rsplit("/", 1)[-1], perms=[])
+        r = c.get(path)
+        assert r.status_code == 200, r.text
+        assert isinstance(r.json(), (dict, list))
+
+    @pytest.mark.parametrize(
+        ("method", "path", "permission"),
+        [
+            ("PUT", "/v1/settings", "config.write"),
+            ("POST", "/v1/audit", "audit.write"),
+            ("POST", "/v1/providers/example/activate", "config.write"),
+            ("POST", "/v1/skills", "skills.write"),
+            ("POST", "/v1/schedules", "schedules.write"),
+            ("POST", "/v1/dags", "dags.write"),
+            ("POST", "/v1/optimizer/proposals/example/accept", "dags.write"),
+        ],
+    )
+    def test_read_exemptions_do_not_authorize_writes(
+        self, method: str, path: str, permission: str
+    ) -> None:
+        c = self._writer("write-" + permission, perms=[])
+        r = c.request(method, path, json={})
         assert r.status_code == 403
-        assert "config.write" in r.json()["detail"]
+        assert permission in r.json()["detail"]
 
     def test_delete_agents_without_permission_is_403(self) -> None:
         c = self._writer("del-agents-1", perms=[])
