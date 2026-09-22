@@ -30,8 +30,14 @@ protocol adapters. Unclassified CRUD-shaped implementations are also rejected by
 the behavior-shaped reachability scan. A conservative scope-propagation lint
 additionally checks record operations inside owner-scoped modules: required
 owner inputs must reach the canonical bucket lookup or store/config delegate.
-It includes selector-free lists (except the two exact public provider-catalog
-helpers), and rejects unused owner parameters and decorative locals. This is a
+It covers every operation that can address or carry credential material —
+id/record selectors, the canonical (provider, workspace, connection) scope
+selectors, secret-bearing parameters, and selector-free lists (except the two
+exact public provider-catalog helpers) — so the retired v2 shape of unscoped
+provider-keyed global-bucket mutations cannot return inside an approved
+surface. Bare master-key parameters stay outside per-user scope: key-material
+administration such as `rotate_master_key` is deployment-scoped, not record
+CRUD. The lint rejects unused owner parameters and decorative locals. This is a
 regression tripwire, not a substitute for behavioral tests or security review.
 
 This census is an architecture boundary, **not a general Python authorization

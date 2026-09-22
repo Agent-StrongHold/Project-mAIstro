@@ -250,8 +250,17 @@ def test_classification_cannot_authorize_another_credential_store(
         "def rotate(self, user_id, record_id, secret):\n        self.secrets[record_id] = secret",
         "def delete(self, user_id, record_id):\n        del self.secrets[record_id]",
         "def list(self):\n        return self.secrets",
+        # The retired-v2 shape: provider-keyed mutations on a global bucket
+        # with no id/record selector and no list prefix. Repair of the verify
+        # finding that these previously returned no failure at all.
+        "def set_secret(self, provider, secret):\n        data = self._load()\n"
+        "        data[provider] = secret\n        self._persist()",
+        "def delete_secret(self, provider):\n        data = self._load()\n"
+        "        data.pop(provider, None)\n        self._persist()",
+        "def get_secret(self, provider):\n        data = self._load()\n"
+        "        return data.get(provider)",
     ],
-    ids=["read", "rotate", "delete", "list"],
+    ids=["read", "rotate", "delete", "list", "provider-set", "provider-delete", "provider-get"],
 )
 def test_unscoped_operations_inside_an_approved_module_fail(tmp_path: Path, operation: str) -> None:
     path = tmp_path / "store.py"
@@ -261,6 +270,39 @@ def test_unscoped_operations_inside_an_approved_module_fail(tmp_path: Path, oper
     )
     assert len(failures) == 1
     assert "scope at a canonical storage sink" in failures[0]
+
+
+def test_provider_keyed_operations_with_owner_scope_pass(tmp_path: Path) -> None:
+    """The canonical provider-keyed shapes satisfy the lint, not just id selectors."""
+    path = tmp_path / "store.py"
+    path.write_text(
+        "class SecretStore:\n"
+        "    def set_secret(self, user_id, provider, secret):\n"
+        "        data = self._load()\n"
+        "        bucket = data.setdefault(user_id, {})\n"
+        "        bucket[provider] = secret\n"
+        "        self._persist()\n"
+        "    def delete_secret(self, user_id, provider):\n"
+        "        data = self._load()\n"
+        "        bucket = data.get(user_id, {})\n"
+        "        bucket.pop(provider, None)\n"
+        "        self._persist()\n",
+        encoding="utf-8",
+    )
+    assert _checker._owner_scope_failures("packages/demo/store.py", path) == []
+
+
+def test_key_material_administration_is_not_per_user_record_crud(tmp_path: Path) -> None:
+    """Bare master-key parameters are deployment-scoped rotation, not record CRUD."""
+    path = tmp_path / "store.py"
+    path.write_text(
+        "class SecretStore:\n"
+        "    def rotate_master_key(self, new_key):\n"
+        "        data = self._load()\n"
+        "        _atomic_write_bytes(self._store_path, data)\n",
+        encoding="utf-8",
+    )
+    assert _checker._owner_scope_failures("packages/demo/store.py", path) == []
 
 
 def _git(root: Path, *args: str) -> str:

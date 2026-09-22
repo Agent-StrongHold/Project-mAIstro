@@ -87,6 +87,17 @@ _INITIAL_CANONICAL = {
 _RETIRED_STORE = "packages/hive-conductor/backend/services/credential_store_v2.py"
 _OWNER_SCOPE_TERMS = frozenset({"user", "principal", "owner", "uid"})
 _CODE_SCOPED_KINDS = frozenset({"product_crud", "encrypted_store"})
+# Parameters that can address or carry a user credential record: id/record
+# selectors, the canonical (provider, workspace, connection) scope tuple, and
+# secret-bearing values. Any operation taking one of these must reach an owned
+# storage sink — id/record selectors alone were not enough, because the
+# retired v2 shape exposed unscoped provider-keyed global-bucket mutations.
+_RECORD_SELECTOR_TERMS = frozenset(
+    {"id", "ids", "record", "records", "provider", "providers", "connection", "workspace"}
+)
+_SECRET_VALUE_TERMS = frozenset(
+    {"secret", "secrets", "token", "tokens", "credential", "credentials", "api_key", "apikey"}
+)
 # Exact non-record catalog helpers, not a blanket exemption for list operations.
 _CATALOG_LISTS = {
     ("packages/hive-conductor/backend/routes/credentials.py", "list_providers"),
@@ -255,6 +266,15 @@ def _scope_sink_evidence(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return scoped
 
 
+def _selects_credential_record(params: tuple[ast.arg, ...]) -> bool:
+    """Whether an operation's parameters can address or carry a credential record."""
+    for arg in params:
+        name = arg.arg.lower().lstrip("_")
+        if name in _SECRET_VALUE_TERMS or set(name.split("_")) & _RECORD_SELECTOR_TERMS:
+            return True
+    return False
+
+
 def _owner_scope_failures(relative: str, path: Path) -> list[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -267,14 +287,15 @@ def _owner_scope_failures(relative: str, path: Path) -> list[str]:
         if not _operation_name(node.name):
             continue
         params = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
-        selects_record = any(
-            set(arg.arg.split("_")) & {"id", "ids", "record", "records"} for arg in params
-        )
+        selects_record = _selects_credential_record(params)
         lists_records = node.name.lstrip("_").split("_")[0] == "list"
         if (relative, node.name) in _CATALOG_LISTS:
             continue
-        # Key-material administration is not per-user record CRUD. Lists need
-        # scope even with no selector; this was missing in the old heuristic.
+        # Key-material administration (bare master-key parameters, e.g.
+        # rotate_master_key) is deployment-scoped, not per-user record CRUD;
+        # bare ``key`` is therefore not a record-selector term. Everything else
+        # that can address or carry credential material — including lists with
+        # no selector at all — must reach an owned bucket or canonical delegate.
         if (selects_record or lists_records) and not _scope_sink_evidence(node):
             failures.append(
                 f"{relative}: {node.name} lacks owner/principal scope at a canonical storage sink"
