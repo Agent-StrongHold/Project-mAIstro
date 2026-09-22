@@ -237,3 +237,44 @@ async def test_container_resolved_summarize_uses_real_authorities_and_invocation
     assert denied.success is False
     assert denied.error_code == "BindingScopeDenied"
     assert calls == ["yaml-model", "yaml-model"]
+
+
+def test_model_binding_config_rejects_blank_scope_identity() -> None:
+    """Authorization identity cannot be blank: an empty Binding is no Binding."""
+    from pydantic import ValidationError
+
+    from maistro.types.config import ModelBindingConfig
+
+    valid = ModelBindingConfig(
+        binding_id="binding-a",
+        project_id="project-a",
+        credential_refs=("vault://creds/one",),
+        policy_refs=("policy://baseline",),
+    )
+    assert valid.binding_id == "binding-a"
+    assert valid.credential_refs == ("vault://creds/one",)
+
+    with pytest.raises(ValidationError, match="non-empty"):
+        ModelBindingConfig(binding_id="   ", project_id="project-a")
+    with pytest.raises(ValidationError, match="non-empty"):
+        ModelBindingConfig(binding_id="binding-a", project_id="")
+
+
+def test_model_binding_config_rejects_empty_refs() -> None:
+    """Credential/policy refs are vault pointers; an empty one resolves nothing."""
+    from pydantic import ValidationError
+
+    from maistro.types.config import ModelBindingConfig
+
+    with pytest.raises(ValidationError, match="cannot contain empty values"):
+        ModelBindingConfig(
+            binding_id="binding-a",
+            project_id="project-a",
+            credential_refs=("vault://creds/one", "  "),
+        )
+    with pytest.raises(ValidationError, match="cannot contain empty values"):
+        ModelBindingConfig(
+            binding_id="binding-a",
+            project_id="project-a",
+            policy_refs=("",),
+        )
