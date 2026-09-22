@@ -24,6 +24,7 @@
     "@tool/check-autonomous-merge",
     "@tool/check-branch-independence",
     "@tool/check_assertion_quality",
+    "@tool/check_compliance",
     "@tool/check_mutation_baseline",
     "@tool/generate_repo_tasks",
     "@tool/generate_repo_tasks_impl",

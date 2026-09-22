@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,16 @@ spec.loader.exec_module(check_compliance)
 AS_OF = datetime(2026, 9, 14, 12, tzinfo=UTC)
 
 
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run a git command against the fixture repository, failing loudly."""
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 def _write_repository(
     tmp_path: Path,
     *,
@@ -33,6 +44,22 @@ def _write_repository(
     artifact = tmp_path / "evidence.txt"
     artifact.write_text("repository-owned evidence\n", encoding="utf-8")
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", ".github")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=compliance-fixture",
+        "-c",
+        "user.email=compliance-fixture@example.invalid",
+        "commit",
+        "-qm",
+        "workflow evidence",
+    )
+    head_sha = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
     (tmp_path / "COMPLIANCE.md").write_text(
         "| ID | Engine control | Status |\n|---|---|---|\n| X-1 | control | implemented |\n",
         encoding="utf-8",
@@ -68,7 +95,7 @@ def _write_repository(
         "execution_id": "https://github.com/Agent-StrongHold/Project-mAIstro/actions/runs/123456",
         "repository": "Agent-StrongHold/Project-mAIstro",
         "run_id": 123456,
-        "head_sha": "a" * 40,
+        "head_sha": head_sha,
         "workflow": ".github/workflows/ci.yml",
         "result": "passed",
         "conclusion": "success",
@@ -246,6 +273,40 @@ def test_cited_test_path_requires_a_typed_record_in_the_claim(tmp_path: Path) ->
     findings = _findings(tmp_path)
 
     assert any("no typed repository evidence record" in str(finding) for finding in findings)
+
+
+def test_receipt_head_sha_must_be_a_commit_of_this_repository(tmp_path: Path) -> None:
+    """A well-formed but absent head SHA is an invented execution identifier."""
+    _write_repository(tmp_path)
+    payload = json.loads((tmp_path / "registry.json").read_text())
+    record = payload["evidence"][1]
+    receipt_path = tmp_path / record["path"]
+    receipt = json.loads(receipt_path.read_text())
+    receipt["head_sha"] = "b" * 40
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    (tmp_path / "registry.json").write_text(json.dumps(payload))
+
+    assert any(
+        "head_sha does not resolve to a commit in this repository" in str(finding)
+        for finding in _findings(tmp_path)
+    )
+
+
+def test_receipt_workflow_must_exist_at_head_commit(tmp_path: Path) -> None:
+    _write_repository(tmp_path)
+    payload = json.loads((tmp_path / "registry.json").read_text())
+    record = payload["evidence"][1]
+    receipt_path = tmp_path / record["path"]
+    receipt = json.loads(receipt_path.read_text())
+    receipt["workflow"] = ".github/workflows/never-existed.yml"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    record["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    (tmp_path / "registry.json").write_text(json.dumps(payload))
+
+    assert any(
+        "workflow does not exist at head_sha" in str(finding) for finding in _findings(tmp_path)
+    )
 
 
 def test_immutable_execution_receipt_must_be_self_consistent(tmp_path: Path) -> None:

@@ -33,10 +33,12 @@ evidence references, and exact coverage between the document and registry. Every
 record must be referenced by the row's claim; an immutable execution record must carry the
 canonical GitHub Actions run URL for this repository plus a hashed, repository-owned JSON receipt.
 The receipt must repeat the run ID, repository, workflow path, head commit, result, conclusion, and
-observation time. The validator checks those fields, the canonical run URL, and the receipt digest
-locally; a matching arbitrary ID or free-form receipt is not an execution record. Existence in a
-remote provider is outside this deterministic local validator and must not be inferred from this
-technical evidence registry. Claim `last_verified` dates are checked against `stale_after_days`.
+observation time. The validator checks those fields, the canonical run URL, and the receipt
+digest locally, and anchors the receipt's head commit in this repository's git history; a matching
+arbitrary ID or free-form receipt is not an execution record. Whether the provider retains the
+named run, and whether its recorded conclusion matches, is outside this deterministic local
+validator and must not be inferred from this technical evidence registry. Claim `last_verified`
+dates are checked against `stale_after_days`.
 A malformed Markdown table row or empty/invalid status is an error; it cannot silently disappear.
 
 ## Evidence vocabulary
@@ -45,9 +47,16 @@ Evidence records point to a repository-owned file and include its SHA-256 digest
 free-form path in a prose table from being treated as proof after the artifact changes. An
 `immutable_execution` record uses its path as a local execution receipt and must carry a canonical
 GitHub Actions run URL, repository, positive run ID, 40-character head SHA, workflow path, result,
-conclusion, and observation time. These typed fields and the receipt digest bind the record to a
-locally inspectable execution receipt. An arbitrary or self-authored ID without that provenance is
-invalid; this check does not claim that a remote provider still retains the run.
+conclusion, and observation time. The validator anchors every receipt to this repository's own git
+history: the head SHA must resolve to a commit that exists in the local clone, and the workflow
+path must exist at that commit. A receipt whose head commit is absent from the repository, or whose
+workflow is absent at that commit, is an invented execution identifier and fails validation. These
+typed fields and the receipt digest bind the record to a locally inspectable execution identity.
+What stays outside this local check is the provider-side half of the identity: whether GitHub
+retains the run, and whether its conclusion matches the receipt. That requires the GitHub API and
+belongs to the parent issue's required-check wiring; a receipt anchored to a real commit can still
+name an arbitrary run ID locally, so run existence must never be inferred from this registry
+alone.
 
 `state` has these meanings:
 

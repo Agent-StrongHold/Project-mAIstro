@@ -1,12 +1,16 @@
 ---
 inventory-delta:
-  tests/: +8
+  tests/: +3
 ---
 
-# Issue #751 compliance validator repair
+# Issue #751 validator repair (immutable execution requirements)
 
-The validator repair adds three collected regression tests for immutable execution
-requirements and rejecting a forged execution identifier. The remaining five IDs
-were already present after the develop merge but were not represented by the
-existing #751 note; this delta records the observed current-tree drift so the
-inventory check compares against the collected 3466-node suite.
+Adds three collected regression tests: an `implemented` claim must reference at least one
+immutable execution record, a forged (non-canonical) execution ID is rejected even when the
+repository-owned receipt matches it, and an immutable execution ID without a receipt fails closed.
+
+Correction (2026-09-22): this note originally recorded `tests/: +8`, padding the three real test
+additions with five IDs to absorb an observed suite drift. That attribution was wrong — the drift
+came from this branch's own notes recording +31 deltas for a file that collects 26 nodes, and the
+padding left the ledger over-counting by five. The delta here is restored to the three tests this
+change actually added; the branch's notes now sum to its real collection.

@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -108,8 +109,27 @@ def _relative_artifact(root: Path, value: Any, subject: str) -> tuple[Path | Non
     return resolved, []
 
 
+def _git_object_exists(root: Path, spec: str) -> bool:
+    """Resolve a revision spec against the repository's own object database.
+
+    This is the local, deterministic inspection surface for an immutable
+    execution: the claimed head must be a commit this repository actually
+    contains, and the claimed workflow must exist at that commit. Fail closed
+    when git is unavailable so the anchoring can never be silently skipped.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "-e", spec],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
 def _validate_execution_receipt(  # noqa: C901
-    path: Path, record: dict[str, Any], subject: str
+    path: Path, record: dict[str, Any], subject: str, root: Path
 ) -> list[Finding]:
     """Require a typed, locally inspectable receipt for an immutable execution."""
     try:
@@ -155,15 +175,29 @@ def _validate_execution_receipt(  # noqa: C901
     if not isinstance(head_sha, str) or not HEAD_SHA_RE.fullmatch(head_sha):
         findings.append(Finding(subject, "execution receipt head_sha must be a 40-character SHA"))
     workflow = receipt.get("workflow")
-    if (
-        not isinstance(workflow, str)
-        or not workflow.startswith(".github/workflows/")
-        or not workflow.endswith((".yml", ".yaml"))
-        or ".." in Path(workflow).parts
-    ):
+    workflow_shape_ok = (
+        isinstance(workflow, str)
+        and workflow.startswith(".github/workflows/")
+        and workflow.endswith((".yml", ".yaml"))
+        and ".." not in Path(workflow).parts
+    )
+    if not workflow_shape_ok:
         findings.append(
             Finding(subject, "execution receipt workflow must be a repository workflow path")
         )
+    if isinstance(head_sha, str) and HEAD_SHA_RE.fullmatch(head_sha):
+        # Anchor the receipt to the repository's own history: a claimed head
+        # that is not a commit of this repository, or a workflow absent at
+        # that commit, is an invented execution identifier.
+        if not _git_object_exists(root, f"{head_sha}^{{commit}}"):
+            findings.append(
+                Finding(
+                    subject,
+                    "head_sha does not resolve to a commit in this repository",
+                )
+            )
+        elif workflow_shape_ok and not _git_object_exists(root, f"{head_sha}:{workflow}"):
+            findings.append(Finding(subject, f"workflow does not exist at head_sha: {workflow}"))
     conclusion = receipt.get("conclusion")
     if conclusion not in {"success", "failure", "cancelled", "timed_out"}:
         findings.append(Finding(subject, "execution receipt conclusion is invalid"))
@@ -255,7 +289,7 @@ def _validate_evidence(  # noqa: C901
                     Finding(subject, "immutable_execution requires a structured execution_id")
                 )
             if artifact_path is not None:
-                findings.extend(_validate_execution_receipt(artifact_path, raw, subject))
+                findings.extend(_validate_execution_receipt(artifact_path, raw, subject, root))
         if raw.get("state") not in EVIDENCE_STATES:
             findings.append(Finding(subject, f"state must be one of {sorted(EVIDENCE_STATES)}"))
         if raw.get("mode") not in {"automated", "manual"}:

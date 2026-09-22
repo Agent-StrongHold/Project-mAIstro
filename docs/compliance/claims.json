@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "as_of": "2026-09-14T12:00:00Z",
+  "as_of": "2026-09-22T12:00:00Z",
   "claims": [
     {
       "control_id": "AT-01",
@@ -100,7 +100,7 @@
         "ev-measure-1",
         "ev-soc2-processing-integrity"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -207,7 +207,7 @@
       "evidence_refs": [
         "ev-map-1"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -218,7 +218,7 @@
       "evidence_refs": [
         "ev-map-2"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -240,7 +240,7 @@
       "evidence_refs": [
         "ev-map-4"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -251,7 +251,7 @@
       "evidence_refs": [
         "ev-map-5"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -332,7 +332,7 @@
       "evidence_refs": [
         "ev-manage-3"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -354,7 +354,7 @@
       "evidence_refs": [
         "ev-eu-art-9"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -370,7 +370,7 @@
         "ev-soc2-security",
         "ev-artifact-37ada2ca435ea39f"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -415,7 +415,7 @@
       "evidence_refs": [
         "ev-eu-art-14"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -439,7 +439,7 @@
       "evidence_refs": [
         "ev-eu-art-17"
       ],
-      "last_verified": "2026-09-14",
+      "last_verified": "2026-09-22",
       "stale_after_days": 365
     },
     {
@@ -670,21 +670,21 @@
       "id": "ev-map-1",
       "kind": "repository_artifact",
       "path": "docs/adr/ADR-072-threat-model.md",
-      "sha256": "1c88cf1ef4e605c42edaeab2b1eff1c0e38efea9e1de6000068555892b1ef03d",
+      "sha256": "44a28430f0512b609a993962df42cd0265ec43ca089080c572b9dd0c34ea0f84",
       "state": "current",
       "mode": "manual",
       "result": "observed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-map-2",
       "kind": "repository_artifact",
       "path": "COMPLIANCE.md",
-      "sha256": "b5e15b3cac8bc182983a444f6ddbdd63a14c680bdb8f96e4d987028990869ffa",
+      "sha256": "bb7d7a2f00fd7fdc8b456809e2a7209f9f43389e5782dc992350d68e1a6c098b",
       "state": "current",
       "mode": "manual",
       "result": "observed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-map-3",
@@ -700,21 +700,21 @@
       "id": "ev-map-4",
       "kind": "repository_artifact",
       "path": "docs/adr/ADR-072-threat-model.md",
-      "sha256": "1c88cf1ef4e605c42edaeab2b1eff1c0e38efea9e1de6000068555892b1ef03d",
+      "sha256": "44a28430f0512b609a993962df42cd0265ec43ca089080c572b9dd0c34ea0f84",
       "state": "current",
       "mode": "manual",
       "result": "observed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-map-5",
       "kind": "repository_artifact",
       "path": "docs/adr/ADR-072-threat-model.md",
-      "sha256": "1c88cf1ef4e605c42edaeab2b1eff1c0e38efea9e1de6000068555892b1ef03d",
+      "sha256": "44a28430f0512b609a993962df42cd0265ec43ca089080c572b9dd0c34ea0f84",
       "state": "current",
       "mode": "manual",
       "result": "observed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-measure-1",
@@ -780,11 +780,11 @@
       "id": "ev-manage-3",
       "kind": "repository_artifact",
       "path": ".github/workflows/ci.yml",
-      "sha256": "1acbac5b75a831f0901cb769fa959a15b3b2dbba366f118bb568dc8b4aa311be",
+      "sha256": "6106eb5917b92b369c307ea04dc12e523b7345f0065b5e312b3faf77e971a629",
       "state": "current",
       "mode": "automated",
       "result": "passed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-manage-4",
@@ -800,11 +800,11 @@
       "id": "ev-eu-art-9",
       "kind": "repository_artifact",
       "path": "docs/adr/ADR-072-threat-model.md",
-      "sha256": "1c88cf1ef4e605c42edaeab2b1eff1c0e38efea9e1de6000068555892b1ef03d",
+      "sha256": "44a28430f0512b609a993962df42cd0265ec43ca089080c572b9dd0c34ea0f84",
       "state": "current",
       "mode": "manual",
       "result": "observed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-eu-art-10",
@@ -850,11 +850,11 @@
       "id": "ev-eu-art-14",
       "kind": "repository_artifact",
       "path": "docs/adr/ADR-068-unified-authorization-and-elevation.md",
-      "sha256": "3bf6d61c3c422ae24b3ed68b157783c6e9494e22d654df1536bb9a150f10f107",
+      "sha256": "b3d2858bcb5807d2f2c151e543ba207b764f95fcadc7ff6386dbb202d7f58a9f",
       "state": "current",
       "mode": "manual",
       "result": "observed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-eu-art-15",
@@ -870,11 +870,11 @@
       "id": "ev-eu-art-17",
       "kind": "repository_artifact",
       "path": ".github/workflows/quality.yml",
-      "sha256": "20b6d110d7d9264cd1db449098bb680913502ffa44f051412d24d877bfdb2b54",
+      "sha256": "e7117fdfa1173729c9845765c3598e4f2572c7a8f0bd24c5300b13544c18bed0",
       "state": "current",
       "mode": "automated",
       "result": "passed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-eu-art-26",
@@ -1110,11 +1110,11 @@
       "id": "ev-artifact-41dce0aece5f4c04",
       "kind": "repository_artifact",
       "path": "packages/maistro-core/tests/builders/test_pipeline_spec_flow.py",
-      "sha256": "b7f3b9f1e9c6532b588b42fbdf8e29522d754af10cd22dcddb4d53572bcffabd",
+      "sha256": "e722658906edc7bd300230d4a2f99116b5d39cdcf198b40c522c276d9cf086a8",
       "state": "current",
       "mode": "automated",
       "result": "passed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-artifact-c9c97926a6e80bfc",
@@ -1160,21 +1160,21 @@
       "id": "ev-artifact-d051e84a20025643",
       "kind": "repository_artifact",
       "path": "formal/models/test_memory_scopes.py",
-      "sha256": "2f1686fd915ed23866339209a079990fd15209b33c44413beedf0818bbbea3cb",
+      "sha256": "20e361d62b4429959d765a066079ce4952dfab1ff8b74455c676a3947e9c017c",
       "state": "current",
       "mode": "automated",
       "result": "passed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     },
     {
       "id": "ev-artifact-37ada2ca435ea39f",
       "kind": "repository_artifact",
       "path": "packages/maistro-core/tests/security/test_redact.py",
-      "sha256": "0cf19d10c8c1f42f09cc5e1a389a76f034cf9228c94a55465ab6dc3239ead640",
+      "sha256": "9932fff8df72ebad37230b294d67702211bdcfbb80247edfa34c3215ce0ec667",
       "state": "current",
       "mode": "automated",
       "result": "passed",
-      "observed_at": "2026-09-14T12:00:00Z"
+      "observed_at": "2026-09-22T12:00:00Z"
     }
   ]
 }

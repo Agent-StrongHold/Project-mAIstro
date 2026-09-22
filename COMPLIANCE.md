@@ -131,9 +131,10 @@ concern (this repo has no auditor engagement).
   scope is the engine only — Stronghold maintains its own COMPLIANCE.md for tenancy/IdP/deployer
   obligations, cross-referencing back here for the substrate it inherits.
 - Run `uv run python scripts/check_compliance.py` locally after changing a row or cited artifact.
-  The validator requires exact row/registry coverage, checks repository artifact digests, and
-  refuses stale, disabled, manual-only, never-run, missing, or failing evidence for an
-  `implemented` claim. It is intentionally not a required CI check in this child issue.
+  The validator requires exact row/registry coverage, checks repository artifact digests, anchors
+  immutable-execution receipts to commits that exist in this repository's git history, and refuses
+  stale, disabled, manual-only, never-run, missing, or failing evidence for an `implemented` claim.
+  It is intentionally not a required CI check in this child issue.
 - Every `tests/...` or `formal/...` path cited above is represented by a typed evidence record.
   Repository-artifact evidence proves that the implementation/test source exists, not that a test
   executed. An `implemented` row additionally requires a current automated immutable execution
