@@ -245,6 +245,7 @@ class TestTheHttpSurfacePassesTheScopeDown:
         pathlib.Path(__file__).resolve().parents[2]
         / "hive-conductor"
         / "backend"
+        / "hive_conductor"
         / "routes"
         / "design.py"
     )
