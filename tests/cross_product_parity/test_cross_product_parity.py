@@ -317,7 +317,8 @@ async def test_evolve_cycle_records_real_run_node_and_attempt_evidence() -> None
             return 0
 
     class Harness:
-        fidelity = "proxy"
+        def __init__(self, benchmark_fidelity: str = "proxy") -> None:
+            self.fidelity = benchmark_fidelity
 
         async def evaluate_genome(
             self, genome: Genome, benchmarks: list[str], llm_call: object
@@ -385,20 +386,18 @@ async def test_evolve_cycle_records_real_run_node_and_attempt_evidence() -> None
             run_store=run_store,
             graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
         )
-        config = SimpleNamespace(
-            eval_batch_size=2,
-            target_benchmarks=["proxy"],
-            eval_ema_alpha=0.5,
-            cull_pct=0.0,
-            island_count=1,
-            population_size=2,
-            migration_interval=100,
-        )
-        from services.evolution import EvolutionService
+        from services.evolution import _EvolutionService
 
-        service = EvolutionService()
+        import maistro_evolve.harness as harness_module
+
+        # The shipped service constructs its own proxy harness and config;
+        # the deterministic boundary stays the benchmark/algorithm/LLM seam,
+        # never the canonical admission and Run/NodeRun/Attempt spine.
+        monkeypatch.setattr(harness_module, "EvalHarness", Harness)
+        service = _EvolutionService()
         service._population = Population()
         service._tournament = Tournament()
+        monkeypatch.setattr(service, "_build_llm_call", lambda: None)
         monkeypatch.setattr(
             engine_module,
             "_singleton",
@@ -412,7 +411,7 @@ async def test_evolve_cycle_records_real_run_node_and_attempt_evidence() -> None
             return [SimpleNamespace(id="evolve-parity")]
 
         monkeypatch.setattr(inspection, "list_views_for_user", _views_for_user)
-        run_id = await service.run_cycle(config=config, harness=Harness(), llm_call=None)
+        run_id = await service._run_one_cycle()
         stored = await run_store.get_run(run_id)
         assert stored is not None and stored.status.value == "completed"
         nodes = await run_store.list_node_runs(run_id)

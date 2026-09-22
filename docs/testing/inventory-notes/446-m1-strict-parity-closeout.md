@@ -19,12 +19,14 @@ The closeout-safety audit's three repair findings, addressed without adding
 or removing collected test nodes:
 
 - **Legacy Builders executor retired from the shipped package.** The
-  pre-#734 `GraphPipelineExecutor` (with `_Outcome`/`_GateRoute`) moved
-  verbatim into `packages/maistro-core/tests/builders/conftest.py` as a
-  frozen parity oracle exposed through the `legacy_graph_executor` fixture.
-  The shipped `maistro.builders.graph_executor` module now carries only the
-  canonical adapter, so direct construction of the evidence-free executor
-  is an `ImportError`, not a silent second authority.
+  pre-#734 `GraphPipelineExecutor` no longer exists in the shipped
+  `maistro.builders` package at all: this branch removed it, and the
+  develop sync (`ba2f1f077`) arrived at the same retirement independently —
+  `test_graph_executor.py` is deleted and
+  `test_canonical_execution.py::test_canonical_adapter_is_public_and_executor_names_are_not_exported`
+  now asserts the executor name is not even importable, so direct
+  construction of the evidence-free executor is an `ImportError`, not a
+  silent second authority.
 - **Parity Scenario 1 consumes the shipped composition.** The TUI's
   pipeline construction was extracted textually-free into
   `maistro.builders.session_composition` (`open_session_spine` /
