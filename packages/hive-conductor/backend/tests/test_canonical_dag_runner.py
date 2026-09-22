@@ -467,6 +467,33 @@ def test_request_credentials_reach_nodes_as_scoped_env_keys() -> None:
     assert env["DAG_ID"] == "dag-1"
 
 
+def test_node_env_carries_the_composed_default_binding_declaration() -> None:
+    """#1085: the runner forwards the composed runtime's declared default
+    Binding into the node wiring.
+
+    Provisioning (bridge boot) and node default resolution must read ONE
+    authority -- the composed ``AgentConfig`` -- so a ``Settings`` object the
+    boot was actually given can never disagree with the declaration a node
+    later resolves. Ambient environment/settings fallbacks remain only a
+    last resort for standalone adapter use.
+    """
+    from types import SimpleNamespace
+
+    from services.canonical_dag_runner import _deployment_model_binding_id, _node_env
+
+    env = _node_env(
+        {"id": "dag-1"},
+        user_id="user-1",
+        user_credentials=None,
+        model_binding_id="declared-binding",
+    )
+    assert env["MAISTRO_MODEL_BINDING_ID"] == "declared-binding"
+
+    container = SimpleNamespace(config=SimpleNamespace(default_model_binding_id="declared-binding"))
+    assert _deployment_model_binding_id(container) == "declared-binding"
+    assert _deployment_model_binding_id(None) == ""
+
+
 def test_the_resolver_names_a_node_missing_from_the_adapter_map() -> None:
     """Durable recovery cannot invent a node the admission snapshot never
     carried; the failure must name both the node and the map."""

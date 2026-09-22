@@ -526,12 +526,17 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
     def _deployment_default_binding_id(self) -> str:
         """The operator-declared default Binding (#1085), never a self-grant.
 
-        The bridge provisions the operator's explicit
-        `Settings.maistro_model_binding_id` declaration (empty by default)
-        into the canonical Binding store at boot; a node naming no explicit
-        binding resolves that declaration. Without wiring (standalone, no
-        Container) the id is never authorized because resolution never
-        happens -- the node fails closed instead.
+        The boot provisions the operator's explicit declaration
+        (``Settings.maistro_model_binding_id``, empty by default) onto the
+        composed runtime config and into the canonical Binding store; the
+        canonical DAG runner carries that SAME declaration into the node
+        wiring as ``MAISTRO_MODEL_BINDING_ID``, so a node naming no explicit
+        binding resolves exactly what was provisioned. The ambient
+        environment/settings fallbacks below remain only as a last resort for
+        standalone adapter use -- when wired through a Container, resolution
+        never depends on ambient state the boot may not have used, and without
+        wiring the id is never authorized because resolution never happens:
+        the node fails closed instead.
         """
         declared = (
             self._node_env.get("MAISTRO_MODEL_BINDING_ID", "").strip()
@@ -599,14 +604,35 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 or self._node_env.get("CHAT_DEFAULT_MODEL")
                 or os.environ.get("CHAT_DEFAULT_MODEL", "gemini-3.5-flash")
             )
+            # Preserve the historical callable's request-shaping contract
+            # (#1085 parity): the raw-HTTP path ALWAYS sent a response_format
+            # -- ``json_schema`` when the caller supplied ``response_schema``,
+            # else ``json_object`` (the shape clarify/grounded-search payloads
+            # shipped with too) -- and forwarded tool declarations when a
+            # caller supplied them. The governed Provider owns the wire; the
+            # adapter owns this shaping, which must not silently regress.
+            schema = kwargs.get("response_schema")
+            response_format = (
+                {"type": "json_schema", "json_schema": {"name": "output", "schema": schema}}
+                if schema
+                else {"type": "json_object"}
+            )
+            tools = kwargs.get("tools")
             request = ModelChatRequest(
                 model=selected_model,
                 messages=[dict(message) for message in messages],
                 temperature=float(kwargs.get("temperature", 0.3)),
                 max_tokens=int(kwargs.get("max_tokens", 4096)),
+                response_format=response_format,
+                tools=[dict(tool) for tool in tools] if isinstance(tools, list) and tools else None,
             )
             effect_material = json.dumps(
-                {"model": selected_model, "messages": messages},
+                {
+                    "model": selected_model,
+                    "messages": messages,
+                    "response_format": response_format,
+                    "tools": [dict(tool) for tool in tools] if isinstance(tools, list) else None,
+                },
                 sort_keys=True,
                 default=str,
             ).encode()

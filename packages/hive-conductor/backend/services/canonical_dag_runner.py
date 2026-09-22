@@ -348,6 +348,21 @@ async def _scope(
     )
 
 
+def _deployment_model_binding_id(container: Any) -> str:
+    """The operator's declared default Binding, read from the composed runtime.
+
+    The bridge provisions this exact declaration into the canonical Binding
+    store at boot from the same ``AgentConfig`` (#1085). Reading it here --
+    instead of letting each node re-derive a default from ambient
+    environment/settings state -- keeps provisioning and node resolution on
+    one authority, so a ``Settings`` object the boot was given can never
+    disagree with the declaration a node later resolves.
+    """
+    if container is None:
+        return ""
+    return str(container.config.default_model_binding_id or "").strip()
+
+
 def _node_env(
     dag_data: Mapping[str, Any],
     *,
@@ -355,6 +370,7 @@ def _node_env(
     user_credentials: Mapping[str, str] | None,
     llm_base_url: str = "",
     llm_api_key: str = "",
+    model_binding_id: str = "",
 ) -> dict[str, str]:
     environment = {
         # AgentConfig is the composition root for Hive's .env-backed gateway
@@ -363,6 +379,11 @@ def _node_env(
         "LITELLM_API_BASE": llm_base_url or os.environ.get("LITELLM_API_BASE", ""),
         "LITELLM_API_KEY": llm_api_key or os.environ.get("LITELLM_API_KEY", ""),
         "CHAT_DEFAULT_MODEL": os.environ.get("CHAT_DEFAULT_MODEL", "gemini-3.5-flash"),
+        # The deployment's declared default model.chat Binding (#1085),
+        # carried from the same composed runtime config the bridge
+        # provisioned, so node default resolution never depends on ambient
+        # environment/settings state the boot never used.
+        "MAISTRO_MODEL_BINDING_ID": model_binding_id,
         "DAG_USER_ID": user_id,
         "DAG_ID": str(dag_data.get("id") or ""),
         "PATH": os.environ.get("PATH", ""),
@@ -433,6 +454,7 @@ def _recovery_resolver(run: Run):
             user_credentials=None,
             llm_base_url=str(container.config.litellm_url) if container is not None else "",
             llm_api_key=str(container.config.litellm_key) if container is not None else "",
+            model_binding_id=_deployment_model_binding_id(container),
         ),
         execution_mode=execution_mode,
         on_response=None,
@@ -602,6 +624,7 @@ async def execute_dag(
                 user_credentials=user_credentials,
                 llm_base_url=str(container.config.litellm_url) if container is not None else "",
                 llm_api_key=str(container.config.litellm_key) if container is not None else "",
+                model_binding_id=_deployment_model_binding_id(container),
             ),
             execution_mode=execution_mode,
             on_response=on_response,

@@ -320,10 +320,12 @@ async def test_start_provisions_the_declared_default_model_binding(monkeypatch):
 
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
     monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
-    # The production declaration point: the operator states the deployment's
-    # default binding in the environment, where both the bridge's Settings
-    # and the node-side fallback read the SAME declaration.
-    monkeypatch.setenv("MAISTRO_MODEL_BINDING_ID", "hive-default-model")
+    # The declaration the boot actually consumed: the PASSED Settings object.
+    # The ambient environment deliberately carries nothing -- a passed
+    # declaration that only the bridge saw must still reach node resolution
+    # through the composed runtime config (#1085), which is exactly the split
+    # this test pins shut.
+    monkeypatch.delenv("MAISTRO_MODEL_BINDING_ID", raising=False)
 
     bridge = MaistroCoreBridge()
     await bridge.start(
@@ -331,11 +333,16 @@ async def test_start_provisions_the_declared_default_model_binding(monkeypatch):
             maistro_agents_dir="agents",
             litellm_api_base="http://localhost:4000/v1",
             maistro_router_api_key="test-key",
+            maistro_model_binding_id="hive-default-model",
         )
     )
 
     container = bridge.container
     assert container is not None
+    # One authority: the composed runtime config carries the declaration the
+    # boot provisioned from, and the canonical DAG runner forwards that same
+    # value into every node's wiring.
+    assert container.config.default_model_binding_id == "hive-default-model"
     root = await container.project_scope_store.root_for_workspace("default")
     binding = await container.capability_effects.bindings.resolve(
         "hive-default-model",

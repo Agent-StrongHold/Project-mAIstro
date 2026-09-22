@@ -164,6 +164,12 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
         # file passes.
         database_url=resolve_database_url(),
+        # The operator's declared default model.chat Binding (#1085), stated
+        # once on the composed runtime config. Provisioning below and node
+        # default resolution (via the container's config) both read THIS
+        # value, so a Settings object the boot was actually given cannot
+        # disagree with the declaration a node later resolves.
+        default_model_binding_id=settings.maistro_model_binding_id.strip(),
         # The Sentinel permission table is fail-closed (#1165): an empty table
         # denies every tool, so the grants this deployment states must reach
         # the config the Container is built from.
@@ -186,7 +192,7 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     # created, and an empty declaration provisions nothing, leaving stored
     # DAG nodes that name no Binding to fail closed. A stored DAG that names
     # its own `binding_id` still resolves against this same authority.
-    default_binding_id = settings.maistro_model_binding_id.strip()
+    default_binding_id = config.default_model_binding_id.strip()
     if default_binding_id:
         from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
         from maistro.types.config import ModelBindingConfig

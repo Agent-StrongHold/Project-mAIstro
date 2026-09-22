@@ -773,3 +773,114 @@ async def test_a_node_without_explicit_binding_resolves_the_deployment_default(
     assert len(invocations) == 1
     assert invocations[0].binding.binding_id == "hive-default-model"
     assert invocations[0].attempt_id == "attempt-1"
+
+
+async def test_governed_call_preserves_the_legacy_request_shaping_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1085 parity: the governed adapter shapes the request exactly like the
+    raw-HTTP callable it replaced.
+
+    The historical ``_httpx_llm`` ALWAYS sent a ``response_format`` --
+    ``json_schema`` when the caller supplied ``response_schema``, else
+    ``json_object`` (also the shape the historical clarify/grounded-search
+    payloads shipped with) -- and the provider-neutral request carries tool
+    declarations when a caller supplies them. Migration onto the governed
+    Provider must not silently drop that wire contract, and the persisted
+    Invocation evidence must carry the same shaping.
+    """
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+
+    captured: list[dict[str, Any]] = []
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {"model": "legacy-model", "choices": [{"message": {"content": "{}"}}]}
+
+    class _Client:
+        # The pooled shared-client cache checks `is_closed` when reusing a
+        # client for a second governed call in the same loop; the fake must
+        # look closable without ever being closed.
+        is_closed = False
+
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, _url: Any, **kwargs: Any) -> _Response:
+            captured.append(dict(kwargs["json"]))
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    effects = new_in_memory_effect_context()
+    await effects.bindings.put(
+        Binding(
+            binding_id="shaping-binding",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="n1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
+    registry = InMemoryProviderRegistry()
+    node = _adapter_node(
+        {
+            "id": "n1",
+            "model": "legacy-model",
+            "binding_id": "shaping-binding",
+            "config": {"execution_tier": "safe"},
+        },
+        node_env={"LITELLM_API_BASE": "http://gateway.test"},
+        effect_context=effects,
+        provider_registry=registry,
+        llm_router=CostAwareRouter(registry),
+    )
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="n1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+    )
+    call = await node._governed_model_call(ctx)
+
+    # Default shape: json_object, exactly like the raw path always sent.
+    await call([{"role": "user", "content": "hi"}], model="legacy-model")
+    assert captured[0]["response_format"] == {"type": "json_object"}
+    assert "tools" not in captured[0]
+
+    # response_schema -> json_schema; tools forwarded, never dropped.
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+    await call(
+        [{"role": "user", "content": "hi"}],
+        model="legacy-model",
+        response_schema=schema,
+        tools=[{"type": "function", "function": {"name": "search"}}],
+    )
+    assert captured[1]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "output", "schema": schema},
+    }
+    assert captured[1]["tools"] == [{"type": "function", "function": {"name": "search"}}]
+
+    # The persisted Invocation evidence carries the same shaping.
+    invocations = list(effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert len(invocations) == 2
+    assert invocations[0].request.response_format == {"type": "json_object"}  # type: ignore[attr-defined]
+    assert invocations[1].request.response_format["type"] == "json_schema"  # type: ignore[attr-defined]
+    assert invocations[1].request.tools  # type: ignore[attr-defined]

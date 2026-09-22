@@ -201,7 +201,11 @@ class Settings(BaseSettings):
     # the canonical Binding store at boot -- through maistro-core's
     # `bootstrap_model_bindings` authority -- scoped to the default Workspace's
     # Root Project, the scope `authorize_hive_dag_scope` admits DAG runs into
-    # when no Project is selected. A node's own `binding_id` still outranks it.
+    # when no Project is selected. The same declaration is composed onto the
+    # runtime `AgentConfig` (`default_model_binding_id`), which the canonical
+    # DAG runner forwards into node wiring, so provisioning and node default
+    # resolution read one authority. A node's own `binding_id` still outranks
+    # it.
     # The shipped default is EMPTY: authorization the operator never declared
     # is an implicit grant, so the deployment states its default binding
     # explicitly (``MAISTRO_MODEL_BINDING_ID=...``) or nodes that name no

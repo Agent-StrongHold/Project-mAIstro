@@ -173,6 +173,13 @@ class AgentConfig(BaseModel):
     model_groups: dict[str, dict[str, object]] = Field(default_factory=dict)
     # Provider discovery never grants model.chat authorization by itself.
     model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
+    # The deployment's declared DEFAULT ``model.chat`` Binding identity
+    # (#1085): the same value the boot provisions into the Binding store. It
+    # lives on the composed runtime config so provisioning and every node's
+    # default-Binding resolution read ONE authority instead of each
+    # re-deriving it from ambient environment/settings state the boot may
+    # never have used.
+    default_model_binding_id: str = ""
     database_url: str = ""
     # The Workspace this instance admits work into (#41). Core keeps the soft
     # scope axes only (ADR-019/ADR-068), and a single-instance deployment is one
