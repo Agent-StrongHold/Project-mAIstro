@@ -2,8 +2,9 @@
 """Run registry-declared tests and emit control-bound evidence manifests.
 
 The output is intended to be uploaded as an immutable GitHub Actions artifact.
-It is deliberately not a status updater: a human-reviewed registry change is
-still required before a claim can become ``implemented``.
+It is deliberately not a status updater: only human-reviewed verification
+requests (or already implemented controls) are executed. The release checker
+independently verifies the resulting artifact before deriving a green view.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ def produce(
     today: dt.date | None = None,
     runner: str | None = None,
 ) -> int:
-    """Run every test behind an implemented claim and write its manifest."""
+    """Execute reviewed requests and existing claims; never modify their status."""
     today = today or dt.date.today()
     output.mkdir(parents=True, exist_ok=True)
     runner = runner or sys.executable
@@ -51,7 +52,12 @@ def produce(
     summary: list[dict[str, Any]] = []
 
     for control in registry["controls"]:
-        if not isinstance(control, dict) or control.get("status") != "implemented":
+        if not isinstance(control, dict):
+            continue
+        if (
+            control.get("status") != "implemented"
+            and control.get("verification_requested") is not True
+        ):
             continue
         control_id = control.get("id")
         test_refs = control.get("test_refs")

@@ -96,9 +96,9 @@ jobs:
 
       # Compliance is intentionally fail-closed. A test path or a green CI job
       # is not immutable release evidence; every implemented release-required
-      # claim must be bound to this exact tag commit by the registry before
-      # anything builds. Partial and unverified claims remain visible without
-      # pretending that the release proved them.
+      # claim must be bound to this exact tag commit before anything builds.
+      # Resolve reviewed requests AFTER the source commit exists, from a
+      # completed automatic branch run. Unrequested claims remain non-green.
       - name: Compliance evidence must cover this release digest
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -106,6 +106,16 @@ jobs:
           python scripts/check-compliance.py
           --require-release-evidence
           --release-digest "$GITHUB_SHA"
+          --resolve-release-evidence
+          --resolved-output release-compliance.json
+
+      - name: Preserve validated release claims and immutable evidence links
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-compliance
+          path: release-compliance.json
+          if-no-files-found: error
+          retention-days: 90
 
       # ADR §2: a final tag may only point at a commit on `main`; an rc is the
       # sole exception and may point at `integration` so a candidate can soak.
@@ -546,6 +556,11 @@ jobs:
           name: sboms
           path: sboms/
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-compliance
+          path: compliance/
+
       # Body = the curated CHANGELOG section (which carries the ADR-076 API
       # statement) + a verification block. The script appends the API statement
       # itself only when the section lacks one, so it is stated exactly once.
@@ -565,6 +580,7 @@ jobs:
           mkdir -p release
           cp dist/* release/
           cp sboms/* release/
+          cp compliance/release-compliance.json release/
           cp get.sh get.ps1 install.sh release/
           (cd release && sha256sum -- * > SHA256SUMS)
           cat release/SHA256SUMS

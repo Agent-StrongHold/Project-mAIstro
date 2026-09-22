@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
 import zipfile
 from pathlib import Path
 from types import ModuleType
@@ -45,6 +46,7 @@ def registry(checker: ModuleType) -> dict:
 def attestation_for(control: dict, digest: str) -> tuple[dict, bytes]:
     payload = {
         "schema_version": 1,
+        "observed_at": "2026-08-25",
         "control_id": control["id"],
         "control_refs": control["control_refs"],
         "test_refs": control["test_refs"],
@@ -703,6 +705,7 @@ def evidence_item(control: dict, digest: str, **overrides: object) -> dict:
 def manifest_payload(control: dict, digest: str, **overrides: object) -> dict:
     payload = {
         "schema_version": 1,
+        "observed_at": "2026-08-25",
         "control_id": control["id"],
         "control_refs": control["control_refs"],
         "test_refs": control["test_refs"],
@@ -987,6 +990,8 @@ def test_attestation_must_prove_the_claimed_execution(
         "attestation": {"file": "manifest.json", "sha256": None},
     }
 
+    item["observed_at"] = "2026-08-25"
+
     def verify_with(payload: object) -> list[str]:
         raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         monkeypatch.setattr(
@@ -994,6 +999,10 @@ def test_attestation_must_prove_the_claimed_execution(
         )
         return checker._verify_attestation(item, evidence_where="e", artifact_id=1)
 
+    assert any(
+        "observation date does not match" in e
+        for e in verify_with(manifest_payload(control, digest, observed_at="2000-01-01"))
+    )
     assert any("not valid JSON" in e for e in verify_with(b"{nope"))
     assert any("must be a JSON object" in e for e in verify_with(b"[1]"))
     assert any(
@@ -1311,6 +1320,7 @@ def test_control_schema_failures(checker: ModuleType, registry: dict) -> None:
         ("owner", "   ", "must be a non-empty string"),
         ("status", "green", "is not a supported status"),
         ("release_required", "yes", "release_required must be boolean"),
+        ("verification_requested", "yes", "verification_requested must be boolean"),
         ("control_refs", "main.py", "control_refs must be a list"),
         ("control_refs", [], "control_refs must not be empty"),
         ("control_refs", ["docs/missing-control.md"], "contains a missing reference"),
@@ -1371,10 +1381,13 @@ def test_manual_only_and_never_run_evidence_cannot_be_green(
     digest = "b" * 40
     control["status"] = "implemented"
     registry["release_digest"] = digest
-    control["evidence"] = [evidence_item(control, digest, manual_only=True, ran=False)]
+    control["evidence"] = [
+        evidence_item(control, digest, manual_only=True, ran=False, observed_at=None)
+    ]
     errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
     assert any("manual-only evidence supporting implemented status" in e for e in errors)
     assert any("never-run evidence supporting implemented status" in e for e in errors)
+    assert any("implemented evidence requires observed_at" in e for e in errors)
 
 
 def test_evidence_must_be_bound_to_the_registry_release_digest(
@@ -1649,3 +1662,283 @@ def test_producer_main_loads_registry_and_fails_closed(
         == 1
     )
     assert "compliance evidence production failed" in capsys.readouterr().err
+
+
+@pytest.fixture
+def release_candidate(
+    checker: ModuleType,
+    producer: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict:
+    """Real committed source, annotated tag and pytest execution; fake only GitHub I/O."""
+    root = tmp_path / "checkout"
+    root.mkdir()
+    for directory in ("quality", "tests", "scripts", ".github/workflows"):
+        (root / directory).mkdir(parents=True)
+    (root / "scripts/control.py").write_text("ENABLED = True\n")
+    (root / "tests/test_control.py").write_text(
+        "from scripts.control import ENABLED\ndef test_enabled():\n    assert ENABLED\n"
+    )
+    workflow = root / checker.EVIDENCE_WORKFLOW
+    workflow.write_text((ROOT / checker.EVIDENCE_WORKFLOW).read_text())
+    control = {
+        "id": "TEST-RELEASE",
+        "framework": "Technical fixture",
+        "requirement": "Control is enabled",
+        "scope": "Test fixture only",
+        "owner": "@control-owner",
+        "status": "unverified",
+        "control_refs": ["scripts/control.py"],
+        "test_refs": ["tests/test_control.py"],
+        "evidence": [],
+        "last_verified": None,
+        "expires": "2026-09-30",
+        "release_required": True,
+        "verification_requested": True,
+    }
+    source = {"schema_version": 1, "release_digest": None, "controls": [control]}
+    registry_path = root / "quality/compliance-registry.json"
+    registry_path.write_text(json.dumps(source))
+    doc_path = root / "COMPLIANCE.md"
+    doc_path.write_text(
+        document_body(
+            checker,
+            "| " + " | ".join(checker.TABLE_HEADER) + " |",
+            "|" + "---|" * len(checker.TABLE_HEADER),
+            "| TEST-RELEASE | Technical fixture | Control is enabled | unverified | "
+            "@control-owner | Test fixture only | not recorded | 2026-09-30 | none |",
+        )
+    )
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Compliance test")
+    git("config", "user.email", "compliance-test@example.invalid")
+    git("add", ".")
+    git("commit", "-qm", "Reviewed technical verification request")
+    digest = git("rev-parse", "HEAD")
+    git("tag", "-a", "v1.0.0", "-m", "Test release")
+    assert git("rev-parse", "v1.0.0^{commit}") == digest
+    monkeypatch.setattr(producer, "ROOT", root)
+    output = tmp_path / "artifact"
+    assert (
+        producer.produce(
+            source,
+            release_digest=digest,
+            output=output,
+            today=dt.date(2026, 8, 25),
+        )
+        == 0
+    )
+    # This is a real pytest subprocess, not a manufactured successful exit.
+    manifest = json.loads((output / "TEST-RELEASE.json").read_text())
+    assert "1 passed" in manifest["tests"][0]["output_tail"]
+    archive = zip_bytes(**{path.name: path.read_bytes() for path in output.iterdir()})
+    state = {
+        "root": root,
+        "registry": registry_path,
+        "document": doc_path,
+        "digest": digest,
+        "archive": archive,
+        "manifest": manifest,
+        "artifact": {
+            "id": 456,
+            "name": f"compliance-evidence-{digest}",
+            "expired": False,
+            "workflow_run": {"id": 123},
+            "digest": "sha256:" + hashlib.sha256(archive).hexdigest(),
+        },
+        "run": {
+            "id": 123,
+            "head_sha": digest,
+            "path": checker.EVIDENCE_WORKFLOW,
+            "status": "completed",
+            "conclusion": "success",
+            "event": "push",
+        },
+        "workflow": {"state": "active"},
+    }
+
+    def github_json(url: str) -> tuple[dict, None]:
+        if "/runs?" in url:
+            assert f"head_sha={digest}" in url
+            return {"workflow_runs": [state["run"]]}, None
+        if "/runs/123/artifacts?" in url:
+            return {"artifacts": [state["artifact"]]}, None
+        if url.endswith("/artifacts/456"):
+            return state["artifact"], None
+        if url.endswith("/runs/123"):
+            return state["run"], None
+        assert url.endswith("/workflows/compliance-evidence.yml")
+        return state["workflow"], None
+
+    monkeypatch.setattr(checker, "_github_json", github_json)
+    monkeypatch.setattr(checker, "_github_bytes", lambda _url: (state["archive"], None))
+    return state
+
+
+def resolved_check(checker: ModuleType, state: dict, **kwargs: object) -> list[str]:
+    return checker.check(
+        registry_path=state["registry"],
+        document_path=state["document"],
+        release_digest=state["digest"],
+        require_release_evidence=True,
+        resolve_release_evidence=True,
+        today=dt.date(2026, 8, 25),
+        **kwargs,
+    )
+
+
+def test_real_tag_can_resolve_post_commit_evidence_without_source_edit(
+    checker: ModuleType,
+    release_candidate: dict,
+    tmp_path: Path,
+) -> None:
+    state = release_candidate
+    before = state["registry"].read_bytes()
+    output = tmp_path / "release-compliance.json"
+    assert resolved_check(checker, state, resolved_output=output) == []
+    result = json.loads(output.read_text())
+    assert result["release_digest"] == state["digest"]
+    control = result["controls"][0]
+    assert control["status"] == "implemented"
+    assert control["expires"] == "2026-09-30"  # owner's shorter expiry is preserved
+    assert control["evidence"][0]["url"].endswith("/runs/123/artifacts/456")
+    assert state["registry"].read_bytes() == before
+    assert (
+        checker.check(
+            registry_path=state["registry"],
+            document_path=state["document"],
+            today=dt.date(2026, 8, 25),
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value", "message"),
+    [
+        ("run", "head_sha", "b" * 40, "no workflow run"),
+        ("run", "event", "workflow_dispatch", "did not complete successfully"),
+        ("run", "conclusion", "failure", "did not complete successfully"),
+        ("run", "status", "in_progress", "did not complete successfully"),
+        ("artifact", "expired", True, "artifact is expired"),
+        ("artifact", "digest", "sha256:" + "0" * 64, "SHA-256 does not match"),
+        ("artifact", "name", "other-commit", "has no artifact"),
+        ("workflow", "state", "disabled_manually", "not active"),
+    ],
+)
+def test_release_resolution_rejects_invalid_provenance(
+    checker: ModuleType,
+    release_candidate: dict,
+    tmp_path: Path,
+    target: str,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    release_candidate[target][field] = value
+    output = tmp_path / "release.json"
+    errors = resolved_check(checker, release_candidate, resolved_output=output)
+    assert any(message in error for error in errors), errors
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("release_digest", "b" * 40, "not bound to the evidence release digest"),
+        ("observed_at", "2026-01-01", "stale evidence"),
+        ("observed_at", None, "no valid executed manifest"),
+        ("result", "failed", "non-passing evidence"),
+        ("tests", [], "does not enumerate every claimed test"),
+    ],
+)
+def test_release_resolution_rejects_invalid_execution(
+    checker: ModuleType,
+    release_candidate: dict,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    state = release_candidate
+    state["manifest"][field] = value
+    state["archive"] = zip_bytes(**{"TEST-RELEASE.json": json.dumps(state["manifest"]).encode()})
+    state["artifact"]["digest"] = "sha256:" + hashlib.sha256(state["archive"]).hexdigest()
+    errors = resolved_check(checker, state)
+    assert any(message in error for error in errors), errors
+
+
+def test_resolution_refuses_uncommitted_claim_edits(
+    checker: ModuleType,
+    release_candidate: dict,
+) -> None:
+    release_candidate["registry"].write_text(release_candidate["registry"].read_text() + "\n")
+    errors = resolved_check(checker, release_candidate)
+    assert any("differs from the committed source" in error for error in errors)
+
+
+def test_resolution_refuses_another_checkout_digest(
+    checker: ModuleType,
+    release_candidate: dict,
+) -> None:
+    release_candidate["digest"] = "b" * 40
+    assert "release digest must equal checkout HEAD" in resolved_check(checker, release_candidate)
+
+
+def test_resolution_never_promotes_without_reviewed_request(
+    checker: ModuleType,
+    registry: dict,
+) -> None:
+    resolved, errors = checker.resolve_registry(registry, "b" * 40)
+    assert errors == []
+    assert [c["status"] for c in resolved["controls"]] == [
+        c["status"] for c in registry["controls"]
+    ]
+    errors = checker.validate_registry(
+        resolved,
+        release_digest="b" * 40,
+        require_release_evidence=True,
+        today=dt.date(2026, 8, 25),
+    )
+    assert any("EU-AI-ACT-ART-15 is unverified" in error for error in errors)
+
+
+@pytest.mark.parametrize("status", ["planned", "documented", "not_applicable"])
+def test_requests_cannot_promote_non_candidate_statuses(
+    checker: ModuleType,
+    registry: dict,
+    status: str,
+) -> None:
+    registry["controls"][0].update(status=status, verification_requested=True)
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("requires a technical candidate status" in error for error in errors)
+
+
+def test_release_workflow_resolves_and_preserves_evidence_before_build(checker: ModuleType) -> None:
+    workflow = checker.yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+    jobs = workflow["jobs"]
+    steps = jobs["guard"]["steps"]
+    gate = next(step for step in steps if "--require-release-evidence" in step.get("run", ""))
+    assert "--resolve-release-evidence" in gate["run"]
+    assert "--resolved-output release-compliance.json" in gate["run"]
+    assert jobs["wheels"]["needs"] == "guard"
+    assert "guard" in jobs["pypi"]["needs"]
+    assert "guard" in jobs["images"]["needs"]
+    assert any(step.get("with", {}).get("name") == "release-compliance" for step in steps)
+    publisher = jobs["github-release"]["steps"]
+    assert any(step.get("with", {}).get("name") == "release-compliance" for step in publisher)
+    assert any(
+        "cp compliance/release-compliance.json release/" in step.get("run", "")
+        for step in publisher
+    )
+    producer_workflow = checker.yaml.safe_load((ROOT / checker.EVIDENCE_WORKFLOW).read_text())
+    assert "integration" in producer_workflow[True]["push"]["branches"]
+    producer_steps = producer_workflow["jobs"]["produce"]["steps"]
+    assert not any(
+        "--release-digest" in step.get("run", "") and "check-compliance.py" in step.get("run", "")
+        for step in producer_steps
+    )

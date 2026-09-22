@@ -10,6 +10,7 @@ release digest can be green.  Legal sufficiency is outside this checker.
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import hashlib
 import io
@@ -63,6 +64,8 @@ REQUIRED_CONTROL_FIELDS = frozenset(
         "release_required",
     }
 )
+OPTIONAL_CONTROL_FIELDS = frozenset({"verification_requested"})
+EVIDENCE_WORKFLOW = ".github/workflows/compliance-evidence.yml"
 REQUIRED_REGISTRY_FIELDS = frozenset({"schema_version", "release_digest", "controls"})
 REQUIRED_EVIDENCE_FIELDS = frozenset(
     {
@@ -257,6 +260,8 @@ def _verify_attestation(  # noqa: C901 - provenance and execution binding stay t
         return [f"{evidence_where} attestation is not valid JSON: {exc}"]
     if not isinstance(payload, dict):
         return [f"{evidence_where} attestation must be a JSON object"]
+    if "observed_at" in item and payload.get("observed_at") != item["observed_at"]:
+        errors.append(f"{evidence_where} attestation observation date does not match evidence")
     if payload.get("control_id") != item["control_id"]:
         errors.append(f"{evidence_where} attestation names the wrong control")
     if payload.get("release_digest") != item["release_digest"]:
@@ -280,7 +285,11 @@ def _verify_attestation(  # noqa: C901 - provenance and execution binding stay t
 
 
 def _resolve_workflow_artifact(  # noqa: C901 - fail-closed lookup stays together
-    item: dict[str, Any], *, evidence_where: str, workflow_ref: str
+    item: dict[str, Any],
+    *,
+    evidence_where: str,
+    workflow_ref: str,
+    automatic_only: bool = False,
 ) -> tuple[dict[str, Any] | None, int | None, int | None, list[str]]:
     """Resolve the artifact produced for a commit-bound workflow locator.
 
@@ -323,7 +332,9 @@ def _resolve_workflow_artifact(  # noqa: C901 - fail-closed lookup stays togethe
     successful_runs = [
         run
         for run in matching_runs
-        if run.get("status") == "completed" and run.get("conclusion") == "success"
+        if run.get("status") == "completed"
+        and run.get("conclusion") == "success"
+        and (not automatic_only or run.get("event") == "push")
     ]
     if not successful_runs:
         errors.append(f"{evidence_where} workflow run did not complete successfully")
@@ -543,7 +554,7 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
         if not isinstance(control, dict):
             errors.append(f"{where} must be an object")
             continue
-        unknown = set(control) - REQUIRED_CONTROL_FIELDS
+        unknown = set(control) - REQUIRED_CONTROL_FIELDS - OPTIONAL_CONTROL_FIELDS
         missing = REQUIRED_CONTROL_FIELDS - set(control)
         if unknown:
             errors.append(f"{where} has unknown fields: {', '.join(sorted(unknown))}")
@@ -563,6 +574,14 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
         status = control["status"]
         if not isinstance(status, str) or status not in STATUSES:
             errors.append(f"{where}.status {status!r} is not a supported status")
+        requested = control.get("verification_requested", False)
+        if not isinstance(requested, bool):
+            errors.append(f"{where}.verification_requested must be boolean")
+        if requested is True and (
+            not isinstance(status, str)
+            or status not in {"unverified", "partially_implemented", "implemented"}
+        ):
+            errors.append(f"{where}.verification_requested requires a technical candidate status")
         if not isinstance(control["release_required"], bool):
             errors.append(f"{where}.release_required must be boolean")
         for field in ("control_refs", "test_refs", "evidence"):
@@ -674,6 +693,8 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
                 ):
                     errors.append(f"{evidence_where}.release_digest must be a git digest")
                 observed_at = _date(item["observed_at"], "observed_at", evidence_where, errors)
+                if status == "implemented" and observed_at is None:
+                    errors.append(f"{evidence_where} implemented evidence requires observed_at")
                 if observed_at is not None:
                     observed_dates.append(observed_at)
                 if observed_at is not None and observed_at > today:
@@ -890,6 +911,8 @@ def check(
     release_digest: str | None = None,
     require_release_evidence: bool = False,
     today: dt.date | None = None,
+    resolve_release_evidence: bool = False,
+    resolved_output: Path | None = None,
 ) -> list[str]:
     try:
         registry = load_registry(registry_path)
@@ -900,13 +923,128 @@ def check(
         root=registry_path.parents[1],
         today=today,
         release_digest=release_digest,
-        require_release_evidence=require_release_evidence,
+        require_release_evidence=require_release_evidence and not resolve_release_evidence,
     )
     try:
         document = document_path.read_text(encoding="utf-8")
     except OSError as exc:
         return [*errors, f"cannot load {document_path}: {exc}"]
-    return [*errors, *validate_document(document, registry)]
+    errors.extend(validate_document(document, registry))
+    if not resolve_release_evidence:
+        return errors
+    if not require_release_evidence or not release_digest:
+        return [*errors, "resolution requires --require-release-evidence and --release-digest"]
+    root = registry_path.resolve().parents[1]
+    errors.extend(committed_inputs(root, release_digest, [registry_path, document_path]))
+    if errors:
+        return errors
+    resolved, errors = resolve_registry(registry, release_digest)
+    errors.extend(
+        validate_registry(
+            resolved,
+            root=root,
+            today=today,
+            release_digest=release_digest,
+            require_release_evidence=True,
+        )
+    )
+    if not errors and resolved_output is not None:
+        resolved_output.write_text(json.dumps(resolved, indent=2) + "\n", encoding="utf-8")
+    return errors
+
+
+def committed_inputs(root: Path, digest: str, paths: list[Path]) -> list[str]:
+    """Require the actual tag checkout and unchanged, tracked claim inputs."""
+    try:
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, timeout=5)
+        if head.decode().strip() != digest:
+            return ["release digest must equal checkout HEAD"]
+        for path in paths:
+            relative = path.resolve().relative_to(root.resolve()).as_posix()
+            committed = subprocess.check_output(
+                ["git", "show", f"{digest}:{relative}"], cwd=root, timeout=5
+            )
+            if committed != path.read_bytes():
+                return [f"release input {relative} differs from the committed source"]
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return [f"cannot verify committed release inputs: {exc}"]
+    return []
+
+
+def resolve_registry(
+    registry: dict[str, Any],
+    digest: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Bind reviewed requests after commit creation, without editing source claims.
+
+    Only the release view is promoted, and only after the normal evidence gate
+    validates it. A request is not evidence and cannot itself make a claim green.
+    """
+    resolved = copy.deepcopy(registry)
+    resolved["release_digest"] = digest
+    errors: list[str] = []
+    for control in resolved["controls"]:
+        if control.get("verification_requested") is not True:
+            continue
+        where = control["id"]
+        locator = {
+            "url": f"https://github.com/{GITHUB_REPOSITORY}/blob/{digest}/{EVIDENCE_WORKFLOW}",
+            "release_digest": digest,
+        }
+        artifact, run_id, artifact_id, failures = _resolve_workflow_artifact(
+            locator,
+            evidence_where=where,
+            workflow_ref=EVIDENCE_WORKFLOW,
+            automatic_only=True,
+        )
+        errors.extend(failures)
+        if artifact is None or artifact_id is None or run_id is None:
+            continue
+        archive, failure = _github_bytes(
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/artifacts/{artifact_id}/zip"
+        )
+        if archive is None:
+            errors.append(f"{where} could not download release evidence: {failure}")
+            continue
+        archive_sha = hashlib.sha256(archive).hexdigest()
+        if artifact.get("digest") != f"sha256:{archive_sha}":
+            errors.append(f"{where} downloaded artifact SHA-256 does not match GitHub")
+            continue
+        filename = f"{where}.json"
+        try:
+            with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+                content = bundle.read(filename)
+            payload = json.loads(content)
+            observed = payload["observed_at"]
+            if not isinstance(observed, str):
+                raise ValueError("observed_at must be a date")
+            verified = dt.date.fromisoformat(observed)
+        except (OSError, KeyError, ValueError, TypeError, zipfile.BadZipFile) as exc:
+            errors.append(f"{where} has no valid executed manifest: {exc}")
+            continue
+        control["status"] = "implemented"
+        control["last_verified"] = observed
+        # Never extend a human-set expiry; also cap evidence validity at 90 days.
+        expiry = (verified + MAX_EVIDENCE_AGE).isoformat()
+        control["expires"] = min(control["expires"] or expiry, expiry)
+        control["evidence"] = [
+            {
+                "url": f"https://github.com/{GITHUB_REPOSITORY}/actions/runs/{run_id}/artifacts/{artifact_id}",
+                "sha256": archive_sha,
+                "release_digest": digest,
+                "control_id": where,
+                "control_refs": control["control_refs"],
+                "test_refs": control["test_refs"],
+                "observed_at": observed,
+                "result": payload.get("result"),
+                "workflow_ref": EVIDENCE_WORKFLOW,
+                "workflow_enabled": True,
+                "manual_only": False,
+                "ran": True,
+                "attestation": {"file": filename, "sha256": hashlib.sha256(content).hexdigest()},
+            }
+        ]
+    return resolved, errors
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -919,12 +1057,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="require every release-required control to have current passing evidence",
     )
+    parser.add_argument(
+        "--resolve-release-evidence",
+        action="store_true",
+        help="resolve reviewed verification requests from automatic same-commit evidence",
+    )
+    parser.add_argument("--resolved-output", type=Path, help="write validated release registry")
     args = parser.parse_args(argv)
     errors = check(
         registry_path=args.registry,
         document_path=args.document,
         release_digest=args.release_digest,
         require_release_evidence=args.require_release_evidence,
+        resolve_release_evidence=args.resolve_release_evidence,
+        resolved_output=args.resolved_output,
     )
     if errors:
         print(f"compliance check FAILED ({len(errors)} problem(s))", file=sys.stderr)
