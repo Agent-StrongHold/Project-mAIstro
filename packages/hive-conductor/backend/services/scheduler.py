@@ -55,7 +55,7 @@ class ScheduleNotFireable(Exception):
 
 
 class ScheduleAdmissionUnavailable(RuntimeError):
-    """A configured Container cannot admit schedule fires.
+    """A configured Container cannot admit -- or consume -- schedule fires.
 
     This is a configuration failure, not a schedule property: the core bridge
     is present but a collaborator it owes the scheduler (run, template, or
@@ -63,6 +63,12 @@ class ScheduleAdmissionUnavailable(RuntimeError):
     degrade to the compatibility path, because firing through the in-process
     registry while a Container exists would make the same persisted schedule
     reachable through two execution authorities.
+
+    The consumer seam fails the same way. A configured Container without
+    ``execute_admitted_runs`` admits Runs no configured process ever executes
+    -- the exact "admitted work nobody executes" state #251 exists to remove --
+    so the tick raises instead of swallowing the missing-method failure behind
+    a warning while admitted Runs sit QUEUED forever.
     """
 
 
@@ -200,8 +206,22 @@ class ScheduleRunner:
         # above cannot remain QUEUED merely because no task receipt exists.
         container = self._canonical_container()
         if container is not None:
+            consumer = getattr(container, "execute_admitted_runs", None)
+            if consumer is None:
+                # Missing wiring, not a failing tick: a configured Container
+                # that lacks the consumer seam admits work nothing will ever
+                # execute. Swallowing the AttributeError here (the old
+                # `except Exception`) is how a mis-wired deployment kept
+                # reporting healthy ticks while admitted Runs sat QUEUED
+                # forever, so this fails closed exactly like the admission
+                # seam above. A consumer that *raises* is different: work is
+                # owned and recoverable, so that stays contained and logged.
+                raise ScheduleAdmissionUnavailable(
+                    "configured Container is missing the canonical consumer seam "
+                    "(execute_admitted_runs); admitted schedule Runs would never execute"
+                )
             try:
-                executed = await container.execute_admitted_runs()
+                executed = await consumer()
                 if executed:
                     logger.info("Consumed %d admitted canonical Run(s)", executed)
             except Exception as exc:

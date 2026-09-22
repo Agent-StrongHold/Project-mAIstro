@@ -317,6 +317,35 @@ def test_scheduler_tick_skips_missing_or_empty_consumer(
     asyncio.run(scenario())
 
 
+def test_scheduler_tick_fails_closed_when_container_lacks_consumer_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured Container without ``execute_admitted_runs`` fails closed.
+
+    The tick used to swallow the missing-method failure behind the same
+    ``except Exception`` that contains a failing consumer, so a container
+    missing the seam admitted Runs nothing ever executed while the tick kept
+    reporting healthy. Missing wiring is a configuration failure
+    (``ScheduleAdmissionUnavailable``), not a consumer error to log.
+    """
+    import asyncio
+
+    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
+
+    class _SeamlessContainer:
+        """Wired for admission, but with no canonical consumer seam."""
+
+    monkeypatch.setattr(
+        _ScheduleRunner, "_canonical_container", staticmethod(lambda: _SeamlessContainer())
+    )
+
+    async def scenario() -> None:
+        await _ScheduleRunner()._tick()
+
+    with pytest.raises(ScheduleAdmissionUnavailable, match="execute_admitted_runs"):
+        asyncio.run(scenario())
+
+
 def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 

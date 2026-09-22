@@ -188,23 +188,38 @@ async def test_builders_created_work_is_observable_on_the_canonical_spine(
 
 
 @pytest.mark.asyncio
-async def test_schedule_fire_admits_a_canonical_run_from_the_live_runner(
+async def test_schedule_fire_admits_and_executes_a_canonical_run_from_the_live_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Scenario 2 fires Hive's configured scheduler, not a source probe."""
+    """Scenario 2 fires Hive's configured scheduler cadence, not a source probe.
+
+    ``ScheduleRunner.run_once`` is the shipped cadence end to end: due
+    occurrences are admitted through the Container-owned
+    ``ScheduleRunAdmitter``, and the same tick then consumes the admitted Run
+    through the Container's canonical consumer
+    (``execute_admitted_runs``), because a schedule Run's admission is its
+    submission -- no caller holds a receipt that will drive it later (#251).
+    The scenario starts the shipped engine composition (the bridge-built
+    Container over a durable SQLite spine), seeds one schedule whose template
+    names a registered shipped node kind, and requires completed canonical
+    Run -> NodeRun -> Attempt evidence: admission without a reachable
+    execution consumer is the persisted-but-unreachable defect the M1
+    evidence rule rejects, so a QUEUED-only observation fails here.
+    """
     from datetime import UTC, datetime
 
     import services.dag_run_inspection as inspection
     import services.engine as engine_module
+    from config import Settings
+    from services.agent_materialization import reset_runtime_source
+    from services.engine import EngineService
     from services.scheduler import ScheduleRunner
-
-    from maistro.graph.definitions import GraphTemplate, Node
 
     class Row:
         id = "parity-schedule"
         user_id = "parity-user"
-        workspace_id = "scheduler-parity"
+        workspace_id = "default"
         name = "Parity schedule"
         description = ""
         cron_expression = "0 * * * *"
@@ -223,62 +238,121 @@ async def test_schedule_fire_admits_a_canonical_run_from_the_live_runner(
             clone.__dict__.update(update)
             return clone
 
-    from maistro.scheduling.admission import ScheduleRunAdmitter
+    db_path = tmp_path / "scheduler.sqlite3"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
-    profile = await open_durable_profile(
-        tmp_path / "scheduler.sqlite3", workspace_id="scheduler-parity"
-    )
-    container = SimpleNamespace(
-        config=SimpleNamespace(workspace_id=profile.workspace_id),
-        project_scope_store=profile.project_store,
-        run_store=profile.run_store,
-        template_store=profile.template_store,
-        schedule_store=profile.schedule_store,
-        schedule_admitter=ScheduleRunAdmitter(
-            profile.run_store, profile.template_store, profile.schedule_store
-        ),
-    )
-    await profile.template_store.put(
-        GraphTemplate(
-            template_id="parity-template",
-            workspace_id=profile.workspace_id,
-            version=1,
-            name="Parity template",
-            nodes=[Node(node_id="only", node_type="parity.probe", name="Probe")],
-            edges=[],
-        )
-    )
-    row = Row()
-    import stores
-
-    stores.schedules[row.id] = row
-    monkeypatch.setattr(
-        engine_module,
-        "_singleton",
-        SimpleNamespace(
-            _agent_port=SimpleNamespace(container=container),
-            run_store=profile.run_store,
-        ),
-    )
-
-    async def _views_for_user(_user_id: str) -> list[SimpleNamespace]:
-        return [SimpleNamespace(id=profile.workspace_id)]
-
-    monkeypatch.setattr(inspection, "list_views_for_user", _views_for_user)
+    engine = EngineService()
+    profile = None
     try:
+        await engine.start(
+            Settings(
+                maistro_router_api_key="parity-key",
+                maistro_agents_dir=str(REPO_ROOT / "agents"),
+            )
+        )
+        # The configured scheduler reads the engine's own Container; a stub
+        # port has no Container, so the cadence would fall back to the
+        # standalone path and prove nothing about configured production.
+        assert engine.is_configured
+        container = engine.agent_port.container
+
+        from maistro.graph.definitions import GraphTemplate, Node
+
+        # A registered shipped node kind: the consumer resolves and executes
+        # it through the production node resolver, no fixture node needed.
+        await container.template_store.put(
+            GraphTemplate(
+                template_id="parity-template",
+                workspace_id="default",
+                version=1,
+                name="Parity template",
+                nodes=[
+                    Node(
+                        node_id="only",
+                        node_type="transform.alias_keys",
+                        parameters={"mapping": {}},
+                    )
+                ],
+                edges=[],
+            )
+        )
+        row = Row()
+        import stores
+
+        stores.schedules[row.id] = row
+        monkeypatch.setattr(engine_module, "_singleton", engine)
+
+        async def _views_for_user(_user_id: str) -> list[SimpleNamespace]:
+            return [SimpleNamespace(id="default")]
+
+        monkeypatch.setattr(inspection, "list_views_for_user", _views_for_user)
+
         await ScheduleRunner().run_once(now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC))
-        recorded = await profile.schedule_store.get(row.id)
+
+        recorded = await container.schedule_store.get(row.id)
         assert recorded is not None and recorded.last_run_id
-        observation = await canonical_observation(profile, recorded.last_run_id)
-        assert observation["status"] == "queued"
-        assert observation["workspace_id"] == profile.workspace_id
-        inspected = await inspection.visible_run_detail("scheduler-observer", recorded.last_run_id)
+        run_id = recorded.last_run_id
+
+        # Observe through an independent connection on the same durable
+        # spine, like every other producer scenario.
+        profile = await open_durable_profile(db_path, workspace_id="default")
+        observation = await canonical_observation(profile, run_id)
+        assert observation["status"] == "completed"
+        assert observation["workspace_id"] == "default"
+        assert len(observation["node_run_ids"]) == len(observation["attempt_ids"]) == 1
+
+        # The physical evidence: one NodeRun driven to completion by one
+        # Attempt the schedule consumer executed and leased.
+        from maistro.runs.consumption import SCHEDULE_EXECUTOR_ID
+
+        (node_run,) = await profile.run_store.list_node_runs(run_id)
+        assert node_run.status.value == "completed"
+        (attempt,) = await profile.run_store.list_attempts(node_run.node_run_id)
+        assert attempt.status.value == "completed"
+        assert attempt.executor_id == SCHEDULE_EXECUTOR_ID
+
+        # Canonical correlation identity survived the product scheduler.
+        run = await profile.run_store.get_run(run_id)
+        assert run is not None
+        assert run.provenance["admission_source"] == "schedule"
+        assert run.provenance["schedule_id"] == row.id
+        assert (
+            run.provenance["scheduled_for"] == datetime(2026, 8, 21, 12, 0, tzinfo=UTC).isoformat()
+        )
+
+        # The Conductor observer resolves the same Run through the canonical
+        # store; the projection cannot invent, hide, or re-terminalize it.
+        inspected = await inspection.visible_run_detail("scheduler-observer", run_id)
         assert inspected is not None
-        assert inspected["canonical_run_id"] == recorded.last_run_id
-        assert inspected["workspace_id"] == profile.workspace_id
+        assert inspected["canonical_run_id"] == run_id
+        assert inspected["workspace_id"] == "default"
+        assert inspected["status"] == "completed"
+        assert_identity_projection(
+            {
+                "workspace_id": run.workspace_id,
+                "project_id": run.project_id,
+                "run_id": run.run_id,
+                "status": run.status.value,
+            },
+            inspected,
+        )
     finally:
-        stores.schedules.pop(row.id, None)
-        await profile.close()
+        import stores
+
+        stores.schedules.pop("parity-schedule", None)
+        if profile is not None:
+            await profile.close()
+        await engine.stop()
+        container = getattr(engine.agent_port, "container", None)
+        if container is not None:
+            await container.aclose()
+        # Module seams engine.start() re-pointed at this container's stores.
+        reset_runtime_source()
+        from services import feedback_service
+
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+
+        feedback_service.set_outcome_store(InMemoryOutcomeStore())
 
 
 @pytest.mark.asyncio
