@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from maistro.constants import THUMB_LIMIT, THUMB_WINDOW_DAYS
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.outcome_scope import scope_predicates
+from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import Outcome
 
 if TYPE_CHECKING:
@@ -114,33 +115,33 @@ class SqliteOutcomeStore:
         late `org_id`. `ALTER TABLE ... ADD COLUMN` with a constant default is
         metadata-only, so this stays cheap on a large table.
         """
-        await self._conn.execute(_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(outcomes)")
-        existing = {row[1] for row in await cursor.fetchall()}
-        for column, ddl in _ADDED_COLUMNS:
-            if column not in existing:
-                await self._conn.execute(f"ALTER TABLE outcomes ADD COLUMN {column} {ddl}")
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_outcomes_thumb ON outcomes (thumb, created_at)"
-        )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_outcomes_run_id ON outcomes (run_id)"
-        )
-        # The scoped access pattern every read now walks: org + project +
-        # task_type + created_at, the same composite PostgreSQL's migration
-        # 010 created as `ix_outcomes_scope_task_time`. Without it a scoped
-        # read is a full table scan on the one backend chosen for
-        # single-box deployments, where the outcomes table is the largest
-        # thing SQLite holds (#844).
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_task_time "
-            "ON outcomes (org_id, project_id, task_type, created_at)"
-        )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_thumb_time "
-            "ON outcomes (org_id, project_id, thumb, created_at)"
-        )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(outcomes)")
+            existing = {row[1] for row in await cursor.fetchall()}
+            for column, ddl in _ADDED_COLUMNS:
+                if column not in existing:
+                    await self._conn.execute(f"ALTER TABLE outcomes ADD COLUMN {column} {ddl}")
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_outcomes_thumb ON outcomes (thumb, created_at)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_outcomes_run_id ON outcomes (run_id)"
+            )
+            # The scoped access pattern every read now walks: org + project +
+            # task_type + created_at, the same composite PostgreSQL's migration
+            # 010 created as `ix_outcomes_scope_task_time`. Without it a scoped
+            # read is a full table scan on the one backend chosen for
+            # single-box deployments, where the outcomes table is the largest
+            # thing SQLite holds (#844).
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_task_time "
+                "ON outcomes (org_id, project_id, task_type, created_at)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_outcomes_scope_thumb_time "
+                "ON outcomes (org_id, project_id, thumb, created_at)"
+            )
 
     async def record(self, outcome: Outcome) -> int:
         """Record an outcome. Returns outcome ID."""

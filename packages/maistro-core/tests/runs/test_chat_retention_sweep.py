@@ -105,7 +105,7 @@ async def test_a_sweep_failure_never_refuses_the_turn(wired) -> None:
         runs, projects, retention=RetentionPolicy(ttl_seconds=1, sweep_interval_seconds=0)
     )
 
-    async def _explode(**_kwargs: object) -> int:
+    async def _explode(_scope: object, **_kwargs: object) -> int:
         raise RuntimeError("the database went away")
 
     runs.purge_expired_runs = _explode  # type: ignore[method-assign]
