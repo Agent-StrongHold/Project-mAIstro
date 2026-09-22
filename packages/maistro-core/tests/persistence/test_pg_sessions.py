@@ -237,3 +237,48 @@ async def test_purge_expired_deletes_both_tables_in_one_transaction(
     assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
     assert conn.transaction_entries == 1
     assert conn.transaction_exits == 1
+
+
+@pytest.mark.asyncio
+async def test_retention_cutoff_is_derived_from_the_database_clock(
+    store: PgSessionStore, conn: FakeConnection
+) -> None:
+    """Retention must not compare a client clock against server-stamped rows.
+
+    `sessions.timestamp` is stamped by the database (`now()` server default),
+    so a cutoff computed from the client's `time.time()` purged rows the
+    server still considered fresh whenever the client clock ran ahead by
+    more than the TTL -- a retention sweep deleting live conversation,
+    observed as the concurrent retention test reading `[]` run-to-run
+    (exact-head verification of #1242). The TTL travels as the parameter and
+    the cutoff arithmetic happens on the database clock that stamped the rows.
+    """
+    await store.purge_expired(3600)
+
+    purge_calls = [c for c in conn.calls if c.method == "execute" and "DELETE" in c.query]
+    assert [_purged_table(c.query) for c in purge_calls] == ["sessions", "session_turns"]
+    for call in purge_calls:
+        assert "to_timestamp" not in call.query
+        assert "now() - make_interval" in call.query
+        assert call.args == (3600,)
+
+
+@pytest.mark.asyncio
+async def test_get_history_ttl_filter_uses_the_database_clock(
+    store: PgSessionStore, conn: FakeConnection
+) -> None:
+    """The history read filters on the same clock that stamps the rows.
+
+    A client-clock cutoff hid fresh messages for the same drift reason the
+    purge deleted them (`to_timestamp(time.time() - ttl)` against a server
+    `now()` default), silently answering history questions with empty or
+    truncated conversation until the clocks agreed again.
+    """
+    conn.queue_fetch([])
+    await store.get_history("s1", ttl_seconds=60)
+
+    call = conn.calls[0]
+    assert call.method == "fetch"
+    assert "to_timestamp" not in call.query
+    assert "now() - make_interval" in call.query
+    assert call.args == ("s1", 60, 20)
