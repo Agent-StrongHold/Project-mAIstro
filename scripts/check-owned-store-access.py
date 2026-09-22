@@ -32,8 +32,10 @@ What is allowed to touch them
 - test modules — a test that plants one user's row so another user can fail to
   read it has to reach the store directly to plant it.
 
-Everything else — every module under `routes/` and every other module under
-`services/` — goes through `OwnedStore`.
+Everything else — every module under `hive_conductor/routes/` and every other
+module under `hive_conductor/services/` — goes through `OwnedStore`. Paths in
+`ALLOWED` are relative to the backend root and include the `hive_conductor/`
+package segment (#1134).
 
 Usage
 -----
@@ -56,8 +58,11 @@ OWNED_STORES: frozenset[str] = frozenset({"chat_sessions", "memory_entries"})
 #: Each is here because it is either the declaration or the scoping seam —
 #: never because scoping it was inconvenient.
 ALLOWED: tuple[tuple[str, str], ...] = (
-    ("stores.py", "declares the stores"),
-    ("services/owned_records.py", "is the scoping view every other caller uses"),
+    ("hive_conductor/stores.py", "declares the stores"),
+    (
+        "hive_conductor/services/owned_records.py",
+        "is the scoping view every other caller uses",
+    ),
 )
 
 
@@ -108,8 +113,8 @@ def audit() -> list[str]:
         for line, store in direct_accesses(path.read_text(encoding="utf-8"), OWNED_STORES):
             failures.append(
                 f"  {relative.as_posix()}:{line}: reads stores.{store} directly — "
-                f"use services.owned_records.OwnedStore so the access is scoped "
-                f"to the authenticated user"
+                f"use hive_conductor.services.owned_records.OwnedStore so the "
+                f"access is scoped to the authenticated user"
             )
     return failures
 

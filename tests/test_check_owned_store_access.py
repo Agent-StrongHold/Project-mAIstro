@@ -103,7 +103,7 @@ class TestTheDeclarationsAreHonest:
     def test_the_declared_stores_exist_on_the_stores_module(self, gate) -> None:
         """`OWNED_STORES` naming a store that was renamed away would report
         `ok` while governing nothing."""
-        source = (gate.BACKEND / "stores.py").read_text(encoding="utf-8")
+        source = (gate.BACKEND / "hive_conductor" / "stores.py").read_text(encoding="utf-8")
 
         for name in gate.OWNED_STORES:
             assert f"\n{name}: ModelStore" in source or f"\n{name}: JsonStore" in source, name
