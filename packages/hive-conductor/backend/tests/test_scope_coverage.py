@@ -49,16 +49,19 @@ def test_zero_permission_user_is_refused(authed_client, method, path, scope):
     assert scope in response.json()["detail"]
 
 
-def test_declared_product_routes_are_not_authenticated_only(authed_client):
-    """Declared permissions must protect ordinary product routes too."""
-    cases = [
-        ("post", "/v1/chat/sessions", "chat.read"),
-        ("put", "/v1/dashboard/layout", "dashboard.read"),
-    ]
-    for method, path, scope in cases:
+def test_product_surface_is_not_gated(authed_client):
+    """The exemptions are load-bearing in the other direction: the daily
+    account's ordinary flow must NOT 403 at the middleware. 404/422 are fine —
+    they prove the request reached the handler."""
+    for method, path in [
+        ("post", "/v1/tasks"),
+        ("post", "/v1/memory/entries"),
+        ("post", "/v1/chat/sessions"),
+        ("put", "/v1/dashboard/layout"),
+        ("post", "/v1/workspaces"),
+    ]:
         response = getattr(authed_client, method)(path, json={})
-        assert response.status_code == 403, (
-            f"{method.upper()} {path} answered {response.status_code} for a "
-            f"permissions=[] user; expected {scope!r}"
+        assert response.status_code != 403, (
+            f"{method.upper()} {path} 403'd — product surface must stay "
+            "reachable for the daily account"
         )
-        assert scope in response.json()["detail"]

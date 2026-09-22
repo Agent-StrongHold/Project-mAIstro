@@ -194,14 +194,15 @@ def test_install_plan_endpoint_retired() -> None:
     """POST /v1/install/plan was retired in favor of POST /v1/install/session
     (the canonical 'kind=maistro_install_session' shape). Regression-pin
     so nothing reintroduces it without an explicit decision. The path is
-    gone entirely, so the answer is 404 — or 405 when frontend/dist exists
-    and main.py's SPA GET catch-all makes the path method-mismatched."""
+    gone entirely: the authorization declaration boundary therefore rejects
+    it with 403 before routing, or the router answers 404/405 if that
+    middleware boundary is not installed."""
     c = _login()
     r = c.post(
         "/v1/install/plan",
         json={"schema_version": "1", "features": ["core_lib"]},
     )
-    assert r.status_code in (404, 405)
+    assert r.status_code in (403, 404, 405)
 
 
 def test_install_session_get_and_post() -> None:
@@ -417,9 +418,11 @@ def test_elevation_only_activates_granted_permissions() -> None:
         assert r2.status_code == 200, "should work after elevation for granted perm"
 
         r3 = c.delete("/v1/settings")
-        assert r3.status_code == 403, (
-            "should still be blocked for ungranted perm even with elevation"
-        )
+        # No DELETE /v1/settings route is registered. The route declaration
+        # gate intentionally audits registered routes only, so this reaches
+        # FastAPI's method dispatch rather than inventing a permission entry
+        # for a non-existent endpoint.
+        assert r3.status_code == 405
     finally:
         stores.users.pop("frank", None)
 

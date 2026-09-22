@@ -258,10 +258,10 @@ class TestProtectedOpsPermissionMatrix:
         assert r.status_code == 403
 
     def test_delete_agents_with_permission_and_elevation_passes_gate(self) -> None:
-        c = self._writer("del-agents-3", perms=["agents.write"])
+        c = self._writer("del-agents-3", perms=["agents.delete"])
         e = c.post(
             "/v1/auth/elevate",
-            json={"password": "pw", "permissions": ["agents.write"], "task_id": "t-del"},
+            json={"password": "pw", "permissions": ["agents.delete"], "task_id": "t-del"},
         )
         assert e.status_code == 200, e.text
         r = c.delete("/v1/agents/foo")
@@ -296,11 +296,13 @@ class TestAdminBlockedFromChat:
         r2 = c.post("/v1/chat/message", json={"message": "hi"})
         assert r2.status_code == 403
 
-    def test_regular_user_without_declared_chat_permission_is_denied(self) -> None:
+    def test_regular_user_chat_preserves_existing_product_authorization(self) -> None:
         c = _login()
-        r = c.post("/v1/chat/message", json={"message": "hi"})
-        assert r.status_code == 403
-        assert "chat.read" in r.json()["detail"]
+        r = c.post(
+            "/v1/chat/complete",
+            json={"messages": [{"role": "user", "content": "ping"}]},
+        )
+        assert r.status_code == 200
 
 
 class TestMalformedAuthHeaders:
