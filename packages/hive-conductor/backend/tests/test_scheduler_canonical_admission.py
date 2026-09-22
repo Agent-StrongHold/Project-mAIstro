@@ -151,11 +151,70 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
     asyncio.run(scenario())
 
 
+def test_the_tick_reports_a_live_run_the_cursor_did_not_name(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A crashed winner (#1059) surfaces at the seam as an admission that
+    names the live Run the cursor never recorded: the tick says so, and the
+    pointer links that winner without this tick creating a second Run."""
+    import logging
+
+    from hive_conductor.services.scheduler import _ScheduleRunner
+
+    from maistro.scheduling import FireDecision
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+        noon = datetime(2026, 8, 21, 12, tzinfo=UTC)
+        # Ticker A died between `create_run` and `record_fire`: the Run for
+        # noon exists and holds the occurrence claim, but the cursor was
+        # never stamped, so the pointer names nothing.
+        runner = _ScheduleRunner()
+        scope = await runner._canonical_scope(row, container)
+        definition = await runner._definition_for(
+            "s-1", row, store=container.schedule_store, scope=scope
+        )
+        assert definition is not None
+        template = await container.template_store.get(
+            definition.graph_template_id, version=definition.template_version
+        )
+        assert template is not None
+        winner = await container.schedule_admitter._admit_one(
+            definition, template, FireDecision(scheduled_for=noon)
+        )
+        stored = await container.schedule_store.get("s-1")
+        assert stored is not None and stored.last_run_id is None
+        try:
+            with caplog.at_level(logging.INFO, logger="services.scheduler"):
+                await _ScheduleRunner()._evaluate_schedule("s-1", row, now=now)
+            live = [
+                record
+                for record in caplog.records
+                if "the cursor did not name" in record.getMessage()
+            ]
+            assert live, "the tick must report the live Run the pointer missed"
+            assert winner in live[0].getMessage()
+            assert "cancel requested: False" in live[0].getMessage()
+            recorded = await container.schedule_store.get("s-1")
+            assert recorded is not None
+            assert recorded.last_run_id == winner, "the cursor follows the crashed winner"
+            assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
 def test_scheduler_tick_executes_the_admitted_run_to_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The configured scheduler closes admission through canonical execution."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     from maistro.container import create_container
     from maistro.graph.definitions import GraphTemplate, Node
@@ -213,7 +272,7 @@ def test_scheduler_tick_logs_consumer_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A consumer failure is contained and reported by the scheduler tick."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     class _FailingContainer:
         async def execute_admitted_runs(self) -> int:
@@ -236,7 +295,7 @@ def test_scheduler_tick_skips_missing_or_empty_consumer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Standalone ticks and empty consumer queues remain successful no-ops."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     class _EmptyContainer:
         async def execute_admitted_runs(self) -> int:
@@ -342,7 +401,7 @@ def test_half_wired_container_fails_closed_for_recurring_fire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A configured Container must never make a tick use the compatibility path."""
-    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
+    from hive_conductor.services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture()

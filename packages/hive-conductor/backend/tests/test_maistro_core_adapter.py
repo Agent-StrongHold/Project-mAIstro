@@ -86,10 +86,21 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         Settings(
             maistro_agents_dir="agents",
             litellm_api_base="http://localhost:4000/v1",
+            provider_config_path="/etc/hive/providers.yaml",
+            model_bindings=[
+                {
+                    "binding_id": "canvas-quality",
+                    "project_id": "project-canvas",
+                    "provider_name": "quality-model",
+                }
+            ],
         )
     )
 
     assert captured["prompt_manager"] is selected_prompt_manager
+    config = captured["config"]
+    assert config.provider_config_path == "/etc/hive/providers.yaml"
+    assert config.model_bindings[0].binding_id == "canvas-quality"
     # Same requirement, one wiring later: the ADR-091 assembly the Container
     # selected has to be the one the agents get, or the Conductor's episodic
     # memories reach no prompt (#622).

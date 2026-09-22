@@ -550,9 +550,18 @@ async def test_list_proposals_limit_clamped() -> None:
 # --- HTTP route tests ----------------------------------------------------
 
 
+def _optimizer_workspace(client: Any) -> str:
+    response = client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Optimizer"}
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
 def test_run_endpoint_returns_ranked_proposals(admin_client: Any) -> None:
     _seed_metrics("d-http", "n1", count=10, failed=8, p95=100)
-    r = admin_client.post("/v1/optimizer/d-http/run")
+    workspace_id = _optimizer_workspace(admin_client)
+    r = admin_client.post(f"/v1/optimizer/d-http/run?workspace_id={workspace_id}")
     assert r.status_code == 200
     body = r.json()
     assert body["dag_id"] == "d-http"
@@ -562,9 +571,59 @@ def test_run_endpoint_returns_ranked_proposals(admin_client: Any) -> None:
 
 def test_run_endpoint_with_apply_auto_true(admin_client: Any) -> None:
     _seed_metrics("d-apply", "n1", count=10, failed=8, p95=100)
-    r = admin_client.post("/v1/optimizer/d-apply/run?apply_auto=true")
+    workspace_id = _optimizer_workspace(admin_client)
+    r = admin_client.post(f"/v1/optimizer/d-apply/run?apply_auto=true&workspace_id={workspace_id}")
     assert r.status_code == 200
     assert r.json()["auto_applied"] >= 1
+
+
+def test_run_endpoint_requires_an_authorized_workspace(admin_client: Any) -> None:
+    """No workspace selection is a refusal (#766), matching the DAG-run route's
+    posture: the optimizer also drives DAG execution (baseline + hill-climb),
+    so it takes the same DagExecutionScope authorization."""
+    _seed_metrics("d-no-workspace", "n1", count=10, failed=8, p95=100)
+    r = admin_client.post("/v1/optimizer/d-no-workspace/run")
+    assert r.status_code == 403
+    assert "not authorized" in r.json()["detail"]
+
+
+def test_run_endpoint_validates_proposals_against_a_real_baseline(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """validate=True (the default) drives the full validation gate — a
+    workspace-scoped baseline run, per-proposal validation, and the
+    model/param hill-climb sweeps — not just the propose step. Exercises the
+    baseline execution in optimizer.py and the validation-gate execution seam
+    in validation_gate.py end to end, through a DAG that actually exists."""
+    import services.benchmark_eval as benchmark_eval
+    import services.graph_runner as graph_runner
+
+    async def fake_execute(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "completed", "run_id": "r-validate", "node_results": {}}
+
+    async def fake_score(_result: Any, _task: Any) -> dict[str, Any]:
+        return {"total": 10}
+
+    monkeypatch.setattr(graph_runner, "execute_dag", fake_execute)
+    monkeypatch.setattr(benchmark_eval, "evaluate_dag_run", fake_score)
+
+    create = admin_client.post(
+        "/v1/dags", json={"name": "Optimizer Validate", "description": "test"}
+    )
+    assert create.status_code == 201
+    dag = create.json()
+    worker_node_id = dag["nodes"][1]["id"]
+    _seed_metrics(dag["id"], worker_node_id, count=10, failed=8, p95=100)
+    workspace_id = _optimizer_workspace(admin_client)
+
+    r = admin_client.post(f"/v1/optimizer/{dag['id']}/run?workspace_id={workspace_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["proposals"]
+    assert body["validated"] is True
+    assert body["baseline_score"] == 10
+    # Every surfaced proposal carries the validation gate's verdict fields.
+    assert all("variant_b_score" in p for p in body["proposals"])
 
 
 def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
@@ -581,7 +640,8 @@ def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
 
     routes_opt.run_optimizer = _raise
     try:
-        r = admin_client.post("/v1/optimizer/anything/run")
+        workspace_id = _optimizer_workspace(admin_client)
+        r = admin_client.post(f"/v1/optimizer/anything/run?workspace_id={workspace_id}")
         assert r.status_code == 400
     finally:
         routes_opt.run_optimizer = original

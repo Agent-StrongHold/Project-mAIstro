@@ -1,29 +1,19 @@
-"""DesignPreviewService — server-side rendering and code validation for design outputs.
+"""DesignPreviewService — validation for design output code.
 
-Handles:
-1. AST validation for generated React/TSX code (imports whitelist, Tailwind classes)
-2. Security scanning for T3 artifacts (untrusted user input)
-3. Server-side rendering for PDF/PPTX/DOCX via async job queue
-4. Preview URLs for rendered outputs
-
-Follows async job queue pattern — render requests return immediately with job_id,
-client polls /v1/design/projects/{id}/render/{job_id} for status and download URL.
+The shipped renderer is deliberately unavailable until a canonical execution
+worker, durable artifact store, and serving route exist. Keeping an in-memory
+job lifecycle here would manufacture pending/completed states without owning
+rendered bytes, so this service only validates code and rejects rendering.
 """
 
 from __future__ import annotations
 
-import logging
 import re
-from datetime import UTC, datetime
-from typing import Any, ClassVar
-from uuid import uuid4
+from typing import Any, ClassVar, NoReturn
 
 from maistro_design.trust import TrustTier
-from maistro_design.types import OutputFormat
 
-logger = logging.getLogger("hive.design_preview")
-
-__all__ = ["CodeValidationError", "DesignPreviewService", "RenderJob"]
+__all__ = ["CodeValidationError", "DesignPreviewService"]
 
 
 class CodeValidationError(Exception):
@@ -32,42 +22,8 @@ class CodeValidationError(Exception):
     pass
 
 
-class RenderJob:
-    """Async render job tracking."""
-
-    def __init__(
-        self,
-        job_id: str,
-        project_id: str,
-        format: OutputFormat,
-        status: str = "pending",
-        url: str | None = None,
-        error: str | None = None,
-    ) -> None:
-        self.job_id = job_id
-        self.project_id = project_id
-        self.format = format
-        self.status = status
-        self.url = url
-        self.error = error
-        self.created_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "job_id": self.job_id,
-            "project_id": self.project_id,
-            "format": self.format,
-            "status": self.status,
-            "url": self.url,
-            "error": self.error,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-        }
-
-
 class DesignPreviewService:
-    """Server-side rendering and validation for design outputs."""
+    """Validate design output code; reject unavailable server-side rendering."""
 
     ALLOWED_IMPORTS: ClassVar[frozenset[str]] = frozenset(
         {
@@ -88,10 +44,6 @@ class DesignPreviewService:
         r"absolute|relative|fixed|block|inline|flex-col|flex-row|justify-|items-|"
         r"gap-|space-|opacity-|transition|duration-|ease-|hover|focus|active)"
     )
-
-    def __init__(self) -> None:
-        """Initialize the preview service."""
-        self._render_jobs: dict[str, RenderJob] = {}
 
     def _check_line_imports(self, line: str, result: dict[str, Any], trust_tier: TrustTier) -> int:
         """Check import line; return 1 if import, 0 otherwise."""
@@ -181,84 +133,30 @@ class DesignPreviewService:
                 return True
         return False
 
-    def create_render_job(self, project_id: str, output_format: OutputFormat) -> RenderJob:
-        """Create a new async render job.
+    @staticmethod
+    def _raise_rendering_unavailable(format_name: str) -> NoReturn:
+        """Reject rendering until bytes can be durably served."""
+        from fastapi import HTTPException
 
-        Returns immediately with job_id. Client polls for status/url.
-        """
-        job_id = str(uuid4())
-        job = RenderJob(job_id, project_id, output_format, status="pending")
-        self._render_jobs[job_id] = job
-        logger.info(
-            "Created render job %s for project %s (format: %s)", job_id, project_id, output_format
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"{format_name.upper()} rendering is unavailable: artifact storage "
+                "and an output-serving route are not configured"
+            ),
         )
-        return job
-
-    def get_render_job(self, job_id: str) -> RenderJob | None:
-        """Retrieve a render job by ID."""
-        return self._render_jobs.get(job_id)
-
-    def update_render_job(
-        self,
-        job_id: str,
-        status: str,
-        url: str | None = None,
-        error: str | None = None,
-    ) -> RenderJob | None:
-        """Update a render job status."""
-        job = self._render_jobs.get(job_id)
-        if job:
-            job.status = status
-            job.url = url
-            job.error = error
-            job.updated_at = datetime.now(UTC)
-            logger.info("Updated render job %s: status=%s", job_id, status)
-        return job
 
     async def render_to_pdf(self, content: str, metadata: dict[str, Any]) -> str:
-        """Render HTML/React to PDF via weasyprint (Phase 2B)."""
-        try:
-            from hive_conductor.services.design_render import get_design_render_service
-
-            render_svc = get_design_render_service()
-            pdf_bytes = await render_svc.render_to_pdf(content, metadata)
-            # Phase 2B.2: Store in S3, return signed URL
-            render_id = str(uuid4())
-            logger.info("PDF rendered successfully (%d bytes)", len(pdf_bytes))
-            return f"/v1/design/renders/{render_id}/output.pdf"
-        except Exception as exc:
-            logger.error("PDF render failed: %s", exc)
-            raise
+        """Reject PDF rendering until the produced bytes have a durable owner."""
+        self._raise_rendering_unavailable("pdf")
 
     async def render_to_pptx(self, content: str, metadata: dict[str, Any]) -> str:
-        """Render to PPTX via python-pptx (Phase 2B)."""
-        try:
-            from hive_conductor.services.design_render import get_design_render_service
-
-            render_svc = get_design_render_service()
-            pptx_bytes = await render_svc.render_to_pptx(content, metadata)
-            # Phase 2B.2: Store in S3, return signed URL
-            render_id = str(uuid4())
-            logger.info("PPTX rendered successfully (%d bytes)", len(pptx_bytes))
-            return f"/v1/design/renders/{render_id}/output.pptx"
-        except Exception as exc:
-            logger.error("PPTX render failed: %s", exc)
-            raise
+        """Reject PPTX rendering until the produced bytes have a durable owner."""
+        self._raise_rendering_unavailable("pptx")
 
     async def render_to_docx(self, content: str, metadata: dict[str, Any]) -> str:
-        """Render to DOCX via python-docx (Phase 2B)."""
-        try:
-            from hive_conductor.services.design_render import get_design_render_service
-
-            render_svc = get_design_render_service()
-            docx_bytes = await render_svc.render_to_docx(content, metadata)
-            # Phase 2B.2: Store in S3, return signed URL
-            render_id = str(uuid4())
-            logger.info("DOCX rendered successfully (%d bytes)", len(docx_bytes))
-            return f"/v1/design/renders/{render_id}/output.docx"
-        except Exception as exc:
-            logger.error("DOCX render failed: %s", exc)
-            raise
+        """Reject DOCX rendering until the produced bytes have a durable owner."""
+        self._raise_rendering_unavailable("docx")
 
 
 # Singleton instance

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
+from hive_conductor.routes.evolution import trigger_cycle
+from hive_conductor.services.evolution import _EvolutionService
 from hive_conductor.services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
 
 import maistro_evolve.cycle as cycle_module
@@ -223,6 +227,572 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     assert {ref["run_id"] for ref in child.harness_params["source_evaluation_runs"]} == {
         record.run_id
     }
+
+
+@pytest.mark.parametrize("failure_stage", ["battle", "finalization"])
+@pytest.mark.asyncio
+async def test_battle_and_finalization_failures_are_canonical_run_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """Failures after evaluation still terminalize the canonical Run."""
+
+    class _BattleFailureTournament(_Tournament):
+        def record_battle(
+            self, *, benchmark: str, genome_a_id: str, genome_b_id: str, **_: Any
+        ) -> None:
+            raise RuntimeError("synthetic battle failure")
+
+    class _FinalizationFailureCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            raise RuntimeError("synthetic finalization failure")
+
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionCycle",
+        _FinalizationFailureCycle if failure_stage == "finalization" else _Cycle,
+    )
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=tournament,
+        config=_config(population_size=2, eval_batch_size=2),
+        harness=_Harness(),
+        container=owner,
+    )
+
+    assert record.run.status is RunStatus.FAILED
+    assert failure_stage in {"battle", "finalization"}
+    assert failure_stage in (record.run.error or "")
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    failed = [item for item in node_runs if item.status is RunStatus.FAILED]
+    assert len(failed) == 1
+    assert failed[0].node_id == (
+        "evolve-battle-1" if failure_stage == "battle" else "evolve-finalize"
+    )
+    attempts = await owner.run_store.list_attempts(failed[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
+    physical = NodeResult.model_validate(attempts[0].result)
+    assert physical.success is False
+    assert physical.error_code == "RuntimeError"
+
+
+@pytest.mark.parametrize("failure_stage", ["evaluation", "battle", "finalization"])
+@pytest.mark.asyncio
+async def test_cycle_route_projects_real_canonical_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """The public route preserves failures returned by the real graph runner."""
+    import maistro_evolve.harness as harness_module
+
+    class _RouteHarness(_Harness):
+        def __init__(self, benchmark_fidelity: str = "proxy") -> None:
+            self.fidelity = benchmark_fidelity
+
+    class _EvaluationFailureHarness(_RouteHarness):
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
+            del genome, benchmarks, llm_call
+            raise RuntimeError("synthetic evaluation failure")
+
+    class _BattleFailureTournament(_Tournament):
+        def record_battle(
+            self, *, benchmark: str, genome_a_id: str, genome_b_id: str, **_: Any
+        ) -> None:
+            del benchmark, genome_a_id, genome_b_id
+            raise RuntimeError("synthetic battle failure")
+
+    class _FinalizationFailureCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            del population
+            raise RuntimeError("synthetic finalization failure")
+
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evolution_module
+
+    owner = await _container()
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
+    monkeypatch.setattr(
+        harness_module,
+        "EvalHarness",
+        _EvaluationFailureHarness if failure_stage == "evaluation" else _RouteHarness,
+    )
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionCycle",
+        _FinalizationFailureCycle if failure_stage == "finalization" else _Cycle,
+    )
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    tournament = _BattleFailureTournament() if failure_stage == "battle" else _Tournament()
+    service = _EvolutionService()
+    service._population = population
+    service._tournament = tournament
+    monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
+
+    with pytest.raises(HTTPException) as caught:
+        await trigger_cycle(SimpleNamespace(state=SimpleNamespace(user_id="principal")))
+
+    assert caught.value.status_code == 500
+    detail = caught.value.detail
+    assert detail["code"] == "canonical_run_failed"
+    assert detail["status"] == "failed"
+    assert detail["run_id"] == service.last_run_id
+    assert failure_stage in detail["diagnostic"]
+    assert "evolution service not started" not in detail["message"]
+    assert service.cycle_count == 0
+    status = service.status()
+    assert status["running"] is True
+    assert status["execution_available"] is True
+    assert status["last_run_status"] == "failed"
+    assert failure_stage in status["last_error"]
+
+    stored = await owner.run_store.get_run(detail["run_id"])
+    assert stored is not None
+    assert stored.status is RunStatus.FAILED
+    failed_nodes = [
+        item
+        for item in await owner.run_store.list_node_runs(detail["run_id"])
+        if item.status is RunStatus.FAILED
+    ]
+    assert len(failed_nodes) == 1
+    assert (
+        failed_nodes[0].node_id
+        == {
+            "evaluation": "evolve-evaluate-1",
+            "battle": "evolve-battle-1",
+            "finalization": "evolve-finalize",
+        }[failure_stage]
+    )
+
+
+@pytest.mark.asyncio
+async def test_successful_cycle_route_projects_completed_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed canonical Run remains the only completed cycle projection."""
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evolution_module
+
+    import maistro_evolve.harness as harness_module
+
+    class _RouteHarness(_Harness):
+        def __init__(self, benchmark_fidelity: str = "proxy") -> None:
+            self.fidelity = benchmark_fidelity
+
+    owner = await _container()
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
+    monkeypatch.setattr(harness_module, "EvalHarness", _RouteHarness)
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+
+    service = _EvolutionService()
+    service._population = _Population([_Genome("g1"), _Genome("g2")])
+    service._tournament = _Tournament()
+    monkeypatch.setattr(evolution_module, "get_evolution_service", lambda: service)
+
+    response = await trigger_cycle(SimpleNamespace(state=SimpleNamespace(user_id="principal")))
+
+    assert response["status"] == "completed"
+    assert response["cycle_count"] == 1
+    assert response["run_id"] == service.last_run_id
+    stored = await owner.run_store.get_run(response["run_id"])
+    assert stored is not None
+    assert stored.status is RunStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SeedingHarness(_Harness):
+        def __init__(self) -> None:
+            self._seeded = False
+
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
+            if not self._seeded:
+                population.add(_Genome("seeded"))
+                seeded = population.get("seeded")
+                assert seeded is not None
+                seeded.eval_scores["proxy"] = 0.99
+                self._seeded = True
+            return await super().evaluate_genome(genome, benchmarks, llm_call)
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=_Tournament(),
+        config=_config(population_size=3, eval_batch_size=2),
+        harness=_SeedingHarness(),
+        container=owner,
+    )
+
+    stored = await owner.run_store.get_run(record.run_id)
+    assert stored is not None
+    assert stored.provenance["evolve_membership_ids"] == ["g1", "g2"]
+    assert stored.provenance["evolve_battle_capacity"] == 1
+    plan = next(
+        item
+        for item in await owner.run_store.list_node_runs(record.run_id)
+        if item.node_id == "evolve-plan-pairs"
+    )
+    assert {frozenset(pair) for pair in plan.result["pairs"]} == {frozenset({"g1", "g2"})}
+    assert all("seeded" not in pair for pair in plan.result["pairs"])
+    assert record.run.status is RunStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    import hive_conductor.services.evolution as evolution_service
+    from fastapi import FastAPI
+    from hive_conductor.routes import evolution as evolution_routes
+
+    import maistro_evolve.harness as harness_module
+    from maistro.runs.model import RunStatus
+
+    evaluation_started = asyncio.Event()
+    release_evaluation = asyncio.Event()
+
+    class _PausingHarness(_Harness):
+        def __init__(self, *, benchmark_fidelity: str) -> None:
+            self.fidelity = benchmark_fidelity
+
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
+            evaluation_started.set()
+            await release_evaluation.wait()
+            return await super().evaluate_genome(genome, benchmarks, llm_call)
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionConfig",
+        lambda **_: _config(population_size=3, eval_batch_size=2),
+    )
+    monkeypatch.setattr(harness_module, "EvalHarness", _PausingHarness)
+    owner = await _container()
+    import hive_conductor.services.engine as engine_module
+
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
+    monkeypatch.setattr(
+        "maistro_evolve.diversity.emergency_spawn",
+        lambda _existing, count: [_Genome(f"seed-{index}") for index in range(count)],
+    )
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    service = evolution_service._EvolutionService()
+    service._population = population
+    service._tournament = _Tournament()
+    previous = evolution_service._service
+    evolution_service._service = service
+    try:
+        app = FastAPI()
+        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await evaluation_started.wait()
+            seed_task = asyncio.create_task(client.post("/v1/evolution/seed", json={"count": 1}))
+            await asyncio.sleep(0)
+            assert seed_task.done() is False
+
+            release_evaluation.set()
+            cycle_response = await cycle_task
+            seed_response = await seed_task
+    finally:
+        evolution_service._service = previous
+
+    assert cycle_response.status_code == 200
+    assert cycle_response.json()["status"] == "completed"
+    assert seed_response.status_code == 200
+    assert seed_response.json() == {"seeded": 1, "population_size": 4}
+    record = await owner.run_store.get_run(cycle_response.json()["run_id"])
+    assert record is not None
+    assert record.status is RunStatus.COMPLETED
+    plan = next(
+        item
+        for item in await owner.run_store.list_node_runs(record.run_id)
+        if item.node_id == "evolve-plan-pairs"
+    )
+    assert {frozenset(pair) for pair in plan.result["pairs"]} == {frozenset({"g1", "g2"})}
+    assert all("seed-0" not in pair for pair in plan.result["pairs"])
+
+
+@pytest.mark.asyncio
+async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    import hive_conductor.services.evolution as evolution_service
+    import hive_conductor.services.evolution_graph as evolution_graph
+    from fastapi import FastAPI
+    from hive_conductor.routes import evolution as evolution_routes
+
+    battle_started = asyncio.Event()
+    release_battle = asyncio.Event()
+
+    async def _pausing_battle(self: Any, inputs: Any, ctx: Any) -> Any:
+        if not battle_started.is_set():
+            battle_started.set()
+            await release_battle.wait()
+        return await original_battle(self, inputs, ctx)
+
+    original_battle = evolution_graph._BattleNode._execute
+    monkeypatch.setattr(evolution_graph._BattleNode, "_execute", _pausing_battle)
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionConfig",
+        lambda **_: _config(population_size=5, eval_batch_size=4),
+    )
+
+    class _RouteHarness(_Harness):
+        def __init__(self, *, benchmark_fidelity: str) -> None:
+            self.fidelity = benchmark_fidelity
+
+    import maistro_evolve.harness as harness_module
+
+    monkeypatch.setattr(harness_module, "EvalHarness", _RouteHarness)
+    owner = await _container()
+    import hive_conductor.services.engine as engine_module
+
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
+    monkeypatch.setattr(
+        "maistro_evolve.diversity.emergency_spawn",
+        lambda _existing, count: [_Genome(f"seed-{index}") for index in range(count)],
+    )
+
+    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
+    service = evolution_service._EvolutionService()
+    service._population = population
+    service._tournament = _Tournament()
+    previous = evolution_service._service
+    evolution_service._service = service
+    try:
+        app = FastAPI()
+        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            cycle_task = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await battle_started.wait()
+            seed_task = asyncio.create_task(client.post("/v1/evolution/seed", json={"count": 1}))
+            await asyncio.sleep(0)
+            assert seed_task.done() is False
+
+            release_battle.set()
+            cycle_response = await cycle_task
+            seed_response = await seed_task
+    finally:
+        evolution_service._service = previous
+
+    assert cycle_response.status_code == 200
+    assert seed_response.status_code == 200
+    assert seed_response.json() == {"seeded": 1, "population_size": 6}
+
+    run_id = cycle_response.json()["run_id"]
+    record = await owner.run_store.get_run(run_id)
+    assert record is not None
+    assert record.status is RunStatus.COMPLETED
+    assert record.provenance["evolve_membership_ids"] == ["g1", "g2", "g3", "g4"]
+    assert record.provenance["evolve_battle_capacity"] == 2
+
+    node_runs = await owner.run_store.list_node_runs(run_id)
+    plan = next(item for item in node_runs if item.node_id == "evolve-plan-pairs")
+    battles = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
+    assert len(plan.result["pairs"]) == len(battles) == 2
+    planned = {tuple(pair) for pair in plan.result["pairs"]}
+    assert all(
+        (item.result["genome_a_id"], item.result["genome_b_id"]) in planned for item in battles
+    )
+    assert all("seed-0" not in pair for pair in plan.result["pairs"])
+    assert len([item for item in node_runs if item.node_id == "evolve-finalize"]) == 1
+    for node_run in battles:
+        attempts = await owner.run_store.list_attempts(node_run.node_run_id)
+        assert len(attempts) == 1
+        assert attempts[0].status is AttemptStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    import hive_conductor.services.evolution as evolution_service
+    from fastapi import FastAPI
+    from hive_conductor.routes import evolution as evolution_routes
+
+    evaluation_started = asyncio.Event()
+    release_evaluation = asyncio.Event()
+
+    class _PausingHarness(_Harness):
+        def __init__(self, *, benchmark_fidelity: str) -> None:
+            self.fidelity = benchmark_fidelity
+
+        async def evaluate_genome(
+            self,
+            genome: _Genome,
+            benchmarks: list[str],
+            llm_call: Any,
+        ):
+            if not evaluation_started.is_set():
+                evaluation_started.set()
+                await release_evaluation.wait()
+            return await super().evaluate_genome(genome, benchmarks, llm_call)
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    monkeypatch.setattr(
+        cycle_module,
+        "EvolutionConfig",
+        lambda **_: _config(population_size=5, eval_batch_size=4),
+    )
+    import maistro_evolve.harness as harness_module
+
+    monkeypatch.setattr(harness_module, "EvalHarness", _PausingHarness)
+    owner = await _container()
+    import hive_conductor.services.engine as engine_module
+
+    monkeypatch.setattr(
+        engine_module,
+        "get_engine",
+        lambda: SimpleNamespace(agent_port=SimpleNamespace(container=owner)),
+    )
+
+    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
+    service = evolution_service._EvolutionService()
+    service._population = population
+    service._tournament = _Tournament()
+    previous = evolution_service._service
+    evolution_service._service = service
+    try:
+        app = FastAPI()
+        app.include_router(evolution_routes.router, prefix="/v1/evolution")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await evaluation_started.wait()
+            second = asyncio.create_task(client.post("/v1/evolution/cycle"))
+            await asyncio.sleep(0)
+            assert second.done() is False
+
+            release_evaluation.set()
+            first_response = await first
+            second_response = await second
+    finally:
+        evolution_service._service = previous
+
+    assert first_response.status_code == second_response.status_code == 200
+    assert first_response.json()["run_id"] != second_response.json()["run_id"]
+    assert service.cycle_count == 2
+
+    for response in (first_response, second_response):
+        run_id = response.json()["run_id"]
+        record = await owner.run_store.get_run(run_id)
+        assert record is not None
+        assert record.status is RunStatus.COMPLETED
+        node_runs = await owner.run_store.list_node_runs(run_id)
+        plan = next(item for item in node_runs if item.node_id == "evolve-plan-pairs")
+        battles = [item for item in node_runs if item.node_id.startswith("evolve-battle-")]
+        assert len(plan.result["pairs"]) == len(battles)
+        planned = {tuple(pair) for pair in plan.result["pairs"]}
+        observed = {(item.result["genome_a_id"], item.result["genome_b_id"]) for item in battles}
+        assert observed == planned
+        assert record.provenance["evolve_battle_capacity"] >= len(plan.result["pairs"])
+        assert (
+            record.graph.materialize().metadata["evolve_membership_ids"]
+            == record.provenance["evolve_membership_ids"]
+        )
+        assert len([item for item in node_runs if item.node_id == "evolve-finalize"]) == 1
+        for battle in battles:
+            attempts = await owner.run_store.list_attempts(battle.node_run_id)
+            assert len(attempts) == 1
+            assert attempts[0].status is AttemptStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_missing_has_more_successor_fails_before_recording_unroutable_battle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hive_conductor.services.evolution_graph as evolution_graph
+
+    original_build_graph = evolution_graph._build_graph
+
+    def _malformed_graph(**kwargs: Any):
+        graph = original_build_graph(**kwargs)
+        graph.edges = [
+            edge
+            for edge in graph.edges
+            if not (edge.from_node == "evolve-battle-1" and edge.to_node == "evolve-battle-2")
+        ]
+        return graph
+
+    monkeypatch.setattr(cycle_module, "EvolutionCycle", _Cycle)
+    monkeypatch.setattr(evolution_graph, "_build_graph", _malformed_graph)
+    population = _Population([_Genome(f"g{index}") for index in range(1, 5)])
+    tournament = _Tournament()
+    owner = await _container()
+
+    record = await run_canonical_evolution_cycle(
+        population=population,
+        tournament=tournament,
+        config=_config(population_size=5, eval_batch_size=4),
+        harness=_Harness(),
+        container=owner,
+    )
+
+    assert record.run.status is RunStatus.FAILED
+    assert "has no executable successor" in (record.run.error or "")
+    assert tournament.battles == []
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert [item.node_id for item in node_runs] == [
+        "evolve-evaluate-1",
+        "evolve-evaluate-2",
+        "evolve-evaluate-3",
+        "evolve-evaluate-4",
+        "evolve-plan-pairs",
+        "evolve-battle-1",
+    ]
+    assert all(item.status is RunStatus.COMPLETED for item in node_runs[:-1])
+    assert node_runs[-1].status is RunStatus.FAILED
+    assert not any(item.node_id == "evolve-finalize" for item in node_runs)
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 from hive_conductor.services.design_preview import DesignPreviewService
 
 from maistro_design.trust import TrustTier
@@ -100,105 +101,25 @@ os.system('echo safe');
         assert result["valid"]
 
 
-class TestRenderJobs:
-    """Test async render job management."""
-
-    def test_create_render_job(self, preview_service: DesignPreviewService) -> None:
-        """Test creating a render job."""
-        from maistro_design.types import OutputFormat
-
-        job = preview_service.create_render_job("project-123", OutputFormat.PDF)
-
-        assert job.job_id is not None
-        assert job.project_id == "project-123"
-        assert job.format == OutputFormat.PDF
-        assert job.status == "pending"
-        assert job.url is None
-        assert job.error is None
-
-    def test_get_render_job(self, preview_service: DesignPreviewService) -> None:
-        """Test retrieving a render job."""
-        from maistro_design.types import OutputFormat
-
-        created = preview_service.create_render_job("project-456", OutputFormat.PPTX)
-        retrieved = preview_service.get_render_job(created.job_id)
-
-        assert retrieved is not None
-        assert retrieved.job_id == created.job_id
-        assert retrieved.project_id == "project-456"
-
-    def test_get_nonexistent_job(self, preview_service: DesignPreviewService) -> None:
-        """Test that getting a nonexistent job returns None."""
-        assert preview_service.get_render_job("nonexistent") is None
-
-    def test_update_render_job_status(self, preview_service: DesignPreviewService) -> None:
-        """Test updating a render job status."""
-        from maistro_design.types import OutputFormat
-
-        job = preview_service.create_render_job("project-789", OutputFormat.PDF)
-
-        updated = preview_service.update_render_job(
-            job.job_id, status="rendering", url=None, error=None
-        )
-
-        assert updated is not None
-        assert updated.status == "rendering"
-
-    def test_update_job_to_completed(self, preview_service: DesignPreviewService) -> None:
-        """Test marking a job as completed with URL."""
-        from maistro_design.types import OutputFormat
-
-        job = preview_service.create_render_job("project-abc", OutputFormat.DOCX)
-
-        updated = preview_service.update_render_job(
-            job.job_id,
-            status="completed",
-            url="https://storage.example.com/project-abc-render.docx",
-            error=None,
-        )
-
-        assert updated is not None
-        assert updated.status == "completed"
-        assert updated.url == "https://storage.example.com/project-abc-render.docx"
-
-    def test_render_job_to_dict(self, preview_service: DesignPreviewService) -> None:
-        """Test serializing a render job to dict."""
-        from maistro_design.types import OutputFormat
-
-        job = preview_service.create_render_job("project-xyz", OutputFormat.PNG)
-        job_dict = job.to_dict()
-
-        assert "job_id" in job_dict
-        assert "project_id" in job_dict
-        assert "format" in job_dict
-        assert "status" in job_dict
-        assert "created_at" in job_dict
-        assert "updated_at" in job_dict
-
-
 class TestRenderStubs:
-    """Test server-side render method stubs (Phase 2).
+    """Rendering is rejected until canonical storage and serving exist.
 
-    Requires optional render packages: weasyprint, python-pptx, python-docx.
+    Rendering remains unavailable until durable artifact ownership is implemented.
     """
 
     @pytest.mark.asyncio
-    async def test_render_to_pdf_stub(self, preview_service: DesignPreviewService) -> None:
-        """Test PDF render stub returns URL."""
-        pytest.importorskip("weasyprint")
-        url = await preview_service.render_to_pdf("<html>Test</html>", {})
-        assert url.endswith(".pdf")
-
-    @pytest.mark.asyncio
-    async def test_render_to_pptx_stub(self, preview_service: DesignPreviewService) -> None:
-        """Test PPTX render stub returns URL."""
-        pytest.importorskip("pptx")
-        url = await preview_service.render_to_pptx("<slides>Test</slides>", {})
-        assert url.endswith(".pptx")
-
-    @pytest.mark.asyncio
-    async def test_render_to_docx_stub(self, preview_service: DesignPreviewService) -> None:
-        """Test DOCX render stub returns URL."""
-        pytest.importorskip("docx")
-        url = await preview_service.render_to_docx("<doc>Test</doc>", {})
-        assert url.endswith(".docx")
+    @pytest.mark.parametrize(
+        ("method_name", "format_name"),
+        [("render_to_pdf", "PDF"), ("render_to_pptx", "PPTX"), ("render_to_docx", "DOCX")],
+    )
+    async def test_render_methods_report_unavailable_without_discarding_bytes(
+        self,
+        preview_service: DesignPreviewService,
+        method_name: str,
+        format_name: str,
+    ) -> None:
+        """Render helpers must not claim a URL without durable artifact storage."""
+        with pytest.raises(HTTPException) as raised:
+            await getattr(preview_service, method_name)("content", {})
+        assert raised.value.status_code == 501
+        assert format_name in str(raised.value.detail)

@@ -15,6 +15,8 @@ import os
 from collections.abc import AsyncIterator, Collection
 from typing import Any
 
+from fastapi import HTTPException
+
 from hive_conductor.adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
 from hive_conductor.adapters.telemetry_langfuse import telemetry
 from hive_conductor.config import get_settings
@@ -41,6 +43,7 @@ from hive_conductor.services.chat_gate import (
     new_gate_id,
     refusal_content,
 )
+from hive_conductor.services.owned_records import Owner, owned_memory_entries
 from hive_conductor.services.secrets import litellm_api_key as _resolve_litellm_api_key
 from hive_conductor.services.tool_primitives import (
     AIRTABLE_PROVIDER_IDS,
@@ -49,6 +52,7 @@ from hive_conductor.services.tool_primitives import (
     ToolCallContext,
     ToolCredentialResolver,
 )
+
 from maistro.http import shared_client
 
 logger = logging.getLogger("hive.chat")
@@ -189,7 +193,7 @@ def _single_user_airtable_env_enabled(user_id: str) -> bool:
     if os.environ.get("AIRTABLE_SINGLE_USER_MODE", "").lower() not in {"1", "true", "yes"}:
         return False
     try:
-        import stores
+        import hive_conductor.stores as stores
 
         principals = tuple(stores.users.keys())
         return len(principals) <= 1 and (not principals or user_id in principals)
@@ -632,12 +636,16 @@ PM_TOOLS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "dag_id": {"type": "string", "description": "The DAG workflow ID to run"},
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "The authorized Workspace in which to run the workflow",
+                    },
                     "goal": {
                         "type": "string",
                         "description": "Optional goal/context to pass to the DAG nodes",
                     },
                 },
-                "required": ["dag_id"],
+                "required": ["dag_id", "workspace_id"],
             },
         },
     },
@@ -1258,9 +1266,7 @@ async def _tool_memory_add(
         created_at=t,
         updated_at=t,
     )
-    import hive_conductor.stores as stores
-
-    stores.memory_entries[eid] = entry
+    owned_memory_entries(Owner(id=user_id)).create(eid, entry)
     return {"saved": True, "id": eid, "content": content}
 
 
@@ -1300,10 +1306,8 @@ async def _tool_memory_search(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Search memories."""
-    import hive_conductor.stores as stores
-
     query = args.get("query", "").lower()
-    entries = [e for e in stores.memory_entries.values() if e.user_id == user_id]
+    entries = owned_memory_entries(Owner(id=user_id)).values()
     if query:
         entries = [
             e
@@ -1325,13 +1329,10 @@ async def _tool_memory_delete(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Delete a memory entry."""
-    import hive_conductor.stores as stores
-
     entry_id = args.get("entry_id", "")
     if not entry_id:
         return {"error": "entry_id required"}
-    if entry_id in stores.memory_entries and stores.memory_entries[entry_id].user_id == user_id:
-        del stores.memory_entries[entry_id]
+    if owned_memory_entries(Owner(id=user_id)).discard(entry_id):
         return {"deleted": True, "id": entry_id}
     return {"error": "not found"}
 
@@ -1340,21 +1341,21 @@ async def _tool_memory_edit(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Edit a memory entry."""
-    import hive_conductor.stores as stores
-
     entry_id = args.get("entry_id", "")
     value = args.get("value", "")
     if not entry_id or not value:
         return {"error": "entry_id and value required"}
-    if entry_id not in stores.memory_entries or stores.memory_entries[entry_id].user_id != user_id:
+    owned = owned_memory_entries(Owner(id=user_id))
+    try:
+        entry = owned.require(entry_id)
+    except HTTPException:
         return {"error": "not found"}
     from datetime import UTC, datetime
 
-    entry = stores.memory_entries[entry_id]
     updates: dict[str, Any] = {"value": value, "key": value[:60], "updated_at": datetime.now(UTC)}
     if "tags" in args:
         updates["tags"] = args["tags"]
-    stores.memory_entries[entry_id] = entry.model_copy(update=updates)
+    owned.update(entry_id, entry.model_copy(update=updates))
     return {"updated": True, "id": entry_id, "value": value}
 
 
@@ -1528,6 +1529,7 @@ async def _tool_run_workflow(
         return {"error": f"DAG '{dag_id}' not found. Use list_workflows to see available DAGs."}
 
     dag_data = stores.dags[dag_id]
+    workspace_id = str(args.get("workspace_id") or "").strip()
     goal = args.get("goal", "")
     if goal:
         dag_data = {**dag_data, "description": goal}
@@ -1542,21 +1544,19 @@ async def _tool_run_workflow(
     # whether the graph itself finished, so only that decides the status.
     executed = False
     try:
-        from hive_conductor.services.canonical_dag_runner import resolve_execution_scope
+        from hive_conductor.services.dag_execution_scope import authorize_hive_dag_scope
         from hive_conductor.services.dag_run_store import get_dag_run_store
         from hive_conductor.services.graph_runner import execute_dag
 
-        # The projection row opens before execution, so it must already carry
-        # the scope the execution will resolve -- resolved here by the same
-        # resolver `execute_dag` uses, never a second mapping (#1174).
-        workspace_id, project_id = await resolve_execution_scope(dag_data)
+        scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id=user_id)
+        project_id = scope.project_id
         store = get_dag_run_store()
         await store.start_run(
             run_id=exec_id,
             workspace_id=workspace_id,
             project_id=project_id,
         )
-        result = await execute_dag(dag_data, user_id=user_id)
+        result = await execute_dag(dag_data, scope=scope)
         executed = True
 
         # Store events

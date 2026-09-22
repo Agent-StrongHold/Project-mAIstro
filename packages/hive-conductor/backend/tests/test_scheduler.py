@@ -10,6 +10,7 @@ fire into a Run.
 from __future__ import annotations
 
 import asyncio
+import logging
 import pathlib
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -1208,7 +1209,7 @@ def _canonical_row(sid: str = "s-canonical-manual", max_runs: int | None = None)
 
 
 def _with_container(monkeypatch: pytest.MonkeyPatch, container: Any) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: container))
 
@@ -1219,8 +1220,8 @@ def test_a_manual_fire_in_production_enters_the_canonical_admitter(
     """#1119: the configured route resolves the real scope through the
     admitter — the recurring loop's authority, no synthetic identities, and no
     compatibility execution beside the canonical Run."""
-    import stores
-    from services.scheduler import fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import fire_now
 
     async def scenario() -> None:
         container, root = await _canonical_manual_fixture()
@@ -1276,9 +1277,9 @@ def test_a_manual_fire_primes_the_durable_template_from_the_registry(
     """A template not yet in the store is migrated from the registry exactly as
     a recurring tick would prime it — the registry is a migration source, never
     the execution authority."""
-    import stores
-    from services.dag_agents import get_registry
-    from services.scheduler import fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.dag_agents import get_registry
+    from hive_conductor.services.scheduler import fire_now
 
     async def scenario() -> None:
         container, _root = await _canonical_manual_fixture(template=False)
@@ -1316,8 +1317,8 @@ def test_a_manual_fire_with_no_durable_template_refuses_and_keeps_state(
 ) -> None:
     """Neither the store nor the registry names the target: the product refusal,
     with cursor and row exactly as they were."""
-    import stores
-    from services.scheduler import ScheduleNotFireable, fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import ScheduleNotFireable, fire_now
 
     async def scenario() -> None:
         container, _root = await _canonical_manual_fixture(template=False)
@@ -1354,7 +1355,7 @@ def test_manual_canonical_fire_refuses_each_non_run_outcome(
     monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     """Every canonical refusal is explicit and leaves execution uncreated."""
-    from services.scheduler import ScheduleNotFireable, _ScheduleRunner
+    from hive_conductor.services.scheduler import ScheduleNotFireable, _ScheduleRunner
 
     from maistro.graph.templates import GraphTemplateNotFound
 
@@ -1422,8 +1423,8 @@ def test_a_half_wired_container_fails_closed_instead_of_degrading(
 ) -> None:
     """A Container missing a collaborator must not silently fire through the
     compatibility path — that is the second authority #1119 retires."""
-    import stores
-    from services.scheduler import ScheduleAdmissionUnavailable, fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import ScheduleAdmissionUnavailable, fire_now
 
     async def scenario() -> None:
         container, _root = await _canonical_manual_fixture()
@@ -1447,8 +1448,8 @@ def test_a_manual_fire_spends_the_bound_on_the_canonical_cursor(
 ) -> None:
     """`max_runs` binds manual fires on the canonical store, and the disable
     reaches both the canonical definition and the product row."""
-    import stores
-    from services.scheduler import ScheduleNotFireable, fire_now
+    import hive_conductor.stores as stores
+    from hive_conductor.services.scheduler import ScheduleNotFireable, fire_now
 
     async def scenario() -> None:
         container, _root = await _canonical_manual_fixture()
@@ -1661,3 +1662,81 @@ def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh(
     recorded = asyncio.run(store.get("s-refresh"))
     assert recorded is not None and recorded.runs_so_far == 1
     assert recorded.next_due_at == noon + timedelta(hours=1)
+
+
+@pytest.mark.parametrize("winner", ["run-the-cursor-lost", None])
+def test_the_tick_reports_a_live_run_the_cursor_never_named(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, winner: str | None
+) -> None:
+    """#1059: the tick reports the winner `last_run_id` does not name.
+
+    A ticker that died before `record_fire` left its Run live and the pointer
+    empty, so the admitter resolves that Run itself and hands it back as
+    `active_run_id`. The tick's log is the only place an operator can see that
+    overlap was judged against a Run the cursor never named -- and, under
+    CANCEL_OTHER, which Run the admitter asked to cancel.
+
+    Both arms, because the ordinary tick reports nothing: an evaluation that
+    found no such Run must stay silent rather than logging an absent winner.
+    """
+    from hive_conductor.services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        runner = _ScheduleRunner()
+        schedule = _canonical_row()
+
+        async def _get(_sid: Any) -> None:
+            return None
+
+        container = SimpleNamespace(schedule_store=SimpleNamespace(get=_get))
+
+        async def scope(_schedule: Any, _container: Any) -> object:
+            return object()
+
+        async def definition(*_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(exhausted=False, max_runs=3)
+
+        async def prime(_definition: Any, _container: Any) -> None:
+            return None
+
+        async def active(_definition: Any, _container: Any) -> bool:
+            return True
+
+        async def audit(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        class _AdmitterReportingTheWinner:
+            async def admit_due(self, *_args: Any, **_kwargs: Any) -> Any:
+                return SimpleNamespace(
+                    skipped=[],
+                    already_fired=[],
+                    active_run_id=winner,
+                    cancel_active_run=True,
+                    failures=[],
+                    run_ids=[],
+                )
+
+        monkeypatch.setattr(runner, "_canonical_scope", scope)
+        monkeypatch.setattr(runner, "_definition_for", definition)
+        monkeypatch.setattr(runner, "_prime_template", prime)
+        monkeypatch.setattr(runner, "_canonical_active_run", active)
+        monkeypatch.setattr(runner, "_audit_canonical_admission", audit)
+
+        admitter: Any = _AdmitterReportingTheWinner()
+        with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            await runner._evaluate_canonical(
+                "s-1059",
+                schedule,
+                now=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                container=container,
+                admitter=admitter,
+            )
+
+        if winner is None:
+            assert "the cursor did not name" not in caplog.text
+        else:
+            assert winner in caplog.text
+            assert "the cursor did not name" in caplog.text
+            assert "cancel requested: True" in caplog.text
+
+    asyncio.run(scenario())

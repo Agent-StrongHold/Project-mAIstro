@@ -139,7 +139,7 @@ class TestPathContainment:
     ) -> None:
         """A prefix test without the separator would read `/srv/rsi-evil` as a
         child of `/srv/rsi`."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         root = tmp_path / "root"
         root.mkdir()
@@ -162,7 +162,7 @@ class TestPathContainment:
         and the obvious way out of that refusal is to widen the root, which is
         the opposite of what this module is for.
         """
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         real = tmp_path / "real"
         repo = real / "repo"

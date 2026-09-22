@@ -353,7 +353,7 @@ def test_model_store_setitem_refused_write_leaves_memory_unchanged() -> None:
     persistence failure followed, so a 200-response route could serve a value
     that vanished — or a deleted record resurrected — after restart.
     """
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     p = _FailingPersisted()
     s = ModelStore("ms", _Model, persisted=p)
@@ -365,7 +365,7 @@ def test_model_store_setitem_refused_write_leaves_memory_unchanged() -> None:
 
 
 def test_json_store_setitem_refused_write_leaves_memory_unchanged() -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     p = _FailingPersisted()
     s = JsonStore("js", persisted=p)
@@ -378,7 +378,7 @@ def test_json_store_setitem_refused_write_leaves_memory_unchanged() -> None:
 
 def test_model_store_pop_refused_delete_keeps_record_addressable() -> None:
     """A delete that raised leaves the parent in memory, addressable/retryable."""
-    from services.model_store import ModelStore
+    from hive_conductor.services.model_store import ModelStore
 
     p = _FailingPersisted()
     s = ModelStore("ms", _Model, persisted=p)

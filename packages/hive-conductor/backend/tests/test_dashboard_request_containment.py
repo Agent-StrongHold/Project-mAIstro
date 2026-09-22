@@ -234,12 +234,12 @@ class TestDemoDashboardIdsStayInsideTheDemoDirectory:
         ["../../../etc/passwd", "..", "demo/../../secret", "/etc/passwd", "a b", "x" * 65],
     )
     async def test_a_path_shaped_id_is_not_found(self, demo_id: str) -> None:
-        from routes.dashboard_layout import get_demo_dashboard
+        from hive_conductor.routes.dashboard_layout import get_demo_dashboard
 
         assert await get_demo_dashboard(demo_id) == {"error": "not found"}
 
     async def test_an_unknown_bare_id_is_not_found(self) -> None:
-        from routes.dashboard_layout import get_demo_dashboard
+        from hive_conductor.routes.dashboard_layout import get_demo_dashboard
 
         assert await get_demo_dashboard("no-such-demo") == {"error": "not found"}
 
@@ -247,7 +247,7 @@ class TestDemoDashboardIdsStayInsideTheDemoDirectory:
         """The containment check must refuse traversal without also refusing
         the shipped demos -- a guard that returns "not found" for everything
         passes every test above and breaks the feature."""
-        from routes.dashboard_layout import get_demo_dashboard
+        from hive_conductor.routes.dashboard_layout import get_demo_dashboard
 
         layout = await get_demo_dashboard("pm-operations")
 

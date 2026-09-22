@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
-
 import hive_conductor.stores as stores
 from hive_conductor.models.schemas import (
     ChatCompletionRequest,
@@ -14,6 +13,7 @@ from hive_conductor.models.schemas import (
     ChatSession,
     ChatSessionSummary,
 )
+from hive_conductor.services.brief_chat import brief_turn
 from hive_conductor.services.chat_completion import build_llm_port
 from hive_conductor.services.chat_completion import conversation_only as _conversation_only
 from hive_conductor.services.chat_gate import (
@@ -24,6 +24,7 @@ from hive_conductor.services.chat_gate import (
     openai_refusal,
 )
 from hive_conductor.services.owned_records import chat_sessions_for
+from hive_conductor.services.program_hyperagent import user_id_from_request
 
 router = APIRouter(tags=["chat"])
 
@@ -147,6 +148,26 @@ async def _gate_messages(req: ChatCompletionRequest, request: Request, surface: 
     return openai_refusal(decision)
 
 
+async def _interview_turn(req: ChatCompletionRequest, request: Request):
+    """The brief interview's answer to this turn, when it is the interview's to answer.
+
+    A turn in a workspace that asks for work opens the interview
+    (SPEC-091726-7c2a); while one is open, every turn there is an answer to
+    it. The reply comes after the Warden boundary and instead of the model:
+    the interview is deterministic and writes nothing but its own state.
+    """
+    extra = req.model_extra or {}
+    workspace_id = extra.get("workspace_id")
+    if not isinstance(workspace_id, str) or not workspace_id:
+        return None
+    last_user = next(
+        (m.get("content") for m in reversed(req.messages) if m.get("role") == "user"), None
+    )
+    if not isinstance(last_user, str):
+        return None
+    return await brief_turn(user_id_from_request(request), workspace_id, last_user)
+
+
 @router.post("/complete")
 async def complete(req: ChatCompletionRequest, request: Request) -> dict:
     """Non-streaming conversational completion; model-driven tools are M0-disabled."""
@@ -158,6 +179,12 @@ async def complete(req: ChatCompletionRequest, request: Request) -> dict:
     refusal = await _gate_messages(req, request, "chat_complete")
     if refusal is not None:
         return refusal
+    turn = await _interview_turn(req, request)
+    if turn is not None:
+        return {
+            "choices": [{"message": {"role": "assistant", "content": turn.text}}],
+            "brief": turn.payload(),
+        }
     messages = list(req.messages)
     if not any(message.get("role") == "system" for message in messages):
         messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
@@ -194,6 +221,14 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    turn = await _interview_turn(req, request)
+    if turn is not None:
+        return StreamingResponse(
+            _brief_events(turn),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     async def event_gen():
         try:
             messages = list(req.messages)
@@ -214,6 +249,17 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _brief_events(turn):
+    """The interview's SSE frames: the brief so far, then the reply as `done`."""
+    import json
+
+    async def gen():
+        yield f"data: {json.dumps(turn.payload())}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'content': turn.text})}\n\n"
+
+    return gen()
 
 
 def _single_done_event(content: str):

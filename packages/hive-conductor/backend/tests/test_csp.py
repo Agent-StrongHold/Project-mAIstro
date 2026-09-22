@@ -192,9 +192,13 @@ class TestThePolicyMatchesWhatTheFrontEndLoads:
         )
         manifest = json.loads((_FRONTEND / "package.json").read_text(encoding="utf-8"))
 
+        stacks += "".join(
+            path.read_text(encoding="utf-8") for path in (_FRONTEND / "src").rglob("*.tsx")
+        )
         for family, package in (
-            ("Inter Variable", "@fontsource-variable/inter"),
+            ("Bricolage Grotesque Variable", "@fontsource-variable/bricolage-grotesque"),
             ("JetBrains Mono Variable", "@fontsource-variable/jetbrains-mono"),
+            ("Inter Variable", "@fontsource-variable/inter"),
         ):
             assert family in stacks, f"no stack asks for {family}"
             assert package in manifest["dependencies"], f"{family} has no shipped source"

@@ -258,8 +258,8 @@ async def list_design_systems() -> dict[str, Any]:
 
     Returns:
       {systems: [{slug, name, description, origin, trust_tier, color_count,
-       spacing_count}], catalog: {available, cause, count}, ready, cause,
-       bundled_count}
+       spacing_count, personas}], catalog: {available, cause, count}, ready,
+       cause, bundled_count}
     """
     status = _require_ready()
     engine = get_design_engine()
@@ -272,6 +272,9 @@ async def list_design_systems() -> dict[str, Any]:
             "trust_tier": s.trust_tier.value,
             "color_count": len(s.colors),
             "spacing_count": len(s.spacing),
+            # The persona contract a first-party system advertises
+            # (ADR-091626-ba4f); None for the vendored brand systems.
+            "personas": s.metadata.get("personas"),
         }
         for s in sorted(engine.systems.list_all(), key=lambda s: s.slug)
     ]
@@ -302,50 +305,37 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
 async def create_render_job(
     project_id: str, request: Request, format: str = "pdf"
 ) -> dict[str, Any]:
-    """Request server-side rendering of a project output.
+    """Reject rendering until its canonical worker and artifact path exist.
 
-    Validates code (for T3 artifacts), creates async render job.
-    Returns immediately with job_id for polling.
-
-    Query params:
-      format: output format (pdf, pptx, docx, png)
-
-    Returns:
-      {job_id, status, created_at}
+    The ownership lookup is intentionally retained below so this unavailable
+    capability cannot become a project-id probing endpoint.
     """
     _require_ready()
     org_id = _get_org_id(request)
     try:
-        from hive_conductor.services.design_preview import get_design_preview_service
-        from maistro_design.types import OutputFormat
-
         store = get_design_store()
-        preview_svc = get_design_preview_service()
+        if store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Design persistence not configured (DATABASE_URL not set)",
+            )
 
-        # Fetch project, within the caller's scope: rendering another org's
-        # project would return its content through a route that never asked
-        # whose it was.
+        # Keep the ownership check even while rendering is unavailable. A
+        # disabled capability must not become a way to probe project ids.
         project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-        # Validate format
-        try:
-            output_format = OutputFormat(format)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported format: {format}. Allowed: pdf, pptx, docx, png",
-            ) from None
-
-        # Create render job
-        job = preview_svc.create_render_job(project_id, output_format)
-        return {
-            "job_id": job.job_id,
-            "status": job.status,
-            "format": output_format,
-            "created_at": job.created_at.isoformat(),
-        }
+        # There is no worker or durable artifact-serving path yet. In
+        # particular, do not create an in-memory pending job that can never
+        # advance or claim a URL whose bytes were discarded.
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Design rendering is unavailable: no canonical renderer, durable "
+                "artifact store, or output-serving route is configured"
+            ),
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -354,29 +344,12 @@ async def create_render_job(
 
 @router.get("/projects/{project_id}/render/{job_id}")
 async def get_render_job_status(project_id: str, job_id: str) -> dict[str, Any]:
-    """Poll render job status and get download URL when ready.
-
-    Returns:
-      {job_id, status, url, error, created_at, updated_at}
-
-    Status: pending | rendering | completed | failed
-    """
-    try:
-        from hive_conductor.services.design_preview import get_design_preview_service
-
-        preview_svc = get_design_preview_service()
-        job = preview_svc.get_render_job(job_id)
-
-        if not job:
-            raise HTTPException(status_code=404, detail=f"Render job {job_id} not found")
-
-        if job.project_id != project_id:
-            raise HTTPException(
-                status_code=403, detail="Render job does not belong to this project"
-            )
-
-        return job.to_dict()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from None
+    """Report that render status is unavailable until a durable job exists."""
+    del project_id, job_id
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Design rendering is unavailable: no canonical renderer, durable "
+            "job store, or output-serving route is configured"
+        ),
+    )

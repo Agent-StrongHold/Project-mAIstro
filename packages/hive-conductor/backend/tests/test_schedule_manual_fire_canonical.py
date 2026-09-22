@@ -48,7 +48,7 @@ def _descriptor() -> dict[str, Any]:
 
 
 def _row() -> Any:
-    from models.schemas import Schedule
+    from hive_conductor.models.schemas import Schedule
 
     now = datetime.now(UTC)
     return Schedule(
@@ -71,13 +71,13 @@ def _row() -> Any:
 
 
 def _install(row: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
 
 
 def _remove() -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.schedules._data.pop(_SID, None)  # type: ignore[attr-defined]
 
@@ -105,8 +105,8 @@ def test_manual_fire_over_http_creates_one_canonical_run(
 ) -> None:
     """AC: canonical Workspace/Project/Run identities, provenance, actor, and
     exactly one Run for the accepted request."""
-    from config import get_settings
-    from services.dag_agents import get_registry
+    from hive_conductor.config import get_settings
+    from hive_conductor.services.dag_agents import get_registry
 
     from maistro.runs.model import RunStatus
 
@@ -155,7 +155,7 @@ def test_manual_fire_over_http_creates_one_canonical_run(
 
         asyncio.run(assert_canonical())
 
-        import stores
+        import hive_conductor.stores as stores
 
         audit_targets = [
             entry for entry in list(stores.audit_log.values()) if entry.get("target") == _SID

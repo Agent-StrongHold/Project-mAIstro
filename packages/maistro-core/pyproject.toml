@@ -34,7 +34,7 @@ maistro = "maistro.cli:main"
 [project.optional-dependencies]
 llm = [
     # Resolves at 3.x in the workspace lock; >=2.0 remains the true floor.
-    "fastmcp>=3.2.0,<4",
+    "fastmcp>=3.2.0,<5",
 ]
 # The sandbox tool drives the `docker` CLI via subprocess, not the Python SDK,
 # so it needs no pip dependency. Kept as an explicit (empty) extra for clarity.

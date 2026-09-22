@@ -59,6 +59,19 @@ This stub does not ship an application database. If you add **LiteLLM** (or any 
 
 The **Install** page (`/install`) calls **`GET /v1/install/session`** (defaults template), **`POST /v1/install/session`** (merge partial answers), and **`POST /v1/install/plan`** (full plan JSON). In a **monorepo checkout** the API loads `maistro-bootstrap` from disk; the standalone Docker image **503**s these routes until bootstrap is bundled (use the CLI from the host instead). See [SPEC-180](../../docs/specs/SPEC-180-maistro-install-bootstrap.md).
 
+## Registration Policy
+
+Public self-registration is **closed by default** after the one-time setup wizard creates the first admin and daily user. The setup endpoint is a bootstrap-only path; it cannot be used to replace accounts after setup or partial initialization, including across a restart. A missing or corrupted policy record also fails closed.
+
+An administrator can explicitly manage the active policy after signing in:
+
+- `GET /v1/auth/registration/policy` reports the current mode and record health.
+- `PUT /v1/auth/registration/policy` with `{"mode":"open"}` enables public user registration; use `{"mode":"closed"}` to disable it again. The change is durable and audited.
+- `POST /v1/auth/registration/invitations` issues a single-use, expiring invitation. The token is shown only in the response and is stored as a digest; share it with the intended user.
+- `GET /v1/auth/registration/invitations` lists invitation status and metadata, never invitation tokens.
+
+Unauthenticated clients may read only `GET /v1/setup/status`, which exposes the setup state and active mode needed by the login surface. It does not disclose account names or counts. Invitation registration remains available while public mode is closed; the first owner can only be created by setup.
+
 ## SPEC
 
 See [docs/specs/SPEC-176-hive-conductor-package.md](../../docs/specs/SPEC-176-hive-conductor-package.md) and [SPEC-180](../../docs/specs/SPEC-180-maistro-install-bootstrap.md).

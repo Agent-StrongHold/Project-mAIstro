@@ -173,7 +173,7 @@ def _workspace_for_run(client: Any, run_id: str) -> str:
 
 
 async def _seed_run(workspace_id: str, run_id: str, project_id: str) -> None:
-    from services.dag_run_store import get_dag_run_store
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     await get_dag_run_store().start_run(
         run_id=run_id,
@@ -314,7 +314,7 @@ def test_feedback_route_comment_too_long_returns_422(
 async def test_collect_thumbs_scopes_a_sqlite_store_by_org_and_project() -> None:
     aiosqlite = pytest.importorskip("aiosqlite")
     import services.feedback_service as svc
-    from services.feedback_service import collect_thumbs, record_thumb
+    from hive_conductor.services.feedback_service import collect_thumbs, record_thumb
 
     from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
 

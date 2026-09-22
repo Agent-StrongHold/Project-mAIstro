@@ -299,21 +299,21 @@ class TestRovoUrlIsMatchedByHost:
     in the URL (CodeQL py/incomplete-url-substring-sanitization)."""
 
     def test_the_rovo_host_and_its_subdomains_match(self) -> None:
-        from services.mcp_defaults import is_atlassian_rovo_url
+        from hive_conductor.services.mcp_defaults import is_atlassian_rovo_url
 
         assert is_atlassian_rovo_url("https://mcp.atlassian.com/v1/sse") is True
         assert is_atlassian_rovo_url("https://eu.mcp.atlassian.com/v1/sse") is True
         assert is_atlassian_rovo_url("HTTPS://MCP.ATLASSIAN.COM/") is True
 
     def test_the_host_elsewhere_in_the_url_does_not_match(self) -> None:
-        from services.mcp_defaults import is_atlassian_rovo_url
+        from hive_conductor.services.mcp_defaults import is_atlassian_rovo_url
 
         assert is_atlassian_rovo_url("https://evil.example/?next=mcp.atlassian.com") is False
         assert is_atlassian_rovo_url("https://mcp.atlassian.com.evil.example/") is False
         assert is_atlassian_rovo_url("https://evilmcp.atlassian.com/") is False
 
     def test_malformed_and_empty_urls_do_not_match_or_raise(self) -> None:
-        from services.mcp_defaults import is_atlassian_rovo_url
+        from hive_conductor.services.mcp_defaults import is_atlassian_rovo_url
 
         assert is_atlassian_rovo_url("") is False
         # An unterminated IPv6 literal: `urlparse` raises rather than

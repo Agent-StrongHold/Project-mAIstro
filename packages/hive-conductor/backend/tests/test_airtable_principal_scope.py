@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import stores
-from routes import widgets
-from services import chat_completion
-from services import user_credentials as cred_svc
+import hive_conductor.stores as stores
+from hive_conductor.routes import widgets
+from hive_conductor.services import chat_completion
+from hive_conductor.services import user_credentials as cred_svc
 
 
 class _NonIterableConfig(dict[str, object]):
