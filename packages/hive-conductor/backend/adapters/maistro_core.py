@@ -180,22 +180,31 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     # Root Project id is minted during container wiring, so the bridge scopes
     # the deployment's declared default binding to (default Workspace, Root
     # Project) -- the scope `authorize_hive_dag_scope` admits DAG runs into
-    # when no Project is selected -- by putting it into the canonical Binding
-    # store the container owns. No second store is created; a stored DAG that
-    # names its own `binding_id` still resolves against this same authority.
+    # when no Project is selected. The declaration loads through maistro-core's
+    # own `bootstrap_model_bindings` authority (the same loader operator
+    # config uses), not a bridge-private Binding mint: no second store is
+    # created, and an empty declaration provisions nothing, leaving stored
+    # DAG nodes that name no Binding to fail closed. A stored DAG that names
+    # its own `binding_id` still resolves against this same authority.
     default_binding_id = settings.maistro_model_binding_id.strip()
     if default_binding_id:
-        from maistro.capabilities.binding import Binding
-        from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+        from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+        from maistro.types.config import ModelBindingConfig
 
         root_project = await container.project_scope_store.create_root(config.workspace_id)
-        await container.capability_effects.bindings.put(
-            Binding(
-                binding_id=default_binding_id,
-                workspace_id=config.workspace_id,
-                project_id=root_project.project_id,
-                capability=MODEL_CHAT_CAPABILITY,
-            )
+        await bootstrap_model_bindings(
+            config.model_copy(
+                update={
+                    "model_bindings": [
+                        ModelBindingConfig(
+                            binding_id=default_binding_id,
+                            workspace_id=config.workspace_id,
+                            project_id=root_project.project_id,
+                        )
+                    ]
+                }
+            ),
+            container.capability_effects,
         )
 
     llm_client = _HttpOpenAILLMClient(

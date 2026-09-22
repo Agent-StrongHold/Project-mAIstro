@@ -576,6 +576,21 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
     run_store = container.run_store
     durable_store = container.graph_run_store
     effects = container.capability_effects
+    # Registry metadata for the pinned model, so the Invocation's usage
+    # evidence carries computed cost (an unregistered model leaves cost
+    # absent-not-zero; #1085 wants provider/model AND available usage/cost
+    # metadata on the durable evidence).
+    from maistro.providers.types import ModelMetadata
+
+    container.provider_registry.register_model(
+        ModelMetadata(
+            name="legacy-model",
+            provider="legacy-provider",
+            cost_per_1k_input=1.0,
+            cost_per_1k_output=2.0,
+            latency_p50_ms=100,
+        )
+    )
 
     import services.canonical_dag_runner as canonical
     import services.graph_runner as facade
@@ -618,6 +633,8 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
     assert invocation.usage.model_version == "legacy-model-v2"
     assert invocation.usage.input_units == 3
     assert invocation.usage.output_units == 5
+    assert invocation.usage.provider == "legacy-provider"
+    assert invocation.usage.cost_cents == pytest.approx(3 / 1000 * 1.0 + 5 / 1000 * 2.0)
     run = await run_store.get_run(result["run_id"])
     assert run is not None
     node_runs = await run_store.list_node_runs(result["run_id"])
@@ -630,7 +647,9 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
 async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dispatched gateway failure cannot leave the durable run successful."""
+    """A dispatched gateway failure cannot leave the durable run successful;
+    the owning Attempt records the failure truthfully (terminal, correlated,
+    failed evidence) rather than dangling or reporting success."""
     import httpx
 
     from maistro.capabilities.binding import Binding
@@ -705,6 +724,28 @@ async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
     assert len(node_runs) == 1
     assert node_runs[0].status.value == "failed"
     assert node_runs[0].node_run_id == invocations[0].node_run_id
+    # The owning Attempt must record the failure truthfully too. Reconciled
+    # with ADR-081226-69ee and core's pinned retry semantics (see
+    # maistro-core test_node_retry_attempts: "each visit is one physically
+    # complete try; only the logical outcome differed"), an Attempt is the
+    # PHYSICAL try: it terminalizes COMPLETED carrying the failed NodeResult
+    # evidence, and the authoritative fold turns that into the FAILED
+    # NodeRun/Run above. What is pinned here is the truthfulness contract:
+    # the Attempt is terminal (never dangling RUNNING), correlated to the
+    # failed Invocation, and its persisted evidence reports failure -- a
+    # compatibility adapter cannot report success from a failed effect.
+    from maistro.graph.nodes.base import NodeResult
+    from maistro.runs.model import AttemptStatus
+
+    attempts = await container.run_store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    assert attempt.attempt_id == invocations[0].attempt_id
+    assert attempt.status is AttemptStatus.COMPLETED
+    assert attempt.status is not AttemptStatus.RUNNING
+    attempt_evidence = NodeResult.model_validate(attempt.result)
+    assert attempt_evidence.success is False
+    assert attempt_evidence.status == "failed"
 
 
 @pytest.mark.asyncio

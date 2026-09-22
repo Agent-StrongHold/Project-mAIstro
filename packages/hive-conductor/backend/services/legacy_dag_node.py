@@ -526,11 +526,12 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
     def _deployment_default_binding_id(self) -> str:
         """The operator-declared default Binding (#1085), never a self-grant.
 
-        The bridge provisions `Settings.maistro_model_binding_id` into the
-        canonical Binding store at boot; a node naming no explicit binding
-        resolves that declaration. Without wiring (standalone, no Container)
-        the id is never authorized because resolution never happens -- the
-        node fails closed instead.
+        The bridge provisions the operator's explicit
+        `Settings.maistro_model_binding_id` declaration (empty by default)
+        into the canonical Binding store at boot; a node naming no explicit
+        binding resolves that declaration. Without wiring (standalone, no
+        Container) the id is never authorized because resolution never
+        happens -- the node fails closed instead.
         """
         declared = (
             self._node_env.get("MAISTRO_MODEL_BINDING_ID", "").strip()

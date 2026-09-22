@@ -320,6 +320,10 @@ async def test_start_provisions_the_declared_default_model_binding(monkeypatch):
 
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
     monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    # The production declaration point: the operator states the deployment's
+    # default binding in the environment, where both the bridge's Settings
+    # and the node-side fallback read the SAME declaration.
+    monkeypatch.setenv("MAISTRO_MODEL_BINDING_ID", "hive-default-model")
 
     bridge = MaistroCoreBridge()
     await bridge.start(
@@ -422,15 +426,23 @@ async def test_start_provisions_the_declared_default_model_binding(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_can_disable_the_default_model_binding(monkeypatch):
-    """An operator who states no default binding gets none: nodes naming no
-    binding then fail closed instead of silently re-authorizing (#1085)."""
+async def test_start_without_a_binding_declaration_provisions_nothing(monkeypatch):
+    """#1085 fail-closed default: an operator who declares no default binding
+    gets none. The shipped default is empty -- the bridge never mints the
+    authorization on the operator's behalf -- so a stored DAG model node that
+    names no binding fails closed through the real facade instead of executing
+    on an implicit grant, and no Invocation is ever started."""
 
     async def fake_create_agents(**kwargs: object) -> dict[str, object]:
         return {"wired-agent": SimpleNamespace(identity=None)}
 
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
     monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+    monkeypatch.delenv("MAISTRO_MODEL_BINDING_ID", raising=False)
+
+    # No maistro_model_binding_id: this is exactly what an operator who
+    # configured nothing ships with.
+    assert Settings().maistro_model_binding_id == ""
 
     bridge = MaistroCoreBridge()
     await bridge.start(
@@ -438,10 +450,52 @@ async def test_start_can_disable_the_default_model_binding(monkeypatch):
             maistro_agents_dir="agents",
             litellm_api_base="http://localhost:4000/v1",
             maistro_router_api_key="test-key",
-            maistro_model_binding_id="",
         )
     )
 
     container = bridge.container
     assert container is not None
     assert await container.capability_effects.bindings.get("hive-default-model") is None
+
+    # The same production composition must refuse: a stored DAG model node
+    # with no explicit binding_id and no deployment declaration cannot
+    # authorize a model effect, so the canonical Run fails truthfully and no
+    # Invocation exists (#1085 acceptance: compatibility adapters cannot
+    # report success from an effect they were never authorized to make).
+    import services.canonical_dag_runner as canonical
+    import services.graph_runner as facade
+    from services.dag_execution_scope import DagExecutionScope
+
+    root = await container.project_scope_store.create_root("default")
+    monkeypatch.setattr(canonical, "_container", lambda: container)
+    monkeypatch.setattr(canonical, "get_run_store", lambda: container.graph_run_store)
+
+    from services.graph_runner import CanonicalDagExecutionError
+
+    with pytest.raises(CanonicalDagExecutionError, match="binding") as excinfo:
+        await facade.execute_dag(
+            {
+                "id": "bridge-undeclared",
+                "name": "bridge-undeclared",
+                "description": "undeclared task",
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "name": "worker",
+                        "model": "legacy-model",
+                        "config": {"execution_tier": "safe"},
+                    }
+                ],
+                "edges": [],
+            },
+            scope=DagExecutionScope(
+                workspace_id="default", project_id=root.project_id, user_id="bridge-user"
+            ),
+        )
+
+    result = excinfo.value.result
+    assert result["status"] == "failed"
+    invocations = list(
+        container.capability_effects.invocation_store._items.values()  # type: ignore[attr-defined]
+    )
+    assert invocations == []
