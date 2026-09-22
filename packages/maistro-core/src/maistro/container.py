@@ -2591,8 +2591,8 @@ def build_node_resolver(
     run_store: RunStore | None = None,
     effect_context: CapabilityEffectContext | None = None,
     graph_run_store: DurableRunStore | None = None,
-    provider_registry: "LLMProviderRegistry | None" = None,
-    llm_router: "LLMRouter | None" = None,
+    provider_registry: LLMProviderRegistry | None = None,
+    llm_router: LLMRouter | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 

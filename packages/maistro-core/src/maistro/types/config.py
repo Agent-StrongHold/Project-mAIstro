@@ -147,6 +147,10 @@ class ModelBindingConfig(BaseModel):
     workspace_id: str = ""
     node_id: str = ""
     provider_name: str = ""
+    # Operator kill-switch carried onto the registered Binding: a declared
+    # Binding can be disabled without deleting it, and resolution then refuses
+    # instead of authorizing (#56).
+    disabled: bool = False
     credential_refs: tuple[str, ...] = ()
     policy_refs: tuple[str, ...] = ()
 

@@ -148,6 +148,11 @@ async def visual_quality_eval(
                 },
             ],
             temperature=0.0,
+            # Legacy parity: the pre-migration call constrained the response to
+            # a JSON object so score parsing is a provider guarantee, not a
+            # prompt hope. The governed gateway carries the same field through
+            # to the provider payload.
+            response_format={"type": "json_object"},
         ),
         response_validator=validate,
     )

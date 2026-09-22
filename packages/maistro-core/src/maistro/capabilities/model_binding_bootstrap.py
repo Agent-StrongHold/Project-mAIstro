@@ -33,6 +33,7 @@ async def bootstrap_model_bindings(
             node_id=declared.node_id,
             capability=MODEL_CHAT_CAPABILITY,
             provider_name=declared.provider_name,
+            disabled=declared.disabled,
             credential_refs=declared.credential_refs,
             policy_refs=declared.policy_refs,
         )

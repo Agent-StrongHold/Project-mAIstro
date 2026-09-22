@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from maistro.capabilities.binding_store import BindingNotFound
+from maistro.capabilities.binding_store import BindingDisabled, BindingNotFound
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
 from maistro.container import Container, build_node_resolver, create_container
 from maistro.graph.nodes.base import NodeContext
@@ -66,6 +66,31 @@ async def test_empty_model_binding_config_authorizes_nothing() -> None:
     with pytest.raises(BindingNotFound):
         await container.capability_effects.bindings.resolve(
             "not-configured",
+            workspace_id="ws-default",
+            project_id="project-a",
+            node_id="summarize",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+
+
+async def test_declared_disabled_model_binding_bootstraps_but_refuses_resolution() -> None:
+    """An operator-disabled declaration stays registered yet authorizes nothing."""
+
+    container = await _container(
+        workspace_id="ws-default",
+        model_bindings=[
+            {
+                "binding_id": "model-disabled",
+                "project_id": "project-a",
+                "provider_name": "model-a",
+                "disabled": True,
+            },
+        ],
+    )
+
+    with pytest.raises(BindingDisabled, match="'model-disabled' is disabled"):
+        await container.capability_effects.bindings.resolve(
+            "model-disabled",
             workspace_id="ws-default",
             project_id="project-a",
             node_id="summarize",

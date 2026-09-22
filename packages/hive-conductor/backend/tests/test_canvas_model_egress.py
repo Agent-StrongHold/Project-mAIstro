@@ -329,3 +329,96 @@ def test_canvas_route_refuses_missing_binding(
     attempt = asyncio.run(canvas_egress[3].run_store.get_attempt(context["attempt_id"]))
     assert attempt is not None
     assert attempt.status.value == "failed"
+
+
+class _PayloadCapturingClient(_Client):
+    last_payload: dict[str, Any] | None = None
+
+    async def post(self, *args: Any, **kwargs: Any) -> _Response:
+        payload = kwargs.get("json")
+        if isinstance(payload, dict):
+            _PayloadCapturingClient.last_payload = dict(payload)
+        return _Response()
+
+
+def test_canvas_route_sends_legacy_json_response_format(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The governed egress carries the legacy JSON-mode constraint to the provider.
+
+    The pre-migration call constrained responses with
+    ``response_format={"type": "json_object"}`` so Canvas score parsing was a
+    provider guarantee. Parity means the shipped route's provider payload keeps
+    that constraint after crossing the governed seam.
+    """
+    egress, _effects, context, _components = canvas_egress
+    _PayloadCapturingClient.last_payload = None
+    monkeypatch.setattr(httpx, "AsyncClient", _PayloadCapturingClient)
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+    client = TestClient(app)
+    login = client.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
+    assert login.status_code == 200
+
+    response = client.post(
+        "/v1/canvas/eval",
+        json={"description": "A blue city at dusk", "run_id": context["run_id"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["score"] == 91
+
+    payload = _PayloadCapturingClient.last_payload
+    assert payload is not None, "the governed egress must dispatch exactly one provider call"
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["model"] == "claude-opus-4-6"
+    assert payload["temperature"] == 0.0
+    assert payload["stream"] is False
+
+
+def test_canvas_route_refuses_disabled_binding(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disabled Binding fails the evaluation truthfully, never a fake score."""
+    egress, effects, context, components = canvas_egress
+    import asyncio
+
+    asyncio.run(
+        effects.bindings.put(
+            Binding(
+                binding_id="canvas-quality-disabled",
+                workspace_id=context["workspace_id"],
+                project_id=context["project_id"],
+                capability=MODEL_CHAT_CAPABILITY,
+                disabled=True,
+            )
+        )
+    )
+    import config
+
+    monkeypatch.setattr(
+        config,
+        "get_settings",
+        lambda: SimpleNamespace(
+            litellm_api_base="http://gateway.test/v1",
+            litellm_api_key=None,
+            canvas_model_binding_id="canvas-quality-disabled",
+            model_bindings=[],
+            hive_default_workspace_id="ws-canvas",
+        ),
+    )
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+    client = TestClient(app)
+    login = client.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
+    assert login.status_code == 200
+
+    response = client.post(
+        "/v1/canvas/eval",
+        json={"description": "A blue city at dusk", "run_id": context["run_id"]},
+    )
+
+    assert response.status_code == 503
+    assert "score" not in response.json()
+    attempt = asyncio.run(components.run_store.get_attempt(context["attempt_id"]))
+    assert attempt is not None
+    assert attempt.status.value == "failed"
