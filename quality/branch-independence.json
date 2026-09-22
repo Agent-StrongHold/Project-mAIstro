@@ -8,7 +8,6 @@
     "quality/citation-baseline.json",
     "quality/contract-markers-baseline.json",
     "quality/direct-effect-call-sites.json",
-    "quality/enumeration-baseline.json",
     "quality/execution-lifecycles.json",
     "quality/image-inventory.json",
     "quality/lifecycle-baseline.json",
@@ -138,15 +137,6 @@
       ],
       "target_kind": "per_identity_policy",
       "reason": "One tracked aggregate mixes discovered call-site metadata with durable per-site disposition, owner, and rationale policy."
-    },
-    {
-      "id": "enumeration-baseline",
-      "kind": "legacy_shared_aggregate",
-      "paths": [
-        "quality/enumeration-baseline.json"
-      ],
-      "target_kind": "base_derived",
-      "reason": "One tracked aggregate records tolerated enumeration findings."
     },
     {
       "id": "execution-lifecycles",

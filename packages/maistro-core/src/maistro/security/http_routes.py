@@ -16,10 +16,33 @@ from typing import Any
 _PERMISSION_RE = re.compile(r"^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$")
 _ROUTE_KINDS = frozenset({"exact", "prefix", "template"})
 _ACCESS_KINDS = frozenset({"public", "permission", "exempt"})
+_REGISTRY_RELPATH = ("quality", "route-permissions.json")
 
 
 class RoutePolicyError(RuntimeError):
     """The shared route declaration cannot be used safely."""
+
+
+def locate_route_registry(start: Path) -> Path:
+    """Find ``quality/route-permissions.json`` from an app file's location.
+
+    Tolerates both run layouts: the monorepo checkout (a backend middleware
+    several levels under the repository root) and packaged images (e.g.
+    ``/app/backend/middleware/auth.py`` with the registry copied to
+    ``/app/quality/``), where only two parent levels exist and indexed
+    ``parents[n]`` access would raise ``IndexError``. Raises
+    :class:`RoutePolicyError` when no parent carries the registry: a
+    deployment without reviewed declarations must fail closed at startup, not
+    serve an unclassified route surface.
+    """
+    for parent in start.resolve().parents:
+        candidate = parent.joinpath(*_REGISTRY_RELPATH)
+        if candidate.is_file():
+            return candidate
+    raise RoutePolicyError(
+        f"route authorization registry not found in any parent of {start} "
+        f"(looked for {'/'.join(_REGISTRY_RELPATH)})"
+    )
 
 
 def load_route_policy(  # noqa: C901
@@ -111,4 +134,10 @@ def route_policy(
     return selected
 
 
-__all__ = ["RoutePolicyError", "load_route_policy", "matches_prefix", "route_policy"]
+__all__ = [
+    "RoutePolicyError",
+    "load_route_policy",
+    "locate_route_registry",
+    "matches_prefix",
+    "route_policy",
+]

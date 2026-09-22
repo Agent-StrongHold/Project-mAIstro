@@ -90,7 +90,14 @@ def test_check_that_cannot_run_is_a_failure_not_a_skip(module, monkeypatch):
 
 
 def test_committed_baseline_is_well_formed(module):
-    """Every tolerated entry needs a check name the script actually runs."""
+    """Every tolerated entry needs a check name the script actually runs.
+
+    A fully repaid baseline is deleted rather than committed as an empty
+    object (load_baseline reads an absent file as zero debt), so absence is
+    the clean state; a file that does exist must be well-formed and non-empty.
+    """
+    if not module.BASELINE_PATH.is_file():
+        return
     data = json.loads(module.BASELINE_PATH.read_text(encoding="utf-8"))
     tolerated = data["tolerated"]
     assert tolerated, "an empty baseline should be deleted, not committed"

@@ -21,11 +21,9 @@ from services import voice_identity
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
-from maistro.security.http_routes import load_route_policy, route_policy
+from maistro.security.http_routes import load_route_policy, locate_route_registry, route_policy
 
 logger = logging.getLogger("hive.auth_middleware")
-
-_ROUTE_REGISTRY = Path(__file__).resolve().parents[4] / "quality" / "route-permissions.json"
 
 #: Authenticated like everything else, but by a device credential rather than a
 #: session — see `services/voice_identity.py`. This is not an exemption: with
@@ -153,7 +151,11 @@ def origin_allowed(origin: str | None, host: str | None = None) -> bool:
 class AuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: object) -> None:
         super().__init__(app)  # type: ignore[arg-type]
-        self._route_policy = load_route_policy(_ROUTE_REGISTRY, "conductor")
+        # Resolved from this file's real location so both the monorepo checkout
+        # and the packaged image (backend at /app/backend, registry at
+        # /app/quality) find the reviewed declarations. A missing registry
+        # fails closed here instead of serving an unclassified surface.
+        self._route_policy = load_route_policy(locate_route_registry(Path(__file__)), "conductor")
 
     async def dispatch(  # noqa: C901
         self, request: Request, call_next: RequestResponseEndpoint

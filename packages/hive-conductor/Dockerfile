@@ -103,6 +103,13 @@ ENV PATH="/app/venv/bin:$PATH" \
 COPY --from=pybuild /app/venv /app/venv
 COPY --from=agebuild /out/age /out/age-keygen /usr/bin/
 COPY packages/hive-conductor/backend/ /app/backend/
+# The route authorization declarations the auth middleware enforces at
+# runtime. middleware/auth.py resolves this file by walking up from its own
+# location (/app/backend/middleware -> /app/quality), so the packaged app
+# boots with the same reviewed declarations the CI gate audited — and a
+# deployment missing them fails closed instead of serving an unclassified
+# route surface.
+COPY quality/route-permissions.json /app/quality/route-permissions.json
 COPY packages/hive-conductor/cage/ /app/cage/
 COPY packages/hive-conductor/eval/ /app/eval/
 COPY packages/hive-conductor/dags/ /app/dags/

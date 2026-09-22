@@ -418,11 +418,12 @@ def test_elevation_only_activates_granted_permissions() -> None:
         assert r2.status_code == 200, "should work after elevation for granted perm"
 
         r3 = c.delete("/v1/settings")
-        # No DELETE /v1/settings route is registered. The route declaration
-        # gate intentionally audits registered routes only, so this reaches
-        # FastAPI's method dispatch rather than inventing a permission entry
-        # for a non-existent endpoint.
-        assert r3.status_code == 405
+        # DELETE keeps its own heavier permission (`config.delete`, see
+        # quality/route-permissions.json), which frank did not elevate into —
+        # so the middleware refuses before routing, granted `config.write`
+        # notwithstanding.
+        assert r3.status_code == 403
+        assert "config.delete" in r3.json()["detail"]
     finally:
         stores.users.pop("frank", None)
 

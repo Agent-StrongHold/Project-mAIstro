@@ -25,7 +25,12 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import JSONResponse, Response
 
 from maistro.auth import Scope, ServiceKeyAuthProvider, ServiceKeyRegistry, canonical_permission
-from maistro.security.http_routes import load_route_policy, matches_prefix, route_policy
+from maistro.security.http_routes import (
+    load_route_policy,
+    locate_route_registry,
+    matches_prefix,
+    route_policy,
+)
 from maistro.security.sentinel.authz_types import Principal
 
 logger = logging.getLogger("turing.auth_middleware")
@@ -57,11 +62,6 @@ _PUBLIC_PREFIXES = (
     "/redoc",
 )
 
-# Route declarations are shared with the CI gate. The backend refuses to serve
-# a protected path that is absent from this reviewed table; CI remains the
-# earlier feedback loop, while this branch is the runtime default-deny floor.
-_ROUTE_REGISTRY = Path(__file__).resolve().parents[4] / "quality" / "route-permissions.json"
-
 
 class TuringAuthMiddleware(BaseHTTPMiddleware):
     """Resolve a human session cookie OR a Turing service key onto request.state.
@@ -73,7 +73,12 @@ class TuringAuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: object, registry: ServiceKeyRegistry) -> None:
         super().__init__(app)  # type: ignore[arg-type]
         self._provider = ServiceKeyAuthProvider(registry)
-        self._route_policy = load_route_policy(_ROUTE_REGISTRY, "turing")
+        # Route declarations are shared with the CI gate. The backend refuses
+        # to serve a protected path that is absent from this reviewed table;
+        # CI remains the earlier feedback loop, while this branch is the
+        # runtime default-deny floor. Resolution tolerates the packaged layout
+        # (registry at /app/quality) as well as the monorepo checkout.
+        self._route_policy = load_route_policy(locate_route_registry(Path(__file__)), "turing")
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
