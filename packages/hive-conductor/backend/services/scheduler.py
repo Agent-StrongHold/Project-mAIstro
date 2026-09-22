@@ -92,6 +92,14 @@ async def fire_now(sid: str) -> str:
 
     runner = _runner or ScheduleRunner()
     container = runner._canonical_container()
+    # Manual admission is still a producer of canonical work.  Refuse before
+    # it mutates the cursor or creates a Run when this process has no consumer
+    # that could execute the work on its configured cadence.
+    if container is not None and runner._canonical_consumer(container) is None:
+        raise ScheduleAdmissionUnavailable(
+            "configured Container is missing the canonical consumer seam "
+            "(execute_admitted_runs); admitted schedule Runs would never execute"
+        )
     admitter = runner._canonical_admitter(container)
     if admitter is not None:
         return await runner._fire_manual_canonical(
@@ -193,6 +201,18 @@ class ScheduleRunner:
         import stores
 
         effective_now = now or datetime.now(UTC)
+        container = self._canonical_container()
+        # This must happen *before* evaluating any schedule.  Admission writes
+        # a QUEUED Run in the same transaction as its occurrence claim, so
+        # checking after the loop would already have stranded work if the
+        # configured process lacks the only consumer able to execute it.
+        consumer = self._canonical_consumer(container)
+        if container is not None and consumer is None:
+            raise ScheduleAdmissionUnavailable(
+                "configured Container is missing the canonical consumer seam "
+                "(execute_admitted_runs); admitted schedule Runs would never execute"
+            )
+
         for sid, schedule in list(stores.schedules.items()):
             if not getattr(schedule, "enabled", False):
                 continue
@@ -204,22 +224,7 @@ class ScheduleRunner:
         # Admission is the submission for schedule work. The same configured
         # process owns the bounded canonical consumer tick, so a Run admitted
         # above cannot remain QUEUED merely because no task receipt exists.
-        container = self._canonical_container()
-        if container is not None:
-            consumer = getattr(container, "execute_admitted_runs", None)
-            if consumer is None:
-                # Missing wiring, not a failing tick: a configured Container
-                # that lacks the consumer seam admits work nothing will ever
-                # execute. Swallowing the AttributeError here (the old
-                # `except Exception`) is how a mis-wired deployment kept
-                # reporting healthy ticks while admitted Runs sat QUEUED
-                # forever, so this fails closed exactly like the admission
-                # seam above. A consumer that *raises* is different: work is
-                # owned and recoverable, so that stays contained and logged.
-                raise ScheduleAdmissionUnavailable(
-                    "configured Container is missing the canonical consumer seam "
-                    "(execute_admitted_runs); admitted schedule Runs would never execute"
-                )
+        if consumer is not None:
             try:
                 executed = await consumer()
                 if executed:
@@ -275,6 +280,12 @@ class ScheduleRunner:
         """The Container's ScheduleStore, or None when there is no bridge."""
         container = ScheduleRunner._canonical_container()
         return getattr(container, "schedule_store", None) if container is not None else None
+
+    @staticmethod
+    def _canonical_consumer(container: Any) -> Any:
+        """Return the configured canonical consumer only when it is callable."""
+        consumer = getattr(container, "execute_admitted_runs", None) if container else None
+        return consumer if callable(consumer) else None
 
     @staticmethod
     def _canonical_admitter(container: Any) -> ScheduleRunAdmitter | None:

@@ -317,33 +317,40 @@ def test_scheduler_tick_skips_missing_or_empty_consumer(
     asyncio.run(scenario())
 
 
-def test_scheduler_tick_fails_closed_when_container_lacks_consumer_seam(
+def test_scheduler_refuses_admission_when_container_lacks_consumer_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A configured Container without ``execute_admitted_runs`` fails closed.
+    """No schedule producer may create work a half-wired process cannot consume.
 
-    The tick used to swallow the missing-method failure behind the same
-    ``except Exception`` that contains a failing consumer, so a container
-    missing the seam admitted Runs nothing ever executed while the tick kept
-    reporting healthy. Missing wiring is a configuration failure
-    (``ScheduleAdmissionUnavailable``), not a consumer error to log.
+    Regression for the previous late check: ``run_once`` first admitted this
+    due row and only then noticed that the configured Container had no
+    consumer, leaving a persisted QUEUED Run.  Manual fire is the same
+    producer boundary and must refuse before it changes either canonical or
+    product-projection state too.
     """
-    import asyncio
-
-    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
-
-    class _SeamlessContainer:
-        """Wired for admission, but with no canonical consumer seam."""
-
-    monkeypatch.setattr(
-        _ScheduleRunner, "_canonical_container", staticmethod(lambda: _SeamlessContainer())
-    )
+    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner, fire_now
 
     async def scenario() -> None:
-        await _ScheduleRunner()._tick()
+        container, row, _root = await _fixture()
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        before = row.last_run
+        try:
+            with pytest.raises(ScheduleAdmissionUnavailable, match="execute_admitted_runs"):
+                await _ScheduleRunner().run_once(now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC))
+            with pytest.raises(ScheduleAdmissionUnavailable, match="execute_admitted_runs"):
+                await fire_now("s-1")
 
-    with pytest.raises(ScheduleAdmissionUnavailable, match="execute_admitted_runs"):
-        asyncio.run(scenario())
+            assert len(container.run_store._runs) == 0  # type: ignore[attr-defined]
+            assert await container.schedule_store.get("s-1") is None
+            assert row.last_run_id is None
+            assert row.last_run == before
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
 
 
 def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:

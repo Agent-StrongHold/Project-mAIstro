@@ -15,13 +15,13 @@ persisted-but-unreachable shape the M1 evidence rule rejects.
 
 ## Changes
 
-- `services/scheduler.py` — `run_once` now distinguishes a configured
-  Container that *lacks* the canonical consumer seam (missing wiring: raise
-  `ScheduleAdmissionUnavailable`, fail closed exactly like missing admission
-  wiring) from a consumer that *raises* (owned, recoverable work: still
-  contained and logged, per the existing `test_scheduler_tick_logs_consumer_failure`
-  contract). A configured process that admits Runs nothing will ever execute
-  no longer reports healthy ticks.
+- `services/scheduler.py` — `run_once` validates that a configured Container
+  has a callable canonical consumer **before** it evaluates/admit any schedule;
+  `fire_now` applies the same preflight before manual admission. Missing wiring
+  raises `ScheduleAdmissionUnavailable` while a consumer that raises remains
+  contained and logged (per `test_scheduler_tick_logs_consumer_failure`).
+  Thus neither producer can persist a Run or move a schedule cursor when its
+  configured process has no execution owner.
 - `tests/cross_product_parity/test_cross_product_parity.py` — Scenario 2
   (`test_schedule_fire_admits_and_executes_a_canonical_run_from_the_live_runner`)
   now starts the shipped engine composition (bridge-built Container over a
@@ -34,10 +34,12 @@ persisted-but-unreachable shape the M1 evidence rule rejects.
   independent connection and the Conductor `visible_run_detail` observer with
   identity projection. No node-count change: the scenario replaces the
   queued-only assertion in place (rename included).
-- New Hive regression `test_scheduler_tick_fails_closed_when_container_lacks_consumer_seam`
-  (+1 node): a configured Container without `execute_admitted_runs` makes
-  `_tick()` raise `ScheduleAdmissionUnavailable` instead of swallowing the
-  missing seam.
+- Hive regression
+  `test_scheduler_refuses_admission_when_container_lacks_consumer_seam`
+  (the existing +1 node): a due recurring row and a manual fire against a
+  real admission-wired fixture without `execute_admitted_runs` both raise
+  `ScheduleAdmissionUnavailable` **before** a Run, canonical schedule row, or
+  product cursor is written.
 
 Also corrected `docs/architecture/CONVERGENCE-MATRIX.md`'s Builders evidence
 cell, which claimed `builders.graph_executor` was deleted while the module
