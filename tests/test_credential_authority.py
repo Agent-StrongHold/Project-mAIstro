@@ -326,3 +326,266 @@ def test_trusted_policy_prevents_reclassification_and_retirement_erasure() -> No
     failures = _checker._policy_failures(candidate, trusted)
     assert len(failures) == 3
     assert all("differs from trusted base" in failure for failure in failures)
+
+
+def test_ledger_must_be_an_object(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ledger_file = tmp_path / "credential-authority.json"
+    ledger_file.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(_checker, "LEDGER", ledger_file)
+    with pytest.raises(ValueError, match="must be an object"):
+        _checker._ledger()
+
+
+def test_trusted_ledger_must_be_an_object(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A trusted baseline that parses to a non-object fails closed."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "ratchet_provenance.py").write_text(
+        (ROOT / "scripts" / "ratchet_provenance.py").read_text(), encoding="utf-8"
+    )
+    ledger_path = tmp_path / "quality" / "credential-authority.json"
+    ledger_path.parent.mkdir()
+    ledger_path.write_text("[]", encoding="utf-8")
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "test@example.invalid")
+    _git(tmp_path, "config", "user.name", "Credential authority test")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base carries a malformed ledger")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    (tmp_path / "candidate.txt").write_text("candidate work\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "candidate change")
+    monkeypatch.setenv("RATCHET_BASE_REV", base)
+    monkeypatch.setattr(_checker, "ROOT", tmp_path)
+    monkeypatch.setattr(_checker, "LEDGER", ledger_path)
+    with pytest.raises(ValueError, match="trusted credential authority ledger"):
+        _checker._trusted_ledger()
+
+
+def test_scope_lint_rejects_unowned_secondary_data_access(tmp_path: Path) -> None:
+    """Results of ``self._load`` are only sinks through owned record access."""
+    path = tmp_path / "store.py"
+    path.write_text(
+        "class SecretStore:\n"
+        "    def get(self, user_id, record_id):\n"
+        "        data = self._load(user_id)\n"
+        "        return data.keys()\n",
+        encoding="utf-8",
+    )
+    failures = _checker._owner_scope_failures("packages/demo/store.py", path)
+    assert failures == [
+        "packages/demo/store.py: get lacks owner/principal scope at a canonical storage sink"
+    ]
+
+
+def test_scope_lint_rejects_unowned_config_reads(tmp_path: Path) -> None:
+    path = tmp_path / "store.py"
+    path.write_text(
+        "class SecretStore:\n"
+        "    def get(self, user_id, record_id):\n"
+        "        return _read_config(record_id)\n",
+        encoding="utf-8",
+    )
+    failures = _checker._owner_scope_failures("packages/demo/store.py", path)
+    assert failures == [
+        "packages/demo/store.py: get lacks owner/principal scope at a canonical storage sink"
+    ]
+
+
+def test_owner_scope_lint_fails_closed_on_unreadable_surface(tmp_path: Path) -> None:
+    failures = _checker._owner_scope_failures("packages/demo/store.py", tmp_path / "missing.py")
+    assert failures == ["packages/demo/store.py: cannot parse owner-scoped credential surface"]
+
+
+def test_surface_detection_fails_closed_on_unreadable_file(tmp_path: Path) -> None:
+    assert _checker.is_credential_surface(tmp_path / "missing.py") is False
+
+
+def test_retired_import_scan_fails_closed_on_unreadable_file(tmp_path: Path) -> None:
+    assert _checker._imports_module_stem(tmp_path / "missing.py", "credential_store_v2") is False
+
+
+def test_surface_entries_ignores_non_list_reachable() -> None:
+    assert _checker._surface_entries({"reachable": 42}) == []
+
+
+_SECRET_REPOSITORY_SOURCE = """
+import httpx
+from cryptography.fernet import Fernet
+
+class SecretRepository:
+    def __init__(self):
+        self._fernet = Fernet.generate_key()
+
+    def get(self, record_id):
+        return httpx.get('/records', params={'id': record_id})
+
+    def rotate(self, record_id, secret):
+        return self._fernet.encrypt(secret.encode())
+
+    def delete(self, record_id):
+        return httpx.delete('/records', params={'id': record_id})
+"""
+
+
+def _demo_ledger_entry(**overrides: object) -> dict:
+    entry: dict = {
+        "path": "packages/demo/src/demo/secrets.py",
+        "kind": "protocol_adapter",
+        "authority": "canonical adapter delegating to the canonical authority",
+        "scope": "authorized binding scope",
+        "storage": "no credential storage of its own",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _demo_root(
+    tmp_path: Path, *, source: str = "# not a credential surface\n"
+) -> tuple[Path, Path]:
+    """A fake repository root whose one package module exists on disk."""
+    fixture = tmp_path / "packages" / "demo" / "src" / "demo" / "secrets.py"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(source, encoding="utf-8")
+    return fixture, fixture
+
+
+@pytest.mark.parametrize(
+    ("defect", "message"),
+    [
+        ("duplicate_paths", "duplicate or missing paths"),
+        ("outside_module_graph", "outside the reachability module graph"),
+        ("unreachable", "classified credential surface is unreachable"),
+        ("unsupported_kind", "unsupported credential surface kind"),
+        ("empty_scope", "must declare scope"),
+        ("empty_authority", "must name its authority"),
+        ("authority_without_canonical", "authority must name canonical"),
+        ("scope_without_contract_terms", "scope does not satisfy the runtime_selection contract"),
+    ],
+)
+def test_audit_reports_each_ledger_entry_defect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    defect: str,
+    message: str,
+) -> None:
+    """Every entry-validation branch names its own defect, not a pooled one."""
+    fixture, _ = _demo_root(tmp_path)
+    entry = _demo_ledger_entry()
+    modules = {"demo.secrets": fixture}
+    reachable = {"demo.secrets"}
+    if defect == "duplicate_paths":
+        reachable_entries = [entry, _demo_ledger_entry()]
+    elif defect == "outside_module_graph":
+        modules, reachable = {}, set()
+        reachable_entries = [entry]
+    elif defect == "unreachable":
+        reachable = set()
+        reachable_entries = [entry]
+    elif defect == "unsupported_kind":
+        reachable_entries = [_demo_ledger_entry(kind="mystery_store")]
+    elif defect == "empty_scope":
+        reachable_entries = [_demo_ledger_entry(scope="   ")]
+    elif defect == "empty_authority":
+        reachable_entries = [_demo_ledger_entry(authority="   ")]
+    elif defect == "authority_without_canonical":
+        reachable_entries = [_demo_ledger_entry(authority="an unrelated authority")]
+    else:
+        reachable_entries = [
+            _demo_ledger_entry(
+                kind="runtime_selection",
+                authority="canonical runtime selection authority",
+                scope="no contract term here",
+            )
+        ]
+
+    monkeypatch.setattr(_checker, "ROOT", tmp_path)
+    failures = _checker.audit(
+        {"reachable": reachable_entries, "retired": [{"path": "packages/demo/retired.py"}]},
+        modules=modules,
+        reachable=reachable,
+        trusted=_ledger(),
+    )
+    assert any(message in failure for failure in failures), failures
+
+
+def test_protocol_adapter_cannot_become_its_own_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, _ = _demo_root(tmp_path, source=_SECRET_REPOSITORY_SOURCE)
+    monkeypatch.setattr(_checker, "ROOT", tmp_path)
+    failures = _checker.audit(
+        {
+            "reachable": [_demo_ledger_entry(authority="an independent storage authority")],
+            "retired": [{"path": "packages/demo/retired.py"}],
+        },
+        modules={"demo.secrets": fixture},
+        reachable={"demo.secrets"},
+        trusted=_ledger(),
+    )
+    assert any("does not name canonical authority" in failure for failure in failures), failures
+
+
+@pytest.mark.parametrize(
+    ("retired", "message"),
+    [
+        (["not-a-record"], "retired record is not an object"),
+        ([{"path": "packages/demo/existing.py"}], "retired credential implementation still exists"),
+        ([], "must record at least one retired decision"),
+    ],
+)
+def test_audit_reports_retirement_defects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    retired: list,
+    message: str,
+) -> None:
+    fixture, _ = _demo_root(tmp_path)
+    (tmp_path / "packages" / "demo" / "existing.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(_checker, "ROOT", tmp_path)
+    failures = _checker.audit(
+        {"reachable": [_demo_ledger_entry()], "retired": retired},
+        modules={"demo.secrets": fixture},
+        reachable={"demo.secrets"},
+        trusted=_ledger(),
+    )
+    assert any(message in failure for failure in failures), failures
+
+
+def test_retired_path_detected_as_a_live_credential_surface_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, _ = _demo_root(tmp_path, source=_SECRET_REPOSITORY_SOURCE)
+    monkeypatch.setattr(_checker, "ROOT", tmp_path)
+    failures = _checker.audit(
+        {
+            "reachable": [_demo_ledger_entry()],
+            "retired": [{"path": "packages/demo/src/demo/secrets.py"}],
+        },
+        modules={"demo.secrets": fixture},
+        reachable={"demo.secrets"},
+        trusted=_ledger(),
+    )
+    assert any("retired credential implementation is reachable" in failure for failure in failures)
+    assert any("retired credential implementation still exists" in failure for failure in failures)
+
+
+def test_main_reports_each_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(_checker, "audit", lambda: ["demo credential failure"])
+    assert _checker.main() == 1
+    assert "demo credential failure" in capsys.readouterr().err
+
+
+def test_main_passes_on_the_committed_policy() -> None:
+    assert _checker.main() == 0
+
+
+def test_script_entrypoint_exits_zero() -> None:
+    """`python scripts/check-credential-authority.py` is the CI invocation."""
+    import runpy
+
+    with pytest.raises(SystemExit) as completed:
+        runpy.run_path(str(CHECKER), run_name="__main__")
+    assert completed.value.code == 0
