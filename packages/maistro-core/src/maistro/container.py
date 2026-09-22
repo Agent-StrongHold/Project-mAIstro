@@ -1799,6 +1799,11 @@ async def create_container(
         pg_pool=pg_pool, db_pool=db_pool
     )
     capability_effects = new_effect_context(invocation_store=capability_invocation_store)
+    # Operator-declared model Bindings load into the canonical effect context;
+    # provider discovery alone never grants model.chat authorization (#1085).
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+
+    await bootstrap_model_bindings(config, capability_effects)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )

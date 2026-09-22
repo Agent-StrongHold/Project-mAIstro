@@ -60,6 +60,35 @@ async def test_known_tools_route_to_the_real_functions(monkeypatch) -> None:
     ]
 
 
+async def test_model_backed_tools_receive_the_governed_caller(monkeypatch) -> None:
+    calls: list[tuple[str, Any]] = []
+
+    async def fake_web_search(
+        query: str, max_results: int = 5, *, model_call=None
+    ) -> dict[str, Any]:
+        calls.append(("web_search", query, model_call))
+        return {"query": query}
+
+    async def fake_clarify(
+        questions: list[str], context: dict[str, Any], *, model_call=None
+    ) -> dict[str, Any]:
+        calls.append(("clarify", questions, model_call))
+        return {"answers": {}}
+
+    async def governed(_messages: list[dict[str, Any]], **_kwargs: Any) -> str:
+        return "governed"
+
+    monkeypatch.setattr(tool_executor, "web_search", fake_web_search)
+    monkeypatch.setattr(tool_executor, "clarify", fake_clarify)
+    assert await tool_executor.dispatch_tool("web_search", {"query": "q"}, model_call=governed) == {
+        "query": "q"
+    }
+    assert await tool_executor.dispatch_tool(
+        "clarify", {"questions": ["q"], "context": {}}, model_call=governed
+    ) == {"answers": {}}
+    assert calls == [("web_search", "q", governed), ("clarify", ["q"], governed)]
+
+
 async def test_unusable_arguments_return_an_error_result_not_an_exception() -> None:
     result = await tool_executor.dispatch_tool("web_search", {"max_results": "not-a-number"})
     assert isinstance(result, str)

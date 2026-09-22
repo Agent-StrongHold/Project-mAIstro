@@ -178,6 +178,9 @@ class Invocation(BaseModel):
     run_id: str
     node_run_id: str
     attempt_id: str
+    # Scope defaults are for pre-#1118 rows reconciled after the fact; every
+    # Invocation created through ``invoke_effect`` names its Binding's
+    # Workspace/Project (#1085), and Binding itself requires that scope.
     workspace_id: str = ""
     project_id: str = ""
     binding: ResolvedBinding

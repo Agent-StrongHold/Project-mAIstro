@@ -467,6 +467,33 @@ def test_request_credentials_reach_nodes_as_scoped_env_keys() -> None:
     assert env["DAG_ID"] == "dag-1"
 
 
+def test_node_env_carries_the_composed_default_binding_declaration() -> None:
+    """#1085: the runner forwards the composed runtime's declared default
+    Binding into the node wiring.
+
+    Provisioning (bridge boot) and node default resolution must read ONE
+    authority -- the composed ``AgentConfig`` -- so a ``Settings`` object the
+    boot was actually given can never disagree with the declaration a node
+    later resolves. Ambient environment/settings fallbacks remain only a
+    last resort for standalone adapter use.
+    """
+    from types import SimpleNamespace
+
+    from services.canonical_dag_runner import _deployment_model_binding_id, _node_env
+
+    env = _node_env(
+        {"id": "dag-1"},
+        user_id="user-1",
+        user_credentials=None,
+        model_binding_id="declared-binding",
+    )
+    assert env["MAISTRO_MODEL_BINDING_ID"] == "declared-binding"
+
+    container = SimpleNamespace(config=SimpleNamespace(default_model_binding_id="declared-binding"))
+    assert _deployment_model_binding_id(container) == "declared-binding"
+    assert _deployment_model_binding_id(None) == ""
+
+
 def test_the_resolver_names_a_node_missing_from_the_adapter_map() -> None:
     """Durable recovery cannot invent a node the admission snapshot never
     carried; the failure must name both the node and the map."""
@@ -511,6 +538,358 @@ def test_recovery_refuses_a_run_whose_nodes_lack_durable_legacy_metadata() -> No
 
     with pytest.raises(ValueError, match="lacks durable legacy_node metadata"):
         _recovery_resolver(run)
+
+
+@pytest.mark.asyncio
+async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real Hive facade keeps the canonical Run/Attempt context on egress.
+
+    ``graph_runner.execute_dag`` still supplies its historical builder for
+    standalone compatibility. A wired Container must nevertheless force the
+    model-backed legacy adapter through the governed caller.
+    """
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "model": "legacy-model-v2",
+                "choices": [{"message": {"content": "canonical answer"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 5},
+            }
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **_kwargs: Any) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.delenv("LITELLM_API_BASE", raising=False)
+
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key",
+            workspace_id="ws-1",
+            litellm_url="http://gateway.test",
+        )
+    )
+    root = await container.project_scope_store.create_root("ws-1")
+    await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="legacy-model-binding",
+            workspace_id="ws-1",
+            project_id=root.project_id,
+            node_id="n1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
+    run_store = container.run_store
+    durable_store = container.graph_run_store
+    effects = container.capability_effects
+    # Registry metadata for the pinned model, so the Invocation's usage
+    # evidence carries computed cost (an unregistered model leaves cost
+    # absent-not-zero; #1085 wants provider/model AND available usage/cost
+    # metadata on the durable evidence).
+    from maistro.providers.types import ModelMetadata
+
+    container.provider_registry.register_model(
+        ModelMetadata(
+            name="legacy-model",
+            provider="legacy-provider",
+            cost_per_1k_input=1.0,
+            cost_per_1k_output=2.0,
+            latency_p50_ms=100,
+        )
+    )
+
+    import services.canonical_dag_runner as canonical
+    import services.graph_runner as facade
+
+    monkeypatch.setattr(canonical, "_container", lambda: container)
+    monkeypatch.setattr(canonical, "get_run_store", lambda: durable_store)
+    result = await facade.execute_dag(
+        {
+            "id": "hive-governed",
+            "name": "hive-governed",
+            "description": "governed task",
+            "nodes": [
+                {
+                    "id": "n1",
+                    "name": "worker",
+                    "model": "legacy-model",
+                    "binding_id": "legacy-model-binding",
+                    "config": {"execution_tier": "safe"},
+                }
+            ],
+            "edges": [],
+        },
+        scope=DagExecutionScope(
+            workspace_id="ws-1", project_id=root.project_id, user_id="hive-user"
+        ),
+    )
+
+    assert result["status"] == "completed"
+    runs = list(effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert len(runs) == 1
+    invocation = runs[0]
+    assert invocation.workspace_id == "ws-1"
+    assert invocation.project_id == root.project_id
+    assert invocation.run_id == result["run_id"]
+    assert invocation.node_run_id
+    assert invocation.attempt_id
+    assert invocation.binding.binding_id == "legacy-model-binding"
+    assert invocation.binding.provider_name == "legacy-model"
+    assert invocation.usage is not None
+    assert invocation.usage.model_version == "legacy-model-v2"
+    assert invocation.usage.input_units == 3
+    assert invocation.usage.output_units == 5
+    assert invocation.usage.provider == "legacy-provider"
+    assert invocation.usage.cost_cents == pytest.approx(3 / 1000 * 1.0 + 5 / 1000 * 2.0)
+    run = await run_store.get_run(result["run_id"])
+    assert run is not None
+    node_runs = await run_store.list_node_runs(result["run_id"])
+    assert [node_run.node_run_id for node_run in node_runs] == [invocation.node_run_id]
+    attempts = await run_store.list_attempts(invocation.node_run_id)
+    assert [attempt.attempt_id for attempt in attempts] == [invocation.attempt_id]
+
+
+@pytest.mark.asyncio
+async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dispatched gateway failure cannot leave the durable run successful;
+    the owning Attempt records the failure truthfully (terminal, correlated,
+    failed evidence) rather than dangling or reporting success."""
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    class _Response:
+        status_code = 500
+
+        def json(self) -> dict[str, Any]:
+            return {"error": "gateway failure"}
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **_kwargs: Any) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key", workspace_id="ws-1", litellm_url="http://gateway.test"
+        )
+    )
+    root = await container.project_scope_store.create_root("ws-1")
+    await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="legacy-model-binding",
+            workspace_id="ws-1",
+            project_id=root.project_id,
+            node_id="n1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
+
+    import services.canonical_dag_runner as canonical
+
+    monkeypatch.setattr(canonical, "_container", lambda: container)
+    monkeypatch.setattr(canonical, "get_run_store", lambda: container.graph_run_store)
+    result = await canonical.execute_dag(
+        {
+            "id": "hive-failed",
+            "description": "failure task",
+            "nodes": [
+                {
+                    "id": "n1",
+                    "model": "legacy-model",
+                    "binding_id": "legacy-model-binding",
+                    "config": {"execution_tier": "safe"},
+                }
+            ],
+            "edges": [],
+        },
+        scope=DagExecutionScope(
+            workspace_id="ws-1", project_id=root.project_id, user_id="hive-user"
+        ),
+    )
+
+    assert result["status"] == "failed"
+    invocations = list(container.capability_effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "unknown"
+    node_runs = await container.run_store.list_node_runs(result["run_id"])
+    assert len(node_runs) == 1
+    assert node_runs[0].status.value == "failed"
+    assert node_runs[0].node_run_id == invocations[0].node_run_id
+    # The owning Attempt must record the failure truthfully too. Reconciled
+    # with ADR-081226-69ee and core's pinned retry semantics (see
+    # maistro-core test_node_retry_attempts: "each visit is one physically
+    # complete try; only the logical outcome differed"), an Attempt is the
+    # PHYSICAL try: it terminalizes COMPLETED carrying the failed NodeResult
+    # evidence, and the authoritative fold turns that into the FAILED
+    # NodeRun/Run above. What is pinned here is the truthfulness contract:
+    # the Attempt is terminal (never dangling RUNNING), correlated to the
+    # failed Invocation, and its persisted evidence reports failure -- a
+    # compatibility adapter cannot report success from a failed effect.
+    from maistro.graph.nodes.base import NodeResult
+    from maistro.runs.model import AttemptStatus
+
+    attempts = await container.run_store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    assert attempt.attempt_id == invocations[0].attempt_id
+    assert attempt.status is AttemptStatus.COMPLETED
+    assert attempt.status is not AttemptStatus.RUNNING
+    attempt_evidence = NodeResult.model_validate(attempt.result)
+    assert attempt_evidence.success is False
+    assert attempt_evidence.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_canonical_tool_model_fallbacks_share_attempt_correlated_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clarify and grounded search are model adapters, not model providers."""
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.container import create_container
+    from maistro.tools import browser
+    from maistro.types.config import AgentConfig
+
+    class _Response:
+        status_code = 200
+
+        def __init__(self, body: dict[str, Any]) -> None:
+            self._body = body
+
+        def json(self) -> dict[str, Any]:
+            return self._body
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **kwargs: Any) -> _Response:
+            messages = kwargs["json"]["messages"]
+            prompt = str(messages[-1]["content"])
+            if "Search the web for:" in prompt:
+                content = '{"summary":"grounded","citations":[]}'
+            else:
+                content = '{"answers":{"1":"chosen"}}'
+            return _Response(
+                {
+                    "model": "tool-model-v2",
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                }
+            )
+
+    class _BrokenBrowser:
+        def __init__(self) -> None:
+            raise RuntimeError("browser unavailable")
+
+    _Client.is_closed = False
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(browser, "BrowserClient", _BrokenBrowser)
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key", workspace_id="ws-1", litellm_url="http://gateway.test"
+        )
+    )
+    root = await container.project_scope_store.create_root("ws-1")
+    for node_id, binding_id in (("clarify", "clarify-binding"), ("grounded", "grounded-binding")):
+        await container.capability_effects.bindings.put(
+            Binding(
+                binding_id=binding_id,
+                workspace_id="ws-1",
+                project_id=root.project_id,
+                node_id=node_id,
+                capability=MODEL_CHAT_CAPABILITY,
+            )
+        )
+
+    import services.canonical_dag_runner as canonical
+
+    monkeypatch.setattr(canonical, "_container", lambda: container)
+    monkeypatch.setattr(canonical, "get_run_store", lambda: container.graph_run_store)
+    result = await canonical.execute_dag(
+        {
+            "id": "hive-tool-egress",
+            "description": "tool fallback task",
+            "nodes": [
+                {
+                    "id": "clarify",
+                    "tool": "clarify",
+                    "binding_id": "clarify-binding",
+                    "tool_config": {"questions": ["Which scope?"]},
+                },
+                {
+                    "id": "grounded",
+                    "tool": "web_search",
+                    "binding_id": "grounded-binding",
+                    "tool_config": {"max_results": 1},
+                },
+            ],
+            "edges": [{"id": "clarify-grounded", "from_node": "clarify", "to_node": "grounded"}],
+        },
+        scope=DagExecutionScope(
+            workspace_id="ws-1", project_id=root.project_id, user_id="hive-user"
+        ),
+    )
+
+    assert result["status"] == "completed"
+    invocations = list(container.capability_effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert {invocation.binding.binding_id for invocation in invocations} == {
+        "clarify-binding",
+        "grounded-binding",
+    }
+    assert all(invocation.workspace_id == "ws-1" for invocation in invocations)
+    assert all(invocation.project_id == root.project_id for invocation in invocations)
+    assert all(invocation.run_id == result["run_id"] for invocation in invocations)
+    assert all(invocation.node_run_id and invocation.attempt_id for invocation in invocations)
+    assert result["node_results"]["grounded"]["success"] is True
 
 
 @pytest.mark.asyncio

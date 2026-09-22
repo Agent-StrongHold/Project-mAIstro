@@ -157,9 +157,9 @@ def _validate_acyclic_and_reachable(
         )
 
 
-def _legacy_scout_node() -> dict[str, Any]:
+def _legacy_scout_node(*, binding_id: str = "") -> dict[str, Any]:
     """Represent the old pre-entry Scout as ordinary canonical physical work."""
-    return {
+    node = {
         "id": _SCOUT_NODE_ID,
         "name": "Scout",
         "role": AgentRole.SCOUT.value,
@@ -168,10 +168,16 @@ def _legacy_scout_node() -> dict[str, Any]:
         "config": {"execution_tier": "safe"},
         "compat_synthetic": "legacy_run_scout",
     }
+    if binding_id.strip():
+        node["binding_id"] = binding_id.strip()
+    return node
 
 
 def _execution_shape(
     dag_data: Mapping[str, Any],
+    *,
+    workspace_id: str = "",
+    project_id: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
     """Return validated nodes, dependency edges, and canonical entry.
 
@@ -190,7 +196,7 @@ def _execution_shape(
     if not dag_data.get("run_scout"):
         return nodes, edges, entry
 
-    scout = _legacy_scout_node()
+    scout = _legacy_scout_node(binding_id=str(dag_data.get("scout_binding_id") or ""))
     scout_edge = {
         "id": _SCOUT_EDGE_ID,
         "from_node": _SCOUT_NODE_ID,
@@ -242,8 +248,9 @@ def graph_from_legacy_dag(
     dag_data: Mapping[str, Any], *, workspace_id: str, project_id: str
 ) -> Graph:
     """Translate one shipped legacy DAG into an immutable canonical Graph."""
-    nodes, raw_edges, entry = _execution_shape(dag_data)
-
+    nodes, raw_edges, entry = _execution_shape(
+        dag_data, workspace_id=workspace_id, project_id=project_id
+    )
     graph_nodes = [
         Node(
             node_id=str(raw["id"]),
@@ -341,13 +348,42 @@ async def _scope(
     )
 
 
+def _deployment_model_binding_id(container: Any) -> str:
+    """The operator's declared default Binding, read from the composed runtime.
+
+    The bridge provisions this exact declaration into the canonical Binding
+    store at boot from the same ``AgentConfig`` (#1085). Reading it here --
+    instead of letting each node re-derive a default from ambient
+    environment/settings state -- keeps provisioning and node resolution on
+    one authority, so a ``Settings`` object the boot was given can never
+    disagree with the declaration a node later resolves.
+    """
+    if container is None:
+        return ""
+    return str(container.config.default_model_binding_id or "").strip()
+
+
 def _node_env(
-    dag_data: Mapping[str, Any], *, user_id: str, user_credentials: Mapping[str, str] | None
+    dag_data: Mapping[str, Any],
+    *,
+    user_id: str,
+    user_credentials: Mapping[str, str] | None,
+    llm_base_url: str = "",
+    llm_api_key: str = "",
+    model_binding_id: str = "",
 ) -> dict[str, str]:
     environment = {
-        "LITELLM_API_BASE": os.environ.get("LITELLM_API_BASE", ""),
-        "LITELLM_API_KEY": os.environ.get("LITELLM_API_KEY", ""),
+        # AgentConfig is the composition root for Hive's .env-backed gateway
+        # settings. Carry those values into the adapter instead of requiring
+        # pydantic-settings to mutate os.environ first.
+        "LITELLM_API_BASE": llm_base_url or os.environ.get("LITELLM_API_BASE", ""),
+        "LITELLM_API_KEY": llm_api_key or os.environ.get("LITELLM_API_KEY", ""),
         "CHAT_DEFAULT_MODEL": os.environ.get("CHAT_DEFAULT_MODEL", "gemini-3.5-flash"),
+        # The deployment's declared default model.chat Binding (#1085),
+        # carried from the same composed runtime config the bridge
+        # provisioned, so node default resolution never depends on ambient
+        # environment/settings state the boot never used.
+        "MAISTRO_MODEL_BINDING_ID": model_binding_id,
         "DAG_USER_ID": user_id,
         "DAG_ID": str(dag_data.get("id") or ""),
         "PATH": os.environ.get("PATH", ""),
@@ -365,6 +401,9 @@ def _resolver(
     execution_mode: str,
     on_response: OnResponseHook | None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None,
+    effect_context: Any = None,
+    provider_registry: Any = None,
+    llm_router: Any = None,
 ):
     def resolve(node_id: str, _graph: Graph) -> LegacyConductorNode:
         try:
@@ -378,6 +417,9 @@ def _resolver(
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
+            effect_context=effect_context,
+            provider_registry=provider_registry,
+            llm_router=llm_router,
         )
 
     return resolve
@@ -399,6 +441,7 @@ def _recovery_resolver(run: Run):
     if execution_mode not in {"interactive", "autonomous"}:
         raise ValueError(f"Run {run.run_id!r} has invalid legacy execution_mode {execution_mode!r}")
     legacy_dag_id = str(graph.metadata.get("legacy_dag_id") or graph.graph_id)
+    container = _container()
     return _resolver(
         raw_by_id,
         task_desc=graph.description or graph.name,
@@ -409,10 +452,16 @@ def _recovery_resolver(run: Run):
             # provenance. The legacy adapter did not consume USER_CRED_* keys;
             # durable recovery reuses deployment credentials only.
             user_credentials=None,
+            llm_base_url=str(container.config.litellm_url) if container is not None else "",
+            llm_api_key=str(container.config.litellm_key) if container is not None else "",
+            model_binding_id=_deployment_model_binding_id(container),
         ),
         execution_mode=execution_mode,
         on_response=None,
         llm_builder=None,
+        effect_context=container.capability_effects if container is not None else None,
+        provider_registry=container.provider_registry if container is not None else None,
+        llm_router=container.llm_router if container is not None else None,
     )
 
 
@@ -530,12 +579,20 @@ async def execute_dag(
         workspace_id=workspace_id,
         project_id=project_id,
     )
+    container = _container()
+    # Binding authorization is bootstrapped from operator configuration; a DAG
+    # may reference it but can never manufacture one during admission.
+    prepared_dag = dict(dag_data)
     graph = graph_from_legacy_dag(
-        dag_data,
+        prepared_dag,
         workspace_id=resolved_workspace,
         project_id=resolved_project,
     )
-    execution_nodes, _, _ = _execution_shape(dag_data)
+    execution_nodes, _, _ = _execution_shape(
+        prepared_dag,
+        workspace_id=resolved_workspace,
+        project_id=resolved_project,
+    )
     raw_by_id = {str(raw["id"]): raw for raw in execution_nodes}
     task_desc = str(dag_data.get("description") or dag_data.get("name") or "")
     provenance = {
@@ -562,13 +619,19 @@ async def execute_dag(
             raw_by_id,
             task_desc=task_desc,
             node_env=_node_env(
-                dag_data,
+                prepared_dag,
                 user_id=user_id,
                 user_credentials=user_credentials,
+                llm_base_url=str(container.config.litellm_url) if container is not None else "",
+                llm_api_key=str(container.config.litellm_key) if container is not None else "",
+                model_binding_id=_deployment_model_binding_id(container),
             ),
             execution_mode=execution_mode,
             on_response=on_response,
             llm_builder=llm_builder,
+            effect_context=container.capability_effects if container is not None else None,
+            provider_registry=container.provider_registry if container is not None else None,
+            llm_router=container.llm_router if container is not None else None,
         ),
         actor_principal_id=user_id or None,
         run_id=admitted_run_id,

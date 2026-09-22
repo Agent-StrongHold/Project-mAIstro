@@ -5,7 +5,15 @@ Pydantic-validated config loaded from YAML.
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import BaseModel, Field, field_validator
+
+#: A string that carries at least one non-whitespace character. Declared once
+#: so constraint-bearing configuration fields stay declarative pydantic
+#: surface instead of growing named validator methods the dead-code ratchet
+#: would have to bank individually (#1085).
+NonEmptyStr = Annotated[str, Field(pattern=r"\S")]
 
 
 class RoutingConfig(BaseModel):
@@ -131,6 +139,24 @@ class AuthConfig(BaseModel):
     session_max_age: int = 3600
 
 
+class ModelBindingConfig(BaseModel):
+    """Operator-declared authorization for the canonical model.chat capability.
+
+    Non-empty identity/scope and non-blank refs are stated as declarative
+    pydantic constraints rather than named validator methods: this is
+    configuration surface, and the repo's Vulture ratchet banks no new
+    method identities for it (#1085).
+    """
+
+    binding_id: NonEmptyStr
+    project_id: NonEmptyStr
+    workspace_id: str = ""
+    node_id: str = ""
+    provider_name: str = ""
+    credential_refs: tuple[NonEmptyStr, ...] = ()
+    policy_refs: tuple[NonEmptyStr, ...] = ()
+
+
 class AgentConfig(BaseModel):
     """Root configuration. Validated at startup."""
 
@@ -145,6 +171,15 @@ class AgentConfig(BaseModel):
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     model_groups: dict[str, dict[str, object]] = Field(default_factory=dict)
+    # Provider discovery never grants model.chat authorization by itself.
+    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
+    # The deployment's declared DEFAULT ``model.chat`` Binding identity
+    # (#1085): the same value the boot provisions into the Binding store. It
+    # lives on the composed runtime config so provisioning and every node's
+    # default-Binding resolution read ONE authority instead of each
+    # re-deriving it from ambient environment/settings state the boot may
+    # never have used.
+    default_model_binding_id: str = ""
     database_url: str = ""
     # The Workspace this instance admits work into (#41). Core keeps the soft
     # scope axes only (ADR-019/ADR-068), and a single-instance deployment is one

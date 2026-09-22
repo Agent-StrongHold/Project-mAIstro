@@ -40,6 +40,7 @@ class DAGNode(BaseModel):
     name: str
     agent_id: str | None = None
     model: str | None = None
+    binding_id: str | None = None
     strategy: Literal["react", "plan_execute", "direct", "delegate"] = "react"
     prompt: str | None = None
     config: dict[str, Any] = {}
@@ -250,6 +251,7 @@ class AddNodeBody(BaseModel):
     name: str
     agent_id: str | None = None
     model: str | None = None
+    binding_id: str | None = None
     strategy: Literal["react", "plan_execute", "direct", "delegate"] = "react"
     prompt: str | None = None
     config: dict[str, Any] = {}
@@ -266,6 +268,7 @@ def add_node(dag_id: str, body: AddNodeBody) -> dict:
         name=body.name,
         agent_id=body.agent_id,
         model=body.model,
+        binding_id=body.binding_id,
         strategy=body.strategy,
         prompt=body.prompt,
         config=body.config,

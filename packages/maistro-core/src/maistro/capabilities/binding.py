@@ -82,6 +82,8 @@ class ResolvedBinding(BaseModel):
     capability: str
     provider_name: str
     provider_trust_tier: str
+    # Optional only so pre-#1118 rows can round-trip; every resolution
+    # performed live names the Binding's Workspace/Project scope (#1085).
     workspace_id: str = ""
     project_id: str = ""
     config: dict[str, Any] = Field(default_factory=dict)
@@ -116,11 +118,11 @@ class ResolvedBinding(BaseModel):
             )
         return cls(
             binding_id=binding.binding_id,
+            workspace_id=binding.workspace_id,
+            project_id=binding.project_id,
             capability=binding.capability,
             provider_name=provider.name,
             provider_trust_tier=provider.trust_tier,
-            workspace_id=binding.workspace_id,
-            project_id=binding.project_id,
             config=binding.config,
             credential_refs=binding.credential_refs,
             policy_refs=binding.policy_refs,

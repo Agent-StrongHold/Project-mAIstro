@@ -164,6 +164,12 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
         # file passes.
         database_url=resolve_database_url(),
+        # The operator's declared default model.chat Binding (#1085), stated
+        # once on the composed runtime config. Provisioning below and node
+        # default resolution (via the container's config) both read THIS
+        # value, so a Settings object the boot was actually given cannot
+        # disagree with the declaration a node later resolves.
+        default_model_binding_id=settings.maistro_model_binding_id.strip(),
         # The Sentinel permission table is fail-closed (#1165): an empty table
         # denies every tool, so the grants this deployment states must reach
         # the config the Container is built from.
@@ -174,6 +180,38 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
     )
 
     container = await create_container(config)
+
+    # #1085: complete the operator's model.chat Binding declaration. The
+    # container's bootstrap only loads statically-declared bindings, and the
+    # Root Project id is minted during container wiring, so the bridge scopes
+    # the deployment's declared default binding to (default Workspace, Root
+    # Project) -- the scope `authorize_hive_dag_scope` admits DAG runs into
+    # when no Project is selected. The declaration loads through maistro-core's
+    # own `bootstrap_model_bindings` authority (the same loader operator
+    # config uses), not a bridge-private Binding mint: no second store is
+    # created, and an empty declaration provisions nothing, leaving stored
+    # DAG nodes that name no Binding to fail closed. A stored DAG that names
+    # its own `binding_id` still resolves against this same authority.
+    default_binding_id = config.default_model_binding_id.strip()
+    if default_binding_id:
+        from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+        from maistro.types.config import ModelBindingConfig
+
+        root_project = await container.project_scope_store.create_root(config.workspace_id)
+        await bootstrap_model_bindings(
+            config.model_copy(
+                update={
+                    "model_bindings": [
+                        ModelBindingConfig(
+                            binding_id=default_binding_id,
+                            workspace_id=config.workspace_id,
+                            project_id=root_project.project_id,
+                        )
+                    ]
+                }
+            ),
+            container.capability_effects,
+        )
 
     llm_client = _HttpOpenAILLMClient(
         base_url=llm_base or "http://localhost:4000/v1",
