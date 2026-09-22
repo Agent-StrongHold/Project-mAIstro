@@ -81,9 +81,7 @@ async def test_a_turn_executes_on_the_canonical_spine_and_reports_the_agent(
     from maistro.cli._builders_tui import BuildersApp, CodingScreen, WelcomeScreen
 
     monkeypatch.setenv("HOME", str(tmp_path))  # the TUI writes under ~/.maistro
-    monkeypatch.setattr(
-        "maistro_bootstrap.builders.agent_loop.TurnRunner", _FakeTurnRunner
-    )
+    monkeypatch.setattr("maistro_bootstrap.builders.agent_loop.TurnRunner", _FakeTurnRunner)
 
     app = BuildersApp()
     async with app.run_test() as pilot:
@@ -116,9 +114,7 @@ async def test_a_failed_turn_is_reported_as_a_failed_canonical_run(
     from maistro.cli._builders_tui import BuildersApp, CodingScreen, WelcomeScreen
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(
-        "maistro_bootstrap.builders.agent_loop.TurnRunner", _FakeTurnRunner
-    )
+    monkeypatch.setattr("maistro_bootstrap.builders.agent_loop.TurnRunner", _FakeTurnRunner)
     _FakeTurnRunner.fail = True
     try:
         app = BuildersApp()

@@ -228,3 +228,16 @@ def test_default_scan_reproduces_ci_scope(gate, monkeypatch, tmp_path):
     # to the reviewed scope.
     assert "tests" not in captured["args"]
     assert "packages" not in captured["args"]
+
+
+def test_default_scan_fails_loud_when_no_src_roots_exist(gate, monkeypatch, tmp_path):
+    """A checkout with no packages/*/src is a broken measurement, not an
+    empty one: the no-argument scan must refuse (named SystemExit) rather
+    than scan nothing and report a clean ledger over zero files (#446
+    repair — this guard line shipped unexercised)."""
+    empty_root = tmp_path / "empty"
+    empty_root.mkdir()
+    monkeypatch.setattr(gate, "ROOT", empty_root)
+
+    with pytest.raises(SystemExit, match="no packages/\*/src found"):
+        gate._default_scan_args()
