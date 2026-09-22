@@ -57,6 +57,13 @@ _ALLOWED_KINDS = frozenset(
         "protocol_adapter",
     }
 )
+#: Kinds whose contract is per-owner record access. Their ledger ``scope``
+#: strings must be corroborated by the implementation itself.
+_CODE_SCOPED_KINDS = frozenset({"product_crud", "encrypted_store"})
+#: Parameter/name shapes that evidence owner (principal) scoping in code.
+_OWNER_SCOPE_TERMS = ("user", "principal", "owner", "uid")
+#: Parameter shapes that select a stored record by identity.
+_RECORD_SELECTOR_TOKENS = frozenset({"id", "ids", "record", "records"})
 
 
 def _load(path: Path, name: str) -> ModuleType:
@@ -97,6 +104,128 @@ def _operation_name(name: str) -> bool:
     return normalized in _OPERATION_NAMES or any(
         normalized.startswith(f"{operation}_") for operation in _OPERATION_NAMES
     )
+
+
+def _tokens(name: str) -> list[str]:
+    return [part for part in name.lower().strip("_").replace("-", "_").split("_") if part]
+
+
+def _has_owner_scope(name: str) -> bool:
+    return any(token.startswith(_OWNER_SCOPE_TERMS) for token in _tokens(name))
+
+
+def _function_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    args = node.args
+    return [
+        arg.arg
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
+        if arg.arg not in {"self", "cls"}
+    ]
+
+
+def _is_record_selector(params: list[str]) -> bool:
+    """Return whether some parameter selects a stored record by identity."""
+    return any(
+        any(token in _RECORD_SELECTOR_TOKENS for token in _tokens(param)) for param in params
+    )
+
+
+def _docstring_node(node: ast.AST) -> ast.Constant | None:
+    """Return the docstring constant of a module/function/class, if any."""
+    body = getattr(node, "body", None)
+    if not body:
+        return None
+    first = body[0]
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return first.value
+    return None
+
+
+def _code_scope_evidence(node: ast.FunctionDef | ast.AsyncFunctionDef, params: list[str]) -> bool:
+    """Owner-scope evidence from parameters or code, docstrings excluded.
+
+    A docstring is a claim, not enforcement, so scope evidence must appear in
+    the code itself: a scope-carrying parameter, or identifiers/strings the
+    body actually references (e.g. ``uid = _user_id(request)`` in a route
+    handler that takes only ``request``).
+    """
+    if any(_has_owner_scope(param) for param in params):
+        return True
+    docstring = _docstring_node(node)
+    for child in ast.walk(node):
+        if child is docstring:
+            continue
+        if isinstance(child, ast.Name) and _has_owner_scope(child.id):
+            return True
+        if (
+            isinstance(child, ast.Constant)
+            and isinstance(child.value, str)
+            and _has_owner_scope(child.value)
+        ):
+            return True
+    return False
+
+
+def _module_has_owner_scope(tree: ast.Module) -> bool:
+    """Return whether the module cites the principal dimension outside docstrings."""
+    docstring = _docstring_node(tree)
+    for node in ast.walk(tree):
+        if node is docstring:
+            continue
+        if isinstance(node, ast.Name) and _has_owner_scope(node.id):
+            return True
+        if isinstance(node, ast.arg) and _has_owner_scope(node.arg):
+            return True
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ) and _has_owner_scope(node.name):
+            return True
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _has_owner_scope(node.value)
+        ):
+            return True
+    return False
+
+
+def _owner_scope_failures(relative: str, path: Path) -> list[str]:
+    """Code-level corroboration for an owner-scoped credential classification.
+
+    The ledger's ``scope`` strings are assertions; this review checks the
+    implementation. The module must reference the principal dimension, and no
+    record operation may select records by id without an owner scope — the
+    exact shape of the retired ``credential_store_v2``. Global operations whose
+    parameters are key material rather than record selectors (e.g. master-key
+    rotation) are not demanded an owner scope.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return [f"{relative}: owner-scoped credential surface cannot be parsed for scope review"]
+
+    failures: list[str] = []
+    if not _module_has_owner_scope(tree):
+        failures.append(
+            f"{relative}: owner-scoped credential surface cites no principal scope in code"
+        )
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not _operation_name(node.name):
+            continue
+        params = _function_params(node)
+        if not _is_record_selector(params) or _code_scope_evidence(node, params):
+            continue
+        failures.append(
+            f"{relative}: {node.name} selects credential records by id without an "
+            "owner/principal scope"
+        )
+    return failures
 
 
 def _is_protocol(node: ast.ClassDef) -> bool:
@@ -256,6 +385,10 @@ def audit(  # noqa: C901 -- this is the closed-world ledger gate
                 failures.append(f"{path_text}: authority must name {authority_term}")
             if scope_terms and not any(term in scope for term in scope_terms):
                 failures.append(f"{path_text}: scope does not satisfy the {kind} contract")
+        if kind in _CODE_SCOPED_KINDS and path.suffix == ".py":
+            # Asserted ledger strings alone do not certify the implementation:
+            # the code itself must corroborate principal scope (#1186).
+            failures.extend(_owner_scope_failures(path_text, path))
 
     detected: dict[str, str] = {}
     for key in reachable:

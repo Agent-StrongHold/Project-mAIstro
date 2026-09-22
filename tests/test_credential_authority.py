@@ -147,3 +147,117 @@ class Repository:
             reachable={"demo.repository"},
         )
         assert any("not classified" in failure for failure in failures)
+
+
+_UNSCOPED_STORE_SOURCE = """
+import httpx
+from cryptography.fernet import Fernet
+
+class SecretRepository:
+    def __init__(self):
+        self._fernet = Fernet.generate_key()
+
+    def get(self, record_id):
+        return httpx.get('/records', params={'id': record_id})
+
+    def rotate(self, record_id, secret):
+        return self._fernet.encrypt(secret.encode())
+
+    def delete(self, record_id):
+        return httpx.delete('/records', params={'id': record_id})
+"""
+
+
+def _scope_ledger_entry(kind: str) -> dict:
+    return {
+        "path": "packages/demo/src/demo/secrets.py",
+        "kind": kind,
+        "authority": "canonical per-user credential authority",
+        "scope": "authenticated request principal user id",
+        "storage": "Fernet-encrypted records",
+    }
+
+
+def test_classified_but_unscoped_reachable_store_fails_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asserted ledger scope strings cannot certify an unscoped implementation.
+
+    Regression: a reachable id-only store used to pass the authority gate once
+    it was classified, because the audit validated only the ledger's own scope
+    strings. The audit must corroborate principal scope in the implementation
+    itself, or a classified store reproduces the retired credential_store_v2
+    shape (read/rotate/delete by record id, no owner predicate).
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        package_root = Path(directory) / "packages" / "demo" / "src"
+        package_fixture = package_root / "demo" / "secrets.py"
+        package_fixture.parent.mkdir(parents=True)
+        package_fixture.write_text(_UNSCOPED_STORE_SOURCE, encoding="utf-8")
+        monkeypatch.setattr(_checker, "ROOT", Path(directory))
+        assert _checker.is_credential_surface(package_fixture)
+
+        for kind in ("product_crud", "encrypted_store"):
+            failures = _checker.audit(
+                {
+                    "reachable": [_scope_ledger_entry(kind)],
+                    "retired": [{"path": "deleted.py"}],
+                },
+                modules={"demo.secrets": package_fixture},
+                reachable={"demo.secrets"},
+            )
+            assert any("without an owner/principal scope" in failure for failure in failures), (
+                f"{kind}: a classified but unscoped store passed the authority gate"
+            )
+            assert any("cites no principal scope in code" in failure for failure in failures), (
+                f"{kind}: missing module-level principal corroboration went unreported"
+            )
+
+
+def test_owner_scoped_classified_store_passes_code_scope_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The code corroboration accepts genuine principal scoping, only that.
+
+    Operations carrying a user/principal parameter pass; route-style handlers
+    pass via body evidence (``uid = _user_id(request)``); and global key-material
+    operations (master-key rotation) are not demanded an owner scope.
+    """
+    scoped_source = """
+class SecretRepository:
+    def get(self, user_id, record_id):
+        return {'id': record_id}
+
+    def rotate(self, user_id, record_id, secret):
+        return record_id
+
+    def delete(self, user_id, record_id):
+        return True
+
+    def rotate_master_key(self, new_key):
+        return new_key
+"""
+    route_style_source = """
+def _user_id(request):
+    return request.state.user_id
+
+
+def get_record(record_id, request):
+    uid = _user_id(request)
+    return {'owner': uid, 'id': record_id}
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        package_root = Path(directory) / "packages" / "demo" / "src"
+        package_fixture = package_root / "demo" / "secrets.py"
+        package_fixture.parent.mkdir(parents=True)
+        package_fixture.write_text(scoped_source + route_style_source, encoding="utf-8")
+        monkeypatch.setattr(_checker, "ROOT", Path(directory))
+        failures = _checker.audit(
+            {
+                "reachable": [_scope_ledger_entry("product_crud")],
+                "retired": [{"path": "deleted.py"}],
+            },
+            modules={"demo.secrets": package_fixture},
+            reachable={"demo.secrets"},
+        )
+        assert failures == []
