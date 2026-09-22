@@ -61,7 +61,38 @@ Validation checkpoint:
 - `uv run python scripts/check-ratchet-provenance.py`: passed all delegated gates.
 - `bash scripts/verify-monorepo-layout.sh`: passed.
 
-Remaining validation: final diff review, release-mode negative checks at committed
-HEAD, final commit. No live Actions artifact or release publication was created;
-GitHub mutations are prohibited. Current registry's missing evidence remains an
-intentional release blocker rather than fabricated proof.
+Final validation and handoff:
+- `git diff --check`: passed. Final Ruff check/format check passed again.
+- Compliance + release tests rerun: 120 passed in 8.12s.
+- Implementation committed as `e2d58a8da72c1f2b6375154391ca6dcfa9cd2caf`.
+- At that committed HEAD, `uv run python scripts/check-compliance.py
+  --require-release-evidence --release-digest <HEAD>` exited 1 with 79 expected
+  missing/incomplete evidence problems.
+- The same command with `--resolve-release-evidence --resolved-output <temp-file>`
+  exited 1 with 52 expected missing/incomplete evidence problems, including
+  Articles 15 and 17. Assertions verified both failures and absence of output.
+  Resolution removes the impossible self-digest requirement, not the requirement
+  for reviewed controls and real evidence.
+- Ordinary compliance check and root inventory gate passed again (3603 tests).
+- Workflow YAML is parsed and release dependency/upload/download wiring asserted
+  by tests. actionlint and shellcheck were not installed; not claimed as run.
+
+Changed files: compliance checker, evidence producer, both compliance-evidence
+and release workflows, COMPLIANCE.md, adjacent root tests, and this note. No
+control status, release_required flag, quality ledger, grant, scheduler, event
+or authorization authority was changed.
+
+Acceptance: document/schema/six statuses and fail-closed evidence behavior are
+covered by the passing checker and tests. The real local annotated-tag + pytest
+execution fixture proves post-commit binding without source edits. Legal
+sufficiency remains explicitly human/Stronghold-owned. Live GitHub API/archive
+semantics, first production Actions execution, and full release publication are
+UNVERIFIED: transport is simulated in integration tests, and no GitHub mutations
+are allowed here. A maintainer must review verification requests and produce
+actual evidence before any current release can pass; no request was fabricated.
+
+Progress: checked=1, done=1 repair committed, skipped=0, errors=0 unexpected
+validation failures. Next: review the repair and exercise the evidence workflow
+on a reviewed branch commit before tagging; the current release remains blocked
+on missing control evidence. Handoff verdict: NEEDS-DEEP-REVIEW, not integration
+approval.
