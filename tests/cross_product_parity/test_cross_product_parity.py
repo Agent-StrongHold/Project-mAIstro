@@ -15,6 +15,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -26,6 +27,7 @@ from maistro.graph.definitions import Graph, Node  # noqa: E402
 from tests.cross_product_parity.harness import (  # noqa: E402
     GOLDEN_BASELINES,
     ONTOLOGY,
+    REPO_ROOT,
     DependencyAssessment,
     DependencyUnavailable,
     ParityContractError,
@@ -434,6 +436,155 @@ async def test_evolve_cycle_records_real_run_node_and_attempt_evidence() -> None
         )
     finally:
         monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_hive_ordinary_chat_admits_a_canonical_run_on_the_workspace_roster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hive's ordinary conversation chat runs on the canonical spine.
+
+    The shipped chat composition is the engine's own door:
+    ``EngineService.route_request`` -> ``MaistroCoreBridge`` ->
+    ``Container.route_request``, which admits the turn as a canonical Run,
+    executes it as a physical Attempt under a NodeRun, and resolves the
+    turn's agent from the persistent roster the bridge materialized at boot
+    over the shipped ``agents/`` manifests (fail-closed when absent). Only
+    the network-facing LLM client is deterministic here; admission,
+    execution, agent resolution, and the durable spine are the shipped
+    wiring (#53/#1037: ordinary conversation-only chat is canonical Run /
+    NodeRun / Attempt evidence, with no second chat execution identity).
+    """
+    import adapters.maistro_core as maistro_core_module
+    import services.dag_run_inspection as inspection
+    import services.engine as engine_module
+    from config import Settings
+    from services.agent_materialization import reset_runtime_source
+    from services.engine import EngineService
+
+    class DeterministicChatLLM:
+        """Model-call boundary stand-in, mirroring the Builders scenario.
+
+        Records what the composition offered the model so the scenario can
+        assert the turn stayed conversation-only (no tool capability was
+        advertised or executed).
+        """
+
+        calls: ClassVar[list[dict[str, object]]] = []
+
+        def __init__(self, *, base_url: str = "", api_key: str = "", model: str = "") -> None:
+            del base_url, api_key  # the network boundary is the replaced half
+            self._model = model
+
+        async def complete(
+            self, messages: list[dict[str, object]], model: str, **kwargs: object
+        ) -> dict[str, object]:
+            DeterministicChatLLM.calls.append({"model": model, **kwargs})
+            user = next((m for m in messages if m.get("role") == "user"), {})
+            content = user.get("content", "") if isinstance(user, dict) else ""
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": f"parity chat: {content}",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(maistro_core_module, "_HttpOpenAILLMClient", DeterministicChatLLM)
+    db_path = tmp_path / "hive-chat.sqlite3"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+
+    engine = EngineService()
+    profile = None
+    try:
+        await engine.start(
+            Settings(
+                maistro_router_api_key="parity-key",
+                maistro_agents_dir=str(REPO_ROOT / "agents"),
+            )
+        )
+        # The bridge, not the degraded stub, must be wired: a missing roster
+        # fails closed at boot, and a stub port cannot fake a configured chat.
+        assert engine.is_configured
+        roster = engine.agent_port.container.agents
+        assert roster, "the shipped workspace roster must materialize"
+
+        monkeypatch.setattr(engine_module, "_singleton", engine)
+
+        async def _views_for_user(_user_id: str) -> list[SimpleNamespace]:
+            return [SimpleNamespace(id="default")]
+
+        monkeypatch.setattr(inspection, "list_views_for_user", _views_for_user)
+
+        from maistro.runs.chat_admission import CHAT_SOURCE, SESSION_ID_KEY
+
+        DeterministicChatLLM.calls.clear()
+        result = await engine.route_request(
+            [{"role": "user", "content": "Parity: what does the workspace roster ship?"}],
+            session_id="parity-chat-session",
+        )
+
+        # The answer names the canonical Run: no second chat execution
+        # identity exists for the product to report instead.
+        run_id = result.get("run_id")
+        assert run_id, "the chat answer must name its canonical Run"
+
+        # Conversation-only containment: exactly one model call, and nothing
+        # the model could have executed a tool with.
+        assert len(DeterministicChatLLM.calls) == 1
+        assert not DeterministicChatLLM.calls[0].get("tools")
+
+        run = await engine.run_store.get_run(run_id)
+        assert run is not None
+        assert run.status.value == "completed"
+        assert run.workspace_id == "default"
+        assert run.provenance["admission_source"] == CHAT_SOURCE
+        assert run.provenance[SESSION_ID_KEY] == "parity-chat-session"
+
+        node_runs = await engine.run_store.list_node_runs(run_id)
+        assert len(node_runs) == 1
+        attempts = await engine.run_store.list_attempts(node_runs[0].node_run_id)
+        assert len(attempts) == 1
+        # The turn resolved the persistent roster agent, and the durable
+        # Attempt records the same agent that answered.
+        assert result["agent"] in roster
+        assert attempts[0].result["agent"] == result["agent"]
+
+        # The Conductor observer resolves the same Run through the canonical
+        # store; the projection cannot invent, hide, or re-terminalize it.
+        inspected = await inspection.visible_run_detail("hive-observer", run_id)
+        assert inspected is not None
+        assert inspected["canonical_run_id"] == run_id
+        assert inspected["status"] == "completed"
+        assert inspected["workspace_id"] == "default"
+
+        # The chat Run is on the shared durable spine, observable through an
+        # independent connection like every other producer scenario.
+        profile = await open_durable_profile(db_path, workspace_id="default")
+        observation = await canonical_observation(profile, run_id)
+        assert observation["status"] == "completed"
+        assert observation["workspace_id"] == "default"
+        assert len(observation["node_run_ids"]) == len(observation["attempt_ids"]) == 1
+        assert_identity_projection(observation, {**observation, "terminal_state": "completed"})
+    finally:
+        if profile is not None:
+            await profile.close()
+        await engine.stop()
+        container = getattr(engine.agent_port, "container", None)
+        if container is not None:
+            await container.aclose()
+        # Module seams engine.start() re-pointed at this container's stores.
+        reset_runtime_source()
+        from services import feedback_service
+
+        from maistro.memory.outcomes import InMemoryOutcomeStore
+
+        feedback_service.set_outcome_store(InMemoryOutcomeStore())
 
 
 def test_shared_identity_contract_consumes_executable_ontology() -> None:

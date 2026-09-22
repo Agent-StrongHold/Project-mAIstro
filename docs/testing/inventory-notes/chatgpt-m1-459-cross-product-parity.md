@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +9
+  tests/: +10
 ---
 
 # #459 cross-product parity harness
@@ -12,7 +12,7 @@ Base recovered from zero diff and fast-forwarded to `develop@93401f3485ebb815ded
 
 This branch owns the cross-product parity **test harness and the #446 repair seams**. It does not close #459.
 
-The repair is limited to canonical inspection authorization, the BuilderPipeline canonical composition, public scheduler/Evolve invocation entry points, and their parity evidence. It does not change the canonical Run/Graph store, migration, workflow, quality gate, or ontology.
+The repair is limited to canonical inspection authorization, the BuilderPipeline canonical composition, public scheduler/Evolve invocation entry points, the Hive engine chat composition, and their parity evidence. It does not change the canonical Run/Graph store, migration, workflow, quality gate, or ontology.
 
 ## Ownership audit
 
@@ -52,7 +52,7 @@ No `skip`, `importorskip`, expected-failure marker, or other test suppression is
 
 ## Collected parity contracts
 
-The named suite currently contributes ten integration tests:
+The named suite currently contributes eleven integration tests:
 
 1. The supported SQLite execution spine persists the identical canonical Run, Graph, Workspace, Project and admission provenance across connection close/reopen.
 2. An identical cross-product identity projection is accepted.
@@ -60,10 +60,18 @@ The named suite currently contributes ten integration tests:
 4. Builders -> Conductor scenario 1 runs the shipped BuilderPipeline canonical composition rather than constructing its executor directly.
 5. Scheduler -> shared inspection scenario 2 runs the live cadence entry point and observes through Conductor inspection.
 6. Evolve -> shared inspection scenario 3 runs the public EvolutionService cycle and observes through Conductor inspection.
-7. Scenario 4 consumes the #458 executable identity ontology once it lands.
-8. Scenario 6 consumes #463's independent golden fixture/matcher once it lands.
-9. Strict closeout rejects blocker-only producer passes.
-10. A harness-integrity test rejects test-suppression escape hatches in this suite.
+7. The Hive chat scenario runs the shipped engine chat door
+   (`EngineService.route_request` -> `MaistroCoreBridge` -> `Container.route_request`)
+   over the durable SQLite spine: one ordinary conversation-only turn admits a
+   canonical Run with `chat` admission provenance and session correlation,
+   executes exactly one NodeRun/Attempt, resolves its agent from the boot-
+   materialized workspace roster (`agents/` shipped manifests, fail-closed), and
+   the Conductor inspection seam resolves the same Run through the canonical
+   store.
+8. Scenario 4 consumes the #458 executable identity ontology once it lands.
+9. Scenario 6 consumes #463's independent golden fixture/matcher once it lands.
+10. Strict closeout rejects blocker-only producer passes.
+11. A harness-integrity test rejects test-suppression escape hatches in this suite.
 
 ## Acceptance status
 
@@ -80,9 +88,16 @@ Already proven independently by this branch:
 - unavailable product scenarios are explicitly tied to named source-level dependency evidence without skips/suppressions;
 - #458 and #463 are consumed as external authorities rather than recreated.
 
-The strict closeout suite now executes the three producer scenarios against the
-canonical spine and fails closed in CI when any scenario cannot run. Each producer
-uses a shipped composition entry point and the Conductor inspection seam where the
-product exposes one. Broader identity
-coverage and the remaining product-specific #459 acceptance work remain governed by
-#459 and its downstream dependencies.
+The strict closeout suite now executes the four producer scenarios — Builders,
+scheduler, Evolve, and Hive ordinary conversation chat — against the canonical
+spine and fails closed in CI when any scenario cannot run. Each producer uses a
+shipped composition entry point (Builders session pipeline, live scheduler
+cadence, EvolutionService cycle, the Hive engine chat door with its boot-
+materialized workspace roster) and the Conductor inspection seam where the
+product exposes one. The Hive chat scenario has no dependency gate: it always
+executes, so the strict-closeout CI step cannot pass while Hive's ordinary chat
+is off the canonical spine. Broader identity coverage and #459's own closeout
+acceptance remain governed by #459 and its downstream dependencies; the four
+executed producer scenarios are this branch's contribution, and the gap between
+them and #459's full scenario set stays visible as unexecuted #459 work rather
+than as a green strict-closeout step.
