@@ -166,6 +166,45 @@ def test_the_node_gets_the_canonical_run_store_not_the_durable_one(monkeypatch) 
     )
 
 
+_SYNTH_DAG_NODE = {"nodes": [{"id": "s", "kind": "agent.synth_dag"}]}
+
+
+def test_the_synth_dag_node_gets_the_durable_graph_store_from_the_container(
+    monkeypatch,
+) -> None:
+    """#1193: the durable graph store is what `agent.synth_dag` files its
+    synthesized sub-graph into. It is the *other* store — `graph_run_store`,
+    not `run_store` — and the bridge hands it on so the node cannot arrive
+    with `run_store=None` and complete with a success that ran nothing."""
+    import services.dag_agents as dag_agents
+
+    container = _StubContainer()
+    _with_container(monkeypatch, container)
+
+    node = dag_agents._resolve_nodes_with()("s", _SYNTH_DAG_NODE)
+
+    assert node._run_store is container.graph_run_store
+    assert node._run_store is not container.run_store
+
+
+def test_without_a_bridge_the_synth_dag_node_is_refused_not_degraded(monkeypatch) -> None:
+    """The fallback resolver has no graph store to give, so it refuses the kind
+    outright (#1193) rather than building a node that reports success for a
+    sub-graph nothing ran."""
+    import services.dag_agents as dag_agents
+    import services.engine as engine_module
+
+    from maistro.graph.nodes import NodeCompositionError
+
+    port = type("_Port", (), {"container": None})()
+    monkeypatch.setattr(
+        engine_module, "get_engine", lambda: type("_Engine", (), {"_agent_port": port})()
+    )
+
+    with pytest.raises(NodeCompositionError, match="graph_run_store"):
+        dag_agents._resolve_nodes_with()("s", _SYNTH_DAG_NODE)
+
+
 @pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
     """A Conductor running standalone must behave as it did, not fail to start."""
