@@ -398,11 +398,13 @@ class TuringExecutionPlane:
     ) -> DurableRunRecord:
         """Execute one chat request as one canonical Graph/Run.
 
-        Failure before node resolution is an audit-admission failure: no provider
-        work has been dispatched, so the HTTP boundary may preserve chat
-        availability by executing the domain turn without a Run. Once the node
-        has been resolved, failures belong to canonical execution and are never
-        replayed outside the spine.
+        Failure before node resolution is an admission failure: no provider
+        work has been dispatched, so the incomplete admission is cancelled and
+        ``TuringAdmissionUnavailable`` is raised. The HTTP boundary fails
+        closed with a fixed 503 and never replays the user turn outside the
+        Run/NodeRun/Attempt spine. Once the node has been resolved, failures
+        belong to canonical execution and are likewise never replayed outside
+        the spine.
         """
         admitted_run_id: str | None = None
         try:
