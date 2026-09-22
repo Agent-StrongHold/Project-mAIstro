@@ -598,8 +598,9 @@ async def test_hive_facade_uses_governed_model_egress_on_canonical_run(
             ],
             "edges": [],
         },
-        workspace_id="ws-1",
-        project_id=root.project_id,
+        scope=DagExecutionScope(
+            workspace_id="ws-1", project_id=root.project_id, user_id="hive-user"
+        ),
     )
 
     assert result["status"] == "completed"
@@ -691,8 +692,9 @@ async def test_hive_gateway_failure_terminalizes_canonical_run_and_node(
             ],
             "edges": [],
         },
-        workspace_id="ws-1",
-        project_id=root.project_id,
+        scope=DagExecutionScope(
+            workspace_id="ws-1", project_id=root.project_id, user_id="hive-user"
+        ),
     )
 
     assert result["status"] == "failed"
@@ -804,8 +806,9 @@ async def test_canonical_tool_model_fallbacks_share_attempt_correlated_egress(
             ],
             "edges": [{"id": "clarify-grounded", "from_node": "clarify", "to_node": "grounded"}],
         },
-        workspace_id="ws-1",
-        project_id=root.project_id,
+        scope=DagExecutionScope(
+            workspace_id="ws-1", project_id=root.project_id, user_id="hive-user"
+        ),
     )
 
     assert result["status"] == "completed"
