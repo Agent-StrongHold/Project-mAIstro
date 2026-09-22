@@ -65,12 +65,20 @@ class TurnDispatcher:
     ) -> Any:
         from maistro.builders.graph_executor import DispatchResult
 
-        result = await self._runner.execute_turn(
-            messages=[
-                {"role": "system", "content": "You are a coding assistant."},
-                {"role": "user", "content": prompt},
-            ]
-        )
+        try:
+            result = await self._runner.execute_turn(
+                messages=[
+                    {"role": "system", "content": "You are a coding assistant."},
+                    {"role": "user", "content": prompt},
+                ]
+            )
+        except Exception as exc:
+            # The agent-loop boundary translates its failures into the
+            # DispatchResult contract: a failing model call is a failed stage
+            # with a named error, not an anonymous exception the pipeline
+            # cannot attribute (``failed_stage_error`` would stay empty and
+            # the TUI would show "Builder run failed:" with no reason).
+            return DispatchResult(ok=False, error=f"agent turn failed: {exc}")
         return DispatchResult(ok=True, output=str(result.get("content", "done")))
 
 

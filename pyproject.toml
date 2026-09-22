@@ -111,6 +111,15 @@ bootstrap = [
 s3 = [
     "maistro-core[s3]",
 ]
+# Passthrough to maistro-core's own `[builders]` extra, for the same reason as
+# s3 above: `uv sync --all-extras` at the root does not pull member extras, and
+# without textual the Builders TUI (`maistro.cli._builders_tui`) cannot even be
+# imported by the coverage producer that measures it. The quality gate's
+# diff-coverage step then scores the file 0% — not "untested", which a test
+# could fix, but "unmeasurable in the measuring environment". #446 repair.
+builders = [
+    "maistro-core[builders]",
+]
 
 [dependency-groups]
 dev = [

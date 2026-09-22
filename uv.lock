@@ -2820,6 +2820,9 @@ bootstrap = [
 browser = [
     { name = "playwright" },
 ]
+builders = [
+    { name = "maistro-core", extra = ["builders"] },
+]
 dev = [
     { name = "aiosqlite" },
     { name = "boto3" },
@@ -2883,6 +2886,7 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "maistro-bootstrap", marker = "extra == 'bootstrap'", editable = "packages/maistro-bootstrap" },
     { name = "maistro-canvas", editable = "packages/maistro-canvas" },
+    { name = "maistro-core", extras = ["builders"], marker = "extra == 'builders'", editable = "packages/maistro-core" },
     { name = "maistro-core", extras = ["s3"], marker = "extra == 's3'", editable = "packages/maistro-core" },
     { name = "maistro-core", extras = ["tui", "identity"], editable = "packages/maistro-core" },
     { name = "maistro-registry", editable = "packages/maistro-registry" },
@@ -2910,7 +2914,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
     { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.14" },
 ]
-provides-extras = ["dev", "browser", "bootstrap", "s3"]
+provides-extras = ["dev", "browser", "bootstrap", "s3", "builders"]
 
 [package.metadata.requires-dev]
 dev = [
