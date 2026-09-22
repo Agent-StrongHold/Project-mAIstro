@@ -488,20 +488,16 @@ class TaskQueue:
         try:
             yield task
         except BaseException as exc:
-            receipt = self._tasks.get(task_id)
-            requested = (
-                isinstance(exc, asyncio.CancelledError)
-                and receipt is not None
-                and receipt.status is TaskStatus.CANCELLED
-            )
-            if requested:
-                # This cancellation is `TaskQueue.cancel()` landing in the
-                # work. The receipt already says CANCELLED — the decision the
-                # caller made and the API reported — and CANCELLED has no edge
-                # to FAILED. Recording a failure (and a `task_failed` error
-                # log) here would overwrite a deliberate stop with what reads
-                # as an accident, and attach an error result to a receipt the
-                # caller was told is simply cancelled.
+            if isinstance(exc, asyncio.CancelledError):
+                # A cancellation is never a failure to record here. Requested
+                # or shutdown, the worker's CancelledError handler above this
+                # claim owns the receipt: it distinguishes the two and, for a
+                # shutdown, records the failure with the message that path has
+                # always used. Recording here as well would write
+                # `str(CancelledError())` — the empty string — onto the receipt
+                # first and log a spurious `task_failed` error for a deliberate
+                # stop, and for a requested cancellation it would fight the
+                # CANCELLED receipt the caller already acted on (#1242).
                 raise
             transitioned = await self.update_status(task_id, TaskStatus.FAILED)
             if transitioned:
