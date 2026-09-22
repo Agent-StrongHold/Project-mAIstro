@@ -168,9 +168,19 @@ def run_cursor_key(run: Run) -> RunCursor:
     return (created_at, run.run_id)
 
 
-def _run_matches_status_scope(run: Run, *, status: RunStatus, project_id: str | None) -> bool:
+def _run_matches_status_scope(
+    run: Run,
+    *,
+    status: RunStatus,
+    project_id: str | None,
+    workspace_id: str | None,
+) -> bool:
     """Whether one Run belongs in a status/scope listing."""
-    return run.status is status and (project_id is None or run.project_id == project_id)
+    return (
+        run.status is status
+        and (project_id is None or run.project_id == project_id)
+        and (workspace_id is None or run.workspace_id == workspace_id)
+    )
 
 
 def validate_child_scope(
@@ -325,6 +335,7 @@ class RunStore(Protocol):
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        workspace_id: str | None = None,
         after: RunCursor | None = None,
     ) -> list[Run]: ...
 
@@ -735,6 +746,7 @@ class InMemoryRunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        workspace_id: str | None = None,
         after: RunCursor | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first.
@@ -757,7 +769,12 @@ class InMemoryRunStore:
             (
                 run
                 for run in self._runs.values()
-                if _run_matches_status_scope(run, status=status, project_id=project_id)
+                if _run_matches_status_scope(
+                    run,
+                    status=status,
+                    project_id=project_id,
+                    workspace_id=workspace_id,
+                )
             ),
             key=run_cursor_key,
         )

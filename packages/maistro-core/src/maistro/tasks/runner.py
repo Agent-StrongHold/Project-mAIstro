@@ -245,11 +245,22 @@ class TaskRunner:
                 # result to a receipt that truthfully says "cancelled".
                 await self._emit_progress_webhook(task_id)
             else:
-                # Graceful shutdown — mark task as failed rather than leaving it stuck
-                await self._queue.update_status(
+                # Graceful shutdown — mark task as failed rather than leaving
+                # it stuck. The transition refusing means this was not a
+                # shutdown: a requested cancellation stops admitted work
+                # through the canonical Run first (#1320), the CancelledError
+                # then lands here while the receipt is still CODING, and the
+                # already-CANCELLED Run refuses the FAILED transition. The
+                # receipt is about to record CANCELLED; attaching a shutdown
+                # error result to it would put a failure onto a receipt the
+                # caller was told is simply cancelled.
+                transitioned = await self._queue.update_status(
                     task_id, TaskStatus.FAILED, error="Task cancelled during shutdown"
                 )
-                self._queue.set_result(task_id, TaskResult(error="Task cancelled during shutdown"))
+                if transitioned:
+                    self._queue.set_result(
+                        task_id, TaskResult(error="Task cancelled during shutdown")
+                    )
                 await self._emit_progress_webhook(task_id)
         except Exception as exc:
             await logger.aexception("task_execution_failed", task_id=task_id)

@@ -361,22 +361,41 @@ class TaskQueue:
     async def cancel(
         self, task_id: str, *, settle_timeout: float = CANCELLATION_SETTLE_TIMEOUT
     ) -> bool:
-        """Cancel a task: terminalize the receipt *and stop the running work*.
+        """Cancel a task: stop the work, then terminalize the receipt.
 
         Terminalizing the receipt alone answered a cancellation with success
         while the runner's coroutine ran on — the executor kept consuming
         compute and writing into the workspace, and its result was then
-        attached to a receipt that already said CANCELLED (#1242). The runner
-        registers the asyncio.Task executing each claimed task, so a
-        cancellation reaches the physical work, and the response waits —
-        bounded by ``settle_timeout`` — for the CancelledError handlers to
-        finish rather than returning while cancellation is still in flight.
+        attached to a receipt that already said CANCELLED (#1242). Two halves
+        now stop the work before the API may report a stop:
 
-        Returns False when the task is unknown, the Run refused, the work
-        already reached a terminal state on its own, or cancellation did not
-        settle within ``settle_timeout``. In every case the caller must not
-        report a successful cancellation.
+        * For admitted work the canonical Run is cancelled first (#1320):
+          the Run/Attempt service fences the Run CANCELLED and signals the
+          in-process owner of the physical Attempt, so an in-flight provider
+          receives the same signal as a queued task that has not started yet.
+          The receipt is a projection and follows afterwards.
+        * The runner registers the asyncio.Task executing each claimed task,
+          so the cancellation also reaches work this queue dispatched itself —
+          including deployments with no admitter, where no Run exists to carry
+          the signal. The response waits — bounded by ``settle_timeout`` — for
+          the CancelledError handlers to finish rather than returning while
+          cancellation is still in flight.
+
+        Returns False when the task is unknown, the Run refused the
+        cancellation, the receipt refused the CANCELLED transition (the work
+        already reached a terminal state on its own), or the local execution
+        did not settle within ``settle_timeout``. In every case the caller
+        must not report a successful cancellation.
         """
+        task = self._tasks.get(task_id)
+        if task is None:
+            return False
+        if (
+            self._admitter is not None
+            and task.run_id
+            and not await self._admitter.cancel_run(task.run_id)
+        ):
+            return False
         if not await self.update_status(task_id, TaskStatus.CANCELLED):
             return False
         execution = self._executions.get(task_id)

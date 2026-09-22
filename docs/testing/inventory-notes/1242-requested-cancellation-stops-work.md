@@ -23,6 +23,26 @@ CANCELLED — leave it, it is the truth the caller acted on) from a shutdown
 cancellation (receipt not terminal — keep recording
 `Task cancelled during shutdown` exactly as before).
 
+## Reconciliation with the canonical cancellation path (#1320)
+
+Develop independently fixed the same class end to end through the canonical
+model (#1169/#1320): `TaskQueue.cancel` calls `admitter.cancel_run(run_id)`
+first, which fences the Run CANCELLED and signals the in-process owner of the
+physical Attempt. Merging the two branches kept both halves:
+
+* For admitted work the canonical Run is cancelled first — the receipt is a
+  projection and follows afterwards. The registry stop still applies to work
+  this queue dispatched itself, including deployments with no admitter, where
+  no Run exists to carry the signal.
+* The canonical stop delivers its `CancelledError` to the worker *before* the
+  receipt flips to CANCELLED (the Run is cancelled first and the runtime
+  settles the victim inside `cancel_run`). The worker's shutdown branch
+  therefore also guards `set_result` behind the FAILED transition: when the
+  already-CANCELLED Run refuses that transition, nothing is written, and the
+  receipt records the requested cancellation with no result — pinned by the
+  `receipt.result is None` assertion in
+  `test_a_requested_cancellation_records_a_cancelled_attempt_and_run`.
+
 ## The tests
 
 Ten tests in `packages/maistro-core/tests/tasks/test_requested_cancellation.py`:

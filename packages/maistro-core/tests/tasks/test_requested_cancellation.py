@@ -302,6 +302,12 @@ async def test_a_requested_cancellation_records_a_cancelled_attempt_and_run() ->
         receipt = queue.get(task.task_id)
         assert receipt is not None
         assert receipt.status is TaskStatus.CANCELLED
+        # The canonical stop lands its CancelledError in the worker while the
+        # receipt is still CODING (the Run is cancelled first, #1320), so the
+        # shutdown branch of the worker must not attach
+        # "Task cancelled during shutdown" to a receipt queue.cancel is about
+        # to terminalize as a requested cancellation.
+        assert receipt.result is None
         run = await runs.get_run(task.run_id or "")
         assert run is not None
         assert run.status is RunStatus.CANCELLED
