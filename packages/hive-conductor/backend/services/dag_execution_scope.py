@@ -1,34 +1,47 @@
-"""Request-bound Workspace selection for Hive DAG execution.
+"""Canonical request scope admission for Hive DAG execution.
 
-This is intentionally the transition seam, not a second canonical Workspace
-store. Hive's visible tabs still come from ``stores.workspaces`` until #37
-retires that duplicate authority. A DAG execution may therefore validate an
-explicit product Workspace here, but it must not manufacture a canonical Root
-Project from that id. #766 extends this seam to canonical Workspace/Project
-resolution once the product authority converges.
+A Workspace id supplied by a client is only a selection.  The canonical
+``WorkspaceStore`` verifies the identity and membership, and its paired
+``ProjectScopeStore`` supplies the Project that owns the execution.  The
+returned immutable scope is the only scope shape accepted by the DAG runner.
 """
 
 from __future__ import annotations
 
-import stores
-from models.workspace import Workspace
+from dataclasses import dataclass
+
+from maistro.projects.scope import Project
+from maistro.workspaces.model import Workspace
+from services import workspace_authority
 
 
 class DagWorkspaceSelectionError(ValueError):
     """An explicit DAG Workspace selection is absent or not authorized."""
 
 
-def authorize_hive_dag_workspace(*, workspace_id: str, user_id: str) -> Workspace:
-    """Return the selected Hive Workspace only when ``user_id`` is a member.
+@dataclass(frozen=True, slots=True)
+class DagExecutionScope:
+    """The server-authorized identity carried to one DAG execution."""
 
-    The client-supplied id is a selection, never proof of authority. Unknown
-    and non-member Workspaces intentionally have the same error so this
-    boundary does not disclose which Workspace ids exist.
+    workspace_id: str
+    project_id: str
+    user_id: str
 
-    This function stops at the current Hive authority. It does *not* call
-    ``ProjectScopeStore.create_root``: until #37 converges Hive's Workspace
-    identity onto the canonical store, doing that would create canonical scope
-    for an id whose canonical Workspace does not exist.
+    def __post_init__(self) -> None:
+        if not self.workspace_id.strip():
+            raise ValueError("workspace_id must be non-empty")
+        if not self.project_id.strip():
+            raise ValueError("project_id must be non-empty")
+        if not self.user_id.strip():
+            raise ValueError("user_id must be non-empty")
+
+
+async def authorize_hive_dag_workspace(*, workspace_id: str, user_id: str) -> Workspace:
+    """Resolve a selected Workspace through the canonical authority.
+
+    This intentionally returns the canonical model, not Hive's retired
+    ``stores.workspaces`` projection.  Unknown, inactive, and non-member
+    selections share one refusal so this boundary is not an existence oracle.
     """
     selected = workspace_id.strip()
     principal = user_id.strip()
@@ -37,12 +50,50 @@ def authorize_hive_dag_workspace(*, workspace_id: str, user_id: str) -> Workspac
     if not principal:
         raise DagWorkspaceSelectionError("authenticated user identity is required")
 
-    workspace = stores.workspaces.get(selected)
-    if workspace is None or not any(member.user_id == principal for member in workspace.members):
-        raise DagWorkspaceSelectionError("Workspace not found")
-    if workspace.active is False:
+    store = await workspace_authority.canonical_workspace_store()
+    workspace = await store.get(selected)
+    membership = None
+    if workspace is not None:
+        membership = await store.get_membership(selected, user_id=principal)
+    presentation = workspace_authority.presentation_store().get(selected)
+    if (
+        workspace is None
+        or membership is None
+        or (presentation is not None and presentation.active is False)
+    ):
         raise DagWorkspaceSelectionError("Workspace not found")
     return workspace
 
 
-__all__ = ["DagWorkspaceSelectionError", "authorize_hive_dag_workspace"]
+async def authorize_hive_dag_scope(
+    *, workspace_id: str, user_id: str, project_id: str | None = None
+) -> DagExecutionScope:
+    """Admit one DAG request and resolve its canonical Project.
+
+    The optional Project id is an internal/server selection.  When omitted,
+    the Workspace's existing Root Project is used; no Project id is minted or
+    copied from legacy DAG data.
+    """
+    workspace = await authorize_hive_dag_workspace(workspace_id=workspace_id, user_id=user_id)
+    store = await workspace_authority.canonical_workspace_store()
+    project_store = store.project_store
+    if project_id is None or not project_id.strip():
+        project: Project = await project_store.root_for_workspace(workspace.workspace_id)
+    else:
+        candidate = await project_store.get(project_id.strip())
+        if candidate is None or candidate.workspace_id != workspace.workspace_id:
+            raise DagWorkspaceSelectionError("Project not found")
+        project = candidate
+    return DagExecutionScope(
+        workspace_id=workspace.workspace_id,
+        project_id=project.project_id,
+        user_id=user_id.strip(),
+    )
+
+
+__all__ = [
+    "DagExecutionScope",
+    "DagWorkspaceSelectionError",
+    "authorize_hive_dag_scope",
+    "authorize_hive_dag_workspace",
+]

@@ -342,7 +342,16 @@ class CanvasExecutor:
             raise RuntimeError(
                 f"Canvas job {job.id!r} names canonical Run {run_id!r} but no adapter is bound"
             )
-        return await self._canonical_execution.execute_stage(run_id, stage, operation)
+
+        async def _sanitised_operation() -> _T:
+            try:
+                return await operation()
+            except Exception as exc:
+                # Canonical Attempt evidence is durable and inspectable, so it
+                # must receive the same safe provider message as the receipt.
+                raise RuntimeError(_sanitise_error(exc)) from None
+
+        return await self._canonical_execution.execute_stage(run_id, stage, _sanitised_operation)
 
     async def _execute_generate(self, job: GenerationJobRecord, canvas: CanvasRecord) -> list[str]:
         params = job.params
