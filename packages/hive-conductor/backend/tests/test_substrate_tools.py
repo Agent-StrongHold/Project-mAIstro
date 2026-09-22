@@ -9,22 +9,19 @@ is a refusal here too, never a silent legacy-scope fallback.
 
 from __future__ import annotations
 
-import pathlib
-import sys
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
-_BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
 
 async def _workspace(workspace_id: str, *, member_user_id: str) -> None:
     from hive_conductor.models.workspace import WorkspacePresentation
-    from hive_conductor.services.workspace_authority import canonical_store_for_tests, presentation_store
+    from hive_conductor.services.workspace_authority import (
+        canonical_store_for_tests,
+        presentation_store,
+    )
 
     store = canonical_store_for_tests()
     await store.create(creator_user_id=member_user_id, workspace_id=workspace_id, name=workspace_id)
@@ -50,7 +47,7 @@ def _dag(dag_id: str, *, node_id: str = "n1") -> dict[str, Any]:
 async def test_tool_run_workflow_executes_through_an_authorized_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
     import hive_conductor.stores as stores
     from hive_conductor.services.substrate_tools import tool_run_workflow
 
@@ -94,8 +91,8 @@ async def test_tool_run_workflow_refuses_an_unauthorized_workspace() -> None:
 async def test_tool_hill_climb_executes_each_attempt_through_the_authorized_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.graph_runner as graph_runner
-    import services.substrate_tools as substrate_tools
+    import hive_conductor.services.graph_runner as graph_runner
+    import hive_conductor.services.substrate_tools as substrate_tools
     import hive_conductor.stores as stores
 
     dag_id = f"substrate-climb-{uuid4()}"

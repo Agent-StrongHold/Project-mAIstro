@@ -307,8 +307,8 @@ class _ScheduleRunner:
                 )
             return
 
-        from maistro.graph.template_adapter import descriptor_to_template
         from hive_conductor.services.dag_agents import get_registry
+        from maistro.graph.template_adapter import descriptor_to_template
 
         descriptor = get_registry().get(definition.graph_template_id)
         if descriptor is None:

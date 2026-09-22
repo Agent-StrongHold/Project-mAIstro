@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+
 from hive_conductor.routes.audit import log_audit
 from hive_conductor.services import brief_store
 from hive_conductor.services import program_store as prog
@@ -23,7 +24,6 @@ from hive_conductor.services.program_hyperagent import (
     user_id_from_request,
 )
 from hive_conductor.services.workspace_authority import visible_view
-
 from maistro.agents.brief_interview import (
     VIDEO_BRIEF_ALIASES,
     VIDEO_BRIEF_SCRIPT,

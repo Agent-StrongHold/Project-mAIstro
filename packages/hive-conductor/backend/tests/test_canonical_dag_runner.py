@@ -397,7 +397,7 @@ async def test_scope_rejects_scope_mismatch(
 async def test_scope_rejects_project_id_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     scope = DagExecutionScope(workspace_id="ws", project_id="project", user_id="user")
     monkeypatch.setattr(runner, "_container", lambda: None)
@@ -410,7 +410,7 @@ async def test_scope_rejects_project_id_mismatch(
 async def test_scope_rejects_a_missing_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     monkeypatch.setattr(runner, "_container", lambda: None)
 
@@ -422,7 +422,7 @@ async def test_scope_rejects_a_missing_scope(
 async def test_execute_dag_rejects_a_missing_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     with pytest.raises(ValueError, match="authorized DAG execution scope is required"):
         await runner.execute_dag(
@@ -436,7 +436,7 @@ async def test_execute_dag_rejects_a_missing_scope(
 async def test_execute_dag_rejects_a_user_id_that_does_not_match_the_scope(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     with pytest.raises(ValueError, match="user_id does not match authorized scope"):
         await runner.execute_dag(

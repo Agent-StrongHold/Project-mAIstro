@@ -1236,7 +1236,7 @@ def test_a_manual_fire_in_production_enters_the_canonical_admitter(
 
         container.schedule_admitter = _AdmitterSpy()
 
-        import services.dag_agents as dag_agents
+        import hive_conductor.services.dag_agents as dag_agents
 
         def _registry_must_not_be_read() -> None:
             raise AssertionError("compatibility registry must not be consulted")
@@ -1723,7 +1723,7 @@ def test_the_tick_reports_a_live_run_the_cursor_never_named(
         monkeypatch.setattr(runner, "_audit_canonical_admission", audit)
 
         admitter: Any = _AdmitterReportingTheWinner()
-        with caplog.at_level(logging.INFO, logger="services.scheduler"):
+        with caplog.at_level(logging.INFO, logger="hive_conductor.services.scheduler"):
             await runner._evaluate_canonical(
                 "s-1059",
                 schedule,

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
+
 import hive_conductor.stores as stores
 from hive_conductor.models.schemas import (
     ChatCompletionRequest,

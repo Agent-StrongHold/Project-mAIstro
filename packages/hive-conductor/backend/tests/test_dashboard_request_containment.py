@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from hive_conductor.services.dashboard_safety import (
     sanitize_dashboard_layout,
     sanitize_widget_config,

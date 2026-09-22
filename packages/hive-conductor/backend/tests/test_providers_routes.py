@@ -7,17 +7,11 @@ registers models with LiteLLM and runs a one-token test completion.
 from __future__ import annotations
 
 import asyncio
-import pathlib
 import shutil
-import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
-
-_BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def _needs_age() -> None:
@@ -296,8 +290,8 @@ class TestKeyAndActivate:
         """An unreachable gateway surfaces as 502 with the operation failed.
         The governed runtime is injected the same way every deployed
         activation has one; the socket alone is pinned unreachable."""
-        import httpx
         import hive_conductor.routes.providers as providers_mod
+        import httpx
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _runtime, run_store = _wire_governed_runtime(monkeypatch, endpoint="http://127.0.0.1:9")
@@ -409,8 +403,8 @@ class TestKeyAndActivate:
     ) -> None:
         """Registration that succeeds followed by a chat probe that cannot
         reach the gateway is a 502 with the operation settled FAILED."""
-        import httpx
         import hive_conductor.routes.providers as providers_mod
+        import httpx
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _runtime, run_store = _wire_governed_runtime(monkeypatch, endpoint="http://gateway")

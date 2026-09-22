@@ -196,7 +196,6 @@ async def activate_provider(name: str) -> dict[str, Any]:
         resolve_binding,
         settle_operation_identity,
     )
-
     from maistro.capabilities.binding_store import BindingResolutionError
 
     try:

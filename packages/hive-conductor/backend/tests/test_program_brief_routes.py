@@ -7,8 +7,8 @@ required one is known.
 
 from __future__ import annotations
 
-import pytest
 import hive_conductor.stores as stores
+import pytest
 
 pytestmark = [pytest.mark.contract("behavioral")]
 

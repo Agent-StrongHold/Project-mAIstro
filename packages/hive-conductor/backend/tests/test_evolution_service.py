@@ -73,8 +73,8 @@ def test_start_then_get_returns_instance(monkeypatch: pytest.MonkeyPatch) -> Non
 async def test_start_evolution_schedules_cadence_when_owner_is_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_module
-    import services.evolution as evo
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evo
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -118,9 +118,9 @@ def test_initialize_domain_state_is_idempotent() -> None:
 async def test_run_loop_stops_when_owner_degrades_after_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_module
-    import services.evolution as evo
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evo
+    import hive_conductor.services.evolution_graph as evolution_graph
     from hive_conductor.services.evolution import _EvolutionService
     from hive_conductor.services.evolution_graph import CanonicalExecutionUnavailable
 
@@ -289,7 +289,7 @@ def test_run_loop_captures_cycle_exception(
         self_.stop()
         return "run-2"
 
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.evolution_graph as evolution_graph
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -363,7 +363,7 @@ def test_run_one_cycle_dispatches_canonical_graph(
 async def test_racing_manual_and_background_cycles_are_serialized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.evolution_graph as evolution_graph
     from hive_conductor.services.evolution import _EvolutionService
 
     from maistro.runs.model import RunStatus
@@ -422,7 +422,7 @@ async def test_racing_manual_and_background_cycles_are_serialized(
 async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.evolution_graph as evolution_graph
     from hive_conductor.services.evolution import _EvolutionService
 
     import maistro_evolve.diversity as diversity
@@ -660,8 +660,8 @@ def test_status_reports_population_size_tournament_and_run() -> None:
 
 
 def _available_owner(monkeypatch: pytest.MonkeyPatch) -> None:
-    import services.engine as engine_module
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution_graph as evolution_graph
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -727,7 +727,7 @@ def test_a_successful_domain_init_turns_execution_on(monkeypatch: pytest.MonkeyP
 async def test_start_evolution_does_not_schedule_a_cadence_without_domain_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     class _Broken:
         def __getattr__(self, name: str) -> Any:

@@ -30,7 +30,7 @@ Open the URL Vite prints (default `http://localhost:5173`). The UI uses relative
 From the **monorepo root** (`maistro-engine/`):
 
 ```bash
-docker build -f packages/hive-conductor/Dockerfile packages/hive-conductor -t hive-conductor:local
+docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:local
 docker run --rm -p 8101:8101 hive-conductor:local
 ```
 

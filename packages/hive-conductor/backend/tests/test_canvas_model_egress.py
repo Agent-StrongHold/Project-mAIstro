@@ -9,11 +9,11 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from hive_conductor.main import app
-from pydantic import SecretStr
 from hive_conductor.routes.canvas import _canvas_execution_context, _quality_binding_id
 from hive_conductor.services import engine as engine_service
 from hive_conductor.services.canvas_dag import CanvasHillClimber, visual_quality_eval
 from hive_conductor.services.canvas_model_egress import CanvasModelEgress, build_canvas_model_egress
+from pydantic import SecretStr
 from starlette.requests import Request
 
 from maistro.capabilities.binding import Binding

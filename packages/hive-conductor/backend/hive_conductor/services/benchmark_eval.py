@@ -22,13 +22,6 @@ import json
 import logging
 from typing import Any
 
-from maistro.capabilities.binding_store import BindingResolutionError
-from maistro.capabilities.governed_invocation import (
-    InvocationApprovalRequired,
-    InvocationDenied,
-)
-from maistro.capabilities.providers.llm_gateway import ModelChatRequest
-from maistro.runs.store import RunIntegrityError
 from hive_conductor.services.governed_model import (
     _runtime,
     complete,
@@ -38,6 +31,13 @@ from hive_conductor.services.governed_model import (
     resolve_binding,
     settle_operation_identity,
 )
+from maistro.capabilities.binding_store import BindingResolutionError
+from maistro.capabilities.governed_invocation import (
+    InvocationApprovalRequired,
+    InvocationDenied,
+)
+from maistro.capabilities.providers.llm_gateway import ModelChatRequest
+from maistro.runs.store import RunIntegrityError
 
 logger = logging.getLogger("hive.benchmark")
 

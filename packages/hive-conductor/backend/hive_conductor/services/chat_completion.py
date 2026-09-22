@@ -52,7 +52,6 @@ from hive_conductor.services.tool_primitives import (
     ToolCallContext,
     ToolCredentialResolver,
 )
-
 from maistro.http import shared_client
 
 logger = logging.getLogger("hive.chat")

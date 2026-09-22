@@ -54,9 +54,9 @@ _TYPED_EFFECT_METHODS: dict[str, dict[str, tuple[str, str]]] = {
 # Product-level wrappers are included because these calls identify the shipped
 # caller that causes the effect, rather than only the wrapper's internal HTTP.
 _FUNCTION_EFFECTS: dict[str, tuple[str, str]] = {
-    "services.tool_executor.web_search": ("TOOL_EFFECT", "hive.web_search"),
-    "services.tool_executor.browse_url": ("TOOL_EFFECT", "hive.browse_url"),
-    "services.tool_executor.clarify": ("MODEL_EFFECT", "hive.clarify"),
+    "hive_conductor.services.tool_executor.web_search": ("TOOL_EFFECT", "hive.web_search"),
+    "hive_conductor.services.tool_executor.browse_url": ("TOOL_EFFECT", "hive.browse_url"),
+    "hive_conductor.services.tool_executor.clarify": ("MODEL_EFFECT", "hive.clarify"),
 }
 
 # Runtime object types cannot always be recovered from Python's AST. These

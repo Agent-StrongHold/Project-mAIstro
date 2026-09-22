@@ -469,8 +469,8 @@ async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
 async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import httpx
     import hive_conductor.services.evolution as evolution_service
+    import httpx
     from fastapi import FastAPI
     from hive_conductor.routes import evolution as evolution_routes
 
@@ -557,9 +557,9 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import httpx
     import hive_conductor.services.evolution as evolution_service
     import hive_conductor.services.evolution_graph as evolution_graph
+    import httpx
     from fastapi import FastAPI
     from hive_conductor.routes import evolution as evolution_routes
 
@@ -655,8 +655,8 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
 async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import httpx
     import hive_conductor.services.evolution as evolution_service
+    import httpx
     from fastapi import FastAPI
     from hive_conductor.routes import evolution as evolution_routes
 

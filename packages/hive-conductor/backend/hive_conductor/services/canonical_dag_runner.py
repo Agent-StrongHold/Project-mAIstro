@@ -15,8 +15,13 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from hive_conductor.services.dag_agents import _container, get_run_store
+from hive_conductor.services.dag_execution_scope import (
+    DagExecutionScope,
+    DagWorkspaceSelectionError,
+)
 from hive_conductor.services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from hive_conductor.services.node_metrics_store import record_run_completion
+from hive_conductor.services.scan_continuations import scan_continuation
 from maistro.graph.conditions import CONDITION_OPERATORS
 from maistro.graph.definitions import Edge, Graph, Node
 from maistro.graph.durable_runs import (
@@ -27,8 +32,6 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from hive_conductor.services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
-from hive_conductor.services.scan_continuations import scan_continuation
 
 logger = logging.getLogger(__name__)
 _SCOUT_NODE_ID = "__hive_legacy_scout__"

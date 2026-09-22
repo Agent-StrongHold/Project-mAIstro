@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from hive_conductor.services.canvas_dag import CANVAS_DAG, CanvasHillClimber, visual_quality_eval
-
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.invocation import CapabilityUnavailable
 from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES

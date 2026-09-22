@@ -313,7 +313,7 @@ def test_feedback_route_comment_too_long_returns_422(
 
 async def test_collect_thumbs_scopes_a_sqlite_store_by_org_and_project() -> None:
     aiosqlite = pytest.importorskip("aiosqlite")
-    import services.feedback_service as svc
+    import hive_conductor.services.feedback_service as svc
     from hive_conductor.services.feedback_service import collect_thumbs, record_thumb
 
     from maistro.persistence.sqlite_outcomes import SqliteOutcomeStore
@@ -419,7 +419,6 @@ def test_resolve_project_id_rejects_a_body_scope_mismatch() -> None:
     from types import SimpleNamespace
 
     from fastapi import HTTPException
-
     from hive_conductor.routes.feedback import FeedbackBody, _resolve_project_id
 
     request = SimpleNamespace(state=SimpleNamespace())
@@ -434,7 +433,6 @@ def test_resolve_project_id_missing_run_scope_fails_closed() -> None:
     from types import SimpleNamespace
 
     from fastapi import HTTPException
-
     from hive_conductor.routes.feedback import FeedbackBody, _resolve_project_id
 
     request = SimpleNamespace(state=SimpleNamespace())

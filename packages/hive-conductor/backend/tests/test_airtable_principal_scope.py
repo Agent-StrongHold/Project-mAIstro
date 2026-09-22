@@ -5,8 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 import hive_conductor.stores as stores
+import pytest
 from hive_conductor.routes import widgets
 from hive_conductor.services import chat_completion
 from hive_conductor.services import user_credentials as cred_svc

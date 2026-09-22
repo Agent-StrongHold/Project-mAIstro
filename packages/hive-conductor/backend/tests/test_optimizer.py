@@ -595,8 +595,8 @@ def test_run_endpoint_validates_proposals_against_a_real_baseline(
     model/param hill-climb sweeps — not just the propose step. Exercises the
     baseline execution in optimizer.py and the validation-gate execution seam
     in validation_gate.py end to end, through a DAG that actually exists."""
-    import services.benchmark_eval as benchmark_eval
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.benchmark_eval as benchmark_eval
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def fake_execute(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"status": "completed", "run_id": "r-validate", "node_results": {}}

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
-import hive_conductor.stores as stores
 import pytest
 from fastapi.testclient import TestClient
 from hive_conductor.services.dag_execution_scope import (

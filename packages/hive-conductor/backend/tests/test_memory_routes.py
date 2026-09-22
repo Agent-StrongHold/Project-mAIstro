@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import pathlib
-import sys
 from datetime import UTC, datetime
 from typing import Any
 
+import hive_conductor.stores as stores
 import pytest
-
-_BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
-import stores  # noqa: E402
-from hive_conductor.models.schemas import MemoryEntry  # noqa: E402
+from hive_conductor.models.schemas import MemoryEntry
 
 
 def _clear(store) -> None:

@@ -190,7 +190,7 @@ def test_the_tick_reports_a_live_run_the_cursor_did_not_name(
         stored = await container.schedule_store.get("s-1")
         assert stored is not None and stored.last_run_id is None
         try:
-            with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            with caplog.at_level(logging.INFO, logger="hive_conductor.services.scheduler"):
                 await _ScheduleRunner()._evaluate_schedule("s-1", row, now=now)
             live = [
                 record
@@ -284,7 +284,7 @@ def test_scheduler_tick_logs_consumer_failure(
             "_canonical_container",
             staticmethod(lambda: _FailingContainer()),
         )
-        with caplog.at_level("WARNING", logger="services.scheduler"):
+        with caplog.at_level("WARNING", logger="hive_conductor.services.scheduler"):
             await _ScheduleRunner()._tick()
 
     asyncio.run(scenario())

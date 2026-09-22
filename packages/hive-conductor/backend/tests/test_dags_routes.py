@@ -192,7 +192,7 @@ def test_activate_then_run_dag_with_a_selected_workspace_succeeds(
     scope selection was wired into the e2e spec, this same sequence without a
     ``workspace_id`` got a 403 (see `test_run_dag_missing_scope_fails_before_execution`
     above) — this is the corresponding success path the fix restores."""
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def ok(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
         return _completed_result("run-activate-then-run")
@@ -296,7 +296,7 @@ def test_run_dag_projection_failure_does_not_rewrite_execution(
 def test_run_dag_missing_scope_fails_before_execution(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def should_not_run(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise AssertionError("execution admitted without Workspace scope")
@@ -310,7 +310,7 @@ def test_run_dag_missing_scope_fails_before_execution(
 def test_run_dag_carries_distinct_authorized_scopes(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.graph_runner as graph_runner
 
     captured: list[Any] = []
 

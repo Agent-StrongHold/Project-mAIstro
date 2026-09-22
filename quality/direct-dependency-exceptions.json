@@ -5,7 +5,7 @@
       "python-multipart": {
         "category": "FRAMEWORK_RUNTIME",
         "owner": "#352",
-        "rationale": "FastAPI Form(...) in backend/routes/design.py causes Starlette to load the multipart parser dynamically; the application itself does not import python-multipart."
+        "rationale": "FastAPI Form(...) in backend/hive_conductor/routes/design.py causes Starlette to load the multipart parser dynamically; the application itself does not import python-multipart."
       },
       "uvicorn": {
         "category": "ENTRYPOINT_RUNTIME",

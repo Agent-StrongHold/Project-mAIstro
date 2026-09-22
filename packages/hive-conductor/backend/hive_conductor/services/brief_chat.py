@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from hive_conductor.services import brief_store
+from hive_conductor.services.workspace_mode import is_workspace_request_authorized
 from maistro.agents.brief_interview import (
     VIDEO_BRIEF_ALIASES,
     VIDEO_BRIEF_SCRIPT,
@@ -35,8 +37,6 @@ from maistro.agents.brief_interview import (
     next_brief_question,
     start_brief_interview,
 )
-from hive_conductor.services import brief_store
-from hive_conductor.services.workspace_mode import is_workspace_request_authorized
 
 #: A turn that asks for something to be made. Deliberately narrow: a question
 #: about the record, or small talk, must reach the model as before.

@@ -223,7 +223,7 @@ async def test_pending_stops_at_the_inspection_ceiling(seeded, monkeypatch) -> N
     constant is patched rather than seeding thousands of rows -- the bound is
     the behaviour under test, not its particular value.
     """
-    import routes.hitl as hitl_routes
+    import hive_conductor.routes.hitl as hitl_routes
 
     client, store, _seed = seeded
     monkeypatch.setattr(hitl_routes, "_MAX_PENDING_SCAN_RECORDS", 3)

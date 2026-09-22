@@ -3,12 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-import hive_conductor.stores as stores
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict
 
-from hive_conductor.services.owned_records import memory_entries_for
+import hive_conductor.stores as stores
 from hive_conductor.models.schemas import MemoryEntry, MemoryNamespace
+from hive_conductor.services.owned_records import memory_entries_for
 
 router = APIRouter(tags=["memory"])
 

@@ -203,8 +203,8 @@ async def test_bridge_start_degradation_keeps_evolve_unavailable(
     await svc.start(_Settings())  # type: ignore[arg-type]
     assert type(svc._agent_port).__name__ == "StubAgentPort"
 
-    import services.engine as engine_module
-    import services.evolution as evolution_module
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evolution_module
 
     monkeypatch.setattr(engine_module, "get_engine", lambda: svc)
     scheduled: list[Any] = []

@@ -173,7 +173,7 @@ def test_the_synth_dag_node_gets_the_durable_graph_store_from_the_container(
     synthesized sub-graph into. It is the *other* store — `graph_run_store`,
     not `run_store` — and the bridge hands it on so the node cannot arrive
     with `run_store=None` and complete with a success that ran nothing."""
-    import services.dag_agents as dag_agents
+    import hive_conductor.services.dag_agents as dag_agents
 
     container = _StubContainer()
     _with_container(monkeypatch, container)
@@ -188,8 +188,8 @@ def test_without_a_bridge_the_synth_dag_node_is_refused_not_degraded(monkeypatch
     """The fallback resolver has no graph store to give, so it refuses the kind
     outright (#1193) rather than building a node that reports success for a
     sub-graph nothing ran."""
-    import services.dag_agents as dag_agents
-    import services.engine as engine_module
+    import hive_conductor.services.dag_agents as dag_agents
+    import hive_conductor.services.engine as engine_module
 
     from maistro.graph.nodes import NodeCompositionError
 

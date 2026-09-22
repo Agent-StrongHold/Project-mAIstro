@@ -18,10 +18,9 @@ async def tool_run_workflow(
     args: dict[str, Any], user_id: str, jira_pat: str | None = None
 ) -> dict[str, Any]:
     """Execute a DAG by ID or name."""
-    from hive_conductor.stores import dags as dag_store
-
     from hive_conductor.services.dag_execution_scope import authorize_hive_dag_scope
     from hive_conductor.services.graph_runner import execute_dag
+    from hive_conductor.stores import dags as dag_store
 
     dag_id = args.get("dag_id") or args.get("id", "")
     name = args.get("name", "")
@@ -162,10 +161,9 @@ async def tool_hill_climb(
     args: dict[str, Any], user_id: str, jira_pat: str | None = None
 ) -> dict[str, Any]:
     """Real hill climbing: run -> eval -> inject critique -> re-run."""
-    from hive_conductor.stores import dags as dag_store
-
     from hive_conductor.services.dag_execution_scope import authorize_hive_dag_scope
     from hive_conductor.services.graph_runner import execute_dag
+    from hive_conductor.stores import dags as dag_store
 
     dag_id = args.get("dag_id", "")
     max_attempts = min(args.get("max_attempts", 3), 5)
