@@ -8,9 +8,9 @@ Two routes:
 Both accept `{ "thumb": "up" | "down", "comment": str?, "project_id": str? }`
 and record the signal to outcome_store. The per-node form sets the node_id
 on the Outcome so the optimizer can localize the feedback to a specific
-node kind. project_id defaults to the user's active project (cookie /
-session); if not present, the signal is recorded with empty project_id
-and will only surface in cross-project queries.
+node kind. The target Run is authorized through the canonical Workspace
+inspection door, and its Project is authoritative; a body project_id may
+confirm that scope but cannot replace it.
 
 Auth: requires the logged-in user (AuthMiddleware sets request.state.user).
 The user_id from the session is the actor; cross-user writes are
@@ -31,7 +31,13 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from hive_conductor.routes.audit import log_audit
+from hive_conductor.services.dag_run_inspection import visible_run_detail
 from hive_conductor.services.feedback_service import ALLOWED_THUMBS, record_thumb
+
+# Agent Conductor is a single soft-org deployment unless middleware provides a
+# resolved org. This value is used only after the canonical Run/Workspace door
+# has authorized the feedback target; it cannot authorize an arbitrary project.
+CONDUCTOR_ORG_ID = "default-org"
 
 router = APIRouter(tags=["dag-feedback"])
 
@@ -39,8 +45,8 @@ router = APIRouter(tags=["dag-feedback"])
 class FeedbackBody(BaseModel):
     thumb: Literal["up", "down"]
     comment: str = Field(default="", max_length=2000)
-    # Optional explicit project scope. If absent the route falls back to
-    # the user's session-active project (set by the project picker UI).
+    # Optional assertion of the Run's Project. It is rejected when it does
+    # not match the authorized execution scope.
     project_id: str = ""
     # Optional: when the user knows what saved DAG this run came from, the
     # optimizer fan-in by DAG (not just run) benefits.
@@ -61,16 +67,31 @@ def _resolve_user_id(request: Request) -> str:
     return str(user["id"])
 
 
-def _resolve_project_id(request: Request, body: FeedbackBody) -> str:
-    """Body wins; otherwise fall back to the session-active project.
+def _resolve_project_id(request: Request, body: FeedbackBody, run_project_id: str) -> str:
+    """Use the authorized Run's Project, rejecting caller-supplied mismatches.
 
-    The session-active project is set in `request.state.project_id` by
-    the ProjectMiddleware (when present); we use getattr to keep this
-    route working before that middleware lands.
+    A feedback body is not an authorization token. The run projection carries
+    the Project resolved by canonical execution, so accepting a different body
+    value would let a caller write feedback into another Outcome scope.
     """
-    if body.project_id:
-        return body.project_id
-    return str(getattr(request.state, "project_id", "") or "")
+    del request  # Kept in the helper signature for direct route-unit callers.
+    project_id = str(run_project_id or "")
+    if not project_id:
+        raise HTTPException(status_code=403, detail="No project scope resolved for this run")
+    if body.project_id and body.project_id != project_id:
+        raise HTTPException(status_code=403, detail="Feedback project does not match the run")
+    return project_id
+
+
+def _resolve_org_id(request: Request) -> str:
+    """Resolve the request org without converting an explicit blank to global."""
+    marker = object()
+    org_id = getattr(request.state, "org_id", marker)
+    if org_id is marker:
+        return CONDUCTOR_ORG_ID
+    if not org_id:
+        raise HTTPException(status_code=403, detail="No organization scope resolved")
+    return str(org_id)
 
 
 async def _record_feedback(
@@ -86,11 +107,18 @@ async def _record_feedback(
         raise HTTPException(status_code=400, detail=f"thumb must be one of {ALLOWED_THUMBS!r}")
 
     user_id = _resolve_user_id(request)
-    project_id = _resolve_project_id(request, body)
+    # Feedback is a write into the Outcome scope. Authorize the run through the
+    # canonical Workspace membership door before resolving either scope axis.
+    run = await visible_run_detail(user_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    project_id = _resolve_project_id(request, body, str(run.get("project_id") or ""))
+    org_id = _resolve_org_id(request)
 
     try:
         result = await record_thumb(
             user_id=user_id,
+            org_id=org_id,
             project_id=project_id,
             run_id=run_id,
             thumb=body.thumb,

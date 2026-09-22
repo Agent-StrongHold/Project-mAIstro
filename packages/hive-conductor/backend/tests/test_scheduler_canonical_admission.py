@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -60,6 +60,7 @@ async def _fixture(
     from maistro.graph.templates import InMemoryGraphTemplateStore
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs.store import InMemoryRunStore
+    from maistro.scheduling.admission import ScheduleRunAdmitter
     from maistro.scheduling.store import InMemoryScheduleStore
 
     projects = InMemoryProjectScopeStore()
@@ -89,6 +90,7 @@ async def _fixture(
         run_store=runs,
         template_store=templates,
         schedule_store=schedules,
+        schedule_admitter=ScheduleRunAdmitter(runs, templates, schedules),
         project_scope_store=projects,
     )
     row = _Row(
@@ -145,6 +147,110 @@ def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) 
             assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
         finally:
             _remove_row(row)
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_tick_executes_the_admitted_run_to_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The configured scheduler closes admission through canonical execution."""
+    from services.scheduler import _ScheduleRunner
+
+    from maistro.container import create_container
+    from maistro.graph.definitions import GraphTemplate, Node
+    from maistro.runs.model import RunStatus
+    from maistro.types.config import AgentConfig
+
+    async def scenario() -> None:
+        container = await create_container(
+            AgentConfig(router_api_key="test-key", workspace_id="ws-1")
+        )
+        root = await container.project_scope_store.create_root("ws-1")
+        await container.template_store.put(
+            GraphTemplate(
+                template_id="scheduled-template",
+                workspace_id="ws-1",
+                version=1,
+                name="Scheduled template",
+                nodes=[
+                    Node(
+                        node_id="only",
+                        node_type="transform.alias_keys",
+                        parameters={"mapping": {}},
+                    )
+                ],
+                edges=[],
+                metadata={"entry_node": "only"},
+            )
+        )
+        row = _Row("s-1", "scheduled-template", project_id=root.project_id)
+        row.cron_expression = "* * * * *"
+        row.last_run = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=2)
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        try:
+            await _ScheduleRunner()._tick()
+            recorded = await container.schedule_store.get("s-1")
+            assert recorded is not None and recorded.last_run_id
+            run = await container.run_store.get_run(recorded.last_run_id)
+            assert run is not None and run.status is RunStatus.COMPLETED
+            (node_run,) = await container.run_store.list_node_runs(run.run_id)
+            (attempt,) = await container.run_store.list_attempts(node_run.node_run_id)
+            assert node_run.status is RunStatus.COMPLETED
+            assert attempt.status.value == "completed"
+        finally:
+            _remove_row(row)
+            await container.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_tick_logs_consumer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A consumer failure is contained and reported by the scheduler tick."""
+    from services.scheduler import _ScheduleRunner
+
+    class _FailingContainer:
+        async def execute_admitted_runs(self) -> int:
+            raise RuntimeError("consumer unavailable")
+
+    async def scenario() -> None:
+        monkeypatch.setattr(
+            _ScheduleRunner,
+            "_canonical_container",
+            staticmethod(lambda: _FailingContainer()),
+        )
+        with caplog.at_level("WARNING", logger="services.scheduler"):
+            await _ScheduleRunner()._tick()
+
+    asyncio.run(scenario())
+    assert "Failed to consume admitted canonical Runs: consumer unavailable" in caplog.text
+
+
+def test_scheduler_tick_skips_missing_or_empty_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standalone ticks and empty consumer queues remain successful no-ops."""
+    from services.scheduler import _ScheduleRunner
+
+    class _EmptyContainer:
+        async def execute_admitted_runs(self) -> int:
+            return 0
+
+    async def scenario() -> None:
+        monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: None))
+        await _ScheduleRunner()._tick()
+        monkeypatch.setattr(
+            _ScheduleRunner,
+            "_canonical_container",
+            staticmethod(lambda: _EmptyContainer()),
+        )
+        await _ScheduleRunner()._tick()
 
     asyncio.run(scenario())
 
@@ -226,6 +332,37 @@ def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPa
             assert recorded.last_fired_at == before
             assert recorded.last_run_id is None
             assert recorded.runs_so_far == 0
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
+def test_half_wired_container_fails_closed_for_recurring_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured Container must never make a tick use the compatibility path."""
+    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        container.schedule_admitter = None
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+
+        async def _compatibility_path(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("configured recurring fire reached compatibility execution")
+
+        monkeypatch.setattr(_ScheduleRunner, "_fire_schedule", _compatibility_path)
+        try:
+            with pytest.raises(ScheduleAdmissionUnavailable):
+                await _ScheduleRunner()._evaluate_schedule(
+                    "s-1", row, now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
+                )
+            assert len(container.run_store._runs) == 0  # type: ignore[attr-defined]
+            assert row.last_run_id is None
         finally:
             _remove_row(row)
 

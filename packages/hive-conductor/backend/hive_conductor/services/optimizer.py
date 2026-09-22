@@ -130,7 +130,9 @@ def _collect_node_metrics(dag_id: str, window_seconds: int) -> dict[str, dict[st
     return out
 
 
-async def _collect_thumbs(dag_id: str) -> dict[str, dict[str, Any]]:
+async def _collect_thumbs(
+    dag_id: str, *, org_id: str = "", project_id: str = ""
+) -> dict[str, dict[str, Any]]:
     """Return {node_id: {up, down, comments}} from feedback_service's store.
 
     Async because the thumbs signal is now read from a durable store rather
@@ -141,7 +143,7 @@ async def _collect_thumbs(dag_id: str) -> dict[str, dict[str, Any]]:
     """
     from hive_conductor.services.feedback_service import collect_thumbs
 
-    return await collect_thumbs(dag_id)
+    return await collect_thumbs(dag_id, org_id=org_id, project_id=project_id)
 
 
 def _collect_eval_verdicts(dag_id: str) -> list[dict[str, Any]]:
@@ -169,10 +171,13 @@ def _collect_user_edits(dag_id: str) -> list[dict[str, Any]]:
 async def _build_snapshot_for_dag(
     dag_id: str,
     window_seconds: int = 24 * 3600,
+    *,
+    org_id: str = "",
+    project_id: str = "",
 ) -> dict[str, SignalSnapshot]:
     """Build one SignalSnapshot per node_id that has any signal."""
     metrics = _collect_node_metrics(dag_id, window_seconds)
-    thumbs = await _collect_thumbs(dag_id)
+    thumbs = await _collect_thumbs(dag_id, org_id=org_id, project_id=project_id)
     verdicts = _collect_eval_verdicts(dag_id)
     edits = _collect_user_edits(dag_id)
 
@@ -348,6 +353,8 @@ async def run_optimizer(
     apply_auto: bool = False,
     edit_lock_now: datetime | None = None,
     now: datetime | None = None,
+    org_id: str = "",
+    project_id: str = "",
 ) -> dict[str, Any]:
     """Run one optimizer pass on the given DAG.
 
@@ -372,7 +379,12 @@ async def run_optimizer(
     from hive_conductor.routes.audit import log_audit
     from hive_conductor.services.edit_lock import is_locked
 
-    snapshots = await _build_snapshot_for_dag(dag_id, window_seconds=window_seconds)
+    snapshots = await _build_snapshot_for_dag(
+        dag_id,
+        window_seconds=window_seconds,
+        org_id=org_id,
+        project_id=project_id,
+    )
     ranked = sorted(snapshots.values(), key=lambda s: s.priority_score, reverse=True)
 
     out_proposals: list[dict[str, Any]] = []

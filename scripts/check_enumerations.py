@@ -252,8 +252,13 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 def _mutating_v1_routes(routes: object) -> list[tuple[str, str]]:
     """(path, method) for every mounted /v1/ route that changes state."""
+    # fastapi >= 0.141 keeps include_router targets as lazy sentinels in
+    # app.routes; flatten them or every router-mounted route is invisible
+    # here and the baseline goes stale (see maistro_server.api.route_table).
+    from maistro_server.api.route_table import iter_effective_routes
+
     found: list[tuple[str, str]] = []
-    for route in routes:  # type: ignore[union-attr]
+    for route in iter_effective_routes(routes if isinstance(routes, list) else []):
         path = getattr(route, "path", None)
         if not path or not path.startswith("/v1/"):
             continue

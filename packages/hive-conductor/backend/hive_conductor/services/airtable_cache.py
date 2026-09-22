@@ -26,8 +26,15 @@ def clear_airtable_cache() -> None:
     _AIRTABLE_CACHE.clear()
 
 
+#: Per-process salt for the cache key derived from a token. The cache is
+#: process-local, so the derivation only has to be stable within one process;
+#: keying it means the fingerprint cannot be matched against a token offline.
+_FINGERPRINT_SALT = os.urandom(16)
+
+
 def _token_fingerprint(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), _FINGERPRINT_SALT, 10_000)
+    return digest.hex()[:12]
 
 
 def _params_key(params: dict[str, str]) -> tuple[tuple[str, str], ...]:
