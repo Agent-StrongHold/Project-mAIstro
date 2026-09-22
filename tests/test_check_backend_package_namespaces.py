@@ -50,6 +50,23 @@ def test_python_outside_package_is_rejected(tmp_path: Path) -> None:
     assert any("routes contains Python outside" in error for error in errors)
 
 
+def test_backend_root_package_init_is_rejected(tmp_path: Path) -> None:
+    """A ``backend/__init__.py`` re-creates the flat collision surface.
+
+    With the directory itself a package, any sibling module resolves as
+    ``backend.<module>`` via sys.path order — the exact aliasing #1134 removed.
+    """
+    check = _load_check()
+    backend = _backend_tree(tmp_path)
+    (backend / "__init__.py").write_text("\n", encoding="utf-8")
+
+    errors = check.violations(tmp_path)
+
+    assert any(
+        "makes the backend directory itself an importable package" in error for error in errors
+    )
+
+
 def test_unknown_backend_namespace_is_rejected(tmp_path: Path) -> None:
     check = _load_check()
     backend = tmp_path / "packages" / "new-backend" / "backend"

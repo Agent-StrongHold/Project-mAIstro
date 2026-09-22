@@ -28,11 +28,17 @@ def _package_violations(root: Path, backend: Path, package: str) -> list[str]:
 
     found: list[str] = []
     for child in sorted(backend.iterdir()):
-        if (
-            child.name in ALLOWED_TOP_LEVEL_DIRS
-            or child.name == "__init__.py"
-            or child == package_root
-        ):
+        if child.name == "__init__.py":
+            # A ``backend/`` directory that is itself a package makes the
+            # generic name ``backend`` importable, so every sibling module
+            # would resolve as ``backend.<module>`` depending on sys.path
+            # order — the exact collision surface this check exists to pin.
+            found.append(
+                f"{child.relative_to(root)} makes the backend directory itself an "
+                f"importable package; application code belongs under {package}/"
+            )
+            continue
+        if child.name in ALLOWED_TOP_LEVEL_DIRS or child == package_root:
             continue
         if child.is_file() and child.suffix == ".py":
             found.append(

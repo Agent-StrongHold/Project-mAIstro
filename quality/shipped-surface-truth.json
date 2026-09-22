@@ -1954,7 +1954,7 @@
       "effect_owner": "maistro.tasks.queue.TaskQueue"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/admin.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/admin.py",
       "method": "PATCH",
       "route": "/facet",
       "handler": "patch_facet",
@@ -1964,7 +1964,7 @@
       "effect_owner": "turing state"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/admin.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/admin.py",
       "method": "PATCH",
       "route": "/mood",
       "handler": "patch_mood",
@@ -1974,7 +1974,7 @@
       "effect_owner": "turing state"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/auth.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/auth.py",
       "method": "POST",
       "route": "/login",
       "handler": "login",
@@ -1984,7 +1984,7 @@
       "effect_owner": "turing session store"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/chat.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/chat.py",
       "method": "POST",
       "route": "",
       "handler": "chat",
@@ -1994,7 +1994,7 @@
       "effect_owner": "turing chat session.handle_message"
     },
     {
-      "source": "packages/maistro-turing/backend/routes/feed.py",
+      "source": "packages/maistro-turing/backend/maistro_turing_backend/routes/feed.py",
       "method": "POST",
       "route": "",
       "handler": "publish_artifact",
