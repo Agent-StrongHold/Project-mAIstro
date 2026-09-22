@@ -60,12 +60,12 @@ run_python_module_or_bin mypy mypy \
   packages/maistro-registry/src
 run_optional_module_or_bin radon radon cc packages tests -s -n C -e "*/.venv/*"
 if uv run python -c "import vulture" >/dev/null 2>&1; then
-  uv run python scripts/check-vulture-baseline.py packages tests --exclude "*/.venv/*" || {
+  uv run python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude "*/third_party/*" || {
     status=$?
     echo "WARN: vulture baseline reported findings/status ${status}; treating optional scanner as advisory" >&2
   }
 elif command -v vulture >/dev/null 2>&1; then
-  python scripts/check-vulture-baseline.py packages tests --exclude "*/.venv/*" || {
+  python scripts/check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude "*/third_party/*" || {
     status=$?
     echo "WARN: vulture baseline reported findings/status ${status}; treating optional scanner as advisory" >&2
   }

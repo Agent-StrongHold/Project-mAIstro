@@ -11,6 +11,15 @@ Candidate bookkeeping is still checked separately: stale rows must be removed,
 blank/unrecorded debt fails, and ``--update`` remains a convenient way to rewrite
 the candidate ledger from a real scan. A deliberate floor raise requires a
 separately landed authorization in quality/ratchet-authorizations.json.
+
+With no scan arguments the gate scans exactly what CI scans
+(vulture-ratchet.yml, quality.yml, docs/quality-gates.md): every
+``packages/*/src`` at confidence >= 60 with vendored ``third_party/`` excluded.
+The ledger is banked against that scope alone; a broader default
+(``packages tests``) swept hive-conductor's backend layout and collected tests —
+surfaces no reviewed rule covers — so every no-argument run failed while CI
+stayed green (#446 repair: the bare invocation was reported as new debt when it
+was a scope mismatch).
 """
 
 from __future__ import annotations
@@ -377,10 +386,28 @@ def _enforce_trusted(
     )
 
 
+#: Flags CI pins on every invocation (vulture-ratchet.yml, quality.yml,
+#: docs/quality-gates.md). A no-argument run must reproduce this scope or it
+#: measures a different question than the ledger answers.
+_CI_SCAN_FLAGS = ["--min-confidence", "60", "--exclude", "*/third_party/*"]
+
+
+def _default_scan_args() -> list[str]:
+    """The no-argument scan: exactly the CI scope, with the glob expanded here.
+
+    The shell expands ``packages/*/src`` in CI; Python expands it itself because
+    Vulture rejects an unexpanded glob as a literal path.
+    """
+    src_roots = sorted(path.as_posix() for path in ROOT.glob("packages/*/src") if path.is_dir())
+    if not src_roots:
+        raise SystemExit("no packages/*/src found to scan; pass explicit scan paths")
+    return [*src_roots, *_CI_SCAN_FLAGS]
+
+
 def main(argv: list[str]) -> int:
     update = "--update" in argv
     scan_args = [arg for arg in argv if arg != "--update"]
-    scan_args = scan_args or ["packages", "tests", "--exclude", "*/.venv/*"]
+    scan_args = scan_args or _default_scan_args()
 
     candidate = _load_baseline()
     candidate_rules = list(candidate["rules"])

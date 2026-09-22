@@ -188,3 +188,43 @@ def test_update_refuses_unbankable_findings(gate, monkeypatch, tmp_path, capsys)
     assert gate.main(["--update", "pkg"]) == 1
     assert "refused" in capsys.readouterr().err
     assert baseline_path.read_text(encoding="utf-8") == before
+
+
+def test_default_scan_reproduces_ci_scope(gate, monkeypatch, tmp_path):
+    """A no-argument run must scan exactly what CI scans (vulture-ratchet.yml,
+    quality.yml, docs/quality-gates.md): every packages/*/src at confidence
+    >= 60, vendored third_party excluded. The old default (`packages tests`)
+    swept surfaces the reviewed ledger deliberately does not cover — e.g.
+    hive-conductor's backend layout and collected tests — so bare runs failed
+    on 100+ phantom identities while CI stayed green (#446)."""
+    captured: dict[str, list[str]] = {}
+
+    def fake_vulture(args):
+        captured["args"] = list(args)
+        return [
+            _finding(gate, "pkg/routes.py", "unused function 'get_thing'"),
+            _finding(gate, "pkg/models.py", "unused attribute 'field_a'"),
+        ]
+
+    monkeypatch.setattr(gate, "_run_vulture", fake_vulture)
+    monkeypatch.setattr(gate, "BASELINE", _baseline_with(tmp_path, RULES))
+    candidate = _payload(RULES)
+    monkeypatch.setattr(gate, "_load_baseline", lambda *args, **kwargs: candidate)
+    trusted_ref = _trusted(gate, RULES)
+    monkeypatch.setattr(gate, "_trusted_state", lambda measured, prov: (trusted_ref, RULES, {}))
+
+    assert gate.main([]) == 0
+
+    expected_roots = sorted(p.as_posix() for p in ROOT.glob("packages/*/src") if p.is_dir())
+    assert expected_roots, "repo must ship at least one packages/*/src"
+    assert captured["args"] == [
+        *expected_roots,
+        "--min-confidence",
+        "60",
+        "--exclude",
+        "*/third_party/*",
+    ]
+    # The old default swept `tests` and non-src package trees; neither belongs
+    # to the reviewed scope.
+    assert "tests" not in captured["args"]
+    assert "packages" not in captured["args"]
