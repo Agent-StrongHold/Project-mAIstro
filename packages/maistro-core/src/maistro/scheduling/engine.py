@@ -198,6 +198,21 @@ def _apply_max_runs(
     ]
 
 
+def enumeration_start(schedule: Schedule, *, now: datetime) -> datetime:
+    """The exclusive lower bound of what `evaluate` enumerates at `now`.
+
+    Three lower bounds, all of them real: the catchup window (which bounds
+    both the semantics and the size of the walk), the last fire, and the
+    moment the schedule came into existence — creating a schedule must not
+    retroactively schedule work from before it existed. Public so the admitter
+    can tell which occurrences an evaluation will *not* look at (#1059): a
+    winner whose ticker died before the horizon passed is never enumerated,
+    and the admitter's recovery walk has to stop exactly where this starts.
+    """
+    horizon = _catchup_horizon(schedule, now=now)
+    return max(schedule.last_fired_at or horizon, horizon, schedule.created_at)
+
+
 def evaluate(
     schedule: Schedule,
     *,
@@ -215,11 +230,7 @@ def evaluate(
         return ScheduleEvaluation(next_due_at=None, exhausted=True)
 
     horizon = _catchup_horizon(schedule, now=now)
-    # Three lower bounds, all of them real: the catchup window (which bounds
-    # both the semantics and the size of the walk), the last fire, and the
-    # moment the schedule came into existence — creating a schedule must not
-    # retroactively schedule work from before it existed.
-    since = max(schedule.last_fired_at or horizon, horizon, schedule.created_at)
+    since = enumeration_start(schedule, now=now)
     occurrences, truncated = _enumerate_due(schedule, since=since, now=now)
     eligible, stale = _partition_by_catchup(occurrences, horizon=horizon)
 
