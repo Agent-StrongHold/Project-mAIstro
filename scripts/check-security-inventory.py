@@ -221,11 +221,16 @@ def _httpx_aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
     ``from httpx import get as fetch`` are just as capable of opening a socket
     as their canonical spellings. Tracking only the literal ``httpx`` name was
     the gap that let the sibling census report a false zero.
+
+    The whole tree is walked, not just ``tree.body``: an import inside a
+    function — ``def make(): from httpx import Client; return Client()`` —
+    constructs exactly the client the constructor census exists to refuse,
+    and a module-level-only scan reported no finding for it.
     """
     modules: set[str] = set()
     methods: set[str] = set()
     constructors: set[str] = set()
-    for node in tree.body:
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "httpx":

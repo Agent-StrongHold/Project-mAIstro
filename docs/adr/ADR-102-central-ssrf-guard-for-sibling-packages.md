@@ -18,7 +18,8 @@ contracts:
   - boundary
   - behavioral
 tests:
-  - packages/maistro-core/tests/security/test_outbound_policy.py
+  - tests/test_check_security_inventory.py::test_repo_constructor_census_has_no_unpooled_production_clients
+  - packages/maistro-rsi/tests/test_free_router.py::test_explicit_gateway_base_cannot_allowlist_a_private_target
 layer: Connectivity
 owners:
   - '@BlakeMatthews-dev'

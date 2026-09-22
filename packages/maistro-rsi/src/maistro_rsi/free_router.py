@@ -152,7 +152,8 @@ def register_gateway_alias(
     # ``sonoma-dusk-alpha:free`` (a different, non-existent model).
     alias = f"openrouter/{concrete}"
     using_configured_gateway = base is None
-    base = (_gateway_base() if using_configured_gateway else base).rstrip("/")
+    configured = _gateway_base() if using_configured_gateway else base
+    base = configured.rstrip("/") if configured else None
     key = key or _gateway_key()
     if not base or not key:
         return None

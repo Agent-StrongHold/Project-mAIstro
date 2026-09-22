@@ -368,8 +368,36 @@ SyncClient()
         assert any(": imported httpx.fetch_head" in finding for finding in findings)
         assert any(": imported httpx.SyncClient" in finding for finding in findings)
 
+    @pytest.mark.contract("boundary")
     def test_repo_constructor_census_has_no_unpooled_production_clients(self, gate):
         assert gate._repo_unguarded_httpx_constructors() == []
+
+    def test_the_census_sees_function_local_httpx_imports(self, gate, tmp_path, monkeypatch):
+        """A module-level-only alias scan reported no finding for a client
+        constructed inside a function — the exact bypass a caller could write
+        to dodge the census without changing behaviour (#1096)."""
+        source = tmp_path / "fn_local.py"
+        source.write_text(
+            """
+import httpx
+
+def make():
+    from httpx import Client
+    return Client()
+
+
+def fetch():
+    import httpx as wire
+    return wire.get('https://example.test')
+"""
+        )
+        monkeypatch.setattr(gate, "_SIBLING_SRC_ROOTS", (tmp_path,))
+
+        findings = gate._sibling_unguarded_httpx_calls()
+
+        assert any(": imported httpx.Client" in finding for finding in findings), findings
+        assert any(": httpx.get" in finding for finding in findings), findings
+        assert gate._constructs_private_client(ast.parse(source.read_text(encoding="utf-8")))
 
     def test_the_pool_itself_is_not_counted_as_a_bypass(self, gate):
         """`http.py` constructs the clients everything else borrows — the ones

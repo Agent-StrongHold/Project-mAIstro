@@ -150,6 +150,7 @@ def test_register_returns_none_without_gateway(monkeypatch: pytest.MonkeyPatch) 
     assert fr.register_gateway_alias("x/y:free", credential="c") is None
 
 
+@pytest.mark.contract("behavioral")
 def test_explicit_gateway_base_cannot_allowlist_a_private_target() -> None:
     """Caller-provided bases must reach the transport validator, not the policy."""
     reset_outbound_policy()
