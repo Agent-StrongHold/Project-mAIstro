@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 
 def _login(username: str = "testuser", password: str = "testpass") -> TestClient:
@@ -17,7 +17,7 @@ def _login(username: str = "testuser", password: str = "testpass") -> TestClient
 def _config_writer(task_id: str) -> TestClient:
     from datetime import UTC, datetime
 
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.security.passwords import hash_password
 
@@ -43,7 +43,7 @@ def _config_writer(task_id: str) -> TestClient:
 
 def _wire_self_repair():
     """Swap the engine registry for one with a host_health-backed self_repair provider."""
-    from services.engine import get_engine
+    from hive_conductor.services.engine import get_engine
 
     from maistro.capabilities.bootstrap import default_capability_registry
     from maistro.capabilities.http_client import HttpxAsyncHttp

@@ -26,8 +26,8 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from main import app
-from middleware.auth import (
+from hive_conductor.main import app
+from hive_conductor.middleware.auth import (
     _PUBLIC_EXACT,
     _PUBLIC_PREFIXES,
     _PUBLIC_PREFIXES_LOOSE,
@@ -220,7 +220,7 @@ class TestProtectedOpsPermissionMatrix:
     def _writer(self, task_id: str, perms: list[str]) -> TestClient:
         from datetime import UTC, datetime
 
-        import stores
+        import hive_conductor.stores as stores
 
         from maistro.security.passwords import hash_password
 
@@ -358,7 +358,7 @@ class TestInstallPreSetupWindow:
         assert r.status_code == 401
 
     def test_install_public_before_setup(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import routes.setup as setup_routes
+        import hive_conductor.routes.setup as setup_routes
 
         monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
         c = TestClient(app)
@@ -372,7 +372,7 @@ class TestInstallPreSetupWindow:
     def test_install_sibling_prefix_not_public_pre_setup(
         self, monkeypatch: pytest.MonkeyPatch, temp_route
     ) -> None:
-        import routes.setup as setup_routes
+        import hive_conductor.routes.setup as setup_routes
 
         monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
         temp_route("/v1/installers-catalog")

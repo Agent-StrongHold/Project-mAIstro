@@ -10,18 +10,11 @@ slip past.
 
 from __future__ import annotations
 
-import pathlib
-import sys
 from typing import Any, ClassVar
 
 import pytest
-
-_BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
-from fastapi import HTTPException  # noqa: E402
-from routes import design as design_routes  # noqa: E402
+from fastapi import HTTPException
+from hive_conductor.routes import design as design_routes
 
 pytestmark = [pytest.mark.contract("boundary")]
 
@@ -148,7 +141,7 @@ class TestTheRoutesPassItDown:
         self, ready: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The shipped route must not mint a job without a worker or artifact URL."""
-        import services.design_preview as preview_module
+        import hive_conductor.services.design_preview as preview_module
 
         class _Project:
             pass

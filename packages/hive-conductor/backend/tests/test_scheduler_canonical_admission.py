@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -12,8 +11,6 @@ from typing import Any
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 class _Row:
@@ -106,19 +103,19 @@ async def _fixture(
 
 
 def _install_row(row: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
 
 
 def _remove_row(row: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
 def test_two_live_runners_claim_one_occurrence(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, root = await _fixture()
@@ -162,7 +159,7 @@ def test_the_tick_reports_a_live_run_the_cursor_did_not_name(
     pointer links that winner without this tick creating a second Run."""
     import logging
 
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     from maistro.scheduling import FireDecision
 
@@ -193,7 +190,7 @@ def test_the_tick_reports_a_live_run_the_cursor_did_not_name(
         stored = await container.schedule_store.get("s-1")
         assert stored is not None and stored.last_run_id is None
         try:
-            with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            with caplog.at_level(logging.INFO, logger="hive_conductor.services.scheduler"):
                 await _ScheduleRunner()._evaluate_schedule("s-1", row, now=now)
             live = [
                 record
@@ -217,7 +214,7 @@ def test_scheduler_tick_executes_the_admitted_run_to_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The configured scheduler closes admission through canonical execution."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     from maistro.container import create_container
     from maistro.graph.definitions import GraphTemplate, Node
@@ -275,7 +272,7 @@ def test_scheduler_tick_logs_consumer_failure(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A consumer failure is contained and reported by the scheduler tick."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     class _FailingContainer:
         async def execute_admitted_runs(self) -> int:
@@ -287,7 +284,7 @@ def test_scheduler_tick_logs_consumer_failure(
             "_canonical_container",
             staticmethod(lambda: _FailingContainer()),
         )
-        with caplog.at_level("WARNING", logger="services.scheduler"):
+        with caplog.at_level("WARNING", logger="hive_conductor.services.scheduler"):
             await _ScheduleRunner()._tick()
 
     asyncio.run(scenario())
@@ -298,7 +295,7 @@ def test_scheduler_tick_skips_missing_or_empty_consumer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Standalone ticks and empty consumer queues remain successful no-ops."""
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     class _EmptyContainer:
         async def execute_admitted_runs(self) -> int:
@@ -318,7 +315,7 @@ def test_scheduler_tick_skips_missing_or_empty_consumer(
 
 
 def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture()
@@ -327,7 +324,7 @@ def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPa
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
 
-        import services.dag_agents as dag_agents
+        import hive_conductor.services.dag_agents as dag_agents
 
         def _registry_must_not_be_read() -> None:
             raise AssertionError("registry must not be consulted")
@@ -346,7 +343,7 @@ def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPa
 
 
 def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture(template=False)
@@ -371,7 +368,7 @@ def test_missing_template_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_run_creation_failure_keeps_occurrence_owed(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture()
@@ -404,7 +401,7 @@ def test_half_wired_container_fails_closed_for_recurring_fire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A configured Container must never make a tick use the compatibility path."""
-    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
+    from hive_conductor.services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner
 
     async def scenario() -> None:
         container, row, _root = await _fixture()
@@ -434,10 +431,10 @@ def test_half_wired_container_fails_closed_for_recurring_fire(
 def test_max_runs_disables_canonical_and_product_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.scheduler import _ScheduleRunner
+    from hive_conductor.services.scheduler import _ScheduleRunner
 
     async def scenario() -> None:
-        import stores
+        import hive_conductor.stores as stores
 
         container, row, _root = await _fixture(max_runs=1)
         _install_row(row)

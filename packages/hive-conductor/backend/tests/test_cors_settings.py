@@ -10,7 +10,7 @@ paths, unguarded. These tests exist so that gap cannot reopen silently.
 from __future__ import annotations
 
 import pytest
-from config import Settings
+from hive_conductor.config import Settings
 
 
 class TestHiveCorsValidation:

@@ -31,7 +31,7 @@ contracts:
 tests:
   - packages/hive-conductor/backend/tests/test_settings_durability.py
 source:
-  - packages/hive-conductor/backend/services/settings_store.py
+  - packages/hive-conductor/backend/hive_conductor/services/settings_store.py
 ac-modules:
   AC-1: '@flat/hive-conductor/services.settings_store'
   AC-2: '@flat/hive-conductor/routes.settings'

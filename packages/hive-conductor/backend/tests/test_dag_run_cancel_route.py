@@ -19,7 +19,6 @@ real deployment answer rather than an error to paper over.
 from __future__ import annotations
 
 import asyncio
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -28,9 +27,6 @@ import pytest
 from fastapi import HTTPException
 
 _BACKEND = Path(__file__).resolve().parents[1]
-if str(_BACKEND) in sys.path:
-    sys.path.remove(str(_BACKEND))
-sys.path.insert(0, str(_BACKEND))
 
 pytestmark = [pytest.mark.contract("behavioral"), pytest.mark.scope("integration")]
 
@@ -45,7 +41,7 @@ class _ScopedRequest:
 
 
 async def _owned_workspace() -> Any:
-    from services.workspace_authority import create_workspace
+    from hive_conductor.services.workspace_authority import create_workspace
 
     return await create_workspace(
         creator_user_id=_USER_ID,
@@ -131,10 +127,10 @@ async def _long_running_canonical_run() -> tuple[
 async def test_cancel_route_terminates_a_long_running_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_mod
-    from routes.dag_runs import cancel_run as cancel_route
-    from routes.dag_runs import get_run as get_run_route
-    from services.dag_run_store import get_dag_run_store
+    import hive_conductor.services.engine as engine_mod
+    from hive_conductor.routes.dag_runs import cancel_run as cancel_route
+    from hive_conductor.routes.dag_runs import get_run as get_run_route
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     from maistro.runs import AttemptStatus, RunStatus
 
@@ -176,9 +172,9 @@ async def test_cancel_route_terminates_a_long_running_canonical_run(
 async def test_cancel_route_refuses_while_the_spine_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_mod
-    from routes.dag_runs import cancel_run as cancel_route
-    from services.dag_run_store import get_dag_run_store
+    import hive_conductor.services.engine as engine_mod
+    from hive_conductor.routes.dag_runs import cancel_run as cancel_route
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     view = await _owned_workspace()
     monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=None))
@@ -194,7 +190,7 @@ async def test_cancel_route_refuses_while_the_spine_is_unavailable(
 
 
 async def test_cancel_route_answers_a_missing_run_with_a_scoped_404() -> None:
-    from routes.dag_runs import cancel_run as cancel_route
+    from hive_conductor.routes.dag_runs import cancel_run as cancel_route
 
     with pytest.raises(HTTPException) as refused:
         await cancel_route("dag-never-was", _ScopedRequest(_USER_ID))
@@ -210,9 +206,9 @@ async def test_cancel_route_answers_a_canonical_run_the_spine_never_saw_with_404
     the canonical side, and the route must answer in the caller's terms
     rather than leaking the spine's ValueError.
     """
-    import services.engine as engine_mod
-    from routes.dag_runs import cancel_run as cancel_route
-    from services.dag_run_store import get_dag_run_store
+    import hive_conductor.services.engine as engine_mod
+    from hive_conductor.routes.dag_runs import cancel_run as cancel_route
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs import InMemoryRunStore

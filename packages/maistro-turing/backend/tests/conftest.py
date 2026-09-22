@@ -3,13 +3,10 @@
 Resets the state singleton per test and provides authed_client / admin_client
 (auto login) plus a turing_service_client (service-key headers).
 
-Imports are package-relative. The flat `from state import ...` form this
-replaced could not be fixed by sys.path ordering: packages/maistro-core/tests/
-has no __init__.py but its `state/` and `config/` subdirectories do, so
-collecting them binds top-level `state` and `config` in sys.modules — and an
-already-imported name beats any path precedence. maistro-core is collected
-first, so the names were always poisoned before this file ran, producing 26
-setup errors in the full suite while every test here passed in isolation.
+Imports use the explicit `maistro_turing_backend` namespace. The former
+flat `state` and `config` names collided with similarly named test packages
+when the full monorepo suite was collected, even though this suite passed in
+isolation.
 """
 
 from __future__ import annotations
@@ -40,8 +37,8 @@ os.environ.setdefault("TURING_SERVICE_KEY", "test-turing-service-key")
 
 @pytest.fixture(autouse=True)
 def _reset_state():
-    from ..execution import reset_execution_plane
-    from ..state import reset_state
+    from maistro_turing_backend.execution import reset_execution_plane
+    from maistro_turing_backend.state import reset_state
 
     reset_state()
     reset_execution_plane()
@@ -51,8 +48,7 @@ def _reset_state():
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient
-
-    from ..main import app
+    from maistro_turing_backend.main import app
 
     return TestClient(app)
 
@@ -60,8 +56,7 @@ def client():
 @pytest.fixture
 def authed_client():
     from fastapi.testclient import TestClient
-
-    from ..main import app
+    from maistro_turing_backend.main import app
 
     c = TestClient(app)
     r = c.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
@@ -72,8 +67,7 @@ def authed_client():
 @pytest.fixture
 def admin_client():
     from fastapi.testclient import TestClient
-
-    from ..main import app
+    from maistro_turing_backend.main import app
 
     c = TestClient(app)
     r = c.post("/v1/auth/login", json={"username": "testadmin", "password": "adminpass"})
@@ -85,9 +79,8 @@ def admin_client():
 def turing_service_client():
     """Client that sends the Turing-internal service key header."""
     from fastapi.testclient import TestClient
-
-    from ..config import turing_service_key
-    from ..main import app
+    from maistro_turing_backend.config import turing_service_key
+    from maistro_turing_backend.main import app
 
     c = TestClient(app, headers={"X-Service-Key": turing_service_key()})
     return c

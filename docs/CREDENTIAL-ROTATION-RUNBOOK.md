@@ -309,5 +309,5 @@ compromised.
 | `rotate_master_key`, `repair_interrupted_rotation` | `packages/maistro-core/src/maistro/credentials/store.py` |
 | `maistro security` CLI | `packages/maistro-core/src/maistro/cli/_security.py` |
 | `purge_all_sessions` | `packages/hive-conductor/backend/stores.py` |
-| `JsonStore.clear` | `packages/hive-conductor/backend/services/model_store.py` |
+| `JsonStore.clear` | `packages/hive-conductor/backend/hive_conductor/services/model_store.py` |
 | Tests | `packages/maistro-core/tests/credentials/test_master_key_rotation.py`, `packages/maistro-core/tests/cli/test_security.py`, `packages/hive-conductor/backend/tests/test_session_purge.py` |

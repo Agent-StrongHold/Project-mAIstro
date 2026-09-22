@@ -331,4 +331,4 @@ five are in.
   contract this builds on
 - docs/adr/ADR-021 — BIP39/BIP32 HD identity root (`ConductorSeed`)
 - packages/maistro-bootstrap/ — wizard, schema, plan, materialize
-- packages/hive-conductor/backend/routes/setup.py — one-shot bootstrap endpoint
+- packages/hive-conductor/backend/hive_conductor/routes/setup.py — one-shot bootstrap endpoint

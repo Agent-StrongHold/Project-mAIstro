@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parents[1]
-_ENGINE = _BACKEND / "services" / "engine.py"
+_ENGINE = _BACKEND / "hive_conductor" / "services" / "engine.py"
 
 
 def test_demo_engine_has_one_executor_regardless_of_retired_poc_env() -> None:

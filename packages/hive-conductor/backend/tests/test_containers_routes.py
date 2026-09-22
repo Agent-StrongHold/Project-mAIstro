@@ -17,7 +17,6 @@ they're the trickiest, highest-value logic in this file and need no I/O.
 from __future__ import annotations
 
 import pathlib
-import sys
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,10 +24,8 @@ import httpx
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-from routes import containers as containers_mod  # noqa: E402
+from hive_conductor.routes import containers as containers_mod  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # Pure helpers

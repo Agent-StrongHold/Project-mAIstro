@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 client = TestClient(app)
 
@@ -58,10 +58,10 @@ def test_health_not_degraded_when_all_dependencies_healthy(
 
     with (
         patch(
-            "routes.health._memory_decay_state",
+            "hive_conductor.routes.health._memory_decay_state",
             return_value={"enabled": True, "state": "running"},
         ),
-        patch("routes.health._log_redaction_active", return_value=True),
+        patch("hive_conductor.routes.health._log_redaction_active", return_value=True),
     ):
         data = client.get("/health").json()
 
@@ -264,7 +264,7 @@ def test_chat_complete_with_mock_llm_port() -> None:
     mock_llm = MagicMock()
     mock_llm.complete = AsyncMock(return_value=mock_response)
 
-    with patch("services.chat_completion.build_llm_port", return_value=mock_llm):
+    with patch("hive_conductor.services.chat_completion.build_llm_port", return_value=mock_llm):
         r = c.post(
             "/v1/chat/complete",
             json={"messages": expected_messages},
@@ -305,7 +305,7 @@ def test_mission_create_dispatches_task() -> None:
     mock_engine._backend = MagicMock()
     mock_engine.submit_task = AsyncMock(return_value=fake_rec)
 
-    with patch("services.engine._singleton", mock_engine):
+    with patch("hive_conductor.services.engine._singleton", mock_engine):
         r = c.post(
             "/v1/tasks",
             json={"name": "Write hello world", "description": "Write hello world"},
@@ -324,7 +324,7 @@ def test_mission_create_dispatches_task() -> None:
 
 
 def test_mission_status_maps_correctly() -> None:
-    from adapters.task_backend import _STATUS_MAP
+    from hive_conductor.adapters.task_backend import _STATUS_MAP
 
     assert _STATUS_MAP["queued"] == "pending"
     assert _STATUS_MAP["planning"] == "running"
@@ -347,7 +347,7 @@ def test_websocket_streams_task_events() -> None:
     mock_engine.iter_task_events = _fake_iter
 
     with (
-        patch("services.engine._singleton", mock_engine),
+        patch("hive_conductor.services.engine._singleton", mock_engine),
         c.websocket_connect("/v1/ws/tasks/test-task-1") as ws,
     ):
         msg1 = ws.receive_json()
@@ -384,7 +384,7 @@ def test_logout() -> None:
 def test_elevation_only_activates_granted_permissions() -> None:
     from datetime import UTC, datetime
 
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.security.passwords import hash_password
 
@@ -427,7 +427,7 @@ def test_elevation_only_activates_granted_permissions() -> None:
 def test_elevate_rejects_unassigned_permissions() -> None:
     from datetime import UTC, datetime
 
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.security.passwords import hash_password
 
@@ -460,7 +460,7 @@ def test_elevate_rejects_unassigned_permissions() -> None:
 def test_elevation_revoked_on_task_completion() -> None:
     from datetime import UTC, datetime
 
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.security.passwords import hash_password
 
@@ -480,7 +480,11 @@ def test_elevation_revoked_on_task_completion() -> None:
 
         c.post(
             "/v1/auth/elevate",
-            json={"password": "frankpass", "permissions": ["config.write"], "task_id": "m-1"},
+            json={
+                "password": "frankpass",
+                "permissions": ["config.write"],
+                "task_id": "m-1",
+            },
         )
         r = c.put("/v1/settings", json={"temperature": 0.5})
         assert r.status_code == 200, "should work with elevated perm"

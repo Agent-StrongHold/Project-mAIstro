@@ -13,17 +13,11 @@ Container's own Run store.
 from __future__ import annotations
 
 import asyncio
-import pathlib
-import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
-_BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 _SID = "s-e2e-manual-fire"
 _TPL = "e2e-manual-fire-template"
@@ -48,7 +42,7 @@ def _descriptor() -> dict[str, Any]:
 
 
 def _row() -> Any:
-    from models.schemas import Schedule
+    from hive_conductor.models.schemas import Schedule
 
     now = datetime.now(UTC)
     return Schedule(
@@ -71,13 +65,13 @@ def _row() -> Any:
 
 
 def _install(row: Any) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
 
 
 def _remove() -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.schedules._data.pop(_SID, None)  # type: ignore[attr-defined]
 
@@ -90,7 +84,7 @@ def _configured_container(monkeypatch: pytest.MonkeyPatch) -> Any:
     steers `fire_now` to the standalone compatibility path, and what the
     configured-product path below must not be reachable without.
     """
-    import services.engine as engine_mod
+    import hive_conductor.services.engine as engine_mod
 
     container = asyncio.run(_build_container())
     service = engine_mod.get_engine()
@@ -105,8 +99,8 @@ def test_manual_fire_over_http_creates_one_canonical_run(
 ) -> None:
     """AC: canonical Workspace/Project/Run identities, provenance, actor, and
     exactly one Run for the accepted request."""
-    from config import get_settings
-    from services.dag_agents import get_registry
+    from hive_conductor.config import get_settings
+    from hive_conductor.services.dag_agents import get_registry
 
     from maistro.runs.model import RunStatus
 
@@ -155,7 +149,7 @@ def test_manual_fire_over_http_creates_one_canonical_run(
 
         asyncio.run(assert_canonical())
 
-        import stores
+        import hive_conductor.stores as stores
 
         audit_targets = [
             entry for entry in list(stores.audit_log.values()) if entry.get("target") == _SID

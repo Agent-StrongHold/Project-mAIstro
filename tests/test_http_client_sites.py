@@ -69,7 +69,7 @@ ALLOWED: dict[str, str] = {
         "to pool one call site would couple a standalone optimizer to the whole core "
         "runtime; sets explicit httpx.Limits instead"
     ),
-    "packages/hive-conductor/backend/routes/containers.py": (
+    "packages/hive-conductor/backend/hive_conductor/routes/containers.py": (
         "unix-domain-socket transport to the Docker socket — no TLS handshake to "
         "amortize, and the transport cannot be shared with TCP call sites"
     ),

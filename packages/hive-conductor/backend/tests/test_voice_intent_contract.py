@@ -24,11 +24,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import hive_conductor.services.chat_completion as service
 import pytest
-import services.chat_completion as service
-from models.schemas import ChatCompletionRequest
+from hive_conductor.models.schemas import ChatCompletionRequest
+from hive_conductor.routes import chat, voice
 from pydantic import ValidationError
-from routes import chat, voice
 
 
 class RecordingLLM:
@@ -117,7 +117,7 @@ class TestVoiceRunsOnTheChatPathsSeam:
         LiteLLM base and key was enough to make this route reach the network
         even with `build_llm_port` stubbed.
         """
-        import adapters.llm_http as llm_http
+        import hive_conductor.adapters.llm_http as llm_http
 
         # The exact condition the old branch keyed on. Without these the old
         # code fell through to `build_llm_port` too, and this test would pass

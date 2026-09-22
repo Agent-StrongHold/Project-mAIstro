@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from config import Settings
-from main import _seed_outbound_policy
+from hive_conductor.config import Settings
+from hive_conductor.main import _seed_outbound_policy
 
 from maistro.http import aclose_shared_clients, override_transport, shared_client
 from maistro.security.outbound import enforce_outbound_policy, reset_outbound_policy

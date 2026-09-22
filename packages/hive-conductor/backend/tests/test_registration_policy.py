@@ -34,8 +34,6 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -49,9 +47,9 @@ def _isolated_registration_state(monkeypatch: pytest.MonkeyPatch):
     snapshotted because the invitation tests create real (Argon2-hashed)
     accounts that must not leak into other suites' assumptions.
     """
-    import stores
-    from services import registration_policy
-    from services.model_store import JsonStore
+    import hive_conductor.stores as stores
+    from hive_conductor.services import registration_policy
+    from hive_conductor.services.model_store import JsonStore
 
     registration_policy.reset()
     fresh_invitations = JsonStore("registration_invitations")
@@ -99,7 +97,7 @@ class TestPostSetupRegistrationIsClosed:
 
     def test_stranger_cannot_register_after_setup(self) -> None:
         """conftest seeds users — the state the old gate read as 'open'."""
-        from main import app
+        from hive_conductor.main import app
 
         client = TestClient(app)
         r = client.post("/v1/auth/register", json=_register_body("stranger"))
@@ -108,8 +106,8 @@ class TestPostSetupRegistrationIsClosed:
         assert r.json()["detail"] == "Registration is closed on this hive."
 
     def test_blocked_attempts_are_audited_with_a_reason(self) -> None:
-        import stores
-        from main import app
+        import hive_conductor.stores as stores
+        from hive_conductor.main import app
 
         client = TestClient(app)
         client.post("/v1/auth/register", json=_register_body("stranger2"))
@@ -123,7 +121,7 @@ class TestPostSetupRegistrationIsClosed:
         assert blocked[-1]["detail"]["reason"] == "closed"
 
     def test_missing_record_means_closed(self) -> None:
-        from services import registration_policy as rp
+        from hive_conductor.services import registration_policy as rp
 
         decision = rp.evaluate_registration(None)
         assert decision.allowed is False
@@ -132,10 +130,10 @@ class TestPostSetupRegistrationIsClosed:
     def test_open_policy_cannot_mint_the_first_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Bootstrap belongs to the one-shot setup state alone: even a forced
         `open` record is inert while no account exists (#313 AC)."""
-        import stores
-        from models.schemas import HiveUser
-        from services import registration_policy as rp
-        from services.model_store import ModelStore
+        import hive_conductor.stores as stores
+        from hive_conductor.models.schemas import HiveUser
+        from hive_conductor.services import registration_policy as rp
+        from hive_conductor.services.model_store import ModelStore
 
         monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
         rp.set_mode("open", actor="admin:test")
@@ -147,10 +145,10 @@ class TestPostSetupRegistrationIsClosed:
     def test_invitation_cannot_mint_the_first_owner_either(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import stores
-        from models.schemas import HiveUser
-        from services import registration_policy as rp
-        from services.model_store import ModelStore
+        import hive_conductor.stores as stores
+        from hive_conductor.models.schemas import HiveUser
+        from hive_conductor.services import registration_policy as rp
+        from hive_conductor.services.model_store import ModelStore
 
         monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
         token = rp.issue_invitation(actor="admin:test")["token"]
@@ -164,7 +162,7 @@ class TestAdminPolicySurface:
     """Registration opens only by explicit, auditable admin action."""
 
     def test_admin_can_open_and_then_close_registration(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         admin = TestClient(app)
         _login(admin, "testadmin", "adminpass")
@@ -186,7 +184,7 @@ class TestAdminPolicySurface:
         assert refused.json()["detail"] == "Registration is closed on this hive."
 
     def test_daily_account_cannot_change_the_policy(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         daily = TestClient(app)
         _login(daily, "testuser", "testpass")
@@ -200,13 +198,13 @@ class TestAdminPolicySurface:
         assert view.json()["policy"]["mode"] == "closed"
 
     def test_anonymous_cannot_read_the_admin_policy_view(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         client = TestClient(app)
         assert client.get("/v1/auth/registration/policy").status_code == 401
 
     def test_unknown_mode_is_refused_without_touching_the_record(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         admin = TestClient(app)
         _login(admin, "testadmin", "adminpass")
@@ -218,7 +216,7 @@ class TestAdminPolicySurface:
         assert view["mode"] == "closed"
 
     def test_admin_view_reports_record_health(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         admin = TestClient(app)
         _login(admin, "testadmin", "adminpass")
@@ -240,7 +238,7 @@ def _park_in_store_window(monkeypatch: pytest.MonkeyPatch, seconds: float = 0.05
     check-then-set fail deterministically instead of by timing luck: every
     thread observes the redemption key absent before any of them writes it.
     """
-    import services.model_store as model_store
+    import hive_conductor.services.model_store as model_store
 
     real_dumps = json.dumps
 
@@ -256,7 +254,7 @@ class TestInvitations:
     """A valid invitation is the only anonymous path when the policy is closed."""
 
     def test_invitation_permits_exactly_one_registration(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         admin = TestClient(app)
         _login(admin, "testadmin", "adminpass")
@@ -280,7 +278,7 @@ class TestInvitations:
         assert "token" not in listing[0]
 
     def test_garbage_tokens_are_refused_uniformly(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         client = TestClient(app)
         for bogus in ("not-a-token", "deadbeef", "A" * 128):
@@ -293,7 +291,7 @@ class TestInvitations:
         assert oversized.status_code == 422
 
     def test_expired_invitation_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from services import registration_policy as rp
+        from hive_conductor.services import registration_policy as rp
 
         token = rp.issue_invitation(actor="admin:test")["token"]
         # The default TTL is 7 days; move the policy clock past it.
@@ -305,7 +303,7 @@ class TestInvitations:
         assert rp.redeem_invitation(token, username="too-late") is False
 
     def test_non_admin_cannot_issue_invitations(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         daily = TestClient(app)
         _login(daily, "testuser", "testpass")
@@ -313,7 +311,7 @@ class TestInvitations:
         assert r.status_code == 403
 
     def test_out_of_range_ttl_and_long_notes_are_refused(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         admin = TestClient(app)
         _login(admin, "testadmin", "adminpass")
@@ -324,7 +322,7 @@ class TestInvitations:
         assert long_note.status_code == 422
 
     def test_issued_tokens_are_not_readable_back(self) -> None:
-        from services import registration_policy as rp
+        from hive_conductor.services import registration_policy as rp
 
         issued = rp.issue_invitation(actor="admin:test", note="for the demo")
         listing = rp.list_invitations()
@@ -338,9 +336,9 @@ class TestInvitations:
     def test_concurrent_redemption_creates_exactly_one_account(self) -> None:
         """One invitation, four simultaneous strangers: the conflict-safe
         insert spends it exactly once, and the losers create nothing."""
-        import stores
-        from main import app
-        from services import registration_policy as rp
+        import hive_conductor.stores as stores
+        from hive_conductor.main import app
+        from hive_conductor.services import registration_policy as rp
 
         token = rp.issue_invitation(actor="admin:test")["token"]
         before = len(stores.users)
@@ -378,8 +376,8 @@ class TestInvitations:
         """
         from concurrent.futures import ThreadPoolExecutor
 
-        import stores
-        from services import registration_policy as rp
+        import hive_conductor.stores as stores
+        from hive_conductor.services import registration_policy as rp
 
         token = rp.issue_invitation(actor="admin:test")["token"]
         _park_in_store_window(monkeypatch)
@@ -413,10 +411,10 @@ class TestInvitations:
         """
         from concurrent.futures import ThreadPoolExecutor
 
-        import stores
-        from main import app
-        from routes import auth as auth_routes
-        from services import registration_policy as rp
+        import hive_conductor.stores as stores
+        from hive_conductor.main import app
+        from hive_conductor.routes import auth as auth_routes
+        from hive_conductor.services import registration_policy as rp
 
         from maistro.security.auth_throttle import AuthThrottle
 
@@ -453,9 +451,9 @@ class TestInvitations:
         `evaluate_registration` but fails `redeem_invitation` — the window a
         concurrent redemption or a just-landed expiry opens — is refused, and
         audited as `invitation_race` rather than as a closed hive."""
-        import stores
-        from main import app
-        from services import registration_policy as rp
+        import hive_conductor.stores as stores
+        from hive_conductor.main import app
+        from hive_conductor.services import registration_policy as rp
 
         token = rp.issue_invitation(actor="admin:test")["token"]
         before = len(stores.users)
@@ -487,7 +485,7 @@ class TestRegisterBodyNormalizesInvitationTokens:
     """
 
     def test_explicit_null_invitation_token_reads_as_absent(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         client = TestClient(app)
         r = client.post(
@@ -504,7 +502,7 @@ class TestRegisterBodyNormalizesInvitationTokens:
         assert r.json()["detail"] == "Registration is closed on this hive."
 
     def test_whitespace_invitation_token_reads_as_absent(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         client = TestClient(app)
         r = client.post(
@@ -530,7 +528,7 @@ class TestAdminSurfaceFailClosedOnLostWrites:
         bearer-only caller passes the middleware and is still refused by the
         route's own 401 — a different detail than the middleware's, which is
         how the guard under test is the one answering."""
-        from main import app
+        from hive_conductor.main import app
 
         admin = TestClient(app)
         _login(admin, "testadmin", "adminpass")
@@ -551,8 +549,8 @@ class TestAdminSurfaceFailClosedOnLostWrites:
     ) -> None:
         """A mode change whose write was not observed back is reported as
         `not persisted`, never as success (#334's rule, applied to #313)."""
-        from main import app
-        from services import registration_policy
+        from hive_conductor.main import app
+        from hive_conductor.services import registration_policy
 
         def _lost(*_args: object, **_kwargs: object) -> dict:
             raise registration_policy.RegistrationPolicyError("simulated write loss")
@@ -572,8 +570,8 @@ class TestAdminSurfaceFailClosedOnLostWrites:
     def test_invitation_issue_that_cannot_persist_answers_503(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from main import app
-        from services import registration_policy
+        from hive_conductor.main import app
+        from hive_conductor.services import registration_policy
 
         def _lost(*_args: object, **_kwargs: object) -> dict:
             raise registration_policy.RegistrationPolicyError("simulated write loss")
@@ -594,10 +592,10 @@ class TestFirstSetupIsOneShot:
 
     @staticmethod
     def _fresh_instance(monkeypatch: pytest.MonkeyPatch) -> None:
-        import stores
-        from models.schemas import HiveUser
-        from routes import setup as setup_routes
-        from services.model_store import ModelStore
+        import hive_conductor.stores as stores
+        from hive_conductor.models.schemas import HiveUser
+        from hive_conductor.routes import setup as setup_routes
+        from hive_conductor.services.model_store import ModelStore
 
         monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
         monkeypatch.setattr(setup_routes, "_get_kv", lambda: None)
@@ -605,9 +603,9 @@ class TestFirstSetupIsOneShot:
     def test_first_setup_creates_the_owner_and_closes_registration(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import stores
-        from routes.setup import complete_setup
-        from services import registration_policy as rp
+        import hive_conductor.stores as stores
+        from hive_conductor.routes.setup import complete_setup
+        from hive_conductor.services import registration_policy as rp
 
         self._fresh_instance(monkeypatch)
 
@@ -632,8 +630,8 @@ class TestFirstSetupIsOneShot:
     ) -> None:
         """Partial initialization must not brick bootstrap (#313: the failure
         direction is closed-for-registration, never locked-for-setup)."""
-        import stores
-        from routes.setup import complete_setup
+        import hive_conductor.stores as stores
+        from hive_conductor.routes.setup import complete_setup
 
         self._fresh_instance(monkeypatch)
 
@@ -678,8 +676,8 @@ class TestFirstSetupIsOneShot:
     def test_concurrent_first_user_attempts_create_exactly_one_owner(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import stores
-        from routes.setup import complete_setup
+        import hive_conductor.stores as stores
+        from hive_conductor.routes.setup import complete_setup
 
         self._fresh_instance(monkeypatch)
         outcomes: list[tuple[str, int]] = []
@@ -734,10 +732,10 @@ class TestSetupGuardEdges:
         the conftest-seeded session is always past setup, and un-provisioning
         the app would test the fixture rather than the handler.
         """
-        import stores
-        from models.schemas import HiveUser
-        from routes import setup as setup_routes
-        from services.model_store import ModelStore
+        import hive_conductor.stores as stores
+        from hive_conductor.models.schemas import HiveUser
+        from hive_conductor.routes import setup as setup_routes
+        from hive_conductor.services.model_store import ModelStore
 
         monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
         monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
@@ -759,7 +757,7 @@ class TestSetupGuardEdges:
     def test_missing_required_fields_are_refused_422(
         self, monkeypatch: pytest.MonkeyPatch, missing: str
     ) -> None:
-        from routes.setup import complete_setup
+        from hive_conductor.routes.setup import complete_setup
 
         self._retryable_instance(monkeypatch)
         body = self._full_body()
@@ -771,7 +769,7 @@ class TestSetupGuardEdges:
         assert exc_info.value.status_code == 422
         assert exc_info.value.detail == f"{missing} required"
         # Refused before the claim, so before any account exists.
-        import stores
+        import hive_conductor.stores as stores
 
         assert "__hive_setup_claim__" not in stores.sessions
         assert len(stores.users) == 0
@@ -783,8 +781,8 @@ class TestSetupGuardEdges:
         another writer claimed between the completeness check and the
         conflict-safe insert, and this attempt must be refused before it can
         write an admin credential over the winner's."""
-        import stores
-        from routes.setup import complete_setup
+        import hive_conductor.stores as stores
+        from hive_conductor.routes.setup import complete_setup
 
         self._retryable_instance(monkeypatch)
         monkeypatch.setattr(stores.sessions, "put_if_absent", lambda *_a, **_k: False)
@@ -805,11 +803,11 @@ class TestSetupGuardEdges:
         insert — the whole reason the check is repeated under the same lock
         as the claim is that passing it once, outside, proves nothing about
         the state by the time the insert would run."""
-        import stores
-        from models.schemas import HiveUser
-        from routes import setup as setup_routes
-        from routes.setup import complete_setup
-        from services.model_store import ModelStore
+        import hive_conductor.stores as stores
+        from hive_conductor.models.schemas import HiveUser
+        from hive_conductor.routes import setup as setup_routes
+        from hive_conductor.routes.setup import complete_setup
+        from hive_conductor.services.model_store import ModelStore
 
         guard_results = iter([False, True])
         monkeypatch.setattr(
@@ -834,9 +832,9 @@ class TestSetupGuardEdges:
         """The #313 close-out write is part of setup's contract: if the
         registration-policy record cannot be persisted, setup must not
         report success — and must stay retryable (the claim is released)."""
-        import stores
-        from routes.setup import complete_setup
-        from services import registration_policy as rp
+        import hive_conductor.stores as stores
+        from hive_conductor.routes.setup import complete_setup
+        from hive_conductor.services import registration_policy as rp
 
         self._retryable_instance(monkeypatch)
 
@@ -862,10 +860,10 @@ class TestPersistedSetupIsOneShot:
     def test_setup_is_one_shot_against_the_persisted_record(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
-        import stores
-        from models.schemas import HiveUser
-        from routes import setup as setup_routes
-        from services.model_store import JsonStore, ModelStore
+        import hive_conductor.stores as stores
+        from hive_conductor.models.schemas import HiveUser
+        from hive_conductor.routes import setup as setup_routes
+        from hive_conductor.services.model_store import JsonStore, ModelStore
 
         from maistro.state import PersistedStore, State
 
@@ -924,10 +922,10 @@ class TestLostSetupMarkerCannotReopenBootstrap:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
         """A marker fault after account writes must fail closed across restart."""
-        import stores
-        from models.schemas import HiveUser
-        from routes import setup as setup_routes
-        from services.model_store import JsonStore, ModelStore
+        import hive_conductor.stores as stores
+        from hive_conductor.models.schemas import HiveUser
+        from hive_conductor.routes import setup as setup_routes
+        from hive_conductor.services.model_store import JsonStore, ModelStore
 
         from maistro.state import PersistedStore, State
 
@@ -1011,8 +1009,8 @@ class TestLostSetupMarkerCannotReopenBootstrap:
 class TestPersistedSetupMarkerBoundary:
     def test_marker_flush_helper_uses_the_persisted_state_boundary(self) -> None:
         """A persisted bootstrap marker must have an explicit drain boundary."""
-        import stores
-        from routes import setup as setup_routes
+        import hive_conductor.stores as stores
+        from hive_conductor.routes import setup as setup_routes
 
         class _State:
             def __init__(self) -> None:
@@ -1047,8 +1045,8 @@ class TestPersistedSetupMarkerBoundary:
 
     def test_marker_flush_rejects_a_lost_write(self) -> None:
         """A flush that leaves no marker must not acknowledge setup."""
-        import stores
-        from routes import setup as setup_routes
+        import hive_conductor.stores as stores
+        from hive_conductor.routes import setup as setup_routes
 
         class _State:
             def flush(self, *, timeout: float) -> None:
@@ -1073,8 +1071,8 @@ class TestPersistedSetupMarkerBoundary:
         """No durable backend bound: the marker is memory-only and there is
         nothing to acknowledge, so the helper must return without touching
         an acknowledgement boundary that does not exist."""
-        import stores
-        from routes import setup as setup_routes
+        import hive_conductor.stores as stores
+        from hive_conductor.routes import setup as setup_routes
 
         original_persisted = stores.sessions._persisted
         stores.sessions._persisted = None
@@ -1087,8 +1085,8 @@ class TestPersistedSetupMarkerBoundary:
         """A persisted backend that cannot drain-and-read-back must fail
         loudly rather than be silently trusted to have landed the marker:
         an acknowledgement boundary is the entire point of the helper."""
-        import stores
-        from routes import setup as setup_routes
+        import hive_conductor.stores as stores
+        from hive_conductor.routes import setup as setup_routes
 
         class _State:
             """PersistedState-shaped, but with no flush to call."""
@@ -1135,7 +1133,7 @@ class TestCorruptedStateFailsClosed:
         ],
     )
     def test_corrupt_records_read_as_closed(self, document: str) -> None:
-        from services import registration_policy as rp
+        from hive_conductor.services import registration_policy as rp
 
         rp.configure(store=self._JunkRecordStore(document))
 
@@ -1148,7 +1146,7 @@ class TestCorruptedStateFailsClosed:
         assert view["record_valid"] is False
 
     def test_corrupt_record_does_not_stop_an_admin_repair(self) -> None:
-        from services import registration_policy as rp
+        from hive_conductor.services import registration_policy as rp
 
         rp.configure(store=self._JunkRecordStore('{"schema_version": 1, "mode": "banana"}'))
         policy = rp.set_mode("closed", actor="admin:testadmin")
@@ -1160,9 +1158,9 @@ class TestRestartDurability:
     """The policy and its invitations are records, not process state."""
 
     def test_policy_and_invitations_survive_a_restart(self, tmp_path: pathlib.Path) -> None:
-        import stores
-        from services import registration_policy as rp
-        from services.model_store import JsonStore
+        import hive_conductor.stores as stores
+        from hive_conductor.services import registration_policy as rp
+        from hive_conductor.services.model_store import JsonStore
 
         from maistro.state import PersistedStore, State
 
@@ -1215,7 +1213,7 @@ class TestPublicSurfaceDoesNotLeakAccounts:
     """`/v1/setup/status` publishes the mode, not the user list (#313 AC)."""
 
     def test_status_has_no_config_and_no_usernames(self) -> None:
-        from main import app
+        from hive_conductor.main import app
 
         client = TestClient(app)
         r = client.get("/v1/setup/status")
@@ -1229,7 +1227,7 @@ class TestPublicSurfaceDoesNotLeakAccounts:
         assert "testuser" not in r.text
 
     def test_public_view_carries_the_mode_only(self) -> None:
-        from services import registration_policy as rp
+        from hive_conductor.services import registration_policy as rp
 
         rp.set_mode("open", actor="admin:test")
         assert rp.public_view() == {"mode": "open"}

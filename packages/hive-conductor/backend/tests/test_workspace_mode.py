@@ -10,11 +10,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import hive_conductor.stores as stores
 import pytest
-import stores
-from models.schemas import Agent
-from models.workspace import Workspace, WorkspaceMember
-from services.workspace_mode import is_workspace_request_authorized, workspace_has_pm_fleet_agents
+from hive_conductor.models.schemas import Agent
+from hive_conductor.models.workspace import Workspace, WorkspaceMember
+from hive_conductor.services.workspace_mode import (
+    is_workspace_request_authorized,
+    workspace_has_pm_fleet_agents,
+)
 
 
 @pytest.fixture(autouse=True)

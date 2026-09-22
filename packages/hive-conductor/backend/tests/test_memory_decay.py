@@ -11,10 +11,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import hive_conductor.services.memory_decay as decay_mod
 import pytest
-import services.memory_decay as decay_mod
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.types import EpisodicMemory, MemoryScope, MemoryTier
@@ -57,10 +57,10 @@ def _patch_store(monkeypatch: pytest.MonkeyPatch, store: object) -> None:
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, **fields: object) -> None:
     """Override `Settings` fields; `get_settings` is lru_cached so env won't do.
 
-    `main` did `from config import get_settings`, so its module-level binding has
-    to be patched too or the lifespan keeps reading the real settings.
+    `hive_conductor.main` binds `get_settings` at module scope, so that binding
+    has to be patched too or the lifespan keeps reading the real settings.
     """
-    from config import get_settings
+    from hive_conductor.config import get_settings
 
     base = get_settings()
 
@@ -68,8 +68,8 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, **fields: object) -> None:
         def __getattr__(self, name: str) -> object:
             return fields[name] if name in fields else getattr(base, name)
 
-    monkeypatch.setattr("config.get_settings", lambda: _S())
-    monkeypatch.setattr("main.get_settings", lambda: _S())
+    monkeypatch.setattr("hive_conductor.config.get_settings", lambda: _S())
+    monkeypatch.setattr("hive_conductor.main.get_settings", lambda: _S())
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def isolated_lifespan(monkeypatch: pytest.MonkeyPatch):
     driver, and its background task are all the genuine article: if the wiring in
     `main.py` is removed, these tests fail.
     """
-    import main as main_mod
+    import hive_conductor.main as main_mod
 
     class _NoopService:
         async def start_foundation(self, *a: object, **k: object) -> None: ...
@@ -96,16 +96,18 @@ def isolated_lifespan(monkeypatch: pytest.MonkeyPatch):
     noop = _NoopService()
     monkeypatch.setattr(main_mod, "foundation_service", noop)
     monkeypatch.setattr(main_mod, "engine_service", noop)
-    monkeypatch.setattr("settings_defaults.apply_default_settings_if_needed", lambda: None)
-    monkeypatch.setattr("services.scheduler.start_scheduler", lambda: None)
-    monkeypatch.setattr("services.scheduler.stop_scheduler", lambda: None)
+    monkeypatch.setattr(
+        "hive_conductor.settings_defaults.apply_default_settings_if_needed", lambda: None
+    )
+    monkeypatch.setattr("hive_conductor.services.scheduler.start_scheduler", lambda: None)
+    monkeypatch.setattr("hive_conductor.services.scheduler.stop_scheduler", lambda: None)
 
     async def _anoop(*a: object, **k: object) -> None: ...
 
-    monkeypatch.setattr("services.design_service.start_design_service", _anoop)
-    monkeypatch.setattr("services.design_service.stop_design_service", _anoop)
-    monkeypatch.setattr("services.evolution.start_evolution", _anoop)
-    monkeypatch.setattr("services.evolution.stop_evolution", _anoop)
+    monkeypatch.setattr("hive_conductor.services.design_service.start_design_service", _anoop)
+    monkeypatch.setattr("hive_conductor.services.design_service.stop_design_service", _anoop)
+    monkeypatch.setattr("hive_conductor.services.evolution.start_evolution", _anoop)
+    monkeypatch.setattr("hive_conductor.services.evolution.stop_evolution", _anoop)
     yield
 
 
@@ -159,7 +161,7 @@ class TestServiceWiring:
         store = await _seeded_store()
         _patch_store(monkeypatch, store)
         _patch_settings(monkeypatch, memory_decay_interval_s=0.02)
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         driver = await decay_mod.start_memory_decay(get_settings())
 
@@ -169,7 +171,7 @@ class TestServiceWiring:
     async def test_start_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_store(monkeypatch, await _seeded_store())
         _patch_settings(monkeypatch, memory_decay_interval_s=0.02)
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         first = await decay_mod.start_memory_decay(get_settings())
         second = await decay_mod.start_memory_decay(get_settings())
@@ -182,7 +184,7 @@ class TestServiceWiring:
         """Stub mode has no episodic memory — say so rather than pretend decay runs."""
         _patch_store(monkeypatch, None)
         _patch_settings(monkeypatch, memory_decay_interval_s=3600)
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         with caplog.at_level(logging.WARNING):
             driver = await decay_mod.start_memory_decay(get_settings())
@@ -190,10 +192,27 @@ class TestServiceWiring:
         assert driver.state() == "no_store"
         assert "memory_decay_not_running" in caplog.text
 
+    async def test_start_without_explicit_settings_resolves_them_itself(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The no-arg call path is the shipped one (main.py lifespan).
+
+        It must resolve settings itself and consult the real episodic-store
+        lookup (``_resolve_episodic_store``), whose lazy imports were repointed
+        at the ``hive_conductor`` package during the #1134 namespace move.
+        """
+        _patch_settings(monkeypatch, memory_decay_interval_s=3600)
+        resolved = decay_mod._resolve_episodic_store()
+
+        driver = await decay_mod.start_memory_decay(None)
+
+        assert resolved is None  # stub mode: no episodic store in this process
+        assert driver.state() == "no_store"
+
     async def test_engine_exposes_no_episodic_store_in_stub_mode(self) -> None:
         """Stub mode has no core Container, so no episodic store — and says None."""
-        from adapters.maistro_core import StubAgentPort
-        from services.engine import EngineService
+        from hive_conductor.adapters.maistro_core import StubAgentPort
+        from hive_conductor.services.engine import EngineService
 
         svc = EngineService()
         svc._agent_port = StubAgentPort()
@@ -201,7 +220,7 @@ class TestServiceWiring:
         assert svc.episodic_store is None
 
     async def test_engine_exposes_the_container_store_when_bridged(self) -> None:
-        from services.engine import EngineService
+        from hive_conductor.services.engine import EngineService
 
         class _Container:
             episodic_store = "the-store"
@@ -224,7 +243,7 @@ class TestDisabledIsLoud:
         store = await _seeded_store()
         _patch_store(monkeypatch, store)
         _patch_settings(monkeypatch, memory_decay_interval_s=0)
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         driver = await decay_mod.start_memory_decay(get_settings())
         await asyncio.sleep(0.05)
@@ -237,7 +256,7 @@ class TestDisabledIsLoud:
     ) -> None:
         _patch_store(monkeypatch, await _seeded_store())
         _patch_settings(monkeypatch, memory_decay_interval_s=0)
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         with caplog.at_level(logging.WARNING):
             await decay_mod.start_memory_decay(get_settings())
@@ -298,7 +317,7 @@ class TestObservability:
         await store.store(_mem("m2", weight=0.7))
         _patch_store(monkeypatch, store)
         _patch_settings(monkeypatch, memory_decay_interval_s=0.02)
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         driver = await decay_mod.start_memory_decay(get_settings())
         await _wait_until(lambda: driver.ticks >= 1)

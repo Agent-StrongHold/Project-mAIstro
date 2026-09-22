@@ -17,18 +17,15 @@ Covers:
 from __future__ import annotations
 
 import pathlib
-import sys
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
-from services.dag_execution_scope import DagExecutionScope
+from hive_conductor.services.dag_execution_scope import DagExecutionScope
 
 from maistro.graph.durable_runs import RunStatus
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def _execution_scope() -> DagExecutionScope:
@@ -56,7 +53,7 @@ def _set_allow_stub_llm(monkeypatch: pytest.MonkeyPatch, allowed: bool) -> None:
     environment would not be observed; patch the accessor instead (same seam
     test_evolution_service.py uses).
     """
-    import config
+    import hive_conductor.config as config
 
     class _S:
         allow_stub_llm = allowed
@@ -73,7 +70,7 @@ def test_build_llm_call_refuses_when_base_url_missing(
     misconfigured deployment produced fake successes. The contract is now a
     `StubLLMNotAllowedError` naming what is unset and how to proceed.
     """
-    from services.graph_runner import StubLLMNotAllowedError, _build_llm_call
+    from hive_conductor.services.graph_runner import StubLLMNotAllowedError, _build_llm_call
 
     _unconfigure_llm(monkeypatch)
     _set_allow_stub_llm(monkeypatch, False)
@@ -98,7 +95,7 @@ def test_build_llm_call_stub_is_labelled_when_opted_in(
     import asyncio
     import json
 
-    from services.graph_runner import _build_llm_call
+    from hive_conductor.services.graph_runner import _build_llm_call
 
     _unconfigure_llm(monkeypatch)
     _set_allow_stub_llm(monkeypatch, True)
@@ -115,8 +112,8 @@ def test_stub_llm_allowed_fails_closed_when_settings_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A settings blow-up must not be read as consent to stub."""
-    import config
-    from services.graph_runner import stub_llm_allowed
+    import hive_conductor.config as config
+    from hive_conductor.services.graph_runner import stub_llm_allowed
 
     def _boom() -> Any:
         raise RuntimeError("settings exploded")
@@ -128,7 +125,7 @@ def test_stub_llm_allowed_fails_closed_when_settings_unavailable(
 def test_llm_gateway_configured_tracks_either_env_var(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.graph_runner import llm_gateway_configured
+    from hive_conductor.services.graph_runner import llm_gateway_configured
 
     _unconfigure_llm(monkeypatch)
     assert llm_gateway_configured() is False
@@ -141,7 +138,7 @@ async def test_run_llm_node_marks_node_failed_when_llm_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The refusal reaches the DAG as a failed node, not a fake answer."""
-    from services import graph_runner as gr
+    from hive_conductor.services import graph_runner as gr
 
     _unconfigure_llm(monkeypatch)
     _set_allow_stub_llm(monkeypatch, False)
@@ -164,7 +161,7 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     a default-tier node is routed through the isolation floor instead, and
     that refusal is the sandbox contract's to assert, not this one's.
     """
-    from services import graph_runner as gr
+    from hive_conductor.services import graph_runner as gr
 
     _unconfigure_llm(monkeypatch)
     _set_allow_stub_llm(monkeypatch, False)
@@ -197,7 +194,7 @@ async def test_build_llm_call_real_httpx_posts_and_extracts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
-    from services.graph_runner import _build_llm_call
+    from hive_conductor.services.graph_runner import _build_llm_call
 
     monkeypatch.setenv("LITELLM_API_BASE", "http://stub.example")
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
@@ -239,7 +236,7 @@ async def test_build_llm_call_on_response_hook_receives_body_and_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
-    from services.graph_runner import _build_llm_call
+    from hive_conductor.services.graph_runner import _build_llm_call
 
     monkeypatch.setenv("LITELLM_API_BASE", "http://stub.example")
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
@@ -282,7 +279,7 @@ async def test_build_llm_call_on_response_hook_failure_is_swallowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
-    from services.graph_runner import _build_llm_call
+    from hive_conductor.services.graph_runner import _build_llm_call
 
     monkeypatch.setenv("LITELLM_API_BASE", "http://stub.example")
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
@@ -320,7 +317,7 @@ async def test_build_llm_call_uses_default_model_when_kwarg_missing(
 ) -> None:
     """Without model kwarg, falls back to CHAT_DEFAULT_MODEL env var."""
     import httpx
-    from services.graph_runner import _build_llm_call
+    from hive_conductor.services.graph_runner import _build_llm_call
 
     monkeypatch.setenv("LITELLM_API_BASE", "http://x")
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
@@ -358,7 +355,7 @@ async def test_build_llm_call_secret_str_api_key_path(
 ) -> None:
     """When LITELLM_API_KEY is set, it is passed as Bearer token."""
     import httpx
-    from services.graph_runner import _build_llm_call
+    from hive_conductor.services.graph_runner import _build_llm_call
 
     monkeypatch.setenv("LITELLM_API_BASE", "http://x")
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
@@ -396,7 +393,7 @@ async def test_build_llm_call_no_api_key_no_auth_header(
 ) -> None:
     """If LITELLM_API_KEY is empty, Authorization header is 'Bearer '."""
     import httpx
-    from services.graph_runner import _build_llm_call
+    from hive_conductor.services.graph_runner import _build_llm_call
 
     monkeypatch.setenv("LITELLM_API_BASE", "http://x")
     monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
@@ -437,7 +434,7 @@ async def test_execute_dag_builds_config_and_returns_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """execute_dag runs a wave executor; stub _build_llm_call and verify shape."""
-    import services.graph_runner as gr
+    import hive_conductor.services.graph_runner as gr
 
     # Stub _build_llm_call to return a coroutine that returns a response string.
     # n1 → n2 (two waves), so cycles == 2.
@@ -483,7 +480,7 @@ async def test_execute_dag_entry_node_fallback_to_first_node(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Single-node DAG with no entry_node runs to completion (1 wave, 1 cycle)."""
-    import services.graph_runner as gr
+    import hive_conductor.services.graph_runner as gr
 
     calls: list[list[dict]] = []
 
@@ -520,7 +517,7 @@ async def test_execute_dag_entry_node_fallback_to_first_node(
 
 
 def test_genome_to_dag_maps_nodes_and_edges() -> None:
-    from services.graph_runner import genome_to_dag
+    from hive_conductor.services.graph_runner import genome_to_dag
 
     class _Node:
         def __init__(self, **kw: Any) -> None:
@@ -576,8 +573,8 @@ def test_genome_to_dag_maps_nodes_and_edges() -> None:
 async def test_execute_champion_returns_error_when_no_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evo
-    import services.graph_runner as gr
+    import hive_conductor.services.evolution as evo
+    import hive_conductor.services.graph_runner as gr
 
     evo._service = None
     out = await gr.execute_champion()
@@ -588,8 +585,8 @@ async def test_execute_champion_returns_error_when_no_service(
 async def test_execute_champion_no_population(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evo
-    import services.graph_runner as gr
+    import hive_conductor.services.evolution as evo
+    import hive_conductor.services.graph_runner as gr
 
     class _Svc:
         population = None
@@ -606,8 +603,8 @@ async def test_execute_champion_no_population(
 async def test_execute_champion_no_champion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evo
-    import services.graph_runner as gr
+    import hive_conductor.services.evolution as evo
+    import hive_conductor.services.graph_runner as gr
 
     class _Pop:
         def get_champion(self) -> Any:
@@ -628,8 +625,8 @@ async def test_execute_champion_no_champion(
 async def test_execute_champion_success_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evo
-    import services.graph_runner as gr
+    import hive_conductor.services.evolution as evo
+    import hive_conductor.services.graph_runner as gr
 
     class _Topo:
         nodes: ClassVar[list[Any]] = []
@@ -697,8 +694,8 @@ class _CompletedRecord:
 async def test_execute_dag_streaming_yields_full_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.graph_runner as gr
-    from services import canonical_dag_runner as runner
+    import hive_conductor.services.graph_runner as gr
+    from hive_conductor.services import canonical_dag_runner as runner
 
     async def _run_durable_graph(graph: Any, **kw: Any) -> Any:
         return _CompletedRecord()
@@ -726,8 +723,8 @@ async def test_execute_dag_streaming_yields_full_lifecycle(
 async def test_execute_dag_streaming_yields_failed_on_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.graph_runner as gr
-    from services import canonical_dag_runner as runner
+    import hive_conductor.services.graph_runner as gr
+    from hive_conductor.services import canonical_dag_runner as runner
 
     async def _boom(graph: Any, **kw: Any) -> Any:
         raise RuntimeError("synthetic")

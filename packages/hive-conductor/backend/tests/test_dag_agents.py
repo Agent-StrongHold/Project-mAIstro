@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import sys
 
 import pytest
 
 _BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_DIR))
 
-from services.dag_agents import get_registry, run_registered_dag  # noqa: E402
+from hive_conductor.services.dag_agents import get_registry, run_registered_dag  # noqa: E402
 
 from maistro.graph.durable_runs import RunStatus  # noqa: E402
 
@@ -99,7 +96,7 @@ class _StubContainer:
 
 def _with_container(monkeypatch, container) -> None:
     """Point `services.engine.get_engine()` at a bridge holding `container`."""
-    import services.engine as engine_module
+    import hive_conductor.services.engine as engine_module
 
     port = type("_Port", (), {"container": container})()
     monkeypatch.setattr(
@@ -132,7 +129,7 @@ def test_the_delegate_node_is_wired_from_the_container(monkeypatch) -> None:
     and run_store=None — every delegation refused for want of a delegator, and
     delegated work could not be filed as a child Run.
     """
-    import services.dag_agents as dag_agents
+    import hive_conductor.services.dag_agents as dag_agents
 
     container = _StubContainer()
     _with_container(monkeypatch, container)
@@ -153,7 +150,7 @@ def test_the_node_gets_the_canonical_run_store_not_the_durable_one(monkeypatch) 
     accepted delegation — after the work has already been dispatched. This
     module holds both, so the wrong one is one line away.
     """
-    import services.dag_agents as dag_agents
+    import hive_conductor.services.dag_agents as dag_agents
 
     container = _StubContainer()
     _with_container(monkeypatch, container)
@@ -176,7 +173,7 @@ def test_the_synth_dag_node_gets_the_durable_graph_store_from_the_container(
     synthesized sub-graph into. It is the *other* store — `graph_run_store`,
     not `run_store` — and the bridge hands it on so the node cannot arrive
     with `run_store=None` and complete with a success that ran nothing."""
-    import services.dag_agents as dag_agents
+    import hive_conductor.services.dag_agents as dag_agents
 
     container = _StubContainer()
     _with_container(monkeypatch, container)
@@ -191,8 +188,8 @@ def test_without_a_bridge_the_synth_dag_node_is_refused_not_degraded(monkeypatch
     """The fallback resolver has no graph store to give, so it refuses the kind
     outright (#1193) rather than building a node that reports success for a
     sub-graph nothing ran."""
-    import services.dag_agents as dag_agents
-    import services.engine as engine_module
+    import hive_conductor.services.dag_agents as dag_agents
+    import hive_conductor.services.engine as engine_module
 
     from maistro.graph.nodes import NodeCompositionError
 
@@ -208,8 +205,8 @@ def test_without_a_bridge_the_synth_dag_node_is_refused_not_degraded(monkeypatch
 @pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
     """A Conductor running standalone must behave as it did, not fail to start."""
-    import services.dag_agents as dag_agents
-    import services.engine as engine_module
+    import hive_conductor.services.dag_agents as dag_agents
+    import hive_conductor.services.engine as engine_module
 
     port = type("_Port", (), {"container": None})()
     monkeypatch.setattr(
@@ -225,8 +222,8 @@ def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
 @pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -> None:
     """Resolving a node must not be the thing that breaks a DAG execution."""
-    import services.dag_agents as dag_agents
-    import services.engine as engine_module
+    import hive_conductor.services.dag_agents as dag_agents
+    import hive_conductor.services.engine as engine_module
 
     def _boom():
         raise RuntimeError("engine unavailable")
@@ -238,7 +235,7 @@ def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -
 @pytest.mark.ac("ADR-082526-3ca6/AC-4")
 def test_ordinary_node_kinds_are_unaffected_by_the_wiring(monkeypatch) -> None:
     """The delegate special case must not change how everything else resolves."""
-    import services.dag_agents as dag_agents
+    import hive_conductor.services.dag_agents as dag_agents
 
     _with_container(monkeypatch, _StubContainer())
     node = dag_agents._resolve_nodes_with()(
@@ -257,7 +254,7 @@ def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_
     retention, not another replica resuming it. With the Container's
     `graph_run_store` the Run is a row on the spine.
     """
-    import services.dag_agents as dag_agents
+    import hive_conductor.services.dag_agents as dag_agents
 
     from maistro.graph.durable_runs import (
         CanonicalDurableRunStore,

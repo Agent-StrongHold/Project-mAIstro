@@ -206,7 +206,7 @@ class TestTheRepository:
         design. It is the package the defect shipped in; a scan that missed it
         would be a gate for everything except the thing that broke."""
         files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
-        assert "packages/hive-conductor/backend/services/design_service.py" in files
+        assert "packages/hive-conductor/backend/hive_conductor/services/design_service.py" in files
 
     @pytest.mark.timeout(120)
     def test_the_script_exits_zero_on_the_real_tree(self):
@@ -392,7 +392,7 @@ class TestTheScanCoversWhatItClaims:
 
     def test_the_packages_tree_is_still_scanned(self, check):
         files = {str(p.relative_to(check.REPO_ROOT)) for p in check.source_files()}
-        assert "packages/hive-conductor/backend/services/design_service.py" in files
+        assert "packages/hive-conductor/backend/hive_conductor/services/design_service.py" in files
 
     def test_widening_did_not_cost_coverage_elsewhere(self, check):
         """Measured when the roots were added: 207 further files, zero new

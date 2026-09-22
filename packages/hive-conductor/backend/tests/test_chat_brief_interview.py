@@ -16,8 +16,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import hive_conductor.stores as stores
 import pytest
-import stores
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -45,7 +45,7 @@ class _CountingLLM:
 @pytest.fixture
 def llm(monkeypatch) -> _CountingLLM:
     fake = _CountingLLM()
-    monkeypatch.setattr("routes.chat.build_llm_port", lambda: fake)
+    monkeypatch.setattr("hive_conductor.routes.chat.build_llm_port", lambda: fake)
     return fake
 
 

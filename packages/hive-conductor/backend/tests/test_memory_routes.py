@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import pathlib
-import sys
 from datetime import UTC, datetime
 from typing import Any
 
+import hive_conductor.stores as stores
 import pytest
-
-_BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
-import stores  # noqa: E402
-from models.schemas import MemoryEntry  # noqa: E402
+from hive_conductor.models.schemas import MemoryEntry
 
 
 def _clear(store) -> None:
@@ -283,7 +276,7 @@ def _entry(eid: str, user_id: str, value: str) -> MemoryEntry:
 
 
 async def test_chat_memory_add_stamps_owner_and_stores_entry() -> None:
-    from services.chat_completion import _tool_memory_add
+    from hive_conductor.services.chat_completion import _tool_memory_add
 
     result = await _tool_memory_add({"content": "remember this"}, user_id="u-chat", jira_pat=None)
     assert result["saved"] is True
@@ -293,7 +286,7 @@ async def test_chat_memory_add_stamps_owner_and_stores_entry() -> None:
 
 
 async def test_chat_memory_add_requires_content() -> None:
-    from services.chat_completion import _tool_memory_add
+    from hive_conductor.services.chat_completion import _tool_memory_add
 
     assert await _tool_memory_add({}, user_id="u-chat", jira_pat=None) == {
         "error": "content is required"
@@ -301,7 +294,7 @@ async def test_chat_memory_add_requires_content() -> None:
 
 
 async def test_chat_memory_search_scopes_to_owner_and_filters() -> None:
-    from services.chat_completion import _tool_memory_search
+    from hive_conductor.services.chat_completion import _tool_memory_search
 
     stores.memory_entries["own"] = _entry("own", "u-chat", "alpha secret")
     stores.memory_entries["foreign"] = _entry("foreign", "someone-else", "alpha private")
@@ -320,7 +313,7 @@ async def test_chat_memory_search_scopes_to_owner_and_filters() -> None:
 
 
 async def test_chat_memory_delete_requires_entry_id() -> None:
-    from services.chat_completion import _tool_memory_delete
+    from hive_conductor.services.chat_completion import _tool_memory_delete
 
     assert await _tool_memory_delete({}, user_id="u-chat", jira_pat=None) == {
         "error": "entry_id required"
@@ -328,7 +321,7 @@ async def test_chat_memory_delete_requires_entry_id() -> None:
 
 
 async def test_chat_memory_delete_is_scoped() -> None:
-    from services.chat_completion import _tool_memory_delete
+    from hive_conductor.services.chat_completion import _tool_memory_delete
 
     stores.memory_entries["own"] = _entry("own", "u-chat", "mine")
     stores.memory_entries["foreign"] = _entry("foreign", "someone-else", "theirs")
@@ -350,7 +343,7 @@ async def test_chat_memory_delete_is_scoped() -> None:
 
 
 async def test_chat_memory_edit_not_found_is_scoped() -> None:
-    from services.chat_completion import _tool_memory_edit
+    from hive_conductor.services.chat_completion import _tool_memory_edit
 
     stores.memory_entries["foreign"] = _entry("foreign", "someone-else", "theirs")
 
@@ -364,7 +357,7 @@ async def test_chat_memory_edit_not_found_is_scoped() -> None:
 
 
 async def test_chat_memory_edit_requires_entry_id_and_value() -> None:
-    from services.chat_completion import _tool_memory_edit
+    from hive_conductor.services.chat_completion import _tool_memory_edit
 
     assert await _tool_memory_edit({}, user_id="u-chat", jira_pat=None) == {
         "error": "entry_id and value required"
@@ -375,7 +368,7 @@ async def test_chat_memory_edit_requires_entry_id_and_value() -> None:
 
 
 async def test_chat_memory_edit_updates_value_key_and_tags() -> None:
-    from services.chat_completion import _tool_memory_edit
+    from hive_conductor.services.chat_completion import _tool_memory_edit
 
     stores.memory_entries["own"] = _entry("own", "u-chat", "before")
 

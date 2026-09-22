@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from services.dag_execution_scope import DagExecutionScope
+from hive_conductor.services.dag_execution_scope import DagExecutionScope
 
 from maistro.graph.durable_runs import InMemoryDurableRunStore
 
@@ -41,7 +41,7 @@ def _fake_llm_builder(*, fail_prompt: str | None = None):
 
 
 def test_graph_normalizes_crud_and_substrate_edge_dialects() -> None:
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     common = [_safe_node("a"), _safe_node("b")]
     crud = graph_from_legacy_dag(
@@ -71,7 +71,7 @@ def test_graph_normalizes_crud_and_substrate_edge_dialects() -> None:
 
 def test_legacy_outcome_tokens_preserve_dependency_edge_behavior() -> None:
     """Bare evolution tokens were labels to the old wave runner, not predicates."""
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     graph = graph_from_legacy_dag(
         {
@@ -95,7 +95,7 @@ def test_legacy_outcome_tokens_preserve_dependency_edge_behavior() -> None:
 
 
 def test_canonical_comparison_condition_is_preserved() -> None:
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     graph = graph_from_legacy_dag(
         {
@@ -119,7 +119,7 @@ def test_canonical_comparison_condition_is_preserved() -> None:
 
 
 def test_run_scout_becomes_a_canonical_pre_entry_node() -> None:
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     graph = graph_from_legacy_dag(
         {
@@ -142,7 +142,7 @@ def test_run_scout_becomes_a_canonical_pre_entry_node() -> None:
 
 
 def test_empty_dag_cannot_report_success_with_zero_work() -> None:
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     with pytest.raises(ValueError, match="no nodes"):
         graph_from_legacy_dag(
@@ -153,7 +153,7 @@ def test_empty_dag_cannot_report_success_with_zero_work() -> None:
 
 
 def test_cycle_is_rejected_before_execution() -> None:
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     with pytest.raises(ValueError, match="cyclic DAG"):
         graph_from_legacy_dag(
@@ -174,7 +174,7 @@ def test_cycle_is_rejected_before_execution() -> None:
 async def test_required_node_failure_terminalizes_canonical_run_failed(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
@@ -203,7 +203,7 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
 async def test_fanout_runs_under_one_canonical_run(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
@@ -237,7 +237,7 @@ async def test_fanout_runs_under_one_canonical_run(
 async def test_run_scout_executes_under_the_same_canonical_run(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)
@@ -271,7 +271,7 @@ async def test_run_scout_executes_under_the_same_canonical_run(
 async def test_legacy_facade_cannot_return_failed_run_as_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.graph_runner as facade
+    import hive_conductor.services.graph_runner as facade
 
     async def failed(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {
@@ -344,7 +344,7 @@ def test_invalid_legacy_shapes_are_rejected_before_a_run_exists(
 ) -> None:
     """Every admission-time rejection: a shape the adapter cannot represent
     faithfully must fail before any canonical Run/NodeRun identity is minted."""
-    from services.canonical_dag_runner import graph_from_legacy_dag
+    from hive_conductor.services.canonical_dag_runner import graph_from_legacy_dag
 
     with pytest.raises(ValueError, match=message):
         graph_from_legacy_dag(dag, workspace_id="w", project_id="p")
@@ -354,7 +354,9 @@ def test_invalid_legacy_shapes_are_rejected_before_a_run_exists(
 async def test_scope_uses_only_the_authorized_immutable_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    """With a live container, an unscoped legacy DAG is admitted into the
+    configured workspace and the workspace's root project, not a compat scope."""
+    import hive_conductor.services.canonical_dag_runner as runner
 
     class _Container:
         run_store = "the-canonical-run-store"
@@ -382,7 +384,7 @@ async def test_scope_uses_only_the_authorized_immutable_scope(
 async def test_scope_rejects_scope_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     scope = DagExecutionScope(workspace_id="ws", project_id="project", user_id="user")
     monkeypatch.setattr(runner, "_container", lambda: None)
@@ -395,7 +397,7 @@ async def test_scope_rejects_scope_mismatch(
 async def test_scope_rejects_project_id_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     scope = DagExecutionScope(workspace_id="ws", project_id="project", user_id="user")
     monkeypatch.setattr(runner, "_container", lambda: None)
@@ -408,7 +410,7 @@ async def test_scope_rejects_project_id_mismatch(
 async def test_scope_rejects_a_missing_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     monkeypatch.setattr(runner, "_container", lambda: None)
 
@@ -420,7 +422,7 @@ async def test_scope_rejects_a_missing_scope(
 async def test_execute_dag_rejects_a_missing_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     with pytest.raises(ValueError, match="authorized DAG execution scope is required"):
         await runner.execute_dag(
@@ -434,7 +436,7 @@ async def test_execute_dag_rejects_a_missing_scope(
 async def test_execute_dag_rejects_a_user_id_that_does_not_match_the_scope(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     with pytest.raises(ValueError, match="user_id does not match authorized scope"):
         await runner.execute_dag(
@@ -454,7 +456,7 @@ def test_request_credentials_reach_nodes_as_scoped_env_keys() -> None:
     """The legacy adapter consumed USER_CRED_* env keys; admission must still
     forward request-time credentials under that contract without persisting
     them into Run provenance."""
-    from services.canonical_dag_runner import _node_env
+    from hive_conductor.services.canonical_dag_runner import _node_env
 
     env = _node_env(
         {"id": "dag-1"},
@@ -470,7 +472,7 @@ def test_request_credentials_reach_nodes_as_scoped_env_keys() -> None:
 def test_the_resolver_names_a_node_missing_from_the_adapter_map() -> None:
     """Durable recovery cannot invent a node the admission snapshot never
     carried; the failure must name both the node and the map."""
-    from services.canonical_dag_runner import _resolver
+    from hive_conductor.services.canonical_dag_runner import _resolver
 
     resolve = _resolver(
         {},
@@ -488,7 +490,7 @@ def test_the_resolver_names_a_node_missing_from_the_adapter_map() -> None:
 def test_recovery_refuses_a_run_whose_nodes_lack_durable_legacy_metadata() -> None:
     """A Run admitted by some other seam has no legacy node facts to rebuild
     from; guessing defaults here would execute work nobody admitted."""
-    from services.canonical_dag_runner import _recovery_resolver
+    from hive_conductor.services.canonical_dag_runner import _recovery_resolver
 
     from maistro.graph.definitions import Graph, Node
     from maistro.runs.model import GraphSnapshot, Run, RunStatus
@@ -523,7 +525,7 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
     outcome: a broken ingest logs and the canonical truth still returns."""
     import logging
 
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     store = InMemoryDurableRunStore()
     monkeypatch.setattr(runner, "_container", lambda: None)

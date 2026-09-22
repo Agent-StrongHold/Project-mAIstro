@@ -27,15 +27,13 @@ from typing import Any
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture(autouse=True)
 def _reset_singleton():
-    import services.foundation as f
-    import stores
-    from services import profile_store, registration_policy, settings_store
+    import hive_conductor.services.foundation as f
+    import hive_conductor.stores as stores
+    from hive_conductor.services import profile_store, registration_policy, settings_store
 
     prev = f._singleton
     f._singleton = None
@@ -73,14 +71,14 @@ def _reset_singleton():
 
 
 def test_get_foundation_raises_when_not_started() -> None:
-    from services.foundation import get_foundation
+    from hive_conductor.services.foundation import get_foundation
 
     with pytest.raises(RuntimeError, match="not started"):
         get_foundation()
 
 
 async def test_start_then_get_returns_instance(tmp_path: Path) -> None:
-    from services.foundation import Foundation, get_foundation, start_foundation
+    from hive_conductor.services.foundation import Foundation, get_foundation, start_foundation
 
     settings = _StubSettings(tmp_path)
     inst = await start_foundation(settings)
@@ -89,8 +87,8 @@ async def test_start_then_get_returns_instance(tmp_path: Path) -> None:
 
 
 async def test_stop_clears_singleton(tmp_path: Path) -> None:
-    import services.foundation as f
-    from services.foundation import start_foundation, stop_foundation
+    import hive_conductor.services.foundation as f
+    from hive_conductor.services.foundation import start_foundation, stop_foundation
 
     await start_foundation(_StubSettings(tmp_path))
     assert f._singleton is not None
@@ -99,8 +97,8 @@ async def test_stop_clears_singleton(tmp_path: Path) -> None:
 
 
 async def test_stop_when_not_started_is_noop() -> None:
-    import services.foundation as f
-    from services.foundation import stop_foundation
+    import hive_conductor.services.foundation as f
+    from hive_conductor.services.foundation import stop_foundation
 
     assert f._singleton is None
     await stop_foundation()
@@ -111,7 +109,7 @@ async def test_stop_when_not_started_is_noop() -> None:
 
 
 def test_foundation_init_zero_state() -> None:
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     fnd = Foundation()
     assert fnd.vault is None
@@ -146,7 +144,7 @@ def test_init_vault_success(
 ) -> None:
     import types
 
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     class _Vault:
         def __init__(self, **kw: Any) -> None:
@@ -169,7 +167,7 @@ def test_init_vault_exception_swallowed(
     """If Vault import fails and no vault file was ever provisioned, degrade quietly."""
     import types
 
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     broken = types.ModuleType("maistro.vault")
 
@@ -193,7 +191,7 @@ def test_init_vault_provisioned_but_unopenable_fails_closed(
     back to env-var secrets — it fails closed (SystemExit), not a swallowed warning."""
     import types
 
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     vault_path = tmp_path / "secrets.age"
     vault_path.write_bytes(b"age-encrypted-blob")
@@ -259,7 +257,7 @@ def test_init_state_success_wires_persisted_store(
 ) -> None:
     import types
 
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     _state_flush_count[0] = 0
 
@@ -281,10 +279,10 @@ def test_init_state_database_open_failure_fails_closed_without_memory_fallback(
 ) -> None:
     import logging
 
-    import stores
-    from models.schemas import HiveUser
-    from services.foundation import Foundation
-    from services.model_store import ModelStore
+    import hive_conductor.stores as stores
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.services.foundation import Foundation
+    from hive_conductor.services.model_store import ModelStore
 
     from maistro import state as state_mod
 
@@ -323,10 +321,10 @@ def test_init_state_constructor_failure_fails_closed_without_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import stores
-    from models.schemas import HiveUser
-    from services.foundation import Foundation
-    from services.model_store import ModelStore
+    import hive_conductor.stores as stores
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.services.foundation import Foundation
+    from hive_conductor.services.model_store import ModelStore
 
     from maistro import state as state_mod
 
@@ -360,8 +358,8 @@ async def test_lifespan_does_not_replace_failed_state_with_memory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import main as main_mod
-    import stores
+    import hive_conductor.main as main_mod
+    import hive_conductor.stores as stores
 
     settings = _StubSettings(tmp_path)
     initialize_calls: list[None] = []
@@ -376,7 +374,9 @@ async def test_lifespan_does_not_replace_failed_state_with_memory(
 
     monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
     monkeypatch.setattr(main_mod, "_seed_outbound_policy", lambda *_args: None)
-    monkeypatch.setattr("settings_defaults.apply_default_settings_if_needed", lambda: None)
+    monkeypatch.setattr(
+        "hive_conductor.settings_defaults.apply_default_settings_if_needed", lambda: None
+    )
     monkeypatch.setattr(main_mod.foundation_service, "start_foundation", fail_start)
     monkeypatch.setattr(main_mod.engine_service, "start_engine", noop)
     monkeypatch.setattr(main_mod.engine_service, "stop_engine", noop)
@@ -395,7 +395,7 @@ async def test_lifespan_does_not_replace_failed_state_with_memory(
 
 
 def test_init_privilege_skipped_without_admin_key(tmp_path: Path) -> None:
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     fnd = Foundation()
     settings = _StubSettings(tmp_path)
@@ -410,7 +410,7 @@ def test_init_privilege_success(
 ) -> None:
     import types
 
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     class _Guard:
         def __init__(self, *, data_dir: str) -> None:
@@ -436,7 +436,7 @@ def test_init_privilege_exception_swallowed(
 ) -> None:
     import types
 
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     broken = types.ModuleType("maistro.privilege")
 
@@ -462,7 +462,7 @@ async def test_init_reactor_success(
 ) -> None:
     import types
 
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     started = [0]
     stopped = [0]
@@ -494,7 +494,7 @@ async def test_init_reactor_exception_swallowed(
 ) -> None:
     import types
 
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     broken = types.ModuleType("maistro.reactor")
 
@@ -513,7 +513,7 @@ async def test_init_reactor_exception_swallowed(
 
 
 async def test_stop_calls_subsystems_when_available() -> None:
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     closed = [0]
     stopped = [0]
@@ -537,7 +537,7 @@ async def test_stop_calls_subsystems_when_available() -> None:
 
 
 async def test_stop_skips_unavailable_subsystems() -> None:
-    from services.foundation import Foundation
+    from hive_conductor.services.foundation import Foundation
 
     fnd = Foundation()
     fnd.reactor = None

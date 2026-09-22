@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from services.evolution_graph import _BattleInput, _TournamentWork
+from hive_conductor.services.evolution_graph import _BattleInput, _TournamentWork
 
 
 class _Genome:

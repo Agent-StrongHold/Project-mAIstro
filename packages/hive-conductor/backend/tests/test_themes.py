@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from models.workspace import Workspace
-from services.themes import (
+from hive_conductor.models.workspace import Workspace
+from hive_conductor.services.themes import (
     DEFAULT_THEME_ID,
     THEME_CATALOG,
     canonical_theme_id,

@@ -7,17 +7,11 @@ registers models with LiteLLM and runs a one-token test completion.
 from __future__ import annotations
 
 import asyncio
-import pathlib
 import shutil
-import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
-
-_BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def _needs_age() -> None:
@@ -40,8 +34,8 @@ def _wire_governed_runtime(
     ``project_scope_store=False`` omits the scope store to exercise the route's
     fail-closed refusal.
     """
-    import config
-    from services import governed_model
+    import hive_conductor.config as config
+    from hive_conductor.services import governed_model
 
     from maistro.capabilities.effect_context import new_in_memory_effect_context
     from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
@@ -176,7 +170,7 @@ async def test_activate_route_delegates_to_governed_health_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The route supplies canonical scope and never owns the provider call."""
-    from services import governed_model
+    from hive_conductor.services import governed_model
 
     from maistro.capabilities.effect_context import new_in_memory_effect_context
     from maistro.capabilities.model_chat import ModelCallResult
@@ -217,8 +211,8 @@ async def test_activate_route_delegates_to_governed_health_operation(
         calls.append(kwargs)
         return ModelCallResult(invocation_id="inv-1", model="mistral/test", body={})
 
-    import config
-    import routes.providers as providers_mod
+    import hive_conductor.config as config
+    import hive_conductor.routes.providers as providers_mod
 
     monkeypatch.setattr(providers_mod, "_vault", lambda: _Vault())
     monkeypatch.setattr(providers_mod, "_record_activation", lambda name: None)
@@ -256,7 +250,7 @@ class TestAuthz:
 
     def test_unauthenticated_is_401(self) -> None:
         from fastapi.testclient import TestClient
-        from main import app
+        from hive_conductor.main import app
 
         r = TestClient(app).get("/v1/providers")
         assert r.status_code == 401
@@ -296,8 +290,8 @@ class TestKeyAndActivate:
         """An unreachable gateway surfaces as 502 with the operation failed.
         The governed runtime is injected the same way every deployed
         activation has one; the socket alone is pinned unreachable."""
+        import hive_conductor.routes.providers as providers_mod
         import httpx
-        import routes.providers as providers_mod
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _runtime, run_store = _wire_governed_runtime(monkeypatch, endpoint="http://127.0.0.1:9")
@@ -321,7 +315,7 @@ class TestKeyAndActivate:
     ) -> None:
         """Degraded mode (no core Container on the agent port) is an honest
         503 — the route refuses instead of faking a gateway verdict."""
-        import routes.providers as providers_mod
+        import hive_conductor.routes.providers as providers_mod
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         r = admin_client.post("/v1/providers/groq/activate")
@@ -333,7 +327,7 @@ class TestKeyAndActivate:
     ) -> None:
         """A runtime without the canonical scope tree refuses: activation must
         correlate to a real Workspace/Project, never invent one."""
-        import routes.providers as providers_mod
+        import hive_conductor.routes.providers as providers_mod
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _wire_governed_runtime(monkeypatch, endpoint="http://gateway", project_scope_store=False)
@@ -346,8 +340,8 @@ class TestKeyAndActivate:
     ) -> None:
         """A canonical Run that fails identity correlation is a 403, and no
         operation is minted."""
-        import routes.providers as providers_mod
-        from services import governed_model
+        import hive_conductor.routes.providers as providers_mod
+        from hive_conductor.services import governed_model
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _wire_governed_runtime(monkeypatch, endpoint="http://gateway")
@@ -366,7 +360,7 @@ class TestKeyAndActivate:
     ) -> None:
         """A vault secret that vanishes mid-activation settles the canonical
         operation as CANCELLED and reports 409 (missing configuration)."""
-        import routes.providers as providers_mod
+        import hive_conductor.routes.providers as providers_mod
 
         from maistro.vault import SecretMissingError
 
@@ -393,7 +387,7 @@ class TestKeyAndActivate:
     ) -> None:
         """A policy-deny on the health probe settles CANCELLED and surfaces as
         403 — egress denied is an authorization verdict, not a transport one."""
-        import routes.providers as providers_mod
+        import hive_conductor.routes.providers as providers_mod
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _runtime, run_store = _wire_governed_runtime(
@@ -409,8 +403,8 @@ class TestKeyAndActivate:
     ) -> None:
         """Registration that succeeds followed by a chat probe that cannot
         reach the gateway is a 502 with the operation settled FAILED."""
+        import hive_conductor.routes.providers as providers_mod
         import httpx
-        import routes.providers as providers_mod
 
         monkeypatch.setattr(providers_mod, "_vault", lambda: _FakeVault())
         _runtime, run_store = _wire_governed_runtime(monkeypatch, endpoint="http://gateway")
@@ -440,8 +434,8 @@ class TestKeyAndActivate:
 
         calls: list[tuple[str, dict[str, Any]]] = []
 
-        from services import governed_model
-        from services.governed_model import GovernedModelRuntime
+        from hive_conductor.services import governed_model
+        from hive_conductor.services.governed_model import GovernedModelRuntime
 
         from maistro.capabilities.effect_context import new_in_memory_effect_context
         from maistro.capabilities.providers import llm_gateway

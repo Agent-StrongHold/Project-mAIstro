@@ -28,14 +28,11 @@ Tests cover:
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 def _wipe(store: Any) -> None:
@@ -46,20 +43,20 @@ def _wipe(store: Any) -> None:
 @pytest.fixture(autouse=True)
 def _isolated():
     """Wipe every store the optimizer reads/writes for each test."""
-    import stores
-    from services import edit_lock
-    from services.feedback_service import (
+    import hive_conductor.stores as stores
+    from hive_conductor.services import edit_lock
+    from hive_conductor.services.feedback_service import (
         InMemoryOutcomeStore,
         get_outcome_store,
         set_outcome_store,
     )
-    from services.node_metrics_store import (
+    from hive_conductor.services.node_metrics_store import (
         NodeMetricsStore,
     )
-    from services.node_metrics_store import (
+    from hive_conductor.services.node_metrics_store import (
         get_store as _get_metrics_store,
     )
-    from services.node_metrics_store import (
+    from hive_conductor.services.node_metrics_store import (
         set_store as _set_metrics_store,
     )
 
@@ -85,7 +82,7 @@ def _seed_metrics(
 ) -> None:
     """Seed `count` total observations for one node, `failed` of which
     are FAILED. The p95 latency arg sets the per-observation latency."""
-    from services.node_metrics_store import NodeObservation, get_store
+    from hive_conductor.services.node_metrics_store import NodeObservation, get_store
 
     store = get_store()
     for i in range(count):
@@ -114,7 +111,7 @@ async def _seed_thumb(dag_id: str, node_id: str, thumb: str, comment: str = "") 
     read it back are now async too -- `asyncio.run` inside one of them raises
     rather than nesting.
     """
-    from services.feedback_service import record_thumb
+    from hive_conductor.services.feedback_service import record_thumb
 
     await record_thumb(
         user_id="u1",
@@ -135,7 +132,7 @@ def _seed_eval_verdict(
     *,
     scored_at: str | None = None,
 ) -> None:
-    import stores
+    import hive_conductor.stores as stores
 
     stores.eval_verdicts[run_id] = {
         "run_id": run_id,
@@ -151,7 +148,7 @@ def _seed_eval_verdict(
 
 
 def test_priority_score_sums_all_components() -> None:
-    from services.optimizer import SignalSnapshot
+    from hive_conductor.services.optimizer import SignalSnapshot
 
     s = SignalSnapshot(
         dag_id="d",
@@ -169,7 +166,7 @@ def test_priority_score_sums_all_components() -> None:
 
 
 async def test_build_snapshot_rolls_up_per_node() -> None:
-    from services.optimizer import _build_snapshot_for_dag
+    from hive_conductor.services.optimizer import _build_snapshot_for_dag
 
     _seed_metrics("d", "n1", count=10, failed=4, p95=200)
     _seed_metrics("d", "n2", count=5, failed=0, p95=10_000)
@@ -202,7 +199,7 @@ async def test_build_snapshot_rolls_up_per_node() -> None:
 
 
 async def test_build_snapshot_no_data_returns_empty() -> None:
-    from services.optimizer import _build_snapshot_for_dag
+    from hive_conductor.services.optimizer import _build_snapshot_for_dag
 
     assert await _build_snapshot_for_dag("d-empty") == {}
 
@@ -211,7 +208,7 @@ async def test_build_snapshot_no_data_returns_empty() -> None:
 
 
 def test_propose_high_error_score_emits_model_swap() -> None:
-    from services.optimizer import (
+    from hive_conductor.services.optimizer import (
         CLASS_AUTO_APPLY,
         KIND_MODEL_SWAP,
         SignalSnapshot,
@@ -232,7 +229,7 @@ def test_propose_high_error_score_emits_model_swap() -> None:
 
 
 def test_propose_moderate_error_score_emits_retry_count() -> None:
-    from services.optimizer import (
+    from hive_conductor.services.optimizer import (
         KIND_MODEL_SWAP,
         KIND_RETRY_COUNT,
         SignalSnapshot,
@@ -252,7 +249,7 @@ def test_propose_moderate_error_score_emits_retry_count() -> None:
 
 
 def test_propose_high_latency_emits_edge_weight() -> None:
-    from services.optimizer import (
+    from hive_conductor.services.optimizer import (
         KIND_EDGE_WEIGHT,
         SignalSnapshot,
         _propose_for_snapshot,
@@ -269,7 +266,7 @@ def test_propose_high_latency_emits_edge_weight() -> None:
 
 
 def test_propose_high_thumb_score_emits_prompt_rewrite() -> None:
-    from services.optimizer import (
+    from hive_conductor.services.optimizer import (
         CLASS_PROPOSE,
         KIND_PROMPT,
         SignalSnapshot,
@@ -289,7 +286,7 @@ def test_propose_high_thumb_score_emits_prompt_rewrite() -> None:
 
 
 def test_propose_eval_topology_surfaced_when_target_matches() -> None:
-    from services.optimizer import (
+    from hive_conductor.services.optimizer import (
         CLASS_PROPOSE,
         KIND_TOPOLOGY,
         SignalSnapshot,
@@ -322,7 +319,7 @@ def test_propose_eval_topology_surfaced_when_target_matches() -> None:
 
 
 def test_propose_eval_topology_skipped_when_target_mismatches() -> None:
-    from services.optimizer import (
+    from hive_conductor.services.optimizer import (
         KIND_TOPOLOGY,
         SignalSnapshot,
         _propose_for_snapshot,
@@ -349,7 +346,7 @@ def test_propose_eval_topology_skipped_when_target_mismatches() -> None:
 
 def test_propose_eval_verdict_without_topology_proposal() -> None:
     """A verdict where topology_proposal is None is skipped (continue)."""
-    from services.optimizer import (
+    from hive_conductor.services.optimizer import (
         KIND_TOPOLOGY,
         SignalSnapshot,
         _propose_for_snapshot,
@@ -366,7 +363,7 @@ def test_propose_eval_verdict_without_topology_proposal() -> None:
 
 def test_propose_thumbs_score_high_but_no_comments() -> None:
     """thumb_score ≥ 2 with no comments — rationale falls back."""
-    from services.optimizer import (
+    from hive_conductor.services.optimizer import (
         KIND_PROMPT,
         SignalSnapshot,
         _propose_for_snapshot,
@@ -386,7 +383,7 @@ def test_propose_thumbs_score_high_but_no_comments() -> None:
 
 
 async def test_run_optimizer_with_no_signals_returns_zero_proposals() -> None:
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     out = await run_optimizer("d-empty")
     assert out["proposals"] == []
@@ -395,14 +392,14 @@ async def test_run_optimizer_with_no_signals_returns_zero_proposals() -> None:
 
 
 async def test_run_optimizer_empty_dag_id_raises_value_error() -> None:
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     with pytest.raises(ValueError, match="dag_id is required"):
         await run_optimizer("")
 
 
 async def test_run_optimizer_default_does_not_apply() -> None:
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     _seed_metrics("d1", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d1")
@@ -412,22 +409,22 @@ async def test_run_optimizer_default_does_not_apply() -> None:
 
 
 async def test_run_optimizer_apply_auto_true_applies_unless_locked() -> None:
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     _seed_metrics("d2", "n-target", count=10, failed=8, p95=100)
     out = await run_optimizer("d2", apply_auto=True, actor="optimizer-bot")
     # At least the model_swap auto-applies (no edit lock)
     assert out["auto_applied"] >= 1
     # Audit log has the auto-apply entry
-    import stores
+    import hive_conductor.stores as stores
 
     apply_entries = [e for e in stores.audit_log.values() if e["action"] == "optimizer_auto_apply"]
     assert len(apply_entries) >= 1
 
 
 async def test_run_optimizer_edit_lock_blocks_auto_apply() -> None:
-    from services.edit_lock import mark_edited
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.edit_lock import mark_edited
+    from hive_conductor.services.optimizer import run_optimizer
 
     _seed_metrics("d3", "n1", count=10, failed=8, p95=100)
     # User just edited the model field → optimizer must NOT auto-apply on it
@@ -443,7 +440,7 @@ async def test_run_optimizer_edit_lock_blocks_auto_apply() -> None:
 
 async def test_run_optimizer_ranks_by_priority_desc() -> None:
     """High error_score node should rank above low-signal node."""
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     _seed_metrics("d4", "n-hot", count=10, failed=9, p95=100)
     _seed_metrics("d4", "n-cold", count=10, failed=0, p95=9000)
@@ -453,8 +450,8 @@ async def test_run_optimizer_ranks_by_priority_desc() -> None:
 
 
 async def test_run_optimizer_writes_run_audit() -> None:
-    import stores
-    from services.optimizer import run_optimizer
+    import hive_conductor.stores as stores
+    from hive_conductor.services.optimizer import run_optimizer
 
     _seed_metrics("d5", "n1", count=10, failed=8, p95=100)
     await run_optimizer("d5", actor="alice")
@@ -469,8 +466,8 @@ async def test_run_optimizer_writes_run_audit() -> None:
 
 
 async def test_record_decision_accepts_proposal() -> None:
-    import stores
-    from services.optimizer import record_decision, run_optimizer
+    import hive_conductor.stores as stores
+    from hive_conductor.services.optimizer import record_decision, run_optimizer
 
     _seed_metrics("d-dec", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d-dec")
@@ -486,7 +483,7 @@ async def test_record_decision_accepts_proposal() -> None:
 
 
 async def test_record_decision_rejects_proposal() -> None:
-    from services.optimizer import record_decision, run_optimizer
+    from hive_conductor.services.optimizer import record_decision, run_optimizer
 
     _seed_metrics("d-rej", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d-rej")
@@ -496,14 +493,14 @@ async def test_record_decision_rejects_proposal() -> None:
 
 
 def test_record_decision_invalid_raises_value_error() -> None:
-    from services.optimizer import record_decision
+    from hive_conductor.services.optimizer import record_decision
 
     with pytest.raises(ValueError, match="decision must be one of"):
         record_decision("any", "maybe", actor="u")
 
 
 def test_record_decision_unknown_id_raises_key_error() -> None:
-    from services.optimizer import record_decision
+    from hive_conductor.services.optimizer import record_decision
 
     with pytest.raises(KeyError):
         record_decision("missing-id", "accepted", actor="u")
@@ -513,7 +510,7 @@ def test_record_decision_unknown_id_raises_key_error() -> None:
 
 
 async def test_list_proposals_filter_by_dag_id() -> None:
-    from services.optimizer import list_proposals, run_optimizer
+    from hive_conductor.services.optimizer import list_proposals, run_optimizer
 
     _seed_metrics("d-A", "n", count=10, failed=8, p95=100)
     _seed_metrics("d-B", "n", count=10, failed=8, p95=100)
@@ -525,7 +522,7 @@ async def test_list_proposals_filter_by_dag_id() -> None:
 
 
 async def test_list_proposals_filter_by_decision() -> None:
-    from services.optimizer import list_proposals, record_decision, run_optimizer
+    from hive_conductor.services.optimizer import list_proposals, record_decision, run_optimizer
 
     # Two nodes with different failure rates → two AUTO_APPLY proposals.
     _seed_metrics("d", "n1", count=10, failed=8, p95=100)
@@ -541,7 +538,7 @@ async def test_list_proposals_filter_by_decision() -> None:
 
 
 async def test_list_proposals_limit_clamped() -> None:
-    from services.optimizer import list_proposals, run_optimizer
+    from hive_conductor.services.optimizer import list_proposals, run_optimizer
 
     _seed_metrics("d", "n", count=10, failed=8, p95=100)
     await run_optimizer("d")
@@ -598,8 +595,8 @@ def test_run_endpoint_validates_proposals_against_a_real_baseline(
     model/param hill-climb sweeps — not just the propose step. Exercises the
     baseline execution in optimizer.py and the validation-gate execution seam
     in validation_gate.py end to end, through a DAG that actually exists."""
-    import services.benchmark_eval as benchmark_eval
-    import services.graph_runner as graph_runner
+    import hive_conductor.services.benchmark_eval as benchmark_eval
+    import hive_conductor.services.graph_runner as graph_runner
 
     async def fake_execute(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"status": "completed", "run_id": "r-validate", "node_results": {}}
@@ -634,7 +631,7 @@ def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
     bubbles, the route translates it to 400."""
 
     # Monkeypatch via the route's binding
-    from routes import optimizer as routes_opt
+    from hive_conductor.routes import optimizer as routes_opt
 
     original = routes_opt.run_optimizer
 
@@ -652,7 +649,7 @@ def test_run_endpoint_empty_dag_id_returns_400(admin_client: Any) -> None:
 
 async def test_list_endpoint_returns_proposals(admin_client: Any) -> None:
     _seed_metrics("d-list", "n", count=10, failed=8, p95=100)
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     await run_optimizer("d-list")
     r = admin_client.get("/v1/optimizer/d-list/proposals")
@@ -664,7 +661,7 @@ async def test_list_endpoint_returns_proposals(admin_client: Any) -> None:
 
 async def test_list_all_endpoint(admin_client: Any) -> None:
     _seed_metrics("d-all", "n", count=10, failed=8, p95=100)
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     await run_optimizer("d-all")
     r = admin_client.get("/v1/optimizer/proposals?decision=pending")
@@ -674,7 +671,7 @@ async def test_list_all_endpoint(admin_client: Any) -> None:
 
 async def test_accept_endpoint(admin_client: Any) -> None:
     _seed_metrics("d-acc", "n", count=10, failed=8, p95=100)
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     out = await run_optimizer("d-acc")
     pid = out["proposals"][0]["id"]
@@ -685,7 +682,7 @@ async def test_accept_endpoint(admin_client: Any) -> None:
 
 async def test_reject_endpoint(admin_client: Any) -> None:
     _seed_metrics("d-rejhttp", "n", count=10, failed=8, p95=100)
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     out = await run_optimizer("d-rejhttp")
     pid = out["proposals"][0]["id"]
@@ -708,7 +705,7 @@ def test_accept_endpoint_invalid_decision_returns_400(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Force record_decision to raise ValueError — route → 400."""
-    import routes.optimizer as routes_opt
+    import hive_conductor.routes.optimizer as routes_opt
 
     def _raise(*a: Any, **kw: Any) -> Any:
         raise ValueError("oops")
@@ -722,7 +719,7 @@ def test_reject_endpoint_invalid_decision_returns_400(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same path but on reject."""
-    import routes.optimizer as routes_opt
+    import hive_conductor.routes.optimizer as routes_opt
 
     def _raise(*a: Any, **kw: Any) -> Any:
         raise ValueError("oops")
@@ -734,7 +731,7 @@ def test_reject_endpoint_invalid_decision_returns_400(
 
 def test_run_endpoint_unauthenticated() -> None:
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     r = client.post("/v1/optimizer/any/run")
@@ -743,7 +740,7 @@ def test_run_endpoint_unauthenticated() -> None:
 
 def test_accept_endpoint_unauthenticated() -> None:
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     r = client.post("/v1/optimizer/proposals/x/accept")
@@ -752,7 +749,7 @@ def test_accept_endpoint_unauthenticated() -> None:
 
 def test_reject_endpoint_unauthenticated() -> None:
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     r = client.post("/v1/optimizer/proposals/x/reject")
@@ -765,8 +762,8 @@ def test_reject_endpoint_unauthenticated() -> None:
 async def test_collect_thumbs_ignores_blank_thumb_outcomes() -> None:
     """An Outcome with thumb='' (e.g. recorded by a non-thumbs flow)
     must NOT count toward the optimizer's signal."""
-    from services.feedback_service import get_outcome_store
-    from services.optimizer import _collect_thumbs
+    from hive_conductor.services.feedback_service import get_outcome_store
+    from hive_conductor.services.optimizer import _collect_thumbs
 
     from maistro.memory.types import Outcome
 
@@ -780,7 +777,7 @@ async def test_collect_thumbs_ignores_other_dag_ids() -> None:
     """A thumb tagged dag_id="other" must NOT appear in dag_id="d"'s
     aggregator."""
     await _seed_thumb("other-dag", "n1", "down")
-    from services.optimizer import _collect_thumbs
+    from hive_conductor.services.optimizer import _collect_thumbs
 
     assert await _collect_thumbs("d") == {}
 
@@ -788,8 +785,8 @@ async def test_collect_thumbs_ignores_other_dag_ids() -> None:
 async def test_collect_thumbs_thumbs_with_no_dag_id_attribution_pass_through() -> None:
     """The loose filter: outcomes with no dag_id attribution still
     surface (the wire wasn't there in older runs)."""
-    from services.feedback_service import record_thumb
-    from services.optimizer import _collect_thumbs
+    from hive_conductor.services.feedback_service import record_thumb
+    from hive_conductor.services.optimizer import _collect_thumbs
 
     await record_thumb(
         user_id="u",
@@ -806,8 +803,8 @@ async def test_collect_thumbs_thumbs_with_no_dag_id_attribution_pass_through() -
 
 async def test_user_edit_count_caps_at_five() -> None:
     """5+ dag_edit audit entries → edit_score plateaus at WEIGHT_USER_EDIT."""
-    import stores
-    from services.optimizer import WEIGHT_USER_EDIT, _build_snapshot_for_dag
+    import hive_conductor.stores as stores
+    from hive_conductor.services.optimizer import WEIGHT_USER_EDIT, _build_snapshot_for_dag
 
     for i in range(7):
         stores.audit_log[f"a-{i}"] = {
@@ -824,7 +821,7 @@ async def test_user_edit_count_caps_at_five() -> None:
 async def test_eval_baseline_uses_most_recent_verdict() -> None:
     """Multiple verdicts → the newest one (by scored_at) drives the
     baseline."""
-    from services.optimizer import _build_snapshot_for_dag
+    from hive_conductor.services.optimizer import _build_snapshot_for_dag
 
     _seed_metrics("d-multi", "n", count=2, failed=0, p95=0)
     _seed_eval_verdict("d-multi", "r-old", score=80, scored_at="2026-01-01T00:00:00+00:00")
@@ -838,8 +835,8 @@ async def test_collect_thumbs_down_without_comment_skips_append() -> None:
     """Thumbs-down with empty comment hits the `if o.thumb_comment:` =
     False branch (142→129). The down count still increments, no
     comments appended."""
-    from services.feedback_service import record_thumb
-    from services.optimizer import _collect_thumbs
+    from hive_conductor.services.feedback_service import record_thumb
+    from hive_conductor.services.optimizer import _collect_thumbs
 
     await record_thumb(
         user_id="u",
@@ -858,8 +855,8 @@ async def test_collect_thumbs_down_without_comment_skips_append() -> None:
 async def test_collect_thumbs_unknown_value_falls_through() -> None:
     """Direct Outcome.thumb='weird' (bypasses service validation) must
     NOT crash. Hits the 'neither up nor down' fall-through (140→129)."""
-    from services.feedback_service import get_outcome_store
-    from services.optimizer import _collect_thumbs
+    from hive_conductor.services.feedback_service import get_outcome_store
+    from hive_conductor.services.optimizer import _collect_thumbs
 
     from maistro.memory.types import Outcome
 
@@ -885,7 +882,7 @@ def test_route_user_id_helper_raises_401_for_missing_id() -> None:
     from types import SimpleNamespace
 
     from fastapi import HTTPException
-    from routes.optimizer import _user_id
+    from hive_conductor.routes.optimizer import _user_id
 
     req = SimpleNamespace(state=SimpleNamespace(user={"username": "x"}))
     with pytest.raises(HTTPException) as ei:
@@ -895,7 +892,7 @@ def test_route_user_id_helper_raises_401_for_missing_id() -> None:
 
 async def test_only_zero_score_snapshots_are_skipped() -> None:
     """A snapshot with priority_score=0 should NOT produce proposals."""
-    from services.optimizer import run_optimizer
+    from hive_conductor.services.optimizer import run_optimizer
 
     # Seed a clean run: success-only, no thumbs, no eval, no edits.
     _seed_metrics("d-clean", "n", count=10, failed=0, p95=100)

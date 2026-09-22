@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+import hive_conductor.stores as stores
 import pytest
-import stores
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +51,10 @@ def test_create_workspace_persists_and_returns_it(admin_client) -> None:
     assert body["theme_id"] == "default"
     assert body["voice_tone_override"] is None
 
-    from services.workspace_authority import canonical_store_for_tests, presentation_store
+    from hive_conductor.services.workspace_authority import (
+        canonical_store_for_tests,
+        presentation_store,
+    )
 
     canonical = asyncio.run(canonical_store_for_tests().get(body["id"]))
     assert canonical is not None
@@ -132,7 +135,7 @@ class TestListPersonaTemplates:
     """Persona picker slice: GET /v1/workspaces/persona-templates."""
 
     def test_returns_one_option_per_loaded_template(self, admin_client, monkeypatch) -> None:
-        import routes.workspaces as workspaces_routes
+        import hive_conductor.routes.workspaces as workspaces_routes
 
         from maistro.personas.schema import BrandSpec, PersonaTemplate
 
@@ -163,7 +166,7 @@ class TestListPersonaTemplates:
     def test_falls_back_to_id_when_brand_display_name_is_empty(
         self, admin_client, monkeypatch
     ) -> None:
-        import routes.workspaces as workspaces_routes
+        import hive_conductor.routes.workspaces as workspaces_routes
 
         from maistro.personas.schema import PersonaTemplate
 
@@ -177,7 +180,7 @@ class TestListPersonaTemplates:
         assert r.json() == [{"id": "nameless", "display_name": "nameless", "tagline": ""}]
 
     def test_empty_when_no_templates_resolve(self, admin_client, monkeypatch) -> None:
-        import routes.workspaces as workspaces_routes
+        import hive_conductor.routes.workspaces as workspaces_routes
 
         monkeypatch.setattr(workspaces_routes, "all_persona_templates", lambda: {})
         r = admin_client.get("/v1/workspaces/persona-templates")
@@ -189,7 +192,7 @@ class TestPersonaChecklist:
     """Phase C: the checklist is derived from the persona's own declared spawns."""
 
     def test_returns_declared_capabilities(self, admin_client, monkeypatch) -> None:
-        import routes.workspaces as workspaces_routes
+        import hive_conductor.routes.workspaces as workspaces_routes
 
         monkeypatch.setattr(
             workspaces_routes,
@@ -213,7 +216,7 @@ class TestPersonaChecklist:
         assert body["default_accepted"] == ["intake.tool.create_epic"]
 
     def test_unknown_persona_404s(self, admin_client, monkeypatch) -> None:
-        import routes.workspaces as workspaces_routes
+        import hive_conductor.routes.workspaces as workspaces_routes
 
         monkeypatch.setattr(workspaces_routes, "all_persona_templates", lambda: {})
         r = admin_client.get("/v1/workspaces/persona-templates/nope/checklist")
@@ -244,7 +247,7 @@ class TestCreateWorkspaceChecklist:
     def test_omitted_checklist_defaults_from_persona_when_resolvable(
         self, admin_client, monkeypatch
     ) -> None:
-        import routes.workspaces as workspaces_routes
+        import hive_conductor.routes.workspaces as workspaces_routes
 
         monkeypatch.setattr(
             workspaces_routes,
@@ -398,7 +401,7 @@ class TestWorkspaceTheme:
 
 def _set_members(workspace_id: str, roles: dict[str, str]) -> None:
     """Test-only helper: replace membership through canonical Workspace authority."""
-    from services import workspace_authority
+    from hive_conductor.services import workspace_authority
 
     target = dict(roles)
     if "owner" not in target.values():
@@ -667,7 +670,7 @@ class TestPersonaAgents:
     the agents a binding screen can offer, derived from the persona's spawns."""
 
     def test_returns_one_option_per_spawn(self, admin_client, monkeypatch) -> None:
-        import routes.workspaces as workspaces_routes
+        import hive_conductor.routes.workspaces as workspaces_routes
 
         monkeypatch.setattr(
             workspaces_routes,
@@ -686,7 +689,7 @@ class TestPersonaAgents:
         ]
 
     def test_unknown_persona_404s(self, admin_client, monkeypatch) -> None:
-        import routes.workspaces as workspaces_routes
+        import hive_conductor.routes.workspaces as workspaces_routes
 
         monkeypatch.setattr(workspaces_routes, "all_persona_templates", lambda: {})
         r = admin_client.get("/v1/workspaces/persona-templates/nope/agents")
@@ -838,7 +841,7 @@ class TestCreatePersonaTemplate:
         )
         assert r.status_code == 201
 
-        from services.persona_authoring import all_persona_templates
+        from hive_conductor.services.persona_authoring import all_persona_templates
 
         template = all_persona_templates()["book_club"]
         assert [q.field for q in template.interview] == ["program_name", "vibe"]
@@ -847,6 +850,6 @@ class TestCreatePersonaTemplate:
     def test_omitted_interview_defaults_to_no_custom_script(self, admin_client) -> None:
         admin_client.post("/v1/workspaces/persona-templates", json=self._body())
 
-        from services.persona_authoring import all_persona_templates
+        from hive_conductor.services.persona_authoring import all_persona_templates
 
         assert all_persona_templates()["book_club"].interview == []

@@ -29,13 +29,11 @@ from typing import Any
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture(autouse=True)
 def _reset_singleton():
-    import services.engine as e
+    import hive_conductor.services.engine as e
 
     prev = e._singleton
     e._singleton = None
@@ -64,7 +62,7 @@ def _fake_task(**overrides: Any) -> Any:
 
 
 def test_task_record_basic_properties() -> None:
-    from services.engine import TaskRecord
+    from hive_conductor.services.engine import TaskRecord
 
     rec = TaskRecord(_fake_task())
     assert rec.id == "t-1"
@@ -80,7 +78,7 @@ def test_task_record_basic_properties() -> None:
 
 def test_task_record_status_mapping() -> None:
     """Each status string maps to the right mission_status."""
-    from services.engine import TaskRecord
+    from hive_conductor.services.engine import TaskRecord
 
     mapping = {
         "queued": "pending",
@@ -98,14 +96,14 @@ def test_task_record_status_mapping() -> None:
 
 
 def test_task_record_unknown_status_falls_back_to_pending() -> None:
-    from services.engine import TaskRecord
+    from hive_conductor.services.engine import TaskRecord
 
     rec = TaskRecord(_fake_task(status="weird"))
     assert rec.mission_status == "pending"
 
 
 def test_task_record_progress_no_subtasks_falls_back() -> None:
-    from services.engine import TaskRecord
+    from hive_conductor.services.engine import TaskRecord
 
     # No subtasks; not completed → 0.0
     rec = TaskRecord(
@@ -127,7 +125,7 @@ def test_task_record_progress_no_subtasks_falls_back() -> None:
 
 
 def test_task_record_current_step_falls_back_to_phase() -> None:
-    from services.engine import TaskRecord
+    from hive_conductor.services.engine import TaskRecord
 
     rec = TaskRecord(
         _fake_task(
@@ -139,14 +137,14 @@ def test_task_record_current_step_falls_back_to_phase() -> None:
 
 
 def test_task_record_error_when_result_set() -> None:
-    from services.engine import TaskRecord
+    from hive_conductor.services.engine import TaskRecord
 
     rec = TaskRecord(_fake_task(result=SimpleNamespace(error="boom")))
     assert rec.error == "boom"
 
 
 def test_task_record_short_name_takes_first_60_chars() -> None:
-    from services.engine import TaskRecord
+    from hive_conductor.services.engine import TaskRecord
 
     long = "x" * 200
     rec = TaskRecord(_fake_task(description=long))
@@ -157,7 +155,7 @@ def test_task_record_short_name_takes_first_60_chars() -> None:
 
 
 def test_get_engine_raises_when_not_started() -> None:
-    from services.engine import get_engine
+    from hive_conductor.services.engine import get_engine
 
     with pytest.raises(RuntimeError, match="EngineService not started"):
         get_engine()
@@ -166,7 +164,7 @@ def test_get_engine_raises_when_not_started() -> None:
 async def test_start_with_no_router_key_uses_stub_agent_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _Settings:
         maistro_router_api_key = ""
@@ -187,8 +185,8 @@ async def test_bridge_start_degradation_keeps_evolve_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A configured bridge that fails must take the same truthful stub path."""
-    from adapters.maistro_core import MaistroCoreBridge
-    from services.engine import EngineService
+    from hive_conductor.adapters.maistro_core import MaistroCoreBridge
+    from hive_conductor.services.engine import EngineService
 
     class _Settings:
         maistro_router_api_key = "router-key"
@@ -205,8 +203,8 @@ async def test_bridge_start_degradation_keeps_evolve_unavailable(
     await svc.start(_Settings())  # type: ignore[arg-type]
     assert type(svc._agent_port).__name__ == "StubAgentPort"
 
-    import services.engine as engine_module
-    import services.evolution as evolution_module
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evolution_module
 
     monkeypatch.setattr(engine_module, "get_engine", lambda: svc)
     scheduled: list[Any] = []
@@ -232,7 +230,7 @@ async def test_bridge_start_degradation_keeps_evolve_unavailable(
 async def test_start_in_demo_mode_uses_local_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _Settings:
         maistro_router_api_key = ""
@@ -274,7 +272,7 @@ async def test_start_in_demo_mode_uses_local_backend(
 
 
 async def test_stop_with_no_backend_is_safe() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
     # _backend is None — stop should be a no-op
@@ -283,7 +281,7 @@ async def test_stop_with_no_backend_is_safe() -> None:
 
 async def test_stop_with_failing_backend_is_swallowed() -> None:
     """The backend's stop() might raise; contextlib.suppress lets it pass."""
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _Backend:
         async def stop(self) -> None:
@@ -299,7 +297,7 @@ async def test_maistro_server_task_backend_submit_get_list_cancel(
 ) -> None:
     """MaistroServerTaskBackend maps 1:1 onto maistro-server's /tasks API."""
     import httpx
-    from adapters.task_backend import MaistroServerTaskBackend
+    from hive_conductor.adapters.task_backend import MaistroServerTaskBackend
 
     from maistro.tasks.models import TaskCreate
 
@@ -369,7 +367,7 @@ async def test_maistro_server_task_backend_get_missing_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
-    from adapters.task_backend import MaistroServerTaskBackend
+    from hive_conductor.adapters.task_backend import MaistroServerTaskBackend
 
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404)
@@ -392,7 +390,7 @@ async def test_maistro_server_task_backend_get_missing_returns_none(
 
 
 async def test_submit_task_no_queue_raises_runtime() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
     with pytest.raises(RuntimeError, match="TaskQueue not available"):
@@ -403,7 +401,7 @@ async def test_submit_task_gated_capability_without_confirmed_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A gated capability must come with `program_context.confirmed=True`."""
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     import maistro.agents.pm_capabilities as caps
 
@@ -424,7 +422,7 @@ async def test_submit_task_gated_capability_without_confirmed_raises(
 async def test_submit_task_success_returns_task_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.engine import EngineService, TaskRecord
+    from hive_conductor.services.engine import EngineService, TaskRecord
 
     import maistro.agents.pm_capabilities as caps
 
@@ -454,14 +452,14 @@ async def test_submit_task_success_returns_task_record(
 
 
 def test_get_task_no_backend_returns_none() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
     assert svc.get_task("any") is None
 
 
 def test_get_task_with_backend_returns_record() -> None:
-    from services.engine import EngineService, TaskRecord
+    from hive_conductor.services.engine import EngineService, TaskRecord
 
     class _B:
         def get(self, tid: str, *, user_id: Any = None) -> Any:
@@ -475,7 +473,7 @@ def test_get_task_with_backend_returns_record() -> None:
 
 
 def test_get_task_missing_returns_none() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _B:
         def get(self, tid: str, *, user_id: Any = None) -> Any:
@@ -487,14 +485,14 @@ def test_get_task_missing_returns_none() -> None:
 
 
 def test_list_tasks_empty_backend_returns_empty() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
     assert svc.list_tasks() == []
 
 
 def test_list_tasks_passes_through_backend() -> None:
-    from services.engine import EngineService, TaskRecord
+    from hive_conductor.services.engine import EngineService, TaskRecord
 
     class _B:
         def list_tasks(self, *, user_id: Any = None) -> Any:
@@ -507,14 +505,14 @@ def test_list_tasks_passes_through_backend() -> None:
 
 
 def test_delete_task_no_backend_returns_false() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
     assert svc.delete_task("any") is False
 
 
 def test_delete_task_with_backend_passes_through() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _B:
         def remove(self, tid: str) -> bool:
@@ -527,14 +525,14 @@ def test_delete_task_with_backend_passes_through() -> None:
 
 
 def test_clear_tasks_no_backend_returns_zero() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
     assert svc.clear_tasks() == 0
 
 
 def test_clear_tasks_filters_by_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     captured: list[Any] = []
 
@@ -562,7 +560,7 @@ def test_clear_tasks_filters_by_status(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_iter_task_events_no_backend_returns_immediately() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
     events = [ev async for ev in svc.iter_task_events("t-1")]
@@ -570,7 +568,7 @@ async def test_iter_task_events_no_backend_returns_immediately() -> None:
 
 
 async def test_iter_task_events_yields_then_terminates() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     async def _events(tid: str) -> AsyncIterator[dict[str, Any]]:
         yield {"id": tid, "status": "running", "progress": 0.0, "current_step": "planning"}
@@ -588,7 +586,7 @@ async def test_iter_task_events_yields_then_terminates() -> None:
 
 
 async def test_iter_task_events_returns_when_task_disappears() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     async def _events(tid: str) -> AsyncIterator[dict[str, Any]]:
         for event in ():
@@ -606,7 +604,7 @@ async def test_iter_task_events_returns_when_task_disappears() -> None:
 
 async def test_schedule_admitter_is_none_without_a_bridge() -> None:
     """No `_agent_port` at all (unconfigured), like `episodic_store`'s stub case."""
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
 
@@ -614,7 +612,7 @@ async def test_schedule_admitter_is_none_without_a_bridge() -> None:
 
 
 async def test_schedule_admitter_exposes_the_container_seam_when_bridged() -> None:
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _Container:
         schedule_admitter = "the-admitter"
@@ -631,7 +629,7 @@ async def test_schedule_admitter_exposes_the_container_seam_when_bridged() -> No
 def test_agent_port_is_none_before_a_bridge_is_bound() -> None:
     """Unconfigured engine: the boot seams read None off the port accessor,
     the same answer `schedule_admitter` gives without a bridge."""
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     svc = EngineService()
 
@@ -641,7 +639,7 @@ def test_agent_port_is_none_before_a_bridge_is_bound() -> None:
 def test_agent_port_exposes_the_bound_runtime() -> None:
     """The property is the one read-side of `_bind_agent_port`: boot seams
     (the roster materializer) get the port object itself back, not a copy."""
-    from services.engine import EngineService
+    from hive_conductor.services.engine import EngineService
 
     class _Bridge:
         async def route(

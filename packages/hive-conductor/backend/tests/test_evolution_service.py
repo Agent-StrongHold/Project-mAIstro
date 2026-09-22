@@ -26,13 +26,11 @@ from typing import Any
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @pytest.fixture(autouse=True)
 def _reset_singleton():
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     prev = evo._service
     evo._service = None
@@ -44,7 +42,7 @@ def _reset_singleton():
 
 
 def test_get_evolution_service_raises_when_not_started() -> None:
-    from services.evolution import get_evolution_service
+    from hive_conductor.services.evolution import get_evolution_service
 
     with pytest.raises(RuntimeError, match="not started"):
         get_evolution_service()
@@ -52,7 +50,7 @@ def test_get_evolution_service_raises_when_not_started() -> None:
 
 def test_start_then_get_returns_instance(monkeypatch: pytest.MonkeyPatch) -> None:
     """start_evolution sets the singleton; get_evolution_service returns it."""
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     started: list[Any] = []
 
@@ -75,8 +73,8 @@ def test_start_then_get_returns_instance(monkeypatch: pytest.MonkeyPatch) -> Non
 async def test_start_evolution_schedules_cadence_when_owner_is_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_module
-    import services.evolution as evo
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evo
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -105,7 +103,7 @@ async def test_start_evolution_schedules_cadence_when_owner_is_available(
 
 
 def test_initialize_domain_state_is_idempotent() -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     service = _EvolutionService()
     population = object()
@@ -120,11 +118,11 @@ def test_initialize_domain_state_is_idempotent() -> None:
 async def test_run_loop_stops_when_owner_degrades_after_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_module
-    import services.evolution as evo
-    import services.evolution_graph as evolution_graph
-    from services.evolution import _EvolutionService
-    from services.evolution_graph import CanonicalExecutionUnavailable
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evo
+    import hive_conductor.services.evolution_graph as evolution_graph
+    from hive_conductor.services.evolution import _EvolutionService
+    from hive_conductor.services.evolution_graph import CanonicalExecutionUnavailable
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -155,7 +153,7 @@ async def test_run_loop_stops_when_owner_degrades_after_start(
 
 
 def test_stop_when_not_started_is_noop() -> None:
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     assert evo._service is None
     asyncio.run(evo.stop_evolution())
@@ -165,7 +163,7 @@ def test_stop_when_not_started_is_noop() -> None:
 def test_stop_flips_running_and_clears_singleton(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     def _swallow(coro: Any) -> Any:
         coro.close()
@@ -184,7 +182,7 @@ def test_stop_flips_running_and_clears_singleton(
 
 
 def test_service_properties_initial_state() -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     s = _EvolutionService()
     assert s.cycle_count == 0
@@ -204,7 +202,7 @@ def test_run_loop_logs_and_returns_when_maistro_evolve_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When maistro_evolve.population is missing, run_loop returns instead of hanging."""
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _Broken:
         def __getattr__(self, name: str) -> Any:
@@ -226,8 +224,8 @@ def test_run_loop_initializes_and_stops_cleanly(
     """Initialize population + tournament, take one short sleep, stop."""
     import types
 
-    import services.evolution as evo
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution as evo
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _StubPop:
         def __init__(self) -> None:
@@ -264,8 +262,8 @@ def test_run_loop_captures_cycle_exception(
     """If _run_one_cycle raises, run_loop stores the message and continues."""
     import types
 
-    import services.evolution as evo
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution as evo
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _Pop:
         def list_all(self) -> list[Any]:
@@ -291,7 +289,7 @@ def test_run_loop_captures_cycle_exception(
         self_.stop()
         return "run-2"
 
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.evolution_graph as evolution_graph
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -317,8 +315,8 @@ def test_run_loop_captures_cycle_exception(
 def test_run_one_cycle_dispatches_canonical_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution_graph as evolution_graph
+    from hive_conductor.services.evolution import _EvolutionService
 
     from maistro.runs.model import RunStatus
 
@@ -365,8 +363,8 @@ def test_run_one_cycle_dispatches_canonical_graph(
 async def test_racing_manual_and_background_cycles_are_serialized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution_graph as evolution_graph
+    from hive_conductor.services.evolution import _EvolutionService
 
     from maistro.runs.model import RunStatus
 
@@ -424,8 +422,8 @@ async def test_racing_manual_and_background_cycles_are_serialized(
 async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution_graph as evolution_graph
+    from hive_conductor.services.evolution import _EvolutionService
 
     import maistro_evolve.diversity as diversity
     from maistro.runs.model import RunStatus
@@ -476,7 +474,7 @@ async def test_seed_waits_for_active_cycle_and_joins_the_next_admission(
 
 @pytest.mark.asyncio
 async def test_seed_population_without_domain_state_is_rejected() -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     service = _EvolutionService()
     assert service._population is None
@@ -488,8 +486,8 @@ async def test_seed_population_without_domain_state_is_rejected() -> None:
 def test_run_one_cycle_does_not_count_failed_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
-    from services.evolution import _EvolutionService
+    import hive_conductor.services.evolution_graph as evolution_graph
+    from hive_conductor.services.evolution import _EvolutionService
 
     from maistro.runs.model import RunStatus
 
@@ -533,7 +531,7 @@ def test_run_one_cycle_does_not_count_failed_canonical_run(
 def test_build_llm_call_returns_none_without_base_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _NoBase:
         maistro_llm_base_url = ""
@@ -542,7 +540,7 @@ def test_build_llm_call_returns_none_without_base_url(
         litellm_api_key = ""
         chat_default_model = "stub"
 
-    import config
+    import hive_conductor.config as config
 
     monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
     s = _EvolutionService()
@@ -552,8 +550,8 @@ def test_build_llm_call_returns_none_without_base_url(
 def test_build_llm_call_swallows_exceptions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import config
-    from services.evolution import _EvolutionService
+    import hive_conductor.config as config
+    from hive_conductor.services.evolution import _EvolutionService
 
     def _boom() -> Any:
         raise RuntimeError("synthetic")
@@ -568,7 +566,7 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
 ) -> None:
     """When settings have a base URL, _build_llm_call posts and returns content."""
     import httpx
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _Settings:
         litellm_api_base = "http://test.example/api"
@@ -576,7 +574,7 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
         litellm_api_key = ""
         chat_default_model = "test-model"
 
-    import config
+    import hive_conductor.config as config
 
     monkeypatch.setattr(config, "get_settings", lambda: _Settings())
 
@@ -617,7 +615,7 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
 
 
 def test_status_reports_zero_state_when_nothing_running() -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     s = _EvolutionService()
     out = s.status()
@@ -634,7 +632,7 @@ def test_status_reports_zero_state_when_nothing_running() -> None:
 
 
 def test_status_reports_population_size_tournament_and_run() -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     class _Pop:
         def list_all(self) -> list[int]:
@@ -662,8 +660,8 @@ def test_status_reports_population_size_tournament_and_run() -> None:
 
 
 def _available_owner(monkeypatch: pytest.MonkeyPatch) -> None:
-    import services.engine as engine_module
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution_graph as evolution_graph
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -678,7 +676,7 @@ def test_a_healthy_engine_without_domain_state_is_not_executable(
     """The engine being up is necessary, not sufficient: without a population
     and tournament every cycle fails before admission, so `/status` must not
     say `running` and the frontend must not offer Run Cycle."""
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     _available_owner(monkeypatch)
     service = _EvolutionService()
@@ -694,7 +692,7 @@ def test_a_healthy_engine_without_domain_state_is_not_executable(
 def test_a_failed_domain_init_keeps_execution_unavailable_and_says_why(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.evolution import EvolutionUnavailableError, _EvolutionService
+    from hive_conductor.services.evolution import EvolutionUnavailableError, _EvolutionService
 
     class _Broken:
         def __getattr__(self, name: str) -> Any:
@@ -715,7 +713,7 @@ def test_a_failed_domain_init_keeps_execution_unavailable_and_says_why(
 
 
 def test_a_successful_domain_init_turns_execution_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.evolution import _EvolutionService
+    from hive_conductor.services.evolution import _EvolutionService
 
     _available_owner(monkeypatch)
     service = _EvolutionService()
@@ -729,7 +727,7 @@ def test_a_successful_domain_init_turns_execution_on(monkeypatch: pytest.MonkeyP
 async def test_start_evolution_does_not_schedule_a_cadence_without_domain_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evo
+    import hive_conductor.services.evolution as evo
 
     class _Broken:
         def __getattr__(self, name: str) -> Any:

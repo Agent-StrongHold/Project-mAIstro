@@ -1,4 +1,4 @@
-from services.human_auth_mode import HumanAuthModePolicy
+from hive_conductor.services.human_auth_mode import HumanAuthModePolicy
 
 
 def test_local_mode_allows_password_and_disables_entra() -> None:

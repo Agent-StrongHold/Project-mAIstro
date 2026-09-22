@@ -15,7 +15,7 @@ Two terminals from this directory (`packages/hive-conductor/`):
 
 ```bash
 # Terminal 1 — API (stub data)
-cd backend && uv pip install -r requirements.txt && uvicorn main:app --reload --port 8101
+cd backend && uv pip install -r requirements.txt && uvicorn hive_conductor.main:app --reload --port 8101
 ```
 
 ```bash
@@ -30,7 +30,7 @@ Open the URL Vite prints (default `http://localhost:5173`). The UI uses relative
 From the **monorepo root** (`maistro-engine/`):
 
 ```bash
-docker build -f packages/hive-conductor/Dockerfile packages/hive-conductor -t hive-conductor:local
+docker build -f packages/hive-conductor/Dockerfile . -t hive-conductor:local
 docker run --rm -p 8101:8101 hive-conductor:local
 ```
 
@@ -44,7 +44,7 @@ Then open `http://localhost:8101`.
 
 ## Ports & protocols
 
-Hive keeps **HTTP routes** thin and pushes vendor specifics behind small **Protocols** in `backend/protocols/` (`LLMPort`, `TelemetryPort`) with **adapters** in `backend/adapters/`. That lets you swap LiteLLM for another OpenAI-shaped gateway, or Langfuse for OTLP-only stacks, without rewriting FastAPI handlers.
+Hive keeps **HTTP routes** thin and pushes vendor specifics behind small **Protocols** in `backend/hive_conductor/protocols/` (`LLMPort`, `TelemetryPort`) with **adapters** in `backend/hive_conductor/adapters/`. The backend application namespace is canonically `hive_conductor`; all imports use that prefix so `main`, `routes`, `middleware`, and `config` cannot collide with another backend. That lets you swap LiteLLM for another OpenAI-shaped gateway, or Langfuse for OTLP-only stacks, without rewriting FastAPI handlers.
 
 - **LLM:** `LLM_HTTP_VARIANT` (`auto` | `responses` | `chat_completions`) controls whether we try the stateful **Responses** path first (`POST …/v1/responses`) and fall back to **chat.completions**, or pin one. See [`backend/.env.example`](backend/.env.example).
 - **Telemetry:** Langfuse is an **optional** `TelemetryPort` when `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and **`LANGFUSE_BASE_URL`** are set (SDK **≥ 3.9**; Langfuse **server ≥ 3.125** for full features). `LANGFUSE_HOST` aliases `LANGFUSE_BASE_URL` when unset. For a lightweight local alternative, run **`docker compose --profile observe up`** to start **Arize Phoenix** and point generic **OTEL** exporters at it (see [Phoenix documentation](https://docs.arize.com/phoenix)); wiring full auto-instrumentation is left as a learning exercise.

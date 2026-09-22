@@ -26,9 +26,9 @@
 /packages/maistro-core/src/maistro/credentials/ @BlakeMatthews-dev
 /packages/maistro-core/src/maistro/vault.py @BlakeMatthews-dev
 /packages/maistro-core/src/maistro/privilege.py @BlakeMatthews-dev
-/packages/hive-conductor/backend/middleware/auth.py @BlakeMatthews-dev
-/packages/hive-conductor/backend/routes/auth.py @BlakeMatthews-dev
-/packages/hive-conductor/backend/routes/setup.py @BlakeMatthews-dev
+/packages/hive-conductor/backend/hive_conductor/middleware/auth.py @BlakeMatthews-dev
+/packages/hive-conductor/backend/hive_conductor/routes/auth.py @BlakeMatthews-dev
+/packages/hive-conductor/backend/hive_conductor/routes/setup.py @BlakeMatthews-dev
 
 # Autonomous execution, containment, and self-modification boundaries
 /packages/maistro-core/src/maistro/tools/ @BlakeMatthews-dev

@@ -23,7 +23,7 @@ import pytest
 @pytest.fixture
 def authorized_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A git repository the deployment has actually authorized."""
-    from services import rsi_execution_policy as policy
+    from hive_conductor.services import rsi_execution_policy as policy
 
     root = tmp_path / "authorized"
     repo = root / "checkout"
@@ -104,7 +104,7 @@ class TestPathContainment:
     def test_a_path_outside_the_authorized_root_is_refused(
         self, admin_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         root = tmp_path / "root"
         (root / "repo" / ".git").mkdir(parents=True)
@@ -121,7 +121,7 @@ class TestPathContainment:
         """`..` is the obvious escape and the easy one to block. A symlink
         planted inside the root points outward while every path component
         reads as legal, which is why containment is decided after resolution."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         root = tmp_path / "root"
         root.mkdir()
@@ -139,7 +139,7 @@ class TestPathContainment:
     ) -> None:
         """A prefix test without the separator would read `/srv/rsi-evil` as a
         child of `/srv/rsi`."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         root = tmp_path / "root"
         root.mkdir()
@@ -162,7 +162,7 @@ class TestPathContainment:
         and the obvious way out of that refusal is to widen the root, which is
         the opposite of what this module is for.
         """
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         real = tmp_path / "real"
         repo = real / "repo"
@@ -177,7 +177,7 @@ class TestPathContainment:
     def test_a_repo_inside_the_root_is_accepted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         root = tmp_path / "root"
         repo = root / "repo"
@@ -189,7 +189,7 @@ class TestPathContainment:
     def test_a_directory_that_is_not_a_repository_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         root = tmp_path / "root"
         (root / "plain").mkdir(parents=True)
@@ -203,7 +203,7 @@ class TestPathContainment:
     ) -> None:
         """An unset allow-list means "nothing is authorized", never
         "everything is"."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         repo = tmp_path / "repo"
         (repo / ".git").mkdir(parents=True)
@@ -215,7 +215,7 @@ class TestPathContainment:
 
 class TestTestCommandPolicy:
     def test_a_profile_resolves_to_an_argument_vector(self) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         profile = policy.resolve_test_profile("pytest")
 
@@ -224,7 +224,7 @@ class TestTestCommandPolicy:
         assert profile.argv[0] != ""
 
     def test_an_unknown_profile_is_refused_and_lists_what_exists(self) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         with pytest.raises(policy.RsiPolicyError) as caught:
             policy.resolve_test_profile("rm -rf /")
@@ -235,7 +235,7 @@ class TestTestCommandPolicy:
         """The whole point of an argv: there is no shell to interpret it. A
         profile that smuggled one back in -- `sh -c "..."` -- would restore the
         defect behind a name that reads as policy."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         for profile in policy.test_profiles():
             assert Path(profile.argv[0]).name not in {"sh", "bash", "zsh", "dash", "cmd", "cmd.exe"}
@@ -247,7 +247,7 @@ class TestIsolationFailsClosed:
         """`LocalSandbox` runs on the host with no isolation at all. It is a
         development convenience for the CLI; reaching it over HTTP is the
         escalation this issue is about."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         assert policy.REQUIRED_ISOLATION == "container"
 
@@ -263,13 +263,13 @@ class TestIsolationFailsClosed:
         question than the one being asked, and read as containment to every
         caller.
         """
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         assert policy.IN_PROCESS_ISOLATION_AVAILABLE is False
         assert policy._isolation_available() is False
 
     def test_unavailable_isolation_is_an_error_not_a_downgrade(self) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         with pytest.raises(policy.RsiPolicyError, match="isolation boundary"):
             policy.require_isolation()
@@ -278,7 +278,7 @@ class TestIsolationFailsClosed:
         """A refusal that leaves the operator with no way to run the loop
         invites the workaround. The isolated wrapper is the answer, so the
         error says so."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         with pytest.raises(policy.RsiPolicyError, match=r"run_rsi_isolated\.sh"):
             policy.require_isolation()
@@ -289,7 +289,7 @@ class TestIsolationFailsClosed:
         """The other side of the gate, so this is a gate rather than a
         hard-coded refusal: when a contained backend is wired, the same call
         returns it."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         monkeypatch.setattr(policy, "IN_PROCESS_ISOLATION_AVAILABLE", True)
 
@@ -317,7 +317,7 @@ class TestTheProfileListingIsTheHonestAnswer:
         than no listing: it would send an operator to a request that 400s."""
         listed = {p["name"] for p in admin_client.get("/v1/rsi/test-profiles").json()["profiles"]}
 
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         for name in listed:
             assert policy.resolve_test_profile(name).name == name
@@ -328,7 +328,7 @@ class TestTheProfileListingIsTheHonestAnswer:
         """An empty list reads as "this deployment runs nothing", which is a
         different and more reassuring claim than "the policy could not be
         read"."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         def _broken() -> None:
             raise policy.RsiPolicyError("profile file is malformed")
@@ -350,7 +350,7 @@ class TestTheServiceRefusesWhatTheRouteWouldNotSend:
     def _drive(self, config: dict) -> None:
         import asyncio
 
-        from services.rsi import RunState, _RsiService
+        from hive_conductor.services.rsi import RunState, _RsiService
 
         run = RunState(run_id="t", mode="cleanup", config=config)
         asyncio.run(_RsiService()._drive_cleanup(run))
@@ -461,7 +461,7 @@ class TestTheAuthorizedRootsComeFromConfiguration:
     ) -> None:
         from types import SimpleNamespace
 
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         first = tmp_path / "a"
         second = tmp_path / "b"
@@ -482,7 +482,7 @@ class TestTheAuthorizedRootsComeFromConfiguration:
         wherever the process happens to have been started."""
         from types import SimpleNamespace
 
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         monkeypatch.setattr(
             policy,
@@ -497,7 +497,7 @@ class TestTheAuthorizedRootsComeFromConfiguration:
     ) -> None:
         from types import SimpleNamespace
 
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         monkeypatch.setattr(
             policy,
@@ -508,7 +508,7 @@ class TestTheAuthorizedRootsComeFromConfiguration:
         assert policy._authorized_roots() == ()
 
     def test_an_empty_repo_path_is_refused_before_anything_is_resolved(self) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         with pytest.raises(policy.RsiPolicyError, match="required"):
             policy.resolve_repo("   ")
@@ -523,7 +523,7 @@ class TestTheProfileOverlay:
     def _overlay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str) -> None:
         from types import SimpleNamespace
 
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         source = tmp_path / "profiles.json"
         source.write_text(content, encoding="utf-8")
@@ -536,7 +536,7 @@ class TestTheProfileOverlay:
     def test_an_operator_profile_joins_the_built_ins(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         self._overlay(tmp_path, monkeypatch, '{"house": ["python", "-m", "pytest", "house"]}')
 
@@ -550,7 +550,7 @@ class TestTheProfileOverlay:
         named policy as if it were the configured one."""
         from types import SimpleNamespace
 
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         monkeypatch.setattr(
             policy,
@@ -564,7 +564,7 @@ class TestTheProfileOverlay:
     def test_malformed_json_is_an_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         self._overlay(tmp_path, monkeypatch, "{not json")
 
@@ -574,7 +574,7 @@ class TestTheProfileOverlay:
     def test_a_file_that_is_not_an_object_is_an_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         self._overlay(tmp_path, monkeypatch, '["python"]')
 
@@ -587,7 +587,7 @@ class TestTheProfileOverlay:
     ) -> None:
         """A string is the shape this whole change exists to remove; an empty
         list would run nothing and report it as a passing gate."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         self._overlay(tmp_path, monkeypatch, f'{{"bad": {argv}}}')
 
@@ -604,7 +604,7 @@ class TestTheProfileOverlay:
         """`["bash", "-c", "..."]` is a well-formed argument vector that
         restores every property this module removed, behind a name that reads
         like policy."""
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         self._overlay(tmp_path, monkeypatch, f'{{"sneaky": {argv}}}')
 
@@ -616,7 +616,7 @@ class TestTheProfileOverlay:
     ) -> None:
         from types import SimpleNamespace
 
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         monkeypatch.setattr(policy, "_settings", lambda: SimpleNamespace(rsi_test_profiles_file=""))
 
@@ -632,8 +632,8 @@ class TestAValidRequestStartsARunWithTheResolvedPolicy:
 
     @pytest.fixture
     def started(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
-        from services import rsi_execution_policy as policy
-        from services.rsi import RunState, get_rsi_service
+        from hive_conductor.services import rsi_execution_policy as policy
+        from hive_conductor.services.rsi import RunState, get_rsi_service
 
         monkeypatch.setattr(policy, "IN_PROCESS_ISOLATION_AVAILABLE", True)
 
@@ -695,7 +695,7 @@ class TestAValidRequestStartsARunWithTheResolvedPolicy:
     def test_the_isolation_the_policy_attested_is_forwarded(
         self, admin_client, authorized_repo: Path, started: list[dict]
     ) -> None:
-        from services import rsi_execution_policy as policy
+        from hive_conductor.services import rsi_execution_policy as policy
 
         admin_client.post(
             "/v1/rsi/runs",
@@ -790,7 +790,7 @@ class TestTheCallerCannotAimTheLoopsWrites:
 
         import asyncio
 
-        from services.rsi import RunState, _RsiService
+        from hive_conductor.services.rsi import RunState, _RsiService
 
         run = RunState(
             run_id="derived",

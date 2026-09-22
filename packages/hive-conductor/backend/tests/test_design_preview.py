@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
-from services.design_preview import DesignPreviewService
+from hive_conductor.services.design_preview import DesignPreviewService
 
 from maistro_design.trust import TrustTier
 

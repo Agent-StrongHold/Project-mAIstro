@@ -47,7 +47,7 @@ def _boom(*_args: Any, **_kwargs: Any) -> Any:
 
 class TestAWidgetFailureNamesItsKindAndNothingElse:
     async def test_the_jira_widget_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from routes import widgets
+        from hive_conductor.routes import widgets
 
         monkeypatch.setattr(widgets, "_jira_pat", lambda _request: "pat")
         monkeypatch.setattr(widgets, "shared_client", _boom)
@@ -61,9 +61,9 @@ class TestAWidgetFailureNamesItsKindAndNothingElse:
     async def test_the_airtable_widget_query(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Past the credential guard, which has its own fixed message: this is
         the query arm, where a provider reply used to come back verbatim."""
-        import stores
-        from routes import widgets
-        from services import user_credentials as cred_svc
+        import hive_conductor.stores as stores
+        from hive_conductor.routes import widgets
+        from hive_conductor.services import user_credentials as cred_svc
 
         monkeypatch.setattr(widgets, "_user_id", lambda _request: "u1")
         monkeypatch.setattr(cred_svc, "get_credential_store", lambda: object())
@@ -78,8 +78,8 @@ class TestAWidgetFailureNamesItsKindAndNothingElse:
         assert "svc_jira" not in str(result)
 
     async def test_the_airtable_table_listing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from routes import widgets
-        from services import user_credentials as cred_svc
+        from hive_conductor.routes import widgets
+        from hive_conductor.services import user_credentials as cred_svc
 
         monkeypatch.setattr(widgets, "_user_id", lambda _request: "u1")
         monkeypatch.setattr(cred_svc, "get_credential_store", _boom)
@@ -92,7 +92,7 @@ class TestAWidgetFailureNamesItsKindAndNothingElse:
     async def test_the_dashboard_screenshot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A stub module keeps this on the non-ImportError arm whether or not
         Playwright is installed on the runner -- the arm that used to leak."""
-        from routes import widgets
+        from hive_conductor.routes import widgets
 
         stub = types.ModuleType("playwright.async_api")
         stub.async_playwright = _boom  # type: ignore[attr-defined]
@@ -108,7 +108,7 @@ class TestAFailedRsiRunRecordsAKindNotAMessage:
     async def test_the_stored_last_error_is_the_exception_class(self) -> None:
         """`last_error` is handed to the browser with the run record, so the
         provider reply that caused it must not travel with it."""
-        from services import rsi
+        from hive_conductor.services import rsi
 
         service = rsi._RsiService()
         run = rsi.RunState(run_id="r1", mode="greenfield", config={})
@@ -126,7 +126,7 @@ class TestAFailedRsiRunRecordsAKindNotAMessage:
     async def test_a_cancelled_run_is_stopped_rather_than_errored(self) -> None:
         """The cancellation arm sits above the one under test; a stop must not
         be recorded as a failure just because both end the run."""
-        from services import rsi
+        from hive_conductor.services import rsi
 
         service = rsi._RsiService()
         run = rsi.RunState(run_id="r2", mode="greenfield", config={})
@@ -148,7 +148,7 @@ class TestAnAirtableTokenFingerprintIsNotAnOfflineOracle:
     derivation is salted per process and stretched (CodeQL py/weak-sensitive-data-hashing)."""
 
     def test_it_is_stable_within_a_process_and_token_specific(self) -> None:
-        from services.airtable_cache import _token_fingerprint
+        from hive_conductor.services.airtable_cache import _token_fingerprint
 
         first = _token_fingerprint("pat-abc")
 
@@ -157,6 +157,6 @@ class TestAnAirtableTokenFingerprintIsNotAnOfflineOracle:
         assert len(first) == 12
 
     def test_it_does_not_contain_the_token(self) -> None:
-        from services.airtable_cache import _token_fingerprint
+        from hive_conductor.services.airtable_cache import _token_fingerprint
 
         assert "pat-abc" not in _token_fingerprint("pat-abc")

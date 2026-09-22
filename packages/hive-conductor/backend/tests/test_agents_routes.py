@@ -16,18 +16,15 @@ anything to choose between them.
 from __future__ import annotations
 
 import pathlib
-import sys
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import stores  # noqa: E402
-from models.schemas import Agent  # noqa: E402
+import hive_conductor.stores as stores  # noqa: E402
+from hive_conductor.models.schemas import Agent  # noqa: E402
 
 
 def _clear(store) -> None:
@@ -136,7 +133,7 @@ def test_delete_agent_normal_mode_missing_404(admin_client: Any, monkeypatch) ->
 
 class TestCrudWritePathRefusesFailClosed:
     def _patch_upsert(self, monkeypatch, exc: Exception) -> None:
-        import routes.agents as agents_routes
+        import hive_conductor.routes.agents as agents_routes
 
         async def _refuse(*args: Any, **kwargs: Any) -> Any:
             raise exc
@@ -146,7 +143,7 @@ class TestCrudWritePathRefusesFailClosed:
     def test_a_rejected_definition_answers_400_and_stores_nothing(
         self, admin_client: Any, monkeypatch
     ) -> None:
-        from services.agent_materialization import AgentDefinitionRejected
+        from hive_conductor.services.agent_materialization import AgentDefinitionRejected
 
         self._patch_upsert(monkeypatch, AgentDefinitionRejected("injected config"))
         r = admin_client.post(
@@ -160,7 +157,7 @@ class TestCrudWritePathRefusesFailClosed:
     def test_an_unavailable_scanner_answers_503_and_stores_nothing(
         self, admin_client: Any, monkeypatch
     ) -> None:
-        from services.agent_materialization import AgentScannerUnavailable
+        from hive_conductor.services.agent_materialization import AgentScannerUnavailable
 
         self._patch_upsert(monkeypatch, AgentScannerUnavailable("detector offline"))
         r = admin_client.post(
@@ -176,7 +173,7 @@ class TestCrudWritePathRefusesFailClosed:
     def test_an_unscannable_config_answers_413_and_stores_nothing(
         self, admin_client: Any, monkeypatch
     ) -> None:
-        from services.agent_materialization import ScanBudgetExceeded
+        from hive_conductor.services.agent_materialization import ScanBudgetExceeded
 
         self._patch_upsert(monkeypatch, ScanBudgetExceeded("config past the scan budget"))
         r = admin_client.post(
@@ -190,8 +187,8 @@ class TestCrudWritePathRefusesFailClosed:
     def test_update_refuses_and_leaves_the_stored_row_untouched(
         self, admin_client: Any, monkeypatch
     ) -> None:
-        import routes.agents as agents_routes
-        from services.agent_materialization import AgentDefinitionRejected
+        import hive_conductor.routes.agents as agents_routes
+        from hive_conductor.services.agent_materialization import AgentDefinitionRejected
 
         async def _refuse(*args: Any, **kwargs: Any) -> Any:
             raise AgentDefinitionRejected("injected config")
@@ -251,7 +248,7 @@ def _register_fake_runtime() -> tuple[Any, dict[str, Any]]:
     way the bridge registers the one it builds at boot."""
     from types import SimpleNamespace
 
-    import services.agent_materialization as materialization
+    import hive_conductor.services.agent_materialization as materialization
 
     wired: dict[str, Any] = {}
     container = SimpleNamespace(
@@ -378,7 +375,11 @@ class TestForgeCreatesACanonicalArtifact:
         assert len(stores.agents) == 2
 
     def test_the_artifact_round_trips_through_the_execution_path(self, admin_client: Any) -> None:
-        from services.agent_invocation import pulse_roster, resolve_agent, resolve_agent_task
+        from hive_conductor.services.agent_invocation import (
+            pulse_roster,
+            resolve_agent,
+            resolve_agent_task,
+        )
 
         forged = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
         aid = forged.json()["id"]
@@ -404,8 +405,12 @@ class TestForgeCreatesACanonicalArtifact:
     def test_a_workspace_forge_is_resolvable_by_the_rosters_spawn_name(
         self, admin_client: Any, monkeypatch
     ) -> None:
-        import routes.agents as agents_routes
-        from services.agent_invocation import pulse_roster, resolve_agent, resolve_agent_task
+        import hive_conductor.routes.agents as agents_routes
+        from hive_conductor.services.agent_invocation import (
+            pulse_roster,
+            resolve_agent,
+            resolve_agent_task,
+        )
 
         async def _owner(uid: str, ws: str) -> bool:
             return True
@@ -431,7 +436,7 @@ class TestForgeCreatesACanonicalArtifact:
     def test_a_non_owner_cannot_forge_into_a_workspace(
         self, admin_client: Any, monkeypatch
     ) -> None:
-        import routes.agents as agents_routes
+        import hive_conductor.routes.agents as agents_routes
 
         async def _not_owner(uid: str, ws: str) -> bool:
             return False
@@ -467,7 +472,7 @@ class TestForgeValidatesAndFailsClosed:
         assert len(stores.agents) == 0
 
     def test_a_scanner_that_cannot_run_forges_nothing(self, admin_client: Any, monkeypatch) -> None:
-        import services.agent_materialization as materialization
+        import hive_conductor.services.agent_materialization as materialization
 
         class _BrokenWarden:
             async def scan(self, text: str, boundary: str) -> None:

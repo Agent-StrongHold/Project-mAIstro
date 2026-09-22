@@ -11,7 +11,6 @@ to wrap them are gone, and with them the incidental coverage.
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
@@ -19,8 +18,6 @@ import pytest
 from maistro.graph.nodes.base import NodeContext
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 # --- tool-node dispatch --------------------------------------------------------
@@ -30,8 +27,8 @@ async def test_an_unknown_tool_fails_the_node_without_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The wave contract: a bad node is a failed result, not a dead run."""
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     monkeypatch.setattr(tools, "TOOLS", {})
     results: dict[str, dict[str, Any]] = {}
@@ -51,8 +48,8 @@ async def test_an_unknown_tool_fails_the_node_without_raising(
 async def test_web_search_iterates_over_a_parent_json_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     seen: list[tuple[str, int]] = []
 
@@ -83,8 +80,8 @@ async def test_web_search_falls_back_to_the_task_when_iteration_data_is_malforme
 ) -> None:
     """A parent result that is not the promised JSON shape searches the task
     description once rather than running zero queries and reporting success."""
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     seen: list[str] = []
 
@@ -110,8 +107,8 @@ async def test_web_search_falls_back_to_the_task_when_iteration_data_is_malforme
 async def test_web_search_templated_queries_from_the_task_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     seen: list[str] = []
 
@@ -139,8 +136,8 @@ async def test_web_search_templated_queries_from_the_task_input(
 async def test_clarify_renders_each_question_with_its_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     async def fake_clarify(questions: list[str], context: dict[str, Any]) -> dict[str, str]:
         return {str(index + 1): f"answer {index + 1}" for index in range(len(questions))}
@@ -164,8 +161,8 @@ async def test_clarify_renders_each_question_with_its_answer(
 async def test_browse_url_returns_the_extractor_payload_as_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     async def fake_browse(url: str, task: str) -> dict[str, Any]:
         return {"url": url, "task": task, "facts": ["one"]}
@@ -188,8 +185,8 @@ async def test_browse_url_returns_the_extractor_payload_as_json(
 async def test_a_generic_tool_result_is_json_encoded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     async def fake_tool(task_desc: str) -> dict[str, Any]:
         return {"did": task_desc}
@@ -209,8 +206,8 @@ async def test_a_generic_tool_result_is_json_encoded(
 async def test_a_failing_tool_becomes_a_failed_node_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     async def boom(task_desc: str) -> dict[str, Any]:
         raise RuntimeError("tool exploded")
@@ -229,8 +226,8 @@ async def test_run_llm_node_dispatches_a_tool_node_without_touching_the_llm(
 ) -> None:
     """`_run_llm_node` is the historical single entry for both shapes; a node
     with a `tool` key must never resolve a model or build a call."""
-    import services.legacy_dag_node as adapter
-    import services.tool_executor as tools
+    import hive_conductor.services.legacy_dag_node as adapter
+    import hive_conductor.services.tool_executor as tools
 
     def _unexpected_builder(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover
         raise AssertionError("llm builder must not be consulted for a tool node")
@@ -258,13 +255,13 @@ async def test_run_llm_node_dispatches_a_tool_node_without_touching_the_llm(
 
 
 def test_an_untrusted_node_without_admin_approval_is_blocked() -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     assert adapter._classify_node_execution({"config": {"untrusted": True}}, "n1") == "blocked"
 
 
 def test_an_approved_untrusted_node_goes_to_the_sandbox() -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     assert (
         adapter._classify_node_execution(
@@ -284,21 +281,21 @@ def test_an_approved_untrusted_node_goes_to_the_sandbox() -> None:
     ],
 )
 def test_dangerous_capabilities_and_heavy_tiers_go_to_the_sandbox(config: dict) -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     assert adapter._classify_node_execution({"config": config}, "n1") == "sandbox"
 
 
 def test_a_node_with_no_tier_and_no_capabilities_defaults_to_the_sandbox() -> None:
     """No declared shape at all: the floor is the sandbox, not the loop."""
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     assert adapter._classify_node_execution({"config": {}}, "n1") == "sandbox"
     assert adapter._classify_node_execution({}, "n1") == "sandbox"
 
 
 def test_a_declared_but_benign_shape_still_sandboxes() -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     assert (
         adapter._classify_node_execution({"config": {"capabilities": ["read_only"]}}, "n1")
@@ -307,7 +304,7 @@ def test_a_declared_but_benign_shape_still_sandboxes() -> None:
 
 
 def test_safe_and_light_tiers_run_inline() -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     assert adapter._classify_node_execution({"config": {"execution_tier": "safe"}}, "n1") == "async"
     assert (
@@ -319,7 +316,7 @@ def test_safe_and_light_tiers_run_inline() -> None:
 
 
 def test_build_dependency_graph_maps_nodes_and_inbound_edges() -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     node_map, inbound = adapter._build_dependency_graph(
         [{"id": "a"}, {"id": "b"}, {"id": "c"}],
@@ -336,7 +333,7 @@ def test_build_dependency_graph_maps_nodes_and_inbound_edges() -> None:
 async def test_run_subprocess_wave_runs_each_node_and_fires_usage_hooks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     def fake_subprocess(node: dict, task: str, context: str, env: dict, mode: str) -> dict:
         return {
@@ -379,7 +376,7 @@ def _ctx() -> NodeContext:
 
 
 def _adapter_node(raw_node: dict[str, Any], **kwargs: Any):
-    from services.legacy_dag_node import LegacyConductorNode
+    from hive_conductor.services.legacy_dag_node import LegacyConductorNode
 
     return LegacyConductorNode(
         raw_node=raw_node,
@@ -401,7 +398,7 @@ async def test_an_unapproved_untrusted_adapter_node_refuses_to_execute() -> None
 async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     captured: dict[str, Any] = {}
 
@@ -435,7 +432,7 @@ async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
 async def test_a_failed_isolated_node_fails_the_adapter_node(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.legacy_dag_node as adapter
+    import hive_conductor.services.legacy_dag_node as adapter
 
     def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
         return {"role": "worker", "response": "subprocess refused", "success": False}

@@ -6,4 +6,4 @@ if [ -f "$ROOT_ENV" ]; then
 elif [ -f "../../../../../.env" ]; then
   export $(grep -E "^[A-Z]" "../../../../../.env" | xargs)
 fi
-exec uvicorn main:app --host 0.0.0.0 --port 8101
+exec uvicorn hive_conductor.main:app --host 0.0.0.0 --port 8101

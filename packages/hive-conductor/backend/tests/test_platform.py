@@ -4,12 +4,9 @@ Run: TESTING=1 python -m pytest tests/test_platform.py -v
 """
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +19,7 @@ def _mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def app():
-    from main import app
+    from hive_conductor.main import app
 
     return app
 
@@ -193,7 +190,7 @@ class TestCredentials:
 class TestChatCompletion:
     def test_tool_definitions_valid(self):
         """All PM_TOOLS must have valid OpenAI function-calling schema."""
-        from services.chat_completion import PM_TOOLS
+        from hive_conductor.services.chat_completion import PM_TOOLS
 
         assert len(PM_TOOLS) > 10
         for tool in PM_TOOLS:
@@ -207,14 +204,14 @@ class TestChatCompletion:
 
     def test_tool_handlers_registered(self):
         """Every tool in PM_TOOLS must have a handler."""
-        from services.chat_completion import _TOOL_HANDLERS, PM_TOOLS
+        from hive_conductor.services.chat_completion import _TOOL_HANDLERS, PM_TOOLS
 
         for tool in PM_TOOLS:
             name = tool["function"]["name"]
             assert name in _TOOL_HANDLERS, f"Tool '{name}' has no handler"
 
     def test_scoped_tools_deck(self):
-        from services.chat_completion import get_scoped_tools
+        from hive_conductor.services.chat_completion import get_scoped_tools
 
         tools = get_scoped_tools("deck")
         names = [t["function"]["name"] for t in tools]
@@ -222,7 +219,7 @@ class TestChatCompletion:
         assert "poll_jira" not in names
 
     def test_scoped_tools_dashboard_edit(self):
-        from services.chat_completion import get_scoped_tools
+        from hive_conductor.services.chat_completion import get_scoped_tools
 
         tools = get_scoped_tools("dashboard_edit")
         names = [t["function"]["name"] for t in tools]
@@ -230,14 +227,14 @@ class TestChatCompletion:
         assert "airtable_query" in names
 
     def test_scoped_tools_none_returns_all(self):
-        from services.chat_completion import PM_TOOLS, get_scoped_tools
+        from hive_conductor.services.chat_completion import PM_TOOLS, get_scoped_tools
 
         tools = get_scoped_tools(None)
         assert len(tools) == len(PM_TOOLS)
 
     @pytest.mark.asyncio
     async def test_create_dashboard_widget_tool(self):
-        from services.chat_completion import _tool_create_dashboard_widget
+        from hive_conductor.services.chat_completion import _tool_create_dashboard_widget
 
         result = await _tool_create_dashboard_widget(
             {"title": "Test", "type": "kpi", "size": "1", "config": {"field": "active_agents"}},
@@ -250,7 +247,7 @@ class TestChatCompletion:
 
     @pytest.mark.asyncio
     async def test_suggest_widgets_tool(self):
-        from services.chat_completion import _tool_suggest_widgets
+        from hive_conductor.services.chat_completion import _tool_suggest_widgets
 
         result = await _tool_suggest_widgets(
             {"source": "airtable"},
@@ -263,7 +260,7 @@ class TestChatCompletion:
     @pytest.mark.asyncio
     async def test_tool_execution_error_handled(self):
         """Tool failures should return error dict, not raise."""
-        from services.chat_completion import _execute_tool
+        from hive_conductor.services.chat_completion import _execute_tool
 
         # Call a tool that will fail (no Jira PAT)
         result = await _execute_tool("poll_jira", {}, "test-user")
@@ -358,14 +355,14 @@ class TestMemory:
 
 class TestPersistence:
     def test_pg_persisted_store_interface(self):
-        from services.pg_persisted import PgPersistedStore
+        from hive_conductor.services.pg_persisted import PgPersistedStore
 
         store = PgPersistedStore()
         # Should not crash without POSTGREST_URL
         assert store.list_all_raw("test") == []
 
     def test_pg_store_helpers(self):
-        from services.pg_store import is_pg_available
+        from hive_conductor.services.pg_store import is_pg_available
 
         # Without env var, should return False
         assert is_pg_available() is False
@@ -418,7 +415,7 @@ class TestDataFiles:
         this test asserted its shape. #340 moved layouts into the store and
         promoted the layout that file held to a shipped demo template, so the
         integrity claim now belongs to the templates, which are image content."""
-        demos = Path(__file__).parent.parent / "data" / "demo_dashboards"
+        demos = Path(__file__).parent.parent / "hive_conductor" / "data" / "demo_dashboards"
         assert demos.is_dir()
         for path in sorted(demos.glob("*.json")):
             data = json.loads(path.read_text())
@@ -426,13 +423,13 @@ class TestDataFiles:
             assert data.get("tabs") or data.get("widgets"), path.name
 
     def test_widget_examples_json_valid(self):
-        path = Path(__file__).parent.parent / "data" / "widget_examples.json"
+        path = Path(__file__).parent.parent / "hive_conductor" / "data" / "widget_examples.json"
         data = json.loads(path.read_text())
         assert isinstance(data, list)
         assert len(data) > 50
 
     def test_deck_templates_json_valid(self):
-        path = Path(__file__).parent.parent / "data" / "deck_templates.json"
+        path = Path(__file__).parent.parent / "hive_conductor" / "data" / "deck_templates.json"
         data = json.loads(path.read_text())
         assert isinstance(data, list)
         assert len(data) >= 50
@@ -442,13 +439,18 @@ class TestDataFiles:
         assert "Layout" in categories
 
     def test_widget_templates_json_valid(self):
-        path = Path(__file__).parent.parent / "data" / "widget_templates.json"
+        path = Path(__file__).parent.parent / "hive_conductor" / "data" / "widget_templates.json"
         data = json.loads(path.read_text())
         assert isinstance(data, list)
         assert len(data) > 10
 
     def test_verified_widget_configs_json_valid(self):
-        path = Path(__file__).parent.parent / "data" / "verified_widget_configs.json"
+        path = (
+            Path(__file__).parent.parent
+            / "hive_conductor"
+            / "data"
+            / "verified_widget_configs.json"
+        )
         if path.exists():
             data = json.loads(path.read_text())
             assert isinstance(data, list)
@@ -461,22 +463,22 @@ class TestDataFiles:
 
 class TestImports:
     def test_main_imports(self):
-        import main  # noqa: F401
+        import hive_conductor.main as main  # noqa: F401
 
     def test_chat_completion_imports(self):
-        from services import chat_completion  # noqa: F401
+        from hive_conductor.services import chat_completion  # noqa: F401
 
     def test_widgets_imports(self):
-        from routes import widgets  # noqa: F401
+        from hive_conductor.routes import widgets  # noqa: F401
 
     def test_dashboard_layout_imports(self):
-        from routes import dashboard_layout  # noqa: F401
+        from hive_conductor.routes import dashboard_layout  # noqa: F401
 
     def test_credentials_imports(self):
-        from routes import credentials  # noqa: F401
+        from hive_conductor.routes import credentials  # noqa: F401
 
     def test_pg_persisted_imports(self):
-        from services import pg_persisted  # noqa: F401
+        from hive_conductor.services import pg_persisted  # noqa: F401
 
     def test_pg_store_imports(self):
-        from services import pg_store  # noqa: F401
+        from hive_conductor.services import pg_store  # noqa: F401

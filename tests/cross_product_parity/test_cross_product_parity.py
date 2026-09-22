@@ -123,6 +123,7 @@ def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
         / "packages"
         / "hive-conductor"
         / "backend"
+        / "hive_conductor"
         / "routes"
         / "dag_runs.py"
     ).read_text(encoding="utf-8")
@@ -142,6 +143,7 @@ def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> 
         / "packages"
         / "hive-conductor"
         / "backend"
+        / "hive_conductor"
         / "services"
         / "scheduler.py"
     ).read_text(encoding="utf-8")
@@ -161,6 +163,7 @@ def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None
         / "packages"
         / "hive-conductor"
         / "backend"
+        / "hive_conductor"
         / "services"
         / "evolution.py"
     ).read_text(encoding="utf-8")

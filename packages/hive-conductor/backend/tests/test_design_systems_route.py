@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from main import app
-from services import design_service
+from hive_conductor.main import app
+from hive_conductor.services import design_service
 
 from maistro_design.systems.importer import (
     BUNDLED_SLUGS,

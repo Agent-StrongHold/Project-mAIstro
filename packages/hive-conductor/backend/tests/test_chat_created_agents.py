@@ -17,28 +17,25 @@ that policy is orthogonal to what a produced row must satisfy.
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import stores  # noqa: E402
-from services.agent_invocation import (  # noqa: E402
+import hive_conductor.stores as stores  # noqa: E402
+from hive_conductor.services.agent_invocation import (  # noqa: E402
     pulse_roster,
     resolve_agent,
     resolve_agent_task,
 )
-from services.agent_materialization import (  # noqa: E402
+from hive_conductor.services.agent_materialization import (  # noqa: E402
     AgentDefinitionRejected,
     AgentScannerUnavailable,
     ScanBudgetExceeded,
     register_runtime_source,
 )
-from services.chat_completion import (  # noqa: E402
+from hive_conductor.services.chat_completion import (  # noqa: E402
     _chat_workspace_id,
     _request_workspace_id,
     _tool_create_agent_button,
@@ -236,7 +233,7 @@ async def test_a_flagged_description_is_refused_and_nothing_is_stored() -> None:
 
 
 async def test_a_scanner_that_cannot_run_stores_nothing(monkeypatch) -> None:
-    import services.agent_materialization as materialization
+    import hive_conductor.services.agent_materialization as materialization
 
     class _BrokenWarden:
         async def scan(self, text: str, boundary: str) -> None:
@@ -291,7 +288,7 @@ async def test_modify_and_remove_go_through_the_same_write_path(workspace: str) 
 
 
 def _refuse_upsert(monkeypatch, exc: Exception) -> None:
-    import services.chat_completion as chat_service
+    import hive_conductor.services.chat_completion as chat_service
 
     async def _raise(*args: Any, **kwargs: Any) -> Any:
         raise exc
@@ -300,7 +297,7 @@ def _refuse_upsert(monkeypatch, exc: Exception) -> None:
 
 
 def _refuse_update(monkeypatch, exc: Exception) -> None:
-    import services.chat_completion as chat_service
+    import hive_conductor.services.chat_completion as chat_service
 
     async def _raise(*args: Any, **kwargs: Any) -> Any:
         raise exc
@@ -314,7 +311,7 @@ def test_request_workspace_id_uses_a_named_scope_and_none_otherwise() -> None:
     None, never an empty string that would select nothing. `workspace_id` is
     an extra field on the request model (extra="allow"), which is why the
     helper reads it defensively -- so this exercises the real schema."""
-    from models.schemas import ChatCompletionRequest
+    from hive_conductor.models.schemas import ChatCompletionRequest
 
     def _request(**extra: Any) -> ChatCompletionRequest:
         return ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], **extra)

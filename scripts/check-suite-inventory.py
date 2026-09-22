@@ -65,9 +65,10 @@ ever wanted, add a second opt-in mode rather than making the default brittle.
 
 Two invocation traps (both documented in SUITE-INVENTORY.md; honored here)
 -------------------------------------------------------------------------
-1. ``packages/hive-conductor/backend/tests`` runs under **bare python, never
-   ``uv run``** — its conftest re-inserts the backend dir at ``sys.path[0]``
-   because the monorepo root has a ``services/`` package that shadows its own.
+1. ``packages/hive-conductor/backend/tests`` is collected through the explicit
+   ``hive_conductor`` package namespace. The root pytest configuration supplies
+   the backend package root; the suite does not rewrite ``sys.path`` to claim
+   generic names.
 2. ``formal/`` needs **evolve + rsi** on ``PYTHONPATH``, not just core. Omitting
    them is a collection ``ImportError``, which reads like a broken suite.
 
@@ -432,7 +433,12 @@ def default_note_slug() -> str | None:
     if proc.returncode != 0 or not branch or branch == "HEAD":
         return None
     readable = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
-    digest = hashlib.sha1(branch.encode()).hexdigest()[:4]
+    # blake2b, not the legacy digest: DevSkim's DS126858 flags broken
+    # hash spellings wherever they appear (error severity — it fails the
+    # devskim check on any line shift), and this digest only disambiguates
+    # note filenames between branches, a job four hex characters of any
+    # hash do.
+    digest = hashlib.blake2b(branch.encode(), digest_size=2).hexdigest()
     return f"{readable}-{digest}" if readable else digest
 
 

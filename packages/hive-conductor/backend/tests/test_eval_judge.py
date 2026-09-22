@@ -29,7 +29,6 @@ These tests verify:
 from __future__ import annotations
 
 import pathlib
-import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -37,8 +36,6 @@ from typing import Any
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @dataclass
@@ -77,7 +74,7 @@ def _wipe_store(store: Any) -> None:
 
 @pytest.fixture(autouse=True)
 def _wipe_verdicts():
-    import stores
+    import hive_conductor.stores as stores
 
     _wipe_store(stores.eval_verdicts)
     yield
@@ -88,7 +85,7 @@ def _wipe_verdicts():
 
 
 def test_build_evidence_payload_strips_enum_prefix() -> None:
-    from services.eval_judge import _build_evidence_payload
+    from hive_conductor.services.eval_judge import _build_evidence_payload
 
     run = _Run(
         node_records=[
@@ -102,7 +99,7 @@ def test_build_evidence_payload_strips_enum_prefix() -> None:
 
 
 def test_build_evidence_payload_with_feedback_filtered_by_run_id() -> None:
-    from services.eval_judge import _build_evidence_payload
+    from hive_conductor.services.eval_judge import _build_evidence_payload
 
     run = _Run(run_id="r-A")
     # One feedback for r-A, one for an unrelated run
@@ -115,7 +112,7 @@ def test_build_evidence_payload_with_feedback_filtered_by_run_id() -> None:
 
 
 def test_build_evidence_payload_none_run_returns_empty_dict() -> None:
-    from services.eval_judge import _build_evidence_payload
+    from hive_conductor.services.eval_judge import _build_evidence_payload
 
     assert _build_evidence_payload(None) == {}
 
@@ -124,7 +121,7 @@ def test_build_evidence_payload_none_run_returns_empty_dict() -> None:
 
 
 def test_parse_pure_json_verdict() -> None:
-    from services.eval_judge import _parse_verdict
+    from hive_conductor.services.eval_judge import _parse_verdict
 
     raw = '{"score": 85, "rationale": "good", "topology_proposal": null}'
     out = _parse_verdict(raw)
@@ -134,7 +131,7 @@ def test_parse_pure_json_verdict() -> None:
 
 
 def test_parse_fenced_json_verdict() -> None:
-    from services.eval_judge import _parse_verdict
+    from hive_conductor.services.eval_judge import _parse_verdict
 
     raw = '```json\n{"score": 72, "rationale": "ok"}\n```'
     out = _parse_verdict(raw)
@@ -143,7 +140,7 @@ def test_parse_fenced_json_verdict() -> None:
 
 def test_parse_verdict_with_leading_prose() -> None:
     """Some LLMs prepend a sentence; the regex fallback finds the {…}."""
-    from services.eval_judge import _parse_verdict
+    from hive_conductor.services.eval_judge import _parse_verdict
 
     raw = 'Here\'s my verdict:\n{"score": 50, "rationale": "meh"}'
     out = _parse_verdict(raw)
@@ -151,7 +148,7 @@ def test_parse_verdict_with_leading_prose() -> None:
 
 
 def test_parse_empty_response_returns_error_status() -> None:
-    from services.eval_judge import _parse_verdict
+    from hive_conductor.services.eval_judge import _parse_verdict
 
     out = _parse_verdict("")
     assert out["status"] == "error"
@@ -159,7 +156,7 @@ def test_parse_empty_response_returns_error_status() -> None:
 
 
 def test_parse_malformed_returns_error_status() -> None:
-    from services.eval_judge import _parse_verdict
+    from hive_conductor.services.eval_judge import _parse_verdict
 
     out = _parse_verdict("this is not json at all")
     assert out["status"] == "error"
@@ -167,7 +164,7 @@ def test_parse_malformed_returns_error_status() -> None:
 
 def test_parse_almost_json_returns_error() -> None:
     """Has a `{` but isn't parseable."""
-    from services.eval_judge import _parse_verdict
+    from hive_conductor.services.eval_judge import _parse_verdict
 
     out = _parse_verdict("{this is not valid json")
     assert out["status"] == "error"
@@ -176,7 +173,7 @@ def test_parse_almost_json_returns_error() -> None:
 def test_parse_regex_fallback_finds_obj_but_fails_to_parse() -> None:
     """Regex fallback finds the `{...}` block but its contents are still
     invalid JSON. Hits the rare last-resort except branch (lines 141-142)."""
-    from services.eval_judge import _parse_verdict
+    from hive_conductor.services.eval_judge import _parse_verdict
 
     raw = "preamble {bad-json-inside-the-braces} trailer"
     out = _parse_verdict(raw)
@@ -187,8 +184,8 @@ def test_parse_regex_fallback_finds_obj_but_fails_to_parse() -> None:
 async def test_score_run_llm_exception_with_persist_false() -> None:
     """LLM raises + persist=False — verdict returned, NOT stored.
     Hits the no-persist branch (216→218)."""
-    import stores
-    from services.eval_judge import score_run
+    import hive_conductor.stores as stores
+    from hive_conductor.services.eval_judge import score_run
 
     async def _boom(messages: list[dict], **kw: Any) -> str:
         raise RuntimeError("upstream 500")
@@ -203,8 +200,8 @@ async def test_score_run_lazy_llm_unavailable_with_persist_false(
 ) -> None:
     """When _build_llm_call raises AND persist=False, no verdict is
     written but the error verdict is still returned. Hits branch 233→235."""
-    import services.eval_judge as ej
-    import services.graph_runner as gr
+    import hive_conductor.services.eval_judge as ej
+    import hive_conductor.services.graph_runner as gr
 
     def _bad() -> Any:
         raise ImportError("no graph_runner")
@@ -218,21 +215,21 @@ async def test_score_run_lazy_llm_unavailable_with_persist_false(
 
 
 def test_validate_clamps_score_above_100() -> None:
-    from services.eval_judge import _validate_verdict
+    from hive_conductor.services.eval_judge import _validate_verdict
 
     out = _validate_verdict({"score": 999, "rationale": "x"})
     assert out["score"] == 100
 
 
 def test_validate_clamps_score_below_zero() -> None:
-    from services.eval_judge import _validate_verdict
+    from hive_conductor.services.eval_judge import _validate_verdict
 
     out = _validate_verdict({"score": -50, "rationale": "x"})
     assert out["score"] == 0
 
 
 def test_validate_strips_unknown_proposal_keys() -> None:
-    from services.eval_judge import _validate_verdict
+    from hive_conductor.services.eval_judge import _validate_verdict
 
     out = _validate_verdict(
         {
@@ -253,7 +250,7 @@ def test_validate_strips_unknown_proposal_keys() -> None:
 
 
 def test_validate_drops_non_dict_proposal() -> None:
-    from services.eval_judge import _validate_verdict
+    from hive_conductor.services.eval_judge import _validate_verdict
 
     out = _validate_verdict(
         {
@@ -266,14 +263,14 @@ def test_validate_drops_non_dict_proposal() -> None:
 
 
 def test_validate_passes_error_status_through() -> None:
-    from services.eval_judge import _validate_verdict
+    from hive_conductor.services.eval_judge import _validate_verdict
 
     out = _validate_verdict({"status": "error", "detail": "x"})
     assert out["status"] == "error"
 
 
 def test_validate_score_not_int_coerces_to_zero() -> None:
-    from services.eval_judge import _validate_verdict
+    from hive_conductor.services.eval_judge import _validate_verdict
 
     out = _validate_verdict({"score": "not-a-number", "rationale": "x"})
     assert out["score"] == 0
@@ -283,8 +280,8 @@ def test_validate_score_not_int_coerces_to_zero() -> None:
 
 
 async def test_score_run_with_stub_llm_writes_verdict() -> None:
-    import stores
-    from services.eval_judge import score_run
+    import hive_conductor.stores as stores
+    from hive_conductor.services.eval_judge import score_run
 
     async def _stub(messages: list[dict], **kw: Any) -> str:
         return '{"score": 88, "rationale": "solid run", "topology_proposal": null}'
@@ -302,8 +299,8 @@ async def test_score_run_with_stub_llm_writes_verdict() -> None:
 
 
 async def test_score_run_persist_false_skips_storage() -> None:
-    import stores
-    from services.eval_judge import score_run
+    import hive_conductor.stores as stores
+    from hive_conductor.services.eval_judge import score_run
 
     async def _stub(messages: list[dict], **kw: Any) -> str:
         return '{"score": 50, "rationale": "x"}'
@@ -313,8 +310,8 @@ async def test_score_run_persist_false_skips_storage() -> None:
 
 
 async def test_score_run_llm_exception_writes_error_verdict() -> None:
-    import stores
-    from services.eval_judge import score_run
+    import hive_conductor.stores as stores
+    from hive_conductor.services.eval_judge import score_run
 
     async def _boom(messages: list[dict], **kw: Any) -> str:
         raise RuntimeError("upstream 500")
@@ -327,7 +324,7 @@ async def test_score_run_llm_exception_writes_error_verdict() -> None:
 
 
 async def test_score_run_llm_returns_empty_response_writes_error_verdict() -> None:
-    from services.eval_judge import score_run
+    from hive_conductor.services.eval_judge import score_run
 
     async def _empty(messages: list[dict], **kw: Any) -> str:
         return ""
@@ -337,7 +334,7 @@ async def test_score_run_llm_returns_empty_response_writes_error_verdict() -> No
 
 
 async def test_score_run_none_run_raises_value_error() -> None:
-    from services.eval_judge import score_run
+    from hive_conductor.services.eval_judge import score_run
 
     with pytest.raises(ValueError, match="run_record is required"):
         await score_run(None)
@@ -348,13 +345,13 @@ async def test_score_run_falls_back_to_default_llm_when_unavailable(
 ) -> None:
     """When _build_llm_call import raises, score_run writes an error
     verdict instead of propagating."""
-    import services.eval_judge as ej
+    import hive_conductor.services.eval_judge as ej
 
     def _bad_import() -> Any:
         raise ImportError("graph_runner not available in this context")
 
     # Patch the lazy import path
-    import services.graph_runner as gr
+    import hive_conductor.services.graph_runner as gr
 
     monkeypatch.setattr(gr, "_build_llm_call", _bad_import)
     out = await ej.score_run(_Run(run_id="r-no-llm"))
@@ -362,15 +359,15 @@ async def test_score_run_falls_back_to_default_llm_when_unavailable(
 
 
 def test_persist_with_empty_run_id_is_noop() -> None:
-    import stores
-    from services.eval_judge import _persist
+    import hive_conductor.stores as stores
+    from hive_conductor.services.eval_judge import _persist
 
     _persist(_Run(run_id=""), {"score": 50, "status": "ok"})
     assert "" not in stores.eval_verdicts
 
 
 def test_get_verdict_returns_persisted_or_none() -> None:
-    from services.eval_judge import _persist, get_verdict
+    from hive_conductor.services.eval_judge import _persist, get_verdict
 
     _persist(
         _Run(run_id="r-G"), {"score": 99, "status": "ok"}, now=datetime(2026, 5, 22, tzinfo=UTC)
@@ -387,8 +384,8 @@ def test_get_verdict_returns_persisted_or_none() -> None:
 def test_get_verdict_endpoint_returns_persisted(authed_client: Any) -> None:
     import asyncio
 
-    from services.dag_run_store import get_dag_run_store
-    from services.eval_judge import _persist
+    from hive_conductor.services.dag_run_store import get_dag_run_store
+    from hive_conductor.services.eval_judge import _persist
 
     # The verdict read is scoped to the run (#1174): the run is seeded inside
     # a Workspace the caller owns, so the persisted verdict is readable.
@@ -413,8 +410,8 @@ def test_get_verdict_endpoint_404(authed_client: Any) -> None:
 def test_list_verdicts_endpoint_returns_newest_first(authed_client: Any) -> None:
     import asyncio
 
-    from services.dag_run_store import get_dag_run_store
-    from services.eval_judge import _persist
+    from hive_conductor.services.dag_run_store import get_dag_run_store
+    from hive_conductor.services.eval_judge import _persist
 
     # Both runs live in a Workspace the caller owns, so both verdicts are
     # inside the caller's scoped list (#1174).
@@ -440,8 +437,8 @@ def test_list_verdicts_endpoint_returns_newest_first(authed_client: Any) -> None
 def test_list_verdicts_limit_clamped_to_100(authed_client: Any) -> None:
     import asyncio
 
-    from services.dag_run_store import get_dag_run_store
-    from services.eval_judge import _persist
+    from hive_conductor.services.dag_run_store import get_dag_run_store
+    from hive_conductor.services.eval_judge import _persist
 
     # Every verdict needs a run inside the caller's Workspace universe to be
     # listable (#1174). The projection keeps MAX_RUNS rows, so seeding 110
@@ -473,8 +470,8 @@ def test_trigger_score_endpoint_runs_against_dag_run_store(
     the trigger reads the projection through the scoped inspection service,
     so an unscoped row would be refused like a missing one.
     """
-    import services.eval_judge as ej
-    from services.dag_run_store import get_dag_run_store
+    import hive_conductor.services.eval_judge as ej
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     async def _stub_llm(messages: list[dict], **kw: Any) -> str:
         return '{"score": 91, "rationale": "ace"}'
@@ -483,7 +480,7 @@ def test_trigger_score_endpoint_runs_against_dag_run_store(
         return await ej.score_run(run_record, llm_call=_stub_llm, **kw)
 
     # Patch route's score_run import to use our stubbed LLM
-    import routes.eval_judge as routes_ej
+    import hive_conductor.routes.eval_judge as routes_ej
 
     monkeypatch.setattr(routes_ej, "score_run", _patched_score)
 
@@ -535,7 +532,7 @@ def test_trigger_score_out_of_scope_run_is_not_scored(
     """
     import asyncio
 
-    from services.dag_run_store import get_dag_run_store
+    from hive_conductor.services.dag_run_store import get_dag_run_store
 
     workspace_id = admin_client.post(
         "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "Admin Runs"}
@@ -549,7 +546,7 @@ def test_trigger_score_out_of_scope_run_is_not_scored(
         called = True
         return {"score": 0}
 
-    import routes.eval_judge as routes_ej
+    import hive_conductor.routes.eval_judge as routes_ej
 
     monkeypatch.setattr(routes_ej, "score_run", _must_not_score)
 
@@ -565,7 +562,7 @@ def test_trigger_score_missing_run_returns_404(authed_client: Any) -> None:
 
 
 def test_events_to_node_records_handles_completed_and_failed() -> None:
-    from routes.eval_judge import _events_to_node_records
+    from hive_conductor.routes.eval_judge import _events_to_node_records
 
     events = [
         {
@@ -590,7 +587,7 @@ def test_events_to_node_records_handles_completed_and_failed() -> None:
 
 
 def test_events_to_node_records_skips_anonymous_events() -> None:
-    from routes.eval_judge import _events_to_node_records
+    from hive_conductor.routes.eval_judge import _events_to_node_records
 
     events = [
         {
@@ -607,7 +604,7 @@ def test_events_to_node_records_unknown_event_type_keeps_empty_phase() -> None:
     """A node-identifying event whose type is neither completed nor
     failed/error produces a record with phase='' (the elif falls
     through both branches — covers 101→85 branch)."""
-    from routes.eval_judge import _events_to_node_records
+    from hive_conductor.routes.eval_judge import _events_to_node_records
 
     events = [
         {

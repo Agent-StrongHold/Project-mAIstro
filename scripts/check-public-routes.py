@@ -24,7 +24,9 @@ from types import ModuleType
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-MIDDLEWARE = ROOT / "packages" / "hive-conductor" / "backend" / "middleware" / "auth.py"
+MIDDLEWARE = (
+    ROOT / "packages" / "hive-conductor" / "backend" / "hive_conductor" / "middleware" / "auth.py"
+)
 REGISTRY = ROOT / "quality" / "public-routes.json"
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "public-routes"

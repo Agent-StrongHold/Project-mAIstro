@@ -6,7 +6,7 @@ import logging
 from types import TracebackType
 from typing import Any
 
-import adapters.telemetry_langfuse as telemetry
+import hive_conductor.adapters.telemetry_langfuse as telemetry
 import pytest
 
 from maistro.observability.correlation import bind_execution_context

@@ -151,18 +151,17 @@ class TestTheRepositoryPasses:
         assert invoked <= set(checker.PROMOTION_ROOTS)
 
     def test_the_conductor_rsi_surface_is_indexed(self, checker: ModuleType) -> None:
-        """The Conductor ships a flat backend, so `packages/*/src` never matched it.
+        """The Conductor application is indexed under its canonical namespace.
 
-        Both production RSI entry points live there: `services/rsi.py`
-        constructs and runs `LocalRsiLoop`, and `routes/rsi.py` approves
-        candidate patches and applies them with `git am`. Neither could enter
-        the module index at all (Codex, #513) — and a module the index cannot
-        see is not merely unprotected, it is invisible to every finding this
-        gate produces.
+        Both production RSI entry points live there:
+        `hive_conductor.services.rsi` constructs and runs `LocalRsiLoop`, and
+        `hive_conductor.routes.rsi` approves candidate patches and applies them
+        with `git am`. They must enter the module index under the same names
+        production imports use, or this gate could silently miss them.
         """
         modules = checker.index_modules()
 
-        assert {"services.rsi", "routes.rsi"} <= set(modules)
+        assert {"hive_conductor.services.rsi", "hive_conductor.routes.rsi"} <= set(modules)
 
 
 class TestReachability:

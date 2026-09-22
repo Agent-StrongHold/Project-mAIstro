@@ -1,7 +1,7 @@
 ---
 date: 2026-06-28
 tester: Claude (agent)
-area: packages/hive-conductor/backend/middleware/auth.py — AuthMiddleware
+area: packages/hive-conductor/backend/hive_conductor/middleware/auth.py — AuthMiddleware
 charter: "Retroactive backfill: this session predates docs/EXPLORATORY-TESTING.md. Logged now, from the original change, as proof the BACKLOG escalation path works for past findings, not just future ones."
 ---
 

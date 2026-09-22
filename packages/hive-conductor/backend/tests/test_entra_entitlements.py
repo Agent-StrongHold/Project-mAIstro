@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from services.entra_entitlements import (
+from hive_conductor.services.entra_entitlements import (
     EntraEntitlementPolicyError,
     EntraGroupGrant,
     EntraGroupMembership,

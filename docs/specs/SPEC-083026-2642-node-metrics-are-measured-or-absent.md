@@ -27,10 +27,10 @@ contracts:
 tests:
   - packages/hive-conductor/backend/tests/test_node_metrics_are_measured.py
 source:
-  - packages/hive-conductor/backend/services/node_metrics_store.py
-  - packages/hive-conductor/backend/services/dag_agents.py
-  - packages/hive-conductor/backend/services/optimizer.py
-  - packages/hive-conductor/backend/services/topology_compare.py
+  - packages/hive-conductor/backend/hive_conductor/services/node_metrics_store.py
+  - packages/hive-conductor/backend/hive_conductor/services/dag_agents.py
+  - packages/hive-conductor/backend/hive_conductor/services/optimizer.py
+  - packages/hive-conductor/backend/hive_conductor/services/topology_compare.py
 ac-modules:
   AC-1: '@flat/hive-conductor/services.node_metrics_store'
   AC-2: '@flat/hive-conductor/services.node_metrics_store'

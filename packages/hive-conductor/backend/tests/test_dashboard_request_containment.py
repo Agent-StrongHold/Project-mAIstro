@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from services.dashboard_safety import (
+from hive_conductor.services.dashboard_safety import (
     sanitize_dashboard_layout,
     sanitize_widget_config,
     widget_config_violations,
@@ -191,7 +191,7 @@ def test_free_text_fields_allow_formula_characters_but_not_traversal() -> None:
 
 async def test_chat_widget_tool_rejects_non_declarative_config() -> None:
     """The model-facing tool reports violations instead of saving a shell (#314)."""
-    from services.chat_completion import _tool_create_dashboard_widget
+    from hive_conductor.services.chat_completion import _tool_create_dashboard_widget
 
     result = await _tool_create_dashboard_widget(
         {
@@ -233,12 +233,12 @@ class TestDemoDashboardIdsStayInsideTheDemoDirectory:
         ["../../../etc/passwd", "..", "demo/../../secret", "/etc/passwd", "a b", "x" * 65],
     )
     async def test_a_path_shaped_id_is_not_found(self, demo_id: str) -> None:
-        from routes.dashboard_layout import get_demo_dashboard
+        from hive_conductor.routes.dashboard_layout import get_demo_dashboard
 
         assert await get_demo_dashboard(demo_id) == {"error": "not found"}
 
     async def test_an_unknown_bare_id_is_not_found(self) -> None:
-        from routes.dashboard_layout import get_demo_dashboard
+        from hive_conductor.routes.dashboard_layout import get_demo_dashboard
 
         assert await get_demo_dashboard("no-such-demo") == {"error": "not found"}
 
@@ -246,7 +246,7 @@ class TestDemoDashboardIdsStayInsideTheDemoDirectory:
         """The containment check must refuse traversal without also refusing
         the shipped demos -- a guard that returns "not found" for everything
         passes every test above and breaks the feature."""
-        from routes.dashboard_layout import get_demo_dashboard
+        from hive_conductor.routes.dashboard_layout import get_demo_dashboard
 
         layout = await get_demo_dashboard("pm-operations")
 

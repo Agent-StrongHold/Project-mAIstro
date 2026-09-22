@@ -20,7 +20,6 @@ the observation list. Covers:
 from __future__ import annotations
 
 import pathlib
-import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -28,8 +27,6 @@ from typing import Any
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
 
 @dataclass
@@ -100,7 +97,7 @@ def _fake_record(
 @pytest.fixture()
 def isolated_store(monkeypatch: pytest.MonkeyPatch):
     """Fresh NodeMetricsStore per test; auto-restore after."""
-    from services.node_metrics_store import NodeMetricsStore, get_store, set_store
+    from hive_conductor.services.node_metrics_store import NodeMetricsStore, get_store, set_store
 
     original = get_store()
     set_store(NodeMetricsStore())
@@ -112,7 +109,7 @@ def isolated_store(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_append_and_len(isolated_store: Any) -> None:
-    from services.node_metrics_store import NodeObservation
+    from hive_conductor.services.node_metrics_store import NodeObservation
 
     isolated_store.append(
         NodeObservation(
@@ -133,7 +130,7 @@ def test_append_and_len(isolated_store: Any) -> None:
 
 
 def test_clear_drops_all_observations(isolated_store: Any) -> None:
-    from services.node_metrics_store import NodeObservation
+    from hive_conductor.services.node_metrics_store import NodeObservation
 
     isolated_store.append(
         NodeObservation(
@@ -155,7 +152,7 @@ def test_clear_drops_all_observations(isolated_store: Any) -> None:
 
 
 def test_ring_buffer_evicts_oldest_at_capacity() -> None:
-    from services.node_metrics_store import NodeMetricsStore, NodeObservation
+    from hive_conductor.services.node_metrics_store import NodeMetricsStore, NodeObservation
 
     store = NodeMetricsStore(max_observations=3)
     for i in range(5):
@@ -192,7 +189,7 @@ def _seed_n(
     node_id: str = "x",
     dag_id: str = "d",
 ) -> None:
-    from services.node_metrics_store import NodeObservation
+    from hive_conductor.services.node_metrics_store import NodeObservation
 
     store.append(
         NodeObservation(
@@ -241,7 +238,7 @@ def test_filter_dag_id(isolated_store: Any) -> None:
 
 def test_filter_window_cutoff_excludes_old_observations(isolated_store: Any) -> None:
     """A recorded_at older than the cutoff must be excluded."""
-    from services.node_metrics_store import NodeObservation
+    from hive_conductor.services.node_metrics_store import NodeObservation
 
     now = datetime(2026, 5, 22, 12, 0, 0, tzinfo=UTC)
     isolated_store.append(
@@ -292,7 +289,7 @@ def test_aggregate_empty_reports_nothing_measured() -> None:
     `None` is the honest answer to "how many tokens", and `tokens_measured`
     is how a reader tells the two apart (#698).
     """
-    from services.node_metrics_store import NodeMetricsStore
+    from hive_conductor.services.node_metrics_store import NodeMetricsStore
 
     store = NodeMetricsStore()
     agg = store.aggregate(window_seconds=3600)
@@ -329,7 +326,7 @@ def test_aggregate_success_rate(isolated_store: Any) -> None:
 
 
 def test_aggregate_tokens_and_cost(isolated_store: Any) -> None:
-    from services.node_metrics_store import NodeObservation
+    from hive_conductor.services.node_metrics_store import NodeObservation
 
     isolated_store.append(
         NodeObservation(
@@ -371,7 +368,7 @@ def test_aggregate_tokens_and_cost(isolated_store: Any) -> None:
 
 def test_aggregate_single_observation_percentile_is_identity() -> None:
     """One value → p50 == p95 == p99 == that value."""
-    from services.node_metrics_store import NodeMetricsStore
+    from hive_conductor.services.node_metrics_store import NodeMetricsStore
 
     store = NodeMetricsStore()
     _seed_n(store, "x", "p", 42)
@@ -389,7 +386,7 @@ def test_percentile_is_absent_for_an_empty_list() -> None:
     the same "unmeasured read as best" this change removes one layer down
     (Codex, #698).
     """
-    from services.node_metrics_store import _percentile
+    from hive_conductor.services.node_metrics_store import _percentile
 
     assert _percentile([], 50) is None
 
@@ -435,7 +432,7 @@ def test_observation_dict_has_isoformat_timestamp(isolated_store: Any) -> None:
 
 
 def test_record_run_completion_ingests_every_node(isolated_store: Any) -> None:
-    from services.node_metrics_store import record_run_completion
+    from hive_conductor.services.node_metrics_store import record_run_completion
 
     run = _fake_record(
         run_id="r-001",
@@ -464,7 +461,7 @@ def test_record_run_completion_ingests_every_node(isolated_store: Any) -> None:
 
 
 def test_record_run_completion_none_is_noop(isolated_store: Any) -> None:
-    from services.node_metrics_store import record_run_completion
+    from hive_conductor.services.node_metrics_store import record_run_completion
 
     assert record_run_completion(None) == 0
     assert len(isolated_store) == 0
@@ -472,7 +469,7 @@ def test_record_run_completion_none_is_noop(isolated_store: Any) -> None:
 
 def test_record_run_completion_handles_missing_fields(isolated_store: Any) -> None:
     """run_record duck-typed with missing attrs → defaults safely."""
-    from services.node_metrics_store import record_run_completion
+    from hive_conductor.services.node_metrics_store import record_run_completion
 
     class _Empty:
         pass
@@ -484,7 +481,7 @@ def test_record_run_completion_handles_missing_fields(isolated_store: Any) -> No
 
 def test_record_run_completion_canonical_status_coerced() -> None:
     """Canonical RunStatus values normalize to the metrics phase vocabulary."""
-    from services.node_metrics_store import (
+    from hive_conductor.services.node_metrics_store import (
         NodeMetricsStore,
         record_run_completion,
         set_store,
@@ -507,7 +504,7 @@ def test_record_run_completion_canonical_status_coerced() -> None:
 def test_set_store_swaps_module_singleton() -> None:
     """The bridge / tests can hot-swap the store via set_store; the
     contract is parallel to feedback_service.set_outcome_store."""
-    from services.node_metrics_store import (
+    from hive_conductor.services.node_metrics_store import (
         NodeMetricsStore,
         get_store,
         set_store,
@@ -585,7 +582,7 @@ def test_metrics_observations_limit_clamped(authed_client: Any, isolated_store: 
 
 def test_metrics_endpoint_unauthenticated_returns_401() -> None:
     from fastapi.testclient import TestClient
-    from main import app
+    from hive_conductor.main import app
 
     client = TestClient(app)
     r = client.get("/v1/dag-metrics")

@@ -15,16 +15,13 @@ process.
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-from services.dag_run_store import (  # noqa: E402
+from hive_conductor.services.dag_run_store import (  # noqa: E402
     MAX_EVENTS_PER_RUN,
     MAX_RESULT_CHARS,
     MAX_RUNS,
@@ -222,8 +219,8 @@ class TestTheBoundIsStatedAndEnforced:
     async def test_the_retention_endpoint_states_the_bound(self) -> None:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from routes import dag_runs as dag_runs_routes
-        from services import dag_run_store
+        from hive_conductor.routes import dag_runs as dag_runs_routes
+        from hive_conductor.services import dag_run_store
 
         app = FastAPI()
         app.include_router(dag_runs_routes.router, prefix="/v1/dag-runs")
@@ -251,7 +248,7 @@ class TestTheBoundIsStatedAndEnforced:
         """
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from routes import dag_runs as dag_runs_routes
+        from hive_conductor.routes import dag_runs as dag_runs_routes
 
         app = FastAPI()
         app.include_router(dag_runs_routes.router, prefix="/v1/dag-runs")
@@ -464,13 +461,13 @@ class TestTheRecordIsBoundedAcrossNodesToo:
 
     @staticmethod
     def _bounded(result: dict[str, Any]) -> dict[str, Any]:
-        from services.dag_run_store import _bounded
+        from hive_conductor.services.dag_run_store import _bounded
 
         return _bounded(result)
 
     @pytest.mark.ac("SPEC-083026-2601/AC-5")
     def test_the_total_is_bounded_however_many_nodes_there_are(self) -> None:
-        from services.dag_run_store import MAX_RESULT_CHARS_PER_RUN
+        from hive_conductor.services.dag_run_store import MAX_RESULT_CHARS_PER_RUN
 
         trimmed = self._bounded(self._result(nodes=500, chars=5000))
         total = sum(len(n["response"]) for n in trimmed["node_results"].values())
@@ -485,7 +482,7 @@ class TestTheRecordIsBoundedAcrossNodesToo:
 
     @pytest.mark.ac("SPEC-083026-2601/AC-5")
     def test_a_small_run_is_not_touched_by_the_total(self) -> None:
-        from services.dag_run_store import MAX_RESULT_CHARS
+        from hive_conductor.services.dag_run_store import MAX_RESULT_CHARS
 
         trimmed = self._bounded(self._result(nodes=3, chars=100))
         assert all(len(n["response"]) == 100 for n in trimmed["node_results"].values())
@@ -502,7 +499,7 @@ class TestABookkeepingFailureIsNotAnExecutionFailure:
 
     @staticmethod
     def _source() -> str:
-        return (_BACKEND / "services/chat_completion.py").read_text()
+        return (_BACKEND / "hive_conductor/services/chat_completion.py").read_text()
 
     @pytest.mark.ac("SPEC-083026-2601/AC-2")
     def test_the_status_comes_from_whether_the_graph_ran(self) -> None:
@@ -545,11 +542,11 @@ class TestTheChatProducerDrivenEndToEnd:
 
     @staticmethod
     def _install(monkeypatch: Any, store: Any, *, events_fail: bool, exec_fails: bool) -> None:
-        import services.dag_execution_scope as scope_module
-        import services.dag_run_store as run_store_module
-        import services.graph_runner as graph_runner_module
-        import stores
-        from services.dag_execution_scope import DagExecutionScope
+        import hive_conductor.services.dag_execution_scope as scope_module
+        import hive_conductor.services.dag_run_store as run_store_module
+        import hive_conductor.services.graph_runner as graph_runner_module
+        import hive_conductor.stores as stores
+        from hive_conductor.services.dag_execution_scope import DagExecutionScope
 
         stores.dags["d-1"] = {"id": "d-1", "nodes": [], "edges": []}
 
@@ -577,7 +574,7 @@ class TestTheChatProducerDrivenEndToEnd:
 
     @pytest.mark.ac("SPEC-083026-2601/AC-2")
     async def test_a_clean_run_finishes_completed(self, monkeypatch: Any) -> None:
-        from services.chat_completion import _tool_run_workflow
+        from hive_conductor.services.chat_completion import _tool_run_workflow
 
         store = DagRunStore(records=FakeRecords())
         self._install(monkeypatch, store, events_fail=False, exec_fails=False)
@@ -589,7 +586,7 @@ class TestTheChatProducerDrivenEndToEnd:
     async def test_a_run_whose_recording_failed_is_still_completed(self, monkeypatch: Any) -> None:
         """The defect: the `try` covers the event writes, so a failing
         `append_event` used to mark a DAG that had finished as `failed`."""
-        from services.chat_completion import _tool_run_workflow
+        from hive_conductor.services.chat_completion import _tool_run_workflow
 
         store = DagRunStore(records=FakeRecords())
         self._install(monkeypatch, store, events_fail=True, exec_fails=False)
@@ -600,7 +597,7 @@ class TestTheChatProducerDrivenEndToEnd:
 
     @pytest.mark.ac("SPEC-083026-2601/AC-2")
     async def test_a_run_that_did_not_execute_is_failed(self, monkeypatch: Any) -> None:
-        from services.chat_completion import _tool_run_workflow
+        from hive_conductor.services.chat_completion import _tool_run_workflow
 
         store = DagRunStore(records=FakeRecords())
         self._install(monkeypatch, store, events_fail=False, exec_fails=True)
@@ -612,7 +609,7 @@ class TestTheChatProducerDrivenEndToEnd:
     async def test_an_unknown_dag_is_refused_before_a_run_is_started(
         self, monkeypatch: Any
     ) -> None:
-        from services.chat_completion import _tool_run_workflow
+        from hive_conductor.services.chat_completion import _tool_run_workflow
 
         store = DagRunStore(records=FakeRecords())
         self._install(monkeypatch, store, events_fail=False, exec_fails=False)
@@ -626,8 +623,8 @@ class TestTheChatProducerDrivenEndToEnd:
     ) -> None:
         """The scorer is commentary on a run, not part of it. Its failure has
         the same standing as a failed event write: the graph still ran."""
-        import services.eval_judge as eval_judge_module
-        from services.chat_completion import _tool_run_workflow
+        import hive_conductor.services.eval_judge as eval_judge_module
+        from hive_conductor.services.chat_completion import _tool_run_workflow
 
         store = DagRunStore(records=FakeRecords())
         self._install(monkeypatch, store, events_fail=False, exec_fails=False)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from adapters.maistro_core import StubAgentPort
+from hive_conductor.adapters.maistro_core import StubAgentPort
 
 
 @pytest.mark.asyncio

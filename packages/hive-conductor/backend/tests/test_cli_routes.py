@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import pathlib
-import sys
 from typing import Any
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
 
-import stores  # noqa: E402
+import hive_conductor.stores as stores  # noqa: E402
 
 
 def _clear(store) -> None:

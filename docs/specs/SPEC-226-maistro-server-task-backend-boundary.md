@@ -30,7 +30,7 @@ owners:
 ADR-096 establishes that maistro-server is the canonical backend for production task
 execution and that Hive Conductor must not own a production `TaskRunner` — Hive is a
 UI/BFF adapter that calls maistro-server for real execution. As implemented today,
-`packages/hive-conductor/backend/services/engine.py::EngineService.start()`
+`packages/hive-conductor/backend/hive_conductor/services/engine.py::EngineService.start()`
 unconditionally constructs `maistro.tasks.queue.TaskQueue` and
 `maistro.tasks.runner.TaskRunner` in-process and runs the engineering/PM executor
 locally — there is no `HIVE_MODE=demo` gate and no call into maistro-server's
@@ -62,7 +62,7 @@ unimplemented feature.
 
 ## Decision
 
-`packages/hive-conductor/backend/adapters/task_backend.py` (new):
+`packages/hive-conductor/backend/hive_conductor/adapters/task_backend.py` (new):
 
 ```python
 class TaskBackend(Protocol):
@@ -126,5 +126,5 @@ delegate to `self._backend` instead of touching `TaskQueue`/`TaskRunner` directl
 ## References
 
 - [ADR-096: Hive Conductor / maistro-server boundary](../adr/ADR-096-hive-server-boundary.md)
-- `packages/hive-conductor/backend/services/engine.py`
+- `packages/hive-conductor/backend/hive_conductor/services/engine.py`
 - `packages/maistro-server/src/maistro_server/api/tasks.py`

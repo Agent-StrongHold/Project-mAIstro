@@ -51,9 +51,9 @@ Hive Conductor is a **mission-control style UI** with a **FastAPI stub** for loc
 
 ## Acceptance Criteria
 
-- **AC-1**: `uvicorn main:app --port 8101` from `packages/hive-conductor/backend` exposes `/health`, `/health/ready`, and `/v1/*` routes used by the UI.
+- **AC-1**: `uvicorn hive_conductor.main:app --port 8101` from `packages/hive-conductor/backend` exposes `/health`, `/health/ready`, and `/v1/*` routes used by the UI.
 - **AC-2**: `npm run dev` in `packages/hive-conductor/frontend` proxies API calls to 8101.
-- **AC-3**: `docker build -f packages/hive-conductor/Dockerfile packages/hive-conductor` produces an image that serves API + SPA on 8101.
+- **AC-3**: `docker build -f packages/hive-conductor/Dockerfile .` — run from the monorepo root, because the Dockerfile's `COPY packages/...` sources are root-relative — produces an image that serves API + SPA on 8101.
 - **AC-4**: CI runs frontend build and backend pytest for this package.
 
 ## References

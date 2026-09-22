@@ -13,20 +13,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import hive_conductor.routes.auth as auth_routes
+import hive_conductor.services.oauth_login as oauth_login
+import hive_conductor.stores as stores
 import httpx
 import jwt as pyjwt
 import pytest
-import routes.auth as auth_routes
-import services.oauth_login as oauth_login
-import stores
-from config import OAuthProviderSettings, Settings, get_settings
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
-from logging_setup import OAuthCallbackQueryFilter
-from main import app
-from pydantic import ValidationError
-from services.model_store import JsonStore
-from services.oauth_login import (
+from hive_conductor.config import OAuthProviderSettings, Settings, get_settings
+from hive_conductor.logging_setup import OAuthCallbackQueryFilter
+from hive_conductor.main import app
+from hive_conductor.services.model_store import JsonStore
+from hive_conductor.services.oauth_login import (
     OAUTH_STATE_TTL_SECONDS,
     HiveIdentityLinkStore,
     IdentityLinkConflictError,
@@ -36,6 +35,7 @@ from services.oauth_login import (
     oauth_callback_path,
     oauth_state_cookie_name,
 )
+from pydantic import ValidationError
 
 from maistro.auth.oauth import InMemoryStateStore, OAuthStateEntry
 from maistro.security.auth_throttle import AuthLimits, AuthThrottle
@@ -1431,7 +1431,7 @@ async def test_shutdown_logs_oauth_close_failure(
 ) -> None:
     import logging
 
-    import main
+    import hive_conductor.main as main
 
     async def _boom() -> None:
         raise RuntimeError("close failed")

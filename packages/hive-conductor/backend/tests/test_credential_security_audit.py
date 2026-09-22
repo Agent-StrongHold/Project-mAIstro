@@ -25,7 +25,7 @@ from __future__ import annotations
 import pathlib
 
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 
 def _login(username: str, password: str) -> TestClient:
@@ -211,13 +211,13 @@ def test_no_new_lambda_s_s_in_critical_callsites() -> None:
     # Allowlist — files known to use the pattern; tracked for refactor.
     # Paths are relative to repo_root = parents[3] (the `packages/` dir).
     ALLOWLIST = {
-        "hive-conductor/backend/services/mcp_client.py:51",
+        "hive-conductor/backend/hive_conductor/services/mcp_client.py:51",
         # Centralised secret helpers — one lambda per file (refactored from inline callsites).
         # `routes/agents.py` left this list in #129: `_build_invoke_context` read
         # Atlassian PATs only for `POST /{agent_id}/invoke`, and both went with
         # POC mode. One fewer place a secret is read, not one fewer line pinned.
-        "hive-conductor/backend/services/program_hyperagent.py:28",
-        "hive-conductor/backend/services/tool_primitives.py:66",
+        "hive-conductor/backend/hive_conductor/services/program_hyperagent.py:28",
+        "hive-conductor/backend/hive_conductor/services/tool_primitives.py:66",
     }
     new = [h for h in hits if h not in ALLOWLIST]
     assert not new, (

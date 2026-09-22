@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
 
 
 def _client(peer: str | None = None) -> TestClient:
@@ -32,7 +32,7 @@ def _client(peer: str | None = None) -> TestClient:
 @pytest.fixture
 def trust_local_proxy(monkeypatch: pytest.MonkeyPatch):
     """Name 10.0.0.0/8 as a trusted proxy, as a real deployment would."""
-    from config import get_settings
+    from hive_conductor.config import get_settings
 
     monkeypatch.setenv("TRUSTED_PROXY_IPS", "10.0.0.0/8")
     get_settings.cache_clear()

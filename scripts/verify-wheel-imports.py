@@ -167,6 +167,7 @@ PACKAGES = [
     Package("maistro-core", "maistro", CORE_PUBLIC_SURFACE, widest_extra="all"),
     Package("maistro-canvas", "maistro_canvas", widest_extra="export"),
     Package("maistro-server", "maistro_server"),
+    Package("hive-conductor", "hive_conductor"),
     Package("maistro-turing", "maistro_turing"),
     Package(
         "maistro-design",
@@ -222,22 +223,6 @@ PACKAGES = [
 # stops being true the entry must go.
 SKIPPED_DISTS = {
     "maistro-workspace": "dependency-only meta package, builds an empty wheel by design",
-    "hive-conductor": (
-        "flat module layout: packages/hive-conductor/backend/ has no package root "
-        "(no backend/__init__.py) and the app imports its own modules "
-        "top-level-relative — `from config import get_settings`, `from routes "
-        "import ...`, `from middleware.auth import AuthMiddleware` — which only "
-        "resolve with backend/ itself on sys.path (the Dockerfile sets "
-        "PYTHONPATH=/app/backend; backend/tests/conftest.py inserts it at "
-        "sys.path[0]). The wheel therefore ships those sources remapped under a "
-        "hive_conductor/ prefix, and `import hive_conductor.main` raises "
-        "ModuleNotFoundError: config. Lifting this skip means giving backend/ a "
-        "real package root and rewriting every intra-app import to be "
-        "package-relative, then updating the Dockerfile PYTHONPATH and the "
-        "conftest sys.path shim to match — a refactor, not a packaging change. "
-        "It is an application, not a published library (not in the PyPI set), so "
-        "the build itself is the coverage that matters here"
-    ),
 }
 
 # Probe executed inside the clean venv. Prints one JSON object so the parent can

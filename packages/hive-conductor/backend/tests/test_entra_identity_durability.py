@@ -5,11 +5,11 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
+import hive_conductor.stores as stores
 import pytest
-import stores
-from models.schemas import HiveUser
-from services.model_store import JsonStore
-from services.oauth_login import HiveIdentityLinkStore, IdentityLinkConflictError
+from hive_conductor.models.schemas import HiveUser
+from hive_conductor.services.model_store import JsonStore
+from hive_conductor.services.oauth_login import HiveIdentityLinkStore, IdentityLinkConflictError
 
 from maistro.state import PersistedStore, State
 

@@ -30,7 +30,7 @@ def _fresh_settings(monkeypatch: pytest.MonkeyPatch, **env: str):
     `.env` would make a test about the *default* pass or fail for a reason that
     has nothing to do with the code.
     """
-    from config import Settings
+    from hive_conductor.config import Settings
 
     for key in ("SESSION_COOKIE_SECURE", "ALLOW_INSECURE_TRANSPORT", "TRUSTED_PROXY_IPS"):
         monkeypatch.delenv(key, raising=False)
@@ -114,7 +114,9 @@ class TestStartupRefusesAPlaintextSession:
         the call sits, not what it returns."""
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "hive_conductor" / "main.py").read_text(
+            encoding="utf-8"
+        )
         start = source.index("async def lifespan(")
         call = source.index("assert_session_transport_is_safe(", start)
         before = source[start:call]
@@ -129,12 +131,12 @@ class TestTheCookieCarriesThePolicy:
     def test_login_marks_the_cookie_secure_when_configured(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         monkeypatch.setenv("SESSION_COOKIE_SECURE", "true")
         get_settings.cache_clear()
         try:
-            from routes.auth import _cookie_secure
+            from hive_conductor.routes.auth import _cookie_secure
 
             assert _cookie_secure() is True
         finally:
@@ -143,12 +145,12 @@ class TestTheCookieCarriesThePolicy:
     def test_samesite_reaches_the_cookie(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """It was hardcoded `"lax"`, so a deployment that wanted `strict` had
         no way to ask."""
-        from config import get_settings
+        from hive_conductor.config import get_settings
 
         monkeypatch.setenv("SESSION_COOKIE_SAMESITE", "strict")
         get_settings.cache_clear()
         try:
-            from routes.auth import _cookie_samesite
+            from hive_conductor.routes.auth import _cookie_samesite
 
             assert _cookie_samesite() == "strict"
         finally:
@@ -158,8 +160,8 @@ class TestTheCookieCarriesThePolicy:
         """Read per call rather than captured at import, so a deployment's
         settings apply without re-importing the module — and so these tests
         mean what they say."""
-        from config import get_settings
-        from routes.auth import _cookie_secure
+        from hive_conductor.config import get_settings
+        from hive_conductor.routes.auth import _cookie_secure
 
         monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
         get_settings.cache_clear()
@@ -177,9 +179,9 @@ class TestTheCookieCarriesThePolicy:
         was set with, so `delete_cookie` has to read the same helpers."""
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "routes" / "auth.py").read_text(
-            encoding="utf-8"
-        )
+        source = (
+            Path(__file__).resolve().parents[1] / "hive_conductor" / "routes" / "auth.py"
+        ).read_text(encoding="utf-8")
         start = source.index("response.delete_cookie(")
         # Balanced-paren scan rather than `index(")")`, which stops inside
         # `_cookie_samesite()` — the very call this is checking for.

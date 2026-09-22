@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from services.dag_execution_scope import DagExecutionScope
+from hive_conductor.services.dag_execution_scope import DagExecutionScope
 
 from maistro.graph.definitions import Graph
 from maistro.runs.model import GraphSnapshot, Run, RunStatus
@@ -29,7 +29,7 @@ def _legacy_dag() -> dict:
 
 
 def _queued_run(*, mode: str = "interactive", source: str = "hive_legacy_dag") -> tuple[Run, Graph]:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     graph = runner.graph_from_legacy_dag(_legacy_dag(), workspace_id="ws-1", project_id="project-1")
     run = Run(
@@ -50,7 +50,7 @@ def _queued_run(*, mode: str = "interactive", source: str = "hive_legacy_dag") -
 
 
 def test_recovery_resolver_rehydrates_node_and_execution_mode_from_run_snapshot() -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     run, graph = _queued_run(mode="interactive")
     resolver = runner._recovery_resolver(run)
@@ -67,7 +67,7 @@ def test_recovery_resolver_rejects_a_run_whose_mode_is_not_a_legacy_mode() -> No
     """The durable snapshot is the only source of truth for how the Run may
     execute; an execution_mode outside the two the adapter admits is not a
     default waiting to happen but a corrupt admission."""
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     run, _graph = _queued_run(mode="batch")
     with pytest.raises(ValueError, match="invalid legacy execution_mode"):
@@ -76,7 +76,7 @@ def test_recovery_resolver_rejects_a_run_whose_mode_is_not_a_legacy_mode() -> No
 
 @pytest.mark.asyncio
 async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.MonkeyPatch) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     graph_store = object()
     run_store = object()
@@ -110,7 +110,7 @@ async def test_recovery_owns_only_hive_legacy_admissions(monkeypatch: pytest.Mon
 async def test_admitted_run_persists_execution_mode_needed_after_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     seen: dict = {}
 
@@ -164,7 +164,7 @@ async def test_admitted_run_persists_execution_mode_needed_after_restart(
 async def test_recovery_cadence_starts_runs_a_tick_and_stops(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.dag_recovery as recovery_driver
+    import hive_conductor.services.dag_recovery as recovery_driver
 
     ticked = asyncio.Event()
 
@@ -195,7 +195,7 @@ async def test_recovery_cadence_survives_a_failing_tick_and_logs_recoveries(
     tick is reported, not swallowed: the log is the driver's only surface."""
     import logging
 
-    import services.dag_recovery as recovery_driver
+    import hive_conductor.services.dag_recovery as recovery_driver
 
     ticks = {"count": 0}
     recovered = asyncio.Event()
@@ -228,7 +228,7 @@ async def test_recovery_cadence_cancellation_during_a_tick_ends_the_task(
 ) -> None:
     """A cancel delivered while a tick is in flight must propagate as a
     cancellation, not be logged as another malformed candidate."""
-    import services.dag_recovery as recovery_driver
+    import hive_conductor.services.dag_recovery as recovery_driver
 
     in_tick = asyncio.Event()
 
@@ -256,7 +256,7 @@ async def test_starting_the_recovery_cadence_twice_keeps_one_task(
 ) -> None:
     """`start` is idempotent: two starts must not leave two cadences ticking,
     or one shutdown join would strand the other."""
-    import services.dag_recovery as recovery_driver
+    import hive_conductor.services.dag_recovery as recovery_driver
 
     ticked = asyncio.Event()
 
@@ -282,7 +282,7 @@ async def test_wakeup_owns_only_hive_legacy_admissions(monkeypatch: pytest.Monke
     """The timed half of the recovery cadence wakes due continuations through
     the canonical seam with the same ownership rule as the bootstrap half, and
     reports its crash dispositions on the Container's canonical Event bus."""
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     event_bus = object()
     container = SimpleNamespace(
@@ -317,7 +317,7 @@ async def test_wakeup_is_a_noop_without_a_container_or_graph_store(
 ) -> None:
     """Standalone Conductor deployments keep today's behavior: no Container,
     no canonical tick, no fabricated work."""
-    import services.canonical_dag_runner as runner
+    import hive_conductor.services.canonical_dag_runner as runner
 
     async def _boom(**kwargs):  # pragma: no cover - must not be reached
         raise AssertionError("wake_due_dag_runs must not reach the seam without a Container")
@@ -339,7 +339,7 @@ async def test_recovery_cadence_wakes_due_runs_and_survives_a_failed_half(
 ) -> None:
     """The cadence's two halves are isolated: a bootstrap failure must not
     silence the timed wakeup in the same tick, and neither kills the loop."""
-    import services.dag_recovery as cadence
+    import hive_conductor.services.dag_recovery as cadence
 
     calls: list[str] = []
 

@@ -71,13 +71,15 @@ def test_production_python_filter_and_module_names() -> None:
     checker = _module()
 
     assert checker._is_production_python("packages/example/src/example/service.py")
-    assert checker._is_production_python("packages/hive-conductor/backend/routes/runs.py")
+    assert checker._is_production_python(
+        "packages/hive-conductor/backend/hive_conductor/routes/runs.py"
+    )
     assert not checker._is_production_python("packages/example/tests/test_service.py")
     assert not checker._is_production_python("docs/example.py")
     assert checker._module_name("packages/example/src/example/service.py") == "example.service"
     assert (
-        checker._module_name("packages/hive-conductor/backend/routes/runs.py")
-        == "packages.hive-conductor.backend.routes.runs"
+        checker._module_name("packages/hive-conductor/backend/hive_conductor/routes/runs.py")
+        == "packages.hive-conductor.backend.hive_conductor.routes.runs"
     )
 
 
@@ -213,9 +215,11 @@ def test_ontology_falls_back_to_empty_when_base_text_missing(
 def test_module_name_resolves_hive_conductor_path() -> None:
     checker = _module()
 
-    name = checker._module_name("packages/hive-conductor/backend/services/dag_recovery.py")
+    name = checker._module_name(
+        "packages/hive-conductor/backend/hive_conductor/services/dag_recovery.py"
+    )
 
-    assert name == "packages.hive-conductor.backend.services.dag_recovery"
+    assert name == "packages.hive-conductor.backend.hive_conductor.services.dag_recovery"
 
 
 def _fake_completed(stdout: str = "", returncode: int = 0, **_unused) -> SimpleNamespace:
@@ -226,8 +230,8 @@ def test_changed_python_pairs_classifies_rename_copy_add_and_skips() -> None:
     checker = _module()
     monkeypatch = pytest.MonkeyPatch()
     diff_output = (
-        "R100\told/path/svc.py\tpackages/hive-conductor/backend/svc.py\n"
-        "A\tpackages/hive-conductor/backend/new_test_target.py\n"
+        "R100\told/path/svc.py\tpackages/hive-conductor/backend/hive_conductor/svc.py\n"
+        "A\tpackages/hive-conductor/backend/hive_conductor/new_test_target.py\n"
         "M\tpackages/maistro-core/src/maistro/mod.py\n"
         "D\tpackages/hive-conductor/backend/gone.py\n"
         "\tunrecognized row\n"
@@ -239,8 +243,11 @@ def test_changed_python_pairs_classifies_rename_copy_add_and_skips() -> None:
         monkeypatch.undo()
 
     assert pairs == [
-        ("old/path/svc.py", "packages/hive-conductor/backend/svc.py"),
-        (None, "packages/hive-conductor/backend/new_test_target.py"),
+        (
+            "old/path/svc.py",
+            "packages/hive-conductor/backend/hive_conductor/svc.py",
+        ),
+        (None, "packages/hive-conductor/backend/hive_conductor/new_test_target.py"),
         ("packages/maistro-core/src/maistro/mod.py",) * 2,
     ]
 
@@ -259,7 +266,7 @@ def test_shared_owner_failures_tolerates_missing_base_blob(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checker = _module()
-    existing = "packages/hive-conductor/backend/routes/dags.py"
+    existing = "packages/hive-conductor/backend/hive_conductor/routes/dags.py"
     monkeypatch.setattr(checker, "_changed_python_pairs", lambda base: [(existing, existing)])
     monkeypatch.setattr("subprocess.run", lambda *a, **k: _fake_completed(returncode=1))
     monkeypatch.setattr(checker, "new_shared_owner_violations", lambda *a, **k: [])

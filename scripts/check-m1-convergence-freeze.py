@@ -337,7 +337,10 @@ def _is_production_python(path: str) -> bool:
     if not path.endswith(".py") or "/tests/" in path or Path(path).name.startswith("test_"):
         return False
     return "/src/" in path or path.startswith(
-        ("packages/hive-conductor/backend/", "packages/maistro-turing/backend/")
+        (
+            "packages/hive-conductor/backend/hive_conductor/",
+            "packages/maistro-turing/backend/maistro_turing_backend/",
+        )
     )
 
 

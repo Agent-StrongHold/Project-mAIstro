@@ -98,3 +98,23 @@ def test_committed_baseline_is_well_formed(module):
     for key in tolerated:
         check = key.split("::", 1)[0]
         assert check in known, f"baseline entry {key!r} names unknown check {check!r}"
+
+
+def test_routes_check_introspects_the_real_app(module):
+    """The routes check imports the real app and finds only tolerated gaps.
+
+    This is the path CI exercises and the one the #1134 namespace move
+    rewired: the check imports ``hive_conductor.main`` and the auth
+    middleware through the package namespace. If that import breaks, the
+    check returns a note instead of silently passing — this test fails
+    first, in the suite, before the gate ever runs.
+    """
+    gaps, note = module.check_routes()
+
+    assert note is None, f"routes check could not run: {note}"
+    tolerated = set(module.load_baseline())
+    for gap in gaps:
+        assert gap.key() in tolerated, (
+            f"{gap.key()} is a new enumeration gap — run "
+            f"`uv run python scripts/check_enumerations.py` and review it"
+        )

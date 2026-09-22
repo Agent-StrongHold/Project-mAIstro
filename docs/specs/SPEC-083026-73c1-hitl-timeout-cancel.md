@@ -33,7 +33,7 @@ source:
   - packages/maistro-core/src/maistro/graph/durable_runs/hitl.py
   - packages/maistro-core/src/maistro/graph/durable_runs/stores.py
   - packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py
-  - packages/hive-conductor/backend/routes/hitl.py
+  - packages/hive-conductor/backend/hive_conductor/routes/hitl.py
 ac-modules:
   AC-1: maistro.graph.durable_runs.hitl
   AC-2: maistro.graph.durable_runs.stores

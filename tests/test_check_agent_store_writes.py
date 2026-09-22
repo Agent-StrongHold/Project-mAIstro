@@ -24,7 +24,9 @@ SCRIPT = ROOT / "scripts" / "check-agent-store-writes.py"
 
 #: The gate's allowlist paths are fixed relative to the scanned root, so a
 #: synthetic tree exercises them by recreating these exact locations.
-_SERVICE_RELPATH = "packages/hive-conductor/backend/services/agent_materialization.py"
+_SERVICE_RELPATH = (
+    "packages/hive-conductor/backend/hive_conductor/services/agent_materialization.py"
+)
 _SERVER_RELPATH = "packages/maistro-server/src/maistro_server/main.py"
 
 
@@ -141,7 +143,7 @@ def test_the_definition_module_holds_only_the_demo_seed(gate: Any, tmp_path: Pat
         "def rogue() -> None:\n"
         '    agents["rogue"] = object()\n'
     )
-    _write(tmp_path, "packages/hive-conductor/backend/stores.py", stores_src)
+    _write(tmp_path, "packages/hive-conductor/backend/hive_conductor/stores.py", stores_src)
     details = _details(gate, tmp_path)
     assert len(details) == 1
     assert "non-seed site" in details[0]

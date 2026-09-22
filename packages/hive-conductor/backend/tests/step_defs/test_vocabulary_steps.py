@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from pytest_bdd import given, parsers, scenarios, then, when
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 FEATURES = Path(__file__).resolve().parents[3] / "features"
 TEMPLATES = Path(__file__).resolve().parents[3] / "eval" / "departments" / "yaml"

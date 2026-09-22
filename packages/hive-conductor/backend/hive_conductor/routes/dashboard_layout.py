@@ -1,0 +1,202 @@
+"""Dashboard layout persistence — per-user widget configuration.
+
+Layouts live in `stores.dashboard_layouts`, the same persistence boundary as
+every other durable Conductor collection, through
+`services/dashboard_layouts.py` (#340, ADR-082926-3b80). They used to live in a
+module dict mirrored to a JSON file inside the image, with a second
+fire-and-forget copy in PostgREST that the read path consulted first.
+
+The read-only routes below this one — demos, widget examples, deck templates —
+serve files shipped in the image. They are catalogue, not user state, and are
+deliberately still read straight off disk.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from pathlib import Path
+from typing import ClassVar
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+
+from hive_conductor.services import dashboard_layouts
+from hive_conductor.services.dashboard_safety import sanitize_dashboard_layout
+
+_DEMO_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+router = APIRouter(prefix="/v1/dashboard", tags=["dashboard"])
+logger = logging.getLogger("hive.dashboard")
+
+
+def _user_id(request: Request) -> str:
+    """The authenticated principal, or 401.
+
+    There used to be a `"dev"` fallback here. Every unauthenticated caller
+    would then share one layout key -- a pooled bucket rather than a default,
+    and a cross-principal leak the moment the middleware stopped covering this
+    path. The middleware does cover it today; the refusal is what keeps that
+    true if it ever stops.
+    """
+    user = getattr(request.state, "user", None) or {}
+    principal = user.get("id") or user.get("username")
+    if not principal:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return str(principal)
+
+
+class WidgetConfig(BaseModel):
+    id: str
+    type: str
+    title: str
+    size: str = "1"
+    config: dict | None = None
+
+
+class DashboardLayout(BaseModel):
+    model_config: ClassVar[dict] = {"extra": "allow"}
+    widgets: list[WidgetConfig] = []
+    tabs: list[dict] = []
+    activeTab: int = 0
+    updatedAt: str = ""
+    #: The revision the client believes it edited. Optional: a save without one
+    #: is last-write-wins, which is what the SPA does today. Never persisted --
+    #: it is a claim about the record, not part of it.
+    expectedRevision: int | None = None
+
+
+@router.get("/layout")
+async def get_layout(request: Request) -> dict:
+    """This principal's stored layout, or its preset, or an empty one.
+
+    `effective` rather than `load`, and the same call the chat widget tool
+    makes: two readers of "what is this user looking at" that answer differently
+    is how a widget added through chat replaced a preset instead of joining it.
+    """
+    principal = _user_id(request)
+    record = dashboard_layouts.effective(principal)
+    return {**record.layout, "revision": record.revision}
+
+
+@router.put("/layout")
+async def save_layout(request: Request, body: DashboardLayout) -> dict:
+    """Store this principal's layout, or say it was not stored.
+
+    The `save` call is deliberately outside any `try`. The defect this route
+    had was not a missing write; it was a handler that turned a failed one into
+    `{"ok": true}`. Only the two failures with an answer of their own are
+    caught, and each names what it is.
+    """
+    principal = _user_id(request)
+    payload = body.model_dump(exclude={"expectedRevision"})
+    try:
+        record = dashboard_layouts.save(principal, payload, expected_revision=body.expectedRevision)
+    except dashboard_layouts.LayoutConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "the layout changed since you loaded it",
+                "revision": exc.stored.revision,
+                "layout": exc.stored.layout,
+            },
+        ) from exc
+    except dashboard_layouts.LayoutPersistenceError as exc:
+        logger.error("dashboard layout was not persisted for %s: %s", principal, exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"the layout was not saved: {exc}",
+        ) from exc
+    return {"ok": True, "revision": record.revision, "updatedAt": record.updated_at.isoformat()}
+
+
+@router.get("/metrics")
+async def get_metrics() -> dict:
+    """Get live dashboard metrics for the header KPI cards."""
+    from pathlib import Path
+
+    agents_path = Path(__file__).parent.parent / "data" / "agents.json"
+    agent_count = 0
+    try:
+        agent_count = len(json.loads(agents_path.read_text()))
+    except Exception:
+        agent_count = 9  # fallback to configured agent count
+    return {
+        "active_agents": agent_count,
+        "runs_today": 0,
+        "avg_latency_ms": 0,
+        "total_cost": 0.0,
+        "approval_rate": None,
+        "ttft_ms": 0,
+    }
+
+
+@router.get("/widget-examples")
+async def get_widget_examples(category: str | None = None) -> list[dict]:
+    """Return curated widget example templates."""
+    from pathlib import Path
+
+    path = Path(__file__).parent.parent / "data" / "widget_examples.json"
+    try:
+        examples = json.loads(path.read_text())
+    except Exception:
+        return []
+    if category:
+        examples = [e for e in examples if category.lower() in e.get("category", "").lower()]
+    return examples
+
+
+@router.get("/demos")
+async def list_demo_dashboards() -> list[dict]:
+    """List available demo dashboard templates."""
+    from pathlib import Path
+
+    demos_dir = Path(__file__).parent.parent / "data" / "demo_dashboards"
+    if not demos_dir.exists():
+        return []
+    results = []
+    for f in sorted(demos_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+            results.append(
+                {
+                    "id": f.stem,
+                    "name": data.get("name", f.stem),
+                    "description": data.get("description", ""),
+                    "widget_count": len(data.get("widgets", [])),
+                }
+            )
+        except Exception:
+            continue
+    return results
+
+
+@router.get("/demos/{demo_id}")
+async def get_demo_dashboard(demo_id: str) -> dict:
+    """Load a demo dashboard template."""
+    import os
+    from pathlib import Path
+
+    # `demo_id` is a URL segment: only a bare template name reaches the
+    # filesystem, and the resolved file must sit inside the demo directory.
+    if not _DEMO_ID.fullmatch(demo_id):
+        return {"error": "not found"}
+    demos = os.path.normpath(str(Path(__file__).parent.parent / "data" / "demo_dashboards"))
+    candidate = os.path.normpath(os.path.join(demos, f"{demo_id}.json"))
+    if not candidate.startswith(demos + os.sep) or not os.path.isfile(candidate):
+        return {"error": "not found"}
+    return sanitize_dashboard_layout(json.loads(Path(candidate).read_text()))
+
+
+@router.get("/deck-templates")
+async def get_deck_templates(category: str | None = None) -> list[dict]:
+    """Return slide template library for the DeckBuilder."""
+    path = Path(__file__).parent.parent / "data" / "deck_templates.json"
+    try:
+        templates = json.loads(path.read_text())
+    except Exception:
+        return []
+    if category:
+        templates = [t for t in templates if t.get("category", "").lower() == category.lower()]
+    return templates

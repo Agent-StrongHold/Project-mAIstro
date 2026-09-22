@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from models.schemas import ChatCompletionRequest
-from routes import chat, voice
+from hive_conductor.models.schemas import ChatCompletionRequest
+from hive_conductor.routes import chat, voice
 
 
 class FakeLLM:
@@ -37,7 +37,7 @@ async def test_ordinary_chat_never_enters_tool_loop(monkeypatch: pytest.MonkeyPa
     fake = FakeLLM()
     monkeypatch.setattr(chat, "build_llm_port", lambda: fake)
 
-    import services.chat_completion as service
+    import hive_conductor.services.chat_completion as service
 
     async def forbidden_tool(*args, **kwargs):
         raise AssertionError("model-driven tool execution must be unreachable")
@@ -101,9 +101,9 @@ async def test_dashboard_edit_stream_never_reaches_model(monkeypatch: pytest.Mon
 async def test_voice_is_conversational_only(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeLLM()
 
-    import config
-    import services.chat_completion as service
-    import services.secrets as secrets
+    import hive_conductor.config as config
+    import hive_conductor.services.chat_completion as service
+    import hive_conductor.services.secrets as secrets
 
     settings = SimpleNamespace(
         litellm_api_base="",

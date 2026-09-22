@@ -30,7 +30,7 @@ NORMAL_CLOSURE = 1000
 
 @pytest.fixture
 def anon_client() -> TestClient:
-    from main import app
+    from hive_conductor.main import app
 
     return TestClient(app)
 
@@ -148,8 +148,8 @@ def test_dag_run_stream_preserves_authenticated_actor(
     admin_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The authenticated socket principal becomes the canonical Run actor."""
-    import services.graph_runner as graph_runner
-    import stores
+    import hive_conductor.services.graph_runner as graph_runner
+    import hive_conductor.stores as stores
 
     dag_id = "ws-actor-attribution"
     stores.dags[dag_id] = {
@@ -216,8 +216,8 @@ def test_dag_run_stream_closes_cleanly_when_the_run_ends_without_a_terminal_even
     """The socket must not hang waiting for a `completed`/`failed` that never
     comes: a stream that simply ends closes the socket through the same
     finally path a terminal break uses."""
-    import services.graph_runner as graph_runner
-    import stores
+    import hive_conductor.services.graph_runner as graph_runner
+    import hive_conductor.stores as stores
 
     dag_id = "ws-stream-exhausts"
     stores.dags[dag_id] = {

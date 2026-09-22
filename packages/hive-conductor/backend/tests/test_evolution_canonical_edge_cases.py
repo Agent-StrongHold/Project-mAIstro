@@ -8,18 +8,18 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from routes.evolution import (
+from hive_conductor.routes.evolution import (
     SeedPopulationBody,
     _actor_principal_id,
     seed_population,
     trigger_cycle,
 )
-from services.evolution import (
+from hive_conductor.services.evolution import (
     CanonicalEvolutionRunError,
     EvolutionUnavailableError,
     _EvolutionService,
 )
-from services.evolution_graph import (
+from hive_conductor.services.evolution_graph import (
     CanonicalExecutionUnavailable,
     _append_execution_ref,
     _BattleInput,
@@ -34,7 +34,7 @@ from maistro.graph.nodes.base import NodeContext
 
 def _evolution_test_app():
     from fastapi import FastAPI
-    from routes import evolution as evolution_routes
+    from hive_conductor.routes import evolution as evolution_routes
 
     app = FastAPI()
     app.include_router(evolution_routes.router, prefix="/v1/evolution")
@@ -64,7 +64,7 @@ def test_actor_provenance_and_cycle_run_id_projection(monkeypatch: pytest.Monkey
             captured["actor_principal_id"] = actor_principal_id
             return "canonical-run-7"
 
-    import services.evolution as evolution_service
+    import hive_conductor.services.evolution as evolution_service
 
     monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: _Service())
     response = asyncio.run(trigger_cycle(requests[1][0]))
@@ -84,7 +84,7 @@ def test_seed_route_uses_the_serialized_service_admission() -> None:
             captured["count"] = count
             return 2, 5
 
-    import services.evolution as evolution_service
+    import hive_conductor.services.evolution as evolution_service
 
     previous = evolution_service._service
     evolution_service._service = _Service()
@@ -100,7 +100,7 @@ def test_seed_route_uses_the_serialized_service_admission() -> None:
 def test_stub_engine_is_domain_state_only_and_bridge_degradation_is_not_executable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_module
+    import hive_conductor.services.engine as engine_module
 
     degraded_engine = SimpleNamespace(agent_port=SimpleNamespace(container=None))
     monkeypatch.setattr(engine_module, "get_engine", lambda: degraded_engine)
@@ -115,7 +115,7 @@ def test_stub_engine_is_domain_state_only_and_bridge_degradation_is_not_executab
 def test_run_one_cycle_rejects_half_initialized_domain_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.evolution_graph as evolution_graph
 
     owner = SimpleNamespace(
         run_store=object(), graph_run_store=object(), project_scope_store=object()
@@ -134,10 +134,10 @@ def test_run_one_cycle_rejects_half_initialized_domain_state(
 def test_cycle_route_when_service_is_not_started_is_explicitly_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution as evolution_service
+    import hive_conductor.services.evolution as evolution_service
 
     def _not_started() -> Any:
-        from services.evolution import EvolutionServiceNotStarted
+        from hive_conductor.services.evolution import EvolutionServiceNotStarted
 
         raise EvolutionServiceNotStarted("EvolutionService not started")
 
@@ -156,9 +156,9 @@ def test_cycle_route_when_service_is_not_started_is_explicitly_unavailable(
 def test_stub_cycle_route_returns_explicit_availability_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_module
-    import services.evolution as evolution_service
-    from adapters.maistro_core import StubAgentPort
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evolution_service
+    from hive_conductor.adapters.maistro_core import StubAgentPort
 
     degraded_engine = SimpleNamespace(agent_port=StubAgentPort())
     monkeypatch.setattr(engine_module, "get_engine", lambda: degraded_engine)
@@ -183,7 +183,7 @@ def test_unavailable_cycle_is_distinguishable_from_execution_failure(
                 "canonical engine Container is unavailable", availability="degraded"
             )
 
-    import services.evolution as evolution_service
+    import hive_conductor.services.evolution as evolution_service
 
     monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: _Unavailable())
     with pytest.raises(HTTPException) as caught:
@@ -221,7 +221,7 @@ def test_canonical_run_failure_projects_identity_status_and_diagnostic(
                 diagnostic=diagnostic,
             )
 
-    import services.evolution as evolution_service
+    import hive_conductor.services.evolution as evolution_service
 
     monkeypatch.setattr(evolution_service, "get_evolution_service", lambda: _Failed())
     with pytest.raises(HTTPException) as caught:
@@ -239,7 +239,7 @@ def test_canonical_run_failure_projects_identity_status_and_diagnostic(
 def test_canonical_owner_reports_engine_not_started(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.engine as engine_module
+    import hive_conductor.services.engine as engine_module
 
     def _not_started() -> Any:
         raise RuntimeError("EngineService not started")
@@ -257,7 +257,7 @@ def test_canonical_owner_uses_legacy_engine_port_fallback(
     )
     engine = SimpleNamespace(agent_port=None, _agent_port=SimpleNamespace(container=owner))
 
-    import services.engine as engine_module
+    import hive_conductor.services.engine as engine_module
 
     monkeypatch.setattr(engine_module, "get_engine", lambda: engine)
     assert canonical_execution_owner() is owner
@@ -273,7 +273,7 @@ def test_canonical_owner_rejects_incomplete_execution_spine() -> None:
 def test_engine_container_wrapper_uses_canonical_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.evolution_graph as evolution_graph
 
     owner = object()
     monkeypatch.setattr(evolution_graph, "canonical_execution_owner", lambda: owner)

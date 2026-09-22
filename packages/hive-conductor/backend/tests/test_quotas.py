@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from routes import quotas
+from hive_conductor.routes import quotas
 
 
 @pytest.fixture(autouse=True)

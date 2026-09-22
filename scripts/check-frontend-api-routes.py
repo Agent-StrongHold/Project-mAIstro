@@ -30,8 +30,9 @@ frontend interpolates ids into paths, and the backend names them.
 
 Why an incomplete route table is refused
 ----------------------------------------
-Four routers are optional (`routes.design`, `routes.canvas`, `routes.evolution`,
-`routes.rsi`); each is mounted inside a `try`, so a missing dependency drops its
+Four Conductor routers are optional (`hive_conductor.routes.design`,
+`hive_conductor.routes.canvas`, `hive_conductor.routes.evolution`,
+`hive_conductor.routes.rsi`); each is mounted inside a `try`, so a missing dependency drops its
 routes silently. Checked against a table missing one, every call the Design page
 makes would be reported as an unregistered route -- the true cause being an
 import error one layer down. So this reads `app.state.optional_routers` and
@@ -329,9 +330,8 @@ def import_paths() -> list[Path]:
     answer -- a true statement about the wrong thing, which is how this was
     found.
 
-    BACKEND is last in the list and therefore first on the path: the monorepo
-    root also has a `services/` package that shadows the app's own when it wins
-    the race, the same hazard `backend/tests/conftest.py` guards against.
+    The backend root is included only to make the explicit `hive_conductor`
+    package importable. No generic application module is loaded from it.
     """
     return [*sorted(REPO_ROOT.glob("packages/*/src")), BACKEND]
 
@@ -353,7 +353,7 @@ def registered_routes() -> tuple[dict[str, frozenset[str]], list[str]]:
     os.environ.setdefault("HIVE_SKIP_DOTENV", "1")
     # Imported here, not at module scope: building the app is the expensive part
     # of this gate and there is no reason to pay it to print --help.
-    from main import app
+    from hive_conductor.main import app
 
     degraded = [
         f"{module}: {cause}"

@@ -6,7 +6,7 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import main
+import hive_conductor.main as main
 import pytest
 from fastapi import APIRouter, FastAPI
 
@@ -22,9 +22,9 @@ def test_optional_router_is_mounted_with_its_prefix(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(main, "import_module", importer)
     app = FastAPI()
 
-    main._include_optional_router(app, "routes.example", prefix="/v1/example")
+    main._include_optional_router(app, "hive_conductor.routes.example", prefix="/v1/example")
 
-    importer.assert_called_once_with("routes.example")
+    importer.assert_called_once_with("hive_conductor.routes.example")
     # Assert the public contract rather than FastAPI's private route storage.
     # FastAPI 0.135+ keeps included routers as lazy ``_IncludedRouter`` objects
     # without a ``path`` attribute, while the version in the uv workspace
@@ -45,7 +45,9 @@ def test_application_openapi_operation_ids_are_unique() -> None:
     assert len(operation_ids) == len(set(operation_ids))
 
 
-@pytest.mark.parametrize("module_name", ["routes.canvas", "routes.evolution"])
+@pytest.mark.parametrize(
+    "module_name", ["hive_conductor.routes.canvas", "hive_conductor.routes.evolution"]
+)
 def test_optional_router_failure_is_logged_with_module_and_error(
     module_name: str,
     monkeypatch: pytest.MonkeyPatch,

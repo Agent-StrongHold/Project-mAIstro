@@ -68,7 +68,7 @@ the exact inversion of what bootstrap is for.
   first-user attempts provision exactly one owner; a failed attempt releases the claim so setup
   stays retryable, and registration stays closed throughout.
 - **Steady state**: registration is closed. `/v1/auth/register` consults the durable policy
-  record (`packages/hive-conductor/backend/services/registration_policy.py`) and fails closed — a
+  record (`packages/hive-conductor/backend/hive_conductor/services/registration_policy.py`) and fails closed — a
   missing, unreadable, corrupt, or mid-bootstrap record all read as *closed*. Nothing in a
   partial initialization can produce *open*, because *open* is a value only an authenticated
   administrator writes, acknowledged only after the stored record reads back as what was sent.

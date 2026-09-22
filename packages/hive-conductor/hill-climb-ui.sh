@@ -146,7 +146,7 @@ def restart_server():
     subprocess.run(["pkill", "-f", f"uvicorn.*--port {PORT}"], capture_output=True)
     time.sleep(1)
     subprocess.Popen(
-        [str(ROOT / "../../.venv/bin/uvicorn"), "main:app", "--host", "0.0.0.0", "--port", PORT],
+        [str(ROOT / "../../.venv/bin/uvicorn"), "hive_conductor.main:app", "--host", "0.0.0.0", "--port", PORT],
         cwd=str(ROOT / "backend"), stdout=open("/tmp/hive-climb.log","a"), stderr=subprocess.STDOUT,
         env={**os.environ, "PYTHONPATH": f"{ROOT}/backend:{ROOT}/../maistro-core/src:{ROOT}"})
     time.sleep(3)

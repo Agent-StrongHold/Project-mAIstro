@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from main import app
-from models.schemas import SettingsModel
-from services import settings_store
+from hive_conductor.main import app
+from hive_conductor.models.schemas import SettingsModel
+from hive_conductor.services import settings_store
 
 
 class _RecordingStore:
@@ -67,7 +67,7 @@ def store() -> Any:
 
 def _config_writer(task_id: str, *permissions: str) -> TestClient:
     """A logged-in client with config.write (plus `permissions`), elevated for `task_id`."""
-    import stores
+    import hive_conductor.stores as stores
 
     from maistro.security.passwords import hash_password
 
@@ -455,7 +455,7 @@ def test_clearing_the_overlay_does_not_disturb_the_record(store: _RecordingStore
 def test_the_model_list_falls_back_to_the_stored_default(
     store: _RecordingStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from routes import settings as settings_routes
+    from hive_conductor.routes import settings as settings_routes
 
     settings_store.save(SettingsModel(default_model="stored-default"))
     monkeypatch.delenv("LITELLM_API_BASE", raising=False)
@@ -468,7 +468,7 @@ def test_the_model_list_falls_back_to_the_stored_default(
 def test_the_model_list_uses_the_proxy_when_one_is_configured(
     store: _RecordingStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from routes import settings as settings_routes
+    from hive_conductor.routes import settings as settings_routes
 
     class _Response:
         @staticmethod
@@ -490,7 +490,7 @@ def test_the_model_list_uses_the_proxy_when_one_is_configured(
 def test_a_failed_model_fetch_falls_back_to_the_stored_default(
     store: _RecordingStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from routes import settings as settings_routes
+    from hive_conductor.routes import settings as settings_routes
 
     settings_store.save(SettingsModel(default_model="stored-default"))
     monkeypatch.setenv("LITELLM_API_BASE", "http://proxy.invalid/v1")
@@ -530,7 +530,7 @@ def test_the_merge_revalidates_even_if_the_request_boundary_stops_doing_so(
     # record that will not load is worse than a rejected request. Constructed
     # unvalidated here to stand in for that drift.
     from fastapi import HTTPException
-    from routes.settings import PatchSettingsBody, patch_settings
+    from hive_conductor.routes.settings import PatchSettingsBody, patch_settings
 
     drifted = PatchSettingsBody.model_construct(log_level="not-a-level")
 
@@ -543,7 +543,7 @@ def test_the_merge_revalidates_even_if_the_request_boundary_stops_doing_so(
 
 @pytest.mark.ac("SPEC-082926-0b72/AC-2")
 def test_the_setup_checklist_reads_the_stored_default_model(store: _RecordingStore) -> None:
-    from routes.setup_checklist import _default_model_picked
+    from hive_conductor.routes.setup_checklist import _default_model_picked
 
     # The checklist's question is "did Setup write something other than the
     # shipped alias", so the untouched alias is what must read as unpicked.
@@ -556,7 +556,7 @@ def test_the_setup_checklist_reads_the_stored_default_model(store: _RecordingSto
 
 @pytest.mark.ac("SPEC-082926-0b72/AC-1")
 def test_startup_leaves_non_legacy_settings_alone(store: _RecordingStore) -> None:
-    from settings_defaults import apply_default_settings_if_needed
+    from hive_conductor.settings_defaults import apply_default_settings_if_needed
 
     saved = settings_store.save(SettingsModel(default_model="operator-picked"))
 
@@ -566,7 +566,10 @@ def test_startup_leaves_non_legacy_settings_alone(store: _RecordingStore) -> Non
 
 @pytest.mark.ac("SPEC-082926-0b72/AC-1")
 def test_startup_repairs_pre_2026_placeholder_settings(store: _RecordingStore) -> None:
-    from settings_defaults import apply_default_settings_if_needed, is_legacy_settings
+    from hive_conductor.settings_defaults import (
+        apply_default_settings_if_needed,
+        is_legacy_settings,
+    )
 
     settings_store.save(SettingsModel(default_model="gpt-4"))
 
@@ -583,7 +586,7 @@ def test_a_repair_that_does_not_land_leaves_the_stored_values_readable(
     # Startup must not die over a cosmetic repair, and it must not claim the
     # repair happened either. The stored values stay readable and the log says
     # what did not land.
-    from settings_defaults import apply_default_settings_if_needed
+    from hive_conductor.settings_defaults import apply_default_settings_if_needed
 
     legacy = json.dumps(
         {
@@ -719,7 +722,9 @@ def test_the_setup_write_is_not_inside_a_bare_except_handler() -> None:
     """
     import ast
 
-    source = (Path(__file__).resolve().parents[1] / "routes" / "setup.py").read_text()
+    source = (
+        Path(__file__).resolve().parents[1] / "hive_conductor" / "routes" / "setup.py"
+    ).read_text()
 
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Try):
@@ -749,7 +754,7 @@ def test_setup_returns_503_rather_than_completing_without_durable_settings(
     fixture rather than the handler.
     """
     from fastapi import HTTPException
-    from routes import setup as setup_routes
+    from hive_conductor.routes import setup as setup_routes
 
     monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
     # complete_setup() creates its accounts before the durable settings write
@@ -757,9 +762,9 @@ def test_setup_returns_503_rather_than_completing_without_durable_settings(
     # the rest of the session logs in as survive this test (#313 made the
     # overlap visible: any later suite asserting on those logins inherited
     # the clobbered credentials whenever this file ran first).
-    import stores
-    from models.schemas import HiveUser
-    from services.model_store import ModelStore
+    import hive_conductor.stores as stores
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.services.model_store import ModelStore
 
     monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
     settings_store.reset(store=_DroppingStore())
@@ -787,14 +792,14 @@ def test_setup_refuses_a_default_model_carrying_credential_material(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from fastapi import HTTPException
-    from routes import setup as setup_routes
+    from hive_conductor.routes import setup as setup_routes
 
     monkeypatch.setattr(setup_routes, "_is_setup_complete", lambda: False)
     # Same isolation as the 503 test above: the refusal under test happens
     # after the accounts are created.
-    import stores
-    from models.schemas import HiveUser
-    from services.model_store import ModelStore
+    import hive_conductor.stores as stores
+    from hive_conductor.models.schemas import HiveUser
+    from hive_conductor.services.model_store import ModelStore
 
     monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
     settings_store.reset(store=_RecordingStore())
@@ -853,7 +858,7 @@ def test_restoring_a_slot_that_had_no_active_provider_does_not_activate_one() ->
     A slot can be enabled with no provider chosen, and a rollback that called
     `activate(slot, None)` would invent a state the registry was never in.
     """
-    from routes.capabilities import _restore_slot
+    from hive_conductor.routes.capabilities import _restore_slot
 
     class _Registry:
         def __init__(self) -> None:

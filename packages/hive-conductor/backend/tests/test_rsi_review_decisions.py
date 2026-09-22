@@ -14,7 +14,7 @@ import pytest
 
 
 def _seed_run_with_review(tmp_path, sha: str) -> str:
-    from services.rsi import RunState, get_rsi_service
+    from hive_conductor.services.rsi import RunState, get_rsi_service
 
     svc = get_rsi_service()
     run = RunState(run_id="testrun-idem", mode="cleanup", config={})

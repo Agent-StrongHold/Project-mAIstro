@@ -47,7 +47,7 @@ async def _correlated_runtime(
 ) -> tuple[Any, Any, str, str]:
     """A GovernedModelRuntime whose run store sits on a real canonical spine."""
 
-    from services.governed_model import GovernedModelRuntime
+    from hive_conductor.services.governed_model import GovernedModelRuntime
 
     scope, project_id = await _canonical_scope()
     run_store = InMemoryRunStore(project_store=scope)
@@ -75,7 +75,7 @@ async def _correlated_runtime(
 
 
 def _plain_runtime():
-    from services.governed_model import GovernedModelRuntime
+    from hive_conductor.services.governed_model import GovernedModelRuntime
 
     registry = InMemoryProviderRegistry(
         models=[
@@ -138,7 +138,7 @@ def fake_gateway(monkeypatch: pytest.MonkeyPatch):
 async def test_benchmark_evaluation_records_correlated_invocation(
     monkeypatch: pytest.MonkeyPatch, fake_gateway: list[tuple[str, dict[str, Any]]]
 ) -> None:
-    import services.benchmark_eval as benchmark_eval
+    import hive_conductor.services.benchmark_eval as benchmark_eval
 
     runtime, run_store, parent_run_id, project_id = await _correlated_runtime()
     monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
@@ -188,7 +188,7 @@ async def test_benchmark_evaluation_without_canonical_run_is_refused(
 ) -> None:
     """An unknown Run cannot be evaluated: there is nothing to correlate to."""
 
-    import services.benchmark_eval as benchmark_eval
+    import hive_conductor.services.benchmark_eval as benchmark_eval
 
     runtime, _run_store, _parent_run_id, project_id = await _correlated_runtime()
     monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
@@ -219,7 +219,7 @@ async def test_benchmark_evaluation_without_canonical_run_is_refused(
 
 @pytest.mark.asyncio
 async def test_evaluation_without_canonical_scope_is_truthful() -> None:
-    from services.benchmark_eval import evaluate_code_output
+    from hive_conductor.services.benchmark_eval import evaluate_code_output
 
     result = await evaluate_code_output("task", "plan", "code")
 
@@ -231,7 +231,7 @@ async def test_evaluation_without_canonical_scope_is_truthful() -> None:
 async def test_provider_health_registration_keeps_secret_out_of_invocation(
     fake_gateway: list[tuple[str, dict[str, Any]]],
 ) -> None:
-    from services.governed_model import (
+    from hive_conductor.services.governed_model import (
         control_plane_binding,
         register_and_health_check,
         resolve_binding,
@@ -279,7 +279,7 @@ async def test_provider_health_policy_denial_causes_zero_http(
     operation records report cancelled, not failed.
     """
 
-    from services.governed_model import (
+    from hive_conductor.services.governed_model import (
         GovernedModelRuntime,
         ProviderAuthorizationError,
         control_plane_binding,
@@ -338,7 +338,7 @@ async def test_provider_health_with_minted_identity_completes_operation(
     invocation -> settled completed operation. This mirrors what the route
     does, runnable without the vault backend."""
 
-    from services.governed_model import (
+    from hive_conductor.services.governed_model import (
         control_plane_binding,
         ensure_binding,
         mint_operation_identity,
@@ -404,7 +404,7 @@ async def test_provider_registration_failure_is_not_authorization_failure(
     """A gateway that refuses registration is an activation failure, reported
     distinctly from policy denial, with the Invocation recording UNKNOWN."""
 
-    from services.governed_model import (
+    from hive_conductor.services.governed_model import (
         ProviderActivationError,
         control_plane_binding,
         register_and_health_check,
@@ -479,7 +479,7 @@ async def test_provider_registration_failure_is_not_authorization_failure(
 async def test_ensure_binding_is_immutable_and_idempotent() -> None:
     """Bindings register once: an identical re-registration returns the stored
     record; a mutated one is refused as an authorization failure."""
-    from services.governed_model import control_plane_binding, ensure_binding
+    from hive_conductor.services.governed_model import control_plane_binding, ensure_binding
 
     from maistro.capabilities.binding_store import BindingResolutionError
 
@@ -505,7 +505,7 @@ async def test_ensure_binding_is_immutable_and_idempotent() -> None:
 async def test_runtime_fails_closed_without_container() -> None:
     """The hive bridge refuses model egress when no core Container is bound —
     degraded mode never fabricates a runtime."""
-    from services.governed_model import _runtime
+    from hive_conductor.services.governed_model import _runtime
 
     with pytest.raises(RuntimeError, match="canonical model egress is unavailable"):
         _runtime()
@@ -519,8 +519,8 @@ async def test_runtime_wires_container_authorities(
     authorities and the gateway endpoint from the environment chain."""
     from types import SimpleNamespace
 
-    import services.engine as engine_mod
-    from services.governed_model import _runtime
+    import hive_conductor.services.engine as engine_mod
+    from hive_conductor.services.governed_model import _runtime
 
     engine = engine_mod.get_engine()
     scope, _project_id = await _canonical_scope()
@@ -556,8 +556,8 @@ async def test_endpoint_refuses_without_gateway_configuration(
 ) -> None:
     """No env endpoint and no configured settings is a fail-closed 503-class
     error, never an implicit default endpoint."""
-    import config
-    from services.governed_model import ProviderActivationError, _endpoint
+    import hive_conductor.config as config
+    from hive_conductor.services.governed_model import ProviderActivationError, _endpoint
 
     for var in (
         "MAISTRO_LLM_BASE_URL",
@@ -579,7 +579,7 @@ async def test_endpoint_refuses_without_gateway_configuration(
 @pytest.mark.asyncio
 async def test_mint_refuses_without_canonical_run_store() -> None:
     """Minting an operation without the canonical run store fails closed."""
-    import services.governed_model as governed_model
+    import hive_conductor.services.governed_model as governed_model
 
     runtime = _plain_runtime()
     with pytest.raises(RuntimeError, match="without the core Container run store"):
@@ -594,7 +594,7 @@ async def test_mint_refuses_without_canonical_run_store() -> None:
 @pytest.mark.asyncio
 async def test_settle_rejects_unknown_outcome() -> None:
     """Only completed/failed/cancelled are legal operation outcomes."""
-    import services.governed_model as governed_model
+    import hive_conductor.services.governed_model as governed_model
 
     runtime, _run_store, parent_run_id, project_id = await _correlated_runtime()
     identity = await governed_model.mint_operation_identity(
@@ -613,7 +613,7 @@ async def test_settle_records_failed_and_cancelled_operations() -> None:
     """Failed and cancelled operations terminalize their canonical spine
     truthfully (Run/NodeRun/Attempt), keeping authorization refusals
     distinguishable from execution failures."""
-    import services.governed_model as governed_model
+    import hive_conductor.services.governed_model as governed_model
 
     runtime, run_store, parent_run_id, project_id = await _correlated_runtime()
     failed = await governed_model.mint_operation_identity(
@@ -659,7 +659,7 @@ async def test_benchmark_authorization_denial_settles_cancelled(
 ) -> None:
     """A policy-deny on the judge call returns an authorization error kind and
     settles the evaluation operation as CANCELLED."""
-    import services.benchmark_eval as benchmark_eval
+    import hive_conductor.services.benchmark_eval as benchmark_eval
 
     async def deny(*args: Any, **kwargs: Any) -> PolicyVerdict:
         del args, kwargs
@@ -695,8 +695,8 @@ async def test_benchmark_transport_failure_settles_failed(
     the error kind is ``evaluation`` and the operation settles FAILED."""
     from contextlib import asynccontextmanager
 
+    import hive_conductor.services.benchmark_eval as benchmark_eval
     import httpx
-    import services.benchmark_eval as benchmark_eval
 
     runtime, run_store, parent_run_id, project_id = await _correlated_runtime()
     monkeypatch.setattr(benchmark_eval, "_runtime", lambda: runtime)
@@ -742,7 +742,7 @@ async def test_evaluate_dag_run_joins_aggregated_outputs(
 ) -> None:
     """DAG-run evaluation judges the joined plan/code/review decomposition of
     every successful node output, positionally."""
-    import services.benchmark_eval as benchmark_eval
+    import hive_conductor.services.benchmark_eval as benchmark_eval
 
     from maistro.providers.types import ModelMetadata
 

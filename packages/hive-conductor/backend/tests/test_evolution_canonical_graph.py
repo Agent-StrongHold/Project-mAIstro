@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from routes.evolution import trigger_cycle
-from services.evolution import _EvolutionService
-from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
+from hive_conductor.routes.evolution import trigger_cycle
+from hive_conductor.services.evolution import _EvolutionService
+from hive_conductor.services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import (
@@ -316,8 +316,8 @@ async def test_cycle_route_projects_real_canonical_failures(
             del population
             raise RuntimeError("synthetic finalization failure")
 
-    import services.engine as engine_module
-    import services.evolution as evolution_module
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evolution_module
 
     owner = await _container()
     monkeypatch.setattr(
@@ -384,8 +384,8 @@ async def test_successful_cycle_route_projects_completed_canonical_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A completed canonical Run remains the only completed cycle projection."""
-    import services.engine as engine_module
-    import services.evolution as evolution_module
+    import hive_conductor.services.engine as engine_module
+    import hive_conductor.services.evolution as evolution_module
 
     import maistro_evolve.harness as harness_module
 
@@ -469,10 +469,10 @@ async def test_seeding_during_evaluation_cannot_expand_frozen_pair_plan(
 async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import hive_conductor.services.evolution as evolution_service
     import httpx
-    import services.evolution as evolution_service
     from fastapi import FastAPI
-    from routes import evolution as evolution_routes
+    from hive_conductor.routes import evolution as evolution_routes
 
     import maistro_evolve.harness as harness_module
     from maistro.runs.model import RunStatus
@@ -502,7 +502,7 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
     )
     monkeypatch.setattr(harness_module, "EvalHarness", _PausingHarness)
     owner = await _container()
-    import services.engine as engine_module
+    import hive_conductor.services.engine as engine_module
 
     monkeypatch.setattr(
         engine_module,
@@ -557,11 +557,11 @@ async def test_post_seed_during_real_cycle_is_admitted_after_pair_plan(
 async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import hive_conductor.services.evolution as evolution_service
+    import hive_conductor.services.evolution_graph as evolution_graph
     import httpx
-    import services.evolution as evolution_service
-    import services.evolution_graph as evolution_graph
     from fastapi import FastAPI
-    from routes import evolution as evolution_routes
+    from hive_conductor.routes import evolution as evolution_routes
 
     battle_started = asyncio.Event()
     release_battle = asyncio.Event()
@@ -589,7 +589,7 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
 
     monkeypatch.setattr(harness_module, "EvalHarness", _RouteHarness)
     owner = await _container()
-    import services.engine as engine_module
+    import hive_conductor.services.engine as engine_module
 
     monkeypatch.setattr(
         engine_module,
@@ -655,10 +655,10 @@ async def test_post_seed_during_battle_traversal_cannot_change_persisted_pairs(
 async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import hive_conductor.services.evolution as evolution_service
     import httpx
-    import services.evolution as evolution_service
     from fastapi import FastAPI
-    from routes import evolution as evolution_routes
+    from hive_conductor.routes import evolution as evolution_routes
 
     evaluation_started = asyncio.Event()
     release_evaluation = asyncio.Event()
@@ -688,7 +688,7 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 
     monkeypatch.setattr(harness_module, "EvalHarness", _PausingHarness)
     owner = await _container()
-    import services.engine as engine_module
+    import hive_conductor.services.engine as engine_module
 
     monkeypatch.setattr(
         engine_module,
@@ -751,7 +751,7 @@ async def test_racing_post_cycle_requests_persist_separate_canonical_plans(
 async def test_missing_has_more_successor_fails_before_recording_unroutable_battle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import services.evolution_graph as evolution_graph
+    import hive_conductor.services.evolution_graph as evolution_graph
 
     original_build_graph = evolution_graph._build_graph
 

@@ -1,5 +1,11 @@
-# Turing backend app deps. The backend imports the maistro_turing library and
-# maistro-core; install those editable from the workspace alongside these.
+# Install the workspace core first so this repository's maistro-turing package
+# does not ask a package index for the unreleased local maistro-core version.
+-e ../../maistro-core
+# Install both the reusable runtime and the explicit application package.
+# The second editable install makes the documented uvicorn command work from a
+# clean environment without relying on the current directory as an import root.
+-e ..
+-e .
 fastapi>=0.115
 uvicorn[standard]>=0.32
 httpx>=0.28

@@ -8,12 +8,12 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from main import app
+from hive_conductor.main import app
+from hive_conductor.routes.canvas import _canvas_execution_context, _quality_binding_id
+from hive_conductor.services import engine as engine_service
+from hive_conductor.services.canvas_dag import CanvasHillClimber, visual_quality_eval
+from hive_conductor.services.canvas_model_egress import CanvasModelEgress, build_canvas_model_egress
 from pydantic import SecretStr
-from routes.canvas import _canvas_execution_context, _quality_binding_id
-from services import engine as engine_service
-from services.canvas_dag import CanvasHillClimber, visual_quality_eval
-from services.canvas_model_egress import CanvasModelEgress, build_canvas_model_egress
 from starlette.requests import Request
 
 from maistro.capabilities.binding import Binding
@@ -180,7 +180,7 @@ def canvas_egress(
         llm_router=router,
         run_store=run_store,
     )
-    import config
+    import hive_conductor.config as config
 
     monkeypatch.setattr(
         config,
@@ -352,7 +352,7 @@ def test_canvas_route_refuses_missing_binding(
     assert login.status_code == 200
 
     context = dict(canvas_egress[2])
-    import config
+    import hive_conductor.config as config
 
     monkeypatch.setattr(
         config,
@@ -442,7 +442,7 @@ def test_canvas_route_refuses_disabled_binding(
             )
         )
     )
-    import config
+    import hive_conductor.config as config
 
     monkeypatch.setattr(
         config,
@@ -964,7 +964,7 @@ def test_visual_quality_eval_requires_governed_egress() -> None:
 
 def test_parse_visual_quality_result_keeps_canvas_parsing_contract() -> None:
     """Score parsing stays Canvas behavior: each malformed shape is a refusal."""
-    from services.canvas_dag import _parse_visual_quality_result
+    from hive_conductor.services.canvas_dag import _parse_visual_quality_result
 
     happy = _parse_visual_quality_result(
         SimpleNamespace(

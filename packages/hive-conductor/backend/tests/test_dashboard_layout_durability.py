@@ -15,11 +15,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import hive_conductor.stores as stores
 import pytest
-import stores
-from services import dashboard_layouts
+from hive_conductor.services import dashboard_layouts
 
-ROUTE_SOURCE = Path(__file__).resolve().parents[1] / "routes" / "dashboard_layout.py"
+ROUTE_SOURCE = (
+    Path(__file__).resolve().parents[1] / "hive_conductor" / "routes" / "dashboard_layout.py"
+)
 
 LAYOUT: dict[str, Any] = {
     "widgets": [{"id": "w1", "type": "stat-score", "title": "Score", "size": "md"}],
@@ -75,7 +77,7 @@ def test_a_saved_layout_survives_the_store_being_closed_and_reopened(
     A real `State` on a real file, a real `PersistedStore`, a real `JsonStore`:
     saved through the service, then closed, reopened and loaded again.
     """
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     from maistro.state import PersistedStore, State
 
@@ -195,7 +197,7 @@ def test_the_route_does_not_wrap_the_save_in_a_broad_handler() -> None:
 
 @pytest.mark.ac("SPEC-082926-3b80/AC-3")
 def test_two_principals_do_not_share_a_layout(store: Any) -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
     dashboard_layouts.save("alice", {"widgets": [{"id": "a", "type": "x", "title": "A"}]})
@@ -211,7 +213,7 @@ def test_a_request_with_no_principal_is_refused_rather_than_pooled() -> None:
     from types import SimpleNamespace
 
     from fastapi import HTTPException
-    from routes import dashboard_layout
+    from hive_conductor.routes import dashboard_layout
 
     request = SimpleNamespace(state=SimpleNamespace(user=None))
 
@@ -226,7 +228,7 @@ def test_a_request_with_no_principal_is_refused_rather_than_pooled() -> None:
 
 @pytest.mark.ac("SPEC-082926-3b80/AC-4")
 def test_a_stale_expected_revision_is_refused(store: Any) -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
     dashboard_layouts.save("alice", LAYOUT)
@@ -240,7 +242,7 @@ def test_a_stale_expected_revision_is_refused(store: Any) -> None:
 
 @pytest.mark.ac("SPEC-082926-3b80/AC-4")
 def test_a_matching_expected_revision_is_accepted(store: Any) -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
     first = dashboard_layouts.save("alice", LAYOUT)
@@ -252,7 +254,7 @@ def test_a_matching_expected_revision_is_accepted(store: Any) -> None:
 
 @pytest.mark.ac("SPEC-082926-3b80/AC-4")
 def test_a_save_without_an_expectation_is_last_write_wins(store: Any) -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
     dashboard_layouts.save("alice", {"widgets": [{"id": "old", "type": "x", "title": "O"}]})
@@ -312,7 +314,7 @@ def test_a_principal_with_no_preset_gets_no_preset() -> None:
 def test_the_demo_preset_ships_in_the_image(authed_client: Any) -> None:
     """`_PRESETS` naming a file that is not there would seed nothing, silently."""
 
-    demos = Path(__file__).resolve().parents[1] / "data" / "demo_dashboards"
+    demos = Path(__file__).resolve().parents[1] / "hive_conductor" / "data" / "demo_dashboards"
     for preset in dashboard_layouts.PRESETS.values():
         assert (demos / f"{preset}.json").is_file(), preset
 
@@ -321,7 +323,7 @@ def test_the_demo_preset_ships_in_the_image(authed_client: Any) -> None:
 def test_a_record_this_build_cannot_parse_reads_as_empty(store: Any) -> None:
     """A layout is a preference. Refusing to render the dashboard because one
     stored document is malformed helps nobody; the next save replaces it."""
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     backing = store(JsonStore("dashboard_layouts"))
     backing["alice"] = {"schema_version": 1, "from_a_future_build": True}
@@ -332,7 +334,7 @@ def test_a_record_this_build_cannot_parse_reads_as_empty(store: Any) -> None:
 @pytest.mark.ac("SPEC-082926-3b80/AC-5")
 def test_the_saved_layout_is_the_sanitized_one(store: Any) -> None:
     """The record holds what the sanitizer returned, never what was sent."""
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
     hostile = {
@@ -350,12 +352,14 @@ def test_the_promoted_demo_preset_is_the_layout_that_used_to_be_committed() -> N
     """`data/dashboard_layouts.json` was runtime state tracked in git. It is
     gone; the layout it held ships as a demo template so the demo account sees
     what it saw before."""
-    demos = Path(__file__).resolve().parents[1] / "data" / "demo_dashboards"
+    demos = Path(__file__).resolve().parents[1] / "hive_conductor" / "data" / "demo_dashboards"
     promoted = json.loads((demos / "pm-command-center.json").read_text())
 
     ids = sorted(w["id"] for tab in promoted["tabs"] for w in tab["widgets"])
     assert "pm-kpi-velocity" in ids
-    assert not (Path(__file__).resolve().parents[1] / "data" / "dashboard_layouts.json").exists()
+    assert not (
+        Path(__file__).resolve().parents[1] / "hive_conductor" / "data" / "dashboard_layouts.json"
+    ).exists()
 
 
 @pytest.mark.ac("SPEC-082926-3b80/AC-5")
@@ -371,7 +375,7 @@ def test_an_unreadable_preset_seeds_nothing_rather_than_raising(
 ) -> None:
     """A corrupt template in the image must not take the dashboard down."""
 
-    demos = Path(__file__).resolve().parents[1] / "data" / "demo_dashboards"
+    demos = Path(__file__).resolve().parents[1] / "hive_conductor" / "data" / "demo_dashboards"
     broken = demos / "broken-for-test.json"
     broken.write_text("{ not json", encoding="utf-8")
     monkeypatch.setitem(dashboard_layouts.PRESETS, "brokenuser", "broken-for-test")
@@ -387,8 +391,8 @@ async def test_a_principal_with_a_preset_reads_it_at_revision_zero(store: Any) -
     """The seed is offered, not written: revision stays 0 until a real save."""
     from types import SimpleNamespace
 
-    from routes import dashboard_layout
-    from services.model_store import JsonStore
+    from hive_conductor.routes import dashboard_layout
+    from hive_conductor.services.model_store import JsonStore
 
     backing = store(JsonStore("dashboard_layouts"))
     request = SimpleNamespace(state=SimpleNamespace(user={"id": "demo"}))
@@ -505,7 +509,7 @@ def test_an_unbacked_store_is_verified_against_itself(store: Any) -> None:
     """A deployment that chose in-memory state has no row to read. #333 owns the
     refusal for a deployment that asked for durability and did not get it; this
     module's job is not to answer that question twice."""
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
 
@@ -522,8 +526,8 @@ def test_a_widget_added_through_chat_keeps_the_preset(store: Any) -> None:
     the one it just added."""
     import asyncio
 
-    from services.chat_completion import _tool_create_dashboard_widget
-    from services.model_store import JsonStore
+    from hive_conductor.services.chat_completion import _tool_create_dashboard_widget
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
     before = dashboard_layouts.preset_for("demo")
@@ -543,7 +547,7 @@ def test_a_widget_added_through_chat_keeps_the_preset(store: Any) -> None:
 
 @pytest.mark.ac("SPEC-082926-3b80/AC-5")
 def test_the_read_route_and_the_chat_tool_see_the_same_layout(store: Any) -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
 
@@ -552,7 +556,7 @@ def test_the_read_route_and_the_chat_tool_see_the_same_layout(store: Any) -> Non
 
 @pytest.mark.ac("SPEC-082926-3b80/AC-5")
 def test_a_saved_layout_wins_over_the_preset(store: Any) -> None:
-    from services.model_store import JsonStore
+    from hive_conductor.services.model_store import JsonStore
 
     store(JsonStore("dashboard_layouts"))
     dashboard_layouts.save("demo", {"widgets": [{"id": "mine", "type": "x", "title": "M"}]})

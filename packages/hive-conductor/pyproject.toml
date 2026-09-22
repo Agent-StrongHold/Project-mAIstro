@@ -7,16 +7,10 @@
 # unlocked `requirements.txt` resolution, and enrolls it in the wheel-imports
 # CI build loop. Do not add it to a publish job.
 #
-# Wheel layout: `backend/` is a FLAT module layout — no package root, no
-# `backend/__init__.py` — and the app imports its own modules top-level-relative
-# (`from config import get_settings`, `from routes import ...`, `from
-# middleware.auth import AuthMiddleware`). Those imports are resolved by putting
-# `backend/` itself on sys.path: the Dockerfile sets `PYTHONPATH=/app/backend`
-# and `backend/tests/conftest.py` inserts it at `sys.path[0]`. The wheel
-# therefore ships the sources remapped under a `hive_conductor/` prefix so it
-# installs without colliding with anything else in site-packages, but the app is
-# NOT importable as `hive_conductor.main` — see the `hive-conductor` entry in
-# scripts/verify-wheel-imports.py's SKIPPED_DISTS.
+# The application namespace is deliberately explicit: `hive_conductor` is the
+# only import authority for this backend. It can therefore run beside the
+# `maistro_turing_backend` application without generic `main`, `routes`, or
+# `config` modules competing in sys.modules.
 [project]
 name = "hive-conductor"
 version = "0.9.0"
@@ -60,6 +54,9 @@ dependencies = [
     # at today (root VERSION); nothing resolves at 1.0.0 yet. Tighten to
     # `>=1.0.0,<2` at tag time, per E1/E2 of the v1.0.0 release plan.
     "maistro-core[bcrypt]>=0.9.0,<2",
+    # The design routes import maistro-design directly; keep the published
+    # application wheel truthful even though the Docker build also installs it.
+    "maistro-design>=0.9.0,<2",
 ]
 
 # `backend/adapters/telemetry_langfuse.py` exports spans to a Langfuse OTLP
@@ -94,11 +91,11 @@ build-backend = "hatchling.build"
 # by the Dockerfile's node stage into the image — its build artifacts are never
 # part of the wheel (F1 acceptance criterion).
 [tool.hatch.build.targets.wheel]
-only-include = ["backend"]
-sources = { "backend" = "hive_conductor" }
+only-include = ["backend/hive_conductor"]
+sources = { "backend/hive_conductor" = "hive_conductor" }
 exclude = [
-    "backend/tests",
-    "backend/__pycache__",
+    "backend/hive_conductor/tests",
+    "backend/hive_conductor/__pycache__",
     "backend/Dockerfile",
     "backend/requirements.txt",
     "backend/.env.example",
@@ -107,5 +104,5 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 # Siblings define no sdist target; hive-conductor needs one only to keep the
 # default sdist from sweeping in `frontend/node_modules` and the app's data dirs.
-only-include = ["backend", "README.md", "LICENSE"]
-exclude = ["backend/__pycache__"]
+only-include = ["backend/hive_conductor", "README.md", "LICENSE"]
+exclude = ["backend/hive_conductor/__pycache__"]

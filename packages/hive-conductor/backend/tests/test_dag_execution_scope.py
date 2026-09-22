@@ -5,13 +5,13 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from services.dag_execution_scope import (
+from hive_conductor.services.dag_execution_scope import (
     DagExecutionScope,
     DagWorkspaceSelectionError,
     authorize_hive_dag_scope,
     authorize_hive_dag_workspace,
 )
-from services.workspace_authority import canonical_store_for_tests
+from hive_conductor.services.workspace_authority import canonical_store_for_tests
 from starlette.websockets import WebSocketDisconnect
 
 POLICY_VIOLATION = 1008
@@ -21,8 +21,8 @@ NORMAL_CLOSURE = 1000
 async def _canonical_workspace(
     workspace_id: str, *, member_user_id: str, active: bool = True
 ) -> None:
-    from models.workspace import WorkspacePresentation
-    from services.workspace_authority import presentation_store
+    from hive_conductor.models.workspace import WorkspacePresentation
+    from hive_conductor.services.workspace_authority import presentation_store
 
     store = canonical_store_for_tests()
     await store.create(

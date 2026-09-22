@@ -27,8 +27,8 @@ def test_empty_message_rejected(authed_client):
 def test_chat_with_fake_provider_has_canonical_execution_evidence(authed_client, monkeypatch):
     # The dev provider bridge has no LLM client; inject a fake so the real
     # TuringChatSession path runs end-to-end under canonical execution.
-    from ..execution import get_execution_plane
-    from ..state import get_state
+    from maistro_turing_backend.execution import get_execution_plane
+    from maistro_turing_backend.state import get_state
 
     st = get_state()
     monkeypatch.setattr(st.provider, "complete", lambda *a, **k: "hello from turing", raising=True)
@@ -66,7 +66,7 @@ def test_chat_with_fake_provider_has_canonical_execution_evidence(authed_client,
 def test_chat_without_llm_returns_503_and_failed_canonical_run(authed_client):
     # No LLM client wired: the domain exception is captured by the canonical
     # Attempt/NodeRun/Run path before the HTTP route projects failure as 503.
-    from ..execution import get_execution_plane
+    from maistro_turing_backend.execution import get_execution_plane
 
     r = authed_client.post("/v1/chat", json={"message": "hey"})
     assert r.status_code == 503
@@ -83,7 +83,7 @@ def test_chat_without_llm_returns_503_and_failed_canonical_run(authed_client):
 
 
 def test_provider_failure_detail_is_not_returned_to_the_caller(authed_client, monkeypatch):
-    from ..state import get_state
+    from maistro_turing_backend.state import get_state
 
     secret = "https://provider.invalid/v1 key=do-not-return"
 
@@ -100,7 +100,7 @@ def test_provider_failure_detail_is_not_returned_to_the_caller(authed_client, mo
 
 
 def test_cancelled_chat_terminalizes_canonical_evidence():
-    from ..execution import TuringExecutionPlane
+    from maistro_turing_backend.execution import TuringExecutionPlane
 
     async def scenario() -> None:
         started = asyncio.Event()
@@ -138,7 +138,7 @@ def test_cancelled_chat_terminalizes_canonical_evidence():
 
 
 def test_turing_chat_admission_uses_chat_retention_and_bounded_window():
-    from ..execution import TuringExecutionPlane
+    from maistro_turing_backend.execution import TuringExecutionPlane
 
     class ReplySession:
         async def handle_message(self, message: str) -> str:
@@ -171,16 +171,16 @@ def test_turing_chat_admission_uses_chat_retention_and_bounded_window():
 
 
 def test_turing_execution_plane_rejects_an_empty_retention_window():
-    from ..execution import TuringExecutionPlane
+    from maistro_turing_backend.execution import TuringExecutionPlane
 
     with pytest.raises(ValueError, match="max_retained must be >= 1"):
         TuringExecutionPlane(max_retained=0)
 
 
 def test_retention_window_preserves_active_runs_and_drops_missing_entries():
-    from maistro.graph import Graph, Node
+    from maistro_turing_backend.execution import TuringExecutionPlane
 
-    from ..execution import TuringExecutionPlane
+    from maistro.graph import Graph, Node
 
     async def scenario() -> None:
         plane = TuringExecutionPlane(max_retained=1)
@@ -207,7 +207,7 @@ def test_retention_window_preserves_active_runs_and_drops_missing_entries():
 
 
 def test_turing_cleanup_helpers_fail_closed_without_masking_the_caller(monkeypatch, caplog):
-    from ..execution import TuringExecutionPlane
+    from maistro_turing_backend.execution import TuringExecutionPlane
 
     async def fail(*_args: Any, **_kwargs: Any) -> Any:
         raise RuntimeError("cleanup store unavailable")
@@ -235,9 +235,9 @@ def test_turing_cleanup_helpers_fail_closed_without_masking_the_caller(monkeypat
 
 
 def test_outer_cancellation_terminalizes_active_evidence_with_and_without_a_lease():
-    from maistro.graph import Graph, Node
+    from maistro_turing_backend.execution import TuringExecutionPlane
 
-    from ..execution import TuringExecutionPlane
+    from maistro.graph import Graph, Node
 
     async def scenario() -> None:
         plane = TuringExecutionPlane()
@@ -295,9 +295,9 @@ def test_outer_cancellation_terminalizes_active_evidence_with_and_without_a_leas
 
 
 def test_cancelled_partial_admission_is_compensated_before_dispatch(monkeypatch):
-    from maistro.runs.chat_admission import ADMISSION_INCOMPLETE
+    from maistro_turing_backend.execution import TuringExecutionPlane
 
-    from ..execution import TuringExecutionPlane
+    from maistro.runs.chat_admission import ADMISSION_INCOMPLETE
 
     async def scenario() -> None:
         plane = TuringExecutionPlane()
@@ -330,8 +330,8 @@ def test_cancelled_partial_admission_is_compensated_before_dispatch(monkeypatch)
 
 
 def test_create_run_failure_does_not_make_chat_unavailable(authed_client, monkeypatch):
-    from ..execution import get_execution_plane
-    from ..state import get_state
+    from maistro_turing_backend.execution import get_execution_plane
+    from maistro_turing_backend.state import get_state
 
     plane = get_execution_plane()
     provider_calls = 0
@@ -356,7 +356,7 @@ def test_create_run_failure_does_not_make_chat_unavailable(authed_client, monkey
 
 
 def test_unrecorded_reply_propagates_cancellation():
-    from ..routes.chat import _unrecorded_reply
+    from maistro_turing_backend.routes.chat import _unrecorded_reply
 
     class CancelledSession:
         async def handle_message(self, _message: str) -> str:
@@ -368,8 +368,7 @@ def test_unrecorded_reply_propagates_cancellation():
 
 def test_unrecorded_reply_sanitizes_provider_failure():
     from fastapi import HTTPException
-
-    from ..routes.chat import _unrecorded_reply
+    from maistro_turing_backend.routes.chat import _unrecorded_reply
 
     secret = "https://provider.invalid token=do-not-return"
 
@@ -386,7 +385,7 @@ def test_unrecorded_reply_sanitizes_provider_failure():
 
 
 def test_chat_sanitizes_a_completed_run_with_missing_reply(authed_client, monkeypatch):
-    from ..routes import chat as chat_module
+    from maistro_turing_backend.routes import chat as chat_module
 
     record: Any = SimpleNamespace(
         run=SimpleNamespace(status=RunStatus.COMPLETED),
@@ -409,10 +408,10 @@ def test_chat_sanitizes_a_completed_run_with_missing_reply(authed_client, monkey
 def test_checkpoint_admission_failure_is_compensated_before_unrecorded_chat(
     authed_client, monkeypatch
 ):
-    from maistro.runs.chat_admission import ADMISSION_INCOMPLETE
+    from maistro_turing_backend.execution import get_execution_plane
+    from maistro_turing_backend.state import get_state
 
-    from ..execution import get_execution_plane
-    from ..state import get_state
+    from maistro.runs.chat_admission import ADMISSION_INCOMPLETE
 
     plane = get_execution_plane()
     provider_calls = 0
@@ -441,8 +440,8 @@ def test_checkpoint_admission_failure_is_compensated_before_unrecorded_chat(
 
 
 def test_each_turn_gets_a_new_run_without_minting_a_new_workspace(authed_client, monkeypatch):
-    from ..execution import get_execution_plane
-    from ..state import get_state
+    from maistro_turing_backend.execution import get_execution_plane
+    from maistro_turing_backend.state import get_state
 
     monkeypatch.setattr(
         get_state().provider,
@@ -470,7 +469,7 @@ def test_each_turn_gets_a_new_run_without_minting_a_new_workspace(authed_client,
 
 
 def test_reply_projection_rejects_missing_canonical_node_results():
-    from ..routes.chat import _reply_from_record
+    from maistro_turing_backend.routes.chat import _reply_from_record
 
     empty_record: Any = SimpleNamespace(node_runs=[])
     with pytest.raises(RuntimeError, match="produced no NodeRun"):
@@ -484,7 +483,7 @@ def test_reply_projection_rejects_missing_canonical_node_results():
 
 
 def test_turing_execution_plane_rejects_unknown_node_resolution(monkeypatch):
-    from .. import execution as execution_module
+    from maistro_turing_backend import execution as execution_module
 
     async def reject_unknown_node(graph: Any, **kwargs: Any) -> Any:
         resolver = kwargs["node_resolver"]
