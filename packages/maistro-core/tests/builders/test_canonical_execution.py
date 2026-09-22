@@ -13,7 +13,6 @@ from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
     CanonicalGraphPipelineExecutor,
     DispatchResult,
-    GraphPipelineExecutor,
     _canonical_graph,
     _mark_skipped,
     _project_canonical_record,
@@ -162,7 +161,9 @@ async def _canonical(
 
 
 @pytest.mark.asyncio
-async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempts() -> None:
+async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempts(
+    legacy_graph_executor,
+) -> None:
     graph = PipelineGraph(
         [
             _node("spec"),
@@ -175,7 +176,7 @@ async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempt
     canonical_dispatcher = ScriptedDispatcher(delay=0.01)
     legacy_run = _run(graph, run_id="legacy")
 
-    await GraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    await legacy_graph_executor(legacy_dispatcher).execute(graph, legacy_run)
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     assert legacy_run.status == canonical_run.status == "completed"
@@ -214,7 +215,9 @@ async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempt
 
 
 @pytest.mark.asyncio
-async def test_multiple_root_ready_wave_preserves_concurrency_with_control_frontier() -> None:
+async def test_multiple_root_ready_wave_preserves_concurrency_with_control_frontier(
+    legacy_graph_executor,
+) -> None:
     graph = PipelineGraph(
         [
             _node("tests"),
@@ -226,7 +229,7 @@ async def test_multiple_root_ready_wave_preserves_concurrency_with_control_front
     canonical_dispatcher = ScriptedDispatcher(delay=0.01)
     legacy_run = _run(graph, run_id="legacy")
 
-    await GraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    await legacy_graph_executor(legacy_dispatcher).execute(graph, legacy_run)
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     assert legacy_run.status == canonical_run.status == "completed"
@@ -244,7 +247,9 @@ async def test_multiple_root_ready_wave_preserves_concurrency_with_control_front
 
 
 @pytest.mark.asyncio
-async def test_skip_and_unsupported_stage_domain_projection_matches_legacy() -> None:
+async def test_skip_and_unsupported_stage_domain_projection_matches_legacy(
+    legacy_graph_executor,
+) -> None:
     graph = PipelineGraph(
         [
             _node("spec", skip_if=lambda ctx: True),
@@ -256,7 +261,7 @@ async def test_skip_and_unsupported_stage_domain_projection_matches_legacy() -> 
     canonical_dispatcher = ScriptedDispatcher(unsupported={"tests"})
     legacy_run = _run(graph, run_id="legacy")
 
-    await GraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    await legacy_graph_executor(legacy_dispatcher).execute(graph, legacy_run)
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     assert legacy_run.status == canonical_run.status == "completed"
@@ -274,7 +279,9 @@ async def test_skip_and_unsupported_stage_domain_projection_matches_legacy() -> 
 
 
 @pytest.mark.asyncio
-async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback() -> None:
+async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
+    legacy_graph_executor,
+) -> None:
     outputs = {"review": ["VIOLATION: missing tests", "APPROVED"]}
     graph = PipelineGraph(
         [
@@ -292,7 +299,7 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
     canonical_dispatcher = ScriptedDispatcher(outputs=outputs)
     legacy_run = _run(graph, run_id="legacy")
 
-    await GraphPipelineExecutor(legacy_dispatcher).execute(graph, legacy_run)
+    await legacy_graph_executor(legacy_dispatcher).execute(graph, legacy_run)
     canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
 
     expected_calls = ["implement", "review", "implement", "review"]

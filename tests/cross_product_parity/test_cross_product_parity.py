@@ -123,50 +123,40 @@ async def test_builders_created_work_is_observable_on_the_canonical_spine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Scenario 1 executes Builders and reads the resulting canonical evidence."""
-    from maistro.builders.graph import PipelineGraph, PipelineNode
-    from maistro.builders.graph_executor import DispatchResult
-    from maistro.builders.pipeline import BuilderPipeline
-    from maistro.graph.durable_runs import CanonicalDurableRunStore
-
-    class Dispatcher:
-        def supports(self, agent_name: str, node_name: str) -> bool:
-            return True
-
-        async def run(self, **kwargs: object) -> DispatchResult:
-            return DispatchResult(ok=True, output=f"output:{kwargs['node_name']}")
-
-    graph = PipelineGraph(
-        [
-            PipelineNode(name="spec", agent_name="builder", prompt_template="spec"),
-            PipelineNode(
-                name="review",
-                agent_name="builder",
-                prompt_template="review",
-                depends_on=("spec",),
-            ),
-        ]
+    from maistro.builders.session_composition import (
+        build_session_pipeline,
+        open_session_spine,
     )
+
+    class DeterministicTurnRunner:
+        """Model-call boundary stand-in for the bootstrap agent loop.
+
+        Everything else — spine wiring, dispatcher, pipeline construction —
+        is the shipped session composition the Builders TUI runs; only the
+        network-facing LLM call is deterministic here.
+        """
+
+        async def execute_turn(self, messages: list[dict[str, object]]) -> dict[str, object]:
+            user = next(m for m in messages if m["role"] == "user")
+            return {"content": f"parity turn: {user['content']}"}
+
     profile = await open_durable_profile(
         tmp_path / "builders.sqlite3", workspace_id="builders-parity"
     )
     try:
-        pipeline = BuilderPipeline(
-            Dispatcher(),
-            nodes=list(graph),
-            run_store=profile.run_store,
-            durable_store=CanonicalDurableRunStore(profile.run_store, profile.continuation_store),
-            workspace_id=profile.workspace_id,
-            project_id=profile.project_id,
-        )
+        spine = await open_session_spine(profile.connection, workspace_id=profile.workspace_id)
+        pipeline = build_session_pipeline(DeterministicTurnRunner(), spine=spine)
         product_run = await pipeline.execute(
             issue_number=734,
             title="Builders parity",
-            repo="Agent-StrongHold/Project-mAIstro",
+            repo=str(tmp_path),
+            skip_decompose=False,
         )
         assert product_run.canonical_run_id
         observation = await canonical_observation(profile, product_run.canonical_run_id)
         assert observation["status"] == "completed"
-        assert len(observation["node_run_ids"]) == len(observation["attempt_ids"]) >= 2
+        assert len(observation["node_run_ids"]) == len(observation["attempt_ids"]) == 1
+        assert product_run.context["chat_turn"] == "parity turn: Builders parity"
 
         # Use the shipped Conductor inspection seam as the observer. The
         # canonical store remains the source of existence and lifecycle truth.

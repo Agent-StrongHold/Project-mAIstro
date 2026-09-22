@@ -14,9 +14,10 @@ from __future__ import annotations
 
 # mypy: disable-error-code="misc,untyped-decorator,unused-ignore"
 import subprocess
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from textual import on, work  # type: ignore[import-not-found]
 from textual.app import App, ComposeResult  # type: ignore[import-not-found]
@@ -33,6 +34,11 @@ from textual.widgets import (  # type: ignore[import-not-found]
     Static,
 )
 
+from maistro.builders.session_composition import (
+    SessionSpine,
+    build_session_pipeline,
+    open_session_spine,
+)
 from maistro.cli._builders_sessions import (
     BuilderSessionEntry,
     get_session,
@@ -47,35 +53,6 @@ _BUILDERS_CACHE_DIR = Path.home() / ".maistro" / "builders_repos"
 
 def _is_git_url(repo: str) -> bool:
     return repo.startswith(_GIT_URL_PREFIXES) or repo.endswith(".git")
-
-
-class _TurnDispatcher:
-    """Adapt one interactive agent turn to the canonical Builders stage seam."""
-
-    def __init__(self, runner: Any) -> None:
-        self._runner = runner
-
-    def supports(self, agent_name: str, node_name: str) -> bool:
-        return True
-
-    async def run(
-        self,
-        *,
-        run_id: str,
-        node_name: str,
-        agent_name: str,
-        prompt: str,
-        context: dict[str, Any],
-    ) -> Any:
-        from maistro.builders.graph_executor import DispatchResult
-
-        result = await self._runner.execute_turn(
-            messages=[
-                {"role": "system", "content": "You are a coding assistant."},
-                {"role": "user", "content": prompt},
-            ]
-        )
-        return DispatchResult(ok=True, output=str(result.get("content", "done")))
 
 
 class WelcomeScreen(Vertical):
@@ -148,37 +125,24 @@ class CodingScreen(Vertical):
         self.repo_url = repo_url
         self.work_dir = work_dir
         self._turn_number = 0
-        self._spine: tuple[Any, Any, Any, Any, Any] | None = None
 
-    async def _ensure_spine(self) -> tuple[Any, Any, Any, Any, Any]:
-        """Open the same durable SQLite spine used by other local products."""
-        if self._spine is not None:
-            return self._spine
+    @asynccontextmanager
+    async def _open_turn_spine(self) -> AsyncIterator[SessionSpine]:
+        """Yield the durable spine for one turn, closing its connection after.
 
+        A turn is the unit of work that owns the connection: the pipeline
+        completes (or fails) within the turn, SQLite durability makes the
+        canonical Run evidence survive the close, and there is no long-lived
+        resource whose cleanup would depend on a lifecycle hook nothing else
+        can call.
+        """
         import aiosqlite
-
-        from maistro.graph.durable_runs import CanonicalDurableRunStore
-        from maistro.runs.wiring import wire_execution_spine
 
         workspace_id = f"builders-{self.session_id}"
         db_path = Path.home() / ".maistro" / "builders" / "runs.sqlite3"
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = await aiosqlite.connect(db_path)
-        try:
-            stores = await wire_execution_spine(connection, workspace_id=workspace_id)
-        except Exception:
-            await connection.close()
-            raise
-        project_store, run_store, _admitter, _templates, _schedules, continuations = stores
-        project = await project_store.root_for_workspace(workspace_id)
-        durable_store = CanonicalDurableRunStore(run_store, continuations)
-        self._spine = (connection, run_store, durable_store, workspace_id, project.project_id)
-        return self._spine
-
-    async def on_unmount(self) -> None:
-        if self._spine is not None:
-            await self._spine[0].close()
-            self._spine = None
+        async with aiosqlite.connect(db_path) as connection:
+            yield await open_session_spine(connection, workspace_id=workspace_id)
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
@@ -219,8 +183,6 @@ class CodingScreen(Vertical):
     async def _run_agent_turn(self, text: str) -> None:
         chat = self.query_one("#chat-log", RichLog)
         try:
-            from maistro.builders.graph import PipelineNode
-            from maistro.builders.pipeline import BuilderPipeline
             from maistro_bootstrap.builders.agent_loop import AgentLoopConfig, TurnRunner
             from maistro_bootstrap.builders.responses_callable import ResponsesAPICallable
             from maistro_bootstrap.builders.sandbox import LocalWorktreeSandbox
@@ -229,35 +191,15 @@ class CodingScreen(Vertical):
             session = BuilderSession(sandbox=LocalWorktreeSandbox(self.work_dir))
             runner = TurnRunner(session=session, config=AgentLoopConfig())
             runner.set_llm(ResponsesAPICallable())  # type: ignore[arg-type]
-            (
-                connection,
-                run_store,
-                durable_store,
-                workspace_id,
-                project_id,
-            ) = await self._ensure_spine()
-            del connection
             self._turn_number += 1
-            pipeline = BuilderPipeline(
-                _TurnDispatcher(runner),
-                nodes=[
-                    PipelineNode(
-                        name="chat_turn",
-                        agent_name="builder",
-                        prompt_template="{title}",
-                    )
-                ],
-                run_store=run_store,
-                durable_store=durable_store,
-                workspace_id=workspace_id,
-                project_id=project_id,
-            )
-            product_run = await pipeline.execute(
-                issue_number=self._turn_number,
-                title=text,
-                repo=str(self.work_dir),
-                skip_decompose=False,
-            )
+            async with self._open_turn_spine() as spine:
+                pipeline = build_session_pipeline(runner, spine=spine)
+                product_run = await pipeline.execute(
+                    issue_number=self._turn_number,
+                    title=text,
+                    repo=str(self.work_dir),
+                    skip_decompose=False,
+                )
             if product_run.status != "completed":
                 chat.write(f"[red]Builder run failed: {product_run.failed_stage_error}[/red]")
             else:
