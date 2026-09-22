@@ -143,7 +143,7 @@ def test_dag_run_stream_preserves_authenticated_actor(
     admin_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The authenticated socket principal becomes the canonical Run actor."""
-    import services.graph_runner as graph_runner
+    import routes.dags as dags_routes
     import stores
 
     dag_id = "ws-actor-attribution"
@@ -156,19 +156,49 @@ def test_dag_run_stream_preserves_authenticated_actor(
     }
     captured: dict[str, Any] = {}
 
-    async def fake_stream(dag_data: dict[str, Any], **kwargs: Any):
-        captured["dag_id"] = dag_data["id"]
-        captured["user_id"] = kwargs.get("user_id")
-        yield {"status": "completed", "run_id": "run-ws-actor"}
+    async def fake_execute(
+        dag_id: str,
+        dag_data: dict[str, Any],
+        *,
+        user_id: str,
+        selected_workspace: str | None = None,
+        selected_project: str | None = None,
+        admission_source: str,
+    ) -> dict[str, Any]:
+        captured["dag_id"] = dag_id
+        captured["user_id"] = user_id
+        captured["admission_source"] = admission_source
+        return {
+            "status": "completed",
+            "run_id": "run-ws-actor",
+            "workspace_id": selected_workspace or "",
+            "project_id": selected_project or "",
+            "cycles": 0,
+            "node_results": {},
+            "annotations": {},
+        }
 
-    monkeypatch.setattr(graph_runner, "execute_dag_streaming", fake_stream)
+    monkeypatch.setattr(dags_routes, "_execute_registered_dag", fake_execute)
     try:
         with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
-            assert ws.receive_json() == {"status": "completed", "run_id": "run-ws-actor"}
+            assert ws.receive_json()["status"] == "started"
+            final = ws.receive_json()
     finally:
         stores.dags.pop(dag_id, None)
 
-    assert captured == {"dag_id": dag_id, "user_id": "admin"}
+    assert captured["dag_id"] == dag_id
+    assert captured["user_id"] == "admin"
+    assert captured["admission_source"] == "hive_dag_ws_route"
+    assert final["status"] == "completed"
+    assert final["run_id"] == "run-ws-actor"
+    # The projection row the socket records carries the same actor and the
+    # canonical Run id, so history attributes the button execution correctly.
+    from services.dag_run_store import get_dag_run_store
+
+    projection = get_dag_run_store().get_run("run-ws-actor")
+    assert projection is not None
+    assert projection["canonical_run_id"] == "run-ws-actor"
+    assert projection["user_id"] == "admin"
 
 
 @pytest.mark.contract("behavioral")
@@ -202,9 +232,9 @@ def test_dag_run_stream_closes_cleanly_when_the_run_ends_without_a_terminal_even
     admin_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The socket must not hang waiting for a `completed`/`failed` that never
-    comes: a stream that simply ends closes the socket through the same
-    finally path a terminal break uses."""
-    import services.graph_runner as graph_runner
+    comes: an outcome that is neither (a parked Run) is streamed as its own
+    final frame and the socket still closes through the same finally path."""
+    import routes.dags as dags_routes
     import stores
 
     dag_id = "ws-stream-exhausts"
@@ -216,17 +246,32 @@ def test_dag_run_stream_closes_cleanly_when_the_run_ends_without_a_terminal_even
         "edges": [],
     }
 
-    async def ending_stream(dag_data: dict[str, Any], **kwargs: Any):
-        yield {"status": "node_complete", "node_id": "n1", "success": True}
+    async def parked_execute(
+        dag_id: str,
+        dag_data: dict[str, Any],
+        *,
+        user_id: str,
+        selected_workspace: str | None = None,
+        selected_project: str | None = None,
+        admission_source: str,
+    ) -> dict[str, Any]:
+        return {
+            "status": "waiting",
+            "run_id": "run-ws-exhausts",
+            "workspace_id": selected_workspace or "",
+            "project_id": selected_project or "",
+            "cycles": 0,
+            "node_results": {},
+            "annotations": {},
+        }
 
-    monkeypatch.setattr(graph_runner, "execute_dag_streaming", ending_stream)
+    monkeypatch.setattr(dags_routes, "_execute_registered_dag", parked_execute)
     try:
         with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
-            assert ws.receive_json() == {
-                "status": "node_complete",
-                "node_id": "n1",
-                "success": True,
-            }
+            assert ws.receive_json()["status"] == "started"
+            final = ws.receive_json()
+            assert final["status"] == "waiting"
+            assert final["run_id"] == "run-ws-exhausts"
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_json()
     finally:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from typing import Any
 
 import stores
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -73,9 +75,39 @@ async def stream_task(websocket: WebSocket, task_id: str) -> None:
             )
 
 
+async def _stream_canonical_outcome(websocket: WebSocket, result: dict[str, Any]) -> None:
+    """Project one canonical execution result onto the historical frames.
+
+    The frame shape is the one ``execute_dag_streaming`` established and
+    DagBuilder's Run button renders: ``node_complete`` per node, then one
+    terminal frame whose ``run_id`` is the canonical Run id.
+    """
+    for node_id, node_result in result.get("node_results", {}).items():
+        await websocket.send_json(
+            {
+                "status": "node_complete",
+                "node_id": node_id,
+                "role": node_result.get("role", "worker"),
+                "response": node_result.get("response", ""),
+                "success": bool(node_result.get("success")),
+                "run_id": result.get("run_id"),
+            }
+        )
+    final: dict[str, Any] = {
+        "status": str(result.get("status") or "failed"),
+        "run_id": result.get("run_id"),
+    }
+    if final["status"] == "completed":
+        final["cycles"] = result.get("cycles", 0)
+        final["annotations"] = result.get("annotations", {})
+    else:
+        final["error"] = str(result.get("error") or f"canonical Run ended {final['status']}")
+    await websocket.send_json(final)
+
+
 @router.websocket("/dags/{dag_id}/run")
 async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
-    """Run a DAG and stream canonical Run/NodeRun progress over WebSocket.
+    """Run a registered DAG and stream its canonical Run/NodeRun outcomes.
 
     Gated on `dags.write`, matching `POST /v1/dags` in the HTTP middleware's
     `_PROTECTED_OPS`: this endpoint *executes* the graph, and its nodes include
@@ -88,6 +120,12 @@ async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
     legacy client while DagBuilder is moved onto this contract; it must become
     required before #766 can close. Canonical Project resolution is deliberately
     not invented here while #37 still owns the duplicate Hive Workspace store.
+
+    #736 puts this socket — the shipped DagBuilder Run button — on the same
+    registered-descriptor -> canonical Run seam as ``POST /v1/dags/{dag_id}/run``.
+    The frames keep the historical streaming shape; every ``run_id`` is the
+    canonical Run id, and the Recent Runs projection records the same identity
+    the HTTP route records.
     """
     user = await _authenticate(websocket, permission="dags.write")
     if user is None:
@@ -108,17 +146,32 @@ async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
         return
 
     dag_data = stores.dags[dag_id]
-    try:
-        from services.graph_runner import execute_dag_streaming
+    user_id = str(user["id"])
+    entry = dag_data.get("entry_node") or (
+        dag_data.get("nodes", [{}])[0].get("id") if dag_data.get("nodes") else ""
+    )
+    from routes.dags import _execute_registered_dag, _public_failure, _record_run_projection
 
-        async for event in execute_dag_streaming(dag_data, user_id=str(user["id"])):
-            await websocket.send_json(event)
-            if event.get("status") in ("completed", "failed"):
-                break
+    try:
+        await websocket.send_json(
+            {"status": "started", "node_count": len(dag_data.get("nodes", [])), "entry": entry}
+        )
+        result = await _execute_registered_dag(
+            dag_id,
+            dag_data,
+            user_id=user_id,
+            selected_workspace=workspace_id or None,
+            admission_source="hive_dag_ws_route",
+        )
+        await _record_run_projection(dag_id=dag_id, user_id=user_id, result=result)
     except WebSocketDisconnect:
         pass
     except Exception as exc:
-        await websocket.send_json({"status": "failed", "error": str(exc)})
+        logger.warning("Registered DAG execution failed", exc_info=exc)
+        with contextlib.suppress(Exception):
+            await websocket.send_json({"status": "failed", "error": _public_failure(exc)})
+    else:
+        await _stream_canonical_outcome(websocket, result)
     finally:
         try:
             await websocket.close()

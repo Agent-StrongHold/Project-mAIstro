@@ -83,25 +83,50 @@ def _actor(request: Request) -> str:
     return str(user.get("id") or "system")
 
 
-async def _resolve_run_scope(
-    dag_data: Mapping[str, Any], request: Request, workspace_id: str | None
+def _owned_workspace_ids(user_id: str) -> list[str]:
+    """The Hive Workspaces ``user_id`` is an active member of, sorted by id.
+
+    Reads the same store ``authorize_hive_dag_workspace`` authorizes against:
+    ``stores.workspaces`` is Hive's Workspace authority until #37 converges it,
+    so owner discovery here is a read of the existing seam, not a second one.
+    """
+    principal = str(user_id).strip()
+    if not principal:
+        return []
+    return sorted(
+        str(workspace.id)
+        for workspace in stores.workspaces.values()
+        if workspace.active is not False
+        and any(member.user_id == principal for member in workspace.members)
+    )
+
+
+async def _resolve_run_scope_for_user(
+    dag_data: Mapping[str, Any],
+    *,
+    user_id: str,
+    selected_workspace: str | None = None,
+    selected_project: str | None = None,
 ) -> tuple[str, str]:
     """Resolve and authorize the scope used by canonical Run admission.
 
-    A request-selected Workspace is checked at the existing Hive authorization
-    boundary before the canonical resolver maps it to its Root Project. The
-    resolver remains the single source for the deployment default and for
-    project selection; this route only supplies an already-authorized request
-    choice when one exists.
+    Precedence: an explicit request selection, then the Workspace the saved
+    DAG already carries, and only when neither exists the requesting owner's
+    single Hive Workspace membership. That last step is the no-selection fix:
+    a request whose authenticated owner has exactly one Workspace must not be
+    admitted into the deployment default, which is an unrelated scope. With
+    zero or several memberships there is no single owner scope to choose, and
+    resolution falls to the canonical resolver, which remains the single
+    source for the deployment default and for Root Project selection.
     """
-    selected_workspace = (
-        workspace_id
-        or getattr(request.state, "workspace_id", None)
-        or dag_data.get("workspace_id")
-        or ""
+    selection = (
+        str(selected_workspace or "").strip() or str(dag_data.get("workspace_id") or "").strip()
     )
-    selected_workspace = str(selected_workspace).strip()
-    if selected_workspace:
+    if not selection:
+        owned = _owned_workspace_ids(user_id)
+        if len(owned) == 1:
+            selection = owned[0]
+    if selection:
         from services.dag_execution_scope import (
             DagWorkspaceSelectionError,
             authorize_hive_dag_workspace,
@@ -109,21 +134,19 @@ async def _resolve_run_scope(
 
         try:
             authorize_hive_dag_workspace(
-                workspace_id=selected_workspace,
-                user_id=_actor(request),
+                workspace_id=selection,
+                user_id=user_id,
             )
         except DagWorkspaceSelectionError as exc:
             raise HTTPException(status_code=403, detail="Workspace not found") from exc
 
-    selected_project = (
-        getattr(request.state, "project_id", None) or dag_data.get("project_id") or ""
-    )
+    project = str(selected_project or "").strip() or str(dag_data.get("project_id") or "").strip()
     from services.canonical_dag_runner import resolve_execution_scope
 
     return await resolve_execution_scope(
         dag_data,
-        workspace_id=selected_workspace or None,
-        project_id=str(selected_project).strip() or None,
+        workspace_id=selection or None,
+        project_id=project or None,
     )
 
 
@@ -255,6 +278,48 @@ def _registered_run_result(graph: Any, record: Any) -> dict[str, Any]:
     if error:
         result["error"] = str(error)
     return result
+
+
+async def _execute_registered_dag(
+    dag_id: str,
+    dag_data: Mapping[str, Any],
+    *,
+    user_id: str,
+    selected_workspace: str | None = None,
+    selected_project: str | None = None,
+    admission_source: str,
+) -> dict[str, Any]:
+    """Register the saved DAG and execute it on the canonical Run path.
+
+    The one execution seam shared by the Hive DAG-run producers (#736): the
+    HTTP button route and the streaming socket both resolve scope, register
+    the saved snapshot as a descriptor, and admit/execute exactly one
+    canonical Run through ``run_registered_dag``. Returns the canonical
+    Run/NodeRun projection in the historical DAG response shape.
+    """
+    from services.dag_agents import get_registry, run_registered_dag
+
+    resolved_workspace, resolved_project = await _resolve_run_scope_for_user(
+        dag_data,
+        user_id=user_id,
+        selected_workspace=selected_workspace,
+        selected_project=selected_project,
+    )
+    # The saved DAG is the product's editable definition. Registering its
+    # snapshot first makes every producer use the same descriptor -> template
+    # projection as schedules and other registered-DAG callers.
+    snapshot = _registered_dag_snapshot(dag_data)
+    node_resolver = _route_node_resolver(dag_data, user_id)
+    get_registry().register(snapshot)
+    graph, record = await run_registered_dag(
+        dag_id,
+        workspace_id=resolved_workspace,
+        project_id=resolved_project,
+        user_id=user_id,
+        node_resolver=node_resolver,
+        provenance={"admission_source": admission_source, "execution_mode": "interactive"},
+    )
+    return _registered_run_result(graph, record)
 
 
 async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str, Any]) -> None:
@@ -527,25 +592,14 @@ async def run_dag(
     actor = _actor(request)
     log_audit("dag_run", actor, target=dag_id)
 
-    from services.dag_agents import get_registry, run_registered_dag
-
     try:
-        resolved_workspace, resolved_project = await _resolve_run_scope(
-            dag_data, request, workspace_id
-        )
-        # The saved DAG is the product's editable definition. Registering its
-        # snapshot first makes this route use the same descriptor -> template
-        # projection as schedules and other registered-DAG producers.
-        snapshot = _registered_dag_snapshot(dag_data)
-        node_resolver = _route_node_resolver(dag_data, actor)
-        get_registry().register(snapshot)
-        graph, record = await run_registered_dag(
+        result = await _execute_registered_dag(
             dag_id,
-            workspace_id=resolved_workspace,
-            project_id=resolved_project,
+            dag_data,
             user_id=actor,
-            node_resolver=node_resolver,
-            provenance={"admission_source": "hive_dag_route", "execution_mode": "interactive"},
+            selected_workspace=workspace_id or getattr(request.state, "workspace_id", None),
+            selected_project=getattr(request.state, "project_id", None),
+            admission_source="hive_dag_route",
         )
     except HTTPException:
         raise
@@ -553,7 +607,6 @@ async def run_dag(
         logger.warning("Registered DAG execution failed", exc_info=exc)
         return {"status": "failed", "error": _public_failure(exc)}
 
-    result = _registered_run_result(graph, record)
     await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
     run_id = result["run_id"]
     return {

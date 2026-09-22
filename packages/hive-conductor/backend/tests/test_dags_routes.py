@@ -166,13 +166,19 @@ def _canonical_container(monkeypatch: pytest.MonkeyPatch, workspace_id: str) -> 
     return container
 
 
-def _route_dag(dag_id: str, *, kind: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
+def _route_dag(
+    dag_id: str,
+    *,
+    kind: str,
+    config: dict[str, Any] | None = None,
+    inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": dag_id,
         "name": dag_id,
         "description": "route integration",
         "workspace_id": "route-workspace",
-        "nodes": [{"id": "n1", "kind": kind, "config": config or {}, "inputs": {}}],
+        "nodes": [{"id": "n1", "kind": kind, "config": config or {}, "inputs": inputs or {}}],
         "edges": [],
         "entry_node": "n1",
     }
@@ -258,6 +264,13 @@ def test_run_dag_uses_one_canonical_run_for_history_projection(
     assert canonical.run_id == run_id
     assert canonical.workspace_id == workspace_id
     assert canonical.status.value == "completed"
+    # Exactly one canonical Run exists for this execution: admission and
+    # traversal share the admitted identity, and no second Run was minted.
+    from maistro.runs import RunStatus
+
+    assert [
+        run.run_id for run in asyncio.run(container.run_store.list_by_status(RunStatus.COMPLETED))
+    ] == [run_id]
     assert projection is not None
     assert projection["canonical_run_id"] == canonical.run_id
     assert projection["workspace_id"] == workspace_id
@@ -399,6 +412,137 @@ async def test_projection_preserves_a_waiting_canonical_run(
     assert paused["status"] == "paused"
     assert paused["finished_at"] is None
     assert paused["node_states"]["worker.n1"] == "running"
+
+
+def test_run_dag_without_selection_uses_the_owners_workspace(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-query run of an unscoped CRUD DAG admits into the owner's Workspace.
+
+    The shipped button sends no workspace query and CRUD-created DAGs carry
+    none. Before #736 the route then fell back to the deployment default
+    (``canonical-default``) -- an unrelated scope -- even though the
+    authenticated owner had exactly one authorized Workspace.
+    """
+    import stores
+    from services.dag_run_store import get_dag_run_store
+
+    # Isolate membership: exactly one active Workspace, owned by the admin
+    # principal the route authenticates.
+    saved_workspaces = dict(stores.workspaces.items())
+    for key in list(stores.workspaces.keys()):
+        stores.workspaces.pop(key)
+    try:
+        _install_route_workspace("owned-ws", "admin")
+        container = _canonical_container(monkeypatch, "canonical-default")
+        asyncio.run(container.project_scope_store.create_root("owned-ws"))
+        dag_id = _seed(admin_client)
+        assert not stores.dags[dag_id].get("workspace_id")
+
+        response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    finally:
+        for key in list(stores.workspaces.keys()):
+            stores.workspaces.pop(key)
+        for key, value in saved_workspaces.items():
+            stores.workspaces[key] = value
+
+    assert response.status_code == 200
+    body = response.json()
+    run_id = body["run_id"]
+
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    assert canonical is not None
+    assert canonical.workspace_id == "owned-ws"
+    projection = get_dag_run_store().get_run(run_id)
+    assert projection is not None
+    assert projection["canonical_run_id"] == canonical.run_id
+    assert projection["workspace_id"] == "owned-ws"
+
+
+def test_run_dag_parks_a_hitl_node_as_paused_not_finished(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real HITL node parks the canonical Run; the projection must not
+    terminalize it. Unlike the fabricated-input unit test above, this drives
+    the pause through the HTTP route and the durable executor.
+    """
+    import stores
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    dag_id = "route-canonical-paused"
+    stores.dags[dag_id] = _route_dag(
+        dag_id, kind="human.ask_question", inputs={"question": "Ship it?"}
+    )
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run?workspace_id={workspace_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "paused"
+    run_id = body["run_id"]
+
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    assert canonical is not None
+    assert canonical.status.value == "paused"
+    projection = get_dag_run_store().get_run(run_id)
+    assert projection is not None
+    assert projection["canonical_run_id"] == run_id
+    assert projection["status"] == "paused"
+    assert projection["finished_at"] is None
+    assert projection["node_states"]
+    assert all(state != "completed" for state in projection["node_states"].values())
+
+
+def test_ws_run_button_executes_one_canonical_run(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shipped DagBuilder Run button's socket executes the registered path.
+
+    The button opens ``/v1/ws/dags/{id}/run``; #736 moves that socket onto the
+    same ``run_registered_dag`` seam as the POST route, so both stores name one
+    canonical Run for a button execution too.
+    """
+    import services.graph_runner as graph_runner
+    import stores
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    dag_id = "route-canonical-ws"
+    stores.dags[dag_id] = _route_dag(dag_id, kind="transform.alias_keys")
+
+    async def legacy_stream_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the DAG socket must not call graph_runner.execute_dag_streaming")
+        yield  # pragma: no cover - keeps this an (unreachable) async generator
+
+    monkeypatch.setattr(graph_runner, "execute_dag_streaming", legacy_stream_must_not_run)
+
+    with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
+        started = ws.receive_json()
+        node_event = ws.receive_json()
+        final = ws.receive_json()
+
+    assert started["status"] == "started"
+    assert started["node_count"] == 1
+    run_id = final["run_id"]
+    assert final["status"] == "completed"
+    assert node_event["status"] == "node_complete"
+    assert node_event["success"] is True
+    assert node_event["run_id"] == run_id
+
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    projection = get_dag_run_store().get_run(run_id)
+    assert canonical is not None
+    assert canonical.run_id == run_id
+    assert canonical.workspace_id == workspace_id
+    assert canonical.status.value == "completed"
+    assert projection is not None
+    assert projection["canonical_run_id"] == canonical.run_id
+    assert projection["workspace_id"] == workspace_id
+    assert projection["status"] == canonical.status.value
 
 
 def test_run_dag_missing_dag_returns_404(admin_client: Any) -> None:
