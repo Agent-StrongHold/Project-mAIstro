@@ -30,10 +30,15 @@ def evolution_status() -> dict:
     except RuntimeError:
         return {
             "running": False,
+            "execution_available": False,
+            "availability": "unavailable",
+            "availability_reason": "evolution service not started",
+            "domain_state_only": True,
             "cycle_count": 0,
             "population_size": 0,
             "last_error": None,
             "last_run_id": None,
+            "last_run_status": None,
             "tournament": {},
         }
 
@@ -152,29 +157,47 @@ async def seed_population(body: SeedPopulationBody) -> dict:
     try:
         from services.evolution import get_evolution_service
 
-        from maistro_evolve.diversity import emergency_spawn
-
         svc = get_evolution_service()
-        if svc.population is None:
-            raise HTTPException(status_code=503, detail="population not initialized")
-        existing = svc.population.list_all()
-        spawned = emergency_spawn(existing, body.count)
-        for g in spawned:
-            svc.population.add(g)
-        return {"seeded": len(spawned), "population_size": len(svc.population.list_all())}
+        seeded, population_size = await svc.seed_population(body.count)
+        return {"seeded": seeded, "population_size": population_size}
     except RuntimeError:
         raise HTTPException(status_code=503, detail="evolution service not started") from None
 
 
 @router.post("/cycle")
 async def trigger_cycle(request: Request) -> dict:
-    try:
-        from services.evolution import get_evolution_service
+    from services.evolution import (
+        CanonicalEvolutionRunError,
+        EvolutionServiceNotStarted,
+        EvolutionUnavailableError,
+        get_evolution_service,
+    )
 
+    try:
         svc = get_evolution_service()
         run_id = await svc._run_one_cycle(actor_principal_id=_actor_principal_id(request))
         return {"status": "completed", "cycle_count": svc.cycle_count, "run_id": run_id}
-    except RuntimeError:
-        raise HTTPException(status_code=503, detail="evolution service not started") from None
+    except EvolutionServiceNotStarted as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "evolution_unavailable",
+                "availability": "unavailable",
+                "message": str(exc),
+            },
+        ) from None
+    except EvolutionUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "evolution_unavailable",
+                "availability": exc.availability,
+                "message": str(exc),
+            },
+        ) from None
+    except CanonicalEvolutionRunError as exc:
+        # The Run was admitted and durably terminalized; this is execution
+        # failure, not service availability failure. Preserve its identity.
+        raise HTTPException(status_code=500, detail=exc.as_detail()) from None
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

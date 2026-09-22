@@ -14,6 +14,12 @@ try:
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
 
+from maistro_canvas.canvas.composition import (
+    CanvasRuntime,
+    bind_canvas_runner_lifecycle,
+    build_canvas_router,
+    build_canvas_runtime,
+)
 from maistro_canvas.export import (
     ExporterDependencyError,
     ExportLayer,
@@ -100,6 +106,7 @@ __all__ = [
     "BlendMode",
     "CanvasError",
     "CanvasRecord",
+    "CanvasRuntime",
     "CanvasStore",
     "CanvasTier",
     "CharacterPose",
@@ -143,6 +150,9 @@ __all__ = [
     "WorldStyleConflictError",
     "WorldStylePartial",
     "__version__",
+    "bind_canvas_runner_lifecycle",
+    "build_canvas_router",
+    "build_canvas_runtime",
     "export_html",
     "export_pptx",
     "layer_type_to_kind",
