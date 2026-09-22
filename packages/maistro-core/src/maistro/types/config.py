@@ -5,7 +5,15 @@ Pydantic-validated config loaded from YAML.
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import BaseModel, Field, field_validator
+
+#: A string that carries at least one non-whitespace character. Declared once
+#: so constraint-bearing configuration fields stay declarative pydantic
+#: surface instead of growing named validator methods the dead-code ratchet
+#: would have to bank individually (#1085).
+NonEmptyStr = Annotated[str, Field(pattern=r"\S")]
 
 
 class RoutingConfig(BaseModel):
@@ -75,12 +83,13 @@ class SecurityConfig(BaseModel):
         return value
 
     # Selects a maistro.security.permission_policy.PERMISSION_PRESETS entry.
-    # Deliberately "none" (empty table = permissive) at shipped defaults: the
-    # "armable, not armed" posture is an ADR-backed design decision
-    # (ADR-072726-0d6b), not an oversight. Arming a preset by default risks
-    # locking a single-user homelab owner out of their own dangerous tools;
-    # do it explicitly per that ADR's preconditions. Tracked in
-    # docs/audit/SECURITY-REMEDIATION-BACKLOG.md.
+    # Deliberately "none" (empty table) at shipped defaults. Under the
+    # fail-closed default (ADR-072726-0d6b, implemented for #1165) an empty
+    # table DENIES every permission-table lookup, so a deployment that wants
+    # tool authority must configure it explicitly here (preset or
+    # permissions) -- the previous allow-all-on-empty posture is gone and can
+    # no longer be armed by omission. Tracked in the security remediation
+    # backlog history for the original armable-not-armed decision.
     permission_preset: str = "none"
     # Explicit tool_name -> [role, ...] overrides, applied on top of the preset.
     permissions: dict[str, list[str]] = Field(default_factory=dict)
@@ -131,29 +140,21 @@ class AuthConfig(BaseModel):
 
 
 class ModelBindingConfig(BaseModel):
-    """Operator-declared authorization for the canonical model.chat capability."""
+    """Operator-declared authorization for the canonical model.chat capability.
 
-    binding_id: str
-    project_id: str
+    Non-empty identity/scope and non-blank refs are stated as declarative
+    pydantic constraints rather than named validator methods: this is
+    configuration surface, and the repo's Vulture ratchet banks no new
+    method identities for it (#1085).
+    """
+
+    binding_id: NonEmptyStr
+    project_id: NonEmptyStr
     workspace_id: str = ""
     node_id: str = ""
     provider_name: str = ""
-    credential_refs: tuple[str, ...] = ()
-    policy_refs: tuple[str, ...] = ()
-
-    @field_validator("binding_id", "project_id")
-    @classmethod
-    def _require_scope_identity(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("model Binding identity/scope fields must be non-empty")
-        return value
-
-    @field_validator("credential_refs", "policy_refs")
-    @classmethod
-    def _reject_empty_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not ref.strip() for ref in value):
-            raise ValueError("model Binding refs cannot contain empty values")
-        return value
+    credential_refs: tuple[NonEmptyStr, ...] = ()
+    policy_refs: tuple[NonEmptyStr, ...] = ()
 
 
 class AgentConfig(BaseModel):

@@ -70,7 +70,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -201,7 +201,7 @@ jobs:
       PUBLISH_SET: "maistro-core maistro-canvas maistro-evolve maistro-rsi maistro-bootstrap"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -272,7 +272,7 @@ jobs:
           for pkg in ${PUBLISH_SET}; do only+=(--only "${pkg}"); done
           python scripts/verify-wheel-imports.py --dist dist/ --python 3.12 "${only[@]}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -480,7 +480,7 @@ jobs:
             -o cyclonedx-json > "sboms/sbom-source-${GITHUB_REF_NAME}.cyclonedx.json"
           ls -1 sboms/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sboms
           path: sboms/
@@ -516,7 +516,7 @@ jobs:
       contents: write # creating a release writes to the repository
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

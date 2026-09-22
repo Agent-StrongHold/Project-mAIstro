@@ -79,11 +79,13 @@ class ResolvedBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     binding_id: str
-    workspace_id: str
-    project_id: str
     capability: str
     provider_name: str
     provider_trust_tier: str
+    # Optional only so pre-#1118 rows can round-trip; every resolution
+    # performed live names the Binding's Workspace/Project scope (#1085).
+    workspace_id: str = ""
+    project_id: str = ""
     config: dict[str, Any] = Field(default_factory=dict)
     credential_refs: tuple[str, ...] = ()
     policy_refs: tuple[str, ...] = ()
@@ -92,8 +94,6 @@ class ResolvedBinding(BaseModel):
     @model_validator(mode="after")
     def _validate_resolved(self) -> ResolvedBinding:
         _require(self.binding_id, "binding_id")
-        _require(self.workspace_id, "workspace_id")
-        _require(self.project_id, "project_id")
         _require(self.capability, "capability")
         _require(self.provider_name, "provider_name")
         return self
