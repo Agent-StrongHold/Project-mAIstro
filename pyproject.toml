@@ -93,6 +93,18 @@ dev = [
     # existed, ran, and proved nothing. Consumers still opt in via
     # `maistro-core[re2]`; this only guarantees *our* CI exercises both engines.
     "google-re2>=1.1",
+    # Same trap a third time, now with collection itself on the line. The
+    # Builders TUI tests (`packages/maistro-core/tests/cli/test_builders_tui.py`)
+    # open with `pytest.importorskip("textual")`, and `textual` ships only in
+    # `maistro-core[builders]` — a member extra that neither `--extra dev` nor
+    # `--all-extras` at this root pulls. The quality gate's coverage job syncs
+    # `--all-extras` and measures the TUI, but the `test` job and the
+    # suite-inventory gate sync `--extra dev`: there the module skips at
+    # collection, its two node IDs vanish, and the inventory drifts (#446
+    # repair, 2026-09). A passthrough `builders` extra at the root does not fix
+    # that — nothing installs it. Putting the member extra here makes the
+    # tests collect (and run) in every environment this repo syncs.
+    "maistro-core[builders]",
 ]
 browser = ["playwright>=1.49"]
 # NOTE: the on-demand /code-health and /security-scan toolchains are NOT project
@@ -157,6 +169,11 @@ dev = [
     "hypothesis>=6.0",
     "cosmic-ray>=8.0.0",
     "pytest-timeout>=2.3",  # see the note in [project.optional-dependencies].dev
+    # maistro-core[builders] (textual + maistro-bootstrap) for the Builders TUI
+    # tests — see the note beside google-re2 in [project.optional-dependencies].dev.
+    # The group carries it as well so a bare default `uv sync` / `uv run` collects
+    # the same node IDs the inventory gate counts.
+    "maistro-core[builders]",
     "copier>=9.17.2",
 ]
 

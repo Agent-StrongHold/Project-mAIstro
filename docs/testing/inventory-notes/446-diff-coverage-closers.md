@@ -47,3 +47,20 @@ exceptions into the `DispatchResult(ok=False, error=...)` contract instead of
 propagating them raw — previously a failing model call left
 `failed_stage_error` empty and the TUI printed "Builder run failed:" with no
 reason. The failure surfaces as a failed canonical Run with a named error.
+
+## 2026-09-02 repair: the TUI nodes have to *collect*, not just exist
+
+The first version of this note recorded `+6` for `maistro-core` while the
+suite-inventory gate collected only `+4`: the two TUI nodes opened with
+`pytest.importorskip("textual")`, and `textual` lives in `maistro-core[builders]`
+— a member extra that neither `uv sync --extra dev` nor `--all-extras` at the
+workspace root pulls. The quality gate's coverage job (sync `--all-extras` plus
+the root passthrough `builders` extra) measured them, but the `test` job and
+the suite-inventory gate sync `--extra dev`, where the module skipped at
+collection and its two node IDs vanished (expected 10569, collected 10567).
+
+A root passthrough extra fixes nothing by itself — nothing installs it. The
+repair adds `maistro-core[builders]` to the root `dev` extra *and* the `dev`
+dependency-group (the pytest-bdd / google-re2 precedent), so every environment
+this repo syncs collects the same 10569 node IDs and the two TUI tests execute
+rather than skip (`2 passed` under `uv sync --locked --extra dev`).
