@@ -573,7 +573,9 @@ async def test_setup_hook_runs_after_authorization_before_model_http(
     """
 
     order: list[str] = []
-    effects = new_in_memory_effect_context()
+    # The route under test is setup-hook ordering (#1088), so this fixture opts
+    # into the explicit M1 baseline policy; omitting a policy now denies (#846).
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
 
     async def _setup() -> None:
@@ -810,7 +812,9 @@ async def test_chat_payload_carries_structured_output_shape(
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    effects = new_in_memory_effect_context()
+    # Response-format passthrough test: explicit M1 baseline policy (#846 — an
+    # omitted policy evaluator now denies instead of defaulting permissive).
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     registry = _registry()
     egress = ModelChatEgress(
         effects,

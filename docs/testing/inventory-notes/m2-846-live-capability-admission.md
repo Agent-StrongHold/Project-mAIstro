@@ -21,3 +21,11 @@ Adds coverage for the two reachable live-effect bypasses fixed by #846:
   records its host action through the canonical Binding/Invocation context.
 - `test_binding_invocation.py` proves an omitted effect policy is an audited
   denial and cannot reach the provider.
+
+Repair pass (auto-846): the fail-closed composition default denied several
+pre-existing behavior fixtures that constructed effect contexts without an
+evaluator (`test_model_chat_egress.py` setup-hook/structured-output,
+`test_governed_model_consumers.py`, `test_providers_routes.py`). Those fixtures
+now opt into the explicit `binding_scope_policy` M1 baseline; no test was added
+or removed by the repair, so the delta above stays the original #846 split with
+`846-live-capability-admission.md` (+2/+2 there, +7/+6 here).
