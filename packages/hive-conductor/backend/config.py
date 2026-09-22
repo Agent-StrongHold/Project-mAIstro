@@ -208,6 +208,13 @@ class Settings(BaseSettings):
     # Canonical model.chat authorization declarations consumed by the embedded
     # core Container. Empty remains fail-closed for model effects.
     model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
+    # The embedded Container's Sentinel permission table (ADR-072726-0d6b,
+    # #1165). Fail-closed: the shipped empty table denies every tool, so a
+    # Conductor that wants its agents to hold tool authority states it here --
+    # `MAISTRO_PERMISSION_PRESET=dangerous_tools_admin` and/or
+    # `MAISTRO_PERMISSIONS='{"tool_name": ["admin", "user"]}'` (JSON).
+    maistro_permission_preset: str = "none"
+    maistro_permissions: dict[str, list[str]] = Field(default_factory=dict)
 
     conductor_data_dir: str = "~/.conductor"
     conductor_vault_path: str | None = None

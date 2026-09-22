@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import sys
+
 import jwt as pyjwt
 import pytest
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import IdentityKind
 from maistro.security.auth_demo_cookie import DemoCookieAuthProvider
 
@@ -70,46 +73,73 @@ async def test_authenticate_uses_custom_cookie_name() -> None:
 
 async def test_authenticate_raises_when_no_token_anywhere() -> None:
     provider = DemoCookieAuthProvider(api_key=_KEY)
-    with pytest.raises(ValueError, match="No demo session token"):
+    with pytest.raises(CredentialNotApplicable, match="No demo session credential"):
         await provider.authenticate(None, headers=None)
 
 
 async def test_authenticate_raises_when_authorization_has_wrong_prefix() -> None:
     provider = DemoCookieAuthProvider(api_key=_KEY)
-    with pytest.raises(ValueError, match="No demo session token"):
+    with pytest.raises(CredentialNotApplicable, match="No demo session credential"):
         await provider.authenticate("Bearer plain-jwt", headers=None)
+
+
+async def test_authenticate_rejects_empty_recognized_header() -> None:
+    provider = DemoCookieAuthProvider(api_key=_KEY)
+    with pytest.raises(AuthError, match="Empty demo session credential"):
+        await provider.authenticate("Bearer demo-jwt:")
+
+
+async def test_authenticate_treats_empty_cookie_header_as_not_applicable() -> None:
+    provider = DemoCookieAuthProvider(api_key=_KEY)
+    with pytest.raises(CredentialNotApplicable, match="No demo session credential"):
+        await provider.authenticate(None, headers={"cookie": ""})
 
 
 async def test_authenticate_raises_when_cookie_present_but_named_cookie_missing() -> None:
     provider = DemoCookieAuthProvider(api_key=_KEY)
-    with pytest.raises(ValueError, match="No demo session token"):
+    with pytest.raises(CredentialNotApplicable, match="No demo session credential"):
         await provider.authenticate(None, headers={"cookie": "other=abc"})
 
 
 async def test_authenticate_swallows_cookie_parse_error_and_treats_as_no_token() -> None:
     provider = DemoCookieAuthProvider(api_key=_KEY)
-    with pytest.raises(ValueError, match="No demo session token"):
+    with pytest.raises(CredentialNotApplicable, match="No demo session credential"):
         await provider.authenticate(None, headers={"cookie": "====="})
+
+
+async def test_authenticate_rejects_malformed_recognized_cookie() -> None:
+    provider = DemoCookieAuthProvider(api_key=_KEY)
+    with pytest.raises(AuthError, match="Empty demo session credential"):
+        await provider.authenticate(None, headers={"cookie": 'maistro_session="'})
 
 
 async def test_authenticate_raises_for_invalid_signature() -> None:
     provider = DemoCookieAuthProvider(api_key=_KEY)
     token = make_token(key="wrong-key-that-is-32-bytes-long!")
-    with pytest.raises(ValueError, match="Invalid demo session"):
+    with pytest.raises(AuthError, match="Invalid demo session"):
         await provider.authenticate(f"Bearer demo-jwt:{token}")
+
+
+async def test_authenticate_propagates_missing_jwt_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "jwt", None)
+    provider = DemoCookieAuthProvider(api_key=_KEY)
+    with pytest.raises(ImportError):
+        await provider.authenticate("Bearer demo-jwt:token")
 
 
 async def test_authenticate_raises_for_wrong_audience() -> None:
     provider = DemoCookieAuthProvider(api_key=_KEY)
     token = make_token(audience="wrong-aud")
-    with pytest.raises(ValueError, match="Invalid demo session"):
+    with pytest.raises(AuthError, match="Invalid demo session"):
         await provider.authenticate(f"Bearer demo-jwt:{token}")
 
 
 async def test_authenticate_raises_for_wrong_issuer() -> None:
     provider = DemoCookieAuthProvider(api_key=_KEY)
     token = make_token(issuer="wrong-iss")
-    with pytest.raises(ValueError, match="Invalid demo session"):
+    with pytest.raises(AuthError, match="Invalid demo session"):
         await provider.authenticate(f"Bearer demo-jwt:{token}")
 
 

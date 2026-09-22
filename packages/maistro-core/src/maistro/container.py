@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -22,11 +24,13 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import (
-    CapabilityEffectContext,
-    new_in_memory_effect_context,
-)
+from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
+from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
+from maistro.events.consumer_cursor import (
+    DEFAULT_HOLE_GRACE_SECONDS,
+    LEGACY_BRIDGE_CONSUMER_ID,
+)
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -47,7 +51,11 @@ from maistro.runs.chat_admission import (
     chat_turn_outcome,
     failure_category,
 )
-from maistro.runs.chat_execution import ChatAttemptExecutor, ChatDispatch
+from maistro.runs.chat_execution import (
+    ChatAttemptExecutor,
+    ChatDispatch,
+    ChatDispatchUnrecorded,
+)
 from maistro.runs.lifecycle import RUN_TRANSITIONS
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -64,6 +72,7 @@ from maistro.runs.wiring import (
 )
 from maistro.scheduling.admission import ScheduleRunAdmitter
 from maistro.scheduling.store import ScheduleStore
+from maistro.security._types import ANONYMOUS_AUTH
 from maistro.security.gate import Gate
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.security.warden.detector import Warden
@@ -87,6 +96,7 @@ if TYPE_CHECKING:
     )
     from maistro.capabilities.registry import CapabilityRegistry
     from maistro.events.bus import EventBus
+    from maistro.events.consumer_cursor import ConsumerCursorStore
     from maistro.events.durable_log import EventLogStore
     from maistro.events.invocations import InvocationStore
     from maistro.events.processing import HandlerCaller
@@ -233,6 +243,12 @@ class Container:
     #: cannot share `db_pool`; it is this container's to close on the same
     #: terms (`holds_db_pool`), never the store's.
     session_conn: Any = None
+    #: The schedule store's own SQLite connection (#1199), on the same terms
+    #: as `session_conn`: `SqliteScheduleStore` holds a `BEGIN IMMEDIATE`
+    #: across its read and write, so it cannot share `db_pool` with the other
+    #: spine stores without colliding with, or rolling back, their open
+    #: transactions.
+    schedule_conn: Any = None
     #: The asyncpg pool, when PostgreSQL is selected. Separate from `db_pool`
     #: because the two are different objects with different APIs, and code that
     #: branches on "is a database configured" needs to know which.
@@ -247,12 +263,12 @@ class Container:
     #: opened it closes it" would take the pool out from under the other; the
     #: pool closes when the last holder releases it (Codex, #335).
     holds_pg_pool: bool = False
-    #: Whether this container opened the SQLite connections (`db_pool` and
-    #: `session_conn`). Same rule as `holds_pg_pool`: `aclose()` closes what it
-    #: opened and leaves a connection the caller supplied for its owner (#1161).
-    #: One flag for both, because they were opened by the same
-    #: `_wire_sqlite_backend` call and there is no third way one of them came
-    #: to exist.
+    #: Whether this container opened the SQLite connections (`db_pool`,
+    #: `session_conn` and `schedule_conn`). Same rule as `holds_pg_pool`:
+    #: `aclose()` closes what it opened and leaves a connection the caller
+    #: supplied for its owner (#1161). One flag for all three, because they
+    #: were opened by the same `_wire_sqlite_backend` call and there is no
+    #: other way one of them came to exist.
     holds_db_pool: bool = False
     #: Set by `aclose()`, so a second call does not close a pool twice.
     closed: bool = False
@@ -287,6 +303,20 @@ class Container:
     trigger_store: TriggerStore = None  # type: ignore[assignment]
     invocation_store: InvocationStore = None  # type: ignore[assignment]
     handler_caller: HandlerCaller = None  # type: ignore[assignment]
+    # Durable replay cursor for the legacy-event bridge (#1163): a claim
+    # lease + fencing token so of several replicas that might tick
+    # `process_durable_events` at once, only the lease holder re-scans this
+    # round. `_durable_events_holder` identifies this Container instance as
+    # a lease holder across repeated ticks/renewals.
+    consumer_cursor_store: ConsumerCursorStore = None  # type: ignore[assignment]
+    _durable_events_holder: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Ids the durable log skipped over below the settled cursor, keyed to
+    # when this holder first saw each missing. PostgreSQL allocates ids
+    # before commit, so a hole is an append that has not committed yet (or
+    # never will); the durable position stays below it for
+    # `durable_event_hole_grace_s` seconds, then treats it as aborted.
+    _durable_event_holes: dict[int, float] = field(default_factory=dict)
+    durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -342,9 +372,10 @@ class Container:
         when the last holder lets go (Codex, #335).
 
         SQLite follows the same ownership rule (#1161): the connections this
-        container opened -- `db_pool` and the session store's `session_conn`,
-        both from one `_wire_sqlite_backend` call -- are closed here, each
-        exactly once, and a connection the caller supplied stays the caller's.
+        container opened -- `db_pool`, the session store's `session_conn` and
+        the schedule store's `schedule_conn`, all from one
+        `_wire_sqlite_backend` call -- are closed here, each exactly once, and
+        a connection the caller supplied stays the caller's.
         aiosqlite's `close()` drains the operations still queued on its worker
         thread before releasing the database, so a durable write a store has
         already issued completes rather than being dropped by the shutdown;
@@ -377,14 +408,15 @@ class Container:
                 self.pg_pool = None
                 self.holds_pg_pool = False
         if self.holds_db_pool:
-            # Two connections, one ownership decision (#327): the session
-            # store's connection was opened by the same `_wire_sqlite_backend`
-            # call, so the same flag governs both. A close that raises must not
-            # strand the other one -- the pg block above exists because a
-            # shutdown that stops at the first failure leaves the rest
-            # unreleased -- and must not leave the container looking open,
-            # though `closed` is already True, so no retry re-enters here.
-            for connection in (self.db_pool, self.session_conn):
+            # Three connections, one ownership decision (#327, #1199): the
+            # session and schedule stores' connections were opened by the same
+            # `_wire_sqlite_backend` call, so the same flag governs all of
+            # them. A close that raises must not strand the others -- the pg
+            # block above exists because a shutdown that stops at the first
+            # failure leaves the rest unreleased -- and must not leave the
+            # container looking open, though `closed` is already True, so no
+            # retry re-enters here.
+            for connection in (self.db_pool, self.session_conn, self.schedule_conn):
                 if connection is None:
                     continue
                 try:
@@ -398,7 +430,28 @@ class Container:
             # connection the next user would find dead.
             self.db_pool = None
             self.session_conn = None
+            self.schedule_conn = None
             self.holds_db_pool = False
+
+    def _resolve_chat_auth(self, auth: Any) -> Any:
+        """Evaluate an identity-free turn as the role-less anonymous principal.
+
+        The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it is
+        empty -- it denies -- but the strategies consult Sentinel only when
+        `auth is not None`, so `None` passed through here would let an
+        unauthenticated turn execute every tool the table denies. Such a turn
+        is routed as the anonymous principal instead. Armed-control enforcement
+        lives in one place: `_require_auth_while_armed`.
+        """
+        self._require_auth_while_armed(auth)
+        if auth is not None:
+            return auth
+        self._require_auth_while_armed(auth)
+        # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it
+        # is empty -- it denies -- but strategies only consult Sentinel when
+        # auth is not None. Evaluate an identity-free request as the role-less
+        # anonymous principal so it cannot walk past the table.
+        return ANONYMOUS_AUTH
 
     async def route_request(
         self,
@@ -423,34 +476,9 @@ class Container:
         every turn to catch a mistake that is not reachable from within one
         process.
         """
-        # An armed security control that cannot run is worse than an unarmed
-        # one: the operator believes it is enforcing. Both controls this
-        # container can arm are keyed on the caller's identity --
-        # Gate.process_input derives user_id from auth and skips every strike
-        # path when it is empty (security/gate.py:62,64,102), and the ReAct and
-        # Artificer strategies guard Sentinel.pre_call with `auth is not None`
-        # (agents/strategies/react.py:252). So with auth=None an armed
-        # permission table authorizes everything and an armed strike tracker
-        # records nothing, silently.
-        #
-        # Refusing here costs nothing at the shipped defaults (empty table, no
-        # tracker -> this never fires) and converts a silent no-op into an
-        # unmissable error for anyone who opts in. That is the same defect
-        # class this container's permission table was fixed for; it should not
-        # reappear one level up.
-        if auth is None and (self.sentinel._permission_table or self.strike_tracker):
-            armed = []
-            if self.sentinel._permission_table:
-                armed.append("sentinel permission table")
-            if self.strike_tracker:
-                armed.append("strike tracking")
-            msg = (
-                f"route_request() called without auth while {' and '.join(armed)} "
-                f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
-                "the caller identity, so they would silently enforce nothing. "
-                "Pass an AuthContext, or disable them in config.security."
-            )
-            raise AgentError(msg)
+        # Refuse while armed, else route as the anonymous principal so the
+        # fail-closed table still sees the turn; the guard alone drops the latter.
+        auth = self._resolve_chat_auth(auth)
 
         if run is None:
             run = await self._admit_chat_turn(
@@ -478,6 +506,26 @@ class Container:
 
         try:
             result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)
+        except ChatDispatchUnrecorded as exc:
+            # The turn was answered and the spine could not say so (#1108). The
+            # answer goes back as it is -- never through a second dispatch --
+            # and the Run stays open on purpose: closing it COMPLETED would
+            # cascade the NodeRun the failed write left RUNNING into a terminal
+            # state the reconciler then refuses to repair, turning recoverable
+            # evidence into a Run that claims an outcome its own record cannot
+            # back. Left RUNNING, it is exactly the state the canonical recovery
+            # authorities read: an unrenewed lease is reclaimed by
+            # `recover_abandoned_attempts`, and a COMPLETED Attempt under a
+            # RUNNING NodeRun is what `AttemptLifecycleReconciler` re-derives
+            # the logical record from -- the same handoff `_close_chat_run`
+            # already makes when its own write fails.
+            logger.warning(
+                "chat turn %s was answered but could not be recorded as an Attempt; "
+                "its Run is left open for recovery",
+                exc.run_id,
+                exc_info=True,
+            )
+            result = exc.response
         except BaseException as exc:
             # Attempt reconciliation already owns cancellation, so a client
             # disconnect observes CANCELLED rather than being reinterpreted as
@@ -487,7 +535,8 @@ class Container:
             error = {True: None, False: failure_category(exc)}[cancelled]
             await self._close_chat_run(run, error=error, cancelled=cancelled)
             raise
-        await self._close_chat_run(run, result=chat_turn_outcome(result))
+        else:
+            await self._close_chat_run(run, result=chat_turn_outcome(result))
         if run is not None:
             # Additive. The OpenAI-compatible shape a caller parses is
             # untouched; `run_id` is the handle for anyone who wants to follow
@@ -495,6 +544,40 @@ class Container:
             # container with no chat admitter wired.
             result["run_id"] = run.run_id
         return result
+
+    def _require_auth_while_armed(self, auth: Any) -> None:
+        """Refuse an unauthenticated turn while a caller-keyed control is armed.
+
+        An armed security control that cannot run is worse than an unarmed
+        one: the operator believes it is enforcing. Both controls this
+        container can arm are keyed on the caller's identity --
+        Gate.process_input derives user_id from auth and skips every strike
+        path when it is empty (security/gate.py:62,64,102), and the ReAct and
+        Artificer strategies guard Sentinel.pre_call with `auth is not None`
+        (agents/strategies/react.py:252). So with auth=None an armed
+        permission table authorizes everything and an armed strike tracker
+        records nothing, silently.
+
+        Refusing here costs nothing at the shipped defaults (empty table, no
+        tracker -> this never fires) and converts a silent no-op into an
+        unmissable error for anyone who opts in. That is the same defect
+        class this container's permission table was fixed for; it should not
+        reappear one level up.
+        """
+        if auth is not None or not (self.sentinel._permission_table or self.strike_tracker):
+            return
+        armed = []
+        if self.sentinel._permission_table:
+            armed.append("sentinel permission table")
+        if self.strike_tracker:
+            armed.append("strike tracking")
+        msg = (
+            f"route_request() called without auth while {' and '.join(armed)} "
+            f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
+            "the caller identity, so they would silently enforce nothing. "
+            "Pass an AuthContext, or disable them in config.security."
+        )
+        raise AgentError(msg)
 
     async def _execute_chat_turn(
         self,
@@ -510,16 +593,24 @@ class Container:
         the thing that may be missing here — the answer is not.
 
         A failure to *record* the execution is likewise not a failure to
-        perform it. `RunIntegrityError` means this process could not write the
-        spine — a Run deleted underneath the turn, or a Graph that is not the
-        one node a turn admits — and turning that into a refusal would trade an
-        unrecorded answer for no answer at all.
+        perform it. `RunIntegrityError` raised *before* the dispatch means this
+        process could not write the spine — a Run deleted underneath the turn,
+        or a Graph that is not the one node a turn admits — and turning that
+        into a refusal would trade an unrecorded answer for no answer at all.
+
+        It is also not a licence to perform it twice (#1108). The executor
+        raises `ChatDispatchUnrecorded` when the spine failed *after* the model
+        answered, carrying that answer; it travels through here untouched,
+        because what to do with a Run whose record is short is the caller's
+        decision, and a second `dispatch()` is never it.
         """
         if run is None or self.run_store is None:
             return await dispatch()
         executor = ChatAttemptExecutor(self.run_store)
         try:
             return await executor.execute(run.run_id, messages, dispatch)
+        except ChatDispatchUnrecorded:
+            raise
         except RunIntegrityError:
             logger.warning("chat turn could not be recorded as an Attempt", exc_info=True)
             return await dispatch()
@@ -690,20 +781,72 @@ class Container:
     async def process_durable_events(self, *, limit: int = 100) -> int:
         """Tick the durable-event loop (ADR-086): log -> triggers -> handlers.
 
-        Advances and persists the container's replay cursor; safe to call
-        repeatedly (idempotent invocations dedupe redelivery).
-        """
-        from maistro.events.processing import process_events
+        Advances and persists the container's replay cursor (#1163); safe to
+        call repeatedly (idempotent invocations dedupe redelivery) and safe
+        to call from more than one replica at once.
 
-        self.durable_event_cursor = await process_events(
+        The cursor is a resume optimisation, not the correctness backstop --
+        that is `InvocationStore.claim` (ADR-082426-82c7: "the occurrence is
+        the claim, not the cursor"). What `consumer_cursor_store.claim` adds
+        is: of several replicas that might tick this at once, only the lease
+        holder re-scans/redispatches this round, so the rest do not redo
+        (idempotent, but wasted) work. The durable position is written only
+        after `process_events_batch` returns -- i.e. only once every event up
+        to it has a terminal invocation on every matching trigger -- so a
+        crash between "processed" and "cursor written" costs at most a replay
+        of already-settled, already-idempotent work; it never skips an event
+        still in flight. Nor does it skip an event whose id the log handed
+        out but has not committed yet: see `_gap_safe_position`.
+        """
+        lease = await self.consumer_cursor_store.claim(
+            LEGACY_BRIDGE_CONSUMER_ID, holder=self._durable_events_holder
+        )
+        if lease is None:
+            # Another replica currently holds the tick lease; ticking anyway
+            # would only repeat work its lease already covers this round.
+            return self.durable_event_cursor
+
+        from maistro.events.processing import process_events_batch
+
+        batch = await process_events_batch(
             self.durable_event_log,
             self.trigger_store,
             self.invocation_store,
             self.handler_caller,
-            after_id=self.durable_event_cursor,
+            after_id=lease.position,
             limit=limit,
         )
-        return self.durable_event_cursor
+        new_cursor = self._gap_safe_position(batch.cursor, batch.holes, now=time.time())
+        if new_cursor > lease.position:
+            await self.consumer_cursor_store.advance(
+                LEGACY_BRIDGE_CONSUMER_ID,
+                fencing_token=lease.fencing_token,
+                position=new_cursor,
+            )
+        self.durable_event_cursor = new_cursor
+        return new_cursor
+
+    def _gap_safe_position(self, cursor: int, holes: tuple[int, ...], *, now: float) -> int:
+        """The highest position this tick may persist without skipping an event.
+
+        `holes` are ids below `cursor` that the log did not return (see
+        `ProcessedBatch`). On PostgreSQL an id can be allocated by an append
+        that has not committed yet; persisting past it would drop that event
+        from every later ``id > position`` read. So the durable position is
+        capped just below the first hole this holder has known for less than
+        `durable_event_hole_grace_s`. A hole that outlives the grace is an
+        append that aborted (or is slower than any healthy one), and the
+        position moves past it. A hole that fills is simply not reported
+        next tick, so the event is read and dispatched then; every event
+        above the cap was already dispatched this tick and is redelivered
+        idempotently until the cap lifts.
+        """
+        seen = {hole: self._durable_event_holes.get(hole, now) for hole in holes}
+        self._durable_event_holes = seen
+        for hole in holes:
+            if now - seen[hole] < self.durable_event_hole_grace_s:
+                return hole - 1
+        return cursor
 
     async def recover_abandoned_attempts(
         self, *, now: datetime | None = None, limit: int = 100
@@ -1273,6 +1416,7 @@ async def create_container(
     # wiring below came to assume "a database is configured" means "SQLite".
     db_pool: Any = None
     session_conn: Any = None
+    schedule_conn: Any = None
     # Held aside before the URL branch runs, because that branch rebinds
     # `pg_pool`. Rebinding it unconditionally — which is what merging #122 into
     # #135 first did — drops the parameter on the floor, and a caller-supplied
@@ -1286,13 +1430,15 @@ async def create_container(
         (
             db_pool,
             session_conn,
+            schedule_conn,
             quota_tracker,
             learning_store,
             outcome_store,
             session_store,
         ) = await _wire_sqlite_backend(config.database_url)
-        # Both connections were opened for this container (#1161); `aclose`
-        # closes them. The pg branch below sets its flag for the same reason.
+        # All three connections were opened for this container (#1161);
+        # `aclose` closes them. The pg branch below sets its flag for the same
+        # reason.
         holds_db_pool = True
     elif config.database_url.startswith(POSTGRES_SCHEMES):
         (
@@ -1339,6 +1485,7 @@ async def create_container(
         workspace_id=config.workspace_id,
         intents=intent_registry,
         pg_pool=pg_pool,
+        schedule_conn=schedule_conn,
         # The same archive tier the Container holds, handed to the one
         # subsystem that writes to it (#273). Until this line the field was
         # built, stored, and read by nothing -- the defect
@@ -1393,8 +1540,9 @@ async def create_container(
         preset=config.security.permission_preset,
         permissions=config.security.permissions,
     )
-    # Recovery is an administrative capability, unlike ordinary tools whose
-    # absent permission-table entries intentionally remain open for compatibility.
+    # Recovery is an administrative capability; its capability check goes
+    # through the same fail-closed table below, so a deployment that arms
+    # nothing denies recovery actions too until it configures permissions.
     tier_policy = _configure_strike_recovery_policy()
     logger.info("Sentinel permission table: %s", describe_permission_table(permission_table))
     # SPEC-247 / ADR-068 §D. Without this, Sentinel._check_elevation_grant is a
@@ -1404,9 +1552,21 @@ async def create_container(
     # can therefore never flip authorized False -> True, only needs
     # "self_elevation"/"scoped_2fa" -> "none".
     elevation_store = InMemoryElevationStore()
+    # Canonical capability state is created BEFORE Sentinel so the permission
+    # source can hold the same registry the container exposes (#1165,
+    # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
+    # Sentinel's next decision through this live source, without a restart.
+    from maistro.capabilities.bootstrap import default_capability_registry
+    from maistro.security.sentinel.permission_source import CapabilityPermissionSource
+
+    capabilities = default_capability_registry()
     sentinel = Sentinel(
         warden=warden,
         permission_table=permission_table,
+        permission_source=CapabilityPermissionSource(
+            base=permission_table,
+            capabilities=capabilities,
+        ),
         audit_log=audit_log,
         tier_policy=tier_policy,
         elevation_store=elevation_store,
@@ -1417,10 +1577,6 @@ async def create_container(
         audit_log=audit_log,
     )
 
-    from maistro.capabilities.bootstrap import default_capability_registry
-
-    capabilities = default_capability_registry()
-
     # --- P1 resilience policies (ADR-066) --------------------------------
     from maistro.resilience.p1 import InMemoryResiliencePolicyStore, default_policies
 
@@ -1428,6 +1584,7 @@ async def create_container(
 
     # --- Durable events (ADR-086) ----------------------------------------
     from maistro.events.bus import EventBus
+    from maistro.events.consumer_cursor import InMemoryConsumerCursorStore
     from maistro.events.durable_log import InMemoryEventLog, append_from_bus_event
     from maistro.events.invocations import InMemoryInvocationStore
     from maistro.events.processing import HTTPHandlerCaller
@@ -1436,6 +1593,7 @@ async def create_container(
     durable_event_log: EventLogStore
     trigger_store: TriggerStore
     invocation_store: InvocationStore
+    consumer_cursor_store: ConsumerCursorStore
     # PostgreSQL first: a caller who supplied a pool asked for the durable
     # backend, and `db_pool` (SQLite) may be set at the same time because the
     # two cover different stores. Silently preferring SQLite here would give
@@ -1446,17 +1604,20 @@ async def create_container(
             durable_event_log,
             trigger_store,
             invocation_store,
+            consumer_cursor_store,
         ) = await _wire_pg_durable_events(pg_pool)
     elif db_pool is not None:
         (
             durable_event_log,
             trigger_store,
             invocation_store,
+            consumer_cursor_store,
         ) = await _wire_sqlite_durable_events(db_pool)
     else:
         durable_event_log = InMemoryEventLog()
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
+        consumer_cursor_store = InMemoryConsumerCursorStore()
         if pg_pool is not None:
             # The durable-event stores (ADR-086) have a SQLite implementation
             # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
@@ -1524,7 +1685,13 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_effects = new_in_memory_effect_context()
+    # Canonical effect ledger follows the container's durable backend (#1118):
+    # model Bindings then bootstrap into that same governed context so no
+    # Provider entry auto-authorizes itself (#1087).
+    capability_invocation_store = await _wire_capability_invocations(
+        pg_pool=pg_pool, db_pool=db_pool
+    )
+    capability_effects = new_effect_context(invocation_store=capability_invocation_store)
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
@@ -1584,6 +1751,7 @@ async def create_container(
         audit_log=audit_log,
         db_pool=db_pool,
         session_conn=session_conn,
+        schedule_conn=schedule_conn,
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
         holds_db_pool=holds_db_pool,
@@ -1593,6 +1761,7 @@ async def create_container(
         trigger_store=trigger_store,
         invocation_store=invocation_store,
         handler_caller=handler_caller,
+        consumer_cursor_store=consumer_cursor_store,
         provider_registry=provider_registry,
         llm_router=llm_router,
         record_store=record_store,
@@ -2082,6 +2251,7 @@ async def _wire_sqlite_backend(
 ) -> tuple[
     Any,
     Any,
+    Any,
     QuotaTracker,
     LearningStore,
     OutcomeStore,
@@ -2134,6 +2304,12 @@ async def _wire_sqlite_backend(
     # nothing but this store reads `sessions` or `session_turns`, and that URL
     # is already warned about above as non-durable.
     session_conn = await aiosqlite.connect(path)
+    # The schedule store's, for the same reason (#1199): its `record_fire`
+    # and `put` hold `BEGIN IMMEDIATE` across a read and a write, and the
+    # spine stores it would otherwise share `conn` with commit and roll back
+    # on their own cadence. Same pathless-`sqlite://` caveat as above: only
+    # the schedule store reads `schedules`.
+    schedule_conn = await aiosqlite.connect(path)
 
     sqlite_quota_tracker = SqliteQuotaTracker(conn)
     sqlite_learning_store = SqliteLearningStore(conn)
@@ -2149,13 +2325,46 @@ async def _wire_sqlite_backend(
     outcome_store: OutcomeStore = sqlite_outcome_store
     session_store: SessionStore = sqlite_session_store
 
-    return conn, session_conn, quota_tracker, learning_store, outcome_store, session_store
+    return (
+        conn,
+        session_conn,
+        schedule_conn,
+        quota_tracker,
+        learning_store,
+        outcome_store,
+        session_store,
+    )
+
+
+async def _wire_capability_invocations(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+) -> CapabilityInvocationStore:
+    """Select the canonical effect ledger from the container's durable backend."""
+    store: CapabilityInvocationStore
+    if pg_pool is not None:
+        from maistro.capabilities.pg_invocation_store import PgInvocationStore
+
+        store = PgInvocationStore(pg_pool)
+        await store.ensure_schema()
+        return store
+    if db_pool is not None:
+        from maistro.capabilities.invocation_store import SqliteInvocationStore
+
+        store = SqliteInvocationStore(db_pool)
+        await store.ensure_schema()
+        return store
+    from maistro.capabilities.invocation import InMemoryInvocationStore
+
+    return InMemoryInvocationStore()
 
 
 async def _wire_sqlite_durable_events(
     conn: Any,
-) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
+) -> tuple[EventLogStore, TriggerStore, InvocationStore, ConsumerCursorStore]:
     """Wire the durable-event stores onto the already-open SQLite connection."""
+    from maistro.events.consumer_cursor import SqliteConsumerCursorStore
     from maistro.events.durable_log import SqliteEventLog
     from maistro.events.invocations import SqliteInvocationStore
     from maistro.events.trigger_store import SqliteTriggerStore
@@ -2163,24 +2372,32 @@ async def _wire_sqlite_durable_events(
     sqlite_event_log = SqliteEventLog(conn)
     sqlite_trigger_store = SqliteTriggerStore(conn)
     sqlite_invocation_store = SqliteInvocationStore(conn)
+    sqlite_consumer_cursor_store = SqliteConsumerCursorStore(conn)
     await sqlite_event_log.ensure_schema()
     await sqlite_trigger_store.ensure_schema()
     await sqlite_invocation_store.ensure_schema()
-    return sqlite_event_log, sqlite_trigger_store, sqlite_invocation_store
+    await sqlite_consumer_cursor_store.ensure_schema()
+    return (
+        sqlite_event_log,
+        sqlite_trigger_store,
+        sqlite_invocation_store,
+        sqlite_consumer_cursor_store,
+    )
 
 
 async def _wire_pg_durable_events(
     pool: Any,
-) -> tuple[EventLogStore, TriggerStore, InvocationStore]:
+) -> tuple[EventLogStore, TriggerStore, InvocationStore, ConsumerCursorStore]:
     """Wire the durable-event stores onto a caller-supplied `asyncpg.Pool` (#135).
 
-    All three share one pool rather than opening their own, matching
+    All four share one pool rather than opening their own, matching
     `persistence/pg_*` and leaving connection lifetime with the caller — which
-    also means a single `ensure_event_schema` covers all three tables, instead
-    of three `ensure_schema()` calls racing `CREATE TABLE IF NOT EXISTS` across
+    also means a single `ensure_event_schema` covers all four tables, instead
+    of four `ensure_schema()` calls racing `CREATE TABLE IF NOT EXISTS` across
     pool connections the way the SQLite twin's serial calls cannot.
     """
     from maistro.events.pg_stores import (
+        PgConsumerCursorStore,
         PgEventLog,
         PgInvocationStore,
         PgTriggerStore,
@@ -2188,7 +2405,12 @@ async def _wire_pg_durable_events(
     )
 
     await ensure_event_schema(pool)
-    return PgEventLog(pool), PgTriggerStore(pool), PgInvocationStore(pool)
+    return (
+        PgEventLog(pool),
+        PgTriggerStore(pool),
+        PgInvocationStore(pool),
+        PgConsumerCursorStore(pool),
+    )
 
 
 def _wire_hierarchy(
