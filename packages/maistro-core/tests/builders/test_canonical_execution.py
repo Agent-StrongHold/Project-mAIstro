@@ -1,4 +1,4 @@
-"""Behavioral parity and canonical evidence for the Builders execution adapter (#734)."""
+"""Behavioral and canonical evidence for the Builders execution adapter (#734)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
     CanonicalGraphPipelineExecutor,
     DispatchResult,
+    _build_prompt,
     _canonical_graph,
     _mark_skipped,
     _project_canonical_record,
@@ -29,6 +30,17 @@ from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
 
 pytestmark = pytest.mark.contract("behavioral")
+
+
+def test_canonical_adapter_is_public_and_executor_names_are_not_exported() -> None:
+    import maistro.builders as builders
+
+    assert not hasattr(builders, "GraphPipelineExecutor")
+    assert builders.CanonicalGraphPipelineExecutor is CanonicalGraphPipelineExecutor
+
+
+def test_build_prompt_falls_back_to_raw_template_on_malformed_format_spec() -> None:
+    assert _build_prompt("{0!Z}", {}) == "{0!Z}"
 
 
 class ScriptedDispatcher:
@@ -161,9 +173,7 @@ async def _canonical(
 
 
 @pytest.mark.asyncio
-async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempts(
-    legacy_graph_executor,
-) -> None:
+async def test_stage_wave_creates_one_canonical_run_node_runs_and_attempts() -> None:
     graph = PipelineGraph(
         [
             _node("spec"),
@@ -172,26 +182,18 @@ async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempt
             _node("review", ("tests", "code")),
         ]
     )
-    legacy_dispatcher = ScriptedDispatcher(delay=0.01)
-    canonical_dispatcher = ScriptedDispatcher(delay=0.01)
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(delay=0.01)
 
-    await legacy_graph_executor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
-    assert legacy_run.status == canonical_run.status == "completed"
-    assert (
-        legacy_dispatcher.calls
-        == canonical_dispatcher.calls
-        == [
-            "spec",
-            "tests",
-            "code",
-            "review",
-        ]
-    )
-    assert legacy_dispatcher.max_in_flight == canonical_dispatcher.max_in_flight == 2
-    assert legacy_run.context["review"] == canonical_run.context["review"]
+    assert canonical_run.status == "completed"
+    assert dispatcher.calls == [
+        "spec",
+        "tests",
+        "code",
+        "review",
+    ]
+    assert dispatcher.max_in_flight == 2
 
     stored = await owner.run_store.get_run(record.run_id)
     assert stored is not None
@@ -215,9 +217,7 @@ async def test_stage_wave_parity_creates_one_canonical_run_node_runs_and_attempt
 
 
 @pytest.mark.asyncio
-async def test_multiple_root_ready_wave_preserves_concurrency_with_control_frontier(
-    legacy_graph_executor,
-) -> None:
+async def test_multiple_root_ready_wave_preserves_concurrency_with_control_frontier() -> None:
     graph = PipelineGraph(
         [
             _node("tests"),
@@ -225,16 +225,13 @@ async def test_multiple_root_ready_wave_preserves_concurrency_with_control_front
             _node("review", ("tests", "code")),
         ]
     )
-    legacy_dispatcher = ScriptedDispatcher(delay=0.01)
-    canonical_dispatcher = ScriptedDispatcher(delay=0.01)
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(delay=0.01)
 
-    await legacy_graph_executor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
-    assert legacy_run.status == canonical_run.status == "completed"
-    assert legacy_dispatcher.max_in_flight == canonical_dispatcher.max_in_flight == 2
-    assert legacy_dispatcher.calls == canonical_dispatcher.calls == ["tests", "code", "review"]
+    assert canonical_run.status == "completed"
+    assert dispatcher.max_in_flight == 2
+    assert dispatcher.calls == ["tests", "code", "review"]
 
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     stage_runs = [item for item in node_runs if item.node_id.startswith("builders-stage:")]
@@ -247,9 +244,7 @@ async def test_multiple_root_ready_wave_preserves_concurrency_with_control_front
 
 
 @pytest.mark.asyncio
-async def test_skip_and_unsupported_stage_domain_projection_matches_legacy(
-    legacy_graph_executor,
-) -> None:
+async def test_skip_and_unsupported_stage_domain_projection() -> None:
     graph = PipelineGraph(
         [
             _node("spec", skip_if=lambda ctx: True),
@@ -257,16 +252,13 @@ async def test_skip_and_unsupported_stage_domain_projection_matches_legacy(
             _node("code", ("tests",)),
         ]
     )
-    legacy_dispatcher = ScriptedDispatcher(unsupported={"tests"})
-    canonical_dispatcher = ScriptedDispatcher(unsupported={"tests"})
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(unsupported={"tests"})
 
-    await legacy_graph_executor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
-    assert legacy_run.status == canonical_run.status == "completed"
-    assert legacy_run.skipped_stages == canonical_run.skipped_stages == ["spec", "tests"]
-    assert legacy_dispatcher.calls == canonical_dispatcher.calls == ["code"]
+    assert canonical_run.status == "completed"
+    assert canonical_run.skipped_stages == ["spec", "tests"]
+    assert dispatcher.calls == ["code"]
     assert [stage.status for stage in canonical_run.stages] == [
         StageStatus.SKIPPED,
         StageStatus.SKIPPED,
@@ -279,9 +271,29 @@ async def test_skip_and_unsupported_stage_domain_projection_matches_legacy(
 
 
 @pytest.mark.asyncio
-async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
-    legacy_graph_executor,
-) -> None:
+@pytest.mark.parametrize("mode", ["failure", "timeout"])
+async def test_failure_and_timeout_terminal_behavior(mode: str) -> None:
+    """The canonical adapter's externally visible terminal behavior."""
+    graph = PipelineGraph([_node("tests", timeout_seconds=0.001 if mode == "timeout" else 600.0)])
+    kwargs: dict[str, Any] = {}
+    if mode == "failure":
+        kwargs["fail"] = {"tests"}
+    else:
+        kwargs["delay"] = 0.02
+    dispatcher = ScriptedDispatcher(**kwargs)
+
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
+
+    assert canonical_run.status == "failed at tests"
+    assert dispatcher.calls == ["tests"]
+    assert record.run.status is RunStatus.FAILED
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert len(node_runs) == 1
+    assert node_runs[0].status is RunStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback() -> None:
     outputs = {"review": ["VIOLATION: missing tests", "APPROVED"]}
     graph = PipelineGraph(
         [
@@ -295,17 +307,14 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
             ),
         ]
     )
-    legacy_dispatcher = ScriptedDispatcher(outputs=outputs)
-    canonical_dispatcher = ScriptedDispatcher(outputs=outputs)
-    legacy_run = _run(graph, run_id="legacy")
+    dispatcher = ScriptedDispatcher(outputs=outputs)
 
-    await legacy_graph_executor(legacy_dispatcher).execute(graph, legacy_run)
-    canonical_run, record, owner = await _canonical(graph, canonical_dispatcher)
+    canonical_run, record, owner = await _canonical(graph, dispatcher)
 
     expected_calls = ["implement", "review", "implement", "review"]
-    assert legacy_dispatcher.calls == canonical_dispatcher.calls == expected_calls
-    assert legacy_run.status == canonical_run.status == "completed"
-    assert legacy_run.revisions == canonical_run.revisions == {"review": 1}
+    assert dispatcher.calls == expected_calls
+    assert canonical_run.status == "completed"
+    assert canonical_run.revisions == {"review": 1}
     assert canonical_run.context["review_feedback"] == "VIOLATION: missing tests"
     assert canonical_run.context["review"] == "APPROVED"
 
@@ -323,6 +332,39 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
         attempts.extend(await owner.run_store.list_attempts(node_run.node_run_id))
     assert len(attempts) == 4
     assert len({attempt.attempt_id for attempt in attempts}) == 4
+
+
+@pytest.mark.asyncio
+async def test_gate_without_revise_target_reoffers_itself_and_records_new_evidence() -> None:
+    graph = PipelineGraph([_node("review", gate=lambda _ctx: False, max_revisions=1)])
+    dispatcher = ScriptedDispatcher()
+
+    run, record, owner = await _canonical(graph, dispatcher)
+
+    assert record.run.status is RunStatus.FAILED
+    assert run.status == "failed at review"
+    assert run.failed_stage_error == "Gate failed after 1 revisions"
+    assert dispatcher.calls == ["review", "review"]
+    node_runs = await owner.run_store.list_node_runs(record.run_id)
+    assert len(node_runs) == 2
+    assert node_runs[0].status is RunStatus.COMPLETED
+    assert node_runs[1].status is RunStatus.FAILED
+    attempts = [
+        attempt
+        for node_run in node_runs
+        for attempt in await owner.run_store.list_attempts(node_run.node_run_id)
+    ]
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_canonical_identity_is_in_the_builders_receipt_projection() -> None:
+    graph = PipelineGraph([_node("tests")])
+
+    run, record, _ = await _canonical(graph, ScriptedDispatcher())
+
+    assert run.canonical_run_id == record.run_id
+    assert run.to_dict()["canonical_run_id"] == record.run_id
 
 
 @pytest.mark.asyncio
@@ -344,7 +386,7 @@ async def test_dispatch_failure_fails_canonical_run_and_never_starts_downstream(
 
 
 @pytest.mark.asyncio
-async def test_timeout_preserves_legacy_no_on_complete_behavior() -> None:
+async def test_timeout_never_runs_the_on_complete_hook() -> None:
     hook_outputs: list[str] = []
 
     async def hook(run: Any, output: str) -> None:

@@ -13,8 +13,10 @@ second execution lifecycle alongside Run/NodeRun/Attempt.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
+from collections.abc import Sequence
 from copy import deepcopy
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -33,6 +35,14 @@ _EVALUATE_KIND = "evolve.evaluate_genome"
 _PAIR_KIND = "evolve.plan_tournament_pairs"
 _BATTLE_KIND = "evolve.tournament_pair"
 _FINALIZE_KIND = "evolve.finalize_cycle"
+
+
+class CanonicalExecutionUnavailable(RuntimeError):
+    """The engine cannot admit Evolve work onto the canonical Run spine."""
+
+    def __init__(self, message: str, *, availability: str = "unavailable") -> None:
+        super().__init__(message)
+        self.availability = availability
 
 
 class _EvaluateInput(BaseModel):
@@ -213,14 +223,37 @@ class _EvaluateNode(BaseNode[_EvaluateInput, _EvaluateOutput]):
 
 
 class _TournamentWork:
-    """Apply tournament domain semantics from canonical persisted work inputs."""
+    """Apply tournament semantics to the cycle's frozen membership snapshot."""
 
-    def __init__(self, *, cycle: Any, population: Any) -> None:
+    def __init__(
+        self,
+        *,
+        cycle: Any,
+        population: Any,
+        membership_ids: Sequence[str] | None = None,
+        battle_slots: int | None = None,
+    ) -> None:
         self._cycle = cycle
         self._population = population
+        # The default keeps this helper convenient for focused unit tests. The
+        # production resolver always supplies the admission-time snapshot.
+        self._membership_ids = tuple(
+            membership_ids
+            if membership_ids is not None
+            else (str(genome.id) for genome in population.list_all())
+        )
+        self._battle_slots = battle_slots
 
     def prepare(self) -> _PairPlanOutput:
-        scored = [genome for genome in self._population.list_all() if genome.eval_scores]
+        scored = []
+        for genome_id in self._membership_ids:
+            genome = self._population.get(genome_id)
+            if genome is None:
+                raise RuntimeError(
+                    f"frozen evolution genome {genome_id!r} disappeared before pair planning"
+                )
+            if genome.eval_scores:
+                scored.append(genome)
         shuffled = list(scored)
         random.shuffle(shuffled)
         pairs = [
@@ -237,6 +270,18 @@ class _TournamentWork:
         if inputs.pair_index < 0 or inputs.pair_index >= len(inputs.pairs):
             raise RuntimeError(
                 "tournament graph requested a battle outside its persisted pair plan"
+            )
+        if self._battle_slots is not None and inputs.pair_index >= self._battle_slots:
+            raise RuntimeError("tournament graph requested a battle beyond its immutable capacity")
+        if (
+            self._battle_slots is not None
+            and inputs.pair_index == self._battle_slots - 1
+            and inputs.pair_index + 1 < len(inputs.pairs)
+        ):
+            # Do this before recording a battle: a malformed plan must fail the
+            # canonical Attempt rather than leave an un-routable side effect.
+            raise RuntimeError(
+                "tournament pair plan has_more=True but the immutable graph has no successor"
             )
 
         genome_a_id, genome_b_id = inputs.pairs[inputs.pair_index]
@@ -287,10 +332,29 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
     display_name: ClassVar[str] = "Run Evolve tournament pair"
     description: ClassVar[str] = "Record one persisted tournament pair as canonical work."
 
-    def __init__(self, tournament_work: _TournamentWork) -> None:
+    def __init__(
+        self,
+        tournament_work: _TournamentWork,
+        *,
+        has_more_successor: bool,
+        completion_successor: bool,
+    ) -> None:
         self._tournament_work = tournament_work
+        self._has_more_successor = has_more_successor
+        self._completion_successor = completion_successor
 
     async def _execute(self, inputs: _BattleInput, ctx: NodeContext) -> _BattleOutput:
+        has_more = inputs.pair_index + 1 < len(inputs.pairs)
+        if has_more and not self._has_more_successor:
+            raise RuntimeError(
+                "tournament battle returned has_more=True but has no executable successor"
+            )
+        if not has_more and not self._completion_successor:
+            raise RuntimeError(
+                "tournament battle completed without an executable finalization successor"
+            )
+        # Validate graph capacity before recording tournament evidence so a
+        # malformed immutable graph cannot leave a domain battle half-applied.
         return self._tournament_work.run_pair(inputs)
 
 
@@ -413,12 +477,31 @@ class _FinalizeNode(BaseNode[_IgnoreInput, _FinalizeOutput]):
         )
 
 
-def _evaluation_ids(population: Any, config: Any) -> list[str]:
-    unevaluated = [
-        genome
-        for genome in population.list_all()
-        if genome.fitness_score is None or not genome.eval_scores
-    ]
+def _population_membership(population: Any) -> tuple[str, ...]:
+    """Capture the admission-time member ids used by one immutable cycle plan."""
+    return tuple(sorted(str(genome.id) for genome in population.list_all()))
+
+
+def _membership_hash(membership_ids: Sequence[str]) -> str:
+    encoded = "\n".join(membership_ids).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _evaluation_ids(
+    population: Any,
+    config: Any,
+    membership_ids: Sequence[str] | None = None,
+) -> list[str]:
+    ids = membership_ids if membership_ids is not None else _population_membership(population)
+    unevaluated = []
+    for genome_id in ids:
+        genome = population.get(genome_id)
+        if genome is None:
+            raise RuntimeError(
+                f"frozen evolution genome {genome_id!r} disappeared while building the graph"
+            )
+        if genome.fitness_score is None or not genome.eval_scores:
+            unevaluated.append(genome)
     return [genome.id for genome in unevaluated[: config.eval_batch_size]]
 
 
@@ -428,8 +511,12 @@ def _build_graph(
     project_id: str,
     population: Any,
     config: Any,
+    membership_ids: Sequence[str] | None = None,
 ) -> Graph:
-    evaluation_ids = _evaluation_ids(population, config)
+    frozen_membership = tuple(
+        membership_ids if membership_ids is not None else _population_membership(population)
+    )
+    evaluation_ids = _evaluation_ids(population, config, frozen_membership)
     nodes: list[Node] = []
     edges: list[Edge] = []
 
@@ -446,7 +533,9 @@ def _build_graph(
             )
         )
 
-    battle_slots = len(population.list_all()) // 2
+    # Battle capacity is derived from the same admission snapshot as pair
+    # planning, never from the live store after evaluation begins.
+    battle_slots = len(frozen_membership) // 2
     pair_plan_id = "evolve-plan-pairs" if battle_slots else None
     if pair_plan_id is not None:
         nodes.append(
@@ -529,12 +618,29 @@ def _build_graph(
             "entry_node": entry,
             "execution_owner": "canonical_run",
             "product": "evolve",
+            "evolve_membership_ids": list(frozen_membership),
+            "evolve_membership_count": len(frozen_membership),
+            "evolve_membership_hash": _membership_hash(frozen_membership),
+            "evolve_battle_capacity": battle_slots,
         },
     )
 
 
-def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
-    tournament_work = _TournamentWork(cycle=cycle, population=population)
+def _resolver(
+    *,
+    cycle: Any,
+    population: Any,
+    config: Any,
+    llm_call: Any,
+    membership_ids: Sequence[str] | None = None,
+    battle_slots: int | None = None,
+):
+    tournament_work = _TournamentWork(
+        cycle=cycle,
+        population=population,
+        membership_ids=membership_ids,
+        battle_slots=battle_slots,
+    )
     evaluate = _EvaluateNode(
         cycle=cycle,
         population=population,
@@ -542,7 +648,6 @@ def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
         llm_call=llm_call,
     )
     pair_plan = _PairPlanNode(tournament_work)
-    battle = _BattleNode(tournament_work)
     finalize = _FinalizeNode(
         cycle=cycle,
         population=population,
@@ -559,7 +664,17 @@ def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
         if spec.node_type == _PAIR_KIND:
             return pair_plan
         if spec.node_type == _BATTLE_KIND:
-            return battle
+            return _BattleNode(
+                tournament_work,
+                has_more_successor=any(
+                    edge.from_node == node_id and edge.condition == "has_more == True"
+                    for edge in graph.edges
+                ),
+                completion_successor=any(
+                    edge.from_node == node_id and edge.condition == "has_more == False"
+                    for edge in graph.edges
+                ),
+            )
         if spec.node_type == _FINALIZE_KIND:
             return finalize
         raise KeyError(f"unsupported evolution node type {spec.node_type!r}")
@@ -567,14 +682,50 @@ def _resolver(*, cycle: Any, population: Any, config: Any, llm_call: Any):
     return resolve
 
 
-def _engine_container() -> Any:
-    from services.engine import get_engine
+def canonical_execution_owner(container: Any | None = None) -> Any:
+    """Return the already-constructed Container that owns canonical Runs.
 
-    engine = get_engine()
-    container = getattr(getattr(engine, "_agent_port", None), "container", None)
+    Evolve may inspect this owner, but never constructs or replaces it. The
+    same admission check is used by startup/status and by cycle execution so a
+    truthful status cannot drift from the path that admits work.
+    """
     if container is None:
-        raise RuntimeError("Evolve requires the canonical engine Container (#51)")
+        from services.engine import get_engine
+
+        try:
+            engine = get_engine()
+        except RuntimeError as exc:
+            raise CanonicalExecutionUnavailable(
+                "Evolve requires the canonical engine Container (#51): engine is not started"
+            ) from exc
+        port = getattr(engine, "agent_port", None)
+        if port is None:
+            # Keep isolated engine doubles compatible with the public accessor's
+            # underlying seam while production uses `agent_port` above.
+            port = getattr(engine, "_agent_port", None)
+        container = getattr(port, "container", None)
+
+    if container is None:
+        raise CanonicalExecutionUnavailable(
+            "Evolve requires the canonical engine Container (#51): no Container is available",
+            availability="degraded",
+        )
+
+    missing = [
+        name
+        for name in ("run_store", "graph_run_store", "project_scope_store")
+        if getattr(container, name, None) is None
+    ]
+    if missing:
+        raise CanonicalExecutionUnavailable(
+            f"Evolve canonical execution spine is unavailable (#51): missing {', '.join(missing)}",
+            availability="degraded",
+        )
     return container
+
+
+def _engine_container() -> Any:
+    return canonical_execution_owner()
 
 
 async def run_canonical_evolution_cycle(
@@ -591,13 +742,10 @@ async def run_canonical_evolution_cycle(
     """Execute one Evolve cycle as canonical Graph -> Run -> NodeRun -> Attempt work."""
     from maistro_evolve.cycle import EvolutionCycle
 
-    owner = container or _engine_container()
-    if (
-        owner.run_store is None
-        or owner.graph_run_store is None
-        or owner.project_scope_store is None
-    ):
-        raise RuntimeError("Evolve canonical execution spine is unavailable (#51)")
+    owner = canonical_execution_owner(container)
+    # This snapshot is the cycle's domain boundary. Later seeds may mutate the
+    # live population, but they cannot add evaluation or tournament work here.
+    membership_ids = _population_membership(population)
 
     workspace_id = str(owner.config.workspace_id)
     project = await owner.project_scope_store.root_for_workspace(workspace_id)
@@ -614,11 +762,17 @@ async def run_canonical_evolution_cycle(
         project_id=project.project_id,
         population=population,
         config=config,
+        membership_ids=membership_ids,
     )
+    battle_slots = len(membership_ids) // 2
     provenance = {
         "admission_source": _ADMISSION_SOURCE,
         "product": "evolve",
         "cycle_number": cycle_number,
+        "evolve_membership_ids": list(membership_ids),
+        "evolve_membership_count": len(membership_ids),
+        "evolve_membership_hash": _membership_hash(membership_ids),
+        "evolve_battle_capacity": battle_slots,
     }
     admitted = await owner.run_store.create_run(
         graph,
@@ -634,6 +788,8 @@ async def run_canonical_evolution_cycle(
             population=population,
             config=config,
             llm_call=llm_call,
+            membership_ids=membership_ids,
+            battle_slots=battle_slots,
         ),
         actor_principal_id=actor_principal_id,
         run_id=admitted.run_id,

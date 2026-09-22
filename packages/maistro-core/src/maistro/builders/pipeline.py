@@ -3,8 +3,8 @@
 Faithful recreation of the Stronghold Epic-15 builder pipeline on maistro:
 stage ordering, skipping, and post-completion hooks are declared on
 :class:`~maistro.builders.graph.PipelineNode`;
-:class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor` drives
-production execution on the canonical spine. New since Epic-15: the review stage is a verifiable gate that
+:class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor`
+drives execution. New since Epic-15: the review stage is a verifiable gate that
 routes back to implement (bounded verify-and-revise) instead of relying
 solely on a downstream cleanup stage.
 
@@ -26,8 +26,11 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, ClassVar
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from maistro.graph.durable_runs.protocol import DurableRunStore
+    from maistro.runs.store import RunStore
 
 from maistro.builders.contracts import RunRequest, RunStatus, WorkerName
 from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
@@ -160,8 +163,10 @@ class PipelineRun:
     failed_stage_error: str = ""
     revisions: dict[str, int] = field(default_factory=dict)
     gate_exhausted: list[str] = field(default_factory=list)
-    canonical_run_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Identity of the canonical Run that owns lifecycle evidence for this
+    # compatibility receipt. Builders domain state remains local to this run.
+    canonical_run_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -455,22 +460,10 @@ class RuntimeDispatcher:
 
 
 class BuilderPipeline:
-    """Execute Builders on the canonical Run spine.
-
-    A deployed caller should supply the shared canonical stores. For older
-    library callers that do not have a container, the pipeline lazily creates
-    an isolated in-memory canonical profile; it never falls back to the old
-    in-process graph executor. The compatibility receipt is always projected
-    from canonical Graph/Run/NodeRun/Attempt evidence.
+    """Executes the full issue-to-merge pipeline on the canonical run spine.
 
     Usage:
-        pipeline = BuilderPipeline(
-            dispatcher,
-            run_store=run_store,
-            durable_store=durable_store,
-            workspace_id="workspace-1",
-            project_id="project-root",
-        )
+        pipeline = BuilderPipeline(dispatcher)
         run = await pipeline.execute(
             issue_number=42, title="Add caching", repo="acme/widget",
         )
@@ -487,42 +480,26 @@ class BuilderPipeline:
         spec_verifier: Any | None = None,
         code_index: Any | None = None,
         nodes: list[PipelineNode] | None = None,
-        run_store: Any | None = None,
-        durable_store: Any | None = None,
+        run_store: RunStore | None = None,
+        durable_store: DurableRunStore | None = None,
         workspace_id: str | None = None,
         project_id: str | None = None,
         actor_principal_id: str | None = None,
     ) -> None:
-        spine_values = (run_store, durable_store, workspace_id, project_id)
-        if any(value is not None for value in spine_values) and not all(
-            value is not None for value in spine_values
-        ):
-            raise ValueError(
-                "canonical Builders execution requires run_store, durable_store, "
-                "workspace_id, and project_id"
-            )
         self._dispatcher = dispatcher
-        self._actor_principal_id = actor_principal_id
-        self._canonical_executor: CanonicalGraphPipelineExecutor | None = None
-        self._canonical_workspace_id = workspace_id or f"builders-{uuid4().hex}"
-        if all(value is not None for value in spine_values):
-            assert run_store is not None
-            assert durable_store is not None
-            assert workspace_id is not None
-            assert project_id is not None
-            self._canonical_executor = CanonicalGraphPipelineExecutor(
-                dispatcher,
-                run_store=run_store,
-                durable_store=durable_store,
-                workspace_id=workspace_id,
-                project_id=project_id,
-                actor_principal_id=actor_principal_id,
-            )
         self._spec_store = spec_store
         self._spec_verifier = spec_verifier
         self._code_index = code_index
         self._nodes = list(nodes) if nodes is not None else list(BUILDER_PIPELINE)
         self._runs: dict[str, PipelineRun] = {}
+        self._canonical_executor = CanonicalGraphPipelineExecutor(
+            dispatcher,
+            run_store=run_store,
+            durable_store=durable_store,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            actor_principal_id=actor_principal_id,
+        )
 
     async def execute(
         self,
@@ -585,45 +562,17 @@ class BuilderPipeline:
 
         run.context["spec_summary"] = build_spec_summary(spec) if spec is not None else ""
 
-        # Wrap each node's on_complete with spec verification if configured.
-        # Every composition, including the no-container compatibility profile,
-        # uses the canonical Graph -> Run -> NodeRun -> Attempt executor.
+        # Wrap each node's on_complete with spec verification if configured
         nodes = self._wrap_nodes_with_verification(self._nodes)
         graph = PipelineGraph(nodes)
-        await self._ensure_canonical_executor()
-        assert self._canonical_executor is not None
+        errors = graph.validate()
+        if errors:
+            # Preserve the legacy invalid-graph receipt without admitting a
+            # canonical Run for work that must never start.
+            run.status = f"invalid graph: {'; '.join(errors)}"
+            return run
         await self._canonical_executor.execute(graph, run)
-
-        self._reconcile_stages(run)
         return run
-
-    async def _ensure_canonical_executor(self) -> None:
-        """Create a local canonical profile for uncontainerized library use."""
-        if self._canonical_executor is not None:
-            return
-
-        from maistro.graph.durable_runs import (
-            CanonicalDurableRunStore,
-            InMemoryGraphContinuationStore,
-        )
-        from maistro.projects.scope_store import InMemoryProjectScopeStore
-        from maistro.runs.store import InMemoryRunStore
-
-        project_store = InMemoryProjectScopeStore()
-        project = await project_store.create_root(self._canonical_workspace_id)
-        run_store = InMemoryRunStore(project_store=project_store)
-        durable_store = CanonicalDurableRunStore(
-            run_store,
-            InMemoryGraphContinuationStore(),
-        )
-        self._canonical_executor = CanonicalGraphPipelineExecutor(
-            self._dispatcher,
-            run_store=run_store,
-            durable_store=durable_store,
-            workspace_id=self._canonical_workspace_id,
-            project_id=project.project_id,
-            actor_principal_id=self._actor_principal_id,
-        )
 
     def _wrap_nodes_with_verification(self, nodes: list[PipelineNode]) -> list[PipelineNode]:
         """Return nodes whose on_complete also runs spec verification."""
@@ -656,22 +605,6 @@ class BuilderPipeline:
 
             result.append(replace(node, on_complete=_hook))
         return result
-
-    def _reconcile_stages(self, run: PipelineRun) -> None:
-        """Update PipelineStage statuses from executor results."""
-        failed_name = ""
-        if run.status.startswith("failed at "):
-            failed_name = run.status[len("failed at ") :]
-
-        for stage in run.stages:
-            if stage.name == failed_name:
-                stage.status = StageStatus.FAILED
-                stage.error = run.failed_stage_error
-            elif stage.name in run.context:
-                stage.status = StageStatus.COMPLETED
-            elif stage.name in run.skipped_stages:
-                stage.status = StageStatus.SKIPPED
-            # else: PENDING (default)
 
     def get_run(self, run_id: str) -> PipelineRun | None:
         return self._runs.get(run_id)

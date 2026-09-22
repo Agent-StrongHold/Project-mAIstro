@@ -21,19 +21,18 @@ Failure still halts the run before any *new* node starts (Epic-15 INV-07,
 relaxed to wave granularity), and a timed-out node never runs its
 ``on_complete`` hook (INV-09).
 
-This module hosts the canonical execution adapter (#734):
+This module also hosts the canonical execution adapter (#734):
 :class:`CanonicalGraphPipelineExecutor` translates a ``PipelineGraph`` into
 a canonical ``Graph`` and drives it through the public durable
 Run/NodeRun/Attempt spine, keeping Builders prompts, context, skip
 predicates, gates, revision feedback, hooks and result projection as domain
-state. This is the only Builders graph executor the shipped package
-carries: the legacy pre-#734 :class:`GraphPipelineExecutor` was retired from
-the product surface (M1 closure-safety: the old authority must be unable to
-win) and survives only as a frozen parity oracle inside the Builders test
-suite. The adapter lives in this module rather than one of its own because
-a new module identity would register as new module debt against the
-trusted-base reachability ratchet; the shipped Builders TUI roots this
-composition and it already shares this module's private dispatch helpers.
+state. Builders production entrypoints use the canonical adapter below; the
+pre-convergence private executor and its parity tests were removed once the
+adapter's own behavioral coverage stood on its own.
+The adapter lives in this module rather than one of its own because a new
+module identity would register as new unreachable-module debt against the
+trusted-base reachability ratchet, and #734 defers reachability bookkeeping
+to #49; it already shares this module's private dispatch helpers.
 """
 
 from __future__ import annotations
@@ -173,7 +172,10 @@ def _gate_decision(graph: PipelineGraph, node: PipelineNode, run: Any) -> _GateD
         return _GateDecision(route="proceed", halt_error=error)
 
     run.revisions[node.name] = used + 1
-    target = node.revise_target or ""
+    # A gate without an explicit target revises its own evaluation.  The
+    # canonical graph therefore gets a real conditional back-edge instead of
+    # silently treating the failed gate as terminal.
+    target = node.revise_target or node.name
     stale = {target} | set(graph.descendants(target))
     run.skipped_stages[:] = [name for name in run.skipped_stages if name not in stale]
 
@@ -352,12 +354,12 @@ def _revision_edges(graph: PipelineGraph) -> list[Edge]:
     return [
         Edge(
             from_node=_stage_node_id(node.name),
-            to_node=_stage_node_id(node.revise_target),
+            to_node=_stage_node_id(node.revise_target or node.name),
             condition="route == 'revise'",
             metadata={"builders_revision": True},
         )
         for node in graph
-        if node.gate is not None and node.revise_target is not None
+        if node.gate is not None
     ]
 
 
@@ -456,7 +458,10 @@ def _project_run_status(run: Any, record: DurableRunRecord, failed_stage: str | 
     if record.run.status is RunStatus.COMPLETED:
         run.status = "completed"
     elif failed_stage is not None:
-        run.status = f"failed at {failed_stage}"
+        if "iteration budget exhausted" in run.failed_stage_error:
+            run.status = f"halted at {failed_stage}: iteration budget exhausted"
+        else:
+            run.status = f"failed at {failed_stage}"
     else:
         run.status = record.run.status.value
 
@@ -485,12 +490,12 @@ def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
     latest_by_stage = _latest_stage_runs(record)
     failed_stage = _failed_stage(record)
     _project_run_status(run, record, failed_stage)
-    for stage in run.stages:
+    for stage in getattr(run, "stages", ()):
         _project_stage(run, stage, latest_by_stage.get(stage.name), failed_stage)
 
 
 def _stage_status(value: str) -> Any:
-    # Local import avoids a module cycle: pipeline imports this module's adapter.
+    # Local import avoids a module cycle: pipeline imports this adapter.
     from maistro.builders.pipeline import StageStatus
 
     return StageStatus(value)
@@ -503,13 +508,19 @@ class CanonicalGraphPipelineExecutor:
         self,
         dispatcher: PipelineDispatcher,
         *,
-        run_store: RunStore,
-        durable_store: DurableRunStore,
-        workspace_id: str,
-        project_id: str,
+        run_store: RunStore | None = None,
+        durable_store: DurableRunStore | None = None,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
         actor_principal_id: str | None = None,
         budget: IterationBudget | None = None,
     ) -> None:
+        if (run_store is None) != (durable_store is None):
+            raise ValueError("run_store and durable_store must be supplied together")
+        if run_store is not None and (workspace_id is None or project_id is None):
+            raise ValueError("workspace_id and project_id are required with explicit stores")
+        if run_store is None and project_id is not None:
+            raise ValueError("project_id requires explicit canonical stores")
         self._dispatcher = dispatcher
         self._run_store = run_store
         self._durable_store = durable_store
@@ -518,12 +529,45 @@ class CanonicalGraphPipelineExecutor:
         self._actor_principal_id = actor_principal_id
         self._budget = budget
 
+    async def _ensure_default_stores(self) -> None:
+        """Build an isolated canonical owner for compatibility callers.
+
+        Product callers should inject their wired stores. The fallback keeps the
+        historical Builders entrypoints usable while still making the canonical
+        spine authoritative for every execution.
+        """
+        if self._run_store is not None:
+            return
+        from maistro.graph.durable_runs import (
+            CanonicalDurableRunStore,
+            InMemoryGraphContinuationStore,
+        )
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+        from maistro.runs.store import InMemoryRunStore
+
+        workspace_id = self._workspace_id or "builders"
+        project_store = InMemoryProjectScopeStore()
+        project = await project_store.create_root(workspace_id)
+        run_store = InMemoryRunStore(project_store=project_store)
+        self._workspace_id = workspace_id
+        self._project_id = project.project_id
+        self._run_store = run_store
+        self._durable_store = CanonicalDurableRunStore(
+            run_store,
+            InMemoryGraphContinuationStore(),
+        )
+
     async def execute(self, graph: PipelineGraph, run: Any) -> DurableRunRecord:
         """Run one Builders pipeline as canonical Graph -> Run -> NodeRun -> Attempt work."""
         errors = graph.validate()
         if errors:
             raise ValueError(f"invalid Builders pipeline graph: {'; '.join(errors)}")
 
+        await self._ensure_default_stores()
+        assert self._run_store is not None
+        assert self._durable_store is not None
+        assert self._workspace_id is not None
+        assert self._project_id is not None
         budget = self._budget or IterationBudget(
             max_iterations=_DEFAULT_EXECUTIONS_PER_NODE * len(graph)
         )
