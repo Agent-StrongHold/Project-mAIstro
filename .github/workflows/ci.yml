@@ -194,10 +194,10 @@ jobs:
 
   postgres:
     needs: workflow-lint
-    if: >-
-      github.event_name != 'merge_group' ||
-      github.event.merge_group.base_ref != 'refs/heads/develop' ||
-      needs.workflow-lint.outputs.postgres == 'true'
+    # Required matrix contexts must exist even for out-of-scope queue changes.
+    # GitHub evaluates job-level if before expanding the matrix; skipping here
+    # reports only an unexpanded name, not postgres (pg17) / postgres (pg18).
+    # Run both real database suites instead of synthesizing status contexts.
     # A real PostgreSQL, because the alternative was proving nothing. Every
     # `test_pg_*.py` module mocks the connection and asserts on the SQL string,
     # which cannot catch a missing table, a column the store writes and the
@@ -310,11 +310,30 @@ jobs:
       # quay.io, where MinIO publishes the identical RELEASE tag.
       - name: Start MinIO
         run: |
+          image=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+          # Pull before `docker run`, retrying the fetch alone. quay.io answered
+          # `502 Bad Gateway` on one PR run and `unauthorized: Unknown service
+          # key` on one merge-group run in a single night (2026-09-15), each
+          # before a test had run, and each cost a queue round: the automation
+          # that watches these PRs cannot re-run a job (403). Only the network
+          # step is retried, the same shape as scripts/prepull-base-images.sh;
+          # a MinIO that starts and never answers still fails once, below.
+          for attempt in 1 2 3 4; do
+            if docker pull "$image"; then
+              break
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::could not pull $image after 4 attempts" >&2
+              exit 1
+            fi
+            echo "::warning::pull of $image failed (attempt $attempt/4); retrying" >&2
+            sleep $((attempt * 5))
+          done
           docker run -d --name minio \
             -p 9000:9000 \
             -e MINIO_ROOT_USER=maistro \
             -e MINIO_ROOT_PASSWORD=maistro-secret \
-            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+            "$image" server /data
           for _ in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
               echo "minio ready"
@@ -838,8 +857,20 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8000/health/ready
+          # Revision ids in this chain are lowercase alnum + underscore
+          # (004_task_run_id, 035_outcome_scope_thumb_index); a hex-only
+          # match held only while the head happened to be numeric. The app
+          # can also report ready before its boot-time migration commits
+          # the alembic_version row (observed: ready ok at uptime 1.1s),
+          # so poll until the row exists and matches, then fail closed.
+          for _ in $(seq 1 60); do
+            v="$(docker exec "$postgres" psql -U maistro -d maistro -Atc \
+              "SELECT version_num FROM alembic_version" 2>/dev/null || true)"
+            if [[ "$v" =~ ^[0-9a-z_]+$ ]]; then break; fi
+            sleep 2
+          done
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
 
           # Recreate PostgreSQL against the same 18-style parent volume and
           # prove the migrated cluster, not an anonymous volume, comes back.
@@ -857,8 +888,16 @@ jobs:
             fi
             sleep 2
           done
+          # Second boot (recreated cluster): same migration-commit race, same
+          # bounded poll before the fail-closed assertion.
+          for _ in $(seq 1 60); do
+            v="$(docker exec "$postgres" psql -U maistro -d maistro -Atc \
+              "SELECT version_num FROM alembic_version" 2>/dev/null || true)"
+            if [[ "$v" =~ ^[0-9a-z_]+$ ]]; then break; fi
+            sleep 2
+          done
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-f]+$'
+            "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
       - name: Build hive-conductor (cached)
         run: >-
           scripts/buildx-build-retry.sh --
