@@ -265,6 +265,58 @@ def test_run_dag_uses_one_canonical_run_for_history_projection(
     assert projection["event_count"] == 1
 
 
+def test_run_dag_pre_admission_failure_has_no_fake_execution_id(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected registration fails before a Run is admitted or named."""
+    import stores
+
+    from maistro.runs import RunStatus
+
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    # An unknown node kind is rejected by registry validation, before
+    # run_registered_dag can admit a Run.
+    dag_id = "route-invalid-kind"
+    stores.dags[dag_id] = _route_dag(dag_id, kind="no.such_kind")
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    assert response.status_code == 200
+    body = response.json()
+    # The exception kind, never its text: messages carry paths and provider
+    # replies, which stay in the server log (CodeQL py/stack-trace-exposure).
+    assert body == {"status": "failed", "error": "ValueError: execution failed; see server logs"}
+    assert not asyncio.run(container.run_store.list_by_status(RunStatus.QUEUED))
+
+
+def test_run_dag_projection_failure_does_not_rewrite_execution(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import services.dag_run_store as history
+    import stores
+
+    def unavailable() -> Any:
+        raise RuntimeError("history unavailable")
+
+    monkeypatch.setattr(history, "get_dag_run_store", unavailable)
+
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    dag_id = "route-history-failure"
+    stores.dags[dag_id] = _route_dag(dag_id, kind="transform.alias_keys")
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+
+    canonical = asyncio.run(container.run_store.get_run(body["run_id"]))
+    assert canonical is not None
+    assert canonical.status.value == "completed"
+
+
 def test_run_dag_cannot_project_a_failed_canonical_node_as_completed(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -381,7 +433,8 @@ def test_run_champion_failure(admin_client: Any, monkeypatch: pytest.MonkeyPatch
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "failed"
-    assert "champion crash" in body["error"]
+    assert body["error"] == "RuntimeError: execution failed; see server logs"
+    assert "champion crash" not in body["error"]
 
 
 @pytest.mark.asyncio
