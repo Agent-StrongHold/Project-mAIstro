@@ -60,9 +60,11 @@ merge_group:
 
 `scripts/check-required-checks.py` enforces this from the checked-in
 `.github/branch-protection.json` required set. It also reads
-`.github/merge-queue.json` and pins the queue to `SQUASH` with batching of at
-most three PRs per merge group, a positive minimum group no larger than the
-maximum, and a group wait limited to reviewed values (0, 2, 3, or 5 minutes).
+`.github/merge-queue.json` and pins the queue to `SQUASH` and `ALLGREEN`
+grouping (every grouped candidate must pass its own checks; `HEADGREEN` would
+land a whole group on the head entry alone), with batching of at most three
+PRs per merge group, a positive minimum group no larger than the maximum, and
+a group wait limited to reviewed values (0, 2, 3, or 5 minutes).
 Anything else — including non-integer or unreviewed values — fails closed, so
 widening the queue further means editing this gate in the same reviewed change
 that edits the queue file. A future required check cannot silently become PR-only while the

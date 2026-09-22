@@ -77,6 +77,12 @@ def _prov(
 
 
 def _load(relative: str, name: str) -> ModuleType:
+    # Scripts that import their siblings by bare name (e.g. check-model-egress
+    # importing check_direct_effects) need the scripts directory importable;
+    # spec-based loading alone does not provide it.
+    scripts_dir = str((ROOT / relative).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
     spec = importlib.util.spec_from_file_location(name, ROOT / relative)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -249,11 +255,20 @@ def test_public_route_git_materialization_fails_closed(monkeypatch: pytest.Monke
     with pytest.raises(_ProvError, match="GITHUB_REF"):
         module._unshallow_ci_checkout(prov, "origin/develop")
 
-    monkeypatch.setenv("GITHUB_REF", "refs/pull/1/merge")
-    responses = iter([shallow, failed])
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/gh-readonly-queue/develop/pr-1375-71d0c112")
+    # Merge-group ref is unfetchable and the unrestricted fallback also fails:
+    # the error names both attempts.
+    responses = iter([shallow, failed, failed])
     monkeypatch.setattr(module, "_run_git", lambda _args: next(responses))
     with pytest.raises(_ProvError, match="could not unshallow"):
         module._unshallow_ci_checkout(prov, "origin/develop")
+
+    # Merge-group ref is unfetchable but the unrestricted fallback unshallow
+    # materializes the ancestry: the gate proceeds without raising (observed
+    # 2026-09-15: merge-group lint runs died here before the fallback).
+    responses = iter([shallow, failed, success])
+    monkeypatch.setattr(module, "_run_git", lambda _args: next(responses))
+    module._unshallow_ci_checkout(prov, "origin/develop")
 
     monkeypatch.setattr(module, "_run_git", lambda _args: failed)
     with pytest.raises(_ProvError, match="could not materialize"):
