@@ -1,8 +1,5 @@
-inventory-delta:
-  packages/hive-conductor/backend/tests: +0 (1 renamed and strengthened, 2 strengthened in place)
----
-
 # Auto-1085 repair 3: explicit-declaration-only default model binding
+
 
 Third repair round for #1085 (authorization-truthfulness findings). No net
 change to collected node count; three tests changed meaning:

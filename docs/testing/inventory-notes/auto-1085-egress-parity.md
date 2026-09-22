@@ -1,5 +1,6 @@
+---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +1 (1 strengthened in place, 1 strengthened via moved declaration)
+  packages/hive-conductor/backend/tests: +2
 ---
 
 # Auto-1085 repair 4: request-shaping parity and one binding-declaration authority
@@ -24,7 +25,9 @@ Fourth repair round for #1085, closing the two code findings from the
   value into every node's wiring (`MAISTRO_MODEL_BINDING_ID` in `_node_env`),
   so provisioning and node resolution read one authority.
 
-Test deltas:
+Test deltas: net +2 new node IDs in the Hive backend suite (both NEW tests
+below; the `test_maistro_core_adapter.py` change strengthened an existing test
+in place, moving no count):
 
 - `test_legacy_dag_node.py`:
   `test_governed_call_preserves_the_legacy_request_shaping_contract` (NEW)
