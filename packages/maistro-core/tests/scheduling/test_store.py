@@ -540,6 +540,57 @@ async def test_record_fire_without_a_fired_at_moves_only_the_due_cursor(
     ]
 
 
+async def test_an_older_occurrence_cannot_regress_the_link(store: ScheduleStore) -> None:
+    """The stored linkage belongs to the newest consumed occurrence, and a
+    stale replica's write does not change which occurrence that is (#1269).
+
+    Two replicas can hold different cursor snapshots; the store serializes
+    their writes, but serialization alone lets the stale one land second and
+    overwrite a newer winner's `last_run_id` with its older Run — the pointer
+    `_canonical_active_run` consults when it decides whether overlap policy
+    applies. An occurrence older than the recorded cursor therefore moves the
+    counters (its fire was real) while the linkage stays with the newer
+    occurrence; an equal or newer occurrence advances exactly as before.
+    """
+    schedule = await store.put(_schedule())
+    await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON + timedelta(hours=1),
+        run_id="run-newer",
+        next_due_at=NOON + timedelta(hours=2),
+    )
+
+    stale = await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-older",
+        next_due_at=NOON + timedelta(hours=1),
+    )
+
+    assert stale is not None
+    assert stale.last_fired_at == NOON + timedelta(hours=1)
+    assert stale.last_run_id == "run-newer"
+    assert stale.runs_so_far == 2
+    # Persisted, not just returned: the next replica to read the row must see
+    # the newer link too.
+    reloaded = await store.get(schedule.schedule_id)
+    assert reloaded is not None
+    assert reloaded.last_fired_at == NOON + timedelta(hours=1)
+    assert reloaded.last_run_id == "run-newer"
+
+    # A write at the recorded cursor itself is not stale: the common crash
+    # recovery re-stamps the occurrence that already holds the link.
+    equal = await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON + timedelta(hours=1),
+        run_id="run-newer",
+        next_due_at=NOON + timedelta(hours=2),
+    )
+    assert equal is not None
+    assert equal.last_run_id == "run-newer"
+    assert equal.last_fired_at == NOON + timedelta(hours=1)
+
+
 # --- write serialization (#1199) ----------------------------------------------
 
 
@@ -572,8 +623,12 @@ async def test_concurrent_record_fire_on_one_store_does_not_lose_an_increment(
     final = await store.get(schedule.schedule_id)
     assert final is not None
     assert final.runs_so_far == callers
-    # Whichever caller landed last, its cursor is what survived: the counter
-    # and the cursors were written by the same caller, not mixed.
+    # The cursors that survive are the newest occurrence's, not whoever's
+    # write happened to land last: serialization lets a replica holding a
+    # stale snapshot commit after a newer one (#1269), so `_advance` accepts
+    # a linkage only from an occurrence at or past the stored cursor. Link
+    # and due stamp stay a pair — both from the same newest write — while
+    # every caller's increment is counted.
     assert final.last_run_id is not None
     winner = int(final.last_run_id.removeprefix("run-"))
     assert final.last_fired_at == NOON + timedelta(minutes=winner)

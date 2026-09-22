@@ -21,7 +21,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from maistro_canvas.canvas.routes import make_canvas_router
+from maistro_canvas.canvas.routes import _make_canvas_router
 from maistro_canvas.types import (
     CanvasRecord,
     CompositeResult,
@@ -141,10 +141,12 @@ class _OrgExecutor:
     def __init__(self, store: _OrgStore) -> None:
         self._store = store
         self.cancel_raises = False
+        self.last_actor_principal_id: str | None = None
 
     async def start_job(
         self, *, canvas_id: str, layer_id: str, org_id: str = "", **kw: Any
     ) -> GenerationJobRecord:
+        self.last_actor_principal_id = kw.get("actor_principal_id")
         job = GenerationJobRecord(
             id=f"job-{len(self._store._jobs) + 1}",
             layer_id=layer_id,
@@ -197,7 +199,7 @@ class _Harness:
     def app(self) -> FastAPI:
         app = FastAPI()
         app.include_router(
-            make_canvas_router(
+            _make_canvas_router(
                 store=self.store,  # type: ignore[arg-type]
                 executor=self.executor,  # type: ignore[arg-type]
                 compositor=self.compositor,  # type: ignore[arg-type]
@@ -232,6 +234,19 @@ def harness(
         headers={"Authorization": f"Bearer {TEST_TOKEN}"},
     ) as c:
         yield c, h
+
+
+async def test_generation_route_preserves_authenticated_actor(
+    harness: tuple[TestClient, _Harness],
+) -> None:
+    client, h = harness
+    canvas = await h.seed_canvas()
+    layer = await h.seed_layer(canvas)
+
+    response = client.post(f"/api/canvas/{canvas.id}/layers/{layer.id}/generate", json={})
+
+    assert response.status_code == 202, response.text
+    assert h.executor.last_actor_principal_id == "default"
 
 
 async def test_get_canvas_returns_layers(harness: tuple[TestClient, _Harness]) -> None:
