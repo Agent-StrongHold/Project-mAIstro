@@ -11,6 +11,21 @@ from adapters.maistro_core import MaistroCoreBridge
 from config import Settings
 
 
+class _FakeBindings:
+    """Minimal canonical BindingStore double for stubbed containers."""
+
+    def __init__(self) -> None:
+        self.put_calls: list[object] = []
+
+    async def put(self, binding: object) -> object:
+        self.put_calls.append(binding)
+        return binding
+
+
+async def _fake_create_root(workspace_id: str) -> SimpleNamespace:
+    return SimpleNamespace(project_id=f"root-of-{workspace_id}")
+
+
 def _fake_container() -> SimpleNamespace:
     """The seams `_construct_runtime` reads off the wired Container."""
     return SimpleNamespace(
@@ -25,6 +40,8 @@ def _fake_container() -> SimpleNamespace:
         session_store=object(),
         quota_tracker=object(),
         agents={},
+        project_scope_store=SimpleNamespace(create_root=_fake_create_root),
+        capability_effects=SimpleNamespace(bindings=_FakeBindings()),
     )
 
 
@@ -61,6 +78,8 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        project_scope_store=SimpleNamespace(create_root=_fake_create_root),
+        capability_effects=SimpleNamespace(bindings=_FakeBindings()),
     )
     captured: dict[str, object] = {}
     # The real Container always initializes `agents` to an empty dict and
@@ -176,6 +195,8 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         session_store=object(),
         quota_tracker=object(),
         agents=wired_agents,
+        project_scope_store=SimpleNamespace(create_root=_fake_create_root),
+        capability_effects=SimpleNamespace(bindings=_FakeBindings()),
     )
 
     async def fake_create_container(config):
@@ -279,3 +300,148 @@ async def test_route_passes_the_caller_identity_through_to_the_container() -> No
     assert captured["auth"] is principal
     assert await bridge.route([{"role": "user", "content": "hi"}]) == {"content": "ok"}
     assert captured["auth"] is None
+
+
+@pytest.mark.asyncio
+async def test_start_provisions_the_declared_default_model_binding(monkeypatch):
+    """#1085: the production bridge, not a test, provisions the operator's
+    declared model.chat Binding into the canonical store.
+
+    The Binding is scoped to the default Workspace's Root Project -- the scope
+    `authorize_hive_dag_scope` admits DAG runs into when no Project is
+    selected -- so a stored DAG model node that predates binding ids can
+    resolve a governed Invocation in the real bridge composition instead of
+    failing for want of a Binding no operator could declare.
+    """
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+
+    async def fake_create_agents(**kwargs: object) -> dict[str, object]:
+        return {"wired-agent": SimpleNamespace(identity=None)}
+
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+
+    bridge = MaistroCoreBridge()
+    await bridge.start(
+        Settings(
+            maistro_agents_dir="agents",
+            litellm_api_base="http://localhost:4000/v1",
+            maistro_router_api_key="test-key",
+        )
+    )
+
+    container = bridge.container
+    assert container is not None
+    root = await container.project_scope_store.root_for_workspace("default")
+    binding = await container.capability_effects.bindings.resolve(
+        "hive-default-model",
+        workspace_id="default",
+        project_id=root.project_id,
+        node_id="any-node",
+        capability=MODEL_CHAT_CAPABILITY,
+    )
+    assert binding.capability == MODEL_CHAT_CAPABILITY
+    assert binding.workspace_id == "default"
+    assert binding.project_id == root.project_id
+
+    # The same production composition must execute: a stored DAG model node
+    # with no explicit binding_id runs through the real facade and canonical
+    # durable Run path using only the binding the bridge provisioned, and the
+    # resulting Invocation names that Run/NodeRun/Attempt (#1085 acceptance).
+    import httpx
+    import services.canonical_dag_runner as canonical
+    import services.graph_runner as facade
+    from services.dag_execution_scope import DagExecutionScope
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {
+                "model": "legacy-model-v2",
+                "choices": [{"message": {"content": "bridge answer"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+            }
+
+    class _Client:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(self, *_args: object, **_kwargs: object) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(canonical, "_container", lambda: container)
+    monkeypatch.setattr(canonical, "get_run_store", lambda: container.graph_run_store)
+
+    result = await facade.execute_dag(
+        {
+            "id": "bridge-governed",
+            "name": "bridge-governed",
+            "description": "bridge task",
+            "nodes": [
+                {
+                    "id": "n1",
+                    "name": "worker",
+                    "model": "legacy-model",
+                    "config": {"execution_tier": "safe"},
+                }
+            ],
+            "edges": [],
+        },
+        scope=DagExecutionScope(
+            workspace_id="default", project_id=root.project_id, user_id="bridge-user"
+        ),
+    )
+
+    assert result["status"] == "completed"
+    invocations = list(
+        container.capability_effects.invocation_store._items.values()  # type: ignore[attr-defined]
+    )
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.binding.binding_id == "hive-default-model"
+    assert invocation.workspace_id == "default"
+    assert invocation.project_id == root.project_id
+    assert invocation.run_id == result["run_id"]
+    assert invocation.node_run_id
+    assert invocation.attempt_id
+    node_runs = await container.run_store.list_node_runs(result["run_id"])
+    assert [node_run.node_run_id for node_run in node_runs] == [invocation.node_run_id]
+    attempts = await container.run_store.list_attempts(invocation.node_run_id)
+    assert [attempt.attempt_id for attempt in attempts] == [invocation.attempt_id]
+    assert invocation.usage is not None
+    assert invocation.usage.provider
+    assert invocation.usage.model_version == "legacy-model-v2"
+
+
+@pytest.mark.asyncio
+async def test_start_can_disable_the_default_model_binding(monkeypatch):
+    """An operator who states no default binding gets none: nodes naming no
+    binding then fail closed instead of silently re-authorizing (#1085)."""
+
+    async def fake_create_agents(**kwargs: object) -> dict[str, object]:
+        return {"wired-agent": SimpleNamespace(identity=None)}
+
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+
+    bridge = MaistroCoreBridge()
+    await bridge.start(
+        Settings(
+            maistro_agents_dir="agents",
+            litellm_api_base="http://localhost:4000/v1",
+            maistro_router_api_key="test-key",
+            maistro_model_binding_id="",
+        )
+    )
+
+    container = bridge.container
+    assert container is not None
+    assert await container.capability_effects.bindings.get("hive-default-model") is None

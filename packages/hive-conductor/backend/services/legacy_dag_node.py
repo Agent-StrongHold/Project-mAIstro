@@ -422,6 +422,17 @@ def _build_llm_call(
                 )
 
             return _stub_llm
+        if llm_gateway_configured():
+            # A configured gateway is not authorization. Without the canonical
+            # effect wiring there is no Binding, no Invocation, and no honest
+            # way to report a model result, so the adapter refuses rather than
+            # rediscovering raw model HTTP (#1085).
+            raise StubLLMNotAllowedError(
+                "An LLM gateway is configured, but this execution is not wired to "
+                "the canonical model egress (Container + Binding), so no governed "
+                "Invocation could be recorded. Refusing to dispatch model HTTP "
+                "outside the governed seam."
+            )
         raise StubLLMNotAllowedError(STUB_LLM_REFUSAL)
 
     async def _governed_llm(messages: list[dict], **kwargs: Any) -> str:
@@ -501,13 +512,38 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
     def _binding_id(self) -> str:
         config = self._raw_node.get("config", {})
         config_map = config if isinstance(config, Mapping) else {}
-        return str(
+        explicit = str(
             self._raw_node.get("binding_id")
             or self._raw_node.get("model_binding_id")
             or config_map.get("binding_id")
             or config_map.get("model_binding_id")
             or ""
         ).strip()
+        if explicit:
+            return explicit
+        return self._deployment_default_binding_id()
+
+    def _deployment_default_binding_id(self) -> str:
+        """The operator-declared default Binding (#1085), never a self-grant.
+
+        The bridge provisions `Settings.maistro_model_binding_id` into the
+        canonical Binding store at boot; a node naming no explicit binding
+        resolves that declaration. Without wiring (standalone, no Container)
+        the id is never authorized because resolution never happens -- the
+        node fails closed instead.
+        """
+        declared = (
+            self._node_env.get("MAISTRO_MODEL_BINDING_ID", "").strip()
+            or os.environ.get("MAISTRO_MODEL_BINDING_ID", "").strip()
+        )
+        if declared:
+            return declared
+        try:
+            from config import get_settings
+
+            return get_settings().maistro_model_binding_id.strip()
+        except Exception:  # pragma: no cover - settings unavailable in isolation
+            return ""
 
     async def _governed_model_call(self, ctx: NodeContext) -> ModelCall:
         if (
@@ -635,37 +671,27 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
 
             governed_model_call = lazy_governed_model_call
 
-        # The subprocess helper is a legacy isolation compatibility seam, not a
-        # model provider. Production model nodes use the governed caller even
-        # when their old execution tier says "sandbox".
-        if tier == "sandbox" and governed_model_call is None and self._llm_builder is None:
-            context = "\n---\n".join(parent_outputs.values())
-            result = await asyncio.to_thread(
-                _run_node_subprocess,
-                self._raw_node,
-                self._task_desc,
-                context,
-                self._node_env,
-                self._execution_mode,
-            )
-            _invoke_subprocess_usage_hooks([node_id], {node_id: result}, self._on_response)
-        else:
-            scratch: dict[str, dict[str, Any]] = {
-                source: {"response": value, "success": True}
-                for source, value in parent_outputs.items()
-            }
-            inbound = {node_id: set(parent_outputs)}
-            await _run_llm_node(
-                self._raw_node,
-                node_id,
-                inbound,
-                scratch,
-                self._task_desc,
-                on_response=self._on_response,
-                llm_builder=self._llm_builder,
-                model_call=governed_model_call,
-            )
-            result = scratch[node_id]
+        # The subprocess isolation helper is an explicit legacy seam for callers
+        # that invoke it directly; a canonical NodeRun never routes through it,
+        # because its script performs none of the node's declared work and a
+        # compatibility adapter may not report success from a physical effect
+        # that never happened (#1085). Unwired model nodes fail closed through
+        # the builder's refusal below; tool nodes execute their real tools.
+        scratch: dict[str, dict[str, Any]] = {
+            source: {"response": value, "success": True} for source, value in parent_outputs.items()
+        }
+        inbound = {node_id: set(parent_outputs)}
+        await _run_llm_node(
+            self._raw_node,
+            node_id,
+            inbound,
+            scratch,
+            self._task_desc,
+            on_response=self._on_response,
+            llm_builder=self._llm_builder,
+            model_call=governed_model_call,
+        )
+        result = scratch[node_id]
 
         if not result.get("success"):
             raise RuntimeError(str(result.get("response") or result.get("error") or "node failed"))

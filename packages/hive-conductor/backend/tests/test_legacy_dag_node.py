@@ -625,23 +625,25 @@ async def test_model_node_without_operator_binding_fails_closed() -> None:
     assert list(effects.invocation_store._items.values()) == []  # type: ignore[attr-defined]
 
 
-async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
+async def test_an_unwired_sandbox_node_fails_closed_instead_of_echoing_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The isolation echo script is not a model provider (#1085).
+
+    A node the classifier sandboxes but that is not wired to the canonical
+    model egress must fail its NodeRun truthfully. Returning the task text
+    through the compatibility subprocess used to fake exactly that success
+    with no physical effect -- and no Invocation -- behind it.
+    """
     import services.legacy_dag_node as adapter
 
-    captured: dict[str, Any] = {}
+    def _unexpected_subprocess(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover
+        raise AssertionError("canonical node execution must not run the isolation echo")
 
-    def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
-        captured.update(node=raw_node["id"], task=task, context=context, mode=mode)
-        return {
-            "role": "worker",
-            "response": "isolated output",
-            "success": True,
-            "usage": {"prompt_tokens": 3, "completion_tokens": 4},
-        }
-
-    monkeypatch.setattr(adapter, "_run_node_subprocess", fake_subprocess)
+    monkeypatch.setattr(adapter, "_run_node_subprocess", _unexpected_subprocess)
+    monkeypatch.delenv("LITELLM_API_BASE", raising=False)
+    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
+    monkeypatch.setenv("MAISTRO_MODEL_BINDING_ID", "")
 
     usage_events: list[dict[str, Any]] = []
 
@@ -652,24 +654,122 @@ async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
         {"id": "n1", "config": {"capabilities": ["shell"]}},
         on_response=on_response,
     )
-    output = await node._execute(node.input_schema(), _ctx())
 
-    assert captured == {"node": "n1", "task": "the task", "context": "", "mode": "interactive"}
-    assert output.response == "isolated output"
-    assert usage_events and usage_events[0]["usage"]["prompt_tokens"] == 3
+    with pytest.raises(RuntimeError, match="No LLM gateway is configured"):
+        await node._execute(node.input_schema(), _ctx())
+
+    assert usage_events == []
 
 
-async def test_a_failed_isolated_node_fails_the_adapter_node(
+async def test_a_gateway_configured_but_unwired_node_refuses_raw_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A configured gateway is not authorization (#1085).
+
+    Without the canonical effect wiring there is no Binding and no
+    Invocation, so the node refuses rather than falling back to raw model
+    HTTP or the isolation echo.
+    """
     import services.legacy_dag_node as adapter
 
-    def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
-        return {"role": "worker", "response": "subprocess refused", "success": False}
+    def _unexpected_subprocess(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover
+        raise AssertionError("canonical node execution must not run the isolation echo")
 
-    monkeypatch.setattr(adapter, "_run_node_subprocess", fake_subprocess)
+    monkeypatch.setattr(adapter, "_run_node_subprocess", _unexpected_subprocess)
+    monkeypatch.setenv("LITELLM_API_BASE", "http://gateway.test")
+    monkeypatch.setenv("MAISTRO_MODEL_BINDING_ID", "")
 
     node = _adapter_node({"id": "n1", "config": {"capabilities": ["shell"]}})
 
-    with pytest.raises(RuntimeError, match="subprocess refused"):
+    with pytest.raises(RuntimeError, match="not wired to the canonical model egress"):
         await node._execute(node.input_schema(), _ctx())
+
+
+async def test_a_node_without_explicit_binding_resolves_the_deployment_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1085: stored DAGs that predate binding ids resolve the operator's
+    declared default Binding rather than failing for want of one.
+
+    The default is a declaration provisioned by the bridge, never a
+    self-grant: resolution still goes through the canonical Binding store's
+    scope checks, and the Invocation names the same binding id.
+    """
+    import httpx
+
+    from maistro.capabilities.binding import Binding
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "model": "model-v2",
+                "choices": [{"message": {"content": "default-binding answer"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    class _Client:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, *_args: Any, **_kwargs: Any) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    effects = new_in_memory_effect_context()
+    await effects.bindings.put(
+        Binding(
+            binding_id="hive-default-model",
+            workspace_id="ws-1",
+            project_id="project-1",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+    )
+    registry = InMemoryProviderRegistry()
+    node = _adapter_node(
+        {
+            "id": "n1",
+            "model": "legacy-model",
+            # No binding_id: the deployment default must be resolved instead.
+            "config": {"execution_tier": "safe"},
+        },
+        node_env={
+            "LITELLM_API_BASE": "http://gateway.test",
+            "MAISTRO_MODEL_BINDING_ID": "hive-default-model",
+        },
+        effect_context=effects,
+        provider_registry=registry,
+        llm_router=CostAwareRouter(registry),
+    )
+
+    result = await node.run(
+        node.input_schema(),
+        NodeContext(
+            run_id="run-1",
+            dag_id="dag-1",
+            node_id="n1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+        ),
+    )
+
+    assert result.success is True
+    assert result.output is not None
+    assert result.output.response == "default-binding answer"
+    invocations = list(effects.invocation_store._items.values())  # type: ignore[attr-defined]
+    assert len(invocations) == 1
+    assert invocations[0].binding.binding_id == "hive-default-model"
+    assert invocations[0].attempt_id == "attempt-1"

@@ -175,6 +175,29 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     container = await create_container(config)
 
+    # #1085: complete the operator's model.chat Binding declaration. The
+    # container's bootstrap only loads statically-declared bindings, and the
+    # Root Project id is minted during container wiring, so the bridge scopes
+    # the deployment's declared default binding to (default Workspace, Root
+    # Project) -- the scope `authorize_hive_dag_scope` admits DAG runs into
+    # when no Project is selected -- by putting it into the canonical Binding
+    # store the container owns. No second store is created; a stored DAG that
+    # names its own `binding_id` still resolves against this same authority.
+    default_binding_id = settings.maistro_model_binding_id.strip()
+    if default_binding_id:
+        from maistro.capabilities.binding import Binding
+        from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+
+        root_project = await container.project_scope_store.create_root(config.workspace_id)
+        await container.capability_effects.bindings.put(
+            Binding(
+                binding_id=default_binding_id,
+                workspace_id=config.workspace_id,
+                project_id=root_project.project_id,
+                capability=MODEL_CHAT_CAPABILITY,
+            )
+        )
+
     llm_client = _HttpOpenAILLMClient(
         base_url=llm_base or "http://localhost:4000/v1",
         api_key=llm_key or "sk-noop",
