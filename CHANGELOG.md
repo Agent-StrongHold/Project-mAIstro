@@ -190,7 +190,18 @@ or placeholder-only section.
   payloads before persistence (#1159), remain open follow-up work this issue
   explicitly does not claim.
 
+
 ### Added
+
+- **maistro-automaton: portable autonomous-actor machinery (#1538).** The
+  tickable skeleton of a self-moving actor — reactor, drives, threshold-gated
+  producers, motivation arbitration with per-key refractory periods, an
+  episodic-sink port, and deterministic cage verdicts — extracted so that
+  autonomous subsystems (first consumer: the merge-train tender) can act on
+  internal pressure without importing Turing. Zero runtime dependencies;
+  hosts inject persistence, providers, and law through protocols. Turing
+  remains an instantiation, not a platform (SPEC-282, per
+  ADR-081426-fb9f's gate).
 
 - **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
   execution (#735).** `maistro_canvas`'s durable generation runner is wired to

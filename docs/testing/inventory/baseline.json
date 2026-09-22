@@ -13,7 +13,8 @@
     "tests/": 1185,
     "formal/": 417,
     "packages/hive-conductor/backend/tests": 1262,
-    "packages/hive-conductor/tests/e2e": 23
+    "packages/hive-conductor/tests/e2e": 23,
+    "packages/maistro-automaton/tests": 0
   },
   "folded": []
 }
