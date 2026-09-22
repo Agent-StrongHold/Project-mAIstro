@@ -35,10 +35,13 @@ def latency():
     return module
 
 
-def _run(pr, sha, start, end, conclusion="success", event="merge_group", base="develop"):
+def _run(pr, sha, start, end, conclusion="success", event="merge_group", base="develop", head=None):
+    """One merge-group run. `sha` is the parent the entry was built on (the
+    branch's trailing SHA); `head` is the entry's own synthetic head."""
     return {
         "event": event,
         "head_branch": f"gh-readonly-queue/{base}/pr-{pr}-{sha}",
+        "head_sha": head or f"head-{pr}-{sha}",
         "run_started_at": f"2026-08-29T{start}Z",
         "updated_at": f"2026-08-29T{end}Z",
         "conclusion": conclusion,
@@ -120,6 +123,60 @@ class TestCandidates:
             "develop",
         )
         assert cands[(496, "aaa")]["success"] is False
+
+
+class TestAttributeRebuilds:
+    """GitHub builds one entry per queued PR on top of the entry ahead of it,
+    and the entry branch carries the SHA it was built on: observed on develop,
+    `pr-1381-62cfc8…` sat on the `pr-1384` entry whose runs had head_sha
+    `62cfc8…`. Under ALLGREEN a failing entry is ejected and the entries
+    behind it are rebuilt; those rebuilds are the batch's cost, not theirs."""
+
+    def _chain(self, latency, *, middle="cancelled", tail="cancelled"):
+        return latency.candidates(
+            [
+                _run(496, "base", "15:00:00", "15:14:00", conclusion="failure", head="A"),
+                _run(628, "A", "15:00:30", "15:05:00", conclusion=middle, head="B"),
+                _run(639, "B", "15:01:00", "15:05:00", conclusion=tail, head="C"),
+            ],
+            "develop",
+        )
+
+    def test_entries_rebuilt_behind_a_failed_entry_are_marked(self, latency):
+        cands = latency.attribute_rebuilds(self._chain(latency))
+        assert cands[(496, "base")]["behind_failure"] is False
+        assert cands[(628, "A")]["behind_failure"] is True
+        assert cands[(639, "B")]["behind_failure"] is True
+
+    def test_a_run_that_raced_the_cancel_is_still_a_bystander(self, latency):
+        """An entry behind a failure can conclude `failure` itself before the
+        queue's cancel reaches it. The chain, not the conclusion, decides."""
+        cands = latency.attribute_rebuilds(self._chain(latency, middle="failure"))
+        assert cands[(628, "A")]["behind_failure"] is True
+
+    def test_an_entry_behind_a_green_entry_owns_its_failure(self, latency):
+        cands = latency.candidates(
+            [
+                _run(496, "base", "15:00:00", "15:14:00", head="A"),
+                _run(628, "A", "15:00:30", "15:12:00", conclusion="failure", head="B"),
+            ],
+            "develop",
+        )
+        cands = latency.attribute_rebuilds(cands)
+        assert cands[(628, "A")]["behind_failure"] is False
+
+    def test_a_parent_outside_the_window_reads_as_the_base_head(self, latency):
+        cands = latency.attribute_rebuilds(
+            latency.candidates(
+                [_run(628, "unseen", "15:00:30", "15:12:00", conclusion="failure")], "develop"
+            )
+        )
+        assert cands[(628, "unseen")]["behind_failure"] is False
+
+    def test_a_successful_candidate_is_never_a_bystander(self, latency):
+        cands = latency.attribute_rebuilds(self._chain(latency, middle="success"))
+        assert cands[(628, "A")]["behind_failure"] is False
+        assert cands[(639, "B")]["behind_failure"] is True
 
 
 class TestBoundaryCohort:
@@ -211,6 +268,22 @@ class TestSummarize:
         assert pr639["merged"] is False
         assert pr639["residency_min"] is None
 
+    def test_rebuilt_behind_counts_per_pr(self, latency):
+        cands = latency.attribute_rebuilds(
+            latency.candidates(
+                [
+                    _run(496, "base", "15:00:00", "15:14:00", conclusion="failure", head="A"),
+                    _run(628, "A", "15:00:30", "15:05:00", conclusion="cancelled", head="B"),
+                    _run(628, "base2", "15:30:00", "15:44:00", head="D"),
+                ],
+                "develop",
+            )
+        )
+        rows = {p["pr"]: p for p in latency.summarize(cands, {})}
+        assert rows[628]["attempts"] == 2
+        assert rows[628]["rebuilt_behind"] == 1
+        assert rows[496]["rebuilt_behind"] == 0
+
     def test_only_completed_successful_candidates_contribute_wall_clock(self, latency):
         """An ejected candidate is cancelled mid-run, so its wall-clock is
         short for the wrong reason — including it would pull the 'clean pass'
@@ -262,6 +335,28 @@ class TestFigures:
         assert figs["dequeued_candidates"] == 2
         assert figs["dequeue_rate"] == pytest.approx(0.5)
 
+    def test_bystander_share_is_over_dequeued_candidates(self, latency):
+        """Of the candidates that landed no merge, how many were rebuilt behind
+        another PR's failure: the share of the multiplier batching pays for,
+        as opposed to bad heads. Here 628's first candidate was cancelled
+        behind 496; 496's own failure is not a bystander."""
+        cands = latency.attribute_rebuilds(
+            latency.candidates(
+                [
+                    _run(496, "base", "15:00:00", "15:14:00", conclusion="failure", head="A"),
+                    _run(628, "A", "15:00:30", "15:05:00", conclusion="cancelled", head="B"),
+                    _run(628, "base2", "15:30:00", "15:44:00", head="D"),
+                ],
+                "develop",
+            )
+        )
+        figs = latency.figures(
+            latency.summarize(cands, {628: latency._when("2026-08-29T15:50:00Z")})
+        )
+        assert figs["dequeued_candidates"] == 2
+        assert figs["bystander_candidates"] == 1
+        assert figs["bystander_rate"] == pytest.approx(0.5)
+
     def test_fallback_residencies_are_counted_for_the_report(self, latency):
         cands = latency.candidates([_run(495, "aaa", "19:13:00", "19:26:00")], "develop")
         merged = {495: latency._when("2026-08-29T19:27:00Z")}
@@ -297,6 +392,7 @@ class TestRender:
             {
                 "pr": 496,
                 "attempts": 2,
+                "rebuilt_behind": 1,
                 "merged": True,
                 "residency_min": 58.1,
                 "residency_from_admission": True,
@@ -305,6 +401,7 @@ class TestRender:
             {
                 "pr": 639,
                 "attempts": 1,
+                "rebuilt_behind": 0,
                 "merged": False,
                 "residency_min": None,
                 "residency_from_admission": False,
@@ -315,6 +412,7 @@ class TestRender:
         assert "496" in out and "58.1" in out
         assert "requeue rate" in out
         assert "dequeued candidates" in out
+        assert "rebuilt behind a failure  : 1 of 2 dequeued (50%" in out
         assert "queue admission -> merged" in out
         assert "0 of 1 from run-start fallback" in out
         assert "clean candidate, med / p90" in out
