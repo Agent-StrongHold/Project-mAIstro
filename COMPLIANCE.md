@@ -54,7 +54,7 @@
 
 ## Maintenance
 
-`quality/compliance-registry.json` is the source of truth. Run `python scripts/check-compliance.py` after changing either file; it rejects unknown or duplicate IDs, malformed table rows, missing references, missing owners, invalid dates, expired green evidence, and registry/document drift.
+`quality/compliance-registry.json` is the source of truth. Run `python scripts/check-compliance.py` after changing either file; it rejects unknown or duplicate IDs, malformed table rows, missing references, missing owners, invalid dates, expired green evidence, and registry/document drift. Every `implemented`, `partially_implemented`, or `documented` claim must carry both a `last_verified` date and an `expires` date: evidence without an expiry could never go stale, so a null expiry fails the check instead of being trusted forever.
 
 CI validates the registry on every change. The release workflow runs the same check with `--require-release-evidence --release-digest <tag commit>`. That mode fails closed for every `release_required` control unless it is `implemented` and has current evidence bound to the exact release digest; non-green statuses therefore block release rather than being silently promoted to green. The current registry intentionally fails this release-mode check because its Article 15 and 17 controls are `unverified` and have no evidence.
 

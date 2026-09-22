@@ -674,3 +674,978 @@ def test_duplicate_control_ids_are_rejected(checker: ModuleType, registry: dict)
 def test_json_is_human_readable_and_has_no_unknown_top_level_claims() -> None:
     data = json.loads((ROOT / "quality" / "compliance-registry.json").read_text(encoding="utf-8"))
     assert set(data) == {"schema_version", "release_digest", "controls"}
+
+
+# ---------------------------------------------------------------------------
+# Helpers for the fail-closed path tests below
+# ---------------------------------------------------------------------------
+
+
+def evidence_item(control: dict, digest: str, **overrides: object) -> dict:
+    item = {
+        "url": "https://example.invalid/evidence/1",
+        "control_id": control["id"],
+        "control_refs": control["control_refs"],
+        "test_refs": control["test_refs"],
+        "sha256": "a" * 64,
+        "release_digest": digest,
+        "observed_at": "2026-08-25",
+        "result": "passed",
+        "workflow_ref": ".github/workflows/ci.yml",
+        "workflow_enabled": True,
+        "manual_only": False,
+        "ran": True,
+    }
+    item.update(overrides)
+    return item
+
+
+def manifest_payload(control: dict, digest: str, **overrides: object) -> dict:
+    payload = {
+        "schema_version": 1,
+        "control_id": control["id"],
+        "control_refs": control["control_refs"],
+        "test_refs": control["test_refs"],
+        "release_digest": digest,
+        "result": "passed",
+        "tests": [{"ref": ref, "result": "passed", "exit_code": 0} for ref in control["test_refs"]],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def zip_bytes(**files: bytes) -> bytes:
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name, content in files.items():
+            bundle.writestr(name, content)
+    return archive.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Verification claims must be time-bounded (#362): a missing expiry can never
+# go stale, so the checker fails closed instead of trusting it forever.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", ["implemented", "partially_implemented", "documented"])
+def test_verified_statuses_require_an_expiry_date(
+    checker: ModuleType, registry: dict, status: str
+) -> None:
+    control = registry["controls"][0]
+    control["status"] = status
+    control["expires"] = None
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("requires an expires date" in error for error in errors)
+
+
+def test_unverified_statuses_may_omit_expiry(checker: ModuleType, registry: dict) -> None:
+    control = registry["controls"][0]
+    control["status"] = "planned"
+    control["last_verified"] = None
+    control["expires"] = None
+    errors = [
+        error
+        for error in checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+        if control["id"] in error
+    ]
+    assert errors == []
+
+
+def test_implemented_requires_last_verified(checker: ModuleType, registry: dict) -> None:
+    control = registry["controls"][0]
+    control["status"] = "implemented"
+    control["last_verified"] = None
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("requires last_verified" in error for error in errors)
+
+
+def test_malformed_and_impossible_dates_fail_closed(checker: ModuleType, registry: dict) -> None:
+    control = registry["controls"][0]
+    control["last_verified"] = "26th of August"
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("must be an ISO date or null" in error for error in errors)
+    control["last_verified"] = "2026-02-30"
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("not a real calendar date" in error for error in errors)
+
+
+def test_link_and_reference_helpers_fail_closed(checker: ModuleType, tmp_path: Path) -> None:
+    assert checker._is_link(None) is False
+    assert checker._local_ref_exists("https://example.com/control.md", tmp_path) is True
+    assert checker._local_ref_exists("docs/adr/ADR-001.md", tmp_path) is False
+    assert checker._is_test_ref("scripts/release_guard.py") is False
+    assert checker._is_test_ref("docs/adr/x.md") is False
+    assert checker._is_test_ref("packages/maistro-core/tests/test_x.py") is True
+
+
+def test_git_probe_fails_closed_when_git_is_unavailable(
+    checker: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: object, **kwargs: object) -> object:
+        raise OSError("git missing")
+
+    monkeypatch.setattr(checker.subprocess, "run", boom)
+    assert checker._git_commit_exists("b" * 40, tmp_path) is False
+
+
+def test_workflow_locator_accepts_only_commit_bound_workflow_links(
+    checker: ModuleType,
+) -> None:
+    base = f"https://github.com/{checker.GITHUB_REPOSITORY}/blob"
+    assert checker._workflow_locator(None) is None
+    assert checker._workflow_locator(f"http://github.com/x/blob/{'b' * 40}/w.yml") is None
+    assert checker._workflow_locator(f"https://gitlab.com/x/blob/{'b' * 40}/w.yml") is None
+    assert checker._workflow_locator(f"{base}/nothex/.github/workflows/ci.yml") is None
+    assert checker._workflow_locator(f"{base}/{'b' * 40}/docs/notes.md") is None
+    assert checker._workflow_locator(f"{base}/{'b' * 40}/.github/workflows/ci.yml") == (
+        "b" * 40,
+        ".github/workflows/ci.yml",
+    )
+
+
+def test_immutable_link_accepts_only_github_actions_urls(checker: ModuleType) -> None:
+    base = f"https://github.com/{checker.GITHUB_REPOSITORY}/actions/runs"
+    assert checker._is_immutable_evidence_link(None) is False
+    assert checker._is_immutable_evidence_link("http://github.com/x") is False
+    assert checker._is_immutable_evidence_link("https://example.com/actions/runs/1") is False
+    assert (
+        checker._is_immutable_evidence_link(
+            f"https://github.com/{checker.GITHUB_REPOSITORY}/wiki/x"
+        )
+        is False
+    )
+    assert checker._is_immutable_evidence_link(f"{base}/123") is True
+    assert checker._is_immutable_evidence_link(f"{base}/123/artifacts/456") is True
+
+
+def test_evidence_artifact_ids_require_run_and_artifact_numbers(
+    checker: ModuleType,
+) -> None:
+    base = f"https://github.com/{checker.GITHUB_REPOSITORY}/actions/runs"
+    assert checker._evidence_artifact_ids("http://github.com/x") is None
+    assert checker._evidence_artifact_ids(f"{base}/123") is None
+    assert checker._evidence_artifact_ids(f"{base}/abc/artifacts/def") is None
+    assert checker._evidence_artifact_ids(f"{base}/0/artifacts/456") is None
+    assert checker._evidence_artifact_ids(f"{base}/123/artifacts/456") == (123, 456)
+
+
+def test_github_json_reports_failures_as_evidence_failures(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    def boom(request: object, timeout: int) -> None:
+        raise OSError("network down")
+
+    monkeypatch.setattr(checker.urllib.request, "urlopen", boom)
+    payload, failure = checker._github_json("https://api.github.com/x")
+    assert payload is None
+    assert "network down" in (failure or "")
+
+    class FakeResponse:
+        def read(self) -> bytes:
+            return b"[1, 2]"
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    monkeypatch.setattr(checker.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+    payload, failure = checker._github_json("https://api.github.com/x")
+    assert payload is None
+    assert failure == "GitHub returned a non-object response"
+
+
+def test_github_requests_carry_the_token_header(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "token-123")
+    seen: dict[str, str] = {}
+
+    class FakeResponse:
+        def read(self) -> bytes:
+            return b"{}"
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+        seen.update(request.headers)  # type: ignore[attr-defined]
+        return FakeResponse()
+
+    monkeypatch.setattr(checker.urllib.request, "urlopen", fake_urlopen)
+    payload, failure = checker._github_json("https://api.github.com/x")
+    assert (payload, failure) == ({}, None)
+    assert seen["Authorization"] == "Bearer token-123"
+
+
+def test_github_bytes_downloads_artifacts_and_fails_closed(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "tok-456")
+    seen: dict[str, str] = {}
+
+    class FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+        def read(self) -> bytes:
+            return self.body
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+        seen.update(request.headers)  # type: ignore[attr-defined]
+        return FakeResponse(b"artifact-bytes")
+
+    monkeypatch.setattr(checker.urllib.request, "urlopen", fake_urlopen)
+    body, failure = checker._github_bytes("https://api.github.com/x/zip")
+    assert (body, failure) == (b"artifact-bytes", None)
+    assert seen["Authorization"] == "Bearer tok-456"
+
+    def boom(request: object, timeout: int) -> None:
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(checker.urllib.request, "urlopen", boom)
+    body, failure = checker._github_bytes("https://api.github.com/x/zip")
+    assert body is None
+    assert "no route to host" in (failure or "")
+
+
+# ---------------------------------------------------------------------------
+# Attestation verification must fail closed on every unprovable shape
+# ---------------------------------------------------------------------------
+
+
+def test_attestation_metadata_must_be_well_formed(checker: ModuleType) -> None:
+    bad_path = {"attestation": {"file": "../escape.json", "sha256": "a" * 64}}
+    errors = checker._verify_attestation(bad_path, evidence_where="e", artifact_id=1)
+    assert any("attestation must name a file" in error for error in errors)
+    bad_digest = {"attestation": {"file": "manifest.json", "sha256": "nope"}}
+    errors = checker._verify_attestation(bad_digest, evidence_where="e", artifact_id=1)
+    assert any("attestation must name a file" in error for error in errors)
+    assert any(
+        "is missing its executed-test attestation" in error
+        for error in checker._verify_attestation({}, evidence_where="e", artifact_id=1)
+    )
+
+
+def test_unreadable_artifacts_fail_closed(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = {"attestation": {"file": "manifest.json", "sha256": None}}
+
+    monkeypatch.setattr(checker, "_github_bytes", lambda _url: (None, "artifact gone"))
+    errors = checker._verify_attestation(item, evidence_where="e", artifact_id=1)
+    assert any("could not download artifact 1" in error for error in errors)
+
+    monkeypatch.setattr(checker, "_github_bytes", lambda _url: (b"not a zip", None))
+    errors = checker._verify_attestation(item, evidence_where="e", artifact_id=1)
+    assert any("artifact has no readable" in error for error in errors)
+
+    monkeypatch.setattr(
+        checker, "_github_bytes", lambda _url: (zip_bytes(**{"other.txt": b"x"}), None)
+    )
+    errors = checker._verify_attestation(item, evidence_where="e", artifact_id=1)
+    assert any("artifact has no readable" in error for error in errors)
+
+
+def test_attestation_digest_must_match_its_manifest(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b'{"result": "passed"}\n'
+    archive = zip_bytes(**{"manifest.json": content})
+    monkeypatch.setattr(checker, "_github_bytes", lambda _url: (archive, None))
+    item = {"attestation": {"file": "manifest.json", "sha256": "b" * 64}}
+    errors = checker._verify_attestation(item, evidence_where="e", artifact_id=1)
+    assert any("attestation.sha256 does not match its artifact file" in error for error in errors)
+
+
+def test_attestation_must_prove_the_claimed_execution(
+    checker: ModuleType,
+    registry: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control = registry["controls"][0]
+    digest = "b" * 40
+    item = {
+        "control_id": control["id"],
+        "control_refs": control["control_refs"],
+        "test_refs": control["test_refs"],
+        "release_digest": digest,
+        "attestation": {"file": "manifest.json", "sha256": None},
+    }
+
+    def verify_with(payload: object) -> list[str]:
+        raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        monkeypatch.setattr(
+            checker, "_github_bytes", lambda _url: (zip_bytes(**{"manifest.json": raw}), None)
+        )
+        return checker._verify_attestation(item, evidence_where="e", artifact_id=1)
+
+    assert any("not valid JSON" in e for e in verify_with(b"{nope"))
+    assert any("must be a JSON object" in e for e in verify_with(b"[1]"))
+    assert any(
+        "names the wrong control" in e
+        for e in verify_with(manifest_payload(control, digest, control_id="OTHER"))
+    )
+    assert any(
+        "not bound to the evidence release digest" in e
+        for e in verify_with(manifest_payload(control, digest, release_digest="c" * 40))
+    )
+    assert any(
+        "control_refs do not match the claim" in e
+        for e in verify_with(manifest_payload(control, digest, control_refs=["other.py"]))
+    )
+    assert any(
+        "test_refs do not match the claim" in e
+        for e in verify_with(manifest_payload(control, digest, test_refs=["other.py"]))
+    )
+    assert any(
+        "does not enumerate every claimed test" in e
+        for e in verify_with(
+            manifest_payload(
+                control, digest, tests=[{"ref": "other.py", "result": "passed", "exit_code": 0}]
+            )
+        )
+    )
+    assert any(
+        "does not prove passing test execution" in e
+        for e in verify_with(manifest_payload(control, digest, result="failed"))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Commit-bound workflow locator resolution fails closed
+# ---------------------------------------------------------------------------
+
+
+def test_commit_bound_locator_must_bind_to_the_claim(checker: ModuleType) -> None:
+    digest = "b" * 40
+    other_digest = "c" * 40
+    base = f"https://github.com/{checker.GITHUB_REPOSITORY}/blob"
+    item = {
+        "url": f"{base}/{other_digest}/.github/workflows/ci.yml",
+        "release_digest": digest,
+    }
+    artifact, run_id, artifact_id, errors = checker._resolve_workflow_artifact(
+        item, evidence_where="e", workflow_ref=".github/workflows/ci.yml"
+    )
+    assert (artifact, run_id, artifact_id) == (None, None, None)
+    assert any("url is not bound to the evidence release digest" in e for e in errors)
+
+    item["url"] = f"{base}/{digest}/.github/workflows/other.yml"
+    _, _, _, errors = checker._resolve_workflow_artifact(
+        item, evidence_where="e", workflow_ref=".github/workflows/ci.yml"
+    )
+    assert any("url does not identify workflow_ref" in e for e in errors)
+
+
+def test_commit_bound_locator_ignores_non_locator_urls(checker: ModuleType) -> None:
+    item = {"url": "https://example.invalid/x", "release_digest": "b" * 40}
+    assert checker._resolve_workflow_artifact(item, evidence_where="e", workflow_ref="w") == (
+        None,
+        None,
+        None,
+        [],
+    )
+
+
+def test_commit_bound_run_resolution_fails_closed(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    digest = "b" * 40
+    item = {
+        "url": (
+            f"https://github.com/{checker.GITHUB_REPOSITORY}/blob/{digest}/.github/workflows/ci.yml"
+        ),
+        "release_digest": digest,
+    }
+
+    def resolve() -> list[str]:
+        return checker._resolve_workflow_artifact(
+            item, evidence_where="e", workflow_ref=".github/workflows/ci.yml"
+        )[3]
+
+    monkeypatch.setattr(checker, "_github_json", lambda _url: (None, "api down"))
+    assert any("could not list workflow runs" in e for e in resolve())
+
+    monkeypatch.setattr(checker, "_github_json", lambda _url: ({"unexpected": 1}, None))
+    assert any("workflow run listing is malformed" in e for e in resolve())
+
+    monkeypatch.setattr(checker, "_github_json", lambda _url: ({"workflow_runs": []}, None))
+    assert any("has no workflow run for the evidence release digest" in e for e in resolve())
+
+    failed = {
+        "workflow_runs": [
+            {
+                "id": 7,
+                "head_sha": digest,
+                "path": ".github/workflows/ci.yml",
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        ]
+    }
+    monkeypatch.setattr(checker, "_github_json", lambda _url: (failed, None))
+    assert any("workflow run did not complete successfully" in e for e in resolve())
+
+
+def test_commit_bound_artifact_resolution_fails_closed(
+    checker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    digest = "b" * 40
+    item = {
+        "url": (
+            f"https://github.com/{checker.GITHUB_REPOSITORY}/blob/{digest}/.github/workflows/ci.yml"
+        ),
+        "release_digest": digest,
+    }
+    good_run = {
+        "id": 7,
+        "head_sha": digest,
+        "path": ".github/workflows/ci.yml",
+        "status": "completed",
+        "conclusion": "success",
+    }
+
+    def resolve() -> list[str]:
+        return checker._resolve_workflow_artifact(
+            item, evidence_where="e", workflow_ref=".github/workflows/ci.yml"
+        )[3]
+
+    # A run whose id is not a usable positive integer cannot be probed.
+    monkeypatch.setattr(
+        checker,
+        "_github_json",
+        lambda _url: ({"workflow_runs": [dict(good_run, id="seven")]}, None),
+    )
+    assert any("has no artifact named" in e for e in resolve())
+
+    monkeypatch.setattr(
+        checker,
+        "_github_json",
+        lambda url: (
+            ({"workflow_runs": [good_run]}, None)
+            if "/runs?" in url
+            else (None, "artifact api down")
+        ),
+    )
+    assert any("could not list artifacts for workflow run 7" in e for e in resolve())
+
+    monkeypatch.setattr(
+        checker,
+        "_github_json",
+        lambda url: (
+            ({"workflow_runs": [good_run]}, None)
+            if "/runs?" in url
+            else ({"artifacts": "nope"}, None)
+        ),
+    )
+    assert any("artifact listing is malformed" in e for e in resolve())
+
+    monkeypatch.setattr(
+        checker,
+        "_github_json",
+        lambda url: (
+            ({"workflow_runs": [good_run]}, None)
+            if "/runs?" in url
+            else ({"artifacts": [{"id": 5, "name": "something-else"}]}, None)
+        ),
+    )
+    assert any("has no artifact named" in e for e in resolve())
+
+
+# ---------------------------------------------------------------------------
+# Artifact provenance failures for artifact-URL evidence
+# ---------------------------------------------------------------------------
+
+
+def artifact_evidence_item(checker: ModuleType, control: dict, digest: str) -> dict:
+    return {
+        "url": (f"https://github.com/{checker.GITHUB_REPOSITORY}/actions/runs/123/artifacts/456"),
+        "control_id": control["id"],
+        "control_refs": control["control_refs"],
+        "test_refs": control["test_refs"],
+        "sha256": "a" * 64,
+        "release_digest": digest,
+        "attestation": {"file": "manifest.json", "sha256": None},
+    }
+
+
+def test_artifact_fetch_failure_fails_closed(
+    checker: ModuleType, registry: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control = registry["controls"][0]
+    item = artifact_evidence_item(checker, control, "b" * 40)
+    monkeypatch.setattr(checker, "_github_json", lambda _url: (None, "api down"))
+    errors = checker._verify_artifact_evidence(
+        item, evidence_where="e", workflow_ref=".github/workflows/ci.yml"
+    )
+    assert errors == ["e could not verify GitHub artifact 456: api down"]
+
+
+def test_artifact_and_run_provenance_mismatches_fail_closed(
+    checker: ModuleType, registry: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control = registry["controls"][0]
+    digest = "b" * 40
+    item = artifact_evidence_item(checker, control, digest)
+    archive = zip_bytes(**{"manifest.json": json.dumps(manifest_payload(control, digest)).encode()})
+
+    def json_by_url(url: str) -> tuple[dict | None, str | None]:
+        if url.endswith("/artifacts/456"):
+            return {
+                "workflow_run": {"id": 999},
+                "expired": True,
+                "digest": "not-a-digest",
+            }, None
+        if url.endswith("/runs/123"):
+            return {
+                "head_sha": "c" * 40,
+                "path": ".github/workflows/other.yml",
+                "status": "in_progress",
+                "conclusion": None,
+            }, None
+        return {"state": "active"}, None
+
+    monkeypatch.setattr(checker, "_github_bytes", lambda _url: (archive, None))
+    monkeypatch.setattr(checker, "_github_json", json_by_url)
+    errors = checker._verify_artifact_evidence(
+        item, evidence_where="e", workflow_ref=".github/workflows/ci.yml"
+    )
+    assert any("does not belong to the URL's workflow run" in e for e in errors)
+    assert any("not for the evidence release digest" in e for e in errors)
+    assert any("does not match workflow_ref" in e for e in errors)
+    assert any("workflow run did not complete successfully" in e for e in errors)
+    assert any("artifact is expired or has no expiry state" in e for e in errors)
+    assert any("artifact has no GitHub SHA-256 digest" in e for e in errors)
+
+
+def test_run_and_workflow_fetch_failures_fail_closed(
+    checker: ModuleType, registry: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control = registry["controls"][0]
+    digest = "b" * 40
+    item = artifact_evidence_item(checker, control, digest)
+    archive = zip_bytes(**{"manifest.json": json.dumps(manifest_payload(control, digest)).encode()})
+
+    def json_by_url(url: str) -> tuple[dict | None, str | None]:
+        if url.endswith("/artifacts/456"):
+            return {
+                "workflow_run": {"id": 123},
+                "expired": False,
+                "digest": "sha256:" + "a" * 64,
+            }, None
+        if url.endswith("/runs/123"):
+            return None, "run api down"
+        return None, "workflow api down"
+
+    monkeypatch.setattr(checker, "_github_bytes", lambda _url: (archive, None))
+    monkeypatch.setattr(checker, "_github_json", json_by_url)
+    errors = checker._verify_artifact_evidence(
+        item, evidence_where="e", workflow_ref=".github/workflows/ci.yml"
+    )
+    assert any("could not verify workflow run 123" in e for e in errors)
+    assert any("could not verify live workflow state" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Workflow-state derivation and registry-level schema failures
+# ---------------------------------------------------------------------------
+
+
+def test_workflow_state_derivation_fails_closed(checker: ModuleType, tmp_path: Path) -> None:
+    assert checker._workflow_state(".github/workflows/missing.yml", tmp_path) is None
+    (tmp_path / "broken.yml").write_text("a: [::", encoding="utf-8")
+    assert checker._workflow_state("broken.yml", tmp_path) is None
+    (tmp_path / "scalar.yml").write_text("just-a-string\n", encoding="utf-8")
+    assert checker._workflow_state("scalar.yml", tmp_path) is None
+    (tmp_path / "no-on.yml").write_text("name: x\njobs: {}\n", encoding="utf-8")
+    assert checker._workflow_state("no-on.yml", tmp_path) is None
+
+
+def test_workflow_state_reads_string_triggers(checker: ModuleType, tmp_path: Path) -> None:
+    (tmp_path / "push.yml").write_text("on: push\njobs: {}\n", encoding="utf-8")
+    assert checker._workflow_state("push.yml", tmp_path) == (True, False)
+
+
+def test_registry_top_level_schema_failures(checker: ModuleType, registry: dict) -> None:
+    assert checker.validate_registry(["nope"], today=dt.date(2026, 8, 25)) == [
+        "registry must be a JSON object"
+    ]
+    registry["extra"] = 1
+    del registry["schema_version"]
+    registry["release_digest"] = "nope"
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("unknown fields: extra" in error for error in errors)
+    assert any("missing fields: schema_version" in error for error in errors)
+    assert any(f"schema_version must be {checker.SCHEMA_VERSION}" in error for error in errors)
+    assert any(
+        "release_digest must be null or a 40-64 character git digest" in error for error in errors
+    )
+    registry["controls"] = []
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("registry.controls must be a non-empty list" in error for error in errors)
+
+
+def test_control_schema_failures(checker: ModuleType, registry: dict) -> None:
+    bare = {"schema_version": 1, "release_digest": None, "controls": [1]}
+    errors = checker.validate_registry(bare, today=dt.date(2026, 8, 25))
+    assert any("controls[0] must be an object" in error for error in errors)
+
+    cases: list[tuple[str, object, str]] = [
+        ("unexpected", 1, "has unknown fields: unexpected"),
+        ("id", "lower-id", "must be an uppercase control ID"),
+        ("owner", "   ", "must be a non-empty string"),
+        ("status", "green", "is not a supported status"),
+        ("release_required", "yes", "release_required must be boolean"),
+        ("control_refs", "main.py", "control_refs must be a list"),
+        ("control_refs", [], "control_refs must not be empty"),
+        ("control_refs", ["docs/missing-control.md"], "contains a missing reference"),
+        ("test_refs", ["docs/missing-test.md"], "contains a missing reference"),
+    ]
+    for field, value, expected in cases:
+        current = copy.deepcopy(registry)
+        current["controls"][0][field] = value
+        errors = checker.validate_registry(current, today=dt.date(2026, 8, 25))
+        assert any(expected in error for error in errors), field
+
+
+def test_evidence_schema_failures(checker: ModuleType, registry: dict) -> None:
+    digest = "b" * 40
+
+    def errors_for(**overrides: object) -> list[str]:
+        current = copy.deepcopy(registry)
+        current["controls"][0]["evidence"] = [
+            evidence_item(current["controls"][0], digest, **overrides)
+        ]
+        return checker.validate_registry(current, today=dt.date(2026, 8, 25))
+
+    not_an_object = copy.deepcopy(registry)
+    not_an_object["controls"][0]["evidence"] = [1]
+    errors = checker.validate_registry(not_an_object, today=dt.date(2026, 8, 25))
+    assert any("evidence[0] must be an object" in e for e in errors)
+
+    no_url = copy.deepcopy(registry)
+    missing = evidence_item(no_url["controls"][0], digest)
+    del missing["url"]
+    missing["bogus"] = 1
+    no_url["controls"][0]["evidence"] = [missing]
+    errors = checker.validate_registry(no_url, today=dt.date(2026, 8, 25))
+    assert any("has unknown fields: bogus" in e for e in errors)
+    assert any("is missing fields: url" in e for e in errors)
+
+    assert any("must be a list of strings" in e for e in errors_for(control_refs="main.py"))
+    assert any("is not bound to control" in e for e in errors_for(control_refs=["other.py"]))
+    assert any(
+        "workflow_ref must name an existing workflow" in e
+        for e in errors_for(workflow_ref="no.yml")
+    )
+    assert any("workflow_enabled must be boolean" in e for e in errors_for(workflow_enabled="yes"))
+    assert any("must be a 64 character SHA-256 digest" in e for e in errors_for(sha256="short"))
+    assert any(
+        "release_digest must be a git digest" in e for e in errors_for(release_digest="nope")
+    )
+    assert any(
+        "observed_at cannot be in the future" in e for e in errors_for(observed_at="2027-01-01")
+    )
+    assert any("result must be 'passed' or 'failed'" in e for e in errors_for(result="green"))
+
+
+def test_manual_only_and_never_run_evidence_cannot_be_green(
+    checker: ModuleType, registry: dict
+) -> None:
+    control = registry["controls"][0]
+    digest = "b" * 40
+    control["status"] = "implemented"
+    registry["release_digest"] = digest
+    control["evidence"] = [evidence_item(control, digest, manual_only=True, ran=False)]
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("manual-only evidence supporting implemented status" in e for e in errors)
+    assert any("never-run evidence supporting implemented status" in e for e in errors)
+
+
+def test_evidence_must_be_bound_to_the_registry_release_digest(
+    checker: ModuleType, registry: dict
+) -> None:
+    control = registry["controls"][0]
+    control["status"] = "implemented"
+    registry["release_digest"] = "b" * 40
+    control["evidence"] = [evidence_item(control, "c" * 40)]
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("evidence is not bound to registry.release_digest" in e for e in errors)
+
+
+def test_implemented_requires_executable_test_references(
+    checker: ModuleType, registry: dict
+) -> None:
+    control = registry["controls"][0]
+    control["status"] = "implemented"
+    control["last_verified"] = "2026-08-25"
+    control["test_refs"] = []
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("implemented but has no executable test reference" in e for e in errors)
+    control["test_refs"] = ["scripts/check-compliance.py"]
+    errors = checker.validate_registry(registry, today=dt.date(2026, 8, 25))
+    assert any("implemented but has no executable test reference" in e for e in errors)
+
+
+def test_release_mode_rejects_malformed_release_digest(checker: ModuleType, registry: dict) -> None:
+    errors = checker.validate_registry(
+        registry,
+        root=ROOT,
+        release_digest="nope",
+        require_release_evidence=True,
+        today=dt.date(2026, 8, 25),
+    )
+    assert "--release-digest must be a 40-64 character git digest" in errors
+
+
+# ---------------------------------------------------------------------------
+# COMPLIANCE.md shape and consistency failures
+# ---------------------------------------------------------------------------
+
+
+def document_body(checker: ModuleType, *lines: str) -> str:
+    return "\n".join([checker.BEGIN_MARKER, *lines, checker.END_MARKER])
+
+
+def test_document_structure_failures(checker: ModuleType) -> None:
+    registry = checker.load_registry()
+    errors = checker.validate_document("no markers here", registry)
+    assert any("missing the compliance registry markers" in e for e in errors)
+
+    errors = checker.validate_document(document_body(checker), registry)
+    assert any("compliance registry table is incomplete" in e for e in errors)
+
+    errors = checker.validate_document(
+        document_body(checker, "prose line", "| - | - |", "tail"), registry
+    )
+    assert any("has no header row" in e for e in errors)
+
+    errors = checker.validate_document(
+        document_body(checker, "| ID | Framework |", "| - | - |", "| A | b |"), registry
+    )
+    assert any("header must be" in e for e in errors)
+    assert any("malformed separator row" in e for e in errors)
+
+
+def test_document_rejects_non_table_rows(checker: ModuleType) -> None:
+    document = (ROOT / "COMPLIANCE.md").read_text(encoding="utf-8")
+    lines = document.splitlines()
+    header_index = next(i for i, line in enumerate(lines) if line.startswith("| ID |"))
+    separator_index = header_index + 1
+    broken = "\n".join(
+        [*lines[: separator_index + 1], "Prose line.", *lines[separator_index + 1 :]]
+    )
+    errors = checker.validate_document(broken, checker.load_registry())
+    assert any("is not a table row" in e for e in errors)
+
+
+def test_document_rejects_duplicate_control_rows(checker: ModuleType) -> None:
+    document = (ROOT / "COMPLIANCE.md").read_text(encoding="utf-8")
+    first_row = next(line for line in document.splitlines() if line.startswith("| OWASP-AT-01 |"))
+    duplicated = document.replace(first_row, f"{first_row}\n{first_row}", 1)
+    errors = checker.validate_document(duplicated, checker.load_registry())
+    assert any("repeats control ID OWASP-AT-01" in e for e in errors)
+
+
+def test_document_skips_incomplete_registry_controls(checker: ModuleType) -> None:
+    document = (ROOT / "COMPLIANCE.md").read_text(encoding="utf-8")
+    registry = checker.load_registry()
+    del registry["controls"][0]["owner"]
+    errors = checker.validate_document(document, registry)
+    assert any("OWASP-AT-01 is incomplete; document comparison skipped" in e for e in errors)
+
+
+def test_document_rejects_registry_drift(checker: ModuleType) -> None:
+    document = (ROOT / "COMPLIANCE.md").read_text(encoding="utf-8")
+    drifted = document.replace("| 2026-08-25 |", "| 2026-08-24 |", 1)
+    errors = checker.validate_document(drifted, checker.load_registry())
+    assert any("does not match the registry" in e for e in errors)
+
+
+def test_document_rejects_implemented_without_evidence(checker: ModuleType) -> None:
+    document = (ROOT / "COMPLIANCE.md").read_text(encoding="utf-8")
+    registry = checker.load_registry()
+    registry["controls"][0]["status"] = "implemented"
+    registry["controls"][0]["evidence"] = []
+    claimed = document.replace("| partially_implemented |", "| implemented |", 1)
+    errors = checker.validate_document(claimed, registry)
+    assert any("marks OWASP-AT-01 implemented without evidence" in e for e in errors)
+
+
+def test_evidence_cell_rendering(checker: ModuleType) -> None:
+    assert checker._evidence_cell([]) == "none"
+    run_url = f"https://github.com/{checker.GITHUB_REPOSITORY}/actions/runs/1/artifacts/2"
+    assert checker._evidence_cell([{"url": run_url, "sha256": "a" * 64}]) == (
+        f"[{'a' * 12}]({run_url})"
+    )
+    locator = {
+        "url": (
+            f"https://github.com/{checker.GITHUB_REPOSITORY}/blob/"
+            f"{'b' * 40}/.github/workflows/ci.yml"
+        ),
+        "sha256": None,
+    }
+    assert checker._evidence_cell([locator]) == f"[artifact via workflow]({locator['url']})"
+    assert checker._evidence_cell([{"url": "not-a-link"}]) == "invalid"
+
+
+def test_check_reports_unloadable_inputs(checker: ModuleType, tmp_path: Path) -> None:
+    errors = checker.check(registry_path=tmp_path / "missing.json")
+    assert any("cannot load" in error and "missing.json" in error for error in errors)
+    errors = checker.check(document_path=tmp_path / "missing.md")
+    assert any("cannot load" in error and "missing.md" in error for error in errors)
+
+
+def test_main_exit_codes(
+    checker: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    assert checker.main([]) == 0
+    assert "valid" in capsys.readouterr().out
+
+    broken = tmp_path / "registry.json"
+    broken.write_text("{}", encoding="utf-8")
+    assert checker.main(["--registry", str(broken)]) == 1
+    assert "compliance check FAILED" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# The evidence producer fails closed too
+# ---------------------------------------------------------------------------
+
+
+def test_producer_skips_non_implemented_controls(producer: ModuleType, tmp_path: Path) -> None:
+    registry = {"controls": [{"id": "P-1", "status": "planned", "test_refs": []}]}
+    assert (
+        producer.produce(
+            registry,
+            release_digest="a" * 40,
+            output=tmp_path,
+            today=dt.date(2026, 8, 25),
+            runner="python",
+        )
+        == 0
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["controls"] == []
+
+
+def test_producer_rejects_implemented_control_with_invalid_test_refs(
+    producer: ModuleType, tmp_path: Path
+) -> None:
+    registry = {
+        "controls": [
+            {"id": "P-1", "status": "implemented", "test_refs": "nope", "control_refs": []}
+        ]
+    }
+    with pytest.raises(ValueError, match="invalid test_refs"):
+        producer.produce(
+            registry,
+            release_digest="a" * 40,
+            output=tmp_path,
+            today=dt.date(2026, 8, 25),
+            runner="python",
+        )
+
+
+def test_producer_records_subprocess_failures(
+    producer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = {
+        "controls": [
+            {
+                "id": "P-1",
+                "status": "implemented",
+                "test_refs": ["tests/test_missing.py"],
+                "control_refs": ["scripts/check-compliance.py"],
+            }
+        ]
+    }
+
+    def timeout(*args: object, **kwargs: object) -> object:
+        raise producer.subprocess.TimeoutExpired(cmd="pytest", timeout=900)
+
+    monkeypatch.setattr(producer.subprocess, "run", timeout)
+    assert (
+        producer.produce(
+            registry,
+            release_digest="a" * 40,
+            output=tmp_path,
+            today=dt.date(2026, 8, 25),
+            runner="python",
+        )
+        == 1
+    )
+    manifest = json.loads((tmp_path / "P-1.json").read_text())
+    assert manifest["result"] == "failed"
+    assert manifest["tests"][0]["exit_code"] == 1
+
+
+def test_producer_fails_implemented_control_without_tests(
+    producer: ModuleType, tmp_path: Path
+) -> None:
+    registry = {
+        "controls": [{"id": "P-1", "status": "implemented", "test_refs": [], "control_refs": []}]
+    }
+    assert (
+        producer.produce(
+            registry,
+            release_digest="a" * 40,
+            output=tmp_path,
+            today=dt.date(2026, 8, 25),
+            runner="python",
+        )
+        == 1
+    )
+    manifest = json.loads((tmp_path / "P-1.json").read_text())
+    assert manifest["result"] == "failed"
+
+
+def test_producer_main_loads_registry_and_fails_closed(
+    producer: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps({"controls": [{"id": "P-1", "status": "planned", "test_refs": []}]}),
+        encoding="utf-8",
+    )
+    argv = [
+        "--registry",
+        str(registry_path),
+        "--release-digest",
+        "a" * 40,
+        "--output",
+        str(tmp_path / "out"),
+    ]
+    assert producer.main(argv) == 0
+
+    broken = tmp_path / "broken.json"
+    broken.write_text('{"nope": true}', encoding="utf-8")
+    assert (
+        producer.main(
+            [
+                "--registry",
+                str(broken),
+                "--release-digest",
+                "a" * 40,
+                "--output",
+                str(tmp_path / "out2"),
+            ]
+        )
+        == 1
+    )
+    assert "compliance evidence production failed" in capsys.readouterr().err

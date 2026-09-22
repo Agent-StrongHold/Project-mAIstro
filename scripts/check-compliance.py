@@ -592,12 +592,20 @@ def validate_registry(  # noqa: C901 - this is the single fail-closed schema/evi
             errors.append(f"{ident} expires before it was last verified")
         if expires is not None and expires < today and status == "implemented":
             errors.append(f"{ident} has expired evidence ({control['expires']})")
-        if (
-            isinstance(status, str)
-            and status in {"implemented", "partially_implemented", "documented"}
-            and last_verified is None
-        ):
-            errors.append(f"{ident} requires last_verified for status {status}")
+        if isinstance(status, str) and status in {
+            "implemented",
+            "partially_implemented",
+            "documented",
+        }:
+            if last_verified is None:
+                errors.append(f"{ident} requires last_verified for status {status}")
+            if expires is None:
+                # A claim without an expiry can never go stale, which is exactly
+                # what stale evidence needs to be able to do. Fail closed.
+                errors.append(
+                    f"{ident} requires an expires date for status {status}; "
+                    "every verification claim must have a bounded window"
+                )
         evidence = control["evidence"]
         observed_dates: list[dt.date] = []
         if isinstance(evidence, list):
