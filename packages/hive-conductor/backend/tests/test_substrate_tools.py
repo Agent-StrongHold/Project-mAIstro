@@ -131,3 +131,130 @@ async def test_tool_hill_climb_refuses_an_unauthorized_workspace() -> None:
 
     with pytest.raises(DagWorkspaceSelectionError):
         await tool_hill_climb({"dag_id": dag_id, "workspace_id": "no-such-workspace"}, user_id="u1")
+
+
+# --- CRUD handlers -------------------------------------------------------
+#
+# `tool_create_workflow`, `tool_evaluate_run`, `tool_update_eval`,
+# `tool_mutate_workflow` and `tool_list_workflows` resolve their stores and
+# the LLM judge lazily from inside the `hive_conductor` package (#1134 moved
+# those imports). These tests exercise each handler through its real body so
+# the namespaced lazy imports stay on a covered, executed path.
+
+
+@pytest.mark.asyncio
+async def test_tool_create_workflow_builds_a_dag_in_the_store() -> None:
+    import hive_conductor.stores as stores
+    from hive_conductor.services.substrate_tools import tool_create_workflow
+
+    result = await tool_create_workflow(
+        {"name": "created-by-test", "nodes": [{"name": "a", "prompt": "hi"}]},
+        user_id="u1",
+    )
+
+    assert result["created"] is True
+    stored = stores.dags[result["dag_id"]]
+    assert stored["name"] == "created-by-test"
+    assert result["node_count"] == len(stored["nodes"])
+
+
+@pytest.mark.asyncio
+async def test_tool_create_workflow_requires_nodes() -> None:
+    from hive_conductor.services.substrate_tools import tool_create_workflow
+
+    result = await tool_create_workflow({"name": "empty"}, user_id="u1")
+
+    assert "nodes array required" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_tool_evaluate_run_scores_through_the_llm_judge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hive_conductor.services.graph_runner as graph_runner
+    import hive_conductor.stores as stores
+    from hive_conductor.services.substrate_tools import tool_evaluate_run
+
+    dag_id = f"substrate-eval-{uuid4()}"
+    stores.dags[dag_id] = _dag(dag_id)
+
+    def fake_call() -> Any:
+        async def _inner(messages: Any, *, model: str) -> str:
+            return '{"scores": {"quality": 80}, "total": 80, "critique": "ok"}'
+
+        return _inner
+
+    monkeypatch.setattr(graph_runner, "_build_llm_call", fake_call)
+
+    result = await tool_evaluate_run({"dag_id": dag_id, "output": "some output"}, user_id="u1")
+
+    assert result["dag_id"] == dag_id
+    assert result["eval"]["total"] == 80
+
+
+@pytest.mark.asyncio
+async def test_tool_evaluate_run_without_a_rubric_refuses() -> None:
+    import hive_conductor.stores as stores
+    from hive_conductor.services.substrate_tools import tool_evaluate_run
+
+    dag_id = f"substrate-eval-norubric-{uuid4()}"
+    dag = _dag(dag_id)
+    dag.pop("eval_rubric")
+    stores.dags[dag_id] = dag
+
+    result = await tool_evaluate_run({"dag_id": dag_id, "output": "x"}, user_id="u1")
+
+    assert "No eval rubric" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_tool_update_eval_and_list_round_trip() -> None:
+    import hive_conductor.stores as stores
+    from hive_conductor.services.substrate_tools import tool_list_workflows, tool_update_eval
+
+    dag_id = f"substrate-eval-update-{uuid4()}"
+    stores.dags[dag_id] = _dag(dag_id)
+
+    updated = await tool_update_eval(
+        {"dag_id": dag_id, "criteria": [{"name": "correctness", "weight": 100}]},
+        user_id="u1",
+    )
+    assert updated["updated"] is True
+
+    # The chat tool stores rubrics as plain strings; listing must tolerate
+    # that shape instead of crashing on it (found by the #1134 repair suite).
+    string_rubric_id = f"substrate-eval-strrubric-{uuid4()}"
+    string_dag = _dag(string_rubric_id)
+    string_dag["eval_rubric"] = "be excellent to each other"
+    stores.dags[string_rubric_id] = string_dag
+
+    bare_id = f"substrate-eval-norubric-list-{uuid4()}"
+    bare_dag = _dag(bare_id)
+    bare_dag.pop("eval_rubric")
+    stores.dags[bare_id] = bare_dag
+
+    listed = await tool_list_workflows({}, user_id="u1")
+    entry = next(w for w in listed["workflows"] if w["id"] == dag_id)
+    assert entry["has_rubric"] is True
+    string_entry = next(w for w in listed["workflows"] if w["id"] == string_rubric_id)
+    assert string_entry["has_rubric"] is True
+    bare_entry = next(w for w in listed["workflows"] if w["id"] == bare_id)
+    assert bare_entry["has_rubric"] is False
+
+
+@pytest.mark.asyncio
+async def test_tool_mutate_workflow_adds_a_node() -> None:
+    import hive_conductor.stores as stores
+    from hive_conductor.services.substrate_tools import tool_mutate_workflow
+
+    dag_id = f"substrate-mutate-{uuid4()}"
+    stores.dags[dag_id] = _dag(dag_id)
+
+    result = await tool_mutate_workflow(
+        {"dag_id": dag_id, "type": "add_node", "name": "extra", "prompt": "do more"},
+        user_id="u1",
+    )
+
+    assert result["mutated"] is True
+    assert result["type"] == "add_node"
+    assert len(stores.dags[dag_id]["nodes"]) == 2

@@ -192,6 +192,23 @@ class TestServiceWiring:
         assert driver.state() == "no_store"
         assert "memory_decay_not_running" in caplog.text
 
+    async def test_start_without_explicit_settings_resolves_them_itself(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The no-arg call path is the shipped one (main.py lifespan).
+
+        It must resolve settings itself and consult the real episodic-store
+        lookup (``_resolve_episodic_store``), whose lazy imports were repointed
+        at the ``hive_conductor`` package during the #1134 namespace move.
+        """
+        _patch_settings(monkeypatch, memory_decay_interval_s=3600)
+        resolved = decay_mod._resolve_episodic_store()
+
+        driver = await decay_mod.start_memory_decay(None)
+
+        assert resolved is None  # stub mode: no episodic store in this process
+        assert driver.state() == "no_store"
+
     async def test_engine_exposes_no_episodic_store_in_stub_mode(self) -> None:
         """Stub mode has no core Container, so no episodic store — and says None."""
         from hive_conductor.adapters.maistro_core import StubAgentPort

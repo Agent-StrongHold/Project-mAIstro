@@ -264,15 +264,29 @@ async def tool_list_workflows(
     """List all DAGs."""
     from hive_conductor.stores import dags as dag_store
 
+    # ``keys()`` and not bare iteration: ``dags`` is a JsonStore, which defines
+    # ``__getitem__`` but not ``__iter__``, so Python falls back to the
+    # sequence protocol (``dag_store[0]``, ``dag_store[1]``, ...) and the tool
+    # crashes with KeyError on the first listing call against the real store.
+    def _has_rubric(dag: dict[str, Any]) -> bool:
+        # The chat tool (`_tool_update_eval`) stores the rubric as a plain
+        # string, while the substrate tool stores `{"criteria": [...]}`;
+        # listing must answer for both shapes instead of crashing on the
+        # first string-rubric DAG it meets.
+        rubric = dag.get("eval_rubric")
+        if isinstance(rubric, dict):
+            return bool(rubric.get("criteria"))
+        return bool(rubric)
+
     return {
         "workflows": [
             {
                 "id": d,
                 "name": dag_store[d].get("name", ""),
                 "nodes": len(dag_store[d].get("nodes", [])),
-                "has_rubric": bool(dag_store[d].get("eval_rubric", {}).get("criteria")),
+                "has_rubric": _has_rubric(dag_store[d]),
             }
-            for d in dag_store
+            for d in dag_store.keys()  # noqa: SIM118 — keys() is load-bearing, see above
         ]
     }
 

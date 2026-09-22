@@ -433,7 +433,12 @@ def default_note_slug() -> str | None:
     if proc.returncode != 0 or not branch or branch == "HEAD":
         return None
     readable = re.sub(r"[^a-z0-9]+", "-", branch.lower()).strip("-")
-    digest = hashlib.sha1(branch.encode()).hexdigest()[:4]
+    # blake2b, not the legacy digest: DevSkim's DS126858 flags broken
+    # hash spellings wherever they appear (error severity — it fails the
+    # devskim check on any line shift), and this digest only disambiguates
+    # note filenames between branches, a job four hex characters of any
+    # hash do.
+    digest = hashlib.blake2b(branch.encode(), digest_size=2).hexdigest()
     return f"{readable}-{digest}" if readable else digest
 
 
