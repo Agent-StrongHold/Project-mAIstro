@@ -231,6 +231,8 @@ async def test_schedule_fire_admits_a_canonical_run_from_the_live_runner(
             clone.__dict__.update(update)
             return clone
 
+    from maistro.scheduling.admission import ScheduleRunAdmitter
+
     profile = await open_durable_profile(
         tmp_path / "scheduler.sqlite3", workspace_id="scheduler-parity"
     )
@@ -240,6 +242,9 @@ async def test_schedule_fire_admits_a_canonical_run_from_the_live_runner(
         run_store=profile.run_store,
         template_store=profile.template_store,
         schedule_store=profile.schedule_store,
+        schedule_admitter=ScheduleRunAdmitter(
+            profile.run_store, profile.template_store, profile.schedule_store
+        ),
     )
     await profile.template_store.put(
         GraphTemplate(
