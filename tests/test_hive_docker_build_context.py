@@ -22,10 +22,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = REPO_ROOT / "packages/hive-conductor/Dockerfile"
 README = REPO_ROOT / "packages/hive-conductor/README.md"
 COMPOSE = REPO_ROOT / "packages/hive-conductor/docker-compose.yml"
+SPEC_176 = REPO_ROOT / "docs/specs/SPEC-176-hive-conductor-package.md"
 
 # COPY <src>... <dest> / ADD <src>... <dest> — keep the src words that are
 # filesystem paths (drop --from=stage refs, flags, and the final destination).
 _COPY_LINE = re.compile(r"^(?:COPY|ADD)\s+(?P<flags>(?:--\w+(?:=\S+)?\s+)*)(?P<src>.+)$")
+
+
+def _build_context(command: str) -> str:
+    """The context word of a docker build command: flags come as `-x value`
+    pairs, the first bare word after them is the context."""
+    match = re.match(r"^\s*docker build\s+(?:-\S+\s+\S+\s+)*(?P<context>\S+)", command)
+    assert match is not None, f"not a docker build command: {command!r}"
+    return match.group("context")
 
 
 def _copy_sources() -> list[str]:
@@ -76,13 +85,26 @@ def test_readme_docker_build_command_uses_the_monorepo_root_context() -> None:
     commands = re.findall(r"^docker build .*$", text, flags=re.MULTILINE)
     assert commands, "README no longer documents a docker build command"
     for command in commands:
-        # -f path first, then the context word (must be '.' = repo root).
-        match = re.match(r"^docker build\s+(?:-\S+\s+\S+\s+)*(?P<context>\S+)", command)
-        assert match is not None
-        context = match.group("context")
-        assert context == ".", (
-            f"README docker build context {context!r} is not the monorepo root; "
-            "the Dockerfile COPY paths require building from '.'"
+        assert _build_context(command) == ".", (
+            f"README docker build command {command!r} does not use the monorepo "
+            "root context; the Dockerfile COPY paths require building from '.'"
+        )
+
+
+def test_spec_176_docker_build_commands_use_the_monorepo_root_context() -> None:
+    """SPEC-176 AC-3 documents the shipped build command too.
+
+    The #1134 verifier executed the spec's ``packages/hive-conductor``
+    context verbatim and watched it fail at the first COPY; the spec and
+    the README must not drift apart again.
+    """
+    text = SPEC_176.read_text()
+    commands = re.findall(r"`docker build [^`]+`", text)
+    assert commands, "SPEC-176 no longer documents a docker build command"
+    for command in commands:
+        assert _build_context(command.strip("`")) == ".", (
+            f"SPEC-176 docker build command {command!r} does not use the monorepo "
+            "root context; the Dockerfile COPY paths require building from '.'"
         )
 
 

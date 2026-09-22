@@ -21,4 +21,7 @@ Added `tests/test_hive_docker_build_context.py` (+1 in `tests/`):
 - the root-only sources do *not* resolve from the package directory (pinning
   why the package dir can never be the context);
 - the README's `docker build` command uses `.` as its context;
+- SPEC-176 AC-3's documented `docker build` command also uses `.` (the repair
+  pass found the spec still carrying the failing package-dir context even
+  after the README was fixed);
 - compose keeps `context: ../..`.
