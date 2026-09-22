@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -81,6 +83,17 @@ def test_canonical_store_isolation_has_uniform_missing_record_behavior() -> None
             store.use_secret("carol", "jira", lambda secret: secret)
         assert str(guessed.value) == str(absent.value)
         assert store.use_secret("alice", "jira", lambda secret: secret) == "alice-secret"
+
+        # Guessing the same provider on a write rotates only Bob's own bucket.
+        store.set_secret("bob", "jira", "bob-secret")
+        assert store.use_secret("alice", "jira", lambda secret: secret) == "alice-secret"
+        assert store.delete_secret("bob", "jira") is True
+        assert store.delete_secret("bob", "jira") is False
+        assert store.delete_secret("carol", "jira") is False
+        assert store.list_providers_for_user("bob") == store.list_providers_for_user("carol")
+        ciphertext = (Path(directory) / "user_credentials.enc").read_bytes()
+        assert b"alice-secret" not in ciphertext
+        assert b"bob-secret" not in ciphertext
 
 
 def test_retired_module_cannot_be_imported_again(
@@ -178,86 +191,138 @@ def _scope_ledger_entry(kind: str) -> dict:
     }
 
 
-def test_classified_but_unscoped_reachable_store_fails_audit(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("kind", ["product_crud", "encrypted_store", "protocol_adapter"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        _UNSCOPED_STORE_SOURCE,
+        # The prior checker accepted these decorative scope tokens.
+        _UNSCOPED_STORE_SOURCE.replace(
+            "return httpx.", "user = 'decorative'\n        return httpx."
+        ).replace("return self._fernet", "owner = 'decorative'\n        return self._fernet"),
+        _UNSCOPED_STORE_SOURCE.replace("self, record_id", "self, user_id, record_id"),
+        _UNSCOPED_STORE_SOURCE + "\n    def list(self):\n        return httpx.get('/records')\n",
+        # A list-only addition must not gain authority by classification either.
+        "class SecretRepository:\n    def list(self):\n        return self.secrets\n",
+    ],
+    ids=["id-only", "decorative-local", "unused-owner", "unscoped-list", "list-only"],
+)
+def test_classification_cannot_authorize_another_credential_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, source: str
 ) -> None:
-    """Asserted ledger scope strings cannot certify an unscoped implementation.
+    """Both reported counterexamples fail even with plausible ledger claims.
 
-    Regression: a reachable id-only store used to pass the authority gate once
-    it was classified, because the audit validated only the ledger's own scope
-    strings. The audit must corroborate principal scope in the implementation
-    itself, or a classified store reproduces the retired credential_store_v2
-    shape (read/rotate/delete by record id, no owner predicate).
+    Start with the complete approved census: the only violation must be the
+    candidate's extra implementation, not a missing canonical fixture.
     """
-    with tempfile.TemporaryDirectory() as directory:
-        package_root = Path(directory) / "packages" / "demo" / "src"
-        package_fixture = package_root / "demo" / "secrets.py"
-        package_fixture.parent.mkdir(parents=True)
-        package_fixture.write_text(_UNSCOPED_STORE_SOURCE, encoding="utf-8")
-        monkeypatch.setattr(_checker, "ROOT", Path(directory))
-        assert _checker.is_credential_surface(package_fixture)
+    trusted = _ledger()
+    modules = {}
+    for index, entry in enumerate(trusted["reachable"]):
+        path = tmp_path / entry["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text((ROOT / entry["path"]).read_text(), encoding="utf-8")
+        modules[str(index)] = path
+    entry = _scope_ledger_entry(kind)
+    fixture = tmp_path / entry["path"]
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text(source, encoding="utf-8")
+    modules["demo.secrets"] = fixture
+    monkeypatch.setattr(_checker, "ROOT", tmp_path)
+    candidate = copy.deepcopy(trusted)
+    candidate["reachable"].append(entry)
 
-        for kind in ("product_crud", "encrypted_store"):
-            failures = _checker.audit(
-                {
-                    "reachable": [_scope_ledger_entry(kind)],
-                    "retired": [{"path": "deleted.py"}],
-                },
-                modules={"demo.secrets": package_fixture},
-                reachable={"demo.secrets"},
-            )
-            assert any("without an owner/principal scope" in failure for failure in failures), (
-                f"{kind}: a classified but unscoped store passed the authority gate"
-            )
-            assert any("cites no principal scope in code" in failure for failure in failures), (
-                f"{kind}: missing module-level principal corroboration went unreported"
-            )
-
-
-def test_owner_scoped_classified_store_passes_code_scope_review(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The code corroboration accepts genuine principal scoping, only that.
-
-    Operations carrying a user/principal parameter pass; route-style handlers
-    pass via body evidence (``uid = _user_id(request)``); and global key-material
-    operations (master-key rotation) are not demanded an owner scope.
-    """
-    scoped_source = """
-class SecretRepository:
-    def get(self, user_id, record_id):
-        return {'id': record_id}
-
-    def rotate(self, user_id, record_id, secret):
-        return record_id
-
-    def delete(self, user_id, record_id):
-        return True
-
-    def rotate_master_key(self, new_key):
-        return new_key
-"""
-    route_style_source = """
-def _user_id(request):
-    return request.state.user_id
-
-
-def get_record(record_id, request):
-    uid = _user_id(request)
-    return {'owner': uid, 'id': record_id}
-"""
-    with tempfile.TemporaryDirectory() as directory:
-        package_root = Path(directory) / "packages" / "demo" / "src"
-        package_fixture = package_root / "demo" / "secrets.py"
-        package_fixture.parent.mkdir(parents=True)
-        package_fixture.write_text(scoped_source + route_style_source, encoding="utf-8")
-        monkeypatch.setattr(_checker, "ROOT", Path(directory))
+    # Exercise both an established trusted policy and first-landing bootstrap.
+    for policy in (trusted, None):
         failures = _checker.audit(
-            {
-                "reachable": [_scope_ledger_entry("product_crud")],
-                "retired": [{"path": "deleted.py"}],
-            },
-            modules={"demo.secrets": package_fixture},
-            reachable={"demo.secrets"},
+            candidate, modules=modules, reachable=set(modules), trusted=policy
         )
-        assert failures == []
+        assert any(
+            "census" in failure or "differs from trusted base" in failure for failure in failures
+        ), failures
+        if kind != "protocol_adapter":
+            assert any("scope at a canonical storage sink" in failure for failure in failures)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "def get(self, record_id):\n        user = 'decoration'\n        return self.secrets[record_id]",
+        "def rotate(self, user_id, record_id, secret):\n        self.secrets[record_id] = secret",
+        "def delete(self, user_id, record_id):\n        del self.secrets[record_id]",
+        "def list(self):\n        return self.secrets",
+    ],
+    ids=["read", "rotate", "delete", "list"],
+)
+def test_unscoped_operations_inside_an_approved_module_fail(tmp_path: Path, operation: str) -> None:
+    path = tmp_path / "store.py"
+    path.write_text("class SecretStore:\n    " + operation + "\n", encoding="utf-8")
+    failures = _checker._owner_scope_failures(
+        "packages/maistro-core/src/maistro/credentials/store.py", path
+    )
+    assert len(failures) == 1
+    assert "scope at a canonical storage sink" in failures[0]
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=root, check=True, capture_output=True, text=True, timeout=30
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("base_has_ledger", [False, True])
+def test_candidate_policy_cannot_become_its_own_trusted_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, base_has_ledger: bool
+) -> None:
+    """Use real git history, including a candidate-committed policy edit."""
+    policy = _ledger()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "ratchet_provenance.py").write_text(
+        (ROOT / "scripts" / "ratchet_provenance.py").read_text(), encoding="utf-8"
+    )
+    ledger_path = tmp_path / "quality" / "credential-authority.json"
+    ledger_path.parent.mkdir()
+    if base_has_ledger:
+        ledger_path.write_text(json.dumps(policy), encoding="utf-8")
+    _git(tmp_path, "init")
+    _git(tmp_path, "config", "user.email", "test@example.invalid")
+    _git(tmp_path, "config", "user.name", "Credential authority test")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "independent base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+
+    candidate = copy.deepcopy(policy)
+    candidate["reachable"].append(_scope_ledger_entry("encrypted_store"))
+    candidate["retired"] = []
+    ledger_path.write_text(json.dumps(candidate), encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "candidate attempts to self-approve")
+    monkeypatch.setenv("RATCHET_BASE_REV", base)
+    monkeypatch.setattr(_checker, "ROOT", tmp_path)
+    monkeypatch.setattr(_checker, "LEDGER", ledger_path)
+
+    trusted = _checker._trusted_ledger()
+    assert trusted == (policy if base_has_ledger else None)
+    assert _checker._policy_failures(candidate, trusted)
+    assert _checker._policy_failures(policy, trusted) == []
+    # The production audit must actually invoke the resolver, not merely expose it.
+    assert any("credential" in failure for failure in _checker.audit(modules={}, reachable=set()))
+
+
+def test_unresolvable_authority_baseline_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable():
+        raise RuntimeError("trusted baseline could not be read")
+
+    monkeypatch.setattr(_checker, "_trusted_ledger", unavailable)
+    assert _checker.main() == 1
+
+
+def test_trusted_policy_prevents_reclassification_and_retirement_erasure() -> None:
+    trusted = _ledger()
+    candidate = copy.deepcopy(trusted)
+    candidate["reachable"][0]["kind"] = "deployment_secret_vault"
+    candidate["canonical"]["encrypted_store"] = "another.Store"
+    candidate["retired"] = []
+    failures = _checker._policy_failures(candidate, trusted)
+    assert len(failures) == 3
+    assert all("differs from trusted base" in failure for failure in failures)
