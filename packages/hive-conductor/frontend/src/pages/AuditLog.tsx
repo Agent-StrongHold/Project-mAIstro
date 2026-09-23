@@ -73,7 +73,7 @@ function severityBadge(s: Severity) {
   const c = SEVERITY_COLORS[s];
   return (
     <span style={{
-      padding: "2px 8px", borderRadius: 3, fontSize: 8,
+      padding: "2px 8px", borderRadius: 3, fontSize: 12,
       fontFamily: "var(--mono)", fontWeight: 600,
       background: c.bg, color: c.fg,
     }}>
@@ -88,7 +88,7 @@ function truncateJson(obj: Record<string, unknown>, maxLen = 60): string {
 }
 
 const selectStyle: React.CSSProperties = {
-  padding: "5px 10px", fontFamily: "var(--mono)", fontSize: 10,
+  padding: "5px 10px", fontFamily: "var(--mono)", fontSize: 12,
   background: "var(--paper-2, #f5f5f0)", border: "1.3px solid var(--rule)",
   borderRadius: 4, color: "var(--ink)", cursor: "pointer",
 };
@@ -135,7 +135,7 @@ export default function AuditLog() {
             onClick={handleRefresh}
             style={{
               padding: "5px 14px", borderRadius: 4, cursor: "pointer",
-              fontFamily: "var(--mono)", fontSize: 10,
+              fontFamily: "var(--mono)", fontSize: 12,
               border: "1.3px solid var(--rule)",
               background: "var(--paper)", color: "var(--ink)",
             }}
@@ -186,15 +186,15 @@ export default function AuditLog() {
           <EmptyState icon="📜" title="No audit entries" />
         ) : (
           <div style={{ overflow: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--mono)", fontSize: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--mono)", fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: "1.3px solid var(--rule)" }}>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", whiteSpace: "nowrap" }}>Time</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", whiteSpace: "nowrap" }}>Action</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", whiteSpace: "nowrap" }}>Actor</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", whiteSpace: "nowrap" }}>Target</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", whiteSpace: "nowrap" }}>Severity</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", whiteSpace: "nowrap" }}>Detail</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Time</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Action</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Actor</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Target</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Severity</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap" }}>Detail</th>
                 </tr>
               </thead>
               <tbody>
@@ -211,7 +211,7 @@ export default function AuditLog() {
                         </span>
                       </td>
                       <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
-                        <span style={{ fontFamily: "var(--mono)", fontSize: 10 }}>
+                        <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
                           {icon} {entry.action}
                         </span>
                       </td>
@@ -229,7 +229,7 @@ export default function AuditLog() {
                           onClick={() => setDetailEntry(entry)}
                           style={{
                             background: "none", border: "none", cursor: "pointer",
-                            fontFamily: "var(--mono)", fontSize: 9,
+                            fontFamily: "var(--mono)", fontSize: 12,
                             color: "var(--accent)", padding: 0, textAlign: "left",
                           }}
                         >
@@ -253,21 +253,21 @@ export default function AuditLog() {
       >
         {detailEntry && (
           <div>
-            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", marginBottom: 12, fontFamily: "var(--mono)", fontSize: 10 }}>
-              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>Action</span>
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 16px", marginBottom: 12, fontFamily: "var(--mono)", fontSize: 12 }}>
+              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>Action</span>
               <span style={{ fontWeight: 600 }}>{ACTION_ICONS[detailEntry.action] || ""} {detailEntry.action}</span>
-              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>Actor</span>
+              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>Actor</span>
               <span>{detailEntry.actor}</span>
-              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>Target</span>
+              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>Target</span>
               <span>{detailEntry.target || "\u2014"}</span>
-              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>Severity</span>
+              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>Severity</span>
               <div>{severityBadge(detailEntry.severity)}</div>
-              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 9 }}>Time</span>
+              <span style={{ color: "var(--pencil)", textTransform: "uppercase", fontSize: 12 }}>Time</span>
               <span>{new Date(detailEntry.created_at).toLocaleString()}</span>
             </div>
             <div style={{
               background: "var(--paper-2, #f5f5f0)", border: "1.3px solid var(--rule)",
-              borderRadius: 4, padding: 12, fontFamily: "var(--mono)", fontSize: 9,
+              borderRadius: 4, padding: 12, fontFamily: "var(--mono)", fontSize: 12,
               whiteSpace: "pre-wrap" as const, overflow: "auto", maxHeight: 400,
             }}>
               {JSON.stringify(detailEntry.detail, null, 2)}
