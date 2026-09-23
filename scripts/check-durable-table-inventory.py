@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every durable table has a declared retention, and the declaration is true (#325).
+"""Every durable table has a declared retention, checked against the schema (#325).
 
 `security_violations` was created by migration 005, appended to on every Warden
 strike, and read back in full on every lock check -- and nothing anywhere
@@ -16,7 +16,9 @@ tree:
   `CREATE TABLE` in runtime DDL, or an ORM `__tablename__` -- has an entry;
 * every entry still names a table something creates, so the inventory cannot
   quietly describe a schema that no longer exists;
-* every `deletion_path` imports, so a claimed purge is a real function;
+* every `deletion_path` imports and is callable, so a claimed purge at least
+  names a real function (whether production drives it is the entry's claim,
+  reviewed by people, not verified here);
 * `security_violations` and `usage_events`, the two tables the issue names,
   can never drop out of it.
 
@@ -47,7 +49,8 @@ MIGRATION_GLOBS = (
 )
 RUNTIME_DDL_GLOBS = (
     "packages/*/src/**/*.py",
-    "packages/hive-conductor/backend/**/*.py",
+    "packages/*/backend/**/*.py",
+    "packages/*/frontend/server/**/*.py",
 )
 ORM_GLOBS = ("packages/**/*.py",)
 
@@ -95,7 +98,7 @@ REQUIRED_KEYS = (
 )
 
 _CREATE_TABLE = re.compile(
-    r"\bCREATE\s+(?P<temp>TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"\bCREATE\s+(?:GLOBAL\s+|LOCAL\s+)?(?P<temp>TEMP(?:ORARY)?\s+)?(?:UNLOGGED\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
     r"(?:\"?[A-Za-z_]\w*\"?\.)?\"?(?P<name>[A-Za-z_]\w*)\"?",
     re.IGNORECASE,
 )
@@ -289,7 +292,10 @@ def _policy_errors(entry: dict[str, object], label: str) -> list[str]:
         errors.append(f"{label}: issue must be '#<number>' or null")
     if retention == "undecided" and issue is None:
         errors.append(f"{label}: an undecided retention must name the issue tracking the decision")
-    if retention == "bounded_by_parent" and not entry.get("parent"):
+    parent = entry.get("parent")
+    if parent is not None and not isinstance(parent, str):
+        errors.append(f"{label}: parent must be a table name")
+    if retention == "bounded_by_parent" and not parent:
         errors.append(f"{label}: bounded_by_parent must name its parent table")
     deletion_path = entry["deletion_path"]
     if deletion_path is None:
@@ -356,7 +362,7 @@ def _coverage_errors(
     errors += [
         f"{table!r}: parent {entry['parent']!r} has no entry of its own"
         for table, entry in declared.items()
-        if entry.get("parent") is not None and entry["parent"] not in declared
+        if isinstance(entry.get("parent"), str) and entry["parent"] not in declared
     ]
     errors += [
         f"{table!r}: must stay in {INVENTORY} (named by #325)"
@@ -368,7 +374,10 @@ def _coverage_errors(
 
 def check(root: Path, inventory: object) -> Report:
     _importable_sources(root)
-    report = Report(discovered=discover(root))
+    try:
+        report = Report(discovered=discover(root))
+    except (SyntaxError, ValueError) as exc:
+        return Report(errors=[f"table discovery failed: {exc}"])
     entries = inventory.get("tables") if isinstance(inventory, dict) else None
     if not isinstance(entries, list):
         report.errors.append(f"{INVENTORY}: expected an object with a 'tables' list")

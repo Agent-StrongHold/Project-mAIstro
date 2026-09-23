@@ -1,5 +1,5 @@
 {
-  "_doc": "Retention of every durable table in the tree (#325). Checked by scripts/check-durable-table-inventory.py against alembic migrations, runtime CREATE TABLE and ORM __tablename__. 'undecided' means no driven deletion path exists today and the decision is tracked on the named issue.",
+  "_doc": "Retention of every durable table in the tree (#325). Checked by scripts/check-durable-table-inventory.py against alembic migrations, runtime CREATE TABLE and ORM __tablename__. 'undecided' means no production-driven deletion path exists today on every listed backend and the decision is tracked on the named issue.",
   "policy_scope": "The engine owns retention mechanisms and this inventory. Legal hold, tamper-evident audit history and lawful-deletion semantics belong to the importing product (owner decision on #325, 2026-09-23; docs/adr/OUT-OF-SCOPE.md). No entry here implements them.",
   "retention_values": {
     "run_purge": "Deleted by the canonical Run purge; dependents follow packages/maistro-core/src/maistro/runs/retention_scope.py.",
@@ -7,7 +7,7 @@
     "window_prune": "Rows outside a sliding window or population bound are deleted by a driven path.",
     "bounded_by_parent": "Deleted with its parent row; lives exactly as long as the parent.",
     "indefinite_by_decision": "Kept forever on purpose; the issue records the decision.",
-    "undecided": "No driven deletion path today. deletion_path, if any, is an explicit or undriven delete, not a retention sweep."
+    "undecided": "No production-driven deletion path on every listed backend today. deletion_path, if any, is an explicit, test-only or single-backend delete, not a retention sweep."
   },
   "created_outside_this_repo": {
     "tables": [
@@ -15,9 +15,10 @@
       "canvases",
       "composite_records",
       "generation_jobs",
+      "hive_memory_entries",
       "layers"
     ],
-    "note": "maistro_canvas.canvas.store reads and writes these, but no migration or DDL in this repository creates them (alembic/versions/002 calls them 'created elsewhere'), so this gate cannot see them. They are uninventoried until their DDL lands here; tracked on #325."
+    "note": "These are read and written in production but no migration or DDL in this repository creates them, so this gate cannot see them: the five canvas tables through maistro_canvas.canvas.store (alembic/versions/002 calls them 'created elsewhere'), and hive_memory_entries through PostgREST in hive-conductor/backend/services/chat_completion.py. They stay uninventoried until their DDL lands here; tracked on #325."
   },
   "tables": [
     {
@@ -114,11 +115,11 @@
       "owner_module": "packages/maistro-core/src/maistro/runs/sqlite_store.py",
       "data_class": "execution_state",
       "retention": "run_purge",
-      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.sweep_now",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.maybe_sweep",
       "issue": "#1175",
       "parent": "canonical_runs",
       "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
-      "notes": "Deleted in the Run purge transaction; the reference policy is runs/retention_scope.py."
+      "notes": "Deleted with its Run in the purge transaction. Only chat-admitted Runs carry a retention deadline, so children of scheduled or graph Runs are not purged. Reference policy: runs/retention_scope.py."
     },
     {
       "table": "canonical_event_log",
@@ -155,11 +156,11 @@
       "owner_module": "packages/maistro-core/src/maistro/runs/sqlite_store.py",
       "data_class": "execution_state",
       "retention": "run_purge",
-      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.sweep_now",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.maybe_sweep",
       "issue": "#1175",
       "parent": "canonical_runs",
       "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
-      "notes": "Deleted in the Run purge transaction; the reference policy is runs/retention_scope.py."
+      "notes": "Deleted with its Run in the purge transaction. Only chat-admitted Runs carry a retention deadline, so children of scheduled or graph Runs are not purged. Reference policy: runs/retention_scope.py."
     },
     {
       "table": "canonical_project_memberships",
@@ -212,10 +213,10 @@
       "owner_module": "packages/maistro-core/src/maistro/runs/sqlite_store.py",
       "data_class": "execution_state",
       "retention": "run_purge",
-      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.sweep_now",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.maybe_sweep",
       "issue": "#1175",
       "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
-      "notes": "Chat-admitted Runs carry a retention deadline and are purged by the sweeper riding on admission; other Runs are archived (runs/archival.py) rather than deleted. Dependents are listed in runs/retention_scope.py."
+      "notes": "Chat-admitted Runs carry a retention deadline and are purged by RunRetentionSweeper.maybe_sweep on chat admission (runs/chat_admission.py); other Runs are archived (runs/archival.py) rather than deleted. Dependents are listed in runs/retention_scope.py."
     },
     {
       "table": "canonical_workspace_memberships",
@@ -451,7 +452,7 @@
       "retention": "window_prune",
       "deletion_path": "maistro_evolve.population:PopulationStore.cull_bottom",
       "issue": null,
-      "notes": "Each evolve cycle culls the bottom of the population (cycle.py)."
+      "notes": "Evolve cycles cull the bottom share of scored genomes (cycle.py), and the RSI autorun loop removes excess past max_pop (maistro_rsi/local_loop.py). Unscored genomes are not culled."
     },
     {
       "table": "graph_continuations",
@@ -462,11 +463,11 @@
       "owner_module": "packages/maistro-core/src/maistro/graph/durable_runs/continuation.py",
       "data_class": "execution_state",
       "retention": "run_purge",
-      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.sweep_now",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.maybe_sweep",
       "issue": "#1175",
       "parent": "canonical_runs",
       "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
-      "notes": "Deleted with its Run in the purge transaction, and when a graph run completes."
+      "notes": "Deleted with its Run in the purge transaction. Only chat-admitted Runs carry a retention deadline, so children of scheduled or graph Runs are not purged. Reference policy: runs/retention_scope.py. Also deleted when a graph run completes."
     },
     {
       "table": "graph_templates",
@@ -700,10 +701,10 @@
       ],
       "owner_module": "packages/maistro-core/src/maistro/security/pg_strikes.py",
       "data_class": "runtime_state",
-      "retention": "window_prune",
+      "retention": "undecided",
       "deletion_path": "maistro.security.pg_strikes:PgRateLimiter.check_and_record",
-      "issue": null,
-      "notes": "Expired windows are deleted inline on every rate-limit check."
+      "issue": "#325",
+      "notes": "PgRateLimiter.check_and_record deletes expired windows inline, but PgRateLimiter has no production caller (production uses InMemoryRateLimiter), so nothing writes or prunes this table today."
     },
     {
       "table": "security_strikes",

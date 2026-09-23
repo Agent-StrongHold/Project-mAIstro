@@ -86,6 +86,10 @@ class TestDiscovery:
         )
         assert _names(check.ddl_tables(source)) == []
 
+    def test_unlogged_ddl(self, check):
+        source = 'A = "CREATE UNLOGGED TABLE IF NOT EXISTS fast (id int)"\n'
+        assert _names(check.ddl_tables(source)) == ["fast"]
+
     def test_tablename(self, check):
         source = 'class Order(Base):\n    __tablename__ = "orders"\n'
         assert _names(check.orm_tables(source)) == ["orders"]
@@ -204,6 +208,19 @@ class TestGate:
         assert "entry 3: not an object" in joined
         assert "'kept_too': missing keys" in joined
 
+    def test_undiscoverable_table_is_reported_not_raised(self, check, tree):
+        (tree / "alembic" / "versions" / "002_y.py").write_text(
+            "def upgrade(name):\n    op.create_table(name)\n"
+        )
+        report = check.check(tree, _inventory(*_complete()))
+        assert any("table discovery failed" in e for e in report.errors)
+
+    def test_parent_must_be_a_name(self, check, tree):
+        entries = _complete()
+        entries[1].update(retention="bounded_by_parent", parent=["kept"], issue=None)
+        report = check.check(tree, _inventory(*entries))
+        assert any("parent must be a table name" in e for e in report.errors)
+
     def test_non_callable_deletion_path_fails(self, check, tree):
         entries = _complete()
         entries[1]["deletion_path"] = "json:__name__"
@@ -238,7 +255,7 @@ class TestGate:
 
 
 class TestRealTree:
-    def test_repository_inventory_is_complete_and_true(self, check):
+    def test_repository_inventory_covers_the_schema(self, check):
         inventory = json.loads((ROOT / check.INVENTORY).read_text())
         report = check.check(ROOT, inventory)
         assert report.errors == []

@@ -231,13 +231,14 @@ or placeholder-only section.
 - **Every durable table declares its retention, and CI checks it against the
   schema (#325).** `quality/durable-table-retention.json` lists all 65 tables
   created by Alembic migrations, runtime `CREATE TABLE` or ORM `__tablename__`,
-  with backend, owner, data class, retention and deletion path.
+  with backend, owner, data class, retention and deletion path. Six tables
+  whose DDL lives outside this repository are listed separately.
   `scripts/check-durable-table-inventory.py` fails CI when a table has no
   entry, an entry names a table nothing creates, a deletion path does not
   import, or `security_violations` or `usage_events` is dropped. A table with
-  no driven purge is recorded as `undecided` against #325. This includes
-  `security_violations`, `usage_events`, `task_idempotency` and PostgreSQL
-  `sessions`. Nothing is written down as retained forever unless someone
+  no production-driven purge is recorded as `undecided` against #325. This
+  includes `security_violations`, `usage_events`, `task_idempotency`,
+  `security_rate_limits` and PostgreSQL `sessions`. Nothing is written down as retained forever unless someone
   decided it.
 
 - **Every maistro-core node kind is proven to get the Container's own
