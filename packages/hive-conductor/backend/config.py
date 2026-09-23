@@ -197,11 +197,12 @@ class Settings(BaseSettings):
     allow_stub_llm: bool = False
 
     maistro_router_api_key: str | None = None
-    # Provider metadata and explicit model authorizations are operator config,
-    # not inferred from the gateway URL. The bridge passes both into the
-    # canonical Container so Canvas and graph nodes share one authority.
+    # Provider metadata is operator config, not inferred from the gateway URL.
+    # The bridge passes it into the canonical Container so Canvas and graph
+    # nodes share one provider registry. Model-Binding authorizations are
+    # `maistro_model_bindings` below -- one canonical list, shared by Canvas
+    # and every other `model.chat`-consuming node, not a second competing one.
     provider_config_path: str = ""
-    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
     # Optional explicit binding selector for the server-side Canvas quality
     # route. If omitted, exactly one matching model binding is required.
     canvas_model_binding_id: str = ""
@@ -220,6 +221,13 @@ class Settings(BaseSettings):
     # `MAISTRO_PERMISSIONS='{"tool_name": ["admin", "user"]}'` (JSON).
     maistro_permission_preset: str = "none"
     maistro_permissions: dict[str, list[str]] = Field(default_factory=dict)
+    # Operator-declared `model.chat` Binding authorizations (#1079). Fail-closed:
+    # the shipped empty list authorizes no Binding, so `llm.summarize` (and any
+    # other `model.chat`-consuming node) refuses everything until a Conductor
+    # states its Bindings here -- JSON list of
+    # `maistro.types.config.ModelBindingConfig` objects, e.g.
+    # `MAISTRO_MODEL_BINDINGS='[{"binding_id": "b1", "project_id": "p1", "provider_name": "gpt-4"}]'`.
+    maistro_model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
 
     conductor_data_dir: str = "~/.conductor"
     conductor_vault_path: str | None = None

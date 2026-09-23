@@ -208,6 +208,25 @@ or placeholder-only section.
 
 ### Added
 
+- **Governed model egress is wired into production Container composition
+  (#1079).** `AgentConfig.model_bindings` declares authorized Workspace/Project
+  `model.chat` Bindings; `create_container()` bootstraps them into the exact
+  per-Container `CapabilityEffectContext` production effect nodes consume, and
+  `execute_admitted_runs`, `resume_parked_runs`, and Hive's `dag_agents` all
+  resolve `llm.summarize` through the same canonical Provider/Router
+  authorities instead of each constructing its own fallback. The physical
+  model call now authenticates from the Binding's own scoped credential
+  (`CredentialRouting`, resolved from `AgentConfig.litellm_key` at bootstrap)
+  rather than a flat environment-variable key, so a call with no authorized
+  Binding, or a Binding whose credential isn't registered in its own
+  Workspace/Project scope, refuses with `CredentialScopeError` before any
+  request reaches the gateway. `test_model_egress_container_composition.py`
+  proves production composition end-to-end (Bindings bootstrap through the
+  Container, zero configured Bindings authorizes nothing, a Container-resolved
+  `llm.summarize` reads real Provider metadata and executes through governed
+  Invocation with Run/NodeRun/Attempt correlation, and incorrect Workspace
+  scope is rejected before the physical transport is invoked).
+
 - **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
   execution (#735).** `maistro_canvas`'s durable generation runner is wired to
   the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
