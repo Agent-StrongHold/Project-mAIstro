@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from maistro_design.scan import scan_blocking_patterns, scan_visual_artifact_markup
+
 
 class TrustTier(StrEnum):
     T0 = "t0"  # built-in (engine-shipped, immutable)
@@ -123,6 +125,9 @@ class InMemoryTrustReviewQueue:
         return len(self._records)
 
 
+_BLOCKING_FINDING_CONFIDENCE = 0.9
+
+
 def _fingerprint(content: str) -> str:
     import hashlib
 
@@ -147,29 +152,30 @@ def scan_and_record(
     banish_list: InMemoryTrustBanishList | None = None,
     review_queue: InMemoryTrustReviewQueue | None = None,
 ) -> TrustTier:
-    """Pre-scan content and enqueue the same trust classification used by callers.
+    """Pre-scan content with the banish list and the shared Design scanners; enqueue review.
 
-    Visual markup is checked before an admin recommendation is produced. The
-    browser-side renderer remains the final sink, but active elements, handlers,
-    dangerous URLs, and CSS/network primitives must never receive an ``upgrade``
-    recommendation merely because this queue cannot build a DOM.
+    Returns the assigned TrustTier (T3 or SKULL). Uses the same
+    `scan_blocking_patterns` as the engine's output scan, plus the shared
+    visual-artifact vocabulary (`scan_visual_artifact_markup`) that the Design
+    Studio rendering boundary enforces (#768). A record is only recommended for
+    upgrade when both the output scan and the browser rendering boundary would
+    pass the content, so active elements, handler attributes, dangerous URLs,
+    and CSS/network primitives can never be recommended for trust upgrade
+    merely because this queue cannot build a DOM (#817).
     """
-    from maistro_design.scan import scan_blocking_patterns, scan_visual_artifact_markup
-
-    flags_list: list[str] = []
+    findings = tuple(scan_blocking_patterns("content", content, None))
+    visual_reasons = scan_visual_artifact_markup(content)
     if banish_list and banish_list.is_banned(content):
-        flags_list.append("banish_list_match")
-
-    # Use the shared visual reason vocabulary first, then retain the existing
-    # general prompt/script heuristics for non-visual discovery content.
-    flags_list.extend(scan_visual_artifact_markup(content))
-    flags_list.extend(scan_blocking_patterns(source_key, content, banish_list=None))
-    flags = tuple(dict.fromkeys(flags_list))
-    if flags:
         tier = TrustTier.SKULL
+        flags: tuple[str, ...] = ("banish_list_match", *findings, *visual_reasons)
         confidence = 1.0
+    elif findings or visual_reasons:
+        tier = TrustTier.SKULL
+        flags = (*findings, *visual_reasons)
+        confidence = _BLOCKING_FINDING_CONFIDENCE
     else:
         tier = TrustTier.T3
+        flags = ()
         confidence = 0.0
 
     if review_queue is not None:

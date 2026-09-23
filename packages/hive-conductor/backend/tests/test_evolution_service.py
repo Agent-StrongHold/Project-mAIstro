@@ -79,7 +79,12 @@ async def test_start_evolution_schedules_cadence_when_owner_is_available(
     import services.evolution as evo
 
     owner = SimpleNamespace(
-        run_store=object(), graph_run_store=object(), project_scope_store=object()
+        run_store=object(),
+        graph_run_store=object(),
+        project_scope_store=object(),
+        # `start_evolution` now also starts the recovery cadence (#1064),
+        # which reaches `owner.event_bus` on its first tick.
+        event_bus=object(),
     )
     monkeypatch.setattr(
         engine_module,
@@ -102,6 +107,103 @@ async def test_start_evolution_schedules_cadence_when_owner_is_available(
         assert evo._service.status()["running"] is True
     finally:
         await evo.stop_evolution()
+
+
+# --- #1064 finding 6: recovery cadence brackets the service's own lifecycle,
+# not the engine's --------------------------------------------------------
+
+
+async def test_start_evolution_starts_the_recovery_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cadence must start once ``_service`` exists, closing the window
+    where `EngineService.start()` started it before `start_evolution()` ever
+    ran -- a due RUNNING Run inspected in that window previously terminalized
+    FAILED only because of startup ordering."""
+    import services.evolution as evo
+    import services.evolution_recovery as recovery_driver
+
+    await recovery_driver.stop_evolution_recovery()
+    assert recovery_driver._task is None
+
+    def _swallow(coro: Any) -> Any:
+        coro.close()
+        return None
+
+    monkeypatch.setattr(evo.asyncio, "ensure_future", _swallow)
+    await evo.start_evolution()
+    try:
+        assert recovery_driver._task is not None
+        assert not recovery_driver._task.done()
+    finally:
+        await evo.stop_evolution()
+    assert recovery_driver._task is None
+
+
+async def test_stop_evolution_stops_the_recovery_cadence_before_clearing_the_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mirror image of start: shutdown previously cleared the singleton
+    in `_shutdown_background_services` before `EngineService.stop()` got
+    around to cancelling the cadence task, leaving the same
+    ``EvolutionServiceNotStarted`` window open at the other end of the
+    process's life. ``stop_evolution`` must stop and join the cadence before
+    (not after) `_service` becomes `None`."""
+    import services.evolution as evo
+    import services.evolution_recovery as recovery_driver
+
+    order: list[str] = []
+    real_stop = recovery_driver.stop_evolution_recovery
+
+    async def _tracking_stop() -> None:
+        order.append("recovery_stopped")
+        await real_stop()
+
+    def _swallow(coro: Any) -> Any:
+        coro.close()
+        return None
+
+    monkeypatch.setattr(evo.asyncio, "ensure_future", _swallow)
+    monkeypatch.setattr(recovery_driver, "stop_evolution_recovery", _tracking_stop)
+    await evo.start_evolution()
+    assert evo._service is not None
+
+    await evo.stop_evolution()
+    # The cadence was stopped while `_service` was still set -- proven by
+    # recording the observation before `stop_evolution` clears it, not merely
+    # that both eventually happened.
+    assert order == ["recovery_stopped"]
+    assert evo._service is None
+
+
+async def test_starting_the_engine_alone_does_not_start_the_evolve_recovery_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`EngineService.start()` must no longer start the Evolve recovery
+    cadence itself (#1064) -- only `services.evolution.start_evolution` does,
+    once the singleton it depends on actually exists. Application startup
+    calls `start_engine()` well before `start_evolution()`, so a cadence
+    started by the engine would tick against a service that does not exist
+    yet."""
+    import services.evolution_recovery as recovery_driver
+    from services.engine import EngineService
+
+    await recovery_driver.stop_evolution_recovery()
+    assert recovery_driver._task is None
+
+    class _Settings:
+        maistro_router_api_key = ""
+        maistro_base_url = "http://localhost:8000"
+        hive_mode = "production"
+        hive_default_workspace_id = "default"
+
+    svc = EngineService()
+    try:
+        await svc.start(_Settings())  # type: ignore[arg-type]
+        assert recovery_driver._task is None
+    finally:
+        await svc.stop()
+        await recovery_driver.stop_evolution_recovery()
 
 
 def test_initialize_domain_state_is_idempotent() -> None:
@@ -195,6 +297,57 @@ def test_service_properties_initial_state() -> None:
     assert s.execution_available is False
     s.stop()
     assert s._running is False
+
+
+# --- record_recovered_run bookkeeping (#1064 finding 4) -----------------
+
+
+def test_record_recovered_run_completed_increments_cycle_count() -> None:
+    from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
+
+    s = _EvolutionService()
+    assert s.cycle_count == 0
+
+    s.record_recovered_run("recovered-run-1", RunStatus.COMPLETED)
+
+    assert s.cycle_count == 1
+    assert s.last_run_id == "recovered-run-1"
+    assert s.status()["last_run_status"] == RunStatus.COMPLETED.value
+    assert s.status()["last_error"] is None
+
+
+def test_record_recovered_run_failed_does_not_increment_cycle_count() -> None:
+    """The non-COMPLETED branch: a recovered Run that terminalized FAILED
+    (or CANCELLED/TIMED_OUT) must not be counted as a completed cycle, and
+    must surface an error — mirroring _run_one_cycle_locked's own semantics
+    for a live cycle that fails."""
+    from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
+
+    s = _EvolutionService()
+
+    s.record_recovered_run("recovered-run-2", RunStatus.FAILED, error="boom")
+
+    assert s.cycle_count == 0
+    assert s.last_run_id == "recovered-run-2"
+    assert s.status()["last_run_status"] == RunStatus.FAILED.value
+    assert s.status()["last_error"] == "boom"
+
+
+def test_record_recovered_run_failed_without_explicit_error_uses_default_message() -> None:
+    from services.evolution import _EvolutionService
+
+    from maistro.runs.model import RunStatus
+
+    s = _EvolutionService()
+
+    s.record_recovered_run("recovered-run-3", RunStatus.CANCELLED)
+
+    assert s.cycle_count == 0
+    assert s.status()["last_error"] == "canonical Run ended cancelled"
 
 
 # --- run_loop import-failure path ---------------------------------------
@@ -563,6 +716,34 @@ def test_build_llm_call_swallows_exceptions(
     assert s._build_llm_call() is None
 
 
+def test_build_llm_call_public_accessor_delegates_to_private_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1064: ``build_llm_call`` is the public accessor a restart-recovery
+    resolver uses to reconstruct the same llm_call a live cycle would have
+    built (it has no other way to reach the private builder). Prove it
+    actually delegates, both when the builder succeeds and when it
+    declines (no base URL configured)."""
+    from services.evolution import _EvolutionService
+
+    class _NoBase:
+        maistro_llm_base_url = ""
+        litellm_api_base = ""
+        maistro_llm_api_key = ""
+        litellm_api_key = ""
+        chat_default_model = "stub"
+
+    import config
+
+    monkeypatch.setattr(config, "get_settings", lambda: _NoBase())
+    s = _EvolutionService()
+    assert s.build_llm_call() is None
+
+    sentinel = object()
+    monkeypatch.setattr(s, "_build_llm_call", lambda: sentinel)
+    assert s.build_llm_call() is sentinel
+
+
 async def test_build_llm_call_real_call_posts_and_extracts_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -666,7 +847,10 @@ def _available_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     import services.evolution_graph as evolution_graph
 
     owner = SimpleNamespace(
-        run_store=object(), graph_run_store=object(), project_scope_store=object()
+        run_store=object(),
+        graph_run_store=object(),
+        project_scope_store=object(),
+        event_bus=object(),
     )
     monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace())
     monkeypatch.setattr(evolution_graph, "canonical_execution_owner", lambda *_a, **_k: owner)
