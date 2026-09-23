@@ -980,6 +980,79 @@ async def test_recovery_requeues_a_running_receipt_whose_lease_expired() -> None
     assert job.status == JobStatus.PENDING
 
 
+async def test_recovery_leaves_an_exhausted_expired_lease_for_the_reaper() -> None:
+    """Recovery must not requeue a receipt that has spent its retry budget.
+
+    `claim_next_pending` bumps `attempts` without checking `max_attempts`;
+    only the lease reaper enforces that ceiling. Reconciliation runs every
+    poll tick, roughly 30x as often as the reaper, so it usually reaches an
+    expired lease first. If it requeued an exhausted receipt whose worker
+    died before `execute_stage` moved the Run out of QUEUED, each claim would
+    dispatch the provider again, with no limit. The receipt must stay
+    RUNNING so the reaper fails it canonically.
+    """
+    adapter, runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-exhausted")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-exhausted",
+        run_id,
+        status=JobStatus.RUNNING,
+        attempts=3,
+        max_attempts=3,
+        leased_by="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    store.jobs[("job-exhausted", "org-1")] = job
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.RUNNING
+    assert job.attempts == 3
+    assert store.updates == []
+    run = await runs.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.QUEUED
+
+
+async def test_recovery_marks_an_exhausted_unleased_receipt_reapable() -> None:
+    """With no lease at all, the reaper would never see the receipt.
+
+    `reap_expired_leases` only matches a non-null, past `lease_expires_at`.
+    Leaving an exhausted, unleased RUNNING receipt as it is would strand it:
+    it could not be claimed and could not be reaped. Recovery stamps an
+    already-expired lease so the next reaper sweep fails it, and leaves the
+    budget decision to the reaper.
+    """
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-exhausted-unleased")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-exhausted-unleased",
+        run_id,
+        status=JobStatus.RUNNING,
+        attempts=3,
+        max_attempts=3,
+    )
+    store.jobs[("job-exhausted-unleased", "org-1")] = job
+    before = datetime.now(UTC)
+
+    repaired = await adapter.reconcile_admissions(store)
+
+    assert repaired == [job]
+    assert job.status == JobStatus.RUNNING
+    assert job.lease_expires_at is not None
+    assert before <= job.lease_expires_at <= datetime.now(UTC)
+    assert store.updates == [job]
+
+    # Once stamped, the receipt is simply "exhausted with an expired lease";
+    # a second pass must not requeue it or rewrite it again.
+    await adapter.reconcile_admissions(store)
+    assert job.status == JobStatus.RUNNING
+    assert store.updates == [job]
+
+
 async def test_reconcile_admissions_pages_past_the_first_batch_of_healthy_canvas_runs() -> None:
     """A missing receipt behind a full first page must still be reached.
 
