@@ -1382,3 +1382,49 @@ async def test_a_death_before_the_mint_takes_over_without_a_duplicate(scoped, mo
     assert retry.run_id is not None
     runs_named = [run for run in runs._runs.values() if run.provenance.get("task_id") is not None]
     assert [run.run_id for run in runs_named] == [retry.run_id]
+async def test_the_bound_evicts_expired_claims_first() -> None:
+    """Past ``_MAX_ENTRIES`` the store sheds load: expired claims go first —
+    evicting one is merely early window expiry — and the claim being admitted
+    now survives with the bound restored."""
+    store = InMemoryTaskIdempotencyStore()
+    wall = datetime.now(UTC)
+    ancient = wall - timedelta(hours=48)
+    for i in range(store._MAX_ENTRIES + 2):
+        store._rows[_scope(f"ancient-{i}")] = _expired_record(ancient + timedelta(seconds=i))
+
+    outcome = await store.claim(_scope("fresh"), fingerprint="fp", request="{}", now=wall)
+
+    assert isinstance(outcome, Claimed)
+    assert len(store._rows) == store._MAX_ENTRIES
+    assert _scope("fresh") in store._rows
+    # The three oldest-created expired claims are the ones that went.
+    assert _scope("ancient-0") not in store._rows
+    assert _scope("ancient-1") not in store._rows
+    assert _scope("ancient-2") not in store._rows
+    assert _scope("ancient-3") in store._rows
+    assert _scope(f"ancient-{store._MAX_ENTRIES + 1}") in store._rows
+
+
+async def test_the_bound_evicts_the_oldest_when_nothing_is_expired() -> None:
+    """Nothing has expired but the store is over its bound: the oldest claims
+    go — the same bound the in-memory Run store applies — and the claim being
+    admitted now survives."""
+    store = InMemoryTaskIdempotencyStore()
+    wall = datetime.now(UTC)
+    for i in range(store._MAX_ENTRIES + 2):
+        # Millisecond-staggered creation inside the last few seconds, so every
+        # row is live and `ancient-0`-style ordering is exact: i=0 is oldest.
+        store._rows[_scope(f"live-{i}")] = _mid_admission_record(
+            wall - timedelta(milliseconds=store._MAX_ENTRIES + 2 - i)
+        )
+
+    outcome = await store.claim(_scope("fresh"), fingerprint="fp", request="{}", now=wall)
+
+    assert isinstance(outcome, Claimed)
+    assert len(store._rows) == store._MAX_ENTRIES
+    assert _scope("fresh") in store._rows
+    assert _scope("live-0") not in store._rows
+    assert _scope("live-1") not in store._rows
+    assert _scope("live-2") not in store._rows
+    assert _scope("live-3") in store._rows
+    assert _scope(f"live-{store._MAX_ENTRIES + 1}") in store._rows
