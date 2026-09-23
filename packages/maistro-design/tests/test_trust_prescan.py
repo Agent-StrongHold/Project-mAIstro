@@ -128,3 +128,21 @@ async def test_engine_queues_non_upgrade_record_for_field_it_bans() -> None:
     assert records["one_liner"].warden_recommendation != "upgrade"
     assert records["one_liner"].warden_flags
     assert records["company_name"].warden_recommendation == "upgrade"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+def test_banish_list_match_keeps_scanner_findings_alongside() -> None:
+    banish_list = InMemoryTrustBanishList()
+    banish_list.add_pattern("alert")
+    content = "<script>alert(1)</script>"
+
+    tier, record = _prescan(content, banish_list)
+
+    assert tier == TrustTier.SKULL
+    assert record.warden_flags == (
+        "banish_list_match",
+        *scan_blocking_patterns("content", content, None),
+    )
+    assert len(record.warden_flags) > 1
+    assert record.warden_recommendation == "banish"
