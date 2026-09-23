@@ -193,6 +193,15 @@ class EngineService:
 
         start_dag_recovery()
 
+        # Canonical Evolve Run recovery (#1064) is bracketed by the Evolve
+        # service's own lifecycle (`services.evolution.start_evolution`/
+        # `stop_evolution`), not the engine's: `services.evolution_graph`'s
+        # recovery resolver requires the Evolve singleton to exist, and this
+        # engine start runs before `start_evolution()` does in application
+        # startup. Starting the cadence here raced that ordering -- a due
+        # RUNNING Run inspected in the gap terminalized FAILED for no reason
+        # but startup sequencing. See `services.evolution.start_evolution`.
+
         try:
             if settings.hive_mode == "demo":
                 from adapters.task_backend import LocalTaskBackend
@@ -296,6 +305,8 @@ class EngineService:
         from services.dag_recovery import stop_dag_recovery
 
         await stop_dag_recovery()
+        # Evolve recovery cadence stop moved to `services.evolution.stop_evolution`
+        # (#1064) -- see the matching note in `start()`.
         if self._backend is not None:
             import contextlib
 

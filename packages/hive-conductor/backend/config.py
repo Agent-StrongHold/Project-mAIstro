@@ -22,6 +22,7 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from maistro.config.settings import validate_cors_origins
+from maistro.types.config import ModelBindingConfig
 
 _BACKEND_DIR = Path(__file__).resolve().parent
 # Repo root `.env` (PM POC flags) — uvicorn cwd is usually `backend/`.
@@ -201,6 +202,14 @@ class Settings(BaseSettings):
     # delegation context and must be shared only with maistro-server.
     maistro_delegation_key: SecretStr | None = None
     maistro_service_principal: str = "conductor"
+    # Provider metadata and explicit model authorizations are operator config,
+    # not inferred from the gateway URL. The bridge passes both into the
+    # canonical Container so Canvas and graph nodes share one authority.
+    provider_config_path: str = ""
+    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
+    # Optional explicit binding selector for the server-side Canvas quality
+    # route. If omitted, exactly one matching model binding is required.
+    canvas_model_binding_id: str = ""
     # The Workspace a submission that names none lands in (#158). Passed
     # explicitly into `AgentConfig.workspace_id` rather than left to core's own
     # default, so "which Workspace did this Run go to" has one answer this

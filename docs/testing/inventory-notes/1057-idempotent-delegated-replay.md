@@ -29,3 +29,10 @@ revision `035`; `tests/migrations/test_migration_chain.py` now upgrades to the
 renumbered revision and the live-PostgreSQL suite (94 tests) was executed
 against a real `pgvector/pgvector:pg18` server, including the
 pre-provenance-receipts-become-system-work check.
+
+Follow-up merge-forward (develop minted `039_canvas_job_admission_key` after
+the first renumbering): the two #1057 revisions were renumbered again onto
+the tail of develop's chain — `041_task_identity_provenance` (Revises: 039)
+and `042_task_receipt_dispatch_inputs` (Revises: 041) — so the migration
+graph keeps a single head. `test_migration_chain.py` upgrades to
+`041_task_identity_provenance` for the legacy-receipt system-actor check.
