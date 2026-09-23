@@ -229,8 +229,9 @@ or placeholder-only section.
 ### Added
 
 - **Every durable table declares its retention, and CI checks it against the
-  schema (#325).** `quality/durable-table-retention.json` lists all 65 tables
-  created by Alembic migrations, runtime `CREATE TABLE` or ORM `__tablename__`,
+  schema (#325).** `quality/durable-table-retention.json` lists all 63 tables
+  in the schema built by Alembic and `.sql` migrations (later drops applied),
+  runtime `CREATE TABLE` or ORM `__tablename__`,
   with backend, owner, data class, retention and deletion path. Six tables
   whose DDL lives outside this repository are listed separately.
   `scripts/check-durable-table-inventory.py` fails CI when a table has no

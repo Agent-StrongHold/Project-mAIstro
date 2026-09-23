@@ -570,18 +570,6 @@
       "notes": "Book-maker POC schema; order and shipping data. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
-      "table": "orgs",
-      "backends": [
-        "postgres"
-      ],
-      "owner_module": "alembic/versions/003_design_projects_outputs.py",
-      "data_class": "configuration",
-      "retention": "undecided",
-      "deletion_path": null,
-      "issue": "#325",
-      "notes": "FK anchor created by migrations 003/024. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
-    },
-    {
       "table": "outcomes",
       "backends": [
         "postgres",
@@ -793,18 +781,6 @@
       "issue": "#325",
       "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
       "notes": "tasks.run_id is preserved by the Run purge on purpose (runs/retention_scope.py). No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
-    },
-    {
-      "table": "teams",
-      "backends": [
-        "postgres"
-      ],
-      "owner_module": "alembic/versions/003_design_projects_outputs.py",
-      "data_class": "configuration",
-      "retention": "undecided",
-      "deletion_path": null,
-      "issue": "#325",
-      "notes": "FK anchor created by migrations 003/024. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
       "table": "trigger_definitions",

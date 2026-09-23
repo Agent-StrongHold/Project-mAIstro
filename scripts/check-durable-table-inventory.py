@@ -12,8 +12,10 @@ required to say what happens to its rows.
 `quality/durable-table-retention.json` is that place. This gate holds it to the
 tree:
 
-* every table the repository creates -- an Alembic `op.create_table`, a raw
-  `CREATE TABLE` in runtime DDL, or an ORM `__tablename__` -- has an entry;
+* every table the repository's schema holds -- what the Alembic chains and
+  `.sql` migrations leave after replaying each revision's upgrade in order
+  (so a later drop retires a table), a raw `CREATE TABLE` in runtime DDL, or
+  an ORM `__tablename__` -- has an entry;
 * every entry still names a table something creates, so the inventory cannot
   quietly describe a schema that no longer exists;
 * every `deletion_path` imports and is callable, so a claimed purge at least
@@ -43,10 +45,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = Path("quality/durable-table-retention.json")
 
+#: Alembic chains, each replayed in revision (filename) order so a later drop
+#: retires a table an earlier revision created.
 MIGRATION_GLOBS = (
     "alembic/versions/*.py",
     "packages/*/frontend/alembic/versions/*.py",
 )
+#: Raw SQL migrations `maistro.persistence.run_migrations` applies in filename order.
+SQL_MIGRATION_GLOBS = ("packages/*/src/**/migrations/*.sql",)
 RUNTIME_DDL_GLOBS = (
     "packages/*/src/**/*.py",
     "packages/*/backend/**/*.py",
@@ -102,6 +108,12 @@ _CREATE_TABLE = re.compile(
     r"(?:\"?[A-Za-z_]\w*\"?\.)?\"?(?P<name>[A-Za-z_]\w*)\"?",
     re.IGNORECASE,
 )
+_DROP_TABLE = re.compile(
+    r"\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:\"?[A-Za-z_]\w*\"?\.)?\"?(?P<name>[A-Za-z_]\w*)\"?",
+    re.IGNORECASE,
+)
+_SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+_OP_KINDS = {"create_table": "create", "drop_table": "drop"}
 _ISSUE = re.compile(r"^#\d+$")
 
 
@@ -168,52 +180,100 @@ def _module_strings(tree: ast.Module) -> dict[str, str]:
     return names
 
 
-def ddl_tables(source: str, *, path: str = "<string>") -> list[Found]:
-    """Tables a raw `CREATE TABLE` in a string literal (not a docstring) creates."""
-    tree = ast.parse(source, filename=path)
+def _sql_events(sql: str, where: str) -> list[tuple[int, str, Found]]:
+    sql = _SQL_COMMENT.sub(lambda m: " " * len(m.group(0)), sql)
+    events: list[tuple[int, str, Found]] = []
+    for match in _CREATE_TABLE.finditer(sql):
+        name = match.group("name")
+        if not match.group("temp") and name.upper() != "IF":
+            events.append((match.start(), "create", Found(name, where)))
+    for match in _DROP_TABLE.finditer(sql):
+        events.append((match.start(), "drop", Found(match.group("name"), where)))
+    return sorted(events, key=lambda event: event[0])
+
+
+def _string_events(tree: ast.AST, path: str) -> list[tuple[tuple[int, int], str, Found]]:
     docstrings = _docstring_nodes(tree)
-    found: list[Found] = []
+    events: list[tuple[tuple[int, int], str, Found]] = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
             continue
         if id(node) in docstrings:
             continue
-        for match in _CREATE_TABLE.finditer(node.value):
-            name = match.group("name")
-            if match.group("temp") or name.upper() == "IF":
-                continue
-            found.append(Found(name, f"{path}:{node.lineno}"))
-    return found
+        for offset, kind, found in _sql_events(node.value, f"{path}:{node.lineno}"):
+            events.append(((node.lineno, node.col_offset + offset), kind, found))
+    return events
 
 
-def migration_tables(source: str, *, path: str = "<string>") -> list[Found]:
-    """Tables an Alembic revision creates with `op.create_table`, in any layout."""
+def ddl_tables(source: str, *, path: str = "<string>") -> list[Found]:
+    """Tables a raw `CREATE TABLE` in a string literal (not a docstring) creates."""
+    tree = ast.parse(source, filename=path)
+    return [found for _, kind, found in _string_events(tree, path) if kind == "create"]
+
+
+def sql_tables(sql: str, *, path: str = "<string>") -> list[Found]:
+    """Tables a `.sql` migration leaves behind: its creates, minus its later drops."""
+    return _net(
+        ("create" if kind == "create" else "drop", found)
+        for _, kind, found in _sql_events(sql, path)
+    )
+
+
+def _op_table_name(node: ast.Call, constants: dict[str, str], path: str) -> str:
+    keyword = next((k.value for k in node.keywords if k.arg == "table_name"), None)
+    first = node.args[0] if node.args else keyword
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    if isinstance(first, ast.Name) and first.id in constants:
+        return constants[first.id]
+    raise ValueError(
+        f"{path}:{node.lineno}: op.{getattr(node.func, 'attr', '?')} with a table name this "
+        "gate cannot resolve; use a literal or a module-level string constant"
+    )
+
+
+def _upgrade_scope(tree: ast.Module) -> ast.AST:
+    """A revision's `upgrade()`: what `downgrade()` recreates is not the current schema."""
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "upgrade":
+            return node
+    return tree
+
+
+def migration_events(source: str, *, path: str = "<string>") -> list[tuple[str, Found]]:
+    """Every table an Alembic revision's upgrade creates or drops, in source order."""
     tree = ast.parse(source, filename=path)
     constants = _module_strings(tree)
-    found: list[Found] = []
-    for node in ast.walk(tree):
-        if not (
+    scope = _upgrade_scope(tree)
+    events: list[tuple[tuple[int, int], str, Found]] = []
+    for node in ast.walk(scope):
+        if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "create_table"
+            and node.func.attr in _OP_KINDS
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "op"
         ):
-            continue
-        keyword = next((k.value for k in node.keywords if k.arg == "table_name"), None)
-        first = node.args[0] if node.args else keyword
-        name: str | None = None
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            name = first.value
-        elif isinstance(first, ast.Name):
-            name = constants.get(first.id)
-        if name is None:
-            raise ValueError(
-                f"{path}:{node.lineno}: op.create_table with a table name this gate "
-                "cannot resolve; use a literal or a module-level string constant"
-            )
-        found.append(Found(name, f"{path}:{node.lineno}"))
-    return found + ddl_tables(source, path=path)
+            name = _op_table_name(node, constants, path)
+            found = Found(name, f"{path}:{node.lineno}")
+            events.append(((node.lineno, node.col_offset), _OP_KINDS[node.func.attr], found))
+    events.extend(_string_events(scope, path))
+    return [(kind, found) for _, kind, found in sorted(events, key=lambda event: event[0])]
+
+
+def _net(events: Iterable[tuple[str, Found]]) -> list[Found]:
+    live: dict[str, list[Found]] = {}
+    for kind, found in events:
+        if kind == "create":
+            live.setdefault(found.table, []).append(found)
+        else:
+            live.pop(found.table, None)
+    return [found for founds in live.values() for found in founds]
+
+
+def migration_tables(source: str, *, path: str = "<string>") -> list[Found]:
+    """Tables an Alembic revision's upgrade leaves behind, in any `op.create_table` layout."""
+    return _net(migration_events(source, path=path))
 
 
 def orm_tables(source: str, *, path: str = "<string>") -> list[Found]:
@@ -235,15 +295,20 @@ def orm_tables(source: str, *, path: str = "<string>") -> list[Found]:
 
 
 def discover(root: Path) -> dict[str, list[str]]:
-    """Every table the tree creates, mapped to where each creation is."""
+    """Every table the tree's schema holds, mapped to where each is created."""
     tables: dict[str, list[str]] = {}
 
     def add(items: Iterable[Found]) -> None:
         for item in items:
             tables.setdefault(item.table, []).append(item.where)
 
-    for path in _files(root, MIGRATION_GLOBS):
-        add(migration_tables(path.read_text(), path=str(path.relative_to(root))))
+    for pattern in MIGRATION_GLOBS:
+        chain: list[tuple[str, Found]] = []
+        for path in _files(root, (pattern,)):
+            chain.extend(migration_events(path.read_text(), path=str(path.relative_to(root))))
+        add(_net(chain))
+    for path in _files(root, SQL_MIGRATION_GLOBS):
+        add(sql_tables(path.read_text(), path=str(path.relative_to(root))))
     for path in _files(root, RUNTIME_DDL_GLOBS):
         add(ddl_tables(path.read_text(), path=str(path.relative_to(root))))
     for path in _files(root, ORM_GLOBS):

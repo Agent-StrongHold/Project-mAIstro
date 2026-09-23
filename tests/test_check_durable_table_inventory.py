@@ -90,6 +90,35 @@ class TestDiscovery:
         source = 'A = "CREATE UNLOGGED TABLE IF NOT EXISTS fast (id int)"\n'
         assert _names(check.ddl_tables(source)) == ["fast"]
 
+    def test_drop_later_in_the_same_upgrade_retires_the_table(self, check):
+        source = (
+            "def upgrade():\n"
+            '    op.create_table("tmp")\n'
+            '    op.drop_table("tmp")\n'
+            '    op.create_table("kept")\n'
+        )
+        assert _names(check.migration_tables(source)) == ["kept"]
+
+    def test_downgrade_is_not_the_current_schema(self, check):
+        source = (
+            "def upgrade():\n"
+            '    op.execute("DROP TABLE IF EXISTS orgs")\n\n'
+            "def downgrade():\n"
+            '    op.execute("CREATE TABLE IF NOT EXISTS orgs (id TEXT)")\n'
+        )
+        assert check.migration_events(source)[0][0] == "drop"
+        assert _names(check.migration_tables(source)) == []
+
+    def test_sql_migration_tables_ignore_comments(self, check):
+        sql = (
+            "-- CREATE TABLE IF NOT EXISTS commented (id int);\n"
+            "/* CREATE TABLE block_commented (id int); */\n"
+            "CREATE TABLE IF NOT EXISTS real_one (id int);\n"
+            "CREATE TABLE gone (id int);\n"
+            "DROP TABLE gone;\n"
+        )
+        assert _names(check.sql_tables(sql)) == ["real_one"]
+
     def test_tablename(self, check):
         source = 'class Order(Base):\n    __tablename__ = "orders"\n'
         assert _names(check.orm_tables(source)) == ["orders"]
@@ -151,6 +180,22 @@ class TestGate:
     def test_stale_entry_fails(self, check, tree):
         report = check.check(tree, _inventory(*_complete(), _entry("dropped_long_ago")))
         assert any("'dropped_long_ago'" in e and "stale" in e for e in report.errors)
+
+    def test_later_migration_drop_makes_the_entry_stale(self, check, tree):
+        (tree / "alembic" / "versions" / "002_drop.py").write_text(
+            'def upgrade():\n    op.drop_table("kept")\n\n'
+            'def downgrade():\n    op.create_table("kept")\n'
+        )
+        report = check.check(tree, _inventory(*_complete()))
+        assert "kept" not in report.discovered
+        assert any("'kept'" in e and "stale" in e for e in report.errors)
+
+    def test_sql_migration_table_needs_an_entry(self, check, tree):
+        migrations = tree / "packages" / "demo" / "src" / "demo" / "migrations"
+        migrations.mkdir()
+        (migrations / "0001_x.sql").write_text("CREATE TABLE IF NOT EXISTS from_sql (id int);\n")
+        report = check.check(tree, _inventory(*_complete()))
+        assert any("'from_sql'" in e and "no retention entry" in e for e in report.errors)
 
     def test_unresolvable_deletion_path_fails(self, check, tree):
         entries = _complete()
