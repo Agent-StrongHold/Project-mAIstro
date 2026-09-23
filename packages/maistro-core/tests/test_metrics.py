@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from maistro.observability import metrics as metrics_module
-from maistro.observability.metrics import DEFAULT_MAX_SERIES_PER_METRIC, MetricsRegistry
+from maistro.observability.metrics import (
+    DEFAULT_MAX_METRICS_PER_REGISTRY,
+    DEFAULT_MAX_SERIES_PER_METRIC,
+    MetricsRegistry,
+)
 
 
 def test_counter_increment():
@@ -420,3 +424,112 @@ def test_prometheus_exposition_surfaces_the_overflow_counter() -> None:
 
     assert "metrics_series_overflow_total" in rendered
     assert 'metrics_series_overflow_total{metric="leaky_total"} 1.0\n' in rendered
+
+
+def test_overflow_counter_is_series_capped_so_dynamic_names_cannot_grow_it() -> None:
+    """Dynamic metric-family names are exactly the unbounded input the
+    backstop exists for, so the overflow counter's ``metric`` label must not
+    inherit that name space without bound (#365 registry-backstop repair).
+    """
+    reg = MetricsRegistry(max_series_per_metric=1)
+    for index in range(50):
+        counter = reg.counter(f"dynamic_total_{index}", "")
+        counter.inc(tenant=f"t{index}")  # admitted (cap 1)
+        counter.inc(tenant="other")  # dropped -> overflow record
+
+    overflow = reg.collect_all()["metrics_series_overflow_total"]
+    assert len(overflow) == 1  # capped, not one series per dynamic name
+    assert overflow[0]["labels"] == {"metric": "dynamic_total_0"}
+
+
+def test_registry_caps_metric_families_and_refuses_new_names_with_a_sink() -> None:
+    """Unbounded metric-family registration must not grow the registry: past
+    the cap, new names get a working-but-dropping sink and are counted."""
+    reg = MetricsRegistry(max_series_per_metric=2, max_metrics_per_registry=1)
+    kept = reg.counter("kept_total", "")
+    kept.inc(route="/a")
+
+    sinks = []
+    for index in range(5):
+        dropped = reg.counter(f"unbounded_total_{index}", "")
+        dropped.inc(route="/raw")  # must neither raise nor store
+        sinks.append(dropped)
+
+    families = reg.collect_all()
+    assert set(families) == {
+        "uptime_seconds",
+        "kept_total",
+        "metrics_registry_overflow_total",
+    }
+    assert families["metrics_registry_overflow_total"] == [
+        {
+            "name": "metrics_registry_overflow_total",
+            "labels": {},
+            "value": 5.0,
+        }
+    ]
+    assert kept.collect() == [{"name": "kept_total", "labels": {"route": "/a"}, "value": 1.0}]
+    for dropped in sinks:
+        assert dropped.collect() == []
+
+
+def test_family_cap_applies_to_gauges_and_histograms_too() -> None:
+    reg = MetricsRegistry(max_metrics_per_registry=1)
+    reg.gauge("kept_gauge", "")
+
+    dropped_gauge = reg.gauge("flood_gauge", "")
+    dropped_histogram = reg.histogram("flood_histogram", "")
+    dropped_gauge.set(1.0, item="x")
+    dropped_histogram.observe(0.5, item="x")
+
+    assert set(reg.collect_all()) == {
+        "uptime_seconds",
+        "kept_gauge",
+        "metrics_registry_overflow_total",
+    }
+    assert reg.collect_all()["metrics_registry_overflow_total"][0]["value"] == 2.0
+
+
+def test_default_family_cap_applies_when_unset() -> None:
+    """``None`` is the default sentinel, not an opt-out, for families too."""
+    reg = MetricsRegistry()
+    for index in range(DEFAULT_MAX_METRICS_PER_REGISTRY + 3):
+        reg.counter(f"flood_total_{index}", "")
+
+    names = set(reg.collect_all())
+    assert len(names) <= DEFAULT_MAX_METRICS_PER_REGISTRY + 2  # + exempt counters
+    assert "metrics_registry_overflow_total" in names
+
+
+def test_existing_family_survives_the_cap_and_keeps_its_type_check() -> None:
+    reg = MetricsRegistry(max_metrics_per_registry=1)
+    kept = reg.counter("kept_total", "")
+    reg.counter("flood_total", "")  # refused
+
+    assert reg.counter("kept_total", "") is kept  # still the stored metric
+    with pytest.raises(ValueError, match="another type"):
+        reg.gauge("kept_total", "")
+
+
+def test_registry_rejects_a_family_cap_below_one() -> None:
+    with pytest.raises(ValueError, match="max_metrics_per_registry"):
+        MetricsRegistry(max_metrics_per_registry=0)
+
+
+def test_registry_overflow_metric_names_are_reserved() -> None:
+    reg = MetricsRegistry()
+    with pytest.raises(ValueError, match="reserved for registry overflow accounting"):
+        reg.counter("metrics_registry_overflow_total")
+
+
+def test_prometheus_exposition_surfaces_the_registry_overflow_counter() -> None:
+    """Operators can alert on family-cap refusals via the text exposition."""
+    reg = MetricsRegistry(max_metrics_per_registry=1)
+    reg.counter("first_total", "")
+    reg.counter("second_total", "").inc(key="a")  # refused sink write
+
+    rendered = reg.render_prometheus()
+
+    assert "metrics_registry_overflow_total" in rendered
+    assert "metrics_registry_overflow_total 1.0\n" in rendered
+    assert "second_total" not in rendered

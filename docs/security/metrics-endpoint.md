@@ -53,5 +53,10 @@ templates and the `unrouted` fallback. SLO instrumentation emits only a fixed-wi
 opaque digest of its configured service key, never the credential text itself.
 The core registry also caps distinct label sets per metric at
 `DEFAULT_MAX_SERIES_PER_METRIC`; samples beyond that cap are dropped and counted
-in `metrics_series_overflow_total`. This cap is a last-resort memory backstop,
-not permission to use unbounded labels.
+in `metrics_series_overflow_total`, whose `metric` label is itself series-capped
+so dynamic metric names cannot inherit unbounded growth. One level up, the
+registry also caps the number of distinct metric families it will hold at
+`DEFAULT_MAX_METRICS_PER_REGISTRY`; a brand-new name past that cap gets a
+dropping sink and the refusal is counted in the unlabeled
+`metrics_registry_overflow_total`. These caps are last-resort memory backstops,
+not permission to use unbounded labels or dynamically minted metric names.
