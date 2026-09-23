@@ -25,13 +25,14 @@ or placeholder-only section.
 
 ### Security
 
-- **Design trust review no longer recommends upgrading content the engine blocks
-  (#817, partial).** `scan_and_record` now runs the shared Design
-  `scan_blocking_patterns` over every discovery response instead of assigning
-  empty flags, so script/iframe/`javascript:` markup, prompt-injection phrasing,
-  base64 blobs and hidden Unicode are recorded as SKULL with explicit flags and a
-  `banish` recommendation. `upgrade` is recommended only when the same scanner the
-  output scan uses finds nothing.
+- **Design trust review records no longer recommend upgrading content the engine
+  blocks (#817, partial).** `scan_and_record` now runs the shared Design
+  `scan_blocking_patterns` over the content it records, instead of assigning
+  empty flags. Script/iframe/`javascript:` markup, prompt-injection phrasing,
+  base64 blobs and hidden Unicode are now recorded as SKULL with explicit flags
+  and a `banish` recommendation. `upgrade` is recommended only when the scanner
+  the output scan uses finds nothing. The engine's accept/reject outcome is
+  unchanged, because the output scan already rejected this content.
 
 - **Concurrent registrations can no longer publish two identities under the
   same username (#1248).** The register route's availability check and the
