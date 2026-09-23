@@ -90,6 +90,9 @@ CORE_PUBLIC_SURFACE = [
     "maistro.reactor",
     "maistro.state",
     "maistro.vault",
+    # Shared SQLite schema-upgrade transaction discipline (asyncpg-free by
+    # design, so sqlite-only environments never need the PG driver).
+    "maistro.sqlite_schema",
     # Added 2026-07: these were importable from a bare install all along but
     # were simply never listed, so the enumeration gate reported each as a gap
     # ("importable module absent from CORE_PUBLIC_SURFACE") and all 18 sat in
@@ -182,7 +185,15 @@ PACKAGES = [
         # silent is the one that most needs declaring.
         data_files=[
             f"systems/bundled/{slug}/{name}"
-            for slug in ("default", "shadcn", "apple", "material", "editorial", "enterprise")
+            for slug in (
+                "default",
+                "shadcn",
+                "apple",
+                "material",
+                "editorial",
+                "enterprise",
+                "workspace",
+            )
             for name in ("manifest.json", "DESIGN.md", "tokens.css", "design-tokens.json")
         ]
         # The catalogue index AND a payload from it. The index alone would let

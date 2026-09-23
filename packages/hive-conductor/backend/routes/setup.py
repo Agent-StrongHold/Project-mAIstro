@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import UTC, datetime
@@ -95,24 +96,53 @@ def _get_kv() -> Any:
     return stores.sessions if stores.sessions._persisted else None
 
 
+def _flush_setup_marker(config: dict[str, Any]) -> None:
+    """Drain and read back the setup marker before reporting success.
+
+    ``JsonStore.__setitem__`` enqueues writes, so the in-memory marker can
+    appear complete while a crash still loses it. That would let a restart
+    retry setup and overwrite the first owner's credentials. A flush alone is
+    not an acknowledgement because the writer can fail or time out silently;
+    the marker must be read back from the authoritative store as well.
+    """
+    import stores
+
+    persisted = getattr(stores.sessions, "_persisted", None)
+    if persisted is None:
+        return
+    state = getattr(persisted, "_state", None)
+    flush = getattr(state, "flush", None)
+    read_raw = getattr(persisted, "get_raw", None)
+    if not callable(flush) or not callable(read_raw):
+        raise RuntimeError("persisted setup marker has no acknowledgement boundary")
+    flush(timeout=10.0)
+    expected = json.dumps(config, default=str)
+    if read_raw("sessions", _SETUP_KEY) != expected:
+        raise RuntimeError("persisted setup marker was not acknowledged")
+
+
 def _is_setup_complete() -> bool:
     """True once first-run setup has begun or finished and cannot re-run.
 
     In a persisted deployment the signals are the records setup itself writes:
     the claim (a first-run attempt is underway — a concurrent second attempt
-    must not also mint accounts) and the config record (setup finished). Users
-    alone do not count here, so the pre-existing retry-after-failure contract
-    holds: an attempt that died between creating accounts and persisting its
-    config left the instance retryable, exactly as before (#334's loud-failure
-    pattern). An unpersisted run has no durable marker to read, so any account
-    at all is the only "setup happened" signal this process can see — and
-    notably it is *not* the signal the register route consults; that inversion
-    is what #313 fixes.
+    must not also mint accounts) and the config record (setup finished). Any
+    account is also terminal evidence: if account writes landed but a later
+    setup marker write was lost, allowing an unauthenticated retry would let an
+    attacker replace the first credentials after restart. An unpersisted run
+    has no durable marker to read, so any account at all is likewise the only
+    "setup happened" signal this process can see. This is deliberately
+    fail-closed after partial initialization; a failed attempt with no account
+    remains retryable.
     """
     import stores
 
     if _get_kv() is not None:
-        return _SETUP_KEY in stores.sessions or _SETUP_CLAIM_KEY in stores.sessions
+        return (
+            _SETUP_KEY in stores.sessions
+            or _SETUP_CLAIM_KEY in stores.sessions
+            or len(stores.users) > 0
+        )
     if _SETUP_KEY in stores.sessions or _SETUP_CLAIM_KEY in stores.sessions:
         return True
     return len(stores.users) > 0
@@ -370,6 +400,9 @@ def _provision_first_run(
     kv = _get_kv()
     if kv is not None:
         kv[_SETUP_KEY] = config
+        # The marker is the durable one-shot boundary for persisted setup. Do
+        # not return success while this write is still only queued.
+        _flush_setup_marker(config)
     else:
         # Unpersisted run: the claim was only ever an in-flight lock —
         # "setup happened" in this mode is signalled by the accounts it
@@ -413,6 +446,17 @@ def complete_setup(body: SetupCompleteBody) -> dict[str, Any]:
     # attempts produce exactly one owner: the loser is refused here, before
     # it can write an admin credential over the winner's.
     with _SETUP_LOCK:
+        # The first check is a fast path. Re-check while holding the same lock
+        # as the claim insert because a failed provisioner may have persisted
+        # accounts after this request passed the fast path.
+        if _is_setup_complete():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Setup already complete. This endpoint is disabled after "
+                    "first-run provisioning."
+                ),
+            )
         claimed = stores.sessions.put_if_absent(
             _SETUP_CLAIM_KEY, {"claimed_at": datetime.now(UTC).isoformat()}
         )
@@ -435,17 +479,21 @@ def complete_setup(body: SetupCompleteBody) -> dict[str, Any]:
             user_password=user_password,
         )
     except BaseException:
-        # Release the claim so a failed first run stays retryable: the failure
-        # modes inside (identity runtime missing, settings or policy not
-        # persisted) are operator-fixable, and a claimed-but-abandoned instance
-        # would lock bootstrap behind manual database surgery. The handler
-        # re-raises everything it catches — it is a rollback, not a swallow.
-        # The delete is enqueued, so a crash in the instant between failure
-        # and flush can resurrect the claim — fail-closed (setup stays locked,
-        # registration stays closed) rather than fail-open, which is the only
-        # direction this endpoint is allowed to fail in.
+        # A failure before any account exists remains retryable. In an
+        # unpersisted run, account state disappears with the process, so the
+        # claim can also be released; the in-memory account check still blocks
+        # a same-process overwrite. Once account writes have landed in a
+        # persisted store, retain the claim: releasing it would let a restart
+        # retry the public endpoint after a lost setup marker and overwrite the
+        # first owner's credentials. The handler re-raises everything it
+        # catches — this is rollback only where it cannot expose a takeover.
         with _SETUP_LOCK:
-            stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+            if len(stores.users) == 0 or _get_kv() is None:
+                stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+            else:
+                logger.error(
+                    "setup failed after account creation; retaining the durable setup claim"
+                )
         raise
 
     result = {"setup_complete": True, "config": config}

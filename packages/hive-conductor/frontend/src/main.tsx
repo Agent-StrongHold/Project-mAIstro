@@ -10,19 +10,22 @@ import { BrowserRouter } from "react-router-dom";
 // unicode-range. Caveat was dropped rather than moved: nothing referenced it.
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
+import "@fontsource-variable/bricolage-grotesque";
+import "@fontsource-variable/bricolage-grotesque/opsz.css";
+// The Workspace design system (ADR-091626-ba4f): a copy of the bundled tokens
+// (kept identical by a backend test), then the bridge that binds the old
+// Conductor variable names to them so existing pages keep rendering while
+// they move over. Light/dark rides `data-scheme` on <html>; a workspace's
+// persona template (greenhouse, slate, studio) rides `data-theme`.
+import "./themes/workspace-tokens.css";
+import "./themes/workspace-bridge.css";
 import "./index.css";
-// Persona/Workspace theme variants -- scoped by [data-theme="..."] on
-// <html>, set by WorkspaceContext when a workspace's theme_id isn't
-// "default"; harmless to load unconditionally since nothing without that
-// attribute matches these selectors.
-import "./themes/dark.css";
-import "./fantasia-theme.css";
 import { applyAppearance } from "./lib/appearance";
 import App from "./App";
 
-// Apply the stored (or OS-preferred) light/dark appearance before first
-// paint so a dark-mode user never sees a white flash. Workspace themes
-// re-apply on top once WorkspaceContext loads.
+// Apply the stored (or OS-preferred) light/dark scheme before first paint so
+// a dark-mode user never sees a white flash. A workspace's persona template
+// is a separate attribute WorkspaceContext sets once it loads.
 applyAppearance();
 
 // When Vite is built with VITE_BASE_PATH=/pm/, the browser is at /pm/ but
