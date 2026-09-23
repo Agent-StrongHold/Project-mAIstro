@@ -236,6 +236,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_delegation_key
     ON canonical_runs(json_extract(payload, '$.provenance.delegation_key'))
     WHERE json_extract(payload, '$.provenance.delegation_key') IS NOT NULL;
 
+-- One Run per Canvas job admission (#1055 review, migration 039). Canvas
+-- computes a deterministic `canvas_job_id` for an idempotency-key retry
+-- before admitting, so the same shape as the two indexes above: the unique
+-- index is the claim, and two workers racing the same key meet one insert.
+--
+-- Scoped to `admission_source = 'canvas_generation'` too, not the field
+-- alone: `canvas_job_id` is not an exclusively Canvas-owned name at this
+-- layer, and an unrelated Run that happens to carry the same string in its
+-- own provenance must not be able to block a real Canvas admission.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_canvas_job
+    ON canonical_runs(json_extract(payload, '$.provenance.canvas_job_id'))
+    WHERE json_extract(payload, '$.provenance.canvas_job_id') IS NOT NULL
+      AND json_extract(payload, '$.provenance.admission_source') = 'canvas_generation';
+
 CREATE TABLE IF NOT EXISTS canonical_node_runs (
     node_run_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
