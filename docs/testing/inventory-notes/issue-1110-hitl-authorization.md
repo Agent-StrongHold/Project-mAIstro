@@ -46,3 +46,15 @@ no-op'ing `authorize_project` (authentication intact) fails exactly
 function returns the suite to 27/27. Inventory delta re-counted against the
 develop base: exactly +2 test functions in
 `packages/hive-conductor/backend/tests`.
+
+## Independent repair re-validation (head `1e9a82cf7`)
+
+The successor repair worker (the prior attempt died on a provider 429 before
+running anything) re-executed the full battery at the assigned head, not
+trusting the record above: 27/27 door+timeout tests, 430 passed / 21 skipped
+in `packages/maistro-core/tests/graph/durable_runs`, the full hive-conductor
+backend suite (2567 passed / 1 skipped), `ruff check` + `ruff format --check`
+clean, canonical mypy clean (711 files), all seven gates listed above green,
+and the same live mutation check reproduced — no-op `authorize_project`
+fails exactly the two isolation tests, revert restores 27/27 with a clean
+tree.
