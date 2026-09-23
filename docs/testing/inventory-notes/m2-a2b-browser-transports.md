@@ -115,3 +115,42 @@ Independent re-run at this exact head; nothing carried forward:
   --run-tests --ratchet` rc=1 (design_coverage 33.0281 < 33.9095 on both),
   and `test_log_redaction.py::test_install_is_idempotent` (fails on both
   heads). All inherited, none introduced by this branch.
+
+Repair-phase re-verification (L155, head 8b1c705b2, 2026-09-23)
+---------------------------------------------------------------
+
+Re-executed at the final head after the inventory-only commit; code is
+identical to 6aa0360c1 and every claim above was re-derived, not carried:
+
+- `uv run pytest packages/maistro-core/tests/tools/browser/ -q` → **131
+  passed** with playwright installed in the venv: the 127 transport-level
+  tests plus all 4 real-Chromium tests in one run, including the
+  redirect-to-private and model-directed-loopback proofs (real HTTP servers,
+  private server asserted to receive zero requests).
+- Security seam: `test_outbound_policy.py` + `test_transport.py` +
+  `test_ssrf.py` → 181 passed; `test_log_redaction.py::
+  test_install_is_idempotent` fails here and on the base archive alike
+  (environment-dependent, pre-existing, unrelated to egress).
+- Conductor: targeted `test_browser_network_policy.py` +
+  `test_engine_service.py` → 38 passed; **full backend suite**
+  `uv run pytest packages/hive-conductor/backend/tests -q` → 2654 passed,
+  1 skipped.
+- Gates: `ruff check .`, `ruff format --check .`,
+  `check-direct-effects`/census, `check-model-egress.py`,
+  `check-security-inventory.py`, `check-suite-inventory.py` (both suites) →
+  all rc=0.
+- Inherited non-green reproduced fresh on this head and on the base archive:
+  `check-vulture-baseline.py` rc=1 with a byte-identical drift diff (no
+  branch file involved; ledger edits are out of scope for an ordinary
+  repair), and `check-ac-state.py --run-tests --ratchet` rc=1 with the same
+  design_coverage 33.0281 < 33.9095 floor on both heads — while the
+  per-change mandate passes (22 criteria claimed, 0 unproven). Both are
+  develop-base debt, not this branch's regression.
+- Transport census re-swept: still exactly five production Playwright entry
+  points (`tools/browser/client.py`, `ui_auto_climb.py`, `widgets.py`,
+  `run_hill_climb.py`, `hill-climb-ui.sh`), each attaching the sync or async
+  guard before its first page; `browser_use` imported only by
+  `tools/browser/{client,guard}.py`; no aiohttp/urllib.request/requests/raw
+  outbound socket in production paths; `tool_executor.py` reaches Chromium
+  only via the guarded `BrowserClient`; `task_backend.py` uses the guarded
+  `sync_client` seam with its base origin allowlisted.
