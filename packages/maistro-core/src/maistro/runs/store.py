@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
@@ -451,6 +451,22 @@ class RunStore(Protocol):
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the canonical Run claiming one scheduled occurrence."""
+        ...
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """Resolve every claim among `scheduled_fors`, in one round trip.
+
+        The batched twin of `get_run_for_occurrence` (#1533): a caller
+        checking many occurrences of the same schedule at once — the
+        scheduling admitter's truncated-tail recovery walk — issues one query
+        instead of one per occurrence, which is the difference between a
+        single lookup and tens of thousands of serial ones on a schedule
+        whose enumeration cap dropped a large tail. An occurrence with no
+        claim is simply absent from the result, the same "no claim"
+        `get_run_for_occurrence` answers with `None`.
+        """
         ...
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
@@ -1028,6 +1044,20 @@ class InMemoryRunStore:
         """Resolve an occurrence through its claim index, never by scanning Runs."""
         run_id = self._occurrences.get((schedule_id, scheduled_for))
         return await self.get_run(run_id) if run_id is not None else None
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """The batched twin of `get_run_for_occurrence`, from the same index."""
+        found: dict[str, Run] = {}
+        for scheduled_for in scheduled_fors:
+            run_id = self._occurrences.get((schedule_id, scheduled_for))
+            if run_id is None:
+                continue
+            run = await self.get_run(run_id)
+            if run is not None:
+                found[scheduled_for] = run
+        return found
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None:
         for run in self._runs.values():
