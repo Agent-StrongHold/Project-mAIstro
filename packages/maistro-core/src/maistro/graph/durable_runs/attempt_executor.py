@@ -88,6 +88,11 @@ async def _validated_admitted_run(
     return admitted
 
 
+#: Default ceiling on walk steps (frontiers), preserved for every caller that
+#: does not derive its own bound from its graph's own admitted shape.
+DEFAULT_MAX_STEPS = 256
+
+
 async def run_durable_graph(
     graph: Graph,
     *,
@@ -103,6 +108,7 @@ async def run_durable_graph(
     blackboard_metadata: Mapping[str, Any] | None = None,
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
+    max_steps: int = DEFAULT_MAX_STEPS,
 ) -> DurableRunRecord:
     """Start a durable Graph whose physical node work crosses the Attempt firewall.
 
@@ -110,6 +116,14 @@ async def run_durable_graph(
     metadata must already be snapshotted on the admitted Run. That makes a
     process loss after admission but before checkpoint 1 reconstruct the same
     work rather than silently substituting empty launch state.
+
+    ``max_steps`` bounds how many frontiers (not node dispatches) the walk may
+    take before it is terminalized as ``StepBudgetExhausted`` (see
+    ``executor._finish_walk``); it defaults to the generic ceiling every
+    caller historically got. A caller whose own admitted graph is wider or
+    deeper than that -- and whose own domain policy already bounds total
+    work some other way -- should derive and pass a bound sufficient for its
+    own graph instead of silently truncating a walk its own policy allows.
     """
     if run_store is not None:
         run = await _validated_admitted_run(
@@ -152,6 +166,7 @@ async def run_durable_graph(
             runtime=runtime,
             run_store=run_store,
             events=events,
+            max_steps=max_steps,
         )
     return await _walk(
         record,
@@ -159,6 +174,7 @@ async def run_durable_graph(
         node_resolver=node_resolver,
         runtime=runtime or PythonExecutionRuntime(),
         run_store=None,
+        max_steps=max_steps,
     )
 
 
@@ -181,6 +197,7 @@ async def resume_durable_graph(
     runtime: ExecutionRuntime | None = None,
     run_store: RunStore | None = None,
     events: RecoveryEventSink | None = None,
+    max_steps: int = DEFAULT_MAX_STEPS,
 ) -> DurableRunRecord:
     """Claim and resume persisted Graph work through canonical physical evidence."""
     # A direct resume can be the first process to observe a crash between the
@@ -232,6 +249,7 @@ async def resume_durable_graph(
         node_resolver=node_resolver,
         runtime=runtime or PythonExecutionRuntime(),
         run_store=spine,
+        max_steps=max_steps,
     )
 
 
@@ -313,7 +331,7 @@ async def _walk(
     store: DurableRunStore,
     node_resolver: NodeResolver,
     runtime: ExecutionRuntime,
-    max_steps: int = 256,
+    max_steps: int = DEFAULT_MAX_STEPS,
     run_store: RunStore | None = None,
 ) -> DurableRunRecord:
     """Execute persisted frontiers through Attempts, then fold Graph semantics."""
@@ -590,6 +608,7 @@ async def _execute_frontier(
 
 
 __all__ = [
+    "DEFAULT_MAX_STEPS",
     "GRAPH_ATTEMPT_LEASE_TTL",
     "GRAPH_RECOVERY_CLAIM_TTL",
     "LiveAttemptOwned",
