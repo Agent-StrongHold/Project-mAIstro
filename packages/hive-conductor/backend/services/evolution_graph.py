@@ -907,6 +907,7 @@ async def run_canonical_evolution_cycle(
     battle_slots = len(membership_ids) // 2
     provenance = {
         "admission_source": _ADMISSION_SOURCE,
+        "executor": "durable_graph",
         "product": "evolve",
         "cycle_number": cycle_number,
         "evolve_membership_ids": list(membership_ids),

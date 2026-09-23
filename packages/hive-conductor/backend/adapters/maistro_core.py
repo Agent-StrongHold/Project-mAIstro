@@ -152,7 +152,6 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # default Workspace and a core that did not would then disagree
         # about where unscoped Runs live, silently.
         workspace_id=settings.hive_default_workspace_id,
-        model_bindings=settings.model_bindings,
         provider_config_path=settings.provider_config_path,
         # Without this the container took the ephemeral branch and built
         # in-memory stores, however the deployment was configured -- the
@@ -173,6 +172,13 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
             permission_preset=settings.maistro_permission_preset,
             permissions=settings.maistro_permissions,
         ),
+        # Same reasoning, for the canonical `model.chat` Binding authority
+        # (#1079): `bootstrap_model_bindings()` authorizes nothing when
+        # `AgentConfig.model_bindings` is empty, so a Conductor's
+        # `MAISTRO_MODEL_BINDINGS` declarations must reach the config this
+        # embedded Container is built from, or every governed model-egress
+        # node refuses every Binding.
+        model_bindings=settings.maistro_model_bindings,
     )
 
     container = await create_container(config)
