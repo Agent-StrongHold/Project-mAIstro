@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from typing import Any
 
 import stores
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -148,20 +150,40 @@ async def _stream_dag_run(
         await websocket.close()
         return
 
-    dag_data = stores.dags[dag_id]
     try:
-        from services.graph_runner import execute_dag_streaming
-
-        async for event in execute_dag_streaming(dag_data, scope=scope):
-            await websocket.send_json(event)
-            if event.get("status") in ("completed", "failed"):
-                break
+        await _stream_canonical_run(websocket, dag_id=dag_id, scope=scope)
     except WebSocketDisconnect:
         pass
     except Exception as exc:
-        await websocket.send_json({"status": "failed", "error": str(exc)})
+        from services.graph_runner import public_failure
+
+        logger.warning("dag_stream_failed dag_id=%s", dag_id, exc_info=exc)
+        with contextlib.suppress(Exception):
+            await websocket.send_json({"status": "failed", "error": public_failure(exc)})
     finally:
         try:
             await websocket.close()
         except Exception as exc:
             logger.debug("ws_close_failed (already closed): %s", exc)
+
+
+async def _stream_canonical_run(
+    websocket: WebSocket, *, dag_id: str, scope: DagExecutionScope
+) -> None:
+    """Stream one canonical Run and record the projection POST /v1/dags/{id}/run records."""
+    from services.graph_runner import execute_dag_streaming
+
+    from routes.audit import log_audit
+    from routes.dags import _record_run_projection
+
+    log_audit("dag_run", scope.user_id, target=dag_id)
+
+    async def project(result: dict[str, Any]) -> None:
+        await _record_run_projection(dag_id=dag_id, user_id=scope.user_id, result=result)
+
+    async for event in execute_dag_streaming(
+        stores.dags[dag_id], scope=scope, execution_mode="interactive", on_result=project
+    ):
+        await websocket.send_json(event)
+        if event.get("status") in ("completed", "failed"):
+            break
