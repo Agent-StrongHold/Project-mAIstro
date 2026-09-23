@@ -391,3 +391,240 @@ def test_model_store_pop_refused_delete_keeps_record_addressable() -> None:
     assert "k" in s
     assert s["k"].value == 1
     assert p.delete_calls == [("ms", "k")]
+
+
+# --- unique_fields / put_if_unique (#1248, #1259) ----------------------
+#
+# These cover the durable-claim path a ModelStore takes when constructed
+# with unique_fields=(...): __setitem__'s unique-aware branch and the
+# explicit put_if_unique() check-then-insert used by registration.
+
+
+class _Named(BaseModel):
+    id: str
+    name: str
+
+
+class _NoUniqueSupportPersisted:
+    """A persisted backend that never learned put_model_unique/put_model_if_unique.
+
+    Exercises the "configured persistence cannot enforce unique fields"
+    RuntimeError — the store refuses to silently skip the uniqueness
+    guarantee just because the backend doesn't support it.
+    """
+
+    def put(self, store_name: str, key: str, value: Any) -> None:
+        raise AssertionError("should not be reached before the capability check")
+
+
+class _UniqueAwarePersisted:
+    """A persisted backend whose unique-claim calls return a scripted result."""
+
+    def __init__(self, *, unique_result: bool = True, if_unique_result: bool = True) -> None:
+        self.unique_result = unique_result
+        self.if_unique_result = if_unique_result
+        self.put_model_unique_calls: list[tuple[str, str, Any, tuple[str, ...]]] = []
+        self.put_model_if_unique_calls: list[tuple[str, str, Any, str]] = []
+
+    def put_model_unique(
+        self, store_name: str, key: str, value: Any, unique_fields: tuple[str, ...]
+    ) -> bool:
+        self.put_model_unique_calls.append((store_name, key, value, unique_fields))
+        return self.unique_result
+
+    def put_model_if_unique(self, store_name: str, key: str, value: Any, field_name: str) -> bool:
+        self.put_model_if_unique_calls.append((store_name, key, value, field_name))
+        return self.if_unique_result
+
+
+def test_model_store_setitem_unique_persisted_success_claims_and_writes() -> None:
+    from services.model_store import ModelStore
+
+    p = _UniqueAwarePersisted(unique_result=True)
+    s = ModelStore("ms", _Named, persisted=p, unique_fields=("name",))
+    s["k"] = _Named(id="k", name="alice")
+    assert s["k"].name == "alice"
+    assert p.put_model_unique_calls == [("ms", "k", s["k"], ("name",))]
+
+
+def test_model_store_setitem_unique_persisted_rejects_duplicate() -> None:
+    """The durable claim lost the race: __setitem__ must raise, not write."""
+    from services.model_store import ModelStore
+
+    p = _UniqueAwarePersisted(unique_result=False)
+    s = ModelStore("ms", _Named, persisted=p, unique_fields=("name",))
+    with pytest.raises(ValueError, match="duplicate unique field"):
+        s["k"] = _Named(id="k", name="alice")
+    assert "k" not in s
+
+
+def test_model_store_setitem_unique_persisted_without_support_raises() -> None:
+    """A backend that can't enforce uniqueness must fail closed, not skip the check."""
+    from services.model_store import ModelStore
+
+    p = _NoUniqueSupportPersisted()
+    s = ModelStore("ms", _Named, persisted=p, unique_fields=("name",))
+    with pytest.raises(RuntimeError, match="cannot enforce unique fields"):
+        s["k"] = _Named(id="k", name="alice")
+    assert "k" not in s
+
+
+def test_model_store_setitem_unique_no_persisted_rejects_duplicate() -> None:
+    """In-memory fallback: _reject_duplicate_unique_fields raises on a collision."""
+    from services.model_store import ModelStore
+
+    s = ModelStore("ms", _Named, unique_fields=("name",))
+    s["a"] = _Named(id="a", name="alice")
+    with pytest.raises(ValueError, match="duplicate unique field"):
+        s["b"] = _Named(id="b", name="Alice")  # casefold-equal collision
+    assert "b" not in s
+
+
+def test_model_store_setitem_unique_no_persisted_allows_distinct_values() -> None:
+    from services.model_store import ModelStore
+
+    s = ModelStore("ms", _Named, unique_fields=("name",))
+    s["a"] = _Named(id="a", name="alice")
+    s["b"] = _Named(id="b", name="bob")
+    assert s["a"].name == "alice"
+    assert s["b"].name == "bob"
+
+
+def test_put_if_unique_persisted_success_returns_true() -> None:
+    from services.model_store import ModelStore
+
+    p = _UniqueAwarePersisted(if_unique_result=True)
+    s = ModelStore("ms", _Named, persisted=p)
+    assert s.put_if_unique("k", _Named(id="k", name="alice"), "name") is True
+    assert "k" in s
+    assert p.put_model_if_unique_calls == [("ms", "k", s["k"], "name")]
+
+
+def test_put_if_unique_persisted_duplicate_returns_false() -> None:
+    """Lost the durable claim race: put_if_unique reports failure, doesn't write."""
+    from services.model_store import ModelStore
+
+    p = _UniqueAwarePersisted(if_unique_result=False)
+    s = ModelStore("ms", _Named, persisted=p)
+    assert s.put_if_unique("k", _Named(id="k", name="alice"), "name") is False
+    assert "k" not in s
+
+
+def test_put_if_unique_persisted_without_support_raises() -> None:
+    from services.model_store import ModelStore
+
+    p = _NoUniqueSupportPersisted()
+    s = ModelStore("ms", _Named, persisted=p)
+    with pytest.raises(RuntimeError, match="cannot enforce unique fields"):
+        s.put_if_unique("k", _Named(id="k", name="alice"), "name")
+    assert "k" not in s
+
+
+def test_put_if_unique_no_persisted_duplicate_returns_false() -> None:
+    """In-memory fallback: the elif duplicate-scan branch, not the persisted one."""
+    from services.model_store import ModelStore
+
+    s = ModelStore("ms", _Named)
+    s["a"] = _Named(id="a", name="alice")
+    assert s.put_if_unique("b", _Named(id="b", name="Alice"), "name") is False
+    assert "b" not in s
+
+
+def test_put_if_unique_no_persisted_success_returns_true() -> None:
+    from services.model_store import ModelStore
+
+    s = ModelStore("ms", _Named)
+    assert s.put_if_unique("a", _Named(id="a", name="alice"), "name") is True
+    assert s["a"].name == "alice"
+
+
+# --- #1037: insert-once, durable discard, durable refresh -----------------
+
+
+class _KeyedPersisted(_FakePersisted):
+    """A durable backend holding raw rows by key, deciding insert-once conflicts."""
+
+    def __init__(self, rows: dict[str, str] | None = None) -> None:
+        super().__init__()
+        self.rows = dict(rows or {})
+
+    def put_raw_if_absent(self, store_name: str, key: str, raw: str) -> bool:
+        if key in self.rows:
+            return False
+        self.rows[key] = raw
+        return True
+
+    def get(self, store_name: str, key: str, model_class: Any) -> Any:
+        raw = self.rows.get(key)
+        return None if raw is None else model_class.model_validate_json(raw)
+
+    def get_raw(self, store_name: str, key: str) -> str | None:
+        return self.rows.get(key)
+
+
+def test_model_store_put_if_absent_inserts_once_in_memory() -> None:
+    from services.model_store import ModelStore
+
+    s = ModelStore("ms", _Model)
+    assert s.put_if_absent("a", _Model(id="a", value=1)) is True
+    assert s.put_if_absent("a", _Model(id="a", value=2)) is False
+    assert s["a"].value == 1
+
+
+def test_model_store_put_if_absent_adopts_another_processes_durable_row() -> None:
+    from services.model_store import ModelStore
+
+    p = _KeyedPersisted({"a": _Model(id="a", value=7).model_dump_json()})
+    s = ModelStore("ms", _Model, persisted=p)
+
+    assert s.put_if_absent("a", _Model(id="a", value=1)) is False
+    assert s["a"].value == 7
+    assert s.put_if_absent("b", _Model(id="b", value=2)) is True
+    assert _Model.model_validate_json(p.rows["b"]).value == 2
+
+
+def test_model_store_put_if_absent_refuses_what_it_cannot_decide() -> None:
+    from services.model_store import ModelStore
+
+    with pytest.raises(RuntimeError, match="conflict-safe inserts"):
+        ModelStore("ms", _Model, persisted=_FakePersisted()).put_if_absent(
+            "a", _Model(id="a", value=1)
+        )
+    vanished = _KeyedPersisted()
+    vanished.put_raw_if_absent = lambda *_args: False  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="conflicting durable record"):
+        ModelStore("ms", _Model, persisted=vanished).put_if_absent("a", _Model(id="a", value=1))
+    with pytest.raises(TypeError, match="unique fields"):
+        ModelStore("ms", _Named, unique_fields=("name",)).put_if_absent(
+            "a", _Named(id="a", name="n")
+        )
+
+
+def test_model_store_discard_reaches_the_backend_for_an_uncached_key() -> None:
+    from services.model_store import ModelStore
+
+    p = _FakePersisted()
+    s = ModelStore("ms", _Model, persisted=p)
+    s["cached"] = _Model(id="cached", value=1)
+
+    s.discard("cached")
+    s.discard("uncached")
+    ModelStore("ms", _Model).discard("nowhere")
+
+    assert "cached" not in s
+    assert p.delete_calls == [("ms", "cached"), ("ms", "uncached")]
+
+
+def test_json_store_refresh_adopts_a_record_written_after_load() -> None:
+    from services.model_store import JsonStore
+
+    p = _KeyedPersisted()
+    s = JsonStore("js", persisted=p)
+    s.initialize()
+    assert s.refresh("k") is False
+
+    p.rows["k"] = '{"owner": "other"}'
+
+    assert s.refresh("k") is True
+    assert s["k"] == {"owner": "other"}
+    assert JsonStore("js").refresh("k") is False
