@@ -7,8 +7,12 @@ not import implementation constants.
 
 The fixture records adversarial inputs that must be blocked, benign inputs that
 must remain usable, and the expected number of effective command matches. The
-match cardinality is intentional: the curl/wget cases exercise the specific
-network-to-shell rules as well as the general pipe-to-shell rule. A rule
+match cardinality is intentional: composed cases (curl/wget piped to a shell,
+`sudo`-launched deletion, `eval` wrapping deletion) exercise the specific
+network-to-shell, privilege, and eval rules as well as the general
+pipe-to-shell and destructive-command rules. Each rule also carries narrowing
+witnesses — flag variants, alternate targets, alternate syntax — so tightening
+a rule to its original witness string alone is a measured failure. A rule
 removal, weakening, shadowing, or unreachable detector changes a measured
 behavior and fails the gate.
 
