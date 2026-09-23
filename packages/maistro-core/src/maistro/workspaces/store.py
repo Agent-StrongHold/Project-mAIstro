@@ -23,6 +23,19 @@ class _WorkspaceCreateKwargs(TypedDict):
 
 @runtime_checkable
 class WorkspaceStore(Protocol):
+    #: The Project tree paired with this Workspace authority.  Workspace
+    #: admission resolves the existing Root Project through this same object.
+    #:
+    #: Declared as a read-only property, not a plain attribute: concrete
+    #: stores (`PgWorkspaceStore`, `SqliteWorkspaceStore`) hold a
+    #: `TransactionalProjectScopeStore` here, a distinct (wider) Protocol
+    #: than `ProjectScopeStore`. A mutable Protocol attribute is invariant —
+    #: it would demand that exact type back — but every consumer only reads
+    #: this field, so a covariant read-only property is both correct and
+    #: what concrete stores' plain instance attributes already satisfy.
+    @property
+    def project_store(self) -> ProjectScopeStore: ...
+
     async def create(
         self,
         *,
@@ -127,17 +140,41 @@ class InMemoryWorkspaceStore:
         return updated.model_copy(deep=True)
 
     async def delete(self, workspace_id: str) -> None:
+        """Remove the Workspace, its memberships, and its Projects.
+
+        The reference has no transaction, so it compensates the way `create`
+        does: the Workspace and membership entries come out first and go back
+        if the purge raises, so a failure in either half leaves everything as
+        it was (#1121). The durable stores do both halves in one transaction
+        and need no restore; the contract the conformance suite reads is the
+        same.
+        """
         if workspace_id not in self._workspaces:
             raise WorkspaceNotFound(workspace_id)
-        del self._workspaces[workspace_id]
-        for key in [key for key in self._memberships if key[0] == workspace_id]:
-            del self._memberships[key]
+        workspace, memberships = await self._delete_workspace_row(workspace_id)
 
         # A direct call, not `getattr(store, "purge_workspace", None)`. The
         # optional form meant the Projects were purged in tests, where the
         # store was the in-memory reference, and left orphaned on every durable
         # deployment, where no implementation defined it (Codex, #516).
-        await self.project_store.purge_workspace(workspace_id)
+        try:
+            await self.project_store.purge_workspace(workspace_id)
+        except Exception:
+            self._workspaces[workspace_id] = workspace
+            self._memberships.update(memberships)
+            raise
+
+    async def _delete_workspace_row(
+        self, workspace_id: str
+    ) -> tuple[Workspace, dict[tuple[str, str], WorkspaceMembership]]:
+        """Take the Workspace and its memberships out, returning them for a restore."""
+        workspace = self._workspaces.pop(workspace_id)
+        memberships = {
+            key: self._memberships[key] for key in self._memberships if key[0] == workspace_id
+        }
+        for key in memberships:
+            del self._memberships[key]
+        return workspace, memberships
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
         workspace_ids = {

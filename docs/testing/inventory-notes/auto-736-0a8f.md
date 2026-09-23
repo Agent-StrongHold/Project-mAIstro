@@ -39,3 +39,49 @@ Addressed the three verifier findings on the prior state:
 
 No inventory-delta change in this round beyond the +4 recorded in
 `736-dag-route-canonical-run.md` (this note's +1 is unchanged).
+
+# Repair round 3 (develop rebase reconciliation)
+
+Merged develop `ba2f1f077` (parent of this job's stated develop base
+`ffd6fdb16`) into the branch. Develop had independently evolved the same
+routes (#1526 "carry canonical scope through DAG execution", #766 scope
+selection): `graph_runner` became a thin facade over `canonical_dag_runner`,
+and both producers gained `authorize_hive_dag_scope` admission with a
+`DagExecutionScope`. The conflicts were resolved by combining both sides'
+guarantees rather than picking one:
+
+1. **Request surface + admission (develop's).** `POST /v1/dags/{dag_id}/run`
+   keeps the `DagRunRequest` body / query selection surface and the single
+   `authorize_hive_dag_scope` admission boundary (403 on an unauthorized or
+   unresolvable selection). The WS button socket keeps develop's strict
+   contract: `workspace_id` is required, omission/unauthorized closes 1008
+   before `accept()` — the merged DagBuilder always sends its active
+   Workspace, so no shipped surface regresses.
+2. **Execution seam (ours).** Both producers still execute through
+   `routes.dags._execute_registered_dag` → `run_registered_dag` (register the
+   saved snapshot, admit/execute exactly one canonical Run); neither calls
+   `graph_runner.execute_dag`/`execute_dag_streaming`. The seam now takes the
+   pre-authorized `scope` instead of re-resolving one.
+3. **Scope precedence (ours, re-hosted on the canonical authority).**
+   `_authorize_run_scope` replaces `_resolve_run_scope_for_user`: explicit
+   request selection → the Workspace the saved DAG carries → the owner's
+   single canonical Workspace membership (now read via
+   `WorkspaceStore.list_for_user`, not the retired `stores.workspaces`
+   projection). Unresolvable scope now fails closed with 403 instead of
+   falling to the deployment-default resolver — strictly stronger than the
+   issue's "no unrelated default for an authorized owner" requirement.
+4. **Tests.** Develop's monkeypatch-the-facade route tests were rewritten to
+   real executions against a canonical test container
+   (`_canonical_container` now wires `workspace_store` sharing the Root
+   Project store, so admission, authorization, and the run store share one
+   scope universe): `test_run_dag_missing_scope_fails_before_execution` is
+   deterministic (fresh container, zero memberships),
+   `test_run_dag_carries_distinct_authorized_scopes` proves two Workspaces
+   yield two completed canonical Runs with distinct Root Projects, and
+   `test_activate_then_run_dag_with_a_selected_workspace_succeeds` runs the
+   e2e activate-and-run step for real. Develop's
+   `test_run_dag_canonical_failure_stays_failed` (fabricated
+   `CanonicalDagExecutionError`) was dropped as superseded by the real
+   `test_run_dag_cannot_project_a_failed_canonical_node_as_completed`
+   (jira.poll e2e) — same assertions against a durable Run. Net collected
+count for the suite still matches the recorded ledger (2487).

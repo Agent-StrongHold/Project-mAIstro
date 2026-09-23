@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,13 +14,17 @@ _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-_BACKEND = pathlib.Path(__file__).resolve().parents[1]
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
 
 def _seed(client: Any) -> str:
     response = client.post("/v1/dags", json={"name": "seed", "description": ""})
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def _workspace(client: Any) -> str:
+    response = client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "DAG runs"}
+    )
     assert response.status_code == 201
     return response.json()["id"]
 
@@ -144,13 +147,20 @@ def _canonical_container(monkeypatch: pytest.MonkeyPatch, workspace_id: str) -> 
     from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs import InMemoryRunStore
+    from maistro.workspaces.store import InMemoryWorkspaceStore
 
+    # One scope universe per test: the canonical WorkspaceStore, its Root
+    # Project store, and Run admission all hang off the monkeypatched
+    # Container, so `authorize_hive_dag_scope` and `run_registered_dag`
+    # authorize and admit against the same state the test seeds.
     projects = InMemoryProjectScopeStore()
+    workspace_store = InMemoryWorkspaceStore(project_store=projects)
     asyncio.run(projects.create_root(workspace_id))
     run_store = InMemoryRunStore(project_store=projects)
     container = SimpleNamespace(
         config=SimpleNamespace(workspace_id=workspace_id),
         project_scope_store=projects,
+        workspace_store=workspace_store,
         run_store=run_store,
         graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
         a2a_delegator=None,
@@ -185,17 +195,22 @@ def _route_dag(
 
 
 def _install_route_workspace(workspace_id: str, user_id: str) -> None:
-    import stores
-    from models.workspace import Workspace, WorkspaceMember
+    """Create the Workspace in the canonical authority the route admits against.
 
-    now = datetime.now(UTC)
-    stores.workspaces[workspace_id] = Workspace(
-        id=workspace_id,
-        persona_template_id="pm_fleet",
-        name=workspace_id,
-        members=[WorkspaceMember(user_id=user_id, role="owner")],
-        created_at=now,
-        updated_at=now,
+    The route authorizes through ``workspace_authority``'s canonical store,
+    which (under the test container monkeypatch) is the container's own
+    ``workspace_store``; creating the identity, the owner membership, and the
+    Root Project there is what makes a selection -- or an owner-resolution
+    fallback -- resolvable for the authenticated principal.
+    """
+    from services.workspace_authority import canonical_store_for_tests
+
+    asyncio.run(
+        canonical_store_for_tests().create(
+            creator_user_id=user_id,
+            workspace_id=workspace_id,
+            name=workspace_id,
+        )
     )
 
 
@@ -276,6 +291,48 @@ def test_run_dag_uses_one_canonical_run_for_history_projection(
     assert projection["workspace_id"] == workspace_id
     assert projection["status"] == canonical.status.value
     assert projection["event_count"] == 1
+
+
+def test_activate_then_run_dag_with_a_selected_workspace_succeeds(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The PM-workflow e2e "activate and run a DAG" step, executed for real.
+
+    Replicates tests/e2e/pm-workflow.spec.ts #06 at the HTTP layer: create the
+    shipped CRUD shape (role nodes, no stored scope), activate it, then run
+    with an explicit Workspace selection. The route registers the snapshot,
+    admits one canonical Run in the selected Workspace, and answers with that
+    Run's identity even though the role node has no LLM behind it in tests.
+    """
+    import services.graph_runner as graph_runner
+    from services.dag_run_store import get_dag_run_store
+
+    async def legacy_path_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the DAG route must not call graph_runner.execute_dag")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", legacy_path_must_not_run)
+
+    container = _canonical_container(monkeypatch, "route-workspace")
+    _install_route_workspace("activate-ws", "admin")
+    create = admin_client.post("/v1/dags", json={"name": "E2E Run Test", "description": "test"})
+    assert create.status_code == 201
+    dag_id = create.json()["id"]
+
+    activate = admin_client.post(f"/v1/dags/{dag_id}/activate")
+    assert activate.status_code == 200
+    assert activate.json()["status"] == "active"
+
+    run = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": "activate-ws"})
+    assert run.status_code == 200
+    body = run.json()
+    assert body["execution_id"]
+
+    canonical = asyncio.run(container.run_store.get_run(body["run_id"]))
+    assert canonical is not None
+    assert canonical.workspace_id == "activate-ws"
+    projection = get_dag_run_store().get_run(body["run_id"])
+    assert projection is not None
+    assert projection["canonical_run_id"] == canonical.run_id
 
 
 def test_run_dag_pre_admission_failure_has_no_fake_execution_id(
@@ -422,30 +479,20 @@ def test_run_dag_without_selection_uses_the_owners_workspace(
     The shipped button sends no workspace query and CRUD-created DAGs carry
     none. Before #736 the route then fell back to the deployment default
     (``canonical-default``) -- an unrelated scope -- even though the
-    authenticated owner had exactly one authorized Workspace.
+    authenticated owner had exactly one authorized Workspace. The container
+    still names the deployment default, proving resolution ignored it.
     """
     import stores
     from services.dag_run_store import get_dag_run_store
 
-    # Isolate membership: exactly one active Workspace, owned by the admin
+    container = _canonical_container(monkeypatch, "canonical-default")
+    # Isolated to exactly one canonical Workspace, owned by the admin
     # principal the route authenticates.
-    saved_workspaces = dict(stores.workspaces.items())
-    for key in list(stores.workspaces.keys()):
-        stores.workspaces.pop(key)
-    try:
-        _install_route_workspace("owned-ws", "admin")
-        container = _canonical_container(monkeypatch, "canonical-default")
-        asyncio.run(container.project_scope_store.create_root("owned-ws"))
-        dag_id = _seed(admin_client)
-        assert not stores.dags[dag_id].get("workspace_id")
+    _install_route_workspace("owned-ws", "admin")
+    dag_id = _seed(admin_client)
+    assert not stores.dags[dag_id].get("workspace_id")
 
-        response = admin_client.post(f"/v1/dags/{dag_id}/run")
-    finally:
-        for key in list(stores.workspaces.keys()):
-            stores.workspaces.pop(key)
-        for key, value in saved_workspaces.items():
-            stores.workspaces[key] = value
-
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
     assert response.status_code == 200
     body = response.json()
     run_id = body["run_id"]
@@ -520,7 +567,9 @@ def test_ws_run_button_executes_one_canonical_run(
 
     monkeypatch.setattr(graph_runner, "execute_dag_streaming", legacy_stream_must_not_run)
 
-    with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
+    with admin_client.websocket_connect(
+        f"/v1/ws/dags/{dag_id}/run?workspace_id={workspace_id}"
+    ) as ws:
         started = ws.receive_json()
         node_event = ws.receive_json()
         final = ws.receive_json()
@@ -545,6 +594,62 @@ def test_ws_run_button_executes_one_canonical_run(
     assert projection["status"] == canonical.status.value
 
 
+def test_run_dag_missing_scope_fails_before_execution(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing resolvable: no selection, no stored DAG scope, no owned Workspace.
+
+    The deployment default is not a substitute for an authorized scope
+    (#736): the route must fail closed before any execution path runs.
+    """
+    import services.graph_runner as graph_runner
+
+    async def should_not_run(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("execution admitted without Workspace scope")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", should_not_run)
+    # A fresh container whose canonical WorkspaceStore owns nothing for the
+    # authenticated principal, so no owner-membership fallback can resolve.
+    _canonical_container(monkeypatch, "canonical-default")
+    dag_id = _seed(admin_client)
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    assert response.status_code == 403
+
+
+def test_run_dag_carries_distinct_authorized_scopes(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two authorized selections execute two Runs in their own Workspaces."""
+    import services.graph_runner as graph_runner
+    import stores
+
+    from maistro.runs import RunStatus
+
+    async def legacy_path_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the DAG route must not call graph_runner.execute_dag")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", legacy_path_must_not_run)
+
+    container = _canonical_container(monkeypatch, "route-workspace")
+    _install_route_workspace("scope-ws-a", "admin")
+    _install_route_workspace("scope-ws-b", "admin")
+    dag_id = "route-scopes"
+    stores.dags[dag_id] = _route_dag(dag_id, kind="transform.alias_keys")
+
+    run_ids = []
+    for workspace in ("scope-ws-a", "scope-ws-b"):
+        response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace})
+        assert response.status_code == 200
+        run_ids.append(response.json()["run_id"])
+
+    runs = asyncio.run(container.run_store.list_by_status(RunStatus.COMPLETED))
+    assert sorted(run.run_id for run in runs) == sorted(run_ids)
+    by_workspace = {run.workspace_id: run.run_id for run in runs}
+    assert set(by_workspace) == {"scope-ws-a", "scope-ws-b"}
+    # Each Workspace's Root Project is its own scope.
+    assert len({run.project_id for run in runs}) == 2
+
+
 def test_run_dag_missing_dag_returns_404(admin_client: Any) -> None:
     assert admin_client.post("/v1/dags/missing-dag/run").status_code == 404
 
@@ -554,11 +659,12 @@ def test_run_champion_success_uses_canonical_run_id(
 ) -> None:
     import services.graph_runner as graph_runner
 
-    async def ok() -> dict[str, Any]:
+    async def ok(**_kwargs: Any) -> dict[str, Any]:
         return {"status": "completed", "run_id": "champion-run", "champion": True}
 
     monkeypatch.setattr(graph_runner, "execute_champion", ok)
-    response = admin_client.post("/v1/dags/run-champion")
+    workspace_id = _workspace(admin_client)
+    response = admin_client.post("/v1/dags/run-champion", json={"workspace_id": workspace_id})
     assert response.status_code == 200
     body = response.json()
     assert body["result"]["champion"] is True
@@ -569,11 +675,12 @@ def test_run_champion_success_uses_canonical_run_id(
 def test_run_champion_failure(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     import services.graph_runner as graph_runner
 
-    async def boom() -> dict[str, Any]:
+    async def boom(**_kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("champion crash")
 
     monkeypatch.setattr(graph_runner, "execute_champion", boom)
-    response = admin_client.post("/v1/dags/run-champion")
+    workspace_id = _workspace(admin_client)
+    response = admin_client.post("/v1/dags/run-champion", json={"workspace_id": workspace_id})
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "failed"

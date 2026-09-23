@@ -128,8 +128,13 @@ def test_dag_run_stream_accepts_admin(admin_client: TestClient) -> None:
     Without this, replacing the `dags.write` check with an unconditional deny
     would leave every DAG-socket test green while the feature was dead.
     """
+    workspace_id = admin_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "WS auth"}
+    ).json()["id"]
     with (
-        admin_client.websocket_connect("/v1/ws/dags/no-such-dag/run") as ws,
+        admin_client.websocket_connect(
+            f"/v1/ws/dags/no-such-dag/run?workspace_id={workspace_id}"
+        ) as ws,
         pytest.raises(WebSocketDisconnect) as exc,
     ):
         assert ws.receive_json() == {"error": "dag not found"}
@@ -155,24 +160,25 @@ def test_dag_run_stream_preserves_authenticated_actor(
         "edges": [],
     }
     captured: dict[str, Any] = {}
+    workspace_id = admin_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "WS actor"}
+    ).json()["id"]
 
     async def fake_execute(
         dag_id: str,
         dag_data: dict[str, Any],
         *,
-        user_id: str,
-        selected_workspace: str | None = None,
-        selected_project: str | None = None,
+        scope: Any,
         admission_source: str,
     ) -> dict[str, Any]:
         captured["dag_id"] = dag_id
-        captured["user_id"] = user_id
+        captured["scope"] = scope
         captured["admission_source"] = admission_source
         return {
             "status": "completed",
             "run_id": "run-ws-actor",
-            "workspace_id": selected_workspace or "",
-            "project_id": selected_project or "",
+            "workspace_id": scope.workspace_id,
+            "project_id": scope.project_id,
             "cycles": 0,
             "node_results": {},
             "annotations": {},
@@ -180,14 +186,17 @@ def test_dag_run_stream_preserves_authenticated_actor(
 
     monkeypatch.setattr(dags_routes, "_execute_registered_dag", fake_execute)
     try:
-        with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
+        with admin_client.websocket_connect(
+            f"/v1/ws/dags/{dag_id}/run?workspace_id={workspace_id}"
+        ) as ws:
             assert ws.receive_json()["status"] == "started"
             final = ws.receive_json()
     finally:
         stores.dags.pop(dag_id, None)
 
     assert captured["dag_id"] == dag_id
-    assert captured["user_id"] == "admin"
+    assert captured["scope"].workspace_id == workspace_id
+    assert captured["scope"].user_id == "admin"
     assert captured["admission_source"] == "hive_dag_ws_route"
     assert final["status"] == "completed"
     assert final["run_id"] == "run-ws-actor"
@@ -250,24 +259,27 @@ def test_dag_run_stream_closes_cleanly_when_the_run_ends_without_a_terminal_even
         dag_id: str,
         dag_data: dict[str, Any],
         *,
-        user_id: str,
-        selected_workspace: str | None = None,
-        selected_project: str | None = None,
+        scope: Any,
         admission_source: str,
     ) -> dict[str, Any]:
         return {
             "status": "waiting",
             "run_id": "run-ws-exhausts",
-            "workspace_id": selected_workspace or "",
-            "project_id": selected_project or "",
+            "workspace_id": scope.workspace_id,
+            "project_id": scope.project_id,
             "cycles": 0,
             "node_results": {},
             "annotations": {},
         }
 
     monkeypatch.setattr(dags_routes, "_execute_registered_dag", parked_execute)
+    workspace_id = admin_client.post(
+        "/v1/workspaces", json={"persona_template_id": "pm_fleet", "name": "WS ending"}
+    ).json()["id"]
     try:
-        with admin_client.websocket_connect(f"/v1/ws/dags/{dag_id}/run") as ws:
+        with admin_client.websocket_connect(
+            f"/v1/ws/dags/{dag_id}/run?workspace_id={workspace_id}"
+        ) as ws:
             assert ws.receive_json()["status"] == "started"
             final = ws.receive_json()
             assert final["status"] == "waiting"

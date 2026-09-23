@@ -112,6 +112,7 @@ class TestMergeQueueRatchet:
         max_merge: object = 1,
         min_merge: object = 1,
         wait_minutes: object = 2,
+        grouping: object = "ALLGREEN",
     ):
         """Default to the reviewed batching posture; override one knob per test.
 
@@ -134,6 +135,7 @@ class TestMergeQueueRatchet:
                             "min_entries_to_merge": min_merge,
                             "max_entries_to_merge": max_merge,
                             "min_entries_to_merge_wait_minutes": wait_minutes,
+                            "grouping_strategy": grouping,
                         }
                     }
                 }
@@ -248,6 +250,19 @@ class TestMergeQueueRatchet:
     ) -> None:
         gaps = self._policy_gaps(gate, tmp_path, monkeypatch, wait_minutes=wait_minutes)
         assert any("min_entries_to_merge_wait_minutes" in gap for gap in gaps)
+
+    @pytest.mark.parametrize("grouping", ["HEADGREEN", "allgreen", None, True])
+    def test_any_grouping_other_than_allgreen_fails_closed(
+        self, gate, tmp_path, monkeypatch, grouping
+    ) -> None:
+        """Batching is safe only because ALLGREEN judges every member on its own
+        entry. HEADGREEN would merge a whole group on the head entry's checks,
+        so the strategy is part of the reviewed posture the gate pins."""
+        gaps = self._policy_gaps(gate, tmp_path, monkeypatch, grouping=grouping)
+        assert gaps == [
+            "develop merge queue must use grouping_strategy=ALLGREEN "
+            f"(every grouped candidate must pass its own checks); got {grouping!r}"
+        ]
 
     def test_a_malformed_queue_contract_fails_closed(self, gate, tmp_path, monkeypatch) -> None:
         protection, _queue = self._write_contracts(tmp_path)

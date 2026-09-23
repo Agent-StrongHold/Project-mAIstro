@@ -8,8 +8,14 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import stores
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
+from services import workspace_authority
+from services.dag_execution_scope import (
+    DagExecutionScope,
+    DagWorkspaceSelectionError,
+    authorize_hive_dag_scope,
+)
 from services.edit_lock import diff_dag_snapshots, mark_edited
 
 from routes.audit import log_audit
@@ -58,6 +64,13 @@ class DAGEdge(BaseModel):
     condition: str | None = None
 
 
+class DagRunRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    workspace_id: str | None = None
+    project_id: str | None = None
+
+
 class DAGFile(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -83,69 +96,38 @@ def _actor(request: Request) -> str:
     return str(user.get("id") or "system")
 
 
-def _owned_workspace_ids(user_id: str) -> list[str]:
-    """The Hive Workspaces ``user_id`` is an active member of, sorted by id.
-
-    Reads the same store ``authorize_hive_dag_workspace`` authorizes against:
-    ``stores.workspaces`` is Hive's Workspace authority until #37 converges it,
-    so owner discovery here is a read of the existing seam, not a second one.
-    """
-    principal = str(user_id).strip()
-    if not principal:
-        return []
-    return sorted(
-        str(workspace.id)
-        for workspace in stores.workspaces.values()
-        if workspace.active is not False
-        and any(member.user_id == principal for member in workspace.members)
-    )
-
-
-async def _resolve_run_scope_for_user(
+async def _authorize_run_scope(
     dag_data: Mapping[str, Any],
     *,
     user_id: str,
     selected_workspace: str | None = None,
     selected_project: str | None = None,
-) -> tuple[str, str]:
-    """Resolve and authorize the scope used by canonical Run admission.
+) -> DagExecutionScope:
+    """Resolve and authorize the scope a DAG-run producer executes under.
 
     Precedence: an explicit request selection, then the Workspace the saved
     DAG already carries, and only when neither exists the requesting owner's
-    single Hive Workspace membership. That last step is the no-selection fix:
-    a request whose authenticated owner has exactly one Workspace must not be
-    admitted into the deployment default, which is an unrelated scope. With
-    zero or several memberships there is no single owner scope to choose, and
-    resolution falls to the canonical resolver, which remains the single
-    source for the deployment default and for Root Project selection.
+    single canonical Workspace membership. That last step is the no-selection
+    fix (#736): a request whose authenticated owner has exactly one Workspace
+    must not be admitted into an unrelated deployment default. Every path
+    ends in ``authorize_hive_dag_scope`` -- the one admission boundary -- so a
+    selection that cannot be authorized, and a request with no resolvable
+    scope at all, fails closed instead of defaulting.
     """
     selection = (
         str(selected_workspace or "").strip() or str(dag_data.get("workspace_id") or "").strip()
     )
     if not selection:
-        owned = _owned_workspace_ids(user_id)
-        if len(owned) == 1:
-            selection = owned[0]
-    if selection:
-        from services.dag_execution_scope import (
-            DagWorkspaceSelectionError,
-            authorize_hive_dag_workspace,
-        )
-
-        try:
-            authorize_hive_dag_workspace(
-                workspace_id=selection,
-                user_id=user_id,
-            )
-        except DagWorkspaceSelectionError as exc:
-            raise HTTPException(status_code=403, detail="Workspace not found") from exc
-
+        principal = str(user_id).strip()
+        if principal:
+            store = await workspace_authority.canonical_workspace_store()
+            owned = await store.list_for_user(principal)
+            if len(owned) == 1:
+                selection = owned[0].workspace_id
     project = str(selected_project or "").strip() or str(dag_data.get("project_id") or "").strip()
-    from services.canonical_dag_runner import resolve_execution_scope
-
-    return await resolve_execution_scope(
-        dag_data,
-        workspace_id=selection or None,
+    return await authorize_hive_dag_scope(
+        workspace_id=selection or "",
+        user_id=user_id,
         project_id=project or None,
     )
 
@@ -284,38 +266,31 @@ async def _execute_registered_dag(
     dag_id: str,
     dag_data: Mapping[str, Any],
     *,
-    user_id: str,
-    selected_workspace: str | None = None,
-    selected_project: str | None = None,
+    scope: DagExecutionScope,
     admission_source: str,
 ) -> dict[str, Any]:
     """Register the saved DAG and execute it on the canonical Run path.
 
     The one execution seam shared by the Hive DAG-run producers (#736): the
-    HTTP button route and the streaming socket both resolve scope, register
-    the saved snapshot as a descriptor, and admit/execute exactly one
-    canonical Run through ``run_registered_dag``. Returns the canonical
-    Run/NodeRun projection in the historical DAG response shape.
+    HTTP button route and the streaming socket both resolve an authorized
+    ``DagExecutionScope`` up front, register the saved snapshot as a
+    descriptor, and admit/execute exactly one canonical Run through
+    ``run_registered_dag``. Returns the canonical Run/NodeRun projection in
+    the historical DAG response shape.
     """
     from services.dag_agents import get_registry, run_registered_dag
 
-    resolved_workspace, resolved_project = await _resolve_run_scope_for_user(
-        dag_data,
-        user_id=user_id,
-        selected_workspace=selected_workspace,
-        selected_project=selected_project,
-    )
     # The saved DAG is the product's editable definition. Registering its
     # snapshot first makes every producer use the same descriptor -> template
     # projection as schedules and other registered-DAG callers.
     snapshot = _registered_dag_snapshot(dag_data)
-    node_resolver = _route_node_resolver(dag_data, user_id)
+    node_resolver = _route_node_resolver(dag_data, scope.user_id)
     get_registry().register(snapshot)
     graph, record = await run_registered_dag(
         dag_id,
-        workspace_id=resolved_workspace,
-        project_id=resolved_project,
-        user_id=user_id,
+        workspace_id=scope.workspace_id,
+        project_id=scope.project_id,
+        user_id=scope.user_id,
         node_resolver=node_resolver,
         provenance={"admission_source": admission_source, "execution_mode": "interactive"},
     )
@@ -583,22 +558,35 @@ def remove_edge(dag_id: str, edge_id: str) -> dict:
 async def run_dag(
     dag_id: str,
     request: Request,
-    workspace_id: str | None = None,
+    body: DagRunRequest | None = None,
+    workspace_id: str | None = Query(default=None),
+    project_id: str | None = Query(default=None),
 ) -> dict:
-    """Execute a saved DAG through the registered canonical Run path."""
+    """Execute through one canonical Run and project its facts for the UI."""
     if dag_id not in stores.dags:
         raise HTTPException(status_code=404, detail="dag not found")
     dag_data = stores.dags[dag_id]
     actor = _actor(request)
+    selection = (body.workspace_id if body is not None else None) or workspace_id
+    requested_project = (body.project_id if body is not None else None) or project_id
+    try:
+        scope = await _authorize_run_scope(
+            dag_data,
+            user_id=actor,
+            selected_workspace=selection,
+            selected_project=requested_project,
+        )
+    except DagWorkspaceSelectionError as exc:
+        raise HTTPException(
+            status_code=403, detail="DAG Workspace scope is not authorized"
+        ) from exc
     log_audit("dag_run", actor, target=dag_id)
 
     try:
         result = await _execute_registered_dag(
             dag_id,
             dag_data,
-            user_id=actor,
-            selected_workspace=workspace_id or getattr(request.state, "workspace_id", None),
-            selected_project=getattr(request.state, "project_id", None),
+            scope=scope,
             admission_source="hive_dag_route",
         )
     except HTTPException:
@@ -618,11 +606,23 @@ async def run_dag(
 
 
 @router.post("/run-champion")
-async def run_champion() -> dict:
+async def run_champion(
+    request: Request,
+    body: DagRunRequest | None = None,
+    workspace_id: str | None = Query(default=None),
+) -> dict:
+    actor = _actor(request)
+    selection = (body.workspace_id if body is not None else None) or workspace_id
+    try:
+        scope = await authorize_hive_dag_scope(workspace_id=selection or "", user_id=actor)
+    except DagWorkspaceSelectionError as exc:
+        raise HTTPException(
+            status_code=403, detail="DAG Workspace scope is not authorized"
+        ) from exc
     try:
         from services.graph_runner import execute_champion
 
-        result = await execute_champion()
+        result = await execute_champion(scope=scope)
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
     except Exception as exc:
