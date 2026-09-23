@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +4
+  packages/hive-conductor/backend/tests: +7
   packages/maistro-design/tests: +1
 ---
 # Design Studio persisted project readback
@@ -24,4 +24,9 @@ tests. The route-conflict fix then replaced the three process-local
 preview-job tests (`refuses_before_any_probe`,
 `reports_unavailable_without_creating_a_pending_job`,
 `polling_render_status_reports_unavailable`) with scope-carrying 501/503 route
-tests, so the honest net for this change is +4: 7 route tests added, 3 removed.
+tests, so the honest net was +4: 7 route tests added, 3 removed. A later
+CI repair for the diff-coverage gate added three more route tests, taking the
+net to +7: an out-of-scope render-poll id answers the same scoped 404 (polling
+is disabled but not an id probe), a store read that fails while polling is an
+explicit 500 rather than a fabricated job state, and an unexpected crash inside
+project preparation is a 500 whose message names preparation, not generation.
