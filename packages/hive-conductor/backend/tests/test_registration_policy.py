@@ -640,6 +640,40 @@ class TestInvitations:
         }
         assert after_failures != before_failures
 
+    def test_allocation_outage_answers_503_with_a_retry_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A persistence outage during allocation is 503, not a half-made user.
+
+        When the durable claim transaction cannot complete (a storage outage,
+        not a name conflict), the route must answer 503 with a retry hint and
+        leave no account row behind.
+        """
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+        from services import username_registry
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        rp.set_mode("open", actor="admin:test")
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+
+        def _outage(_users: Any) -> None:
+            raise username_registry.UsernameAllocationError("durable store offline")
+
+        monkeypatch.setattr(username_registry, "create_users", _outage)
+        before = len(stores.users)
+
+        response = TestClient(app).post("/v1/auth/register", json=_register_body("outage-user"))
+
+        assert response.status_code == 503
+        assert "durably allocated" in response.json()["detail"]
+        assert len(stores.users) == before
+
     def test_independent_process_writers_publish_one_username(self, tmp_path: pathlib.Path) -> None:
         """The SQLite uniqueness claim survives separate application processes (#1248)."""
         from models.schemas import HiveUser
@@ -1081,6 +1115,63 @@ class TestSetupGuardEdges:
             stores.users.pop(user_id, None)
         for username in ("guardadmin", "guarduser"):
             stores.username_claims.pop(f"username:{username}", None)
+
+    def test_rollback_failure_demands_operator_reconciliation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rollback that cannot prove the pair is its own fails closed."""
+        from routes.setup import SetupRollbackError, _rollback_setup_accounts
+        from services import username_registry
+
+        def _refuses(_accounts: list[Any]) -> None:
+            raise username_registry.UsernameAllocationError("backend refused the rollback")
+
+        monkeypatch.setattr(username_registry, "rollback_users", _refuses)
+
+        with pytest.raises(SetupRollbackError, match="operator reconciliation"):
+            _rollback_setup_accounts([object()])
+
+    def test_setup_that_loses_the_username_race_is_refused_409(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Another writer claimed a setup name first: bootstrap refuses cleanly."""
+        import stores
+        from routes.setup import complete_setup
+        from services import username_registry
+
+        self._retryable_instance(monkeypatch)
+
+        def _taken(_users: Any) -> None:
+            raise username_registry.UsernameTakenError("username is already claimed")
+
+        monkeypatch.setattr(username_registry, "create_users", _taken)
+
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "Username is already taken."
+        assert len(stores.users) == 0
+
+    def test_setup_allocation_outage_answers_503(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A storage outage during bootstrap allocation is a retryable 503."""
+        import stores
+        from routes.setup import complete_setup
+        from services import username_registry
+
+        self._retryable_instance(monkeypatch)
+
+        def _outage(_users: Any) -> None:
+            raise username_registry.UsernameAllocationError("durable store offline")
+
+        monkeypatch.setattr(username_registry, "create_users", _outage)
+
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 503
+        assert "could not durably allocate" in exc_info.value.detail
+        assert len(stores.users) == 0
 
     def test_setup_completed_between_check_and_lock_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
