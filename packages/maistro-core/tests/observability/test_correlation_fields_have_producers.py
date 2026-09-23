@@ -83,7 +83,7 @@ def _bound_fields(tree: ast.AST) -> set[str]:
 def _produced_fields(files: Iterable[Path]) -> set[str]:
     produced: set[str] = set()
     for path in files:
-        produced |= _bound_fields(ast.parse(path.read_text(), filename=str(path)))
+        produced |= _bound_fields(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
     return produced
 
 
@@ -145,6 +145,11 @@ class TestTheScan:
             "packages/maistro-turing/backend/main.py",
         } <= scanned
         assert not any("/tests/" in path or "/testing/" in path for path in scanned)
+
+    def test_every_extra_root_exists(self) -> None:
+        """A renamed tree would otherwise drop out of the corpus silently."""
+        packages = _repo_root() / "packages"
+        assert [extra for extra in _EXTRA_ROOTS if not (packages / extra).is_dir()] == []
 
     def test_a_qualified_and_a_bare_call_are_both_read(self) -> None:
         source = (
