@@ -463,3 +463,64 @@ async def test_a_waiting_run_under_a_completed_continuation_does_not_abort_the_t
     assert await spine.store.reconcile_persistence() == 0
     unchanged = await spine.run_store.get_run(admitted.run_id)
     assert unchanged is not None and unchanged.status is RunStatus.WAITING
+
+
+async def test_a_claim_advanced_by_another_writer_first_is_left_to_that_writer(
+    spine: _Spine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await _claimed_but_not_running(
+        spine, claim_until=datetime.now(UTC) - timedelta(minutes=1)
+    )
+
+    async def lost_race(continuation: GraphContinuation) -> GraphContinuation:
+        raise ValueError("version regression")
+
+    monkeypatch.setattr(spine.continuations, "update", lost_race)
+
+    assert await spine.store.reconcile_persistence() == 0
+    still = await spine.continuations.get(run_id)
+    assert still is not None and still.status is RunStatus.QUEUED
+
+
+async def test_a_cancelled_continuation_with_hitl_evidence_is_not_settled_as_graph_residue(
+    spine: _Spine,
+) -> None:
+    """HITL cancellation belongs to the HITL repair, which knows its node and moment."""
+
+    async def hitl_cancelled(record: DurableRunRecord) -> DurableRunRecord:
+        running = await spine.run_store.get_run(record.run_id)
+        assert running is not None
+        metadata = {
+            **record.graph_state.metadata,
+            "hitl_settlements": {"step": {"outcome": "cancelled"}},
+        }
+        return record.model_copy(
+            update={
+                "run": transition_run(running, RunStatus.CANCELLED),
+                "graph_state": record.graph_state.model_copy(update={"metadata": metadata}),
+            }
+        )
+
+    run_id = await _crash_at_terminal_write(spine, _Step(), rewrite=hitl_cancelled)
+
+    assert await spine.store.reconcile_persistence() == 0
+    untouched = await spine.run_store.get_run(run_id)
+    assert untouched is not None and untouched.status is RunStatus.RUNNING
+
+
+async def test_the_running_sweep_does_not_spend_the_per_status_budget(spine: _Spine) -> None:
+    """A full page of RUNNING Runs must not starve the continuation-status repairs."""
+    filler = _graph(spine, _Step(), name="not graph work")
+    for _ in range(5):
+        other = await spine.run_store.create_run(filler, initial_status=RunStatus.QUEUED)
+        await spine.run_store.transition_run(other.run_id, RunStatus.RUNNING)
+    await spine.continuations.create(
+        GraphContinuation(
+            run_id="orphaned-continuation",
+            graph_state=GraphExecutionState(run_id="orphaned-continuation"),
+            status=RunStatus.WAITING,
+        )
+    )
+
+    assert await spine.store.reconcile_persistence(limit=5) == 1
+    assert await spine.continuations.get("orphaned-continuation") is None

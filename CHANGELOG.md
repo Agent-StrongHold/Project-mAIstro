@@ -390,7 +390,8 @@ or placeholder-only section.
   reconcile that starts every due and queued tick now repairs a RUNNING Run
   whose continuation is already COMPLETED, FAILED or (non-HITL) CANCELLED,
   carrying the matching NodeRun result/error over or stating that the original
-  error was not persisted. A continuation still QUEUED under a RUNNING Run
+  error was not persisted, once the Run's spine has been quiet for 60 seconds
+  (so a walker between its two writes is never mistaken for a crash). A continuation still QUEUED under a RUNNING Run
   whose resume claim has elapsed is rewritten to mirror RUNNING, so the due
   tick resumes it; a live claim is left alone. Canonical RUNNING Runs are
   swept with a cursor that advances across ticks, so a stranded Run behind any
