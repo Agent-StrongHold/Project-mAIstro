@@ -5,9 +5,10 @@
    Turing, and (admins only) mutate self-model variables.
 
 2. Turing-internal lane: a narrowly-scoped B2B service key from maistro.auth.
-   Turing's own reactor/producers authenticate with this to post producer
-   artifacts and write self-model updates back through the API — NOT general
-   admin power. The scope list is fixed below and enforced per-route.
+   An explicitly launched, future producer process may authenticate with this to
+   post producer artifacts and write self-model updates back through the API —
+   NOT general admin power. This backend starts no reactor; the scope list is
+   fixed below and enforced per-route.
 
 The middleware only establishes identity (cookie → user, service key →
 ServiceIdentity) and rejects unauthenticated /v1 traffic. Per-route gating
@@ -27,9 +28,9 @@ from maistro.auth import Scope, ServiceKeyAuthProvider, ServiceKeyRegistry
 
 logger = logging.getLogger("turing.auth_middleware")
 
-# Scopes Turing's own internals are allowed to use against this API. Explicitly
-# NOT admin/dashboard scopes — Turing posts producer artifacts and writes
-# self-model updates, nothing more.
+# Scopes a separately launched Turing producer process may use against this API.
+# Explicitly NOT admin/dashboard scopes — producer artifacts and self-model
+# updates, nothing more.
 TURING_INTERNAL_SCOPES: frozenset[Scope] = frozenset(
     {
         Scope.TURING_CHAT,

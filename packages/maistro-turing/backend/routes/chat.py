@@ -11,15 +11,14 @@ bridges: there is no such wiring on the current product path. A durable product
 composition can replace the store implementations through the same public
 contracts without changing the chat node.
 
-Streaming is not implemented: the underlying TuringChatSession exposes only a
-non-streaming handle_message(). A streaming endpoint would need a token-yielding
-method on the runtime, which does not exist yet — left as a TODO so the contract
-isn't faked.
+Streaming is not implemented: the underlying TuringChatSession exposes only
+non-streaming prompt preparation and response recording. A streaming endpoint
+would need a token-yielding method on the runtime, which does not exist yet —
+left as a TODO so the contract isn't faked.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from uuid import uuid4
 
@@ -62,17 +61,6 @@ def _reply_from_record(record: DurableRunRecord) -> str:
     return str(result["reply"])
 
 
-async def _unrecorded_reply(session: TuringChatSession, message: str) -> str:
-    """Preserve chat availability when only canonical audit admission failed."""
-    try:
-        return await session.handle_message(message)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.warning("unrecorded Turing chat execution failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
-
-
 @router.post("")
 async def chat(body: ChatBody, user: dict = Depends(require_user)) -> dict:
     message = body.message.strip()
@@ -93,13 +81,11 @@ async def chat(body: ChatBody, user: dict = Depends(require_user)) -> dict:
             session_id=session_id,
             message=message,
         )
-    except TuringAdmissionUnavailable:
-        logger.warning(
-            "Turing chat audit admission unavailable; executing turn without run_id",
-            exc_info=True,
-        )
-        reply = await _unrecorded_reply(session, message)
-        return {"session_id": session_id, "run_id": None, "reply": reply}
+    except TuringAdmissionUnavailable as exc:
+        # A failed canonical admission must not replay the turn outside the
+        # Run/NodeRun/Attempt spine: that would create an uncorrelated path.
+        logger.warning("Turing chat canonical admission unavailable", exc_info=True)
+        raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
 
     if record.run.status is not RunStatus.COMPLETED:
         logger.warning(
@@ -115,4 +101,14 @@ async def chat(body: ChatBody, user: dict = Depends(require_user)) -> dict:
         logger.warning("canonical Turing chat result projection failed", exc_info=True)
         raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE) from exc
 
-    return {"session_id": session_id, "run_id": record.run_id, "reply": reply}
+    invocation = await get_execution_plane().invocation_for_run(record.run_id)
+    if invocation is None:
+        logger.warning("canonical Turing chat Run %s has no Invocation", record.run_id)
+        raise HTTPException(status_code=503, detail=_PUBLIC_CHAT_FAILURE)
+
+    return {
+        "session_id": session_id,
+        "run_id": record.run_id,
+        "invocation_id": invocation.invocation_id,
+        "reply": reply,
+    }

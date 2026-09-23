@@ -191,6 +191,10 @@ src = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90", "C4"]
+# Vulture owns these external suppression codes; keep both the dynamic
+# backend surface and the inline review markers explicit without making
+# Ruff reject the cross-linter annotations.
+external = ["V102", "V105", "V106", "V107"]
 # UP046/UP047 (PEP 695 type-parameter syntax) only fire once target-version
 # reaches py312 (C2/#287). The 9 existing TypeVar/Generic[T] sites they'd flag
 # (maistro.credentials.rotation, maistro.graph.executor/nodes.base,
@@ -201,9 +205,6 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90", "C4"]
 # side effect of a floor-alignment PR. Tracked as follow-up, not silently
 # dropped.
 ignore = ["E501", "UP046", "UP047"]
-# Vulture owns these suppression codes; Ruff must preserve the inline review
-# markers without treating its external analyzer's codes as malformed.
-external = ["V102", "V106", "V107"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10

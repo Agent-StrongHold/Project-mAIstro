@@ -9,6 +9,16 @@ than retryable failure: an exception can arrive after the remote system has
 already committed the side effect. A provider/adapter may raise
 :class:`EffectNotApplied` only when it can prove no external effect occurred.
 
+Reachable consumers construct Invocations through this boundary. In
+particular, the standalone Turing chat backend composes the governed service
+and stores its canonical Invocation rows in a process-local
+:class:`InMemoryInvocationStore`; durable ``InvocationStore`` adapters exist
+for composition roots that select them. This layer is therefore both a
+production execution boundary and a tested contract, although durability still
+depends on the composition root that selects the store. An Invocation id is
+correlated with the owning Run/NodeRun/Attempt on the Turing path, rather than
+being test-only evidence.
+
 The container composes this service for capability-effect consumers. A
 provider call is admitted, recorded, and reconciled here; no caller may mutate
 Invocation rows directly. Ephemeral contexts still use the in-memory store,
@@ -373,7 +383,9 @@ class ProviderReconciliationAdapter(Protocol):
 class InvocationExecutionService:
     """Resolve one Binding, persist one provider call, and guard effect retries.
 
-    The service is the lifecycle authority for capability effects. Provider
+    Reachable composition roots use this service for governed provider calls;
+    the effect-retry guard protects those calls when they share its store. The
+    service is the lifecycle authority for capability effects. Provider
     adapters can report evidence, but only this service changes Invocation
     state.
     """

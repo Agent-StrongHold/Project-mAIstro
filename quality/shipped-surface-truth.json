@@ -2000,8 +2000,8 @@
       "handler": "chat",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "runs the message through the chat session",
-      "effect_owner": "turing chat session.handle_message"
+      "reason": "runs the message through the canonical chat Node and Invocation path",
+      "effect_owner": "Turing canonical chat Node / model.chat Invocation"
     },
     {
       "source": "packages/maistro-turing/backend/routes/feed.py",
