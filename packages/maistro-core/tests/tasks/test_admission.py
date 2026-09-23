@@ -689,6 +689,82 @@ async def test_recovery_leaves_a_claimed_run_to_the_attempt_sweep(claiming) -> N
     assert restarted.list_tasks()[0] == []
 
 
+async def test_recovery_terminalizes_a_running_claim_whose_node_run_has_no_attempt(
+    claiming,
+) -> None:
+    """A NodeRun is not physical evidence (#1114).
+
+    A worker that died between creating the NodeRun and persisting its first
+    Attempt — the non-claiming dispatch window, or a legacy worker during a
+    rolling upgrade — leaves a RUNNING task Run whose lone NodeRun has no
+    Attempt under it. Nothing anchored on physical evidence can reach that
+    Run: the lease sweep (#232) reclaims Attempts, and there is none. The
+    stranded-claim scan used to treat the NodeRun itself as evidence and skip
+    it forever; it now fails the Run visibly, and the disposition survives a
+    second restart unchanged.
+    """
+    runs, admitter = claiming
+    submitted = await TaskQueue(admitter=admitter).submit(
+        TaskCreate(description="incomplete dispatch record")
+    )
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    node_id = run.graph.materialize().nodes[0].node_id
+    await runs.transition_run(submitted.run_id or "", RunStatus.RUNNING)
+    await runs.create_node_run(submitted.run_id or "", node_id=node_id)
+
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+    assert run.error is not None and "stranded dispatch" in run.error
+    # The incomplete dispatch record stays as canonical evidence of where the
+    # worker died; recovery terminalizes the Run, it does not rewrite history.
+    node_runs = await runs.list_node_runs(submitted.run_id or "")
+    assert len(node_runs) == 1
+    assert await runs.list_attempts(node_runs[0].node_run_id) == []
+    # Idempotent: a later restart sees a terminal Run and touches nothing.
+    again = TaskQueue()
+    assert await again.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.FAILED
+
+
+async def test_recovery_leaves_attempt_evidence_to_its_owner_even_when_terminal(
+    claiming,
+) -> None:
+    """A terminal Attempt is still evidence, and not this scan's to fail.
+
+    A crash between the Attempt's terminal write and its logical
+    reconciliation leaves a RUNNING Run whose NodeRun holds a terminal
+    Attempt. The reconciler re-derives the logical record from that persisted
+    outcome — the same handoff chat's recovery documents — so terminalizing it
+    here would claim a failure the physical record cannot back.
+    """
+    from maistro.runs.model import AttemptStatus
+
+    runs, admitter = claiming
+    submitted = await TaskQueue(admitter=admitter).submit(
+        TaskCreate(description="completed but unreconciled")
+    )
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    node_id = run.graph.materialize().nodes[0].node_id
+    await runs.transition_run(submitted.run_id or "", RunStatus.RUNNING)
+    node_run = await runs.create_node_run(submitted.run_id or "", node_id=node_id)
+    attempt = await runs.create_attempt(node_run.node_run_id, runtime_id="test")
+    await runs.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    await runs.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"success": True}
+    )
+
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.RUNNING
+
+
 async def test_postgres_queued_task_rehydrates_after_queue_restart(pg_pool) -> None:
     if pg_pool is None:
         pytest.skip("MAISTRO_TEST_PG_DSN is not set")
@@ -937,6 +1013,41 @@ async def test_postgres_stranded_running_claim_gets_a_terminal_disposition(pg_po
     run = await runs.get_run(submitted.run_id or "")
     assert run is not None and run.status is RunStatus.FAILED
     assert run.error is not None and "stranded dispatch" in run.error
+
+
+async def test_postgres_lone_node_run_is_not_stranded_claim_evidence(pg_pool) -> None:
+    """On the durable store too, a NodeRun without an Attempt is an
+    incomplete dispatch record, not evidence of a live claim (#1114): a death
+    after `create_node_run` and before `create_attempt` must still reach a
+    terminal disposition instead of an immortal RUNNING Run."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.runs.consumer_claim import ClaimingPgRunStore
+
+    projects = PgProjectScopeStore(pg_pool)
+    root = await projects.create_root("pg-stranded-lone-node-run")
+    runs = ClaimingPgRunStore(pg_pool, project_store=projects)
+    admitter = TaskRunAdmitter(
+        runs, workspace_id="pg-stranded-lone-node-run", project_id=root.project_id
+    )
+    submitted = await TaskQueue(admitter=admitter).submit(
+        TaskCreate(description="pg lone node run")
+    )
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    node_id = run.graph.materialize().nodes[0].node_id
+    await runs.transition_run(submitted.run_id or "", RunStatus.RUNNING)
+    await runs.create_node_run(submitted.run_id or "", node_id=node_id)
+
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.FAILED
+    assert run.error is not None and "stranded dispatch" in run.error
+    node_runs = await runs.list_node_runs(submitted.run_id or "")
+    assert len(node_runs) == 1
+    assert await runs.list_attempts(node_runs[0].node_run_id) == []
 
 
 async def test_an_unwired_queue_admits_without_a_run() -> None:

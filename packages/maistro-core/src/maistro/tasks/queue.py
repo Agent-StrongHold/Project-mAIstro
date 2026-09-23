@@ -143,6 +143,22 @@ def _task_from_run(run: Any) -> tuple[TaskResponse | None, str | None]:
     return task.model_copy(update={"run_id": run.run_id, "status": TaskStatus.QUEUED}), None
 
 
+async def _has_attempt_evidence(run_store: Any, node_runs: list[Any]) -> bool:
+    """Whether any physical Attempt exists under these NodeRuns.
+
+    A NodeRun is logical scaffolding: it says where a try would run, not that
+    one ever started. The Attempt is the physical evidence — active, its lease
+    is the Attempt sweep's to expire; terminal, its outcome is the
+    reconciler's to re-derive. A NodeRun with no Attempt under it is an
+    execution record that is incomplete rather than absent, and no sweep
+    anchored on physical evidence can reach it.
+    """
+    for node_run in node_runs:
+        if await run_store.list_attempts(node_run.node_run_id):
+            return True
+    return False
+
+
 class TaskQueue:
     """In-memory task queue with event-based notification and async lock."""
 
@@ -502,7 +518,9 @@ class TaskQueue:
         cannot remain an invisible QUEUED row forever. Task Runs left RUNNING
         with no physical execution evidence — the residue of a refused
         terminalization, or of a dispatch that wrote RUNNING separately from
-        its Attempt — are failed visibly for the same reason (#1114).
+        its Attempt, including one that died after creating a NodeRun but
+        before any Attempt under it — are failed visibly for the same reason
+        (#1114).
         """
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -544,16 +562,22 @@ class TaskQueue:
     async def _terminalize_stranded_claims(self, run_store: Any, *, batch_size: int) -> None:
         """Fail task Runs claiming execution with no physical evidence (#1114).
 
-        A task Run that is RUNNING with no NodeRun has no Attempt, no lease and
-        no dispatch path: on a claiming store RUNNING is only ever committed
-        together with the NodeRun and leased Attempt that make it true, so this
-        state is the residue of a terminalization whose FAILED write was
-        refused, of a pre-repair worker that wrote RUNNING before creating its
-        evidence, or of a legacy worker mid-dispatch during a rolling upgrade —
-        whose execute then fails visibly against the terminal Run rather than
-        silently racing the recovering process. Failing it is the honest
-        disposition, and every restart retries it, so it cannot outlive
-        recovery as an immortal RUNNING Run.
+        A task Run that is RUNNING with no Attempt — with or without a NodeRun
+        — has no lease and no dispatch path. A NodeRun alone is not evidence:
+        one with no Attempt under it is an execution record that is incomplete
+        rather than absent, left by a worker that died between creating the
+        NodeRun and persisting its first Attempt. On a claiming store RUNNING
+        is only ever committed together with the NodeRun and leased Attempt
+        that make it true, so these states are the residue of a terminalization
+        whose FAILED write was refused, of a pre-repair worker that wrote
+        RUNNING before creating its evidence, or of a legacy worker mid-dispatch
+        during a rolling upgrade — whose execute then fails visibly against the
+        terminal Run rather than silently racing the recovering process. An
+        Attempt, active or terminal, is evidence: active, the lease sweep
+        (#232) owns reclaiming it; terminal, the reconciler re-derives the
+        logical record from it. Failing the rest is the honest disposition, and
+        every restart retries it, so it cannot outlive recovery as an immortal
+        RUNNING Run.
         """
         from maistro.runs.store import run_cursor_key
 
@@ -568,9 +592,11 @@ class TaskQueue:
                 after = run_cursor_key(run)
                 if run.provenance.get(ADMISSION_SOURCE) != TASK_QUEUE_SOURCE:
                     continue
-                if await run_store.list_node_runs(run.run_id):
-                    # Physical evidence exists: the Attempt lease sweep (#232)
-                    # owns reclaiming it, not this scan.
+                node_runs = await run_store.list_node_runs(run.run_id)
+                if await _has_attempt_evidence(run_store, node_runs):
+                    # Physical evidence exists — an Attempt, not a NodeRun: the
+                    # Attempt lease sweep (#232) owns the active ones and the
+                    # reconciler the terminal ones, not this scan.
                     continue
                 try:
                     await run_store.transition_run(
