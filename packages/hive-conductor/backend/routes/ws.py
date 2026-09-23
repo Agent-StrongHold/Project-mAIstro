@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
@@ -117,6 +118,12 @@ async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
         await _stream_canonical_run(websocket, dag_id=dag_id, scope=scope)
     except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        from services.graph_runner import public_failure
+
+        logger.warning("dag_stream_failed dag_id=%s", dag_id, exc_info=exc)
+        with contextlib.suppress(Exception):
+            await websocket.send_json({"status": "failed", "error": public_failure(exc)})
     finally:
         try:
             await websocket.close()
@@ -128,7 +135,7 @@ async def _stream_canonical_run(
     websocket: WebSocket, *, dag_id: str, scope: DagExecutionScope
 ) -> None:
     """Stream one canonical Run and record the projection POST /v1/dags/{id}/run records."""
-    from services.graph_runner import execute_dag_streaming, public_failure
+    from services.graph_runner import execute_dag_streaming
 
     from routes.audit import log_audit
     from routes.dags import _record_run_projection
@@ -138,18 +145,9 @@ async def _stream_canonical_run(
     async def project(result: dict[str, Any]) -> None:
         await _record_run_projection(dag_id=dag_id, user_id=scope.user_id, result=result)
 
-    try:
-        async for event in execute_dag_streaming(
-            stores.dags[dag_id], scope=scope, execution_mode="interactive", on_result=project
-        ):
-            await websocket.send_json(event)
-            if event.get("status") in ("completed", "failed"):
-                break
-    except WebSocketDisconnect:
-        raise
-    except Exception as exc:
-        logger.warning("dag_stream_failed dag_id=%s", dag_id, exc_info=exc)
-        try:
-            await websocket.send_json({"status": "failed", "error": public_failure(exc)})
-        except Exception as send_exc:
-            logger.debug("ws_failure_frame_not_sent (client gone): %s", send_exc)
+    async for event in execute_dag_streaming(
+        stores.dags[dag_id], scope=scope, execution_mode="interactive", on_result=project
+    ):
+        await websocket.send_json(event)
+        if event.get("status") in ("completed", "failed"):
+            break

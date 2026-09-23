@@ -352,6 +352,7 @@ def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both
     sqlite_member_root_project: str,
 ) -> None:
     import stores
+    from services.dag_run_store import get_dag_run_store
 
     assert "sqlite-member" not in stores.workspaces
     assert "sqlite-foreign" not in stores.workspaces
@@ -371,6 +372,10 @@ def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both
     terminal = _run_over_socket(admin_client, stored_dag, "sqlite-member")[-1]
     assert terminal["status"] == "completed"
     assert _canonical_record(terminal["run_id"]).run.project_id == sqlite_member_root_project
+    projection = get_dag_run_store().get_run(terminal["run_id"])
+    assert projection is not None
+    assert projection["workspace_id"] == "sqlite-member"
+    assert projection["project_id"] == sqlite_member_root_project
 
     before = _run_ids()
     with (

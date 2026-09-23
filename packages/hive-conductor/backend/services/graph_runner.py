@@ -97,7 +97,8 @@ async def execute_dag_streaming(
 
     ``on_result`` receives the canonical result as soon as the Run settles,
     before any NodeRun frame is sent, so a client that disconnects mid-stream
-    cannot keep the caller from recording its projection.
+    cannot keep the caller from recording its projection. It must not raise:
+    the Run has already settled, and an exception here fails the stream.
     """
     entry = dag_data.get("entry_node") or (
         dag_data.get("nodes", [{}])[0].get("id") if dag_data.get("nodes") else ""
