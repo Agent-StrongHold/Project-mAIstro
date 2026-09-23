@@ -411,6 +411,24 @@ or placeholder-only section.
   the query, which both SQL backends push down. The per-candidate source check
   stays as defense in depth.
 
+- **Ratchet bases resolve for rebased topic pushes (no linked issue: CI infra).**
+  Restores the #727/#534 base rule in three workflows that had drifted off it.
+  `quality.yml`'s coverage gate, `ci.yml`'s root suite and
+  `vulture-ratchet.yml` named
+  `RATCHET_BASE_REV` themselves and fell through to `github.event.before` for
+  *every* push. That is right only for a protected branch, which really does
+  replace that revision; on a topic branch `before` is the branch's own
+  previous tip, and any rebase orphans it — unreachable from every ref, so
+  `fetch-depth: 0` (which fetches refs, not orphans) cannot supply it. The
+  ratchet then refused with "base revision could not be resolved" and the
+  candidate went red on base provenance while its pull-request run passed on
+  byte-identical content; a re-run could not clear it, because `before` is
+  fixed in the stored event payload. All three now use the integration base
+  for topic pushes, matching the two sibling declarations that were already
+  correct and what `ratchet_provenance._push_event_base` computes when no base
+  is named. A new test pins the shape of every declaration so the two
+  behaviours cannot drift apart again.
+
 - **The Simple/Power toggle is removed rather than left silently inert
   (#1409, #1411, #1410).** It promised "Power Mode (DAGs, prompts, topology)" but
   changed nothing observable: `AppShell.tsx`'s navigation never branched on
