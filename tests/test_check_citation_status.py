@@ -497,19 +497,37 @@ def test_updating_the_ledger_rewrites_it(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert set(written["known"]) == set(written["reasons"])
 
 
-def test_proposed_related_design_is_marked_historical_not_governing() -> None:
-    """A related link cannot smuggle a Proposed decision into shipped prose."""
-    path = ROOT / "docs" / "specs" / "SPEC-070226-af02-p1-resilience-control.md"
+@pytest.mark.parametrize(
+    ("spec_name", "adr_id", "in_related"),
+    [
+        ("SPEC-070226-af02-p1-resilience-control.md", "ADR-066", False),
+        ("SPEC-070226-2b70-observability-replay-pii-tiers.md", "ADR-055", True),
+        ("SPEC-062126-d421-medley-import-sanitization-pipeline.md", "ADR-083", True),
+    ],
+)
+def test_proposed_related_design_is_marked_historical_not_governing(
+    spec_name: str, adr_id: str, in_related: bool
+) -> None:
+    """A related link cannot smuggle a Proposed decision into shipped prose.
+
+    Moving a governing citation to `related` silences the front-matter check,
+    so the prose has to carry the status honestly: the citation stays (history
+    remains citable) but the body must say the authority is not live. Each
+    entry here is a document where an Accepted spec treated a Proposed ADR as
+    realised, governing fact — the exact laundering #374 names.
+    """
+    path = ROOT / "docs" / "specs" / spec_name
     result = validate_file(path)
 
     assert result.front_matter is not None
-    assert _ref("ADR-066") not in result.front_matter.related
+    assert (_ref(adr_id) in result.front_matter.related) is in_related
 
-    body = path.read_text().split("\n---", 2)[-1]
-    assert "ADR-066 remains Proposed" in body
-    assert "historical design context only" in body
-    assert "not shipped\nauthority" in body
-    assert "ADR-066 specifies" not in body
+    body = " ".join(path.read_text().split("\n---", 2)[-1].split())
+    assert f"{adr_id} remains Proposed" in body
+    assert "design context only" in body
+    assert "not shipped authority" in body
+    for normative in ("says", "specifies", "mandates"):
+        assert f"{adr_id} {normative}" not in body
 
 
 def test_the_committed_baseline_records_a_reason_for_every_entry() -> None:

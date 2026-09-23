@@ -38,8 +38,10 @@ A user can bring a skill into the engine from many places: the Medley/ClawHub re
 arbitrary **URL**, a **file upload**, or **pasted text**. The supply-chain threat is live and at
 scale — OpenClaw's ClawHavoc campaign put 1,184 malicious skills (~1 in 5 packages at peak) on its
 registry, 341+ shipping the AMOS infostealer (see `docs/security/AGENT-FRAMEWORK-FLAWS-LEDGER.md`
-entry 13). ADR-072 names malicious third-party code as the #1 adversary; ADR-083 says skills must be
-signed, trust-tiered, and sandboxed; SPEC-005 specifies the *publisher VC / signing / revocation*
+entry 13). ADR-072 names malicious third-party code as the #1 adversary; ADR-083 remains Proposed
+and is retained as design context only — it is not shipped authority for this SPEC; its
+signed/trust-tiered/sandboxed direction is made concrete (and its trust-tier *promotion* policy
+deferred) here; SPEC-005 specifies the *publisher VC / signing / revocation*
 trust chain.
 
 What is **not** yet specified is the **content-safety pipeline** that every import — signed or not,
