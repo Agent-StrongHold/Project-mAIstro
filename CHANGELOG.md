@@ -208,6 +208,16 @@ or placeholder-only section.
 
 ### Added
 
+- **Every shipped node kind is proven to get the Container's own authorities
+  through `Container.node_resolver()` (#44, #1082).** A new sweep resolves each
+  registered production kind that declares an authority through a real
+  `create_container()` Container and asserts it receives the exact
+  Container-owned harness adapters, usage log, A2A delegator, guest peers,
+  canonical and graph Run stores, capability-effect context, provider
+  registry, LLM router, and resolver, so the Container dropping one and
+  letting `build_node_resolver`'s bare default stand in now fails CI. Test
+  only; no wiring gap was found.
+
 - **Governed model egress is wired into production Container composition
   (#1079).** `AgentConfig.model_bindings` declares authorized Workspace/Project
   `model.chat` Bindings; `create_container()` bootstraps them into the exact
