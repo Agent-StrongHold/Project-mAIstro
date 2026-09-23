@@ -58,9 +58,22 @@ async def _refresh_authenticated_activity(
     websocket: WebSocket, permission: str | None = None
 ) -> dict | None:
     """Touch activity only after the complete handshake authorization path passes."""
-    # Re-resolve so expiry or revocation winning between the initial identity
-    # check and this serialized touch fails closed rather than accepting stale
-    # authorization.
+    # Resolve and authorize WITHOUT touching first: a denied handshake is not
+    # eligible activity — including one denied by a `dags.write` elevation
+    # withdrawn between the admission check above and this re-check. Touching
+    # on the denial path would let rejected (even mid-handshake-revoked)
+    # callers slide the idle window, diverging from the HTTP middleware's
+    # resolve -> authorize -> touch ordering.
+    user = resolve_principal(websocket.cookies, websocket.headers.get("authorization"))
+    if user is None:
+        await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
+        return None
+    if permission is not None and not principal_has_permission(user, permission):
+        await websocket.close(code=_POLICY_VIOLATION, reason=f"Permission '{permission}' required")
+        return None
+    # Authorization passed: the serialized touch re-validates the record under
+    # the session lock, so expiry or revocation winning between the check and
+    # this touch fails closed rather than accepting stale authorization.
     user = resolve_principal(
         websocket.cookies,
         websocket.headers.get("authorization"),
@@ -68,9 +81,6 @@ async def _refresh_authenticated_activity(
     )
     if user is None:
         await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
-        return None
-    if permission is not None and not principal_has_permission(user, permission):
-        await websocket.close(code=_POLICY_VIOLATION, reason=f"Permission '{permission}' required")
         return None
     return user
 

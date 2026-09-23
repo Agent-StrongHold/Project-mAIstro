@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +10
+  packages/hive-conductor/backend/tests: +12
 ---
 
 # #1187 authenticated session idle policy
@@ -24,3 +24,16 @@ Cross-process race safety is closed as a documented single-writer contract in
 ADR-077 ("Serialization authority"): the supported deployment serves the
 session store from one process, so the in-process session lock serializes every
 expiry/revocation/refresh decision.
+
+Second repair round: the DAG-run socket authorizes in two phases, and the
+activity touch rode inside the same re-resolve as the phase-2 permission
+re-check, so a `dags.write` elevation withdrawn between the handshake's
+admission check and its touch still slid the idle window (probe reproduction:
+ denial with a clock advanced past login refreshed `last_activity_at`).
+`_refresh_authenticated_activity` now resolves and authorizes without touching
+first and performs the serialized, fail-closed touch only after the full
+authorization path — the HTTP middleware's resolve -> authorize -> touch
+ordering. Two cases added: `test_revocation_mid_handshake_denies_without_
+refreshing_idle_expiry` (denial leaves the idle window and the session
+untouched) and `test_accepted_websocket_handshake_is_eligible_activity` (the
+positive control: an accepted handshake does refresh).
