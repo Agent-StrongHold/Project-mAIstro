@@ -168,6 +168,26 @@ async def test_a_failed_task_attempt_is_visible_without_its_error_text(
     assert "sk-do-not-leak" not in response.text
 
 
+async def test_only_a_chat_attempt_names_an_agent(wired, client: TestClient) -> None:
+    """A graph node's output is its Attempt result, and may hold an "agent" key of
+    its own; that is not the agent the node was dispatched to (ADR-082526-7f02)."""
+    from maistro.runs.model import AttemptStatus
+
+    run_id = _submit(client)["run_id"]
+    run = await wired.get_run(run_id)
+    assert run is not None
+    node_run = await wired.create_node_run(run_id, node_id=run.graph.materialize().nodes[0].node_id)
+    attempt = await wired.create_attempt(node_run.node_run_id, executor_id="transform")
+    await wired.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    await wired.transition_attempt(
+        attempt.attempt_id, AttemptStatus.COMPLETED, result={"agent": "not-a-dispatch"}
+    )
+
+    body = client.get(f"/runs/{run_id}/node-runs").json()
+
+    assert body[0]["attempts"][0]["agent"] is None
+
+
 async def test_node_runs_for_an_unknown_run_are_404(wired, client: TestClient) -> None:
     assert client.get("/runs/no-such-run/node-runs").status_code == 404
 
