@@ -145,6 +145,7 @@ export default function DesignStudio() {
               <span style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600 }}>{artifact.name}</span>
               <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 4 }}>{artifact.description}</span>
             </button>;
+
           })}
         </div>
         <p id="design-artifact-types-help" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", margin: "10px 0 0" }}>Keyboard: Tab moves between artifact types; Enter or Space selects one. The selected type is announced as pressed.</p>
@@ -178,6 +179,7 @@ export default function DesignStudio() {
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
           <button type="button" className="btn-primary" disabled={!canOpenEditor} onClick={openEditor} aria-describedby="design-execution-state" style={{ padding: "9px 16px", borderRadius: 8 }}>{selectedMode === "deck" ? "Open Deck editor" : "Open editor"}</button>
           <span id="design-execution-state" role="status" aria-live="polite" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>{status}</span>
+
         </div>
       </section>
 
@@ -185,5 +187,6 @@ export default function DesignStudio() {
         {[{ label: "Design resource discovery", state: catalog.status === "ready" ? "available" : catalog.status, detail: "Skills and design systems are discovered from the connected Design service." }, { label: "Editing + preview", state: "available", detail: "Fixed-page and Deck editors expose selection, property controls, keyboard movement, and visible status." }, { label: "Presentation + export", state: selectedMode === "deck" ? "available" : "available", detail: "Deck presentation, ordered-page navigation, and HTML/print export are keyboard-operable." }].map((step) => <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}><div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span><span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>{step.state}</span></div><div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>{step.detail}</div></div>)}
       </div></section>
     </main>
+
   );
 }

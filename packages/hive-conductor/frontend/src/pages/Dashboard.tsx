@@ -312,19 +312,19 @@ BEHAVIOR:
   return (
     <div style={{ marginBottom: "1rem" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: C.card, border: `1px solid ${C.border}`, borderRadius: 10 }}>
-        <span style={{ color: C.gold, fontSize: "0.75rem" }}>✦</span>
+        <span style={{ color: C.gold, fontSize: "var(--text-floor)" }}>✦</span>
         <input value={value} onChange={e => setValue(e.target.value)} onKeyDown={(e: KeyboardEvent) => e.key === "Enter" && submit()}
           placeholder={editing ? "Build: add widgets, resize, configure..." : "Ask: drill into data, compare, explain trends..."}  disabled={loading}
           style={{ flex: 1, border: "none", background: "transparent", color: "var(--ink)", fontSize: "0.82rem", outline: "none" }} />
-        {msgs.length > 0 && <button onClick={() => setOpen(!open)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: "0.63rem" }}>{open ? "▾" : `▸${msgs.length}`}</button>}
-        {loading && <span style={{ fontSize: "0.63rem", color: C.muted }}>…</span>}
+        {msgs.length > 0 && <button onClick={() => setOpen(!open)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: "var(--text-floor)" }}>{open ? "▾" : `▸${msgs.length}`}</button>}
+        {loading && <span style={{ fontSize: "var(--text-floor)", color: C.muted }}>…</span>}
       </div>
       {open && msgs.length > 0 && (
         <div ref={ref} style={{ maxHeight: 160, overflowY: "auto", background: "var(--paper-2)", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", marginTop: 6 }}>
           {msgs.map((m, i) => (
             <div key={i} style={{ marginBottom: 6 }}>
-              <div style={{ fontSize: "0.56rem", color: m.role === "user" ? C.gold : C.ok, fontWeight: 600, textTransform: "uppercase" }}>{m.role === "user" ? "You" : "Fantasia"}</div>
-              <div style={{ fontSize: "0.74rem", color: C.ink, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{m.content}</div>
+              <div style={{ fontSize: "var(--text-floor)", color: m.role === "user" ? C.gold : C.ok, fontWeight: 600, textTransform: "uppercase" }}>{m.role === "user" ? "You" : "Fantasia"}</div>
+              <div style={{ fontSize: "var(--text-floor)", color: C.ink, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{m.content}</div>
             </div>
           ))}
         </div>
@@ -352,7 +352,7 @@ function KpiWidget({ config, agents, metrics }: { config?: Record<string, any>; 
     <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", position: "relative", paddingLeft: 10 }}>
       <div style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: 2, background: "var(--accent-gradient)" }} />
       <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--ink)", fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: "-0.02em" }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
-      <div style={{ fontSize: "0.62rem", color: "var(--pencil)", marginTop: 6, letterSpacing: "0.02em", fontWeight: 500 }}>{config?.sub || field}</div>
+      <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 6, letterSpacing: "0.02em", fontWeight: 500 }}>{config?.sub || field}</div>
     </div>
   );
 }
@@ -367,8 +367,8 @@ function AgentOrbsWidget({ agents }: { agents: any[] }) {
           <div style={{ width: 44, height: 44, borderRadius: "50%", margin: "0 auto", background: `radial-gradient(circle at 40% 40%, ${statusColor(a.status)}33, transparent)`, border: `2px solid ${statusColor(a.status)}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <div style={{ width: 10, height: 10, borderRadius: "50%", background: statusColor(a.status), boxShadow: `0 0 6px ${statusColor(a.status)}` }} />
           </div>
-          <div style={{ fontSize: "0.7rem", fontWeight: 600, color: C.ink, marginTop: 6 }}>{a.name || "Agent"}</div>
-          <div style={{ fontSize: "0.56rem", color: statusColor(a.status) }}>● {a.status || "idle"}</div>
+          <div style={{ fontSize: "var(--text-floor)", fontWeight: 600, color: C.ink, marginTop: 6 }}>{a.name || "Agent"}</div>
+          <div style={{ fontSize: "var(--text-floor)", color: statusColor(a.status) }}>● {a.status || "idle"}</div>
         </div>
       ))}
     </div>
@@ -377,14 +377,14 @@ function AgentOrbsWidget({ agents }: { agents: any[] }) {
 
 function InvocationsWidget({ metrics }: { metrics: any }) {
   const count = metrics?.count || 0;
-  if (count === 0) return <div style={{ color: C.muted, fontSize: "0.72rem" }}>No invocations yet. Start a conversation to generate data.</div>;
+  if (count === 0) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No invocations yet. Start a conversation to generate data.</div>;
   return (
     <div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
         <span style={{ fontSize: "1.2rem", fontWeight: 800, color: C.ink }}>{count}</span>
-        <span style={{ fontSize: "0.65rem", color: C.muted }}>total invocations</span>
+        <span style={{ fontSize: "var(--text-floor)", color: C.muted }}>total invocations</span>
       </div>
-      <div style={{ fontSize: "0.68rem", color: C.muted }}>
+      <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>
         <div>p50: {Math.round(metrics.latency_ms_p50 || 0)}ms · p95: {Math.round(metrics.latency_ms_p95 || 0)}ms</div>
         <div>Tokens in: {metrics.tokens_in_total || 0} · out: {metrics.tokens_out_total || 0}</div>
       </div>
@@ -394,12 +394,12 @@ function InvocationsWidget({ metrics }: { metrics: any }) {
 
 function CostDonutWidget({ metrics }: { metrics: any }) {
   const total = metrics?.cost_usd_total || 0;
-  if (total === 0) return <div style={{ color: C.muted, fontSize: "0.72rem" }}>No cost data yet.</div>;
+  if (total === 0) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>No cost data yet.</div>;
   return (
     <div style={{ textAlign: "center" }}>
       <div style={{ fontSize: "1.3rem", fontWeight: 800, color: C.ink }}>${total.toFixed(2)}</div>
-      <div style={{ fontSize: "0.62rem", color: C.muted }}>Total estimated cost</div>
-      <div style={{ fontSize: "0.6rem", color: C.dim, marginTop: 4 }}>{metrics?.count || 0} invocations</div>
+      <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>Total estimated cost</div>
+      <div style={{ fontSize: "var(--text-floor)", color: C.dim, marginTop: 4 }}>{metrics?.count || 0} invocations</div>
     </div>
   );
 }
@@ -431,9 +431,9 @@ function JiraWidget({ widget }: { widget: Widget }) {
 
   const display = cfg.jira_display || "count";
 
-  if (!cfg.project) return <div style={{ color: C.muted, fontSize: "0.72rem" }}>Configure: set a Jira project key.</div>;
-  if (loading) return <div style={{ color: C.muted, fontSize: "0.72rem" }}>Querying Jira...</div>;
-  if (!data || data.error) return <div style={{ color: C.danger, fontSize: "0.72rem" }}>{data?.error || "No data"}</div>;
+  if (!cfg.project) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>Configure: set a Jira project key.</div>;
+  if (loading) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>Querying Jira...</div>;
+  if (!data || data.error) return <div style={{ color: C.danger, fontSize: "var(--text-floor)" }}>{data?.error || "No data"}</div>;
 
   // Status breakdown → horizontal bars
   if (display === "status-breakdown" && data.statuses) {
@@ -444,14 +444,14 @@ function JiraWidget({ widget }: { widget: Widget }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         {entries.map(([name, count]) => (
           <div key={name} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: "0.6rem", color: C.muted, width: 80, textAlign: "right", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+            <span style={{ fontSize: "var(--text-floor)", color: C.muted, width: 80, textAlign: "right", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
             <div style={{ flex: 1, height: 14, background: "var(--track)", borderRadius: 4, overflow: "hidden" }}>
               <div style={{ width: `${(count / max) * 100}%`, height: "100%", background: statusColors[name] || C.gold, borderRadius: 4 }} />
             </div>
-            <span style={{ fontSize: "0.6rem", color: C.ink, width: 30, flexShrink: 0 }}>{count}</span>
+            <span style={{ fontSize: "var(--text-floor)", color: C.ink, width: 30, flexShrink: 0 }}>{count}</span>
           </div>
         ))}
-        <div style={{ fontSize: "0.55rem", color: C.dim, textAlign: "right" }}>{data.shown && data.shown < data.total ? `${data.shown} of ${data.total}` : `${data.total}`} total</div>
+        <div style={{ fontSize: "var(--text-floor)", color: C.dim, textAlign: "right" }}>{data.shown && data.shown < data.total ? `${data.shown} of ${data.total}` : `${data.total}`} total</div>
       </div>
     );
   }
@@ -459,13 +459,13 @@ function JiraWidget({ widget }: { widget: Widget }) {
   // Issue list
   if (display === "list") {
     return (
-      <div style={{ fontSize: "0.68rem" }}>
+      <div style={{ fontSize: "var(--text-floor)" }}>
         <div style={{ color: C.muted, marginBottom: 4 }}>{data.total} issues</div>
         {(data.issues || []).slice(0, 8).map((iss: any, i: number) => (
           <div key={i} style={{ display: "flex", gap: 6, padding: "3px 0", borderBottom: `1px solid ${C.border}` }}>
             <a href={`${JIRA_BASE}/browse/${iss.key}`} target="_blank" rel="noopener noreferrer" style={{ color: C.gold, fontWeight: 600, flexShrink: 0, textDecoration: "none" }}>{iss.key}</a>
             <span style={{ color: C.ink, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.summary}</span>
-            <span style={{ color: C.muted, flexShrink: 0, fontSize: "0.58rem" }}>{iss.status}</span>
+            <span style={{ color: C.muted, flexShrink: 0, fontSize: "var(--text-floor)" }}>{iss.status}</span>
           </div>
         ))}
       </div>
@@ -476,7 +476,7 @@ function JiraWidget({ widget }: { widget: Widget }) {
   return (
     <div style={{ textAlign: "center", padding: "8px 0" }}>
       <div style={{ fontSize: "1.8rem", fontWeight: 700, color: C.gold }}>{(data.total || 0).toLocaleString()}</div>
-      <div style={{ fontSize: "0.6rem", color: C.muted }}>tickets{cfg.days ? ` (last ${cfg.days}d)` : ""}</div>
+      <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>tickets{cfg.days ? ` (last ${cfg.days}d)` : ""}</div>
     </div>
   );
 }
@@ -485,7 +485,7 @@ function TraceWidget() {
   const steps = [{ s: "Input Received", t: "2.1s" }, { s: "Agent Selected", t: "0.8s" }, { s: "Tool Invoked", t: "1.4s" }, { s: "Knowledge Retrieved", t: "2.7s" }, { s: "Drafted", t: "1.9s" }, { s: "Review", t: "15.2s" }, { s: "Delivered", t: "0.6s" }];
   return (
     <div>{steps.map((st, i) => (
-      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", borderBottom: `1px solid ${C.border}`, fontSize: "0.7rem" }}>
+      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", borderBottom: `1px solid ${C.border}`, fontSize: "var(--text-floor)" }}>
         <span style={{ color: i === 5 ? C.gold : C.ok }}>●</span>
         <span style={{ flex: 1, color: C.ink }}>{st.s}</span>
         <span style={{ color: C.muted }}>{st.t}</span>
@@ -543,14 +543,14 @@ function UnknownWidget({ widget }: { widget: Widget }) {
   }, [cfg.source, cfg.table, cfg.metric, cfg.filter_formula, cfg.query, cfg.field, cfg.group_by, cfg.display_field, cfg.max_records, cfg.period, tick]);
 
   if (!cfg.source && !cfg.query) {
-    return <div style={{ color: C.muted, fontSize: "0.72rem" }}>
+    return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>
       <p style={{ margin: "0 0 4px" }}>Not configured.</p>
-      <p style={{ margin: 0, fontSize: "0.65rem" }}>Use the chat in Edit mode to build this widget.</p>
+      <p style={{ margin: 0, fontSize: "var(--text-floor)" }}>Use the chat in Edit mode to build this widget.</p>
     </div>;
   }
-  if (loading) return <div style={{ color: C.muted, fontSize: "0.72rem" }}>Loading...</div>;
-  if (!data) return <div style={{ color: C.danger, fontSize: "0.72rem" }}>No data</div>;
-  if (data.error) return <div style={{ color: C.danger, fontSize: "0.72rem" }}>{data.error}</div>;
+  if (loading) return <div style={{ color: C.muted, fontSize: "var(--text-floor)" }}>Loading...</div>;
+  if (!data) return <div style={{ color: C.danger, fontSize: "var(--text-floor)" }}>No data</div>;
+  if (data.error) return <div style={{ color: C.danger, fontSize: "var(--text-floor)" }}>{data.error}</div>;
 
   // Legacy: string response from LLM query
   if (typeof data === "string") {
@@ -564,17 +564,17 @@ function UnknownWidget({ widget }: { widget: Widget }) {
         return (<div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {nums.map((n: {label: string; value: number}, i: number) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: "0.6rem", color: C.muted, width: 70, textAlign: "right", flexShrink: 0 }}>{n.label}</span>
+              <span style={{ fontSize: "var(--text-floor)", color: C.muted, width: 70, textAlign: "right", flexShrink: 0 }}>{n.label}</span>
               <div style={{ flex: 1, height: 16, background: "var(--track)", borderRadius: 4, overflow: "hidden" }}>
                 <div style={{ width: `${(n.value / max) * 100}%`, height: "100%", background: C.gold, borderRadius: 4 }} />
               </div>
-              <span style={{ fontSize: "0.6rem", color: C.ink, width: 50, flexShrink: 0 }}>{n.value.toLocaleString()}</span>
+              <span style={{ fontSize: "var(--text-floor)", color: C.ink, width: 50, flexShrink: 0 }}>{n.value.toLocaleString()}</span>
             </div>
           ))}
         </div>);
       }
     }
-    return <div style={{ fontSize: "0.75rem", color: C.ink, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{data}</div>;
+    return <div style={{ fontSize: "var(--text-floor)", color: C.ink, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{data}</div>;
   }
 
   // Table data → full data table with columns, sortable, filterable
@@ -588,13 +588,13 @@ function UnknownWidget({ widget }: { widget: Widget }) {
     }).slice(0, 6); // max 6 columns
     const cols = usefulCols.length > 0 ? usefulCols : allCols.slice(0, 4);
     return (
-      <div style={{ fontSize: "0.65rem", display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={{ fontSize: "var(--text-floor)", display: "flex", flexDirection: "column", height: "100%" }}>
         <div style={{ overflowX: "auto", overflowY: "auto", flex: 1 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: cols.length * 100 }}>
             <thead>
               <tr style={{ position: "sticky", top: 0, background: "var(--paper-2)", zIndex: 1 }}>
                 {cols.map(c => (
-                  <th key={c} style={{ textAlign: "left", padding: "6px 8px", borderBottom: "2px solid var(--accent-light)", color: "var(--accent)", fontSize: "0.58rem", fontWeight: 700, whiteSpace: "nowrap", textTransform: "uppercase", letterSpacing: "0.05em" }}>{c}</th>
+                  <th key={c} style={{ textAlign: "left", padding: "6px 8px", borderBottom: "2px solid var(--accent-light)", color: "var(--accent)", fontSize: "var(--text-floor)", fontWeight: 700, whiteSpace: "nowrap", textTransform: "uppercase", letterSpacing: "0.05em" }}>{c}</th>
                 ))}
               </tr>
             </thead>
@@ -609,7 +609,7 @@ function UnknownWidget({ widget }: { widget: Widget }) {
             </tbody>
           </table>
         </div>
-        <div style={{ fontSize: "0.55rem", color: "var(--pencil)", marginTop: 4 }}>{data.count} rows × {cols.length} columns</div>
+        <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 4 }}>{data.count} rows × {cols.length} columns</div>
       </div>
     );
   }
@@ -620,7 +620,7 @@ function UnknownWidget({ widget }: { widget: Widget }) {
     return (
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
         <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--ink)", fontVariantNumeric: "tabular-nums" }}>{total.toLocaleString()}</div>
-        {cfg.sub && <div style={{ fontSize: "0.6rem", color: "var(--pencil)", marginTop: 4 }}>{cfg.sub}</div>}
+        {cfg.sub && <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 4 }}>{cfg.sub}</div>}
       </div>
     );
   }
@@ -629,13 +629,13 @@ function UnknownWidget({ widget }: { widget: Widget }) {
   if (cfg.display === "list" && data.records) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 2, overflowY: "auto", maxHeight: 240 }}>
-        {data.records.length === 0 && <div style={{ fontSize: "0.65rem", color: "var(--pencil)" }}>No records</div>}
+        {data.records.length === 0 && <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>No records</div>}
         {data.records.map((r: { name?: string; id?: string }, i: number) => (
-          <div key={i} style={{ fontSize: "0.68rem", padding: "4px 0", borderBottom: "1px solid var(--track)", color: "var(--ink)" }}>
+          <div key={i} style={{ fontSize: "var(--text-floor)", padding: "4px 0", borderBottom: "1px solid var(--track)", color: "var(--ink)" }}>
             {r.name || r.id || "(untitled)"}
           </div>
         ))}
-        <div style={{ fontSize: "0.55rem", color: "var(--pencil)", marginTop: 4 }}>{data.records.length} records</div>
+        <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", marginTop: 4 }}>{data.records.length} records</div>
       </div>
     );
   }
@@ -666,7 +666,7 @@ function UnknownWidget({ widget }: { widget: Widget }) {
               <div key={label} style={{ width: `${(count / total) * 100}%`, background: palette[i % palette.length], minWidth: 2, position: "relative" }} title={`${label}: ${count} (${Math.round(count/total*100)}%)`} />
             ))}
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", fontSize: "0.58rem" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", fontSize: "var(--text-floor)" }}>
             {entries.slice(0, 8).map(([label, count], i) => (
               <span key={label} style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--pencil)" }}>
                 <span style={{ width: 8, height: 8, borderRadius: 2, background: palette[i % palette.length] }} />
@@ -689,7 +689,7 @@ function UnknownWidget({ widget }: { widget: Widget }) {
           <div style={{ height: 10, background: "var(--track)", borderRadius: 6, overflow: "hidden" }}>
             <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent-gradient)", borderRadius: 6, transition: "width 0.4s cubic-bezier(0.4, 0, 0.2, 1)" }} />
           </div>
-          <div style={{ fontSize: "0.58rem", color: "var(--pencil)" }}>{achieved} / {target}</div>
+          <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>{achieved} / {target}</div>
         </div>
       );
     }
@@ -700,9 +700,9 @@ function UnknownWidget({ widget }: { widget: Widget }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {entries.slice(0, 10).map(([label, count], i) => (
             <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-              <span style={{ width: 20, height: 20, borderRadius: "50%", background: i < 3 ? palette[i] : "var(--rule)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.55rem", fontWeight: 700, color: i < 3 ? "#fff" : "var(--pencil)", flexShrink: 0 }}>{i + 1}</span>
-              <span style={{ flex: 1, fontSize: "0.68rem", color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-              <span style={{ fontSize: "0.7rem", fontWeight: 700, color: "var(--ink)", fontVariantNumeric: "tabular-nums" }}>{count}</span>
+              <span style={{ width: 20, height: 20, borderRadius: "50%", background: i < 3 ? palette[i] : "var(--rule)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "var(--text-floor)", fontWeight: 700, color: i < 3 ? "#fff" : "var(--pencil)", flexShrink: 0 }}>{i + 1}</span>
+              <span style={{ flex: 1, fontSize: "var(--text-floor)", color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+              <span style={{ fontSize: "var(--text-floor)", fontWeight: 700, color: "var(--ink)", fontVariantNumeric: "tabular-nums" }}>{count}</span>
             </div>
           ))}
         </div>
@@ -734,7 +734,7 @@ function UnknownWidget({ widget }: { widget: Widget }) {
             })}
             <text x={cx} y={cy + 4} textAnchor="middle" style={{ fontSize: "14px", fontWeight: 700, fill: "var(--ink)" }}>{total}</text>
           </svg>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.62rem" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "var(--text-floor)" }}>
             {slices.slice(0, 8).map((s, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0, boxShadow: `0 0 6px ${s.color}44` }} />
@@ -752,14 +752,14 @@ function UnknownWidget({ widget }: { widget: Widget }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {entries.slice(0, 10).map(([label, count], i) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: "0.62rem", color: "var(--pencil)", width: 80, textAlign: "right", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }} title={label}>{label}</span>
+            <span style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", width: 80, textAlign: "right", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }} title={label}>{label}</span>
             <div style={{ flex: 1, height: 20, background: "var(--track)", borderRadius: 6, overflow: "hidden" }}>
               <div style={{ width: `${(count / max) * 100}%`, height: "100%", background: `linear-gradient(90deg, ${palette[i % palette.length]}cc, ${palette[i % palette.length]})`, borderRadius: 6, minWidth: 4, transition: "width 0.4s ease" }} />
             </div>
-            <span style={{ fontSize: "0.65rem", color: "var(--ink)", width: 32, flexShrink: 0, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{count}</span>
+            <span style={{ fontSize: "var(--text-floor)", color: "var(--ink)", width: 32, flexShrink: 0, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{count}</span>
           </div>
         ))}
-        {data.total && <div style={{ fontSize: "0.55rem", color: "var(--pencil)", textAlign: "right", marginTop: 2 }}>{data.total} total</div>}
+        {data.total && <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", textAlign: "right", marginTop: 2 }}>{data.total} total</div>}
       </div>
     );
   }
@@ -769,7 +769,7 @@ function UnknownWidget({ widget }: { widget: Widget }) {
     return (
       <div style={{ textAlign: "center", padding: "8px 0" }}>
         <div style={{ fontSize: "1.6rem", fontWeight: 700, color: C.gold }}>{typeof data.value === "number" ? data.value.toLocaleString() : data.value}</div>
-        <div style={{ fontSize: "0.6rem", color: C.muted }}>{data.unit || ""}{data.period ? ` (${data.period})` : ""}</div>
+        <div style={{ fontSize: "var(--text-floor)", color: C.muted }}>{data.unit || ""}{data.period ? ` (${data.period})` : ""}</div>
       </div>
     );
   }
@@ -777,15 +777,15 @@ function UnknownWidget({ widget }: { widget: Widget }) {
   // Airtable records → list
   if (data.records) {
     return (
-      <div style={{ fontSize: "0.7rem" }}>
-        <div style={{ color: "var(--pencil)", marginBottom: 6, fontSize: "0.58rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>{data.count || data.records.length} records</div>
+      <div style={{ fontSize: "var(--text-floor)" }}>
+        <div style={{ color: "var(--pencil)", marginBottom: 6, fontSize: "var(--text-floor)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>{data.count || data.records.length} records</div>
         {data.records.slice(0, 12).map((rec: any, i: number) => {
           const name = rec.name || rec.Name || rec.Title || rec.use_case || rec.Summary || rec["Use Case Name/ Project"] || Object.values(rec).find(v => typeof v === "string" && (v as string).length > 3 && v !== rec.id && v !== rec.status) || rec.id;
           return (
             <div key={i} style={{ display: "flex", gap: 8, padding: "6px 4px", borderBottom: "1px solid var(--track)", alignItems: "center" }}>
               <span style={{ width: 4, height: 4, borderRadius: "50%", background: "var(--accent)", flexShrink: 0, opacity: 0.7 }} />
-              <span style={{ color: "var(--ink)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.68rem" }}>{name as string}</span>
-              {rec.status && <span style={{ color: "var(--accent)", flexShrink: 0, fontSize: "0.56rem", padding: "2px 8px", borderRadius: 6, background: "var(--accent-light)", fontWeight: 600 }}>{rec.status}</span>}
+              <span style={{ color: "var(--ink)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "var(--text-floor)" }}>{name as string}</span>
+              {rec.status && <span style={{ color: "var(--accent)", flexShrink: 0, fontSize: "var(--text-floor)", padding: "2px 8px", borderRadius: 6, background: "var(--accent-light)", fontWeight: 600 }}>{rec.status}</span>}
             </div>
           );
         })}
@@ -802,11 +802,11 @@ function UnknownWidget({ widget }: { widget: Widget }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
           {numEntries.slice(0, 10).map(([label, value]) => (
             <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: "0.6rem", color: C.muted, width: 70, textAlign: "right", flexShrink: 0 }}>{label}</span>
+              <span style={{ fontSize: "var(--text-floor)", color: C.muted, width: 70, textAlign: "right", flexShrink: 0 }}>{label}</span>
               <div style={{ flex: 1, height: 14, background: "var(--track)", borderRadius: 4, overflow: "hidden" }}>
                 <div style={{ width: `${(value / max) * 100}%`, height: "100%", background: C.gold, borderRadius: 4 }} />
               </div>
-              <span style={{ fontSize: "0.6rem", color: C.ink, width: 40, flexShrink: 0 }}>{value.toLocaleString()}</span>
+              <span style={{ fontSize: "var(--text-floor)", color: C.ink, width: 40, flexShrink: 0 }}>{value.toLocaleString()}</span>
             </div>
           ))}
         </div>
@@ -816,7 +816,7 @@ function UnknownWidget({ widget }: { widget: Widget }) {
 
   // Array → list
   if (Array.isArray(data)) {
-    return (<div style={{ fontSize: "0.7rem", maxHeight: 120, overflowY: "auto" }}>
+    return (<div style={{ fontSize: "var(--text-floor)", maxHeight: 120, overflowY: "auto" }}>
       {data.slice(0, 8).map((item: any, i: number) => (
         <div key={i} style={{ padding: "2px 0", borderBottom: `1px solid ${C.border}`, color: C.ink }}>
           {item.key || item.title || item.name || item.Name || JSON.stringify(item).slice(0, 60)}
@@ -826,7 +826,7 @@ function UnknownWidget({ widget }: { widget: Widget }) {
   }
 
   // Fallback
-  return <pre style={{ fontSize: "0.6rem", color: C.ink, whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(data, null, 2).slice(0, 300)}</pre>;
+  return <pre style={{ fontSize: "var(--text-floor)", color: C.ink, whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(data, null, 2).slice(0, 300)}</pre>;
 }
 
 // ─── Widget Card ────────────────────────────────────────────────────────────
@@ -837,7 +837,7 @@ function AirtableCascade({ cfgTable, setCfgTable, cfgGroupBy, setCfgGroupBy, cfg
   const [tables, setTables] = useState<{id:string;name:string}[]>([]);
   const [selectedBase, setSelectedBase] = useState("");
   const [loadingTables, setLoadingTables] = useState(false);
-  const inputStyle = { background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 6, color: "var(--ink)", padding: "4px 8px", fontSize: "0.72rem", width: "100%" };
+  const inputStyle = { background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 6, color: "var(--ink)", padding: "4px 8px", fontSize: "var(--text-floor)", width: "100%" };
 
   // Load bases on mount
   useEffect(() => {
@@ -857,13 +857,13 @@ function AirtableCascade({ cfgTable, setCfgTable, cfgGroupBy, setCfgGroupBy, cfg
   useEffect(() => { if (bases.length === 1 && !selectedBase) setSelectedBase(bases[0].id); }, [bases]);
 
   return (<>
-    <label style={{ fontSize: "0.58rem", color: "var(--pencil)" }}>Base</label>
+    <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>Base</label>
     <select value={selectedBase} onChange={e => { setSelectedBase(e.target.value); setCfgTable(""); }} style={inputStyle}>
       <option value="">Select base...</option>
       {bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
     </select>
 
-    <label style={{ fontSize: "0.58rem", color: "var(--pencil)" }}>Table</label>
+    <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>Table</label>
     <select value={cfgTable} onChange={e => setCfgTable(e.target.value)} style={inputStyle} disabled={!selectedBase}>
       <option value="">{loadingTables ? "Loading..." : "Select table..."}</option>
       {tables.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
@@ -872,22 +872,22 @@ function AirtableCascade({ cfgTable, setCfgTable, cfgGroupBy, setCfgGroupBy, cfg
     </select>
 
     {cfgTable && (<>
-      <label style={{ fontSize: "0.58rem", color: "var(--pencil)" }}>Group By (chart column)</label>
+      <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>Group By (chart column)</label>
       <select value={cfgGroupBy} onChange={e => setCfgGroupBy(e.target.value)} style={inputStyle}>
         <option value="">None (show as list/table)</option>
         {cfgFields.map((f: string) => <option key={f} value={f}>{f}</option>)}
       </select>
 
-      <label style={{ fontSize: "0.58rem", color: "var(--pencil)" }}>Display Column</label>
+      <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>Display Column</label>
       <select value={cfgDisplayField} onChange={e => setCfgDisplayField(e.target.value)} style={inputStyle}>
         <option value="">Auto-detect</option>
         {cfgFields.map((f: string) => <option key={f} value={f}>{f}</option>)}
       </select>
 
-      <label style={{ fontSize: "0.58rem", color: "var(--pencil)" }}>Filter</label>
+      <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>Filter</label>
       <input value={cfgFilter} onChange={(e: any) => setCfgFilter(e.target.value)} placeholder="{Status} = 'Development'" style={inputStyle} />
 
-      <label style={{ fontSize: "0.58rem", color: "var(--pencil)" }}>Max Records</label>
+      <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)" }}>Max Records</label>
       <input type="number" value={cfgMaxRecords} onChange={(e: any) => setCfgMaxRecords(e.target.value)} style={{...inputStyle, width: 80}} />
     </>)}
   </>);
@@ -981,7 +981,7 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
   return (
     <div className="dashboard-widget-card" style={{ gridColumn: span[widget.size], background: "var(--paper)", border: `1px solid ${editing ? C.gold : "var(--rule)"}`, borderRadius: 16, padding: "0.8rem", position: "relative", maxHeight: 320, display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <span style={{ fontSize: "0.62rem", fontWeight: 600, color: "var(--pencil)", textTransform: "uppercase", letterSpacing: "0.08em" }}>{widget.title}</span>
+        <span style={{ fontSize: "var(--text-floor)", fontWeight: 600, color: "var(--pencil)", textTransform: "uppercase", letterSpacing: "0.08em" }}>{widget.title}</span>
         {editing && <button onClick={() => setConfigOpen(true)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: "0.9rem" }}>⋯</button>}
       </div>
       {configOpen && (
@@ -989,13 +989,13 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
           <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.25)" }} onClick={() => setConfigOpen(false)} />
           <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", zIndex: 1000, background: "var(--paper)", borderRadius: 16, padding: 20, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", border: "1px solid var(--rule)", width: 340, maxHeight: "85vh", boxShadow: "0 12px 40px rgba(0,0,0,0.15)" }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <span style={{ fontSize: "0.6rem", fontWeight: 600, color: C.gold, textTransform: "uppercase" }}>Configure Widget</span>
+            <span style={{ fontSize: "var(--text-floor)", fontWeight: 600, color: C.gold, textTransform: "uppercase" }}>Configure Widget</span>
             <button onClick={() => setConfigOpen(false)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>✕</button>
           </div>
-          <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Title</label>
-          <input value={cfgTitle} onChange={e => setCfgTitle(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
-          <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Type</label>
-          <select value={cfgType} onChange={e => setCfgType(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
+          <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Title</label>
+          <input value={cfgTitle} onChange={e => setCfgTitle(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
+          <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Type</label>
+          <select value={cfgType} onChange={e => setCfgType(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
             <option value="kpi">KPI Card</option>
             <option value="jira">Jira Query</option>
             <option value="agent-orbs">Agent Status</option>
@@ -1004,15 +1004,15 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
             <option value="trace">Trace View</option>
             <option value="custom">Custom (free query)</option>
           </select>
-          <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Size (columns)</label>
+          <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Size (columns)</label>
           <input type="range" min="1" max="6" value={cfgSize} onChange={e => setCfgSize(e.target.value as Widget["size"])} style={{ width: "100%" }} />
-          <span style={{ fontSize: "0.58rem", color: C.ink, textAlign: "center" }}>{cfgSize} col{Number(cfgSize) > 1 ? "s" : ""}</span>
-          <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Height (rows)</label>
+          <span style={{ fontSize: "var(--text-floor)", color: C.ink, textAlign: "center" }}>{cfgSize} col{Number(cfgSize) > 1 ? "s" : ""}</span>
+          <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Height (rows)</label>
           <input type="range" min="1" max="4" value={cfgRows} onChange={e => setCfgRows(e.target.value as "1"|"2"|"3"|"4")} style={{ width: "100%" }} />
-          <span style={{ fontSize: "0.58rem", color: C.ink, textAlign: "center" }}>{cfgRows} row{Number(cfgRows) > 1 ? "s" : ""}</span>
+          <span style={{ fontSize: "var(--text-floor)", color: C.ink, textAlign: "center" }}>{cfgRows} row{Number(cfgRows) > 1 ? "s" : ""}</span>
           {cfgType === "kpi" && (<>
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Data Field</label>
-            <select value={cfgField} onChange={e => setCfgField(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Data Field</label>
+            <select value={cfgField} onChange={e => setCfgField(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
               <option value="active_agents">Active Agents</option>
               <option value="runs_today">Runs Today</option>
               <option value="avg_latency">Avg Latency</option>
@@ -1020,60 +1020,60 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
               <option value="approval_rate">Approval Rate</option>
               <option value="ttft">TTFT</option>
             </select>
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Subtitle</label>
-            <input value={cfgSub} onChange={e => setCfgSub(e.target.value)} placeholder="vs last hour" style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Subtitle</label>
+            <input value={cfgSub} onChange={e => setCfgSub(e.target.value)} placeholder="vs last hour" style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
           </>)}
           {cfgType !== "kpi" && widget.config?.variables && (<>
             {(widget.config.variables as any[]).map((v: any) => (
               <div key={v.id}>
-                <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>{v.label}</label>
+                <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>{v.label}</label>
                 {v.type === "select" ? (
-                  <select value={vars[v.id] || ""} onChange={e => setVars({ ...vars, [v.id]: e.target.value })} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "0.72rem", width: "100%" }}>
+                  <select value={vars[v.id] || ""} onChange={e => setVars({ ...vars, [v.id]: e.target.value })} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "var(--text-floor)", width: "100%" }}>
                     {(v.options || []).map((o: string) => <option key={o} value={o}>{o}</option>)}
                   </select>
                 ) : v.type === "number" ? (
-                  <input type="number" value={vars[v.id] || ""} onChange={e => setVars({ ...vars, [v.id]: e.target.value })} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "0.72rem", width: "100%" }} />
+                  <input type="number" value={vars[v.id] || ""} onChange={e => setVars({ ...vars, [v.id]: e.target.value })} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "var(--text-floor)", width: "100%" }} />
                 ) : (
-                  <input value={vars[v.id] || ""} onChange={e => setVars({ ...vars, [v.id]: e.target.value })} placeholder={v.placeholder || ""} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "0.72rem", width: "100%" }} />
+                  <input value={vars[v.id] || ""} onChange={e => setVars({ ...vars, [v.id]: e.target.value })} placeholder={v.placeholder || ""} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "var(--text-floor)", width: "100%" }} />
                 )}
               </div>
             ))}
             {widget.config.display_options && (<>
-              <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Visualization</label>
-              <select value={cfgDisplayType} onChange={e => setCfgDisplayType(e.target.value)} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "0.72rem", width: "100%" }}>
+              <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Visualization</label>
+              <select value={cfgDisplayType} onChange={e => setCfgDisplayType(e.target.value)} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "var(--text-floor)", width: "100%" }}>
                 {(widget.config.display_options as string[]).map((o: string) => <option key={o} value={o}>{o}</option>)}
               </select>
             </>)}
           </>)}
           {cfgType === "jira" && !widget.config?.variables && (<>
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Project Key</label>
-            <input value={cfgProject} onChange={e => setCfgProject(e.target.value)} placeholder="e.g. DEMO" style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Status</label>
-            <input value={cfgStatus} onChange={e => setCfgStatus(e.target.value)} placeholder="Open, In Progress, Done..." style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Assignee</label>
-            <input value={cfgAssignee} onChange={e => setCfgAssignee(e.target.value)} placeholder="currentUser() or username" style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Days Back</label>
-            <input type="number" value={cfgDays} onChange={e => setCfgDays(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Extra JQL</label>
-            <input value={cfgJqlExtra} onChange={e => setCfgJqlExtra(e.target.value)} placeholder="AND labels = ..." style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Display</label>
-            <select value={cfgJiraDisplay} onChange={e => setCfgJiraDisplay(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Project Key</label>
+            <input value={cfgProject} onChange={e => setCfgProject(e.target.value)} placeholder="e.g. DEMO" style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Status</label>
+            <input value={cfgStatus} onChange={e => setCfgStatus(e.target.value)} placeholder="Open, In Progress, Done..." style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Assignee</label>
+            <input value={cfgAssignee} onChange={e => setCfgAssignee(e.target.value)} placeholder="currentUser() or username" style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Days Back</label>
+            <input type="number" value={cfgDays} onChange={e => setCfgDays(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Extra JQL</label>
+            <input value={cfgJqlExtra} onChange={e => setCfgJqlExtra(e.target.value)} placeholder="AND labels = ..." style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }} />
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Display</label>
+            <select value={cfgJiraDisplay} onChange={e => setCfgJiraDisplay(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
               <option value="count">Count (bar chart)</option>
               <option value="list">Issue List</option>
               <option value="status-breakdown">Status Breakdown</option>
             </select>
           </>)}
           {cfgType !== "kpi" && cfgType !== "jira" && !widget.config?.variables && (<>
-            <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Data Source</label>
-            <select value={cfgTable ? "airtable" : (widget.config?.source || "none")} onChange={e => { if (e.target.value === "none") setCfgTable(""); }} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
+            <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Data Source</label>
+            <select value={cfgTable ? "airtable" : (widget.config?.source || "none")} onChange={e => { if (e.target.value === "none") setCfgTable(""); }} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
               <option value="none">None</option>
               <option value="airtable">Airtable</option>
               <option value="metrics">Metrics</option>
             </select>
             {(cfgTable || widget.config?.source === "airtable") && (<AirtableCascade cfgTable={cfgTable} setCfgTable={setCfgTable} cfgGroupBy={cfgGroupBy} setCfgGroupBy={setCfgGroupBy} cfgDisplayField={cfgDisplayField} setCfgDisplayField={setCfgDisplayField} cfgFilter={cfgFilter} setCfgFilter={setCfgFilter} cfgMaxRecords={cfgMaxRecords} setCfgMaxRecords={setCfgMaxRecords} cfgFields={cfgFields} />)}
           </>)}
-          <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Chart Type</label>
-          <select value={cfgDisplay} onChange={e => setCfgDisplay(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
+          <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Chart Type</label>
+          <select value={cfgDisplay} onChange={e => setCfgDisplay(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
             <option value="auto">Auto (based on data)</option>
             <option value="bar">Horizontal Bars</option>
             <option value="donut">Donut / Pie</option>
@@ -1083,8 +1083,8 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
             <option value="list">Record List</option>
             <option value="table">Data Table</option>
           </select>
-          <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Theme</label>
-          <select value={cfgTheme} onChange={e => setCfgTheme(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
+          <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Theme</label>
+          <select value={cfgTheme} onChange={e => setCfgTheme(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
             <option value="default">Default (Dark)</option>
             <option value="midnight">Midnight Blue</option>
             <option value="aurora">Aurora (Green/Teal)</option>
@@ -1095,8 +1095,8 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
             <option value="minimal">Minimal (Monochrome)</option>
             <option value="neon">Neon (Vivid)</option>
           </select>
-          <label style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Auto-refresh</label>
-          <select value={cfgRefresh} onChange={e => setCfgRefresh(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "0.72rem", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
+          <label style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>Auto-refresh</label>
+          <select value={cfgRefresh} onChange={e => setCfgRefresh(e.target.value)} style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: 8, color: "var(--ink)", padding: "6px 10px", fontSize: "var(--text-floor)", outline: "none", width: "100%", caretColor: "var(--accent)" }}>
             <option value="0">Off</option>
             <option value="1">Every 1 min</option>
             <option value="5">Every 5 min</option>
@@ -1104,8 +1104,8 @@ function WidgetCard({ widget, agents, metrics, editing, onRemove, onUpdate }: {
             <option value="30">Every 30 min</option>
             <option value="60">Every 60 min</option>
           </select>
-          <button onClick={saveConfig} style={{ marginTop: 4, padding: "6px 0", borderRadius: 8, border: "none", background: C.gold, color: "#fff", fontSize: "0.68rem", fontWeight: 600, cursor: "pointer" }}>Save</button>
-          <button onClick={() => { if (window.confirm(`Remove "${widget.title}"?`)) { onRemove(); setConfigOpen(false); } }} style={{ marginTop: 4, padding: "5px 0", borderRadius: 8, border: `1px solid ${C.danger}`, background: "transparent", color: C.danger, fontSize: "0.62rem", cursor: "pointer" }}>Delete Widget</button>
+          <button onClick={saveConfig} style={{ marginTop: 4, padding: "6px 0", borderRadius: 8, border: "none", background: C.gold, color: "#fff", fontSize: "var(--text-floor)", fontWeight: 600, cursor: "pointer" }}>Save</button>
+          <button onClick={() => { if (window.confirm(`Remove "${widget.title}"?`)) { onRemove(); setConfigOpen(false); } }} style={{ marginTop: 4, padding: "5px 0", borderRadius: 8, border: `1px solid ${C.danger}`, background: "transparent", color: C.danger, fontSize: "var(--text-floor)", cursor: "pointer" }}>Delete Widget</button>
         </div></div>
       )}
       <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", scrollbarWidth: "thin", scrollbarColor: "var(--scroll-thumb) transparent" }}>{content}</div>
@@ -1142,21 +1142,21 @@ function AddWidget({ onAdd }: { onAdd: (type: string, size: Widget["size"], conf
 
   return (
     <div style={{ gridColumn: "span 1", position: "relative" }}>
-      <button onClick={() => setOpen(!open)} style={{ width: "100%", padding: 16, borderRadius: 14, border: `2px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: "0.72rem", cursor: "pointer" }}>+ Add</button>
+      <button onClick={() => setOpen(!open)} style={{ width: "100%", padding: 16, borderRadius: 14, border: `2px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: "var(--text-floor)", cursor: "pointer" }}>+ Add</button>
       {open && !browsing && (
         <>
         <div style={{ position: "fixed", inset: 0, zIndex: 19 }} onClick={() => setOpen(false)} />
         <div style={{ position: "absolute", zIndex: 40, marginTop: 4, background: "var(--paper)", border: `1px solid ${C.border}`, borderRadius: 8, padding: 6, width: 180, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>
           {CATALOG.map(c => (
             <button key={c.type} onClick={() => { onAdd(c.type, c.size); setOpen(false); }}
-              style={{ display: "block", width: "100%", textAlign: "left", padding: "5px 8px", background: "none", border: "none", color: C.ink, fontSize: "0.72rem", cursor: "pointer", borderRadius: 4 }}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "5px 8px", background: "none", border: "none", color: C.ink, fontSize: "var(--text-floor)", cursor: "pointer", borderRadius: 4 }}
               onMouseOver={e => (e.currentTarget.style.background = "var(--accent-light)")} onMouseOut={e => (e.currentTarget.style.background = "none")}>
               {c.label}
             </button>
           ))}
           <hr style={{ border: "none", borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
           <button onClick={loadExamples}
-            style={{ display: "block", width: "100%", textAlign: "left", padding: "5px 8px", background: "none", border: "none", color: C.gold, fontSize: "0.72rem", cursor: "pointer", borderRadius: 4, fontWeight: 600 }}>
+            style={{ display: "block", width: "100%", textAlign: "left", padding: "5px 8px", background: "none", border: "none", color: C.gold, fontSize: "var(--text-floor)", cursor: "pointer", borderRadius: 4, fontWeight: 600 }}>
             Browse Examples...
           </button>
         </div>
@@ -1167,10 +1167,10 @@ function AddWidget({ onAdd }: { onAdd: (type: string, size: Widget["size"], conf
         <div style={{ position: "fixed", inset: 0, zIndex: 19 }} onClick={() => { setBrowsing(false); setOpen(false); }} />
         <div style={{ position: "absolute", zIndex: 40, marginTop: 4, background: "var(--paper)", border: `1px solid ${C.border}`, borderRadius: 12, padding: 10, width: 360, maxHeight: 420, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <span style={{ fontSize: "0.65rem", fontWeight: 600, color: C.gold, textTransform: "uppercase" }}>Widget Examples ({filtered.length})</span>
+            <span style={{ fontSize: "var(--text-floor)", fontWeight: 600, color: C.gold, textTransform: "uppercase" }}>Widget Examples ({filtered.length})</span>
             <button onClick={() => { setBrowsing(false); setOpen(false); setFilter(""); }} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>✕</button>
           </div>
-          <select value={filter} onChange={e => setFilter(e.target.value)} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "0.68rem", marginBottom: 8 }}>
+          <select value={filter} onChange={e => setFilter(e.target.value)} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, padding: "4px 8px", fontSize: "var(--text-floor)", marginBottom: 8 }}>
             <option value="">All Categories</option>
             {categories.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
@@ -1179,8 +1179,8 @@ function AddWidget({ onAdd }: { onAdd: (type: string, size: Widget["size"], conf
               <button key={i} onClick={() => { onAdd(ex.type, ex.size, ex.config, ex.title); setOpen(false); setBrowsing(false); setFilter(""); }}
                 style={{ display: "block", width: "100%", textAlign: "left", padding: "6px 8px", background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, color: C.ink, cursor: "pointer" }}
                 onMouseOver={e => (e.currentTarget.style.borderColor = C.gold)} onMouseOut={e => (e.currentTarget.style.borderColor = C.border)}>
-                <div style={{ fontSize: "0.7rem", fontWeight: 600 }}>{ex.title}</div>
-                <div style={{ fontSize: "0.62rem", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>{ex.description}</div>
+                <div style={{ fontSize: "var(--text-floor)", fontWeight: 600 }}>{ex.title}</div>
+                <div style={{ fontSize: "var(--text-floor)", color: "var(--pencil)", fontWeight: 500, marginTop: 4 }}>{ex.description}</div>
               </button>
             ))}
           </div>
@@ -1270,33 +1270,33 @@ export default function Dashboard() {
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.ink, fontFamily: "'Inter Variable', 'Inter', -apple-system, system-ui, sans-serif", padding: "1.5rem 2rem" }}>
       {saveError && (
-        <div role="alert" data-testid="dashboard-save-error" style={{ marginBottom: "1rem", padding: "0.6rem 0.8rem", borderRadius: 8, border: `1px solid ${C.danger}`, color: C.danger, fontSize: "0.72rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div role="alert" data-testid="dashboard-save-error" style={{ marginBottom: "1rem", padding: "0.6rem 0.8rem", borderRadius: 8, border: `1px solid ${C.danger}`, color: C.danger, fontSize: "var(--text-floor)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <span>Your dashboard changes were not saved — {saveError}</span>
-          <button onClick={() => persist(tabs, activeIdx)} style={{ padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.danger}`, background: "transparent", color: C.danger, fontSize: "0.68rem", cursor: "pointer" }}>Retry</button>
+          <button onClick={() => persist(tabs, activeIdx)} style={{ padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.danger}`, background: "transparent", color: C.danger, fontSize: "var(--text-floor)", cursor: "pointer" }}>Retry</button>
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.1rem" }}>
         <div>
           <h1 style={{ fontSize: "1.5rem", fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>Live Operations</h1>
-          <p style={{ fontSize: "0.72rem", color: C.muted, margin: "3px 0 0" }}>Real-time visibility into your orchestration</p>
+          <p style={{ fontSize: "var(--text-floor)", color: C.muted, margin: "3px 0 0" }}>Real-time visibility into your orchestration</p>
         </div>
         <div className="dashboard-header-actions" style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span className="dashboard-status-pill">
             <span className="dashboard-status-dot" />
             Operational
           </span>
-          <button onClick={() => window.location.reload()} style={{ padding: "4px 8px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: "0.63rem", cursor: "pointer" }}>↻ Refresh</button>
+          <button onClick={() => window.location.reload()} style={{ padding: "4px 8px", borderRadius: 8, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: "var(--text-floor)", cursor: "pointer" }}>↻ Refresh</button>
           {editing && (<>
-            <button onClick={undo} disabled={history.length === 0} style={{ padding: "4px 8px", borderRadius: 8, border: `1px solid ${C.border}`, background: history.length ? C.card : "transparent", color: history.length ? C.ink : C.dim, fontSize: "0.7rem", cursor: history.length ? "pointer" : "default", opacity: history.length ? 1 : 0.4 }}>← Undo</button>
-            <button onClick={redo} disabled={future.length === 0} style={{ padding: "4px 8px", borderRadius: 8, border: `1px solid ${C.border}`, background: future.length ? C.card : "transparent", color: future.length ? C.ink : C.dim, fontSize: "0.7rem", cursor: future.length ? "pointer" : "default", opacity: future.length ? 1 : 0.4 }}>Redo →</button>
+            <button onClick={undo} disabled={history.length === 0} style={{ padding: "4px 8px", borderRadius: 8, border: `1px solid ${C.border}`, background: history.length ? C.card : "transparent", color: history.length ? C.ink : C.dim, fontSize: "var(--text-floor)", cursor: history.length ? "pointer" : "default", opacity: history.length ? 1 : 0.4 }}>← Undo</button>
+            <button onClick={redo} disabled={future.length === 0} style={{ padding: "4px 8px", borderRadius: 8, border: `1px solid ${C.border}`, background: future.length ? C.card : "transparent", color: future.length ? C.ink : C.dim, fontSize: "var(--text-floor)", cursor: future.length ? "pointer" : "default", opacity: future.length ? 1 : 0.4 }}>Redo →</button>
           </>)}
           <button onClick={() => setEditing(!editing)} style={{
             padding: "4px 12px", borderRadius: 12, border: `1px solid ${editing ? C.gold : C.border}`,
             background: editing ? "var(--accent-light)" : "transparent",
-            color: editing ? C.gold : C.muted, fontSize: "0.63rem", fontWeight: 600, cursor: "pointer",
+            color: editing ? C.gold : C.muted, fontSize: "var(--text-floor)", fontWeight: 600, cursor: "pointer",
           }}>{editing ? "✓ Done" : "✎ Edit"}</button>
-          <button onClick={() => setShowTemplates(true)} style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${C.border}`, background: "transparent", color: C.accent, fontSize: "0.63rem", cursor: "pointer" }}>📂 Templates</button>
-          <button onClick={() => update(DEFAULT_WIDGETS)} style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${C.border}`, background: "transparent", color: C.ok, fontSize: "0.63rem", cursor: "pointer" }}>Reset Default</button>
+          <button onClick={() => setShowTemplates(true)} style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${C.border}`, background: "transparent", color: C.accent, fontSize: "var(--text-floor)", cursor: "pointer" }}>📂 Templates</button>
+          <button onClick={() => update(DEFAULT_WIDGETS)} style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${C.border}`, background: "transparent", color: C.ok, fontSize: "var(--text-floor)", cursor: "pointer" }}>Reset Default</button>
           <button onClick={() => {
             const input = document.querySelector("input[placeholder*='Build'],input[placeholder*='Ask']") as HTMLInputElement;
             if (input) {
@@ -1305,7 +1305,7 @@ export default function Dashboard() {
               input.dispatchEvent(new Event('input', { bubbles: true }));
               setTimeout(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })), 50);
             }
-          }} style={{ padding: "4px 10px", borderRadius: 12, border: "1px solid rgba(37,99,235,0.3)", background: "var(--accent-light)", color: "var(--accent)", fontSize: "0.63rem", cursor: "pointer" }}>✨ Suggest Layout</button>
+          }} style={{ padding: "4px 10px", borderRadius: 12, border: "1px solid rgba(37,99,235,0.3)", background: "var(--accent-light)", color: "var(--accent)", fontSize: "var(--text-floor)", cursor: "pointer" }}>✨ Suggest Layout</button>
         </div>
       </div>
 
@@ -1317,14 +1317,14 @@ export default function Dashboard() {
       <div style={{ display: "flex", alignItems: "center", gap: 2, marginBottom: "0.8rem", borderBottom: `1px solid ${C.border}`, paddingBottom: 6, overflowX: "auto", scrollbarWidth: "none" }}>
         {tabs.map((t, i) => (
           <button key={i} onClick={() => setActiveIdx(i)} onDoubleClick={() => editing && renameTab(i)}
-            style={{ padding: "4px 12px", borderRadius: "8px 8px 0 0", border: "none", background: i === activeIdx ? C.card : "transparent", color: i === activeIdx ? C.gold : C.muted, fontSize: "0.68rem", fontWeight: i === activeIdx ? 600 : 400, cursor: "pointer", position: "relative", whiteSpace: "nowrap", flexShrink: 0 }}>
+            style={{ padding: "4px 12px", borderRadius: "8px 8px 0 0", border: "none", background: i === activeIdx ? C.card : "transparent", color: i === activeIdx ? C.gold : C.muted, fontSize: "var(--text-floor)", fontWeight: i === activeIdx ? 600 : 400, cursor: "pointer", position: "relative", whiteSpace: "nowrap", flexShrink: 0 }}>
             {t.name}
             {editing && tabs.length > 1 && i === activeIdx && (
-              <span onClick={(e) => { e.stopPropagation(); removeTab(i); }} style={{ marginLeft: 6, color: C.danger, fontSize: "0.55rem", cursor: "pointer" }}>✕</span>
+              <span onClick={(e) => { e.stopPropagation(); removeTab(i); }} style={{ marginLeft: 6, color: C.danger, fontSize: "var(--text-floor)", cursor: "pointer" }}>✕</span>
             )}
           </button>
         ))}
-        {editing && <button onClick={addTab} style={{ padding: "4px 8px", border: "none", background: "transparent", color: C.muted, fontSize: "0.68rem", cursor: "pointer" }}>+ Tab</button>}
+        {editing && <button onClick={addTab} style={{ padding: "4px 8px", border: "none", background: "transparent", color: C.muted, fontSize: "var(--text-floor)", cursor: "pointer" }}>+ Tab</button>}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: "0.6rem" }}>
