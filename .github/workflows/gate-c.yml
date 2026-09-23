@@ -88,11 +88,7 @@ jobs:
           # Revision ids in this chain are lowercase alnum + underscore
           # (004_task_run_id, 035_outcome_scope_thumb_index), not hex.
           docker compose exec -T postgres psql -U maistro -d maistro -Atc \
-<<<<<<< HEAD
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[[:alnum:]_]+$'
-=======
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
 
       - name: Record candidate and shipped image digest
         shell: bash

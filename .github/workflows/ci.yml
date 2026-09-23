@@ -869,11 +869,7 @@ jobs:
             sleep 2
           done
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
-<<<<<<< HEAD
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[[:alnum:]_]+$'
-=======
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
 
           # Recreate PostgreSQL against the same 18-style parent volume and
           # prove the migrated cluster, not an anonymous volume, comes back.
@@ -900,11 +896,7 @@ jobs:
             sleep 2
           done
           docker exec "$postgres" psql -U maistro -d maistro -Atc \
-<<<<<<< HEAD
-            "SELECT version_num FROM alembic_version" | grep -Eq '^[[:alnum:]_]+$'
-=======
             "SELECT version_num FROM alembic_version" | grep -Eq '^[0-9a-z_]+$'
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
       - name: Build hive-conductor (cached)
         run: >-
           scripts/buildx-build-retry.sh --

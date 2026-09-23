@@ -8,7 +8,7 @@ system/unscoped scope. A later contract migration may make the column
 non-nullable once old writers are retired.
 
 Revision ID: 036_audit_log_org_scope
-Revises: 035_outcome_scope_thumb_index
+Revises: 038
 Create Date: 2026-09-10
 """
 
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "036_audit_log_org_scope"
-down_revision = "035_outcome_scope_thumb_index"
+down_revision = "038"
 branch_labels = None
 depends_on = None
 

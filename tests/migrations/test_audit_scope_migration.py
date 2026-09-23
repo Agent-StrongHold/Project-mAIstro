@@ -75,7 +75,7 @@ class _Operations:
         return None
 
 
-def test_audit_scope_migration_is_reachable_from_the_single_head() -> None:
+def test_audit_scope_migration_is_the_single_head() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -84,7 +84,11 @@ def test_audit_scope_migration_is_reachable_from_the_single_head() -> None:
     directory = ScriptDirectory.from_config(config)
 
     revision = directory.get_revision("036_audit_log_org_scope")
-    assert revision.down_revision == "035_outcome_scope_thumb_index"
+    # 036 already existed on the historical 035 branch when the consumer and
+    # task migrations landed. It therefore follows their current head so every
+    # deployment's ordinary ``upgrade head`` applies the audit scope migration
+    # rather than leaving it on a competing branch.
+    assert revision.down_revision == "038"
     assert directory.get_heads() == ["036_audit_log_org_scope"]
     walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
     assert revision.revision in walked

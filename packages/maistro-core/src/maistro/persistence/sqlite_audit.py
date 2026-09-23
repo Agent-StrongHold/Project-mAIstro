@@ -67,29 +67,25 @@ class SqliteAuditLog:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-<<<<<<< HEAD
         """Create or upgrade the audit_log table and its scope index.
 
         SQLite has no ``ADD COLUMN IF NOT EXISTS``. Inspecting the table keeps
         existing homelab databases readable while making the empty string an
-        explicit representation for legacy system/unscoped entries.
+        explicit representation for legacy system/unscoped entries. The whole
+        read-then-DDL sequence runs under the shared schema-upgrade lock so
+        concurrent processes cannot both decide the column is absent.
         """
-        await self._conn.execute(_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(audit_log)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        if "org_id" not in columns:
-            await self._conn.execute(
-                "ALTER TABLE audit_log ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
-            )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
-        )
-        await self._conn.commit()
-=======
-        """Create the audit_log table if it doesn't exist."""
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
+            cursor = await self._conn.execute("PRAGMA table_info(audit_log)")
+            columns = {row[1] for row in await cursor.fetchall()}
+            if "org_id" not in columns:
+                await self._conn.execute(
+                    "ALTER TABLE audit_log ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
+                )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
+            )
 
     async def log(self, entry: AuditEntry) -> None:
         """Record an audit entry."""
