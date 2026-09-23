@@ -24,7 +24,12 @@ from maistro.capabilities.effect_context import (
 )
 from maistro.capabilities.invocation import InvocationStatus
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
-from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+    MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    GatewayEndpoint,
+)
+from maistro.credentials.types import CredentialRecord
 from maistro.graph.definitions import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.providers.registry import InMemoryProviderRegistry
@@ -135,8 +140,22 @@ def canvas_egress(
             workspace_id="ws-canvas",
             project_id=project.project_id,
             capability=MODEL_CHAT_CAPABILITY,
+            # The governed model-chat egress routes every physical call
+            # through a Binding-scoped credential (#1079); an authorized
+            # Binding with no matching pool entry refuses with
+            # CredentialScopeError before any (fake) transport call is made.
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
         )
         await effects.bindings.put(binding)
+        effects.credentials.add(
+            workspace_id="ws-canvas",
+            project_id=project.project_id,
+            record=CredentialRecord(
+                key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+                provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+                api_key="test-canvas-gateway-key",
+            ),
+        )
         run_store = InMemoryRunStore(project_store=project_store)
         run = await run_store.create_run(
             Graph(
@@ -161,6 +180,7 @@ def canvas_egress(
         }, run_store
 
     context, run_store = asyncio.run(_seed_execution())
+    _seed_canonical_workspace("ws-canvas", member="user")
     registry = InMemoryProviderRegistry(
         models=[
             ModelMetadata(
@@ -195,7 +215,7 @@ def canvas_egress(
             litellm_api_base="http://gateway.test/v1",
             litellm_api_key=None,
             canvas_model_binding_id="canvas-quality-binding",
-            model_bindings=[],
+            maistro_model_bindings=[],
             hive_default_workspace_id="ws-canvas",
         ),
     )
@@ -367,7 +387,7 @@ def test_canvas_route_refuses_missing_binding(
             litellm_api_base="http://gateway.test/v1",
             litellm_api_key=None,
             canvas_model_binding_id="not-authorized",
-            model_bindings=[],
+            maistro_model_bindings=[],
             hive_default_workspace_id="ws-canvas",
         ),
     )
@@ -457,7 +477,7 @@ def test_canvas_route_refuses_disabled_binding(
             litellm_api_base="http://gateway.test/v1",
             litellm_api_key=None,
             canvas_model_binding_id="canvas-quality-disabled",
-            model_bindings=[],
+            maistro_model_bindings=[],
             hive_default_workspace_id="ws-canvas",
         ),
     )
@@ -493,11 +513,32 @@ def _request_with_state(
     return Request(scope)
 
 
+def _seed_canonical_workspace(workspace_id: str, *, member: str) -> None:
+    """Admit `member` to a canonical Workspace; Canvas eval authorizes by membership."""
+    import asyncio
+    from datetime import UTC, datetime
+
+    from models.workspace import WorkspacePresentation
+    from services import workspace_authority
+
+    asyncio.run(
+        workspace_authority.canonical_store_for_tests().create(
+            creator_user_id=member, name=workspace_id, workspace_id=workspace_id
+        )
+    )
+    workspace_authority.presentation_store()[workspace_id] = WorkspacePresentation(
+        workspace_id=workspace_id,
+        persona_template_id="test-persona",
+        updated_at=datetime.now(UTC),
+    )
+
+
 def _seed_run(
     run_store: Any,
     *,
     project_id: str,
     actor_principal_id: str | None,
+    workspace_id: str = "ws-canvas",
     node_type: str = "canvas.visual_quality",
     with_node_run: bool = True,
     with_attempt: bool = True,
@@ -508,7 +549,7 @@ def _seed_run(
         run = await run_store.create_run(
             Graph(
                 graph_id=f"canvas-graph-{node_type}-{actor_principal_id}",
-                workspace_id="ws-canvas",
+                workspace_id=workspace_id,
                 project_id=project_id,
                 name="Canvas quality",
                 nodes=[Node(node_id="canvas-quality", node_type=node_type)],
@@ -527,11 +568,137 @@ def _seed_run(
     return asyncio.run(_create())
 
 
-def test_canvas_route_refuses_run_owned_by_another_principal(
+def _eval_as(username: str, password: str, run_id: str) -> Any:
+    client = TestClient(app)
+    login = client.post("/v1/auth/login", json={"username": username, "password": password})
+    assert login.status_code == 200
+    return client.post(
+        "/v1/canvas/eval",
+        json={"description": "A blue city at dusk", "run_id": run_id},
+    )
+
+
+def _foreign_workspace_run(components: Any, *, actor_principal_id: str) -> Any:
+    import asyncio
+
+    _seed_canonical_workspace("ws-foreign", member="someone-else")
+    project = asyncio.run(components.run_store._project_store.create_root("ws-foreign"))
+    run, _node_run, attempt = _seed_run(
+        components.run_store,
+        project_id=project.project_id,
+        actor_principal_id=actor_principal_id,
+        workspace_id="ws-foreign",
+    )
+    return run, attempt
+
+
+def test_canvas_route_answers_foreign_workspace_run_exactly_like_missing_run(
     canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A Run minted by another principal is refused, never re-owned."""
+    """A Run outside the caller's Workspace is indistinguishable from no Run (#1152)."""
+    egress, effects, _context, components = canvas_egress
+    run, attempt = _foreign_workspace_run(components, actor_principal_id="user")
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+
+    foreign = _eval_as("testuser", "testpass", run.run_id)
+    missing = _eval_as("testuser", "testpass", "run-that-does-not-exist")
+
+    assert foreign.status_code == missing.status_code == 503
+    assert foreign.content == missing.content
+    assert "score" not in foreign.json()
+    import asyncio
+
+    unchanged = asyncio.run(components.run_store.get_attempt(attempt.attempt_id))
+    assert unchanged == attempt
+    invocations = asyncio.run(
+        effects.invocation_store.list_effect(
+            run_id=run.run_id,
+            node_run_id=attempt.node_run_id,
+            binding_id="canvas-quality-binding",
+            effect_key="canvas.visual_quality.evaluate",
+        )
+    )
+    assert invocations == []
+
+
+def test_canvas_route_answers_foreign_run_like_missing_when_membership_store_fails(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing membership lookup refuses closed, with the missing-Run answer."""
+    import routes.canvas as canvas_route
+
+    egress, _effects, _context, components = canvas_egress
+    run, attempt = _foreign_workspace_run(components, actor_principal_id="user")
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+
+    async def _unavailable(_user_id: str) -> set[str]:
+        raise ConnectionError("workspace store unreachable")
+
+    monkeypatch.setattr(canvas_route, "authorized_workspace_ids", _unavailable)
+
+    foreign = _eval_as("testuser", "testpass", run.run_id)
+    missing = _eval_as("testuser", "testpass", "run-that-does-not-exist")
+
+    assert foreign.status_code == missing.status_code == 503
+    assert foreign.content == missing.content
+    import asyncio
+
+    assert asyncio.run(components.run_store.get_attempt(attempt.attempt_id)) == attempt
+
+
+def test_canvas_route_does_the_same_membership_work_for_missing_and_foreign_runs(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Membership is resolved whether or not the Run exists, so latency is no oracle."""
+    import routes.canvas as canvas_route
+
+    egress, _effects, _context, components = canvas_egress
+    run, _attempt = _foreign_workspace_run(components, actor_principal_id="user")
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+    resolved = canvas_route.authorized_workspace_ids
+    lookups: list[str] = []
+
+    async def _recording(user_id: str) -> set[str]:
+        lookups.append(user_id)
+        return await resolved(user_id)
+
+    monkeypatch.setattr(canvas_route, "authorized_workspace_ids", _recording)
+
+    _eval_as("testuser", "testpass", "run-that-does-not-exist")
+    missing_lookups = list(lookups)
+    lookups.clear()
+    _eval_as("testuser", "testpass", run.run_id)
+
+    assert missing_lookups == lookups == ["user"]
+
+
+def test_canvas_route_gives_admin_no_bypass_of_workspace_membership(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visibility is Workspace membership for every role, as in DAG-run inspection."""
+    egress, _effects, _context, components = canvas_egress
+    run, attempt = _foreign_workspace_run(components, actor_principal_id="someone-else")
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+
+    foreign = _eval_as("testadmin", "adminpass", run.run_id)
+    missing = _eval_as("testadmin", "adminpass", "run-that-does-not-exist")
+
+    assert foreign.status_code == missing.status_code == 503
+    assert foreign.content == missing.content
+    import asyncio
+
+    assert asyncio.run(components.run_store.get_attempt(attempt.attempt_id)) == attempt
+
+
+def test_canvas_route_lets_workspace_member_evaluate_run_started_by_another_member(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The initiating principal is provenance, not a visibility gate (#1152)."""
     egress, _effects, _context, components = canvas_egress
     run, _node_run, _attempt = _seed_run(
         components.run_store,
@@ -539,24 +706,18 @@ def test_canvas_route_refuses_run_owned_by_another_principal(
         actor_principal_id="someone-else",
     )
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
-    client = TestClient(app)
-    login = client.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
-    assert login.status_code == 200
 
-    response = client.post(
-        "/v1/canvas/eval",
-        json={"description": "A blue city at dusk", "run_id": run.run_id},
-    )
+    response = _eval_as("testuser", "testpass", run.run_id)
 
-    assert response.status_code == 403
-    assert "score" not in response.json()
+    assert response.status_code == 200, response.text
+    assert response.json()["score"] == 91
 
 
 def test_canvas_route_refuses_run_without_execution_principal(
     canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An admin may inspect any Run, but a principal-less Run still refuses."""
+    """A principal-less Run in the caller's Workspace refuses like a missing one."""
     egress, _effects, _context, components = canvas_egress
     run, _node_run, _attempt = _seed_run(
         components.run_store,
@@ -564,17 +725,13 @@ def test_canvas_route_refuses_run_without_execution_principal(
         actor_principal_id=None,
     )
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
-    client = TestClient(app)
-    login = client.post("/v1/auth/login", json={"username": "testadmin", "password": "adminpass"})
-    assert login.status_code == 200
 
-    response = client.post(
-        "/v1/canvas/eval",
-        json={"description": "A blue city at dusk", "run_id": run.run_id},
-    )
+    actorless = _eval_as("testuser", "testpass", run.run_id)
+    missing = _eval_as("testuser", "testpass", "run-that-does-not-exist")
 
-    assert response.status_code == 503
-    assert "score" not in response.json()
+    assert actorless.status_code == missing.status_code == 503
+    assert actorless.content == missing.content
+    assert "score" not in actorless.json()
 
 
 def test_canvas_route_refuses_run_without_quality_node(
@@ -891,7 +1048,7 @@ def test_quality_binding_id_prefers_one_deployment_scoped_binding() -> None:
     settings = SimpleNamespace(
         canvas_model_binding_id="",
         hive_default_workspace_id="ws-canvas",
-        model_bindings=[
+        maistro_model_bindings=[
             SimpleNamespace(
                 binding_id="binding-other-project",
                 workspace_id="",
@@ -923,7 +1080,7 @@ def test_quality_binding_id_returns_stable_unconfigured_reference() -> None:
     settings = SimpleNamespace(
         canvas_model_binding_id="",
         hive_default_workspace_id="ws-canvas",
-        model_bindings=[],
+        maistro_model_bindings=[],
     )
     run = SimpleNamespace(workspace_id="ws-canvas", project_id="project-a")
 
@@ -933,7 +1090,7 @@ def test_quality_binding_id_returns_stable_unconfigured_reference() -> None:
     ambiguous_settings = SimpleNamespace(
         canvas_model_binding_id="",
         hive_default_workspace_id="ws-canvas",
-        model_bindings=[
+        maistro_model_bindings=[
             SimpleNamespace(
                 binding_id="binding-one",
                 workspace_id="ws-canvas",

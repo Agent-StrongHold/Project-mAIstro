@@ -6,8 +6,8 @@
  * comment cites #1422); `Schedules.tsx` and `Memory.tsx` still followed
  * every create/update/delete with a GET of the entire collection -- two
  * round trips per action instead of one, and a visible stall on a slow link.
- * Both pages are workspace-agnostic (no `useWorkspaces()` dependency), so
- * these specs need no workspace fixture.
+ * Memory is workspace-agnostic; a schedule is created inside a Workspace
+ * the caller belongs to (#1201), so the schedule spec makes one first.
  */
 
 import { test, expect } from "@playwright/test";
@@ -18,8 +18,15 @@ test("toggling a schedule does not refetch the whole collection", async ({ page 
   await loginAsAdmin(page);
   await page.addInitScript(() => window.localStorage.setItem("hive_onboarded", "1"));
 
+  const workspace = await page.request.post("/v1/workspaces", {
+    data: { persona_template_id: "pm_fleet", name: `Schedules ${Date.now()}` },
+  });
+  expect(workspace.status()).toBe(201);
+  const { id: workspaceId } = (await workspace.json()) as { id: string };
+
   const created = await page.request.post("/v1/schedules", {
     data: {
+      workspace_id: workspaceId,
       name: `Optimistic UI ${Date.now()}`,
       description: "",
       cron_expression: "0 * * * *",
