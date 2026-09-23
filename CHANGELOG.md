@@ -25,6 +25,20 @@ or placeholder-only section.
 
 ### Security
 
+- **Hive schedules are bound to their owner's Workspace (#1201, partial).**
+  `POST /v1/schedules` now requires a `workspace_id` selection (optional
+  `project_id`), admits it through the same canonical Workspace/Project
+  authorization as `POST /v1/dags/{id}/run` (403 when absent or not a
+  membership), and stamps `user_id`, `workspace_id` and `project_id` from the
+  authenticated session; a client-sent `user_id` is ignored and `PUT` cannot
+  change owner or scope. List returns only schedules in the caller's
+  Workspaces, and get/update/delete/manual run answer the same 404 for a
+  missing, foreign, or ownerless (pre-existing) schedule. Removing a member
+  removes their access. Manual fires of a bound schedule now create their Run
+  in the bound Workspace/Project instead of the configured default. Operators:
+  schedules created before this change have no Workspace and are no longer
+  visible over the API; recreate them from a Workspace.
+
 - **Workspace access decisions now live in one core seam (#1150, partial).**
   `maistro.workspaces.WorkspaceAuthorizer` answers "may this principal VIEW or
   ADMINISTER this Workspace?" from the Workspace store, with one
