@@ -121,6 +121,19 @@ async def test_every_notation_of_a_private_or_dangerous_target_is_denied(url: st
 
 
 @pytest.mark.ac("SPEC-090326-b7e2/AC-2")
+async def test_a_redirect_chain_is_bounded_and_fails_closed() -> None:
+    """An endless redirect cannot make the route handler loop indefinitely."""
+    guard, context = await _guarded_context(
+        responses={_PUBLIC: FakeHttpResponse(302, location=_PUBLIC)}
+    )
+
+    route = await context.navigate(_PUBLIC)
+
+    assert route.action == ("abort", ABORT_REASON)
+    assert guard.events[-1].reason == "error"
+    assert len([event for event in guard.events if event.decision == ALLOWED]) == 21
+
+
 async def test_a_redirect_hop_from_public_to_private_is_denied_at_that_hop() -> None:
     """The controlled wire follows a public redirect through the real route handler."""
     guard, context = await _guarded_context(
@@ -196,6 +209,17 @@ async def test_websocket_upgrades_are_denied_regardless_of_destination() -> None
 # --- allowances are host-owned and stay narrow ------------------------------
 
 
+@pytest.mark.ac("SPEC-090326-b7e2/AC-4")
+async def test_a_browser_allowance_cannot_authorize_a_dangerous_scheme() -> None:
+    """Configured exceptions are network origins, never file/data URLs."""
+    guard, context = await _guarded_context(extra_origins=["file:///etc/passwd"])
+
+    route = await context.navigate("file:///etc/passwd")
+
+    assert route.action == ("abort", ABORT_REASON)
+    assert guard.events[-1].reason == BLOCK_SCHEME
+
+
 @pytest.mark.ac("SPEC-090326-b7e2/AC-6")
 async def test_a_configured_origin_is_allowed_and_the_allowance_stays_scoped() -> None:
     configure_outbound_policy("http://10.20.30.40:8443")
@@ -213,14 +237,6 @@ async def test_a_configured_origin_is_allowed_and_the_allowance_stays_scoped() -
 
 
 @pytest.mark.ac("SPEC-090326-b7e2/AC-6")
-async def test_a_non_http_allowance_cannot_bypass_the_scheme_policy() -> None:
-    _guard, context = await _guarded_context(extra_origins=["file:///etc/passwd"])
-
-    route = await context.navigate("file:///etc/passwd")
-
-    assert route.action == ("abort", ABORT_REASON)
-
-
 async def test_browser_specific_origins_layer_without_widening_the_shared_policy() -> None:
     """`BROWSER_USE_ALLOWED_ORIGINS` is a host-owned browser allowance.
 
@@ -305,6 +321,29 @@ async def test_allowed_and_denied_decisions_are_both_audited() -> None:
     await context.navigate("http://10.9.8.7/x")
 
     assert [e.decision for e in guard.events] == [ALLOWED, DENIED]
+
+
+async def test_a_route_without_fetch_or_fulfill_fails_closed() -> None:
+    """A route API drift must not silently restore an ungoverned continue."""
+    from types import SimpleNamespace
+
+    guard = BrowserNetworkGuard()
+    answered: list[str] = []
+    route = SimpleNamespace(
+        request=FakePwRequest(_PUBLIC),
+        fetch=None,
+        fulfill=None,
+    )
+
+    async def _abort(_reason: str) -> None:
+        answered.append("abort")
+
+    route.abort = _abort
+    await guard.handle_route(route)
+
+    assert answered == ["abort"]
+    assert guard.events[-1].decision == DENIED
+    assert guard.events[-1].reason == "error"
 
 
 async def test_an_unexpected_error_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:

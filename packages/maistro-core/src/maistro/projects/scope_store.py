@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -146,6 +147,68 @@ class ProjectScopeStore(Protocol):
         """Reject required resources that are not visible at the target."""
 
         ...
+
+
+@runtime_checkable
+class TransactionalProjectScopeStore(Protocol):
+    """A scope store whose Workspace-lifecycle writes can join one transaction.
+
+    A Workspace and its Root Project are two stores' rows, and the Workspace
+    stores used to write them in two transactions: commit the Workspace, then
+    `create_root`; commit the delete, then `purge_workspace`. In-process
+    compensation covered an exception between the halves and nothing covered
+    a crash there, which left a Workspace with no Root Project (a thing
+    `root_for_workspace` treats as impossible) or a Project tree with no
+    Workspace to reach it by (#1121).
+
+    The durable scope stores share a database with their Workspace store --
+    the same asyncpg pool, or the same aiosqlite connection -- so the fix is
+    one transaction, and this Protocol is the shape of it. `transaction()`
+    opens the scope store's own write transaction and yields the connection
+    handle it runs on; the Workspace store writes its rows on that handle and
+    calls the `_in` methods with it, and the whole lot commits or rolls back
+    together. The `transaction()` is the *scope store's* rather than the
+    Workspace store's because on SQLite the two write on one connection, and
+    a second lock over that connection is how "cannot start a transaction
+    within a transaction" happens; the scope store's critical section is the
+    only one there can be.
+
+    `ProjectScopeStore.create_root` and `purge_workspace` keep their
+    contracts: the durable stores implement each as its `_in` twin inside its
+    own `transaction()`. The in-memory reference does not implement this
+    Protocol -- it has no transaction to join -- and a Workspace store paired
+    with a non-transactional scope store falls back to compensating, which is
+    not crash-consistent by construction and says so where it does it.
+    """
+
+    def transaction(self) -> AbstractAsyncContextManager[Any]:
+        """Open this store's write transaction, yielding the connection it runs on."""
+
+        ...
+
+    async def create_root_in(self, conn: Any, workspace_id: str) -> Project:
+        """`create_root`, issued on the caller's open transaction."""
+
+        ...
+
+    async def purge_workspace_in(self, conn: Any, workspace_id: str) -> None:
+        """`purge_workspace`, issued on the caller's open transaction."""
+
+        ...
+
+
+@runtime_checkable
+class DurableProjectScopeStore(ProjectScopeStore, TransactionalProjectScopeStore, Protocol):
+    """A Project store that is both the full canonical interface and joinable.
+
+    `PgWorkspaceStore`/`SqliteWorkspaceStore` need both roles at once: the
+    canonical `ProjectScopeStore` surface `WorkspaceStore.project_store`
+    exposes to callers, and the `TransactionalProjectScopeStore` surface they
+    use internally to write the Workspace, its membership, and its Root
+    Project on one connection (#1121). Naming that intersection once here,
+    rather than at each call site, is what lets the field keep a single
+    static type that is honestly a subtype of `ProjectScopeStore`.
+    """
 
 
 class InMemoryProjectScopeStore:
@@ -457,4 +520,9 @@ class InMemoryProjectScopeStore:
         return project
 
 
-__all__ = ["InMemoryProjectScopeStore", "ProjectScopeStore"]
+__all__ = [
+    "DurableProjectScopeStore",
+    "InMemoryProjectScopeStore",
+    "ProjectScopeStore",
+    "TransactionalProjectScopeStore",
+]
