@@ -1126,6 +1126,51 @@ async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     assert resolved.run_id == first.run_id
 
 
+async def test_get_runs_for_occurrences_is_the_batched_twin_of_the_single_lookup(
+    spine: Any,
+) -> None:
+    """One query resolves many occurrences, keyed by `scheduled_for` (#1533).
+
+    Schedule recovery used to resolve each occurrence with its own round trip;
+    this is the batched replacement, checked against the same claims
+    `get_run_for_occurrence` would resolve one at a time — plus a
+    `scheduled_for` that was never claimed, to prove a miss is simply absent
+    from the result rather than raising, and an empty request, which must
+    short-circuit to `{}` rather than query at all.
+    """
+    store, workspace, project_id = spine
+    first = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T12:00:00+00:00")
+    )
+    second = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T13:00:00+00:00")
+    )
+    third = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T14:00:00+00:00")
+    )
+
+    resolved = await store.get_runs_for_occurrences(
+        "sched-1",
+        [
+            "2026-08-24T12:00:00+00:00",
+            "2026-08-24T13:00:00+00:00",
+            "2026-08-24T14:00:00+00:00",
+            "2026-08-24T15:00:00+00:00",  # never claimed
+        ],
+    )
+
+    assert set(resolved) == {
+        "2026-08-24T12:00:00+00:00",
+        "2026-08-24T13:00:00+00:00",
+        "2026-08-24T14:00:00+00:00",
+    }
+    assert resolved["2026-08-24T12:00:00+00:00"].run_id == first.run_id
+    assert resolved["2026-08-24T13:00:00+00:00"].run_id == second.run_id
+    assert resolved["2026-08-24T14:00:00+00:00"].run_id == third.run_id
+
+    assert await store.get_runs_for_occurrences("sched-1", []) == {}
+
+
 async def test_concurrent_occurrence_claims_converge_on_one_run(spine: Any) -> None:
     """A replica race has one winner, and every loser can resolve that winner."""
     store, workspace, project_id = spine
