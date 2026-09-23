@@ -97,14 +97,21 @@ def read_beneath(root: Path, path: str) -> bytes:
         os.close(parent_fd)
 
 
-def write_beneath(root: Path, path: str, content: bytes) -> None:
+def write_beneath(root: Path, path: str, content: bytes, *, mode: int = 0o600) -> None:
+    """Write ``content`` beneath ``root``, creating parents, never following symlinks.
+
+    ``mode`` exists for backends whose in-sandbox reader is a *different uid*
+    than the host process (the container tier runs as a fixed non-root uid, so
+    its mounted workspace must be readable by that uid). The default keeps the
+    same-uid backends — and every other caller — at owner-only.
+    """
     parts = _relative_parts(path)
     parent_fd, name = _open_parent(root, parts, create=True)
     try:
         file_fd = os.open(
             name,
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-            0o600,
+            mode,
             dir_fd=parent_fd,
         )
         with os.fdopen(file_fd, "wb") as stream:

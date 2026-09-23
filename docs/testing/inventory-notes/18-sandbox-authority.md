@@ -1,8 +1,8 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +5
-  packages/maistro-core/tests: +5
-  packages/maistro-core/tests/sandbox: +5
+  packages/maistro-core/tests: +22
+  packages/maistro-core/tests/sandbox: +22
 ---
 # #18 — canonical sandbox authority
 
@@ -128,3 +128,68 @@ Known residuals, recorded rather than hidden:
   installer preflight already reports the real ladder.
 - Child-issue closure states (#76–#81, #811, #1197, #1198) are not
   verifiable from this worktree; no GitHub action is taken from here.
+
+## Verification repair (2026-09-23, same branch)
+
+Independent acceptance validation of the convergence repair found two real
+defects; both are fixed here, with the evidence that produced them:
+
+**1. The lane broke the hard type gate it ships inside.** CI's mypy step is
+`uv run mypy --strict packages/maistro-core/src` (quality.yml, 0-baseline).
+Files this lane added/changed carried four errors:
+`backends/container.py:116/143/189` (`str | None` launcher reaching
+`create_subprocess_exec`) and `tools/sandbox/server.py:52` (a compatibility
+facade returning `Any` from a `str` function). Fixed at the source — the
+launcher is narrowed by the constructor's own refusal, and the facade declares
+its `bytes` — not by widening any config. `mypy --strict` is now clean across
+all 629 core source files, and the pyright ratchet moved 21 → 20 errors
+(baseline 21).
+
+**2. The container backend could not read its own workspace — found by the
+conformance coverage #80 requires.** `build_selector` prefers the container
+tier over bubblewrap wherever a runtime is reachable, so on Docker/Podman
+hosts `ContainerSandboxBackend` IS the production boundary; it had no tests.
+The new `tests/sandbox/backends/test_container.py` (argv-boundary assertions
+that run anywhere; spawn/exec/destroy, default-deny network, env-allowlist,
+output-bound and timeout assertions against the real daemon where one is
+reachable) failed immediately: the container runs as uid 65532 while the
+host-created workspace was `mkdtemp` 0700 with 0600 files, so
+`ls /work` → Permission denied — the backend's primary write-then-execute
+flow was broken. Fix: the backend-created workspace is chmod 0755 and
+`write_file` writes 0644 (`paths.write_beneath` grew a `mode` parameter,
+default unchanged at 0600 for same-uid backends); the host-side exposure is
+still gated by the authorized-root parent chain. All 17 container tests pass
+against a live daemon; the full sandbox suite is 139 passed / 36 skipped
+(kernel-bound bubblewrap tests skip on this host, whose userns is restricted —
+the same hosts CI enables userns for, so they run there).
+
+## Residual findings from the same validation (recorded, not repaired here)
+
+Two production consumers still reach a sandbox **outside** the canonical
+authority, through the legacy `maistro.tools.sandbox.docker` module — which
+remains a full second launcher: it hand-assembles its own `docker run` argv,
+re-adds `CHOWN/SETUID/SETGID` after `--cap-drop=ALL` (ADR-093 decision 3's
+hardened profile says cap-drop ALL, full stop), runs the image's default user
+(often root, vs the canonical backend's fixed 65532), and gates networking on
+a settings boolean instead of a policy `EgressGrant`. The shipped
+`check-sandbox-authority.py` cannot see it: its flag vocabulary and class
+names cover the canonical backends only.
+
+- `packages/maistro-evolve/src/maistro_evolve/benchmarks/sandbox_exec.py:77`
+  executes model-generated candidate code via `create_sandbox`. Under
+  ADR-093 decision 6 this is unattended untrusted code: converging it onto
+  the canonical ladder *refuses* it on every Tier-3-only host — the correct
+  ADR answer, but a functional decision for the evolve owners (their evals
+  fail closed until a Tier-2 backend exists), not a mechanical repair.
+- `packages/maistro-rsi/src/maistro_rsi/sandbox/microvm.py:21` wraps the same
+  legacy module as RSI's development `MicroVmSandbox`. The issue text places
+  RSI-specific containment leaves under M5 #552's hierarchy; converging this
+  seam is theirs, with the same refusal trade-off to own.
+
+Both must be adapted (or the legacy module converted to a facade over the
+selector, as `tools/sandbox/server.py` and the conductor adapter were) before
+#18's "direct alternate sandbox APIs are retired/adapted" and "RSI consumes
+this substrate" criteria are fully satisfied; `test_docker.py` pins the legacy
+flags and must be re-based deliberately with that change. Recorded here
+because the convergence CI cannot yet fail on this pair — extending its rule
+set to the legacy launcher vocabulary is part of that same deliberate change.

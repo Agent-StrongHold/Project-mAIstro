@@ -48,7 +48,10 @@ class CanonicalSandbox:
         return result.exit_code, result.stdout + result.stderr
 
     async def read_file(self, path: str) -> str:
-        content = await self._backend.read_file(self._instance, path)
+        # Declared `bytes` so the decode returns `str` to mypy --strict: the
+        # protocol backend returns Any here only because the facade stores it
+        # behind a compatibility `Any` seam.
+        content: bytes = await self._backend.read_file(self._instance, path)
         return content.decode("utf-8", errors="replace")
 
     async def write_file(self, path: str, content: str) -> None:

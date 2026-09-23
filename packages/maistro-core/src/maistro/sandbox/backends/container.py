@@ -54,9 +54,13 @@ class ContainerSandboxBackend:
         settings: SandboxSettings | None = None,
         root: Path | None = None,
     ) -> None:
-        self._binary = binary or shutil.which("docker") or shutil.which("podman")
-        if self._binary is None:
+        resolved = binary or shutil.which("docker") or shutil.which("podman")
+        if resolved is None:
             raise ContainerUnavailableError("no Docker or Podman CLI is available")
+        # Annotated at the assignment so the constructor's refusal narrows the
+        # type for every use below: mypy --strict reads the `str | None` union
+        # otherwise, and the subprocess launch sites inherit the lie.
+        self._binary: str = resolved
         self._settings = settings or SandboxSettings()
         self._root = validate_host_root(root, create=True) if root is not None else None
         self._instances: dict[str, _LiveContainer] = {}
@@ -84,6 +88,14 @@ class ContainerSandboxBackend:
         env = sanitize_env(config.env)
         if config.fence is not None:
             env.update(config.fence.to_env())
+        # The container reads this directory as uid 65532, not as this process:
+        # mkdtemp's 0700 would deny the sandbox its own workspace. The host
+        # exposure is gated by the parent chain (an authorized root, created
+        # 0755), and the sandbox user is a fixed non-root uid — so r-xr-xr-x on
+        # the directory and 0644 on host-written files (write_file below) are
+        # what "the workspace is the sandbox's" means here.
+        if remove_root:
+            await asyncio.to_thread(workdir.chmod, 0o755)
         command = [
             self._binary,
             "run",
@@ -175,7 +187,9 @@ class ContainerSandboxBackend:
 
     async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
         live = self._require(instance)
-        await asyncio.to_thread(write_beneath, live.root, path, content)
+        # 0644, not the default 0600: the reader inside the sandbox is uid
+        # 65532. See the workspace-permission note in `spawn`.
+        await asyncio.to_thread(write_beneath, live.root, path, content, mode=0o644)
 
     async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
         live = self._require(instance)
