@@ -296,6 +296,12 @@ class GenerationJobRecord:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat(),
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "leased_by": self.leased_by,
+            "lease_expires_at": (
+                self.lease_expires_at.isoformat() if self.lease_expires_at else None
+            ),
             "org_id": self.org_id,
         }
 
@@ -365,6 +371,19 @@ class JobNotDoneError(CanvasError):
 
 class JobAlreadyTerminalError(CanvasError):
     code = "JOB_ALREADY_TERMINAL"
+
+
+class JobLeaseLostError(CanvasError):
+    """A worker-owned completion write lost the race to lease reclamation.
+
+    Raised by ``CanvasStore.update_job`` when called with ``expected_leased_by``
+    and the row's current ``leased_by`` no longer matches: another worker
+    reclaimed the job (the original lease expired and was reaped) before this
+    worker's own completion write landed. The caller's result is stale and
+    must be discarded rather than persisted over the new holder's state.
+    """
+
+    code = "JOB_LEASE_LOST"
 
 
 class TextLayerNoGenError(CanvasError):
