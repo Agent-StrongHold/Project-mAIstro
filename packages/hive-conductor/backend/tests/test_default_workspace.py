@@ -394,3 +394,41 @@ async def test_a_later_generation_another_process_claimed_wins_over_the_cached_o
         await conn.close()
 
     assert resolved.id == successor.workspace_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-6")
+@pytest.mark.contract("behavioral")
+async def test_the_default_route_refuses_a_request_with_no_principal() -> None:
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from routes import workspaces as workspace_routes
+
+    before = set(stores.agents.keys())
+
+    with pytest.raises(HTTPException) as refused:
+        await workspace_routes.ensure_default_workspace(
+            SimpleNamespace(state=SimpleNamespace(user=None))
+        )
+
+    assert refused.value.status_code == 401
+    assert set(stores.agents.keys()) == before
+
+
+@pytest.mark.ac("ADR-092326-7ed7/AC-6")
+@pytest.mark.contract("behavioral")
+def test_the_default_route_maps_a_foreign_agent_row_to_409(
+    admin_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from routes import workspaces as workspace_routes
+
+    async def _held_by_another_workspace(workspace_id: str):
+        raise workspace_agent.WorkspaceAgentConflict(f"{workspace_id} is held elsewhere")
+
+    monkeypatch.setattr(workspace_routes, "resolve_workspace_agent", _held_by_another_workspace)
+
+    response = admin_client.post("/v1/workspaces/default")
+
+    assert response.status_code == 409
+    assert "held elsewhere" in response.json()["detail"]
