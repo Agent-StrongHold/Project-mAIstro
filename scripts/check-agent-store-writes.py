@@ -56,7 +56,9 @@ CONTAINER_ASSIGN_EXCEPTIONS = frozenset(
 )
 
 #: Store-mutating method calls.
-MUTATING_METHODS = frozenset({"pop", "popitem", "update", "clear", "setdefault"})
+MUTATING_METHODS = frozenset(
+    {"pop", "popitem", "update", "clear", "setdefault", "put_if_absent", "discard"}
+)
 
 
 @dataclass(frozen=True)
