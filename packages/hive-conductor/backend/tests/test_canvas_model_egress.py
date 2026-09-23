@@ -609,6 +609,32 @@ def test_canvas_route_answers_foreign_workspace_run_exactly_like_missing_run(
     assert invocations == []
 
 
+def test_canvas_route_answers_foreign_run_like_missing_when_membership_store_fails(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing membership lookup refuses closed, with the missing-Run answer."""
+    import routes.canvas as canvas_route
+
+    egress, _effects, _context, components = canvas_egress
+    run, attempt = _foreign_workspace_run(components, actor_principal_id="user")
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+
+    async def _unavailable(_user_id: str, _workspace_id: str | None) -> bool:
+        raise ConnectionError("workspace store unreachable")
+
+    monkeypatch.setattr(canvas_route, "is_member", _unavailable)
+
+    foreign = _eval_as("testuser", "testpass", run.run_id)
+    missing = _eval_as("testuser", "testpass", "run-that-does-not-exist")
+
+    assert foreign.status_code == missing.status_code == 503
+    assert foreign.content == missing.content
+    import asyncio
+
+    assert asyncio.run(components.run_store.get_attempt(attempt.attempt_id)) == attempt
+
+
 def test_canvas_route_gives_admin_no_bypass_of_workspace_membership(
     canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
     monkeypatch: pytest.MonkeyPatch,

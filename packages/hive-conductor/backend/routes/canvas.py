@@ -69,23 +69,28 @@ def _trusted_canvas_context(request: Request) -> dict[str, str]:
 async def _canonical_canvas_run(request: Request, run_id: str) -> Any:
     """Load an existing canonical Run the caller's Workspace membership authorizes.
 
-    Visibility is Workspace membership, as in HITL and DAG-run inspection
-    (#1152, #1174): the initiating principal is provenance, not a gate, and
-    no role bypasses it. A foreign, actor-less, or missing Run gets one
-    answer so the response never confirms that a Run id exists.
+    Visibility is canonical Workspace membership, the check HITL run
+    inspection uses (#1152, #1174): the initiating principal is provenance,
+    not a gate, and no role bypasses it. A foreign, actor-less, or missing
+    Run gets one answer so the response never confirms that a Run id exists.
     """
     user = getattr(request.state, "user", None) or {}
     principal = str(user.get("id") or user.get("username") or "").strip()
     if not principal:
         raise HTTPException(status_code=401, detail="Authentication required")
 
+    refusal = BindingResolutionError("Canvas visual evaluation requires an existing canonical Run")
     run = await _canvas_model_egress(request).run_store.get_run(run_id)
-    if (
-        run is None
-        or not run.actor_principal_id
-        or not await is_member(principal, run.workspace_id)
-    ):
-        raise BindingResolutionError("Canvas visual evaluation requires an existing canonical Run")
+    if run is None or not run.actor_principal_id:
+        raise refusal
+    try:
+        authorized = await is_member(principal, run.workspace_id)
+    except Exception:
+        # A membership-store failure must not surface as a different status
+        # than a missing Run, or it would confirm the Run exists.
+        authorized = False
+    if not authorized:
+        raise refusal
     return run
 
 
