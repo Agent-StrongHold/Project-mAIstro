@@ -66,3 +66,18 @@ is now explicitly dispositioned `MIGRATE_TO_GOVERNED_INVOCATION` in
 remaining invisible. Verified end to end: with a temporary rogue Jira node
 the gate fails with an unclassified `PM_POLLING_EFFECT` site; on the clean
 tree it passes with 61 sites, all dispositioned.
+
+## Repair round: reachability-ledger prune for the durable effect authority
+
+The governed effect context's PostgreSQL composition
+(`new_postgres_effect_context` -> `PgEventStore`) made
+`maistro.events.pg_envelope` genuinely reachable from a production entry
+path (`container._wire_capability_effects`), which the reachability ratchet
+correctly refused as a drift from its trusted baseline. Per the gate's own
+repair instruction ("The reviewed baseline must shrink when modules become
+reachable"), the module was pruned from `quality/reachability-baseline.json`
+and its LIBRARY disposition entry from
+`quality/reachability-dispositions.json` in lockstep. Re-probed the
+direct-effects negative path (temporary rogue node, gate fails; clean tree,
+gate passes) and re-ran `check-reachability`, `check-reachability-dispositions`,
+`check-convergence-matrix`, and `check-ratchet-provenance` — all green.
