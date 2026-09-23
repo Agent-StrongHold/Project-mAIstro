@@ -91,6 +91,18 @@ class AuditEntry:
     content_sha256: str = ""
     content_length: int = 0
 
+    def __post_init__(self) -> None:
+        """Reject malformed non-secret audit correlation evidence."""
+        if self.policy_version and not self.policy_version.strip():
+            raise ValueError("policy_version must not be whitespace")
+        if self.content_sha256 and (
+            len(self.content_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.content_sha256)
+        ):
+            raise ValueError("content_sha256 must be a lowercase SHA-256 digest")
+        if self.content_length < 0:
+            raise ValueError("content_length must not be negative")
+
 
 @dataclass(frozen=True)
 class GateResult:

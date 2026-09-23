@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from maistro.security._types import AuditEntry, AuditLog
 from maistro.security.composition import (
     CanonicalSecurityDependencies,
@@ -60,3 +62,16 @@ def test_composed_audit_sink_records_correlation_without_content() -> None:
     # The audit record carries evidence hashes, never the scanned content.
     assert entry.detail == ""
     assert entry.content_length == 12
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("policy_version", " "),
+        ("content_sha256", "not-a-digest"),
+        ("content_length", -1),
+    ],
+)
+def test_audit_correlation_evidence_is_validated(field: str, value: str | int) -> None:
+    with pytest.raises(ValueError):
+        AuditEntry(**{field: value})

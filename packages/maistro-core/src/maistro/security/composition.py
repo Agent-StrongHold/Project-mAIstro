@@ -14,6 +14,8 @@ from maistro.security._types import AuditLog
 from maistro.security.sentinel.audit import InMemoryAuditLog
 from maistro.security.warden.detector import Warden
 
+__all__ = ["CanonicalSecurityDependencies", "build_canonical_security_dependencies"]
+
 
 @dataclass(frozen=True)
 class CanonicalSecurityDependencies:
@@ -32,4 +34,7 @@ def build_canonical_security_dependencies() -> CanonicalSecurityDependencies:
     second Warden or audit vocabulary.
     """
 
-    return CanonicalSecurityDependencies(warden=Warden(), audit_log=InMemoryAuditLog())
+    warden = Warden()
+    if not warden.policy_version:
+        raise RuntimeError("canonical Warden must identify its policy version")
+    return CanonicalSecurityDependencies(warden=warden, audit_log=InMemoryAuditLog())
