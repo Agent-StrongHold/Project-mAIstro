@@ -385,6 +385,17 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A Graph Run stranded RUNNING by a crash between its continuation write and
+  the canonical mirror is now settled or resumed (#1151).** The persistence
+  reconcile that starts every due and queued tick now repairs a RUNNING Run
+  whose continuation is already COMPLETED, FAILED or (non-HITL) CANCELLED,
+  carrying the matching NodeRun result/error over or stating that the original
+  error was not persisted. A continuation still QUEUED under a RUNNING Run
+  whose resume claim has elapsed is rewritten to mirror RUNNING, so the due
+  tick resumes it; a live claim is left alone. Canonical RUNNING Runs are
+  swept with a cursor that advances across ticks, so a stranded Run behind any
+  number of other RUNNING Runs is reached in a bounded number of ticks.
+
 - **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
   predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
   keyword argument, with a default, when `Schedule.recovered_occurrences`

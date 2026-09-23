@@ -14,9 +14,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
+from maistro.runs.aggregation import terminal_run_payload
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     settle_open_node_run,
@@ -24,16 +25,23 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
-from maistro.runs.store import RunIntegrityError, RunStore
+from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
 
 from .continuation import GraphContinuation, GraphContinuationStore
-from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage, cursor_time
+from .fair_scan import (
+    DEFAULT_MAX_INSPECTED,
+    ScanContinuation,
+    ScanPage,
+    cursor_time,
+    fair_page_scan,
+)
 from .hitl import earliest_hitl_deadline, settlement_time
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
+_GRAPH_TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
 #: How many times `list_hitl_due` widens its candidate page when the indexed
 #: prefix is occupied by projections the canonical Run disqualifies. Six
 #: doublings read at most 64x the requested work before giving up on a tick.
@@ -141,6 +149,7 @@ class CanonicalDurableRunStore:
         self._run_store = run_store
         self._continuations = continuations
         self._lock = asyncio.Lock()
+        self._running_scan: ScanContinuation[RunCursor] = ScanContinuation()
 
     async def create(self, record: DurableRunRecord) -> DurableRunRecord:
         if await self._run_store.get_run(record.run_id) is None:
@@ -186,8 +195,9 @@ class CanonicalDurableRunStore:
         if limit <= 0:
             return 0
 
-        changed = 0
         seen: set[str] = set()
+        changed = await self._reconcile_running_page(limit, seen)
+        swept = len(seen)
         # Terminal settlement residue first, and from the side that shrinks. A
         # crash between the continuation write and the spine mirror leaves the
         # canonical Run PAUSED while its continuation is already CANCELLED or
@@ -202,7 +212,7 @@ class CanonicalDurableRunStore:
             if await self._reconcile_run(run.run_id):
                 changed += 1
         for status in RunStatus:
-            remaining = limit - len(seen)
+            remaining = limit - (len(seen) - swept)
             if remaining <= 0:
                 break
             run_ids = await self._continuations.list_run_ids_by_status(
@@ -215,6 +225,37 @@ class CanonicalDurableRunStore:
                 seen.add(run_id)
                 if await self._reconcile_run(run_id):
                     changed += 1
+        return changed
+
+    async def _reconcile_running_page(self, limit: int, seen: set[str]) -> int:
+        """Reconcile one cursor-advancing page of canonical RUNNING Runs.
+
+        A crash between the continuation write and the spine mirror strands a
+        RUNNING Run under a terminal or QUEUED continuation, neither of which
+        the due index sees. The continuation-status buckets the loop below
+        reads only grow, so the canonical RUNNING set -- transient by
+        construction -- is where such a Run is reliably found. The cursor
+        outlives the call, so non-Graph RUNNING Runs ahead of it are paged
+        past on later ticks rather than re-read forever.
+        """
+
+        async def page(cursor: RunCursor | None, size: int) -> list[Run]:
+            return await self._run_store.list_by_status(RunStatus.RUNNING, limit=size, after=cursor)
+
+        runs = await fair_page_scan(
+            fetch_page=page,
+            cursor_of=run_cursor_key,
+            eligible=lambda _run: True,
+            limit=limit,
+            page_size=limit,
+            max_inspected=limit,
+            continuation=self._running_scan,
+        )
+        changed = 0
+        for run in runs:
+            seen.add(run.run_id)
+            if await self._reconcile_run(run.run_id):
+                changed += 1
         return changed
 
     async def _reconcile_run(self, run_id: str) -> bool:
@@ -237,6 +278,10 @@ class CanonicalDurableRunStore:
             )
             return await self._continuations.delete(run_id)
         if await self._reconcile_terminal_hitl(continuation, canonical):
+            return True
+        if await self._reconcile_terminal_graph(continuation, canonical):
+            return True
+        if await self._reconcile_unstarted_claim(continuation, canonical):
             return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
@@ -296,6 +341,66 @@ class CanonicalDurableRunStore:
         desired_run = transition_run(record.run, target, at=moment, error=reason)
         desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
         return await self._mirror_terminal_hitl(desired, continuation.run_id, target)
+
+    async def _reconcile_terminal_graph(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Settle a Run whose Graph continuation was persisted terminal first.
+
+        The terminal record itself was lost with the crash; what survives is
+        its status and whatever NodeRun evidence was mirrored before it. The
+        Run's payload is re-derived from that evidence, and where none carries
+        the original error, the error says so rather than inventing one. Open
+        NodeRuns are settled by the spine's own terminal cascade.
+        """
+        target = continuation.status
+        if target not in _GRAPH_TERMINAL_STATUSES or canonical.status in TERMINAL_RUN_STATUSES:
+            return False
+        if target is RunStatus.CANCELLED and _matching_hitl_settlement(continuation, target):
+            return False
+        node_runs = tuple(await self._run_store.list_node_runs(canonical.run_id))
+        result, error = terminal_run_payload(node_runs, target)
+        if target is not RunStatus.COMPLETED and error is None:
+            error = (
+                f"Graph continuation settled {target.value} before canonical settlement; "
+                "original error not persisted"
+            )
+        record = await self.get(canonical.run_id)
+        if record is None:
+            return False
+        desired_run = transition_run(record.run, target, result=result, error=error)
+        desired = record.model_copy(update={"run": desired_run})
+        return await self._mirror_terminal_hitl(desired, canonical.run_id, target)
+
+    async def _reconcile_unstarted_claim(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+    ) -> bool:
+        """Make an expired resume claim visible to the due index again.
+
+        The resume claim is checkpointed while the continuation still reads
+        QUEUED, and only then is the spine stepped to RUNNING. A crash between
+        the two leaves a claim the due index never lists, because it excludes
+        QUEUED continuations. Once the claim has elapsed no walker holds it,
+        so the continuation is rewritten to mirror RUNNING under the same
+        claim, and the next due tick resumes it. A live claim is left alone.
+        """
+        if continuation.status is not RunStatus.QUEUED or canonical.status is not RunStatus.RUNNING:
+            return False
+        if continuation.resume_at is None or continuation.resume_at > datetime.now(UTC):
+            return False
+        visible = continuation.model_copy(
+            update={"status": RunStatus.RUNNING, "version": continuation.version + 1}
+        )
+        try:
+            await self._continuations.update(visible)
+        except ValueError:
+            # Another writer advanced the continuation first; it owns the Run.
+            return False
+        return True
 
     @staticmethod
     def _has_terminal_hitl_node(
