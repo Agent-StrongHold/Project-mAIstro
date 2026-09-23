@@ -24,6 +24,7 @@ from maistro.capabilities.invocation import (
     StaleInvocationUpdate,
     UnsafeEffectRetry,
 )
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -62,13 +63,13 @@ class SqliteInvocationStore:
         self._lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        columns = await self._conn.execute("PRAGMA table_info(capability_invocations)")
-        if "revision" not in {str(row[1]) for row in await columns.fetchall()}:
-            await self._conn.execute(
-                "ALTER TABLE capability_invocations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
-            )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
+            columns = await self._conn.execute("PRAGMA table_info(capability_invocations)")
+            if "revision" not in {str(row[1]) for row in await columns.fetchall()}:
+                await self._conn.execute(
+                    "ALTER TABLE capability_invocations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+                )
 
     async def create(self, invocation: Invocation) -> Invocation:
         async with self._lock:

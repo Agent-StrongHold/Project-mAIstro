@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "036_quota_usage_event_identity"
-down_revision = ("035", "035_outcome_scope_thumb_index")
+revision = "039_quota_usage_event_identity"
+down_revision = "038"
 branch_labels = None
 depends_on = None
 

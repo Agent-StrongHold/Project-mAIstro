@@ -41,6 +41,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -80,27 +81,26 @@ class SqliteUsageLog:
         The event-id column is added and backfilled for databases created by
         the timestamp-only schema. Existing rows receive identities derived
         from their stable SQLite rowids; new rows always come from
-        `UsageEvent.event_id`.
+        `UsageEvent.event_id`. The upgrade runs through the shared
+        `serialized_schema_upgrade` discipline (per-connection asyncio lock +
+        ``BEGIN IMMEDIATE``) so concurrent store initializations sharing one
+        database cannot interleave; this instance's operation lock keeps the
+        migration exclusive of `snapshot`/`restore` on the same connection.
         """
-        async with self._operation_lock:
+        async with self._operation_lock, serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
             cursor = await self._conn.execute("PRAGMA table_info(usage_events)")
             columns = await cursor.fetchall()
             if not any(row[1] == "event_id" for row in columns):
                 await self._conn.execute("ALTER TABLE usage_events ADD COLUMN event_id TEXT")
-                await self._conn.execute(
-                    "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
-                )
-            else:
-                await self._conn.execute(
-                    "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
-                )
+            await self._conn.execute(
+                "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
+            )
             await self._conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_event_id "
                 "ON usage_events (event_id)"
             )
             await self._conn.execute(_INDEX)
-            await self._conn.commit()
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:
         """Persist the currently retained events, idempotently.
