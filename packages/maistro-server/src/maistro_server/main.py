@@ -300,7 +300,13 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "are lost on restart"
             ),
         )
-    queue = configure_task_queue(admitter=container.task_admitter)
+    queue = configure_task_queue(
+        admitter=container.task_admitter,
+        # Same claim tier the spine selected (#1176): a retry reconciles across
+        # a restart or a replica handoff exactly as far as the Runs it names
+        # are durable.
+        idempotency_store=container.task_idempotency,
+    )
     # Rebuild receipts from canonical QUEUED task Runs before starting workers.
     # This is the restart-safe handoff for both admission/receipt gaps; the Run
     # already contains the immutable payload needed to execute the original id.
