@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+#: GET is normally read-only, but these routes establish or consume
+#: authentication state and therefore belong in the execution/security matrix.
+_SECURITY_ROUTE_RE = re.compile(
+    r"(?:oauth|oidc|openid|authorize|authentication|identity|token|login|logout|permission|elevat)",
+    re.IGNORECASE,
+)
 #: Not an HTTP verb, so never a member of MUTATING_METHODS -- a WebSocket route
 #: is a distinct kind of shipped execution/control surface (#1122) and must be
 #: discovered on its own terms, not folded into the mutating-method vocabulary.
@@ -38,6 +44,8 @@ SUCCESS_STATUS = {
     "running",
     "started",
 }
+_SUCCESS_BOOLEAN_KEYS = {"success", "ok"}
+_SUCCESS_BOOLEAN_MARKERS = {f"{key}:true" for key in _SUCCESS_BOOLEAN_KEYS}
 EXCLUDED_PARTS = {
     ".git",
     ".venv",
@@ -66,6 +74,31 @@ _TIMER_CALLBACK_RE = re.compile(
 _FETCH_RE = re.compile(
     r"fetch\s*\(\s*(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)\s*,\s*\{(?P<opts>.*?)\}\s*\)",
     re.DOTALL,
+)
+# A shipped client commonly hoists endpoint paths into constants. Keep this
+# deliberately small and literal: resolving a named string is safe, while an
+# arbitrary expression must remain an explicit dynamic surface.
+_JS_STRING_ASSIGNMENT_RE = re.compile(
+    r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+    r"(?P<quote>['\"`])(?P<value>[^'\"`]+)(?P=quote)"
+)
+_JS_VARIABLE_FETCH_RE = re.compile(
+    r"fetch\s*\(\s*(?P<target>[A-Za-z_$][\w$]*)\s*,\s*"
+    r"(?P<options>[A-Za-z_$][\w$]*|\{(?P<object_opts>.*?)\})\s*\)",
+    re.DOTALL,
+)
+_JS_LITERAL_VARIABLE_FETCH_RE = re.compile(
+    r"fetch\s*\(\s*(?P<quote>['\"`])(?P<route>[^'\"`]+)(?P=quote)\s*,\s*"
+    r"(?P<options>[A-Za-z_$][\w$]*)\s*\)",
+)
+_JS_OBJECT_ASSIGNMENT_RE = re.compile(r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*\{")
+# Express and router registrations are shipped backend handlers even when the
+# file lives beside a frontend bundle. They need a matrix disposition just like
+# Python routes; a non-literal first argument gets a line/digest stand-in.
+_JS_MUTATING_ROUTE_RE = re.compile(
+    r"\b(?:app|router|api|server|[A-Za-z_$][\w$]*(?:Router|App|Server))\."
+    r"(?P<method>post|put|patch|delete)\s*\(\s*(?P<target>[^,\n\r]+)",
+    re.IGNORECASE,
 )
 _METHOD_RE = re.compile(r"\bmethod\s*:\s*['\"](?P<method>POST|PUT|PATCH|DELETE)['\"]", re.I)
 
@@ -112,29 +145,48 @@ def _excluded(path: Path, root: Path) -> bool:
     )
 
 
-def _declared_methods(call: ast.Call) -> list[str]:
-    """The mutating methods a `methods=` argument names, or `DYNAMIC_METHODS`.
+def _declared_methods(
+    call: ast.Call,
+    *,
+    positional_index: int | None = None,
+    include_security_get: bool = False,
+) -> list[str]:
+    """The mutating methods a registration's ``methods`` argument names.
 
     A literal collection of string literals is read; the mutating subset is
     returned. Anything else -- a name, a call, a collection holding a
-    non-literal element -- cannot be proven free of `POST`, so it yields the
+    non-literal element -- cannot be proven free of ``POST``, so it yields the
     one conservative stand-in rather than nothing: the route stays in the
-    fail-closed inventory and the matrix must classify it. No `methods=` at
-    all is FastAPI's default GET, which is not a mutating surface.
+    fail-closed inventory and the matrix must classify it. Starlette's
+    ``add_route`` also accepts ``methods`` as a third positional argument;
+    callers pass that index explicitly. No ``methods=`` at all is the
+    framework default GET. It is normally omitted, but a security-marked
+    route opts into GET explicitly.
     """
-    for keyword in call.keywords:
-        if keyword.arg != "methods":
-            continue
-        value = keyword.value
-        if not isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+    methods_expr: ast.expr | None = next(
+        (keyword.value for keyword in call.keywords if keyword.arg == "methods"),
+        None,
+    )
+    if methods_expr is None and positional_index is not None and len(call.args) > positional_index:
+        methods_expr = call.args[positional_index]
+    if methods_expr is None:
+        return ["GET"] if include_security_get else []
+    if not isinstance(methods_expr, (ast.List, ast.Tuple, ast.Set)):
+        return [DYNAMIC_METHODS]
+    methods: list[str] = []
+    for item in methods_expr.elts:
+        if not (isinstance(item, ast.Constant) and isinstance(item.value, str)):
             return [DYNAMIC_METHODS]
-        methods: list[str] = []
-        for item in value.elts:
-            if not (isinstance(item, ast.Constant) and isinstance(item.value, str)):
-                return [DYNAMIC_METHODS]
-            methods.append(item.value.upper())
-        return [method for method in methods if method in MUTATING_METHODS]
-    return []
+        methods.append(item.value.upper())
+    allowed = set(MUTATING_METHODS)
+    if include_security_get:
+        allowed.add("GET")
+    return [method for method in methods if method in allowed]
+
+
+def _security_surface(path: str, handler: str | None = None) -> bool:
+    """Whether a GET registration can make an authentication decision."""
+    return bool(_SECURITY_ROUTE_RE.search(path) or (handler and _SECURITY_ROUTE_RE.search(handler)))
 
 
 def _path_argument(call: ast.Call) -> ast.expr | None:
@@ -177,9 +229,12 @@ def _decorated_routes(node: ast.AsyncFunctionDef | ast.FunctionDef) -> list[tupl
             continue
         path = _route_path(path_expr, dynamic_at=decorator)
         name = decorator.func.attr.lower()
+        security_get = _security_surface(path, node.name)
         methods = [name.upper()] if name.upper() in MUTATING_METHODS else []
-        if name in {"api_route", "route"}:
-            methods = _declared_methods(decorator)
+        if name == "get" and security_get:
+            methods = ["GET"]
+        elif name in {"api_route", "route"}:
+            methods = _declared_methods(decorator, include_security_get=security_get)
         elif name == "websocket":
             # Every WebSocket route is a shipped execution/control surface
             # regardless of "mutating": it bypasses HTTP-method semantics
@@ -219,18 +274,20 @@ def _handler_identity(expr: ast.expr) -> tuple[str | None, bool]:
 _UNRESOLVED_ENDPOINT = "<unresolved endpoint>"
 
 
-def _add_api_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None, bool]]:
-    """`(method, path, handler_identity, resolvable)` per `*.add_api_route(...)`.
+def _registered_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None, bool]]:
+    """Discover call-registered FastAPI and Starlette routes.
 
-    The non-decorator registration form FastAPI supports alongside
-    `@router.post(...)`; a route registered this way carries no decorator for
-    `_decorated_routes` to see at all; this walks the whole module for the
-    call directly instead. The path may be positional or `path=`, the
-    endpoint positional or `endpoint=`.
+    ``add_api_route`` and ``add_route`` have no decorator for
+    ``_decorated_routes`` to see. Starlette's ``add_route`` accepts its
+    methods collection positionally (or by keyword), so that form must be
+    retained rather than silently treated as a default GET.
     """
     found: list[tuple[str, str, str | None, bool]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _call_attr_name(node) != "add_api_route":
+        if not isinstance(node, ast.Call):
+            continue
+        registration = _call_attr_name(node)
+        if registration not in {"add_api_route", "add_route", "add_websocket_route"}:
             continue
         path_expr = _path_argument(node)
         if path_expr is None:
@@ -241,7 +298,14 @@ def _add_api_route_calls(tree: ast.Module) -> list[tuple[str, str, str | None, b
             if keyword.arg == "endpoint":
                 endpoint = keyword.value
         handler, resolvable = _handler_identity(endpoint) if endpoint is not None else (None, False)
-        methods = _declared_methods(node)
+        if registration == "add_websocket_route":
+            methods = [WEBSOCKET_METHOD]
+        else:
+            methods = _declared_methods(
+                node,
+                positional_index=2 if registration == "add_route" else None,
+                include_security_get=_security_surface(path, handler),
+            )
         found.extend((method, path, handler, resolvable) for method in methods)
     return found
 
@@ -274,13 +338,20 @@ class _OwnReturns(ast.NodeVisitor):
 
 
 def _literal_success_status(value: ast.expr | None) -> str | None:
+    """Return a literal status or boolean success marker from a response."""
     if not isinstance(value, ast.Dict):
         return None
     for key, item in zip(value.keys, value.values, strict=True):
-        if not isinstance(key, ast.Constant) or key.value != "status":
+        if not isinstance(key, ast.Constant):
             continue
-        if isinstance(item, ast.Constant) and isinstance(item.value, str):
+        if key.value == "status" and isinstance(item, ast.Constant) and isinstance(item.value, str):
             return item.value.lower()
+        if (
+            key.value in _SUCCESS_BOOLEAN_KEYS
+            and isinstance(item, ast.Constant)
+            and item.value is True
+        ):
+            return f"{key.value}:true"
     return None
 
 
@@ -289,6 +360,10 @@ def _literal_success_status(value: ast.expr | None) -> str | None:
 #: else -- a service call, a database write, a background-task scheduler --
 #: means the handler is not a no-op, however its final `return` reads.
 _LOG_LIKE_CALL_NAMES = {"log", "logger", "logging", "metrics", "print"}
+#: ``object()`` is a deliberately inert local placeholder, not an execution
+#: effect. Keep this exception narrow: arbitrary calls assigned to locals may
+#: perform the work that makes a status response truthful.
+_INERT_CALL_NAMES = {"object"}
 
 
 def _call_root_name(call: ast.Call) -> str | None:
@@ -330,7 +405,13 @@ class _RealWorkDetector(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         root = _call_root_name(node)
-        if root is None or root.lower() not in _LOG_LIKE_CALL_NAMES:
+        inert_builtin = (
+            isinstance(node.func, ast.Name)
+            and node.func.id in _INERT_CALL_NAMES
+            and not node.args
+            and not node.keywords
+        )
+        if not inert_builtin and (root is None or root.lower() not in _LOG_LIKE_CALL_NAMES):
             self.has_real_work = True
         self.generic_visit(node)
 
@@ -384,7 +465,7 @@ def _does_real_work(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
 
 
 def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None:
-    """The literal `status` every reachable return in this handler agrees on,
+    """The literal success marker every reachable return in this handler agrees on,
     for a handler whose own body does no real work beyond that return.
 
     Deliberately conservative, but over the *whole* body rather than one
@@ -413,7 +494,11 @@ def _returned_status(node: ast.AsyncFunctionDef | ast.FunctionDef) -> str | None
 
 def _obvious_fake(node: ast.AsyncFunctionDef | ast.FunctionDef) -> bool:
     status = _returned_status(node)
-    return status in SUCCESS_STATUS if status is not None else False
+    return (
+        status in SUCCESS_STATUS or status in _SUCCESS_BOOLEAN_MARKERS
+        if status is not None
+        else False
+    )
 
 
 def _function_nodes(tree: ast.Module) -> list[ast.AsyncFunctionDef | ast.FunctionDef]:
@@ -463,7 +548,7 @@ def _source_surfaces(path: Path, repo_root: Path) -> list[BackendSurface]:
                     obvious_fake_success=obvious_fake,
                 )
             )
-    for method, route, handler_name, resolvable in _add_api_route_calls(tree):
+    for method, route, handler_name, resolvable in _registered_route_calls(tree):
         handler_def = functions.get(handler_name) if handler_name and resolvable else None
         surfaces.append(
             BackendSurface(
@@ -504,12 +589,118 @@ def _timer_success_signal(text: str) -> bool:
     return False
 
 
+def _js_string_bindings(text: str) -> dict[str, str]:
+    return {
+        match.group("name"): match.group("value")
+        for match in _JS_STRING_ASSIGNMENT_RE.finditer(text)
+    }
+
+
+def _balanced_js_object_body(text: str, start: int) -> str | None:
+    depth = 1
+    quote: str | None = None
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index]
+    return None
+
+
+def _js_object_bindings(text: str) -> dict[str, str]:
+    """Return literal object options that can be inspected without execution."""
+    bindings: dict[str, str] = {}
+    for match in _JS_OBJECT_ASSIGNMENT_RE.finditer(text):
+        body = _balanced_js_object_body(text, match.end())
+        if body is not None:
+            bindings[match.group("name")] = body
+    return bindings
+
+
+def _js_route_path(target: str, *, bindings: dict[str, str], line: int) -> str:
+    target = target.strip()
+    if len(target) >= 2 and target[0] in "'\"`" and target[-1] == target[0]:
+        return target[1:-1]
+    if re.fullmatch(r"[A-Za-z_$][\w$]*", target) and target in bindings:
+        return bindings[target]
+    digest = hashlib.sha256(target.encode("utf-8")).hexdigest()[:8]
+    return f"<dynamic-route:{line}:{digest}>"
+
+
+def _js_fetch_method(options: str, *, object_bindings: dict[str, str] | None = None) -> str | None:
+    if object_bindings is not None and re.fullmatch(r"[A-Za-z_$][\w$]*", options):
+        bound = object_bindings.get(options)
+        if bound is None:
+            # An unknown options object may select POST at runtime. Keep the
+            # fetch in the matrix instead of silently treating it as GET.
+            return DYNAMIC_METHODS
+        options = bound
+    literal = _METHOD_RE.search(options)
+    if literal:
+        return literal.group("method").upper()
+    # An unreadable method may contain POST; retain the call rather than
+    # silently treating it as a read-only/default-GET request.
+    if re.search(r"\bmethod\s*:", options):
+        return DYNAMIC_METHODS
+    return None
+
+
 def _mutating_fetches(text: str) -> set[tuple[str, str]]:
+    bindings = _js_string_bindings(text)
+    object_bindings = _js_object_bindings(text)
     found: set[tuple[str, str]] = set()
     for match in _FETCH_RE.finditer(text):
-        method_match = _METHOD_RE.search(match.group("opts"))
-        if method_match:
-            found.add((method_match.group("method").upper(), match.group("route")))
+        method = _js_fetch_method(match.group("opts"))
+        if method:
+            found.add((method, match.group("route")))
+    for match in _JS_LITERAL_VARIABLE_FETCH_RE.finditer(text):
+        method = _js_fetch_method(
+            match.group("options"),
+            object_bindings=object_bindings,
+        )
+        if method:
+            found.add((method, match.group("route")))
+    for match in _JS_VARIABLE_FETCH_RE.finditer(text):
+        method = _js_fetch_method(
+            match.group("options"),
+            object_bindings=object_bindings,
+        )
+        route = bindings.get(match.group("target"))
+        if route is None:
+            route = _js_route_path(
+                match.group("target"),
+                bindings=bindings,
+                line=text.count("\n", 0, match.start()) + 1,
+            )
+        if method:
+            found.add((method, route))
+    return found
+
+
+def _mutating_js_routes(text: str) -> set[tuple[str, str]]:
+    bindings = _js_string_bindings(text)
+    found: set[tuple[str, str]] = set()
+    for match in _JS_MUTATING_ROUTE_RE.finditer(text):
+        route = _js_route_path(
+            match.group("target"),
+            bindings=bindings,
+            line=text.count("\n", 0, match.start()) + 1,
+        )
+        found.add((match.group("method").upper(), route))
     return found
 
 
@@ -525,6 +716,15 @@ def discover_frontend_surfaces(repo_root: Path, roots: list[str]) -> list[Fronte
                 FrontendSurface(
                     source=source,
                     signal="mutating-api-call",
+                    method=method,
+                    route=route,
+                )
+            )
+        for method, route in _mutating_js_routes(text):
+            surfaces.append(
+                FrontendSurface(
+                    source=source,
+                    signal="mutating-api-route",
                     method=method,
                     route=route,
                 )
@@ -654,6 +854,27 @@ def _frontend_entry_errors(
     return errors
 
 
+def _product_status_errors(
+    repo_root: Path,
+    checks: list[dict[str, Any]],
+    backend_entries: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Keep selected product-status prose tied to a reviewed matrix entry."""
+    errors: list[str] = []
+    for check in checks:
+        surface = str(check.get("surface", ""))
+        if surface not in backend_entries:
+            errors.append(f"product status check references unknown surface: {surface}")
+            continue
+        status_file = repo_root / str(check.get("file", ""))
+        marker = check.get("contains")
+        if not status_file.is_file():
+            errors.append(f"product status file does not exist: {status_file}")
+        elif not isinstance(marker, str) or marker not in status_file.read_text(encoding="utf-8"):
+            errors.append(f"product status claim missing from {status_file}: {marker!r}")
+    return errors
+
+
 def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = False) -> list[str]:
     backend = discover_backend_surfaces(repo_root, list(matrix.get("backend_roots", [])))
     frontend = discover_frontend_surfaces(repo_root, list(matrix.get("frontend_roots", [])))
@@ -668,10 +889,22 @@ def validate_matrix(repo_root: Path, matrix: dict[str, Any], *, strict: bool = F
     auto_frontend_entries = {
         key: entry
         for key, entry in frontend_entries.items()
-        if entry.get("signal") in {"timer-status-simulation", "mutating-api-call"}
+        if entry.get("signal")
+        in {
+            "timer-status-simulation",
+            "mutating-api-call",
+            "mutating-api-route",
+        }
     }
 
     errors = [*duplicate_backend, *duplicate_frontend]
+    errors.extend(
+        _product_status_errors(
+            repo_root,
+            list(matrix.get("product_status_checks", [])),
+            backend_entries,
+        )
+    )
     errors.extend(
         _coverage_errors(
             set(discovered_backend),

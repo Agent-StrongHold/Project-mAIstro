@@ -40,10 +40,10 @@ export default function Skills() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "center" }}>
               <div>
                 <div style={{ fontFamily: "var(--hand)", fontSize: 15 }}>{s.name}</div>
-                <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>{s.description}</div>
+                <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{s.description}</div>
               </div>
               <Hex variant={s.enabled ? "ok" : "muted"}>{s.enabled ? "on" : "off"}</Hex>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>{s.usage_count}x</span>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{s.usage_count}x</span>
             </div>
             <div style={{ display: "flex", gap: 4, marginTop: 5 }}>
               <Hex variant="accent">{s.category}</Hex>
@@ -58,8 +58,8 @@ export default function Skills() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
             <h2 style={{ fontFamily: "var(--hand)", fontSize: 22, fontWeight: 600, margin: "0 0 8px" }}>{sel.name}</h2>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <button className="btn" style={{ fontSize: 9, padding: "2px 10px", background: sel.enabled ? "var(--danger, #c4452a)" : "var(--ok, #5a9a4a)", color: "#fff", border: "none" }} onClick={() => void toggleSkill(sel.id)}>{sel.enabled ? "Disable" : "Enable"}</button>
-              <span className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setSel(null)}>close</span>
+              <button className="btn" style={{ fontSize: 12, padding: "2px 10px", background: sel.enabled ? "var(--danger, #c4452a)" : "var(--ok, #5a9a4a)", color: "#fff", border: "none" }} onClick={() => void toggleSkill(sel.id)}>{sel.enabled ? "Disable" : "Enable"}</button>
+              <span className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setSel(null)}>close</span>
             </div>
           </div>
           <div style={{ fontFamily: "var(--hand)", fontSize: 14, color: "var(--pencil)", marginBottom: 14 }}>{sel.description}</div>
@@ -74,14 +74,14 @@ export default function Skills() {
               { label: "PARAMS", val: `${sel.parameters.length}` },
             ].map((s) => (
               <div key={s.label} style={{ textAlign: "center", padding: "8px 6px", border: "1.3px solid var(--rule)", borderRadius: 5 }}>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)" }}>{s.label}</div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{s.label}</div>
                 <div style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--ink)", marginTop: 2 }}>{s.val}</div>
               </div>
             ))}
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 4 }}>SUCCESS RATE</div>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>SUCCESS RATE</div>
             <div className="progress-bar" style={{ height: 8 }}>
               <div className="progress-bar-fill" style={{ width: `${sel.success_rate * 100}%`, background: sel.success_rate > 0.9 ? "var(--ok)" : sel.success_rate > 0.7 ? "var(--accent)" : "var(--danger)" }} />
             </div>
@@ -89,7 +89,7 @@ export default function Skills() {
 
           {sel.parameters.length > 0 && (
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 4 }}>PARAMETERS</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 4 }}>PARAMETERS</div>
               <div className="card" style={{ padding: 0 }}>
                 <table className="table">
                   <thead><tr><th>Name</th><th>Type</th><th>Required</th></tr></thead>
