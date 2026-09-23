@@ -28,7 +28,6 @@ history:
 
 # ADR-076: HTTP API Versioning via content negotiation
 
-**Status:** Accepted
 **Date:** 2026-06-10
 **Fixes the HTTP surface contract** so the API can evolve without forking the URL space, and so every
 client (TUI, web, third-party) talks to one canonical, fully-featured surface.

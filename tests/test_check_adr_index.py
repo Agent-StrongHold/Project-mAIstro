@@ -175,7 +175,10 @@ def test_fix_leaves_the_reviewed_columns_alone(sandbox) -> None:
         if (m := row.match(line))
     }
     assert before == after
-    assert len(after) == 85
+    # Tracks the committed row count, so adding an ADR-INDEX row bumps it
+    # (ADR-092126-a28a added one). The assertion above is what guards the
+    # reviewed columns; this one only catches the table being read as empty.
+    assert len(after) == 86
 
 
 def test_fix_is_idempotent(sandbox) -> None:

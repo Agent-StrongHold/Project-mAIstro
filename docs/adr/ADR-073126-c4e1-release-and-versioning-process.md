@@ -29,7 +29,6 @@ history:
 
 # ADR-073126-c4e1: Release and versioning process
 
-**Status:** Accepted
 **Date:** 2026-07-31
 
 Extends [ADR-095](ADR-095-four-tier-branch-model.md) past `main`. ADR-095 defines

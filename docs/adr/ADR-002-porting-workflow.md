@@ -27,7 +27,6 @@ history:
 
 # ADR-002: Per-port spec-first workflow
 
-**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T0  
 **Depends on:** ADR-001

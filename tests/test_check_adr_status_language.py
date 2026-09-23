@@ -17,10 +17,13 @@ import runpy
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
+
+#: ADR-092126-a28a declares a behavioral contract — a body status line is a
+#: finding whatever it says — and names this suite as its evidence.
+pytestmark = [pytest.mark.contract("behavioral")]
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "check-adr-status-language.py"
@@ -40,9 +43,13 @@ def _gate():
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A copy of the real corpus, with the baseline pointed at a copy too.
 
-    A copy rather than a synthetic corpus: the check under test is agreement
-    between *real* front matter and real body text, and 63 ADRs carry a body
-    status line the synthetic case would never reproduce.
+    Still a copy rather than a synthetic corpus, though the reason has moved.
+    It used to be that 63 ADRs carried a body status line a synthetic case
+    would never reproduce; ADR-092126-a28a removed all of them. What the real
+    corpus now provides is the *absence* — these tests assert that no document
+    carries one, and that a document the gate skips cannot be silently chosen
+    to carry the one they introduce. Categories 2 and 3 still read ADR-046's
+    real banner and real prose.
     """
     module = _gate()
     adr_dir = tmp_path / "docs" / "adr"
@@ -80,12 +87,64 @@ def test_adr_046_is_no_longer_a_contradiction() -> None:
 # --- category 1: body status lines -------------------------------------------
 
 
-def test_a_body_status_line_disagreeing_with_front_matter_fails(sandbox) -> None:
-    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
-    front_matter_status = _front_matter_status(path)
-    other = "Proposed" if front_matter_status != "Proposed" else "Accepted"
-    patched, count = _replace_first_status_line(path.read_text(), other)
-    assert count == 1, f"{path.name} lost the body status line its selection promised"
+@pytest.mark.ac("ADR-092126-a28a/AC-1")
+def test_the_corpus_carries_no_body_status_line_at_all(sandbox) -> None:
+    """The retirement itself, asserted against the real corpus.
+
+    ADR-092126-a28a removed the line from all 83 documents that had one. This
+    is the test that fails if any comes back — including via a merge that
+    reinstates an old revision, which no per-document test would notice.
+    """
+    offenders = [
+        path.name
+        for path in sorted(sandbox.DOC_ROOTS[0].glob("*.md"))
+        if _BODY_STATUS_LINE_RE.search(path.read_text())
+    ]
+
+    assert offenders == []
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-2")
+def test_a_body_status_line_fails_even_when_it_agrees(sandbox) -> None:
+    """Absence, not agreement — the rule that makes the retirement durable.
+
+    This is the case the old agreement check let through, and the one that
+    restarts the drift: a line that copies front matter correctly today is a
+    second place to edit tomorrow. #387's whole history is that copy going
+    stale.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(_with_status_line(path.read_text(), _front_matter_status(path)))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+def test_a_disagreeing_body_status_line_still_fails(sandbox) -> None:
+    """The original #387 shape keeps failing under the retirement rule."""
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    other = "Proposed" if _front_matter_status(path) != "Proposed" else "Accepted"
+    path.write_text(_with_status_line(path.read_text(), other))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+def test_a_list_item_status_line_is_not_exempt(sandbox) -> None:
+    """`- **Status:** X` is the same declaration as the bare `**Status:** X`.
+
+    The gate matched only the bare spelling for a year, so the 3 ADRs and 20
+    specs writing the list-item form were exempt from this category outright —
+    the *form* of the line, not its content, decided whether it could be seen.
+    Retirement has to cover both spellings or it just relocates the habit.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    patched = _with_status_line(path.read_text(), "Accepted", bullet="- ")
+    assert "\n- **Status:**" in patched, "the mutation must write the list form"
     path.write_text(patched)
 
     problems = sandbox.audit()
@@ -93,58 +152,74 @@ def test_a_body_status_line_disagreeing_with_front_matter_fails(sandbox) -> None
     assert any(p.path == path and p.kind == "body-status-line" for p in problems)
 
 
-def test_the_mutated_adr_is_chosen_the_same_way_whatever_the_filesystem_yields(sandbox) -> None:
-    """Every test that mutates an ADR must pick the same one on any checkout.
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+def test_a_status_line_dressed_up_with_trailing_prose_is_still_caught(sandbox) -> None:
+    """Decoration is not an exemption.
 
-    `Path.glob` yields in `os.scandir` order, which varies by filesystem. When
-    the corpus was walked raw, the document the category-1 tests mutated was
-    whichever one the checkout happened to hand over first — and on a
-    filesystem yielding one of the three list-form ADRs, the bare-form-only
-    rewrite helper matched nothing, so both
-    `test_a_body_status_line_disagreeing_with_front_matter_fails` and the
-    baseline-ratchet test that calls it failed. CI was green only because its
-    order yielded `ADR-000-template.md`, which carries no body status line at
-    all: the escape clause fired and an appended synthetic line was tested
-    instead of the corpus.
+    This started as a question about *parsing*: under the agreement check,
+    `**Status:** Accepted — ratified 2026-01-01` read as claiming the whole
+    string, so it failed against a front matter saying `Accepted`. That was
+    incidental to the regex rather than stated intent, and worth pinning.
 
-    So the selection is by property, not position: any order must produce a
-    document that satisfies both requirements the mutation makes of it.
+    Retirement changes what is at stake. There is no claim to parse any more,
+    so the question is no longer "what does this line say" but "is a qualified
+    line still a line" — the evasion route that would otherwise let the
+    duplication back in wearing a hat. It is, and this is the test that says
+    so.
     """
-    forward = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
-    backward = _an_adr_whose_body_status_agrees(
-        sandbox.DOC_ROOTS[0], order=lambda paths: sorted(paths, reverse=True)
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    status = _front_matter_status(path)
+    path.write_text(_with_status_line(path.read_text(), f"{status} — ratified 2026-01-01"))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+@pytest.mark.ac("ADR-092126-a28a/AC-3")
+def test_an_empty_status_line_is_still_a_retired_line(sandbox) -> None:
+    """`**Status:**` with no value is reported too.
+
+    Under the old agreement check this was deliberately skipped — an empty
+    line claimed no status to disagree with, and comparing `None` would have
+    raised. Retirement removes that subtlety along with the branch: the line
+    is the finding, so there is no value to parse and nothing to skip.
+    """
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(_with_status_line(path.read_text(), ""))
+
+    problems = sandbox.audit()
+
+    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
+
+
+def _an_adr(root: Path) -> Path:
+    """A deterministic ADR that the gate actually audits.
+
+    Sorted, not `Path.glob` order, which is `os.scandir` order and varies by
+    filesystem — the defect that made two of these tests pass in CI and fail
+    everywhere else.
+
+    "That the gate audits" is the other half, and it is not pedantry. Sorted
+    order puts `ADR-000-template.md` first, and the template's front matter
+    does not parse, so `_audit_file` returns early and a status line written
+    there is never seen. That is the same trap in a new costume: CI's old
+    iteration order happened to yield the template too, which is exactly why
+    the original tests passed while proving nothing. Selecting through the
+    validator the gate itself uses means a document it skips cannot be chosen
+    silently.
+    """
+    from maistro_registry.validator import validate_file  # the gate puts this on sys.path
+
+    chosen = next(
+        p
+        for p in sorted(root.glob("*.md"))
+        if not p.name.startswith("ADR-INDEX") and validate_file(p).front_matter is not None
     )
-
-    assert forward == _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
-    assert forward != backward, "a corpus of one would not prove order-independence"
-    for chosen in (forward, backward):
-        assert _body_status_claim(chosen.read_text()) == _front_matter_status(chosen)
-        assert _replace_first_status_line(chosen.read_text(), "Proposed")[1] == 1
-
-
-def _an_adr_whose_body_status_agrees(
-    root: Path, *, order: Callable[[Iterable[Path]], list[Path]] = sorted
-) -> Path:
-    """An ADR carrying a body status line that agrees with its front matter.
-
-    Both properties are what the mutation tests need, so both are selected for
-    rather than hoped for. A **body status line** — bare or in the list-item
-    form (`- **Status:** X`) three ADRs use — is what there is to mutate.
-    **Agreement today** is what makes the mutation a *new* contradiction:
-    mutating a site the baseline already records would reuse that entry's
-    identity, and the ratchet would rightly stay silent.
-
-    `order` exists so a test can prove the choice does not depend on the
-    filesystem's iteration order. A corpus that stops carrying a qualifying
-    ADR raises here, loudly, instead of quietly degrading the tests into
-    proving nothing.
-    """
-    for path in order(p for p in root.glob("*.md") if not p.name.startswith("ADR-INDEX")):
-        text = path.read_text()
-        claim = _body_status_claim(text)
-        if claim is not None and claim == _front_matter_status(path):
-            return path
-    raise AssertionError(f"no ADR under {root} carries a body status line agreeing with its own")
+    assert not _BODY_STATUS_LINE_RE.search(chosen.read_text()), (
+        f"{chosen.name} already carries a body status line; these tests must introduce the only one"
+    )
+    return chosen
 
 
 def _front_matter_status(path: Path) -> str:
@@ -154,113 +229,40 @@ def _front_matter_status(path: Path) -> str:
     raise AssertionError(f"no status line in {path}")
 
 
-#: A body status declaration in either form the corpus writes: bare, or as a
-#: Markdown list item. Group 1 is the list bullet (so a rewrite can preserve
-#: it), group 2 the claim.
-_BODY_STATUS_LINE_RE = re.compile(r"^([-*+]\s+)?\*\*Status:\*\*(.*)$")
+#: A body status declaration in either spelling: bare, or as a Markdown list
+#: item. Multiline so it can be searched against a whole document.
+_BODY_STATUS_LINE_RE = re.compile(r"^([-*+]\s+)?\*\*Status:\*\*.*$", re.M)
 
 
-def _body_status_claim(text: str) -> str | None:
-    """What the first body status line claims, or `None` if there is none."""
-    for line in text.splitlines():
-        match = _BODY_STATUS_LINE_RE.match(line)
-        if match is not None:
-            return match[2].strip().strip("*").strip() or None
-    return None
+def _with_status_line(text: str, value: str, *, bullet: str = "") -> str:
+    """Put a body status line under the document's title.
 
-
-def _replace_first_status_line(
-    text: str, value: str, *, bullet: str | None = None
-) -> tuple[str, int]:
-    """Rewrite the first body status line, keeping the form it was written in.
-
-    `bullet` overrides that form, so a test can write the list-item spelling
-    onto a document that used the bare one.
+    Written below the `# ` heading rather than appended, which is where the 83
+    retired lines lived — a gate that only noticed one at the end of a file
+    would miss every real occurrence.
     """
     lines = text.splitlines()
-    for index, line in enumerate(lines):
-        match = _BODY_STATUS_LINE_RE.match(line)
-        if match is None:
-            continue
-        replaced = f"{bullet if bullet is not None else match[1] or ''}**Status:** {value}"
-        if line.endswith("  "):
-            replaced += "  "
-        lines[index] = replaced
-        return "\n".join(lines) + "\n", 1
-    return text, 0
+    index = next(i for i, line in enumerate(lines) if line.startswith("# "))
+    lines.insert(index + 1, f"{bullet}**Status:** {value}")
+    return "\n".join(lines) + "\n"
 
 
-def test_a_list_item_status_line_is_not_exempt(sandbox) -> None:
-    """`- **Status:** X` is the same declaration as the bare `**Status:** X`.
+def test_fixing_a_banked_body_status_line_requires_pruning(sandbox, capsys) -> None:
+    """A fixed finding must shrink the ledger in the same change.
 
-    The gate matched only the bare spelling, so the 3 ADRs and 20 specs that
-    write the line as a Markdown list item were exempt from this category
-    outright — the *form* of the line, not its content, decided whether a
-    contradiction could be seen at all.
+    Introduced and banked here rather than borrowed from the committed ledger.
+    It used to read whichever identity the real ledger happened to carry, which
+    made the test a hostage of the corpus's legacy debt: draining that ledger
+    to zero left the `next(...)` with nothing to find, and the ratchet's
+    central rule untested exactly when the corpus was finally clean.
     """
-    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
-    other = "Proposed" if _front_matter_status(path) != "Proposed" else "Accepted"
-    patched, count = _replace_first_status_line(path.read_text(), other, bullet="- ")
-    assert count == 1
-    assert "\n- **Status:**" in patched, "the mutation must write the list form"
-    path.write_text(patched)
-
-    problems = sandbox.audit()
-
-    assert any(p.path == path and p.kind == "body-status-line" for p in problems)
-
-
-def test_a_status_line_with_nothing_after_it_declares_nothing(sandbox) -> None:
-    """An empty `**Status:**` is malformed markup, not a claim of any status.
-
-    Reporting it would name a status the document never asserts, and the
-    comparison itself would raise on the `None` rather than report the finding
-    it was in the middle of making. Driven through `audit()`, not the helper
-    alone: the guard lives in the audit loop, and a unit test of the parser
-    leaves the branch that consumes it unexercised.
-    """
-    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
-    patched, count = _replace_first_status_line(path.read_text(), "")
-    assert count == 1
-
-    path.write_text(patched)
-
-    assert not any(p.path == path and p.kind == "body-status-line" for p in sandbox.audit())
-
-
-def test_the_claim_is_the_whole_value_not_its_first_word(sandbox) -> None:
-    """The vocabulary has multi-word members, and the markup is presentation.
-
-    Reading only the first word reported `AC` against a front matter saying
-    `AC Defined` — a contradiction that was not one, on the single document
-    whose list-item line already agreed.
-    """
-    assert sandbox._claimed_status(" AC Defined") == "AC Defined"
-    assert sandbox._claimed_status(" **Accepted**  ") == "Accepted"
-    assert sandbox._claimed_status("   ") is None
-
-
-def test_fixing_a_baselined_body_status_line_requires_pruning(sandbox, capsys) -> None:
-    """A fixed contradiction must shrink the ledger in the same change.
-
-    The contradiction is introduced and banked here rather than borrowed from
-    the committed ledger. It used to read whichever identity the real ledger
-    happened to carry, which made the test a hostage of the corpus's legacy
-    debt: draining that ledger to zero left this `next(...)` with nothing to
-    find and the ratchet's central rule untested exactly when the corpus was
-    finally clean.
-    """
-    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
-    status = _front_matter_status(path)
-    contradicted, count = _replace_first_status_line(
-        path.read_text(), "Proposed" if status != "Proposed" else "Accepted"
-    )
-    assert count == 1
-    path.write_text(contradicted)
-    assert sandbox.main(["--update"]) == 0, "the contradiction is banked first"
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    original = path.read_text()
+    path.write_text(_with_status_line(original, _front_matter_status(path)))
+    assert sandbox.main(["--update"]) == 0, "the finding is banked first"
     capsys.readouterr()
 
-    path.write_text(_replace_first_status_line(contradicted, status)[0])
+    path.write_text(original)
 
     assert sandbox.main([]) == 1
     assert "no longer found" in capsys.readouterr().out
@@ -269,6 +271,7 @@ def test_fixing_a_baselined_body_status_line_requires_pruning(sandbox, capsys) -
 # --- category 2: replacement banners -----------------------------------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_a_banner_naming_a_different_replacement_fails(sandbox) -> None:
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
     text = path.read_text().replace(
@@ -289,6 +292,7 @@ def test_a_banner_naming_a_different_replacement_fails(sandbox) -> None:
 # --- category 3: status-asserting prose --------------------------------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_unqualified_status_stays_prose_on_a_superseded_adr_fails(sandbox) -> None:
     """The ADR-046 defect, verbatim shape, on any Superseded document."""
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
@@ -307,6 +311,7 @@ def test_unqualified_status_stays_prose_on_a_superseded_adr_fails(sandbox) -> No
     )
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_wrapped_status_stays_prose_still_matches(sandbox) -> None:
     """The phrase that hides across a line break in flowing prose."""
     path = sandbox.DOC_ROOTS[0] / "ADR-046-scheduler.md"
@@ -338,11 +343,14 @@ def test_dated_past_status_statements_are_history_not_assertions(sandbox) -> Non
 # --- the baseline ratchet -----------------------------------------------------
 
 
-def test_a_new_body_status_line_contradiction_is_not_absorbed_by_the_baseline(
-    sandbox, capsys
-) -> None:
-    """Per-identity: the 28 legacy entries cannot pay for a 29th."""
-    test_a_body_status_line_disagreeing_with_front_matter_fails(sandbox)
+def test_a_reintroduced_body_status_line_is_not_absorbed_by_the_baseline(sandbox, capsys) -> None:
+    """The ledger is empty, so a reintroduced line has nothing to hide behind.
+
+    Per-identity was what stopped the 28 legacy entries paying for a 29th.
+    With the ledger drained it is simpler still: every finding is new, and the
+    run that reports one exits non-zero.
+    """
+    test_a_body_status_line_fails_even_when_it_agrees(sandbox)
 
     assert sandbox.main([]) == 1
     assert "new body/front-matter status contradiction" in capsys.readouterr().out
@@ -351,6 +359,7 @@ def test_a_new_body_status_line_contradiction_is_not_absorbed_by_the_baseline(
 # --- category 2, the other half: a banner with nothing behind it -------------
 
 
+@pytest.mark.ac("ADR-092126-a28a/AC-4")
 def test_a_banner_on_a_document_with_no_superseded_by_fails(sandbox) -> None:
     """The banner claims a replacement the front matter never records.
 
@@ -403,16 +412,15 @@ def test_update_banks_the_current_state_and_then_passes(sandbox, capsys) -> None
     exactly what the audit found, and the next ordinary run passes.
 
     The state to bank is introduced here. Asserting that the *corpus* carries
-    contradictions made a clean corpus fail this test, which inverts what the
-    suite is for — the gate's banking behavior is the subject, not how much
-    legacy debt happens to be outstanding.
+    findings made a clean corpus fail this test, which inverts what the suite
+    is for — the gate's banking behavior is the subject, not how much legacy
+    debt happens to be outstanding.
     """
-    path = _an_adr_whose_body_status_agrees(sandbox.DOC_ROOTS[0])
-    other = "Proposed" if _front_matter_status(path) != "Proposed" else "Accepted"
-    path.write_text(_replace_first_status_line(path.read_text(), other)[0])
+    path = _an_adr(sandbox.DOC_ROOTS[0])
+    path.write_text(_with_status_line(path.read_text(), _front_matter_status(path)))
     sandbox.LEDGER.unlink()
     found = {p.identity for p in sandbox.audit()}
-    assert found, "the introduced contradiction is what --update must bank"
+    assert found, "the introduced finding is what --update must bank"
 
     assert sandbox.main(["--update"]) == 0
     out = capsys.readouterr().out

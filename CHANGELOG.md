@@ -383,6 +383,25 @@ or placeholder-only section.
   explicitly and are unaffected; a caller that omits it now gets a
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
+### Changed
+
+- **A document's status lives in front matter and nowhere else
+  (`ADR-092126-a28a`).** The duplicated body `**Status:**` line is removed
+  from all 83 documents under `docs/adr/` and `docs/specs/` that carried one,
+  in both the bare and list-item spellings. Nothing but the gate written to
+  police them ever read those lines -- every other tool already read front
+  matter -- and storing one fact twice is what produced `#387` in the first
+  place: ADR-046's three-week contradiction, 28 more banked behind it, and 19
+  specs claiming a status (`Active`) that is not in the vocabulary at all.
+  `scripts/check-adr-status-language.py` accordingly changes its first
+  category from *agreement* to *absence*: any body status line is a finding
+  whatever it says, because one that agrees today is a second place to edit
+  tomorrow. Categories 2 and 3 (replacement banners, status-asserting prose)
+  are unchanged -- they police claims front matter cannot express. Operators
+  and authors read status from front matter, which every tool already acts on;
+  the scaffolding never emitted a body line, so nothing needs to change in how
+  new documents are written.
+
 ### Fixed
 
 - **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that

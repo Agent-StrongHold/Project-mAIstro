@@ -30,7 +30,6 @@ history:
 
 # ADR-083: Skills and MCP Gateway Trust
 
-**Status:** Proposed
 **Date:** 2026-05-30
 **Defends the ADR-072 anchor** (malicious third-party code) at the two places untrusted code
 enters the engine: the **Skills marketplace** and the **MCP gateway**.
