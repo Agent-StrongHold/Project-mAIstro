@@ -241,3 +241,55 @@ passes above:
   open_design, `maistro-evolve` openai_compatible) predate the branch
   (untouched by base→head diff; last governed by merged #1308) and are
   outside the maistro-core seam census SECURITY.md's recomputed claim covers.
+
+## L155 independent verifier pass at b77dabbfe (2026-09-23)
+
+Fresh execution at the lane head
+`b77dabbfef0b3e637edd960db7c387821b14791a` (develop base
+`8bb344e32b8693574fc0be7a93f86d941616b62c`); nothing carried forward from the
+rounds above:
+
+- Browser seam: `uv sync --locked --extra dev --extra browser`, then
+  `uv run pytest packages/maistro-core/tests/tools/browser/ -q` →
+  **131 passed, 0 skipped**, including all four real-Chromium transport
+  proofs verified individually by name (redirect-to-private denied before
+  the private server receives a request; allowed in-guard redirect chain;
+  model-directed loopback denied pre-connect; only-the-configured-origin
+  readable). Conductor `test_browser_network_policy.py` +
+  `test_engine_service.py` → **38 passed**. Ordinary-HTTP seam
+  `test_outbound_policy.py` + `test_transport.py` + `test_ssrf.py` →
+  **173 passed**.
+- Gates: `ruff check .` and `ruff format --check .` clean;
+  `check-security-inventory.py` rc=0 (63 paths resolve, 23 rows match);
+  `check-model-egress.py` rc=0; `check_direct_effects.py` rc=0 (50 sites,
+  every site dispositioned).
+- Inherited non-green, re-reproduced with my own base worktree
+  (`git worktree add --detach /tmp/maistro-base-8bb344 8bb344e3`), not a
+  carried claim: `check-vulture-baseline.py` rc=1 at head (1429 findings)
+  and at base (1430 findings); the ledger `quality/vulture-baseline.json`
+  has no base→head diff, no branch-changed file appears in the head drift
+  output, and the single-identity delta is the branch's *fix*
+  (`run_hill_climb.py::COMPONENT_PATH` no longer exists at head).
+  `check-ac-state.py --run-tests --ratchet --mandate 3e9f7525…` rc=1 at
+  head (design_coverage 33.0281 < 33.9095 floor); a measurement-only run at
+  the base worktree (`--run-tests --out`, no `--ratchet`, rc=0) reports
+  **33.0281% over 155 taken decisions (93 at zero)** and the base/head state
+  JSONs are byte-equal across every counter — the branch moves design
+  coverage by exactly 0.0000, so the floor undercut is develop-base debt.
+  Per-change mandate at head: 22 criteria claimed, 0 unproven; chain
+  mandate: zero absent links.
+- Pre-existing environment-dependent failure re-confirmed on both heads:
+  `test_log_redaction.py::test_install_is_idempotent` fails identically at
+  base and at this head (unrelated to egress).
+- Transport census re-swept at this head: exactly five production Playwright
+  entry points (`tools/browser/client.py`, `ui_auto_climb.py`,
+  `widgets.py`, `run_hill_climb.py`, `hill-climb-ui.sh`), each guard-attaching
+  before its first page; `browser_use` imported only by
+  `tools/browser/client.py`; no `aiohttp`/`urllib.request`/`requests` import
+  in production code; `maistro-core` constructs raw httpx clients only
+  inside `maistro/http.py` itself. The three non-core raw httpx clients
+  (`maistro-bootstrap` model_selector, `maistro-design` open_design,
+  `maistro-evolve` openai_compatible) and the UDS-only Docker client
+  (`containers.py`, no IP destination) are untouched by the base→head diff.
+- Closure keywords: none in the PR #1451 body ("Refs #155" only, draft) nor
+  in any of the 19 branch commit messages.
