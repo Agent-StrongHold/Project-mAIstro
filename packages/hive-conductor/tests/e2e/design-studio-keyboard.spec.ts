@@ -162,6 +162,8 @@ test("fixed-page and Deck editors expose keyboard workflows and deterministic tr
   await page.getByRole("button", { name: "Move right" }).press("Enter");
   // The shell also renders status regions; scope to the one the editor moved.
   await expect(page.getByRole("status").filter({ hasText: /moved/ })).toBeVisible();
+  // The fixed-page editor surface itself is axe-clean, not just the parent page.
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.getByRole("button", { name: "Back to Design Studio" }).press("Enter");
   await expect(page.getByText("What are you making?")).toBeVisible();
 
@@ -171,6 +173,8 @@ test("fixed-page and Deck editors expose keyboard workflows and deterministic tr
   await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
   await page.getByRole("button", { name: "Present" }).press("Enter");
   await expect(page.getByRole("dialog")).toBeVisible();
+  // The Deck editor and its presentation dialog are axe-clean surfaces too.
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.getByRole("button", { name: "Exit (Esc)" }).press("Enter");
   await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
 });

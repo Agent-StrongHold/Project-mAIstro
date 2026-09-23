@@ -13,6 +13,34 @@ collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
 API tests).
 
+## Executed evidence (repair round 4, revalidation at 8e1b93882)
+
+Re-ran the full battery against this head (backend: `uv run --no-project uvicorn
+main:app` from `packages/hive-conductor/backend`, root venv, serving the freshly
+rebuilt `frontend/dist` on `HIVE_BASE_URL=http://127.0.0.1:8102`):
+
+- `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts`:
+  6/6 passed (8.6s). The keyboard journey now also axe-scans the fixed-page
+  editor, the Deck editor, and the open presentation dialog (probed first:
+  all three surfaces report zero violations, then the scans were promoted
+  into the shipped spec as regression guards).
+- `deck-sanitization.spec.ts`: 4/4 passed (1.6s) via the CI-shaped harness
+  layout (staged sources + standalone `react`/`react-dom` under
+  `E2E_SRC_ROOT`/`E2E_NODE_PATHS`, matching `tests/Dockerfile.playwright`'s
+  copy set; see the round-3 caveat below for why the raw worktree layout
+  fails locally but not in CI).
+- `uv run pytest packages/hive-conductor/backend/tests -q -k design`:
+  75 passed; `uv run ruff check .` and `uv run ruff format --check .` clean;
+  `scripts/check-suite-inventory.py` exit 0 (13 suites);
+  `scripts/check-frontend-api-routes.py` exit 0 (215 routes); frontend
+  `npm run build` (tsc + vite) and `npm run lint` (0 errors, 90/96 warnings)
+  clean.
+- Prior-round findings re-checked against this head and closed as stale:
+  the editor-entry button is `disabled={!canOpenEditor}` (enabled by typing a
+  brief, asserted by the keyboard journey), `/decks` is routed and the Deck
+  editor opens from Design Studio, and the axe scan runs `.include("main")`
+  with no disabled rules.
+
 ## Executed evidence (repair round 3, post-merge revalidation at 2845e1c98)
 
 After the develop merge, all journeys were re-executed against the same
