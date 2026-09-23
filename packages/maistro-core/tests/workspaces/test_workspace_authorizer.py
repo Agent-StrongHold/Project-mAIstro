@@ -170,3 +170,37 @@ async def test_store_without_membership_is_always_denied() -> None:
     for action in WorkspaceAction:
         with pytest.raises(WorkspaceAuthorizationDenied):
             await authorizer.require("alice", workspace.workspace_id, action)
+
+
+async def test_action_is_compared_by_value_and_unknown_actions_are_denied() -> None:
+    store = InMemoryWorkspaceStore()
+    workspace = await store.create(creator_user_id="alice", name="Alice")
+    await store.set_membership(workspace.workspace_id, user_id="bob", role=WorkspaceRole.MEMBER)
+    authorizer = WorkspaceAuthorizer(store)
+
+    for action in ("administer", "delete"):
+        with pytest.raises(WorkspaceAuthorizationDenied):
+            await authorizer.require("bob", workspace.workspace_id, action)  # type: ignore[arg-type]
+    await authorizer.require("bob", workspace.workspace_id, "view")  # type: ignore[arg-type]
+
+
+async def test_non_string_principal_is_denied() -> None:
+    store = InMemoryWorkspaceStore()
+    workspace = await store.create(creator_user_id="alice", name="Alice")
+    authorizer = WorkspaceAuthorizer(store)
+
+    with pytest.raises(WorkspaceAuthorizationDenied):
+        await authorizer.require(None, workspace.workspace_id, WorkspaceAction.VIEW)  # type: ignore[arg-type]
+    assert await authorizer.visible_workspace_ids(None) == frozenset()  # type: ignore[arg-type]
+
+
+async def test_denial_does_not_chain_the_lookup_that_revealed_absence(world: _World) -> None:
+    with pytest.raises(WorkspaceAuthorizationDenied) as unknown:
+        await world.authorizer.require(world.alice, f"missing-{uuid4().hex}", WorkspaceAction.VIEW)
+    with pytest.raises(WorkspaceAuthorizationDenied) as foreign:
+        await world.authorizer.require(world.alice, world.bob_ws, WorkspaceAction.VIEW)
+
+    for denied in (unknown.value, foreign.value):
+        assert denied.__cause__ is None
+        assert denied.__context__ is None
+        assert denied.membership is None

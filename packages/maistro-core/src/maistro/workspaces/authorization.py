@@ -6,6 +6,7 @@ principal act on this Workspace? -- so the answer lives here, not in either.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from enum import StrEnum
 
 from maistro.workspaces.model import WorkspaceMembership, WorkspaceNotFound
@@ -30,8 +31,14 @@ class WorkspaceAuthorizationDenied(LookupError):
     """
 
     def __init__(self, membership: WorkspaceMembership | None = None) -> None:
-        super().__init__("Workspace not found")
+        super().__init__(
+            "Workspace not found" if membership is None else "Workspace action not permitted"
+        )
         self.membership = membership
+
+
+def _is_blank(principal_id: object) -> bool:
+    return not isinstance(principal_id, str) or not principal_id.strip()
 
 
 class WorkspaceAuthorizer:
@@ -44,20 +51,24 @@ class WorkspaceAuthorizer:
         workspace_id: str,
         action: WorkspaceAction,
     ) -> WorkspaceMembership:
-        if not principal_id.strip():
+        if _is_blank(principal_id):
             raise WorkspaceAuthorizationDenied
-        try:
+        if action not in WorkspaceAction.__members__.values():
+            raise WorkspaceAuthorizationDenied
+        wanted = WorkspaceAction(action)
+        membership: WorkspaceMembership | None = None
+        # Denied below, outside the suppressed lookup, so no __context__ tells
+        # a missing Workspace apart from a foreign one.
+        with suppress(WorkspaceNotFound):
             membership = await self._store.get_membership(workspace_id, user_id=principal_id)
-        except WorkspaceNotFound as exc:
-            raise WorkspaceAuthorizationDenied from exc
         if membership is None:
             raise WorkspaceAuthorizationDenied
-        if action is WorkspaceAction.ADMINISTER and not membership.can_administer:
-            raise WorkspaceAuthorizationDenied(membership)
-        return membership
+        if wanted is WorkspaceAction.VIEW or membership.can_administer:
+            return membership
+        raise WorkspaceAuthorizationDenied(membership)
 
     async def visible_workspace_ids(self, principal_id: str) -> frozenset[str]:
-        if not principal_id.strip():
+        if _is_blank(principal_id):
             return frozenset()
         workspaces = await self._store.list_for_user(principal_id)
         return frozenset(workspace.workspace_id for workspace in workspaces)
