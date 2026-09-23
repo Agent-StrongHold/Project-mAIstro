@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from .audit import GenomeAuditTrail
 from .types import PipelineGenome
@@ -30,6 +31,25 @@ class PopulationStore:
             self._init_db()
         else:
             self._db_path = None
+        # Idempotency ledger for effectful cycle-level operations (currently
+        # only Evolve's canonical finalize node, #1064) keyed by a caller's
+        # own logical identity (e.g. ``f"finalize:{node_run_id}"``). This is
+        # deliberately process-local only, even when ``db_path`` is set: it
+        # is retry evidence for an in-process Attempt retry against a NodeRun
+        # that already published its mutation, not a durable cross-process
+        # store. A genuine process restart has no durable population/
+        # tournament state to resume against regardless (see
+        # ``services.evolution_graph`` recovery resolver), so this ledger's
+        # process-local scope is consistent with the rest of this store's
+        # in-memory identity, not a gap this alone would need to close.
+        self._cycle_markers: dict[str, dict[str, Any]] = {}
+
+    def record_cycle_marker(self, marker_id: str, payload: dict[str, Any]) -> None:
+        """Record (or overwrite) one idempotency ledger entry."""
+        self._cycle_markers[marker_id] = payload
+
+    def get_cycle_marker(self, marker_id: str) -> dict[str, Any] | None:
+        return self._cycle_markers.get(marker_id)
 
     def _init_db(self) -> None:
         assert self._db_path is not None

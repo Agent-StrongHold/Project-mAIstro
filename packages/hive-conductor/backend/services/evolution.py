@@ -66,9 +66,35 @@ async def start_evolution() -> None:
         # Keep a reference to the background task so it isn't garbage-collected mid-flight.
         _service.task = asyncio.ensure_future(_service.run_loop())
 
+    # The restart/recovery cadence (#1064) is bracketed by THIS service's own
+    # lifecycle, not the engine's. Application startup previously started it
+    # from `EngineService.start()`, well before this function ever ran --
+    # `_recovery_resolver` then raised `EvolutionServiceNotStarted` for any
+    # due RUNNING Run inspected in that window, which the executor's own
+    # failure boundary turns into a terminal FAILED Run for no reason but
+    # lifecycle ordering. Starting it here, only once `_service` exists, closes
+    # that window. Unconditional (unlike the cadence task above): a
+    # degraded/stub engine still needs recovery ticking so a later Run stays
+    # eligible instead of stalling until a restart that happens to start with
+    # a healthy engine -- the tick itself already no-ops safely (0 recovered)
+    # via `canonical_execution_owner()` when the engine cannot admit work.
+    from services.evolution_recovery import start_evolution_recovery
+
+    start_evolution_recovery()
+
 
 async def stop_evolution() -> None:
     global _service
+    # Stop and join the recovery cadence BEFORE clearing the singleton, the
+    # mirror image of start: application shutdown previously cleared this
+    # singleton in `_shutdown_background_services` before `EngineService.stop()`
+    # got around to cancelling the cadence task, leaving the same
+    # `EvolutionServiceNotStarted` window open at the other end of the
+    # process's life. Stopping first means the cadence can never observe
+    # `_service is None` mid-tick.
+    from services.evolution_recovery import stop_evolution_recovery
+
+    await stop_evolution_recovery()
     if _service is not None:
         _service.stop()
         _service = None
@@ -170,6 +196,37 @@ class _EvolutionService:
     @property
     def last_run_id(self) -> str | None:
         return self._last_run_id
+
+    @property
+    def cycle_lock(self) -> asyncio.Lock:
+        """The lock manual/cadence cycles and seeding share (#1064).
+
+        A recovery tick must hold this same lock while it executes graph
+        nodes and mutates ``population``/``tournament``, exactly as
+        ``seed_population`` and ``_run_one_cycle_locked`` already do, or
+        recovery could interleave with a live cycle/seed and corrupt the
+        shared domain state despite the normal path's own serialization.
+        """
+        return self._cycle_lock
+
+    def record_recovered_run(
+        self, run_id: str, status: RunStatus, *, error: str | None = None
+    ) -> None:
+        """Fold one recovery-terminalized Run into this service's status (#1064).
+
+        Mirrors the bookkeeping ``_run_one_cycle_locked`` performs for a live
+        cycle. Without this, a stranded/due Run recovered to a terminal
+        status left ``/evolution/status`` reporting the previous cycle's
+        ``cycle_count``/``last_run_id``/``last_run_status``, and the next
+        live admission could reuse the recovered cycle's ``cycle_number``.
+        """
+        self._last_run_id = run_id
+        self._last_run_status = status
+        if status is RunStatus.COMPLETED:
+            self._cycle_count += 1
+            self._last_cycle_error = None
+        else:
+            self._last_cycle_error = error or f"canonical Run ended {status.value}"
 
     async def run_loop(self) -> None:
         self.initialize_domain_state()
@@ -278,6 +335,12 @@ class _EvolutionService:
             pop_size,
         )
         return record.run_id
+
+    def build_llm_call(self):
+        """Public accessor so a restart-recovery resolver can reconstruct the
+        same llm_call this service would have built for a live cycle (#1064).
+        """
+        return self._build_llm_call()
 
     def _build_llm_call(self):
         try:

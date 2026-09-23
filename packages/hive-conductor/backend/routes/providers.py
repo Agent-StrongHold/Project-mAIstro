@@ -207,6 +207,7 @@ async def activate_provider(name: str) -> dict[str, Any]:
             raise RuntimeError("canonical project scope is unavailable")
         root_project = await runtime.project_scope_store.root_for_workspace(workspace_id)
         binding = control_plane_binding(
+            runtime,
             binding_id=f"provider-activation:{name}",
             workspace_id=workspace_id,
             project_id=root_project.project_id,

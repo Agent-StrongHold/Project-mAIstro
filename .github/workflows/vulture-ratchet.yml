@@ -38,14 +38,29 @@ jobs:
       # merge-base with the checked-out synthetic merge, yielding the exact
       # target state this candidate is being integrated into. For stacked PRs,
       # github.base_ref names the parent branch rather than assuming develop.
-      # Merge groups already provide their integration base SHA. Pushes compare
-      # to the previous SHA so the pushed commit cannot bless its own ledger.
+      # Merge groups already provide their integration base SHA.
+      #
+      # Protected-branch pushes compare to the previous SHA, so the pushed
+      # commit cannot bless its own ledger. Topic-branch pushes must not: there
+      # `before` is the branch's own previous tip, which a force-push (any
+      # rebase) leaves unreachable from every ref, and `fetch-depth: 0` fetches
+      # refs rather than orphans -- the ratchet then refuses with "base revision
+      # could not be resolved" on a candidate that is otherwise green, while the
+      # pull-request run on identical content passes. Topic pushes therefore use
+      # the same integration base their PR run does, which is also what
+      # `ratchet_provenance._push_event_base` computes when no base is named.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)
             || github.event_name == 'merge_group'
             && github.event.merge_group.base_sha
-            || github.event.before }}
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
     steps:
       - uses: actions/checkout@v7
         with:

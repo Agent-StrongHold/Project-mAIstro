@@ -358,12 +358,26 @@ jobs:
       # exactly as vulture-ratchet.yml does, so the trusted baseline is the
       # revision this push replaces. tests/conftest.py captures this value and
       # keeps it away from every test except the gate self-checks that opt in.
+      #
+      # Only a protected-branch push replaces a revision, though. On a topic
+      # branch `before` is that branch's own previous tip, which any rebase
+      # orphans: unreachable from every ref, so `fetch-depth: 0` does not fetch
+      # it and the resolver refuses with "base revision could not be resolved".
+      # That reds the seven root-suite self-checks on a candidate whose
+      # pull-request run passes on identical content. Topic pushes use the
+      # integration base instead, matching their PR run.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)
             || github.event_name == 'merge_group'
             && github.event.merge_group.base_sha
-            || github.event.before }}
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
     steps:
       - uses: actions/checkout@v7
         with:

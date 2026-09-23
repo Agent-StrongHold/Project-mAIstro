@@ -1126,6 +1126,51 @@ async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     assert resolved.run_id == first.run_id
 
 
+async def test_get_runs_for_occurrences_is_the_batched_twin_of_the_single_lookup(
+    spine: Any,
+) -> None:
+    """One query resolves many occurrences, keyed by `scheduled_for` (#1533).
+
+    Schedule recovery used to resolve each occurrence with its own round trip;
+    this is the batched replacement, checked against the same claims
+    `get_run_for_occurrence` would resolve one at a time — plus a
+    `scheduled_for` that was never claimed, to prove a miss is simply absent
+    from the result rather than raising, and an empty request, which must
+    short-circuit to `{}` rather than query at all.
+    """
+    store, workspace, project_id = spine
+    first = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T12:00:00+00:00")
+    )
+    second = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T13:00:00+00:00")
+    )
+    third = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T14:00:00+00:00")
+    )
+
+    resolved = await store.get_runs_for_occurrences(
+        "sched-1",
+        [
+            "2026-08-24T12:00:00+00:00",
+            "2026-08-24T13:00:00+00:00",
+            "2026-08-24T14:00:00+00:00",
+            "2026-08-24T15:00:00+00:00",  # never claimed
+        ],
+    )
+
+    assert set(resolved) == {
+        "2026-08-24T12:00:00+00:00",
+        "2026-08-24T13:00:00+00:00",
+        "2026-08-24T14:00:00+00:00",
+    }
+    assert resolved["2026-08-24T12:00:00+00:00"].run_id == first.run_id
+    assert resolved["2026-08-24T13:00:00+00:00"].run_id == second.run_id
+    assert resolved["2026-08-24T14:00:00+00:00"].run_id == third.run_id
+
+    assert await store.get_runs_for_occurrences("sched-1", []) == {}
+
+
 async def test_concurrent_occurrence_claims_converge_on_one_run(spine: Any) -> None:
     """A replica race has one winner, and every loser can resolve that winner."""
     store, workspace, project_id = spine
@@ -1281,6 +1326,114 @@ async def test_deleting_a_run_releases_its_occurrence(spine: Any) -> None:
     await store.delete_run(run.run_id, force=True)
 
     readmitted = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    assert readmitted.run_id != run.run_id
+
+
+# ── one Run per Canvas job admission (#1055 review, migration 039) ──
+#
+# `CanvasCanonicalExecution.admit` computes a deterministic `canvas_job_id`
+# from `(org_id, operation_id)` before it ever reaches `create_run`, so two
+# workers racing the same Canvas `Idempotency-Key` submit that *same* id.
+# Same shape as the occurrence claim above, and the delegation_key claim
+# (migration 037): the unique index is the claim, not an application
+# check-then-insert, and the loser resolves the winner by reading rather than
+# retrying. Unlike the occurrence claim, a conflict here is not wrapped in a
+# named exception (mirroring delegation_key, not occurrence) -- callers
+# resolve it with a broad `except Exception` and a re-read, which is exactly
+# what `CanvasCanonicalExecution.admit` does.
+
+
+def _canvas_job(job_id: str, *, operation_id: str | None = None) -> dict[str, Any]:
+    provenance: dict[str, Any] = {
+        ADMISSION_SOURCE: "canvas_generation",
+        "canvas_job_id": job_id,
+    }
+    if operation_id is not None:
+        provenance["canvas_operation_id"] = operation_id
+    return provenance
+
+
+async def test_a_second_run_for_one_canvas_job_is_refused(spine: Any) -> None:
+    store, workspace, project_id = spine
+    first = await store.create_run(
+        _graph(workspace, project_id), provenance=_canvas_job("job-1", operation_id="op-1")
+    )
+
+    with pytest.raises(Exception):  # noqa: B017 - backend-specific (see module note)
+        await store.create_run(
+            _graph(workspace, project_id), provenance=_canvas_job("job-1", operation_id="op-1")
+        )
+
+    survivor = await store.get_run(first.run_id)
+    assert survivor is not None
+
+
+async def test_concurrent_canvas_job_claims_converge_on_one_run(spine: Any) -> None:
+    """Eight admitters race the same Canvas idempotency key. Seven must lose.
+
+    The core proof behind PR #1531 review finding 2: under PostgreSQL these
+    run genuinely at once, and "exactly one run_id per Canvas job" must not
+    depend on how many workers happen to be deployed.
+    """
+    store, workspace, project_id = spine
+
+    results = await asyncio.gather(
+        *(
+            store.create_run(
+                _graph(workspace, project_id),
+                provenance=_canvas_job("job-race", operation_id="op-race"),
+            )
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    losers = [result for result in results if isinstance(result, BaseException)]
+    assert len(winners) == 1
+    assert len(losers) == 7
+
+
+async def test_a_different_canvas_job_id_is_admitted(spine: Any) -> None:
+    store, workspace, project_id = spine
+    first = await store.create_run(_graph(workspace, project_id), provenance=_canvas_job("job-a"))
+    second = await store.create_run(_graph(workspace, project_id), provenance=_canvas_job("job-b"))
+
+    assert first.run_id != second.run_id
+
+
+async def test_a_non_canvas_run_sharing_the_same_job_id_string_does_not_collide(
+    spine: Any,
+) -> None:
+    """`canvas_job_id` is not an exclusively Canvas-owned field name at this
+    layer. A Run from an unrelated source that happens to carry the same
+    string in its own provenance -- accidentally, or as an impersonation
+    attempt -- must not be able to block a real Canvas admission from
+    claiming it."""
+    store, workspace, project_id = spine
+    impostor = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "task_queue", "canvas_job_id": "job-shared"},
+    )
+
+    canvas_run = await store.create_run(
+        _graph(workspace, project_id), provenance=_canvas_job("job-shared")
+    )
+
+    assert canvas_run.run_id != impostor.run_id
+
+
+async def test_deleting_a_run_releases_its_canvas_job_claim(spine: Any) -> None:
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id), provenance=_canvas_job("job-released")
+    )
+    await store.delete_run(run.run_id, force=True)
+
+    readmitted = await store.create_run(
+        _graph(workspace, project_id), provenance=_canvas_job("job-released")
+    )
 
     assert readmitted.run_id != run.run_id
 

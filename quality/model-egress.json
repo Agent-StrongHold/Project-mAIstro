@@ -16,7 +16,6 @@
     "maistro_rsi.gateway",
     "maistro_server.api.chat_completions",
     "services.canonical_corpus",
-    "services.canvas_dag",
     "services.chat_completion",
     "services.eval_bootstrap",
     "services.evolution",

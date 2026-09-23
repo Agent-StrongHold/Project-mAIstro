@@ -209,6 +209,42 @@ async def test_record_fire_on_unknown_schedule_returns_none(store: ScheduleStore
     assert (await store.record_fire("nope", fired_at=NOON, run_id=None, next_due_at=None)) is None
 
 
+def test_advance_truncates_recovered_occurrences_past_the_cap() -> None:
+    """`_advance` bounds the recovered-occurrence ledger rather than growing it
+    forever (#1533 review).
+
+    A schedule that keeps crashing mid-fire credits one pre-horizon claim at a
+    time; once the ledger is already at `_MAX_RECOVERED_OCCURRENCES`, crediting
+    one more must drop the single oldest entry rather than let the set grow
+    without bound — and the newest entry, the one this call is here to credit,
+    must survive the trim.
+    """
+    from maistro.scheduling.store import _MAX_RECOVERED_OCCURRENCES, _advance
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    oldest = base
+    existing = frozenset(base + timedelta(minutes=i) for i in range(_MAX_RECOVERED_OCCURRENCES))
+    assert len(existing) == _MAX_RECOVERED_OCCURRENCES
+    schedule = _schedule(recovered_occurrences=existing)
+    newest = base + timedelta(minutes=_MAX_RECOVERED_OCCURRENCES)
+
+    advanced = _advance(
+        schedule,
+        fired_at=None,
+        run_id=None,
+        next_due_at=None,
+        fires=None,
+        disable=False,
+        recovered=frozenset({newest}),
+    )
+
+    assert len(advanced.recovered_occurrences) == _MAX_RECOVERED_OCCURRENCES
+    assert newest in advanced.recovered_occurrences
+    assert oldest not in advanced.recovered_occurrences
+    assert min(advanced.recovered_occurrences) == base + timedelta(minutes=1)
+    assert max(advanced.recovered_occurrences) == newest
+
+
 # --- the actual defect --------------------------------------------------------
 
 

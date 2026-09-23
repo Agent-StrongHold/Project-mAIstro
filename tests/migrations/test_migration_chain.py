@@ -56,6 +56,11 @@ EXPECTED_TABLES = frozenset(
         "asset_sheets",
         "audit_log",
         "books",
+        # The canonical governed-capability boundary (039, renumbered from 032
+        # after a collision with 032_asset_instance_org_scope; #1079).
+        # Bindings and Invocations are separate tables: Bindings are immutable
+        # authorization records, Invocations the logical effect ledger.
+        "capability_bindings",
         "capability_invocations",
         "consumer_cursors",
         # The canonical execution spine (012) and the template registry it

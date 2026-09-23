@@ -263,6 +263,30 @@ class TestStepBudgetExhaustion:
         )
         assert result.status is RunStatus.COMPLETED
 
+    async def test_public_entry_point_honors_an_explicit_max_steps_override(self) -> None:
+        """#1067 defect 3: a caller with its own domain-derived step bound can supply one.
+
+        ``run_durable_graph``/``resume_durable_graph`` used to hardcode 256
+        with no way for a caller (e.g. Builders, whose own iteration policy
+        might allow -- or refuse -- more) to derive and pass its own bound.
+        """
+        from maistro.graph.durable_runs.attempt_executor import run_durable_graph
+
+        store = InMemoryDurableRunStore()
+        graph = graph_from_dag(self._cycle_dag())
+
+        result = await run_durable_graph(
+            graph,
+            store=store,
+            node_resolver=_resolver,
+            max_steps=3,
+        )
+
+        assert result.run.status is RunStatus.FAILED
+        assert result.run.error is not None
+        assert result.run.error.startswith("StepBudgetExhausted:")
+        assert "max_steps=3" in result.run.error
+
 
 class TestCanonicalNodeRunPersistence:
     async def test_nonterminal_node_run_is_reused_on_resume(self) -> None:

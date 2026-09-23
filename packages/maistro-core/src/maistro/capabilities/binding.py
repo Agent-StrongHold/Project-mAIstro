@@ -55,7 +55,10 @@ class Binding(BaseModel):
     capability: str
     node_id: str = ""
     provider_name: str = ""
-    enabled: bool = True
+    # Operator kill-switch (#56): a disabled Binding still resolves its
+    # identity but authorizes nothing, so an effect that references it fails
+    # truthfully instead of silently falling back to another provider.
+    disabled: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
     credential_refs: tuple[str, ...] = ()
     policy_refs: tuple[str, ...] = ()
@@ -129,7 +132,10 @@ class ResolvedBinding(BaseModel):
             capability=binding.capability,
             provider_name=provider.name,
             provider_trust_tier=provider.trust_tier,
-            enabled=binding.enabled,
+            # Evidence for the authorization snapshot (#1195): carried from the
+            # operator kill-switch, so a disabled Binding can never resolve to
+            # an enabled-looking Invocation decision.
+            enabled=not binding.disabled,
             config=binding.config,
             credential_refs=binding.credential_refs,
             policy_refs=binding.policy_refs,

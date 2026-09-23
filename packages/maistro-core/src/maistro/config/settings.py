@@ -20,6 +20,7 @@ from maistro.security.resource_policy import (
     EffectiveResourcePolicy,
     validate_resource_policy,
 )
+from maistro.types.config import ModelBindingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +438,12 @@ class MaistroYamlConfig(BaseModel):
     model_groups: dict[str, dict[str, Any]] = Field(default_factory=dict)
     permissions: dict[str, list[str]] = Field(default_factory=dict)
     rate_profiles: list[ModelRateProfileConfig] = Field(default_factory=list)
+    # Operator-declared `model.chat` Binding authorizations (#1079). Threaded
+    # onto `AgentConfig.model_bindings` by whoever builds it from this loaded
+    # YAML config, so `bootstrap_model_bindings()` has something to authorize
+    # -- see `maistro.types.config.ModelBindingConfig` for the shape and the
+    # fail-closed default (empty authorizes nothing).
+    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
     database_url: str = ""
     redis_url: str = ""
     agents_dir: str = ""

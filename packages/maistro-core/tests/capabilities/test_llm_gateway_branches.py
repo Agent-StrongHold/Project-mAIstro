@@ -15,7 +15,9 @@ import pytest
 
 from maistro.capabilities.providers.llm_gateway import (
     GatewayEndpoint,
+    LlmAuthError,
     LlmGatewayProvider,
+    LlmHttpError,
     ModelChatRequest,
     _chat_payload,
     _checked_body,
@@ -75,6 +77,58 @@ def test_checked_body_refuses_non_object_body() -> None:
         _checked_body(_Resp(200, ["choices"]))
     with pytest.raises(RuntimeError, match="non-object response body"):
         _checked_body(_Resp(200, "ok"))
+
+
+def test_checked_body_401_carries_status_code_for_credential_routing() -> None:
+    """#1079 finding 5: a bare PermissionError could not be classified — the
+    CredentialRouter's status extraction (and the resilience classifier's)
+    both read ``status_code`` off the exception first, so without it a real
+    401 fell through to ErrorCategory.UNKNOWN and never blocked the key."""
+
+    with pytest.raises(LlmAuthError) as excinfo:
+        _checked_body(_Resp(401, {}))
+    assert excinfo.value.status_code == 401
+    assert isinstance(
+        excinfo.value, PermissionError
+    )  # existing `except PermissionError` still works
+
+
+def test_checked_body_429_carries_status_code_for_credential_routing() -> None:
+    with pytest.raises(LlmHttpError) as excinfo:
+        _checked_body(_Resp(429, {}))
+    assert excinfo.value.status_code == 429
+    assert isinstance(excinfo.value, RuntimeError)  # existing `except RuntimeError` still works
+
+
+def test_checked_body_other_4xx_carries_status_code_for_credential_routing() -> None:
+    with pytest.raises(LlmHttpError) as excinfo:
+        _checked_body(_Resp(403, {}))
+    assert excinfo.value.status_code == 403
+
+
+def test_credential_router_blocks_and_cools_on_the_carried_status() -> None:
+    """End-to-end proof, not just that the exception carries the attribute:
+    the router's own status extraction and cooldown table actually act on it."""
+
+    from maistro.credentials.router import _status_from_error, cooldown_for_failure
+    from maistro.resilience.classifier import classify_error
+
+    auth_error = LlmAuthError("llm_auth_failed status=401", status_code=401)
+    assert _status_from_error(auth_error) == 401
+    classified = classify_error(auth_error)
+    cooldown, should_block = cooldown_for_failure(
+        classified, status_code=_status_from_error(auth_error)
+    )
+    assert should_block is True  # 401 blocks the credential permanently
+
+    rate_limit_error = LlmHttpError("llm_rate_limited status=429", status_code=429)
+    assert _status_from_error(rate_limit_error) == 429
+    classified = classify_error(rate_limit_error)
+    cooldown, should_block = cooldown_for_failure(
+        classified, status_code=_status_from_error(rate_limit_error)
+    )
+    assert should_block is False
+    assert cooldown > 0  # 429 cools down rather than blocking outright
 
 
 async def test_foreign_provider_handle_refuses_seam() -> None:

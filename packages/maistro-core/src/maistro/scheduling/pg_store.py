@@ -132,6 +132,7 @@ class PgScheduleStore:
         next_due_at: datetime | None,
         fires: int | None = None,
         disable: bool = False,
+        recovered: frozenset[datetime] = frozenset(),
     ) -> Schedule | None:
         """Advance the cursors under a row lock, so a concurrent tick cannot lose them."""
         async with self._pool.acquire() as conn, conn.transaction():
@@ -148,6 +149,7 @@ class PgScheduleStore:
                 next_due_at=next_due_at,
                 fires=fires,
                 disable=disable,
+                recovered=recovered,
             )
             await conn.execute(
                 """UPDATE schedules

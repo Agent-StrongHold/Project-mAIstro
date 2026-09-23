@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from maistro_design.scan import scan_blocking_patterns
+
 
 class TrustTier(StrEnum):
     T0 = "t0"  # built-in (engine-shipped, immutable)
@@ -123,6 +125,9 @@ class InMemoryTrustReviewQueue:
         return len(self._records)
 
 
+_BLOCKING_FINDING_CONFIDENCE = 0.9
+
+
 def _fingerprint(content: str) -> str:
     import hashlib
 
@@ -147,16 +152,21 @@ def scan_and_record(
     banish_list: InMemoryTrustBanishList | None = None,
     review_queue: InMemoryTrustReviewQueue | None = None,
 ) -> TrustTier:
-    """Run a lightweight pre-scan (banish list + simple heuristics) and enqueue review.
+    """Pre-scan content with the banish list and the shared Design scanner; enqueue review.
 
-    Returns the assigned TrustTier (T3 or SKULL).
-    Full Warden integration (4-layer pipeline) is wired when Warden is injected into
-    DesignEngine; this function handles the pre-scan path.
+    Returns the assigned TrustTier (T3 or SKULL). Uses the same
+    `scan_blocking_patterns` as the engine's output scan, so a record is only
+    recommended for upgrade when that scan would pass the content.
     """
+    findings = tuple(scan_blocking_patterns("content", content, None))
     if banish_list and banish_list.is_banned(content):
         tier = TrustTier.SKULL
-        flags: tuple[str, ...] = ("banish_list_match",)
+        flags: tuple[str, ...] = ("banish_list_match", *findings)
         confidence = 1.0
+    elif findings:
+        tier = TrustTier.SKULL
+        flags = findings
+        confidence = _BLOCKING_FINDING_CONFIDENCE
     else:
         tier = TrustTier.T3
         flags = ()

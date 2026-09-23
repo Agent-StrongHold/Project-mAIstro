@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -35,6 +35,9 @@ from maistro.providers.router import CostAwareRouter
 
 from . import register_node
 from .base import BaseNode, NodeContext
+
+if TYPE_CHECKING:
+    from maistro.providers.protocols import LLMProviderRegistry, LLMRouter
 
 
 class LlmSummarizeIn(BaseModel):
@@ -84,7 +87,16 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     # The shipped model path crosses the governed model egress (#56): the
     # Container's effect context is what makes Bindings resolve; the bare
     # default authorizes nothing, which is a refusal rather than a no-op.
-    optional_authorities: ClassVar[Mapping[str, str]] = {"effect_context": "effect_context"}
+    # `registry`/`router` are likewise the Container's own Provider registry
+    # and cost-aware router (#1079), so a resolver-built node reads real
+    # Provider metadata and routes through the same authorities the rest of
+    # production does, rather than each node's bare `InMemoryProviderRegistry`
+    # default silently substituting empty state.
+    optional_authorities: ClassVar[Mapping[str, str]] = {
+        "effect_context": "effect_context",
+        "registry": "provider_registry",
+        "router": "llm_router",
+    }
     kind_category: ClassVar = "sync.llm"
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut
@@ -101,16 +113,18 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         self,
         *,
         effect_context: CapabilityEffectContext | None = None,
-        registry: InMemoryProviderRegistry | None = None,
-        router: CostAwareRouter | None = None,
+        registry: LLMProviderRegistry | None = None,
+        router: LLMRouter | None = None,
     ) -> None:
         # The container passes its own capability_effects so resolver-built
         # nodes resolve the same Binding/Invocation authorities (#55 wiring
         # pattern). Bare registry construction keeps the process default, which
         # registers no Bindings and therefore authorizes nothing.
         self._effects = effect_context or default_effect_context()
-        self._registry = registry if registry is not None else InMemoryProviderRegistry()
-        self._router = router if router is not None else CostAwareRouter(self._registry)
+        self._registry: LLMProviderRegistry = (
+            registry if registry is not None else InMemoryProviderRegistry()
+        )
+        self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # LLM gateway endpoint + key — pulled from env (maistro config layer

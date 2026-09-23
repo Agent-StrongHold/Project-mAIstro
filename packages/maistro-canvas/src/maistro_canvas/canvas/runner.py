@@ -94,6 +94,13 @@ class CanvasJobRunner:
                 "CanvasJobRunner requires canonical execution binding before claiming provider work"
             )
 
+        # Reconciliation precedes claiming. A process can die after canonical
+        # admission and before the Canvas receipt insert; the canonical Run is
+        # the durable recovery owner and recreates that receipt here.
+        reconcile = getattr(self._executor, "reconcile_admissions", None)
+        if reconcile is not None:
+            await reconcile()
+
         job = await self._store.claim_next_pending(self._worker_id, self._lease_seconds)
         if job is None:
             return False

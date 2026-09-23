@@ -264,7 +264,7 @@ async def test_disabled_binding_fails_before_http(monkeypatch: Any) -> None:
             node_id="n1",
             capability="airtable.records",
             provider_name="airtable",
-            enabled=False,
+            disabled=True,
         )
     )
 

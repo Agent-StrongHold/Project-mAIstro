@@ -54,6 +54,26 @@ class RunSummary(BaseModel):
     error: str | None = None
 
 
+class AttemptSummary(BaseModel):
+    """One physical try under a NodeRun, and the agent it dispatched to.
+
+    `Attempt.result` and `Attempt.error` are left out on purpose: they can carry
+    raw provider or exception text, which must not reach whoever holds a run_id
+    (see `maistro.runs.chat_admission`).
+    """
+
+    attempt_id: str
+    ordinal: int
+    status: str
+    executor_id: str
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    #: The agent a chat turn dispatched to (ADR-082526-7f02); null where the
+    #: Attempt recorded none, as for a task.
+    agent: str | None = None
+
+
 class NodeRunSummary(BaseModel):
     """Per-node execution state under a Run."""
 
@@ -62,6 +82,7 @@ class NodeRunSummary(BaseModel):
     status: str
     created_at: datetime
     finished_at: datetime | None = None
+    attempts: list[AttemptSummary] = Field(default_factory=list)
 
 
 class TaskCancelledResponse(BaseModel):

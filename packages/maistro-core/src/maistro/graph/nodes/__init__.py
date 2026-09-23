@@ -52,6 +52,8 @@ AUTHORITY_NAMES: Final[frozenset[str]] = frozenset(
         "graph_run_store",
         "effect_context",
         "node_resolver",
+        "provider_registry",
+        "llm_router",
     }
 )
 

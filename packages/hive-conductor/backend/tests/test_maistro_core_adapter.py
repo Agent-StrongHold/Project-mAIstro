@@ -86,10 +86,21 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         Settings(
             maistro_agents_dir="agents",
             litellm_api_base="http://localhost:4000/v1",
+            provider_config_path="/etc/hive/providers.yaml",
+            maistro_model_bindings=[
+                {
+                    "binding_id": "canvas-quality",
+                    "project_id": "project-canvas",
+                    "provider_name": "quality-model",
+                }
+            ],
         )
     )
 
     assert captured["prompt_manager"] is selected_prompt_manager
+    config = captured["config"]
+    assert config.provider_config_path == "/etc/hive/providers.yaml"
+    assert config.model_bindings[0].binding_id == "canvas-quality"
     # Same requirement, one wiring later: the ADR-091 assembly the Container
     # selected has to be the one the agents get, or the Conductor's episodic
     # memories reach no prompt (#622).
@@ -256,6 +267,60 @@ async def test_start_carries_the_permission_grants_onto_the_container_config(mon
     config = captured["config"]
     assert config.security.permission_preset == "dangerous_tools_admin"
     assert config.security.permissions == {"shell": ["admin"]}
+
+
+@pytest.mark.asyncio
+async def test_start_carries_the_model_bindings_onto_the_container_config(monkeypatch):
+    """#1079 Finding 1: the operator's `model.chat` Binding declarations need
+    to reach `AgentConfig.model_bindings`, or `bootstrap_model_bindings()`
+    always authorizes nothing and every governed model-egress node refuses
+    every Binding in production."""
+    from maistro.types.config import ModelBindingConfig
+
+    container = _fake_container()
+    captured: dict[str, object] = {}
+
+    async def fake_create_container(config):
+        captured["config"] = config
+        return container
+
+    async def fake_create_agents(**kwargs):
+        return {"wired-agent": SimpleNamespace(identity=None)}
+
+    monkeypatch.setattr("maistro.container.create_container", fake_create_container)
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
+
+    await MaistroCoreBridge().start(
+        Settings(
+            maistro_agents_dir="agents",
+            maistro_model_bindings=[
+                ModelBindingConfig(binding_id="b1", project_id="p1", provider_name="gpt-4"),
+            ],
+        )
+    )
+
+    config = captured["config"]
+    assert [b.binding_id for b in config.model_bindings] == ["b1"]
+    assert config.model_bindings[0].provider_name == "gpt-4"
+
+
+@pytest.mark.asyncio
+async def test_start_parses_model_bindings_from_a_json_env_value(monkeypatch):
+    """`MAISTRO_MODEL_BINDINGS` is JSON, like `MAISTRO_PERMISSIONS` -- the real
+    `Settings` env parsing path, not a Python literal handed in directly."""
+    from maistro.types.config import ModelBindingConfig
+
+    monkeypatch.setenv(
+        "MAISTRO_MODEL_BINDINGS",
+        '[{"binding_id": "env-b1", "project_id": "env-p1", "provider_name": "gpt-4"}]',
+    )
+
+    settings = Settings(maistro_agents_dir="agents")
+
+    assert settings.maistro_model_bindings == [
+        ModelBindingConfig(binding_id="env-b1", project_id="env-p1", provider_name="gpt-4")
+    ]
 
 
 @pytest.mark.asyncio
