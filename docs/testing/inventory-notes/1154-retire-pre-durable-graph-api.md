@@ -78,3 +78,24 @@ maistro-core and hive-conductor; `check-retired-guidance.py`,
 `check-merge-markers.py` all exit 0. No test files changed: suite inventories
 unchanged. `LegacyGraphRunArchive` verified read-only (`mode=ro` URI;
 `ArchivedGraphRun.resume()` raises `LegacyRunNotResumable`).
+
+## Independent verification (f60b228bf, this lane re-run)
+
+All claims above re-derived and re-executed at f60b228bf: `tests/graph` 1091 passed /
+79 skipped (incl. `test_retired_executor.py`); `tests/testing` + `tests/resilience` +
+`tests/orchestrator` + `tests/builders` + `tests/tasks` 912 passed / 1 xfailed; hive
+`test_graph_runner_injection.py` + `test_evolution_canonical_graph.py` +
+`test_dag_agents.py` 43 passed; `ruff check .` and `ruff format --check .` clean;
+`git diff --check` clean; `check-merge-markers.py`, `check-retired-guidance.py`,
+`check-execution-lifecycles.py`, `check-convergence-matrix.py`,
+`check-m1-convergence-freeze.py --base 8bb344e32` all exit 0. Two-tree vulture
+comparison (same interpreter, full scans of `git archive 8bb344e32` and this tree):
+base 967 trusted-added keys vs head 968 — the single branch-only key is the
+authorized `parallel_generations` grant; candidate staleness 952 (base) -> 937 (head),
+worsened 0 / pruned 15, so the gate's exit 1 is byte-for-byte pre-existing at the
+develop base and not branch-caused. Shipped Graph work crosses only
+`run_durable_graph`/`run_durable_dag` (`master.py:630`, `builders/graph_executor.py:890`,
+`agent_synth_dag.py:474`, `dag_registry.py`); the sole shipped `GraphRun`-named import
+is the read-only `LegacyGraphRunArchive` (`mode=ro`, `resume()` raises
+`LegacyRunNotResumable`). No closure keywords in the PR body or commit messages.
+Stop condition re-checked: no executor gained persistence.
