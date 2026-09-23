@@ -305,6 +305,66 @@ async def test_readiness_passes_once_the_canonical_store_is_running(hive: _HiveP
     assert body["checks"]["workspace_authority"] is True
 
 
+def test_readiness_reports_an_unreadable_authority_as_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected failure reading the authority is never reported as ready."""
+    from fastapi.testclient import TestClient
+    from main import app
+
+    def _broken() -> bool:
+        raise RuntimeError("authority state unreadable")
+
+    monkeypatch.setattr(workspace_authority, "canonical_store_available", _broken)
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["workspace_authority"] is False
+
+
+def test_a_server_database_url_survives_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://maistro:pw@postgres:5432/maistro")
+
+    assert workspace_authority._database_survives_restart()
+
+
+@BACKENDS
+@pytest.mark.asyncio
+async def test_a_failed_durable_create_rolls_back_without_touching_the_mirror(
+    hive: _HiveProcess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await hive.boot()
+    created: list[str] = []
+    original_create = hive.canonical.create
+
+    async def _recording_create(**kwargs: Any) -> Any:
+        workspace = await original_create(**kwargs)
+        created.append(workspace.workspace_id)
+        return workspace
+
+    def _journal_down(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("journal unavailable")
+
+    monkeypatch.setattr(hive.canonical, "create", _recording_create)
+    monkeypatch.setattr(workspace_authority, "_write_journal", _journal_down)
+
+    with pytest.raises(OSError, match="journal unavailable"):
+        await workspace_authority.create_workspace(
+            creator_user_id="alice",
+            name="Half-made",
+            persona_template_id="content_creator",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+
+    assert len(created) == 1
+    assert await hive.canonical.get(created[0]) is None
+    assert hive.mirror_rows() == {}
+
+
 def _image_path_of_default_roster() -> tuple[str, dict[str, str]]:
     """Where the image's default ``maistro_agents_dir`` lands, and its COPY map.
 

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +14
+  packages/hive-conductor/backend/tests: +18
 ---
 # claude-ws-37-implement-the-owner-decision-shared-post-06f4
 
@@ -22,6 +22,11 @@ one proves it is ready once the bridge is running, on SQLite and on
 PostgreSQL (two node IDs; the PostgreSQL copy skips without a DSN). The
 fourth reads the Hive Dockerfile and proves the runtime stage copies the
 agent roster to where the default `maistro_agents_dir` resolves.
+
+Four more cover what the diff-coverage gate found unexercised: an unreadable
+authority reports not-ready, a server database URL counts as durable, and a
+durable create that fails after the canonical write rolls it back without
+touching the mirror (SQLite and PostgreSQL, two node IDs).
 
 In `test_workspace_authority.py`, the durable-retirement test was renamed in
 place for the new contract, which leaves the mirror untouched. That rename
