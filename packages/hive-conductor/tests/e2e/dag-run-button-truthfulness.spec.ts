@@ -119,16 +119,20 @@ async function expectRunLink(log: ReturnType<Page["getByRole"]>) {
 
 test("a completed Run shows its canonical id and Completed", async () => {
   const log = await runWith([started, nodeComplete(true), { status: "completed", run_id: RUN_ID, cycles: 1, annotations: {} }]);
+  // Toasts auto-dismiss after 3s, so check them before the slower log assertions.
+  await expect(page.getByText("DAG execution completed")).toBeVisible();
   await expect(log).toContainText(`worker (${NODE_ID.slice(0, 8)}): OK`);
   await expect(log).toContainText("Completed in 1 cycles");
   await expectRunLink(log);
   await expect(log).not.toContainText("Connection closed");
-  await expect(page.getByText("DAG execution completed")).toBeVisible();
 });
 
 test("a parked (waiting) Run is shown as parked with its id, not success or a dropped connection", async () => {
-  const log = await runWith([started, { status: "waiting", run_id: RUN_ID, error: "canonical Run ended waiting" }]);
+  // The backend projects the node that parked the Run as success:false.
+  const log = await runWith([started, nodeComplete(false), { status: "waiting", run_id: RUN_ID, error: "canonical Run ended waiting" }]);
   await expect(log).toContainText("Parked (waiting)");
+  await expect(log).toContainText(`worker (${NODE_ID.slice(0, 8)}): not finished`);
+  await expect(log).not.toContainText("FAIL");
   await expectRunLink(log);
   await expect(log).not.toContainText("Connection closed");
   await expect(log).not.toContainText("Completed");
@@ -146,12 +150,13 @@ test("a paused Run is shown as parked, not finished", async () => {
 
 test("a cancelled Run is a non-success terminal state", async () => {
   const log = await runWith([started, nodeComplete(false), { status: "cancelled", run_id: RUN_ID, error: "cancelled by operator" }]);
+  // Toasts auto-dismiss after 3s, so check them before the slower log assertions.
+  await expect(page.getByText("DAG run cancelled")).toBeVisible();
   await expect(log).toContainText("Cancelled: cancelled by operator");
   await expectRunLink(log);
   await expect(log).not.toContainText("Completed");
   await expect(log).not.toContainText("Connection closed");
   await expect(page.getByText("DAG execution completed")).toHaveCount(0);
-  await expect(page.getByText("DAG run cancelled")).toBeVisible();
 });
 
 test("a timed-out Run is a non-success terminal state", async () => {
@@ -169,6 +174,44 @@ test("a failed node and failed Run read FAIL and Failed", async () => {
   await expectRunLink(log);
   await expect(log).not.toContainText("Connection closed");
   await expect(page.getByText("DAG execution completed")).toHaveCount(0);
+});
+
+test("a Run that ends on a non-terminal status says it has not finished, not that the connection dropped", async () => {
+  const log = await runWith([started, { status: "running", run_id: RUN_ID }]);
+  await expect(log).toContainText("Run running: not finished");
+  await expectRunLink(log);
+  await expect(log).not.toContainText("Connection closed");
+  await expect(log).not.toContainText("Completed");
+});
+
+test("the DAG Runs link opens the Run it names, not the newest run", async () => {
+  const OTHER_RUN_ID = "run-newer-0000";
+  const summary = (id: string, started_at: number) => ({
+    id, user_id: "pm", started_at, finished_at: started_at + 1, event_count: 0, node_states: {},
+  });
+  const detailRequests: string[] = [];
+  await page.route(/\/v1\/dag-runs(\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([summary(OTHER_RUN_ID, 2000), summary(RUN_ID, 1000)]),
+    });
+  });
+  await page.route(/\/v1\/dag-runs\/[^/?]+$/, async (route) => {
+    const id = new URL(route.request().url()).pathname.split("/").pop() ?? "";
+    detailRequests.push(id);
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...summary(id, 1000), events: [] }) });
+  });
+  await page.route(/\/v1\/dag-runs\/[^/]+\/events$/, async (route) => {
+    await route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
+  });
+
+  const log = await runWith([started, nodeComplete(true), { status: "completed", run_id: RUN_ID, cycles: 1, annotations: {} }]);
+  await log.getByRole("link", { name: /DAG Runs/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/dag-runs\\?run=${RUN_ID}$`));
+  await expect.poll(() => detailRequests).toContain(RUN_ID);
+  await page.waitForLoadState("networkidle");
+  expect(detailRequests).not.toContain(OTHER_RUN_ID);
 });
 
 test("a socket that closes before any terminal frame still says the connection closed", async () => {

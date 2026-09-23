@@ -366,8 +366,18 @@ export default function DagBuilder() {
           toast(`DAG run ${label.toLowerCase()}`, "error");
         } else if (status === "waiting" || status === "paused") {
           settled = true;
-          setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Parked (${status}): the Run has not finished`] }));
+          // A parked Run projects its unfinished nodes as success:false; they
+          // have not failed, so relabel them rather than report FAIL.
+          setExecState((prev) => ({
+            ...prev,
+            running: false,
+            nodeId: null,
+            log: [...prev.log.map((line) => line.replace(/: FAIL$/, ": not finished")), `Parked (${status}): the Run has not finished`],
+          }));
           toast(`DAG run ${status}`, "warn");
+        } else if (status) {
+          settled = true;
+          setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Run ${status}: not finished`] }));
         }
       } catch { /* ignore parse errors */ }
     };

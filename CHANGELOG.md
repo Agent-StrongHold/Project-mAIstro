@@ -388,8 +388,9 @@ or placeholder-only section.
 - **The DAG Builder's Run button reports the canonical Run truthfully
   (#53).**
   The execution log now shows the canonical `run_id` the run socket already
-  sends, with a link to DAG Runs. A `waiting`/`paused` Run shows as parked
-  rather than "Connection closed"; `cancelled` and `timed_out` show as
+  sends, with a link that opens that Run in DAG Runs (`/dag-runs?run=<id>`).
+  A `waiting`/`paused` Run shows as parked, with its unfinished nodes not
+  reported as FAIL, rather than "Connection closed"; `cancelled` and `timed_out` show as
   non-success terminal states; a canonical `failed` frame reads "Failed"
   instead of a bare "Error". "Connection closed" now appears only when the
   socket closes before any terminal or parked frame. Presentation only: no
