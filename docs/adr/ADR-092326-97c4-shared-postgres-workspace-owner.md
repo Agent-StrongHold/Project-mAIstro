@@ -6,6 +6,12 @@ kind: adr
 status: Accepted
 created: 2026-09-23
 accepted: 2026-09-23
+ac-modules:
+  AC-1: '@flat/hive-conductor/services.workspace_authority'
+  AC-2: '@flat/hive-conductor/services.workspace_authority'
+  AC-3: '@flat/hive-conductor/services.workspace_authority'
+  AC-4: '@flat/hive-conductor/services.workspace_authority'
+  AC-5: '@flat/hive-conductor/services.workspace_authority'
 history:
   - status: Proposed
     date: 2026-09-23
@@ -83,6 +89,28 @@ durable store and maistro-server becomes secondary. The owner chose the third on
    in-process canonical store with the mirror as restart recovery evidence.
    This also applies when the database is in-process (`memory://`, or
    `sqlite://` with no path), since it does not survive a restart either.
+
+## Acceptance criteria
+
+Each criterion is one numbered decision above, proven in
+`packages/hive-conductor/backend/tests/test_workspace_authority_durable.py`.
+The PostgreSQL legs run where `MAISTRO_TEST_PG_DSN` is set; their SQLite twins
+run everywhere.
+
+- [x] **AC-1** With a database configured, Hive's embedded Container's
+  `workspace_store` is the durable canonical store Workspace authorization
+  reads, and the shipped compose file gives `hive-conductor` the engine's own
+  `DATABASE_URL`/`DB_*`.
+- [x] **AC-2** Hive never migrates: it starts only after `postgres` and
+  `maistro-engine` are healthy, and its compose service runs no `alembic`.
+- [x] **AC-3** On the durable path the mirror is imported once and never
+  written or replayed; revocations and deletions survive a restart, and a
+  failed create rolls back without touching the mirror.
+- [x] **AC-4** A configured database with no running Container fails
+  Workspace authorization closed, and `/health/ready` reports the instance
+  not ready (503) until the Container is up.
+- [x] **AC-5** With no database, or an in-process one, the ephemeral canonical
+  store still serves and the mirror stays restart recovery evidence.
 
 ## Consequences
 

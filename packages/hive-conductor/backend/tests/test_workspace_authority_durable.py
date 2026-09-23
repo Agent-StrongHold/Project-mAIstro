@@ -144,6 +144,7 @@ def _legacy(workspace_id: str, members: list[WorkspaceMember]) -> Workspace:
 BACKENDS = pytest.mark.parametrize("hive", ["sqlite", "postgres"], indirect=True)
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-1")
 @BACKENDS
 @pytest.mark.asyncio
 async def test_bridge_with_database_url_makes_the_canonical_store_the_durable_authority(
@@ -155,6 +156,7 @@ async def test_bridge_with_database_url_makes_the_canonical_store_the_durable_au
     assert await workspace_authority.canonical_workspace_store() is hive.canonical
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-3")
 @BACKENDS
 @pytest.mark.asyncio
 async def test_restart_keeps_revocations_and_deletions_without_any_mirror_writes(
@@ -198,6 +200,7 @@ async def test_restart_keeps_revocations_and_deletions_without_any_mirror_writes
     await workspace_authority.delete_workspace(kept.id)
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-3")
 @BACKENDS
 @pytest.mark.asyncio
 async def test_legacy_mirror_rows_import_once_and_never_resurrect(
@@ -254,6 +257,7 @@ async def test_legacy_mirror_rows_import_once_and_never_resurrect(
     assert hive.mirror_rows() == seeded
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-4")
 @pytest.mark.asyncio
 async def test_a_configured_database_without_a_container_refuses_the_mirror_fallback(
     monkeypatch: pytest.MonkeyPatch,
@@ -268,6 +272,7 @@ async def test_a_configured_database_without_a_container_refuses_the_mirror_fall
         await workspace_authority.canonical_workspace_store()
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-4")
 def test_readiness_fails_when_the_configured_canonical_store_is_not_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -289,6 +294,7 @@ def test_readiness_fails_when_the_configured_canonical_store_is_not_running(
     assert body["checks"]["workspace_authority"] is False
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-4")
 @BACKENDS
 @pytest.mark.asyncio
 async def test_readiness_passes_once_the_canonical_store_is_running(hive: _HiveProcess) -> None:
@@ -329,6 +335,7 @@ def test_a_server_database_url_survives_restart(monkeypatch: pytest.MonkeyPatch)
     assert workspace_authority._database_survives_restart()
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-3")
 @BACKENDS
 @pytest.mark.asyncio
 async def test_a_failed_durable_create_rolls_back_without_touching_the_mirror(
@@ -409,6 +416,7 @@ def test_the_image_packages_the_roster_its_bridge_requires() -> None:
     assert list(source.glob("*/agent.yaml")), f"{image_path} <- {source} has no agents"
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-5")
 @pytest.mark.asyncio
 async def test_without_a_database_the_ephemeral_fallback_still_serves(
     monkeypatch: pytest.MonkeyPatch,
@@ -422,6 +430,8 @@ async def test_without_a_database_the_ephemeral_fallback_still_serves(
     assert isinstance(store, InMemoryWorkspaceStore)
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-1")
+@pytest.mark.ac("ADR-092326-97c4/AC-2")
 @pytest.mark.contract("boundary")
 def test_compose_hive_shares_the_engine_database_and_waits_for_its_migration() -> None:
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
@@ -448,6 +458,7 @@ def test_compose_hive_shares_the_engine_database_and_waits_for_its_migration() -
     assert "alembic" not in yaml.safe_dump(hive)
 
 
+@pytest.mark.ac("ADR-092326-97c4/AC-5")
 @pytest.mark.asyncio
 async def test_a_pathless_sqlite_url_keeps_the_mirror_as_recovery_evidence(
     tmp_path: Path,
