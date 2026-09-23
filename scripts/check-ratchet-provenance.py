@@ -79,6 +79,12 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
         "direct-effect entries are per-call-site reviewed policy: exact AST identities must "
         "match both directions and every live site must state disposition, owner and rationale"
     ),
+    ("check-durable-table-inventory.py", "quality/durable-table-retention.json"): (
+        "the retention inventory is the reviewed per-table specification being changed: "
+        "every table the tree creates must carry an entry and every entry must name a "
+        "table the tree creates, so a prior-tree oracle would predate this tree's schema; "
+        "a changed retention claim is the substantive change reviewers read"
+    ),
     ("check-shipped-surface-truth.py", "quality/shipped-surface-truth.json"): (
         "the shipped-surface matrix is the reviewed per-surface truth specification being "
         "changed: every discovered route must carry an exact disposition, so comparing "

@@ -9,6 +9,8 @@ process-pool fan-out, or terminal-state implementation (#835).
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from services import legacy_dag_node as _legacy_dag_node
@@ -34,6 +36,13 @@ _run_subprocess_wave = _legacy_dag_node._run_subprocess_wave
 _run_tool_node = _legacy_dag_node._run_tool_node
 llm_gateway_configured = _legacy_dag_node.llm_gateway_configured
 stub_llm_allowed = _legacy_dag_node.stub_llm_allowed
+
+logger = logging.getLogger("hive.graph_runner")
+
+
+def public_failure(exc: BaseException) -> str:
+    """The failure text a transport may show: the exception kind, never its message."""
+    return f"{type(exc).__name__}: execution failed; see server logs"
 
 
 class CanonicalDagExecutionError(RuntimeError):
@@ -64,8 +73,33 @@ async def execute_dag(dag_data: dict, **kwargs: Any) -> dict[str, Any]:
     return result
 
 
-async def execute_dag_streaming(dag_data: dict, **kwargs: Any):
-    """Project canonical Run/NodeRun outcomes onto the historical websocket shape."""
+def _node_frames(result: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "status": "node_complete",
+            "node_id": node_id,
+            "role": node_result.get("role", "worker"),
+            "response": node_result.get("response", ""),
+            "success": bool(node_result.get("success")),
+            "run_id": result.get("run_id"),
+        }
+        for node_id, node_result in result.get("node_results", {}).items()
+    ]
+
+
+async def execute_dag_streaming(
+    dag_data: dict,
+    *,
+    on_result: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    **kwargs: Any,
+) -> AsyncIterator[dict[str, Any]]:
+    """Project canonical Run/NodeRun outcomes onto the historical websocket shape.
+
+    ``on_result`` receives the canonical result as soon as the Run settles,
+    before any NodeRun frame is sent, so a client that disconnects mid-stream
+    cannot keep the caller from recording its projection. It must not raise:
+    the Run has already settled, and an exception here fails the stream.
+    """
     entry = dag_data.get("entry_node") or (
         dag_data.get("nodes", [{}])[0].get("id") if dag_data.get("nodes") else ""
     )
@@ -78,40 +112,28 @@ async def execute_dag_streaming(dag_data: dict, **kwargs: Any):
         result = await execute_dag(dag_data, **kwargs)
     except CanonicalDagExecutionError as exc:
         result = exc.result
-        for node_id, node_result in result.get("node_results", {}).items():
-            yield {
-                "status": "node_complete",
-                "node_id": node_id,
-                "role": node_result.get("role", "worker"),
-                "response": node_result.get("response", ""),
-                "success": bool(node_result.get("success")),
-                "run_id": result.get("run_id"),
-            }
-        yield {
+        terminal: dict[str, Any] = {
             "status": result.get("status", "failed"),
             "run_id": result.get("run_id"),
             "error": str(exc),
         }
-        return
     except Exception as exc:
-        yield {"status": "failed", "error": str(exc)}
+        logger.warning("Graph execution failed", exc_info=exc)
+        yield {"status": "failed", "error": public_failure(exc)}
         return
-
-    for node_id, node_result in result.get("node_results", {}).items():
-        yield {
-            "status": "node_complete",
-            "node_id": node_id,
-            "role": node_result.get("role", "worker"),
-            "response": node_result.get("response", ""),
-            "success": bool(node_result.get("success")),
+    else:
+        terminal = {
+            "status": "completed",
             "run_id": result.get("run_id"),
+            "cycles": result.get("cycles", 0),
+            "annotations": result.get("annotations", {}),
         }
-    yield {
-        "status": "completed",
-        "run_id": result.get("run_id"),
-        "cycles": result.get("cycles", 0),
-        "annotations": result.get("annotations", {}),
-    }
+
+    if on_result is not None:
+        await on_result(result)
+    for frame in _node_frames(result):
+        yield frame
+    yield terminal
 
 
 async def execute_champion(*, scope: DagExecutionScope | None = None) -> dict[str, Any]:
