@@ -105,3 +105,37 @@ def test_committed_baseline_is_well_formed(module):
     for key in tolerated:
         check = key.split("::", 1)[0]
         assert check in known, f"baseline entry {key!r} names unknown check {check!r}"
+
+
+def test_live_routes_check_holds_against_the_real_backend(module):
+    """The routes check imports the real Conductor application and evaluates
+    the decision its own middleware makes, using the shared route registry the
+    middleware enforces: no mutating /v1 route may be anonymously reachable.
+
+    Driving the real import path here is what keeps the checker honest — a
+    synthetic app would pass even if the import scaffolding drifted.
+    """
+    gaps, error = module.check_routes()
+
+    assert error is None, error
+    assert gaps == []
+
+
+def test_an_anonymously_reachable_mutating_route_is_reported(module, monkeypatch):
+    """If the middleware's public tables and the registry ever agree on making
+    a mutating route anonymous, the check must fire rather than stay green."""
+    backend = module.REPO / "packages" / "hive-conductor" / "backend"
+    for src in sorted((module.REPO / "packages").glob("*/src")):
+        sys.path.insert(0, str(src))
+    sys.path.insert(0, str(backend))
+    import middleware.auth as conductor_auth
+
+    import maistro.security.http_routes as shared
+
+    monkeypatch.setattr(conductor_auth, "_PUBLIC_EXACT", frozenset({"/v1/agents"}))
+    monkeypatch.setattr(shared, "route_policy", lambda *_a, **_k: {"access": "public"})
+
+    gaps, error = module.check_routes()
+
+    assert error is None, error
+    assert any(gap.item == "POST /v1/agents" for gap in gaps), gaps
