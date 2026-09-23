@@ -381,9 +381,16 @@ def gate_tool_dispatch(
                 request_digest=request_digest,
             )
         ):
+            # Refusal naming: a caller that presented no approval evidence at
+            # all is missing authorization; a caller that presented evidence
+            # which failed verification gets the more precise invalid reason,
+            # so the audit row distinguishes a missing grant from a bad one.
+            presented_evidence = bool(approval_evidence or approval_decision is not None)
             decision = GateDecision(
                 allowed=False,
-                reason=(REASON_INVALID_APPROVAL if approval_evidence else REASON_APPROVAL_REQUIRED),
+                reason=(
+                    REASON_INVALID_APPROVAL if presented_evidence else REASON_APPROVAL_REQUIRED
+                ),
                 boundary=_BOUNDARY_USER_INPUT,
                 surface="chat_tool_dispatch",
                 gate_id=gate_id or new_gate_id(),

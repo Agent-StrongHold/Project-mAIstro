@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal, cast
 
 import pytest
 import services.chat_completion as service
@@ -600,7 +600,12 @@ def test_run_workflow_is_privileged_and_requires_scoped_approval() -> None:
 
 
 def _canonical_workflow_approval(
-    *, principal: str, workflow_id: str, args: dict[str, Any], actor: str
+    *,
+    principal: str,
+    workflow_id: str,
+    args: dict[str, Any],
+    actor: str,
+    kind: str = "human",
 ) -> tuple[Any, Any]:
     from maistro.capabilities.authority import (
         ApprovalAuthority,
@@ -619,7 +624,7 @@ def _canonical_workflow_approval(
         requester=principal,
     )
     authority = ApprovalAuthority(
-        kind="human",
+        kind=cast(Literal["human", "delegated"], kind),
         principal=actor,
         scope="run_workflow",
         evidence_id=request.request_id,
@@ -656,7 +661,50 @@ def test_actor_string_without_typed_authority_cannot_approve_workflow() -> None:
         request_digest=chat_gate._workflow_request_digest(args),
     )
     assert refused is not None
-    assert refused.reason == chat_gate.REASON_APPROVAL_REQUIRED
+    # A decision was presented; it simply carries no verified authority.
+    assert refused.reason == chat_gate.REASON_INVALID_APPROVAL
+
+
+def test_delegated_authority_authorizes_only_through_its_signature() -> None:
+    """Delegated authority crosses the same signed, scope-bound check as human
+    authority (#1094): a validly signed delegation authorizes the exact
+    workflow, while the identical evidence without the server's signature is
+    not authority at all — the actor string alone never delegates."""
+    args = {"dag_id": "dag-1", "goal": "delegated goal"}
+    request, decision = _canonical_workflow_approval(
+        principal="user-1",
+        workflow_id="dag-1",
+        args=args,
+        actor="delegate-ops",
+        kind="delegated",
+    )
+    gate_kwargs: dict[str, Any] = {
+        "approval_request": request,
+        "workflow_id": "dag-1",
+        "request_digest": chat_gate._workflow_request_digest(args),
+    }
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow", "user-1", approval_decision=decision, **gate_kwargs
+        )
+        is None
+    )
+
+    from maistro.capabilities.authority import ApprovalAuthority
+    from maistro.capabilities.slots.approval import ApprovalDecision
+
+    assert decision.authority is not None
+    unsigned = ApprovalAuthority(**{**decision.authority.__dict__, "signature": ""})
+    refused = chat_gate.gate_tool_dispatch(
+        "run_workflow",
+        "user-1",
+        approval_decision=ApprovalDecision(
+            request_id=decision.request_id, approved=True, actor="delegate-ops", authority=unsigned
+        ),
+        **gate_kwargs,
+    )
+    assert refused is not None
+    assert refused.reason == chat_gate.REASON_INVALID_APPROVAL
 
 
 def test_canonical_human_approval_is_exactly_scoped_and_audited() -> None:
