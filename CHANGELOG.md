@@ -210,19 +210,22 @@ or placeholder-only section.
 
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
-  `PAUSE_RESUME_CONDITIONS` reason to its production waker: the Hive HITL
-  answer and cancel routes for the four human reasons (answered Runs are
-  drained by queued recovery), and the legacy-DAG and Evolve due ticks for
-  the two elapsed-timer reasons. For each waker it checks that the entrypoint
-  exists, has a non-test production caller (one hop, by name), and calls the
-  canonical API it names, and that the API accepts the status the reason
-  actually parks in. `awaiting_remote_delegation` and `awaiting_harness`
-  park WAITING while the only answer path accepts PAUSED, so they sit in a
-  known-gap ledger citing #1192. The test fails when a reason has neither a
-  waker nor a ledger entry, and when a ledgered reason is given a waker entry
-  without leaving the ledger. Coverage is limited to Runs admitted by the
-  legacy DAG adapter and by Evolve. HITL deadline expiry is not counted as a
-  waker, because only a manual `POST /v1/hitl/expire` triggers it.
+  `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap
+  ledger. For each waker it checks that the entrypoint exists, has a non-test
+  production caller (one hop, by name), calls the canonical API it names, and
+  that the API accepts the status the reason actually parks in. It also checks
+  that whatever runs the Run again can select a Run holding the reason: a tick
+  filtered to one admission source owns only the node kinds that source builds,
+  and one of them must emit the reason. A reason parked beside a human pause
+  parks PAUSED with it, so the pair must still be released. Every declared
+  accepted status is pinned by equality against the shipped API. What this
+  shows today: the four human reasons are released only by the Hive HITL
+  cancel route. An answer queues the Run, but the only drains own legacy-DAG
+  and Evolve Runs, and neither holds a human node. The two elapsed-timer
+  reasons are ledgered against #62 for the same reason. `awaiting_remote_delegation`
+  and `awaiting_harness` park WAITING while the only answer path accepts
+  PAUSED, so they are ledgered against #1192. HITL deadline expiry is not
+  counted as a waker, because only a manual `POST /v1/hitl/expire` triggers it.
 
 - **Governed model egress is wired into production Container composition
   (#1079).** `AgentConfig.model_bindings` declares authorized Workspace/Project
