@@ -46,5 +46,7 @@ decisions, all in favour of one canonical contract:
   inputs. The test now pins both halves of the canonical semantics: same
   durable inputs adopt the reservation (same child, same task, transport
   accepted once); a genuinely different request is explicit new work.
-- The effect-claim migration was renumbered `034` → `039` (develop's
-  `034_hitl_deadline_index` owns revision `034`), chaining after `038`.
+- The effect-claim migration was renumbered `034` → `041` (develop's chain
+  claimed 034/039/040 while this branch was open); per the convention in
+  `036_audit_log_org_scope`, the audit-scope migration follows the new tip so
+  `upgrade head` stays single-headed and applies it.
