@@ -3,9 +3,15 @@ inventory-delta:
   packages/maistro-core/tests: +9
   packages/maistro-design/tests: +31
   packages/hive-conductor/backend/tests: +1
-  packages/hive-conductor/tests/e2e: +1
 ---
 # Issue 817: Design trust active-markup corpus
+
+Inventory correction: the `packages/hive-conductor/tests/e2e: +1` claim was
+removed — the suite inventory counts pytest node IDs and the e2e recipe
+collects only Python tests, so a Playwright spec addition (the active-markup
+browser corpus in `deck-sanitization.spec.ts`) is not a collectable delta.
+The browser coverage itself is documented below and exercised by the Playwright
+suite.
 
 The added Design tests exercise the shared pre-scan and output boundary with
 prompt injection, script tags, handler attributes, dangerous SVG/image URLs,

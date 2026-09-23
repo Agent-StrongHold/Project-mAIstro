@@ -71,6 +71,16 @@ VISUAL_ARTIFACT_BLOCK_REASONS: tuple[str, ...] = (
     "css-network-or-code",
 )
 
+# The pattern table's reasons ARE the declared vocabulary above: unpacking
+# keeps the two in lockstep by construction, so a scanner-emitted reason can
+# never drift from the names the browser boundary reports (AC-4 of #817).
+(
+    _REASON_ACTIVE_ELEMENT,
+    _REASON_EVENT_HANDLER,
+    _REASON_DANGEROUS_URL,
+    _REASON_CSS_NETWORK_OR_CODE,
+) = VISUAL_ARTIFACT_BLOCK_REASONS
+
 VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
     (
         regex.compile(
@@ -79,15 +89,15 @@ VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
             r"textarea|select|option|a|animate|set|mpath|math|annotation-xml)\b",
             regex.IGNORECASE,
         ),
-        "active-element",
+        _REASON_ACTIVE_ELEMENT,
     ),
     (
         regex.compile(r"<[^>]*\bon[a-z][a-z0-9:-]*\s*=", regex.IGNORECASE),
-        "event-handler",
+        _REASON_EVENT_HANDLER,
     ),
     (
         regex.compile(r"(?:javascript|vbscript|data)\s*:", regex.IGNORECASE),
-        "dangerous-url",
+        _REASON_DANGEROUS_URL,
     ),
     (
         regex.compile(
@@ -96,7 +106,7 @@ VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
             r"(?:-moz-binding|behavior)\s*:)",
             regex.IGNORECASE,
         ),
-        "css-network-or-code",
+        _REASON_CSS_NETWORK_OR_CODE,
     ),
 )
 
