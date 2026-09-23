@@ -529,6 +529,15 @@ def test_the_manual_fire_route_runs_the_canonical_spine_end_to_end(
         row.workspace_id = "ws-route"
         row.name = "schedule-s-route"
         _install_row(row)
+        # #1201 route authority: the caller must be a canonical writer of the
+        # schedule's Workspace. Seed the Workspace with the seeded admin (id
+        # "admin", username "testadmin") as its owner, or the route's
+        # membership check refuses the fire before the spine is reached.
+        from services import workspace_authority
+
+        await workspace_authority.canonical_store_for_tests().create(
+            creator_user_id="admin", name="Route schedules", workspace_id="ws-route"
+        )
         monkeypatch.setattr(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
@@ -611,6 +620,13 @@ def test_an_idempotency_key_meets_the_fire_id_contract(
         row = _Row("s-idem", "idem-template", project_id=root.project_id)
         row.workspace_id = "ws-idem"
         _install_row(row)
+        # Same #1201 route authority as the spine E2E: seed the Workspace with
+        # the seeded admin (id "admin") as owner so the fire is admitted.
+        from services import workspace_authority
+
+        await workspace_authority.canonical_store_for_tests().create(
+            creator_user_id="admin", name="Idem schedules", workspace_id="ws-idem"
+        )
         monkeypatch.setattr(
             _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
         )
