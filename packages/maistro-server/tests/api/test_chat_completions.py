@@ -25,10 +25,12 @@ from fastapi.testclient import TestClient
 
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
+from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY
 from maistro.types.config import AgentConfig
 from maistro_server.api import chat_completions as chat_api
 from maistro_server.api import runs as runs_api
 from maistro_server.api.chat_completions import (
+    RUN_ID_HEADER,
     ChatCompletionRequest,
     ChatMessage,
     _extract_user_message,
@@ -201,6 +203,52 @@ class TestNonStreamingChatCompletions:
         body = node_runs.json()
         assert len(body) == 1
         assert body[0]["status"] == "completed"
+
+    async def test_the_node_run_names_the_attempt_and_the_agent_that_ran(
+        self, client: TestClient
+    ) -> None:
+        """ADR-082526-7f02: the Attempt answers which agent ran, so it must be readable."""
+        with patch(RUN_TASK, AsyncMock(return_value=_output("recorded"))):
+            response = client.post(
+                "/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "record this"}]},
+            )
+        run_id = response.json()["run_id"]
+
+        body = client.get(f"/v1/runs/{run_id}/node-runs").json()
+
+        assert chat_api._container is not None
+        store = chat_api._container.run_store
+        (node_run,) = await store.list_node_runs(run_id)
+        (stored,) = await store.list_attempts(node_run.node_run_id)
+        (attempt,) = body[0]["attempts"]
+        assert attempt["attempt_id"] == stored.attempt_id
+        assert attempt["ordinal"] == 1
+        assert attempt["status"] == "completed"
+        assert attempt["executor_id"] == "conduit"
+        assert attempt["started_at"] is not None
+        assert attempt["finished_at"] is not None
+        assert stored.result[ATTEMPT_AGENT_KEY] == CONDUCTOR_AGENT_NAME
+        assert attempt["agent"] == CONDUCTOR_AGENT_NAME
+
+    def test_a_failed_turns_attempt_is_visible_without_its_error_text(
+        self, client: TestClient
+    ) -> None:
+        """The provider's message can carry its endpoint or key (chat_admission.py)."""
+        with patch(RUN_TASK, AsyncMock(side_effect=LLMProviderError("https://secret-endpoint"))):
+            response = client.post(
+                "/v1/chat/completions",
+                json={"stream": True, "messages": [{"role": "user", "content": "hi"}]},
+            )
+        run_id = response.headers[RUN_ID_HEADER]
+
+        node_runs = client.get(f"/v1/runs/{run_id}/node-runs")
+
+        (attempt,) = node_runs.json()[0]["attempts"]
+        assert attempt["status"] == "failed"
+        assert "error" not in attempt
+        assert "result" not in attempt
+        assert "secret-endpoint" not in node_runs.text
 
 
 class TestStreamingChatCompletions:
