@@ -228,12 +228,14 @@ or placeholder-only section.
 
 ### Added
 
-- **`GET /health/ready` reports the container ceilings the kernel actually
-  enforces (#75, partial).** A new `container_limits` field reads cgroup v2
-  `memory.max`, `pids.max` and `cpu.max` for the serving process and reports
-  `memory_max_bytes`, `pids_max` and `cpu_max_cores`. Each value is a number,
-  `"unbounded"` when the deployment profile set no limit, or `"unknown"` when
-  there is no cgroup v2 hierarchy or the file cannot be parsed. The field is
+- **`GET /health/ready` reports the serving container's cgroup ceilings
+  (#75, partial).** A new `container_limits` field reads cgroup v2
+  `memory.max`, `pids.max` and `cpu.max` at the hierarchy root, which under
+  a private cgroup namespace is the container's own cgroup. It reports
+  `memory_max_bytes`, `pids_max` and `cpu_max_cores`. Each value is a
+  number, `"unbounded"` when no limit is set at that level (an enclosing
+  cgroup may still impose one), or `"unknown"` when nothing readable is
+  there: cgroup v1, a host-root view, or unparseable content. The field is
   informational only and never changes readiness status. Compose profiles
   still declare no ceilings (#862).
 

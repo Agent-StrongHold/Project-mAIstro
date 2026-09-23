@@ -157,10 +157,13 @@ are rejected in every mode, unsafe included.
 process is actually enforcing can be read rather than inferred from the
 environment it was supposed to have been given.
 The same response carries `container_limits`: the cgroup v2 memory, PID and
-CPU ceilings the kernel applies to the serving process. `"unbounded"` means the
-container profile set no limit. `"unknown"` means there is no cgroup v2
-hierarchy to read. The engine reports these values but does not enforce them;
-the supported Compose profiles do not set them yet (#862).
+CPU ceilings set at the hierarchy root. Under a private cgroup namespace, which
+is the Docker/containerd default on v2 hosts, that root is the container's own
+cgroup. `"unbounded"` means no limit is set at that level, though an enclosing
+cgroup may still impose one. `"unknown"` means nothing readable is there:
+cgroup v1, a non-namespaced host-root view, or unparseable content. The engine
+reports these values but does not enforce them, and the supported Compose
+profiles do not set them yet (#862).
 
 ### Gaps against Stronghold's inventory
 

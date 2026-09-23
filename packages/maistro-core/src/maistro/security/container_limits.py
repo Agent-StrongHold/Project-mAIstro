@@ -1,9 +1,11 @@
-"""Effective container ceilings as the kernel enforces them (cgroup v2).
+"""Container ceilings set on the cgroup v2 hierarchy root (normally the container).
 
 Application floors (`resource_policy.py`) say what the engine will accept;
-these values say what the deployment actually granted the process. Reading
-them at runtime lets an operator see when a container profile left memory,
-PIDs or CPU unbounded. This module only observes: it never decides readiness.
+these values say what the deployment set on the process's container. Under a
+private cgroup namespace (the Docker/containerd default on v2 hosts) the mount
+root is the container's own cgroup. Reading them at runtime lets an operator
+see when a container profile left memory, PIDs or CPU unbounded. This module
+only observes: it never decides readiness.
 """
 
 from __future__ import annotations
@@ -43,10 +45,16 @@ def _read(path: Path) -> str | None:
         return None
 
 
+_U64_DIGITS = 20
+
+
 def _count(raw: str) -> int | None:
-    # int() also accepts "+5", "1_000" and surrounding whitespace; the kernel
-    # never writes those, so anything but plain digits is treated as corrupt.
-    return int(raw) if raw.isascii() and raw.isdigit() else None
+    # int() also accepts "+5", "1_000" and surrounding whitespace, and raises
+    # past sys.get_int_max_str_digits(); the kernel writes only plain u64
+    # digits, so anything else is treated as corrupt.
+    if len(raw) > _U64_DIGITS or not (raw.isascii() and raw.isdigit()):
+        return None
+    return int(raw)
 
 
 def _parse_count(raw: str | None) -> int | Unbounded | Unknown:
@@ -77,11 +85,13 @@ def _parse_cpu(raw: str | None) -> float | Unbounded | Unknown:
 
 
 def read_effective_container_limits(root: Path = CGROUP_V2_ROOT) -> EffectiveContainerLimits:
-    """Read this process's cgroup v2 ceilings; never raises.
+    """Read the cgroup v2 ceilings at `root`; never raises.
 
-    A missing hierarchy (cgroup v1, a non-Linux host, or a controller not
-    delegated to this cgroup) reads as `unknown`, which is deliberately
-    distinct from `unbounded`: only the latter proves the profile set no limit.
+    `unbounded` means the file says `max`: no limit at this level, though an
+    enclosing cgroup the namespace hides may still impose one. `unknown`
+    covers everything that cannot be read as a limit: cgroup v1, a non-Linux
+    host, a host-root view with no namespace (the root cgroup has no limit
+    files), a controller not delegated here, or unparseable content.
     """
     return EffectiveContainerLimits(
         memory_max_bytes=_parse_count(_read(root / "memory.max")),

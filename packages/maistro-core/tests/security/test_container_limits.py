@@ -95,6 +95,7 @@ def test_controller_file_absent_reports_unknown_for_that_ceiling(tmp_path: Path)
         ("\x00\xff", "\x00", "max max"),
         ("max 1", "max 1", "100000 -1"),
         ("1.5", "+5", "1" * 400 + " 1"),
+        ("1" * 5000, "1" * 21, "1" * 5000 + " 100000"),
     ],
 )
 def test_malformed_content_reports_unknown_without_raising(
