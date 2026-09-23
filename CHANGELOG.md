@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Security
 
+- **Design trust review records no longer recommend upgrading content the engine
+  blocks (#817, partial).** `scan_and_record` now runs the shared Design
+  `scan_blocking_patterns` over the content it records, instead of assigning
+  empty flags. Script/iframe/`javascript:` markup, prompt-injection phrasing,
+  base64 blobs and hidden Unicode are now recorded as SKULL with explicit flags
+  and a `banish` recommendation. `upgrade` is recommended only when the scanner
+  the output scan uses finds nothing. The engine's accept/reject outcome is
+  unchanged, because the output scan already rejected this content.
+
 - **Concurrent registrations can no longer publish two identities under the
   same username (#1248).** The register route's availability check and the
   UUID-keyed write were separate steps, so the store's key (a fresh UUID, not
@@ -207,6 +216,24 @@ or placeholder-only section.
   explicitly does not claim.
 
 ### Added
+
+- **Every maistro-core node kind is proven to get the Container's own
+  authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
+  resolves each registered core kind that declares an authority through a real
+  `create_container()` Container and asserts it receives the exact
+  Container-owned harness adapters, usage log, A2A delegator, guest peers,
+  canonical and graph Run stores, capability-effect context, provider
+  registry, LLM router, and resolver, so the Container dropping one and
+  letting `build_node_resolver`'s bare default stand in now fails CI. Test
+  only; no wiring gap was found.
+- **`GET /v1/runs/{run_id}/node-runs` now lists each NodeRun's Attempts,
+  including the agent a chat turn dispatched to (#223).** Every NodeRun carries
+  an additive `attempts` array of `attempt_id`, `ordinal`, `status`,
+  `executor_id`, `created_at`, `started_at`, `finished_at` and `agent`
+  (null where none was recorded, as for tasks). This is the public reader for
+  ADR-082526-7f02's "the Attempt answers which agent ran". `Attempt.result`
+  and `Attempt.error` are deliberately not exposed, since they can carry raw
+  provider or exception text.
 
 - **Governed model egress is wired into production Container composition
   (#1079).** `AgentConfig.model_bindings` declares authorized Workspace/Project
@@ -393,6 +420,32 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **The DAG Builder's Run button reports the canonical Run truthfully
+  (#53).**
+  The execution log now shows the canonical `run_id` the run socket already
+  sends, with a link that opens that Run in DAG Runs (`/dag-runs?run=<id>`).
+  A `waiting`/`paused` Run shows as parked, with its unfinished nodes not
+  reported as FAIL, rather than "Connection closed"; `cancelled` and `timed_out` show as
+  non-success terminal states; a canonical `failed` frame reads "Failed"
+  instead of a bare "Error". "Connection closed" now appears only when the
+  socket closes before any terminal or parked frame. Presentation only: no
+  backend or lifecycle change.
+
+- **Evolve canonical Runs now record their durable execution owner at
+  admission (#51).** `run_canonical_evolution_cycle()` admitted its Run via
+  `RunStore.create_run()` without the standard `executor: "durable_graph"`
+  provenance marker every other canonical adapter (`canonical_dag_runner.py`,
+  `dag_agents.py`) stamps at admission, then passed the same un-marked
+  `provenance` dict to `run_durable_graph()` expecting it to backfill the
+  marker — but that function only applies its `provenance` argument when it
+  creates a brand-new Run itself (`run_store=None`); against a canonical
+  `run_store` it adopts the already-admitted Run as-is and silently ignores
+  the argument. Every Evolve Run therefore permanently lacked the marker,
+  making its executor unidentifiable to audit/history consumers inspecting
+  Run provenance. Fixed by setting `"executor": "durable_graph"` directly in
+  the provenance dict built before admission, matching the existing
+  convention.
 
 - **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
   predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
