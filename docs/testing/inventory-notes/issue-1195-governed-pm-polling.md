@@ -81,3 +81,31 @@ and its LIBRARY disposition entry from
 direct-effects negative path (temporary rogue node, gate fails; clean tree,
 gate passes) and re-ran `check-reachability`, `check-reachability-dispositions`,
 `check-convergence-matrix`, and `check-ratchet-provenance` — all green.
+
+## Independent verification round (develop-merged head, no tree changes)
+
+After the branch merged develop `8bb344e32` (merge commit `7367bc452`), every
+acceptance criterion was re-checked against reachable behavior and the prior
+audit findings against the merged code — no repair was required:
+
+- All six earlier findings are fixed in the merged tree: production
+  `bindings.put` callers exist (`container._wire_capability_effects` seeds the
+  provisioning seam into the durable store; `model_binding_bootstrap` loads
+  operator-declared model Bindings); effect evidence is durable
+  (SQLite/PostgreSQL Binding+Invocation+Event stores behind
+  `new_sqlite_effect_context`/`new_postgres_effect_context`);
+  `Invocation` carries and validates Workspace/Project scope correlation;
+  `Binding.disabled` + `BindingDisabled` fail closed before any provider
+  work; `check_direct_effects` matches GET and PM URL boundaries;
+  `check-security-inventory` recomputes counted claims (exit 0).
+- AC7 negative probe re-executed on the merged tree: a temporary graph node
+  calling `shared_client().get("https://acme.atlassian.net/rest/api/2/search")`
+  made `check_direct_effects.py` exit 1 with an unclassified
+  `PM_POLLING_EFFECT` site; after removal the clean tree exits 0 (61 sites).
+- Gates re-run green on the merged tree: ruff check / format (2530 files),
+  mypy (714 files), capabilities 339 passed, graph 1318 passed + 79 skipped,
+  runs+seeds+metrics 899 passed + 203 skipped, `tests/test_check_direct_effects.py`
+  26 passed, `check-security-inventory`, `check-reachability`,
+  `check-reachability-dispositions-provenance`, `check-ratchet-provenance`,
+  `check-convergence-matrix`, `check-branch-independence`,
+  `check-durable-table-inventory`, `check-m1-convergence-freeze` — all exit 0.
