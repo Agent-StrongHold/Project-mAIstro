@@ -885,8 +885,11 @@ or placeholder-only section.
   A runtime deadline that cancelled the dispatch still arrives as
   `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
   fails arrives as the cancellation, never as a bare store error the
-  pre-dispatch fallback would answer again; and a failure before the dispatch
-  still propagates unchanged without reaching the model.
+  pre-dispatch fallback would answer again; a dispatch that caught the
+  deadline and answered late still arrives as `RuntimeDeadlineExceeded`; an
+  answer behind a Run already fenced CANCELLED ends the turn cancelled rather
+  than being handed back; and a failure before the dispatch still propagates
+  unchanged without reaching the model.
 - **A launch the store refuses no longer masks itself as a lifecycle error
   (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
   the executor's failure path asked the lifecycle for `FAILED` from `CREATED`

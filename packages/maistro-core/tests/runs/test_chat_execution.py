@@ -13,6 +13,7 @@ proves nothing about whether a turn reaches the spine.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 from datetime import UTC, datetime
@@ -335,6 +336,25 @@ class _RecordingVeto:
             raise self._error("store hiccup after dispatch")
 
 
+class _FlakyFenceRead:
+    """A store whose next `get_run` fails once after it is armed — the read
+    `_settle_provider_success` makes of the Run's cancellation fence."""
+
+    def __init__(self, inner: Any, *, persistent: bool = False) -> None:
+        self._inner = inner
+        self.armed = False
+        self._persistent = persistent
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def get_run(self, run_id: str) -> Any:
+        if self.armed:
+            self.armed = self._persistent
+            raise OSError("fence read lost its connection")
+        return await self._inner.get_run(run_id)
+
+
 class TestAPostDispatchRecordingFailureIsNeverRedispatched:
     """#1108's second defect: the fallback could not tell before from after.
 
@@ -583,6 +603,80 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
 
         assert not isinstance(failed.value, RunIntegrityError)
         assert isinstance(failed.value.__cause__, RunIntegrityError)
+
+    async def test_a_dispatch_that_outlives_its_deadline_is_not_an_unrecorded_answer(
+        self,
+    ) -> None:
+        """A dispatch may catch the deadline's `CancelledError` and return
+        anyway. The runtime refuses to call that success, and the late answer
+        must not be handed back as one that merely went unrecorded."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+
+        async def _stubborn() -> dict[str, Any]:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(5)
+            return {"choices": [{"message": {"content": "late"}, "finish_reason": "stop"}]}
+
+        with pytest.raises(RuntimeDeadlineExceeded):
+            await ChatAttemptExecutor(container.run_store, timeout_s=0.01).execute(
+                run.run_id, MESSAGES, _stubborn
+            )
+
+    async def test_an_answer_behind_the_cancellation_fence_is_not_handed_back(
+        self,
+    ) -> None:
+        """The Run is fenced CANCELLED while the model answers, and the read
+        of that fence fails once. The answer exists, but the durable Run says
+        nobody may publish it: the turn ends cancelled, not as an unrecorded
+        success."""
+        container = await _container()
+        real = container.run_store
+        run = await container.chat_admitter.admit(MESSAGES)
+        await real.transition_run(run.run_id, RunStatus.QUEUED)
+        await real.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _FlakyFenceRead(real)
+
+        async def _answered_after_cancel() -> dict[str, Any]:
+            await real.transition_run(run.run_id, RunStatus.CANCELLED)
+            store.armed = True
+            return {"choices": [{"message": {"content": "42"}, "finish_reason": "stop"}]}
+
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await ChatAttemptExecutor(store).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _answered_after_cancel
+            )
+
+        assert isinstance(cancelled.value.__cause__, OSError)
+
+    async def test_an_unreadable_fence_still_hands_the_answer_back_once(self) -> None:
+        """The store stays down after the model answered, so the fence cannot
+        be read at all. That is not proof of cancellation: the answer goes back
+        as unrecorded, per #1108's owner decision, and is never asked for
+        again."""
+        container = await _container()
+        real = container.run_store
+        run = await container.chat_admitter.admit(MESSAGES)
+        await real.transition_run(run.run_id, RunStatus.QUEUED)
+        await real.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _FlakyFenceRead(real, persistent=True)
+        conduit = _Conduit(content="42")
+
+        async def _answered() -> dict[str, Any]:
+            response = await conduit.route_request(MESSAGES)
+            store.armed = True
+            return response
+
+        with pytest.raises(ChatDispatchUnrecorded) as unrecorded:
+            await ChatAttemptExecutor(store).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _answered
+            )
+
+        assert unrecorded.value.response["choices"][0]["message"]["content"] == "42"
+        assert isinstance(unrecorded.value.__cause__, OSError)
+        assert conduit.calls == 1
 
     async def test_a_raw_store_failure_before_the_dispatch_never_reaches_the_model(
         self,
