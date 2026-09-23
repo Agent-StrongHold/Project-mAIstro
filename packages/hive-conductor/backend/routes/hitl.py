@@ -253,7 +253,7 @@ async def list_pending_human_work(
             "hitl_authorization_denied",
             _session_principal(request),
             target=project_id or "pending",
-            detail={"target_class": "pending", "permission": "hitl.inspect"},
+            detail={"target_class": "pending", "permission": HITL_INSPECT},
             severity="warning",
         )
         return []
