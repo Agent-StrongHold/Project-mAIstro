@@ -305,6 +305,205 @@ def test_every_implementation_satisfies_the_protocol() -> None:
     assert isinstance(PgScheduleStore(None), ScheduleStore)  # type: ignore[arg-type]
 
 
+HOUR = timedelta(hours=1)
+
+
+class TestFireReservation:
+    """`reserve_fire` / `settle_fire` (#1119): the quota claimed before the Run.
+
+    Conformance across memory, SQLite, and PostgreSQL: the claim is atomic
+    against concurrent callers, a release is a real undo, and a confirmation
+    records the Run without moving the recurrence cursor.
+    """
+
+    async def test_a_reservation_counts_the_run_and_leaves_the_cursor_alone(
+        self, store: ScheduleStore
+    ) -> None:
+        from maistro.scheduling.store import FireReservation
+
+        schedule = await store.put(
+            _schedule(max_runs=3, last_fired_at=NOON, next_due_at=NOON + HOUR)
+        )
+
+        reserved = await store.reserve_fire(schedule.schedule_id)
+
+        assert reserved is not None
+        current, reservation = reserved
+        assert isinstance(reservation, FireReservation)
+        assert current.runs_so_far == 1
+        assert current.enabled is True
+        assert current.last_fired_at == NOON
+        assert current.next_due_at == NOON + HOUR
+        assert reservation.disabled is False
+        assert await store.get(schedule.schedule_id) == current
+
+    async def test_the_last_reservation_disables_and_a_release_undoes_it(
+        self, store: ScheduleStore
+    ) -> None:
+        schedule = await store.put(
+            _schedule(max_runs=1, last_fired_at=NOON, next_due_at=NOON + HOUR)
+        )
+
+        reserved = await store.reserve_fire(schedule.schedule_id)
+        assert reserved is not None
+        current, reservation = reserved
+        assert current.enabled is False
+        assert current.next_due_at is None
+        assert reservation.disabled is True
+
+        released = await store.settle_fire(schedule.schedule_id, reservation, run_id=None)
+
+        assert released is not None
+        assert released.runs_so_far == 0
+        assert released.enabled is True
+        assert released.next_due_at == NOON + HOUR
+        assert released == schedule, "a release leaves no trace, updated_at included"
+
+    async def test_a_confirmation_records_the_run_without_moving_the_cursor(
+        self, store: ScheduleStore
+    ) -> None:
+        schedule = await store.put(_schedule(last_fired_at=NOON, next_due_at=NOON + HOUR))
+        reserved = await store.reserve_fire(schedule.schedule_id)
+        assert reserved is not None
+        _current, reservation = reserved
+
+        confirmed = await store.settle_fire(schedule.schedule_id, reservation, run_id="run-1")
+
+        assert confirmed is not None
+        assert confirmed.last_run_id == "run-1"
+        assert confirmed.runs_so_far == 1
+        assert confirmed.last_fired_at == NOON
+        assert confirmed.next_due_at == NOON + HOUR
+
+    async def test_an_exhausted_schedule_cannot_be_reserved(self, store: ScheduleStore) -> None:
+        from maistro.scheduling.store import ScheduleExhausted
+
+        schedule = await store.put(_schedule(max_runs=1, runs_so_far=1))
+
+        with pytest.raises(ScheduleExhausted, match="all 1 of its runs"):
+            await store.reserve_fire(schedule.schedule_id)
+        assert await store.get(schedule.schedule_id) == schedule
+
+    async def test_concurrent_reservations_never_exceed_max_runs(
+        self, store: ScheduleStore
+    ) -> None:
+        from maistro.scheduling.store import ScheduleExhausted
+
+        schedule = await store.put(_schedule(max_runs=2))
+
+        outcomes = await asyncio.gather(
+            *(store.reserve_fire(schedule.schedule_id) for _ in range(5)),
+            return_exceptions=True,
+        )
+
+        claimed = [item for item in outcomes if isinstance(item, tuple)]
+        refused = [item for item in outcomes if isinstance(item, ScheduleExhausted)]
+        assert len(claimed) == 2 and len(refused) == 3
+        recorded = await store.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.runs_so_far == 2
+        assert recorded.enabled is False
+
+    async def test_an_unknown_schedule_reserves_and_settles_to_none(
+        self, store: ScheduleStore
+    ) -> None:
+        from maistro.scheduling.store import FireReservation
+
+        assert await store.reserve_fire("missing") is None
+        reservation = FireReservation(
+            schedule_id="missing",
+            fires=1,
+            disabled=False,
+            next_due_at_before=None,
+            updated_at_before=NOON,
+            stamped_at=NOON,
+        )
+        assert await store.settle_fire("missing", reservation, run_id=None) is None
+
+
+class _FakeTransaction:
+    async def __aenter__(self) -> _FakeTransaction:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _FakeConnection:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+        self.executed: list[tuple[str, tuple[object, ...]]] = []
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
+
+    async def fetchval(self, _query: str, _schedule_id: str) -> object:
+        return self.payload
+
+    async def execute(self, query: str, *args: object) -> None:
+        self.executed.append((query, args))
+
+
+class _FakeAcquire:
+    def __init__(self, connection: _FakeConnection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self) -> _FakeConnection:
+        return self.connection
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _FakePool:
+    def __init__(self, payload: object) -> None:
+        self.connection = _FakeConnection(payload)
+
+    def acquire(self) -> _FakeAcquire:
+        return _FakeAcquire(self.connection)
+
+
+async def test_postgres_reservation_and_settlement_use_locked_transactions() -> None:
+    """The PG adapter's new quota methods issue both row-lock reads and writes."""
+    from maistro.runs.evidence_json import json_of
+    from maistro.scheduling.pg_store import PgScheduleStore
+
+    schedule = _schedule(max_runs=2)
+    pool = _FakePool(json_of(schedule))
+    store = PgScheduleStore(pool)  # type: ignore[arg-type]
+
+    reserved = await store.reserve_fire(schedule.schedule_id)
+    assert reserved is not None
+    current, reservation = reserved
+    assert current.runs_so_far == 1
+
+    settled = await store.settle_fire(schedule.schedule_id, reservation, run_id="run-1")
+    assert settled is not None
+    assert settled.last_run_id == "run-1"
+    assert len(pool.connection.executed) == 2
+    assert all("UPDATE schedules" in query for query, _args in pool.connection.executed)
+
+
+async def test_postgres_reservation_and_settlement_return_none_for_missing_rows() -> None:
+    from maistro.scheduling.pg_store import PgScheduleStore
+    from maistro.scheduling.store import FireReservation
+
+    pool = _FakePool(None)
+    store = PgScheduleStore(pool)  # type: ignore[arg-type]
+    reservation = FireReservation(
+        schedule_id="missing",
+        fires=1,
+        disabled=False,
+        next_due_at_before=None,
+        updated_at_before=NOON,
+        stamped_at=NOON,
+    )
+
+    assert await store.reserve_fire("missing") is None
+    assert await store.settle_fire("missing", reservation, run_id=None) is None
+    assert pool.connection.executed == []
+
+
 # --- the due cursor without a fire (#1199) ------------------------------------
 
 
@@ -341,6 +540,57 @@ async def test_record_fire_without_a_fired_at_moves_only_the_due_cursor(
     ]
 
 
+async def test_an_older_occurrence_cannot_regress_the_link(store: ScheduleStore) -> None:
+    """The stored linkage belongs to the newest consumed occurrence, and a
+    stale replica's write does not change which occurrence that is (#1269).
+
+    Two replicas can hold different cursor snapshots; the store serializes
+    their writes, but serialization alone lets the stale one land second and
+    overwrite a newer winner's `last_run_id` with its older Run — the pointer
+    `_canonical_active_run` consults when it decides whether overlap policy
+    applies. An occurrence older than the recorded cursor therefore moves the
+    counters (its fire was real) while the linkage stays with the newer
+    occurrence; an equal or newer occurrence advances exactly as before.
+    """
+    schedule = await store.put(_schedule())
+    await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON + timedelta(hours=1),
+        run_id="run-newer",
+        next_due_at=NOON + timedelta(hours=2),
+    )
+
+    stale = await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON,
+        run_id="run-older",
+        next_due_at=NOON + timedelta(hours=1),
+    )
+
+    assert stale is not None
+    assert stale.last_fired_at == NOON + timedelta(hours=1)
+    assert stale.last_run_id == "run-newer"
+    assert stale.runs_so_far == 2
+    # Persisted, not just returned: the next replica to read the row must see
+    # the newer link too.
+    reloaded = await store.get(schedule.schedule_id)
+    assert reloaded is not None
+    assert reloaded.last_fired_at == NOON + timedelta(hours=1)
+    assert reloaded.last_run_id == "run-newer"
+
+    # A write at the recorded cursor itself is not stale: the common crash
+    # recovery re-stamps the occurrence that already holds the link.
+    equal = await store.record_fire(
+        schedule.schedule_id,
+        fired_at=NOON + timedelta(hours=1),
+        run_id="run-newer",
+        next_due_at=NOON + timedelta(hours=2),
+    )
+    assert equal is not None
+    assert equal.last_run_id == "run-newer"
+    assert equal.last_fired_at == NOON + timedelta(hours=1)
+
+
 # --- write serialization (#1199) ----------------------------------------------
 
 
@@ -373,8 +623,12 @@ async def test_concurrent_record_fire_on_one_store_does_not_lose_an_increment(
     final = await store.get(schedule.schedule_id)
     assert final is not None
     assert final.runs_so_far == callers
-    # Whichever caller landed last, its cursor is what survived: the counter
-    # and the cursors were written by the same caller, not mixed.
+    # The cursors that survive are the newest occurrence's, not whoever's
+    # write happened to land last: serialization lets a replica holding a
+    # stale snapshot commit after a newer one (#1269), so `_advance` accepts
+    # a linkage only from an occurrence at or past the stored cursor. Link
+    # and due stamp stay a pair — both from the same newest write — while
+    # every caller's increment is counted.
     assert final.last_run_id is not None
     winner = int(final.last_run_id.removeprefix("run-"))
     assert final.last_fired_at == NOON + timedelta(minutes=winner)

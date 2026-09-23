@@ -60,6 +60,7 @@ from maistro.security._types import RateLimitConfig
 from maistro.security.rate_limiter import InMemoryRateLimiter
 from maistro.tasks.http_contract import DELEGATION_HEADER, verify_delegation_context
 from maistro_server.api.auth import resolve_token_principal
+from maistro_server.api.route_table import iter_effective_routes
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -177,7 +178,7 @@ def _route_template(request: Request) -> str:
 
 def _match_route_template(request: Request) -> str:
     try:
-        for candidate in request.app.routes:
+        for candidate in iter_effective_routes(request.app.routes):
             match, _ = candidate.matches(request.scope)
             if match is Match.FULL:
                 path = getattr(candidate, "path", None)

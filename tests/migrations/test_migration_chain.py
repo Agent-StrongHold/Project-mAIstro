@@ -56,6 +56,8 @@ EXPECTED_TABLES = frozenset(
         "asset_sheets",
         "audit_log",
         "books",
+        "capability_invocations",
+        "consumer_cursors",
         # The canonical execution spine (012) and the template registry it
         # instantiates Runs from (014). Six tables and one, not seven of a
         # kind: `canonical_projects` and its two child tables are the scope a
@@ -109,6 +111,10 @@ EXPECTED_TABLES = frozenset(
         # live on the message table (#327).
         "session_turns",
         "sessions",
+        # Admission claims for task submission (037). Durable and replica-shareable
+        # so a retried submit resolves to the original receipt rather than minting
+        # a second Run (#1176).
+        "task_idempotency",
         "tasks",
         "trigger_definitions",
     }
@@ -224,7 +230,7 @@ class TestTheChainApplies:
 
 class TestTaskIdentityMigration:
     def test_pre_provenance_receipts_become_explicit_system_work(self, empty_database) -> None:
-        """Migration 035 must not invent an empty user actor for old receipts.
+        """Migration 039 must not invent an empty user actor for old receipts.
 
         This uses the live PostgreSQL schema rather than inspecting migration
         source, because the relevant contract is the value an upgrade writes
@@ -236,7 +242,7 @@ class TestTaskIdentityMigration:
             ("legacy-task", "queued", "legacy work", "/tmp/maistro-workspace"),
         )
 
-        assert _alembic("upgrade", "035").returncode == 0
+        assert _alembic("upgrade", "039_task_identity_provenance").returncode == 0
         assert _query("select user_id, actor_kind from tasks where id = %s", ("legacy-task",)) == [
             ("system", "system")
         ]

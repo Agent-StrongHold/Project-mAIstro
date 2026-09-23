@@ -113,6 +113,26 @@
       "rationale": "SPEC-183 OIDC claim validation helper; issuer/aud/exp/nonce checks are intentionally explicit and tested. Tracked under SPEC-264 pending a small extractor refactor if complexity grows."
     },
     {
+      "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService._reconcile_values_locked",
+      "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
+      "line": 688,
+      "name": "_reconcile_values_locked",
+      "classname": "InvocationExecutionService",
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "Value reconciliation for #1310's recoverable invocations: locked re-entry guards each caller-supplied value against drift before re-dispatch. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 12."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService.invoke",
+      "path": "packages/maistro-core/src/maistro/capabilities/invocation.py",
+      "line": 408,
+      "name": "invoke",
+      "classname": "InvocationExecutionService",
+      "rank": "C",
+      "complexity": 13,
+      "rationale": "Landed with #1310's rework that makes ambiguous Invocation outcomes recoverable instead of permanently blocking; the recovered/failed-outcome branching concentrates in this single execute path. Post-merge ledger reconciliation records trunk reality under SPEC-264 - the ratchet is set at 13."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py::_norm_docker",
       "path": "packages/maistro-core/src/maistro/capabilities/providers/host_health.py",
       "line": 87,
@@ -201,6 +221,26 @@
       "rank": "C",
       "complexity": 19,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/durable_runs/executor.py::_build_ctx",
+      "path": "packages/maistro-core/src/maistro/graph/durable_runs/executor.py",
+      "line": 1060,
+      "name": "_build_ctx",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "The #1263-family HITL lifecycle-mirror work funnels terminal-evidence resolution into the durable-run executor's node context build. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
+    },
+    {
+      "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::answer_record",
+      "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
+      "line": 109,
+      "name": "answer_record",
+      "classname": null,
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "The #1263-family durable answer record mirrors HITL settlement state onto the canonical spine. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
     },
     {
       "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record",
@@ -423,14 +463,24 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
+      "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_usage_breakdown",
+      "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
+      "line": 183,
+      "name": "get_usage_breakdown",
+      "classname": "InMemoryOutcomeStore",
+      "rank": "C",
+      "complexity": 11,
+      "rationale": "The in-memory usage-breakdown read from #1310's outcome-read decomposition carries the org/project scope predicates plus per-group token aggregation in one pass. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/memory/scopes.py::matches_scope",
       "path": "packages/maistro-core/src/maistro/memory/scopes.py",
-      "line": 27,
+      "line": 39,
       "name": "matches_scope",
       "classname": null,
       "rank": "C",
-      "complexity": 20,
-      "rationale": "SPEC-262: see docs/specs/SPEC-262-memory-scope-policy-truth-table.md"
+      "complexity": 19,
+      "rationale": "SPEC-262: see docs/specs/SPEC-262-memory-scope-policy-truth-table.md. #1258 strict org-binding removed a branch: 20 -> 19, shrunk per the baseline's own policy."
     },
     {
       "key": "packages/maistro-core/src/maistro/orchestrator/master.py::MasterOrchestrator.load_plan",
@@ -493,6 +543,16 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
+      "key": "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py::_load_tool_calls",
+      "path": "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py",
+      "line": 516,
+      "name": "_load_tool_calls",
+      "classname": null,
+      "rank": "C",
+      "complexity": 12,
+      "rationale": "#1391's tenant/project scope parity for SQLite outcome reads layered scope guards onto the tool-call payload loader. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 12."
+    },
+    {
       "key": "packages/maistro-core/src/maistro/resilience/classifier.py::_classify_by_message_patterns",
       "path": "packages/maistro-core/src/maistro/resilience/classifier.py",
       "line": 223,
@@ -533,14 +593,14 @@
       "rationale": "AttemptResult evidence comparison introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
     },
     {
-      "key": "packages/maistro-core/src/maistro/security/auth_demo_cookie.py::DemoCookieAuthProvider.authenticate",
-      "path": "packages/maistro-core/src/maistro/security/auth_demo_cookie.py",
-      "line": 35,
-      "name": "authenticate",
-      "classname": "DemoCookieAuthProvider",
+      "key": "packages/maistro-core/src/maistro/scheduling/admission.py::ScheduleRunAdmitter.admit_due",
+      "path": "packages/maistro-core/src/maistro/scheduling/admission.py",
+      "line": 189,
+      "name": "admit_due",
+      "classname": "ScheduleRunAdmitter",
       "rank": "C",
-      "complexity": 13,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+      "complexity": 11,
+      "rationale": "#1311 moved manual schedule fire onto this canonical scoped admission path (fail-closed when the container lacks collaborators), concentrating the due-scan/claim/settle branching here. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
     },
     {
       "key": "packages/maistro-core/src/maistro/security/auth_jwt.py::JWTAuthProvider._get_jwks_client",

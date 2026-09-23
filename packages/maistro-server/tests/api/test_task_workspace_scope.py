@@ -6,6 +6,7 @@ import aiosqlite
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from maistro.observability.middleware import REQUEST_ID_HEADER
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
 from maistro.tasks.http_contract import (
@@ -275,3 +276,59 @@ async def test_blank_workspace_header_is_rejected_before_admission(
 
     assert response.status_code == 422
     assert response.json()["error"]["message"] == "Workspace id must be a non-empty string"
+
+
+async def test_request_id_cannot_assert_workspace_scope(durable_spine, client: AsyncClient) -> None:
+    """X-Request-ID is correlation metadata only (#1063), never a scope selector.
+
+    A caller sends a request id equal to a real Workspace id it has no signed
+    proof of membership for. Admission must fall through to the configured
+    default Workspace exactly as an unscoped request would -- the correlation
+    header is not consulted anywhere on the authorization path. The id still
+    round-trips onto the Run so the two systems' logs remain correlatable;
+    only its power to select scope is what must be absent.
+    """
+    scope_store, run_store = durable_spine
+
+    response = await client.post(
+        "/tasks",
+        headers={REQUEST_ID_HEADER: "workspace-a"},
+        json={"description": "must not scope via request id", "workspace": TASK_WORKSPACE},
+    )
+
+    assert response.status_code == 202
+    run = await run_store.get_run(response.json()["run_id"])
+    default_root = await scope_store.root_for_workspace("default")
+    assert run is not None
+    assert run.workspace_id == "default"
+    assert run.project_id == default_root.project_id
+    assert run.provenance.get("request_id") == "workspace-a"
+
+
+async def test_request_id_cannot_impersonate_the_workspace_scope_signature(
+    durable_spine, client: AsyncClient
+) -> None:
+    """A request id shaped like a valid signature still proves nothing.
+
+    The Workspace is asserted, so the request reaches the scope check; the
+    only thing that could authorize it is the exact HMAC for "workspace-a",
+    and that HMAC is present -- in X-Request-ID. The check reads only the
+    dedicated signed header, never the correlation header, so the assertion
+    is refused and nothing is admitted.
+    """
+    del durable_spine
+
+    response = await client.post(
+        "/tasks",
+        headers={
+            WORKSPACE_ID_HEADER: "workspace-a",
+            REQUEST_ID_HEADER: sign_workspace_scope("workspace-a", SCOPE_KEY),
+        },
+        json={"description": "must not scope via request id", "workspace": TASK_WORKSPACE},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Workspace scope assertion is not authorized"
+    assert queue_module._queue is not None
+    items, _ = queue_module._queue.list_tasks(limit=10)
+    assert items == []

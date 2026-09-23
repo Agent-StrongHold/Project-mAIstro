@@ -300,10 +300,19 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "are lost on restart"
             ),
         )
-    queue = configure_task_queue(admitter=container.task_admitter)
+    queue = configure_task_queue(
+        admitter=container.task_admitter,
+        # Same claim tier the spine selected (#1176): a retry reconciles across
+        # a restart or a replica handoff exactly as far as the Runs it names
+        # are durable.
+        idempotency_store=container.task_idempotency,
+    )
     # Restore the receipt projection before the runner can accept work. Only
     # queued rows with an existing canonical Run are re-enqueued; active Runs
-    # belong to the canonical recovery loop, never a second task scheduler.
+    # belong to the canonical recovery loop, never a second scheduler — and
+    # never a second claim: a restored queued receipt re-enters through the
+    # runner, not through admission, so it cannot consume or collide with an
+    # idempotency claim.
     await queue.restore_persisted()
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.

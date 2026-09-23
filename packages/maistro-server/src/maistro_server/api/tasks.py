@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 
 from maistro.tasks.http_contract import (
     DELEGATION_HEADER,
+    IDEMPOTENCY_KEY_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
     verify_workspace_scope_signature,
 )
+from maistro.tasks.idempotency import IdempotencyKeyMismatch, InvalidIdempotencyKey
 from maistro.tasks.models import TaskCreate, TaskResponse, TaskResult
 from maistro.tasks.queue import TaskQueue, get_task_queue
 from maistro.tools.sandbox.workspace import validate_workspace_path
@@ -71,6 +73,7 @@ async def create_task(
     workspace_signature: Annotated[
         str | None, Header(alias=WORKSPACE_SCOPE_SIGNATURE_HEADER)
     ] = None,
+    idempotency_key: Annotated[str | None, Header(alias=IDEMPOTENCY_KEY_HEADER)] = None,
 ) -> TaskCreatedResponse:
     _validate_task_workspace(request.workspace)
     if workspace_id is not None:
@@ -81,14 +84,30 @@ async def create_task(
             )
         _authorize_workspace_scope(workspace_id, workspace_signature)
     uid, service_principal, delegation_id, actor_kind = resolve_delegated_identity(auth, delegation)
-    task = await queue.submit(
-        request,
-        user_id=uid,
-        workspace_id=workspace_id,
-        service_principal_id=service_principal,
-        delegation_id=delegation_id,
-        actor_kind=actor_kind,
-    )
+    try:
+        # The queue owns key validation and reconciliation (#1176); this layer
+        # only translates the two refusal shapes into their status codes —
+        # 422 for a key the request itself makes ambiguous, 409 for a reused
+        # key that admitted a different payload.
+        task = await queue.submit(
+            request,
+            user_id=uid,
+            workspace_id=workspace_id,
+            service_principal_id=service_principal,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
+            idempotency_key=idempotency_key,
+        )
+    except InvalidIdempotencyKey as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except IdempotencyKeyMismatch as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     response.headers["Location"] = f"/tasks/{task.task_id}"
     return TaskCreatedResponse(
         task_id=task.task_id,
