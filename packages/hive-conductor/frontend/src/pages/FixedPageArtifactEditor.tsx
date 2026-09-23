@@ -5,6 +5,7 @@ import {
   recommendVisualArtifactTrust,
   SanitizedVisualArtifact,
   sanitizeVisualArtifactMarkup,
+  type VisualArtifactTrustRecommendation,
 } from "../lib/visualArtifactRenderer";
 
 export type FixedPageMode =
@@ -53,26 +54,33 @@ function insertAtSelection(target: HTMLElement, fragment: DocumentFragment): voi
 export type FixedPageArtifactEditorProps = {
   mode: FixedPageMode;
   initialMarkup?: string;
-  onMarkupChange?: (markup: string) => void;
+  /** Verdict recorded when this artifact was last loaded/edited; survives remounts. */
+  initialTrustRecommendation?: VisualArtifactTrustRecommendation;
+  onMarkupChange?: (markup: string, trustRecommendation: VisualArtifactTrustRecommendation) => void;
 };
 
 export default function FixedPageArtifactEditor({
   mode,
   initialMarkup,
+  initialTrustRecommendation,
   onMarkupChange,
 }: FixedPageArtifactEditorProps) {
   const sourceMarkup = initialMarkup ?? DEFAULT_MARKUP[mode];
   const [markup, setMarkup] = useState(() => sanitizeVisualArtifactMarkup(sourceMarkup));
   const [trustRecommendation, setTrustRecommendation] = useState(() =>
-    recommendVisualArtifactTrust(sourceMarkup),
+    initialTrustRecommendation ?? recommendVisualArtifactTrust(sourceMarkup),
   );
 
   const commitMarkup = useCallback(
     (nextMarkup: string) => {
-      setTrustRecommendation(recommendVisualArtifactTrust(nextMarkup));
+      // The verdict is derived from the raw incoming content, before the
+      // boundary sanitizes it, so hostile persisted/edited markup can never
+      // earn "upgrade" merely because the render already sanitized it.
+      const recommendation = recommendVisualArtifactTrust(nextMarkup);
+      setTrustRecommendation(recommendation);
       const safeMarkup = sanitizeVisualArtifactMarkup(nextMarkup);
       setMarkup(safeMarkup);
-      onMarkupChange?.(safeMarkup);
+      onMarkupChange?.(safeMarkup, recommendation);
     },
     [onMarkupChange],
   );

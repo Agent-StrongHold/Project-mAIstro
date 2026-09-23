@@ -162,7 +162,10 @@ test("Design Studio is the parent surface and never enables fake visual executio
   });
 
   await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("Design Studio", { exact: true })).toBeVisible();
+  // Scope to the page heading: the fixed-page editor mounts by default in
+  // poster mode and its safe template legitimately contains the words
+  // "Design Studio" as body text.
+  await expect(page.getByRole("heading", { name: "Design Studio", exact: true })).toBeVisible();
 
   const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
   for (const mode of [

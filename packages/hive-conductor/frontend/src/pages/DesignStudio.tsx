@@ -2,7 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { PageHeader } from "../components/shared";
 import { apiGet } from "../lib/api";
 import FixedPageArtifactEditor, { type FixedPageMode } from "./FixedPageArtifactEditor";
-import { sanitizeVisualArtifactMarkup } from "../lib/visualArtifactRenderer";
+import {
+  recommendVisualArtifactTrust,
+  sanitizeVisualArtifactMarkup,
+  type VisualArtifactTrustRecommendation,
+} from "../lib/visualArtifactRenderer";
 
 type ArtifactModeId = "deck" | FixedPageMode;
 
@@ -110,7 +114,22 @@ function resourceSummary(skillCount: number, systemCount: number): string {
 
 const FIXED_PAGE_STORAGE_KEY = "hive_design_studio_fixed_page_artifacts";
 
-function loadPersistedArtifacts(): Partial<Record<FixedPageMode, string>> {
+type PersistedFixedPageArtifact = {
+  markup: string;
+  trustRecommendation: VisualArtifactTrustRecommendation;
+};
+
+function isPersistedArtifact(value: unknown): value is PersistedFixedPageArtifact {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as PersistedFixedPageArtifact).markup === "string" &&
+    ((value as PersistedFixedPageArtifact).trustRecommendation === "upgrade" ||
+      (value as PersistedFixedPageArtifact).trustRecommendation === "review")
+  );
+}
+
+function loadPersistedArtifacts(): Partial<Record<FixedPageMode, PersistedFixedPageArtifact>> {
   if (typeof window === "undefined") return {};
 
   try {
@@ -120,20 +139,30 @@ function loadPersistedArtifacts(): Partial<Record<FixedPageMode, string>> {
     if (!parsed || typeof parsed !== "object") return {};
 
     const stored = parsed as Record<string, unknown>;
-    const migrated = { ...stored };
     let changed = false;
-    const restored: Partial<Record<FixedPageMode, string>> = {};
+    const migrated: Record<string, PersistedFixedPageArtifact> = {};
+    const restored: Partial<Record<FixedPageMode, PersistedFixedPageArtifact>> = {};
     for (const mode of FIXED_PAGE_MODES) {
       const value = stored[mode];
-      if (typeof value !== "string") continue;
-      const safeValue = sanitizeVisualArtifactMarkup(value);
-      // The editor sanitizes before its first DOM render, while retaining the
-      // raw source long enough for the trust recommendation to say "review".
-      restored[mode] = value;
-      if (safeValue !== value) {
-        migrated[mode] = safeValue;
-        changed = true;
+      if (typeof value !== "string" && !isPersistedArtifact(value)) continue;
+      if (isPersistedArtifact(value)) {
+        restored[mode] = value;
+        migrated[mode] = value;
+        continue;
       }
+      // Legacy string payloads (and any raw markup) keep the verdict the
+      // pre-scan produced for their ORIGINAL content alongside the sanitized
+      // markup. The recommendation must survive the storage migration: this
+      // component can mount more than once per page load, and later mounts
+      // would otherwise read the already-sanitized string and wrongly report
+      // "upgrade" for content the boundary blocked.
+      const artifact: PersistedFixedPageArtifact = {
+        markup: sanitizeVisualArtifactMarkup(value),
+        trustRecommendation: recommendVisualArtifactTrust(value),
+      };
+      restored[mode] = artifact;
+      migrated[mode] = artifact;
+      changed = true;
     }
     // Migrate old persisted content so later readers never receive raw markup.
     if (changed) window.localStorage.setItem(FIXED_PAGE_STORAGE_KEY, JSON.stringify(migrated));
@@ -146,7 +175,7 @@ function loadPersistedArtifacts(): Partial<Record<FixedPageMode, string>> {
 export default function DesignStudio() {
   const [selectedMode, setSelectedMode] = useState<ArtifactModeId>("poster");
   const [prompt, setPrompt] = useState("");
-  const [artifactMarkup, setArtifactMarkup] = useState<Partial<Record<FixedPageMode, string>>>(loadPersistedArtifacts);
+  const [artifactMarkup, setArtifactMarkup] = useState<Partial<Record<FixedPageMode, PersistedFixedPageArtifact>>>(loadPersistedArtifacts);
   const [catalog, setCatalog] = useState<CatalogState>({
     status: "loading",
     skills: [],
@@ -208,12 +237,13 @@ export default function DesignStudio() {
 
   const mode = ARTIFACT_MODES.find((candidate) => candidate.id === selectedMode) ?? ARTIFACT_MODES[0];
   const catalogBorder = catalog.status === "ready" ? "var(--ok, #5a9a4a)" : catalog.status === "loading" ? "var(--rule)" : "var(--danger, #c4452a)";
-  const persistArtifactMarkup = useCallback((fixedMode: FixedPageMode, markup: string) => {
+  const persistArtifactMarkup = useCallback((fixedMode: FixedPageMode, markup: string, trustRecommendation: VisualArtifactTrustRecommendation) => {
     const safeMarkup = sanitizeVisualArtifactMarkup(markup);
-    setArtifactMarkup((current) => ({ ...current, [fixedMode]: safeMarkup }));
+    const artifact: PersistedFixedPageArtifact = { markup: safeMarkup, trustRecommendation };
+    setArtifactMarkup((current) => ({ ...current, [fixedMode]: artifact }));
     try {
       const stored = JSON.parse(window.localStorage.getItem(FIXED_PAGE_STORAGE_KEY) ?? "{}");
-      window.localStorage.setItem(FIXED_PAGE_STORAGE_KEY, JSON.stringify({ ...stored, [fixedMode]: safeMarkup }));
+      window.localStorage.setItem(FIXED_PAGE_STORAGE_KEY, JSON.stringify({ ...stored, [fixedMode]: artifact }));
     } catch {
       // Browser storage can be unavailable; the in-memory editor remains usable.
     }
@@ -323,8 +353,9 @@ export default function DesignStudio() {
             <FixedPageArtifactEditor
               key={selectedMode}
               mode={selectedMode}
-              initialMarkup={artifactMarkup[selectedMode]}
-              onMarkupChange={(markup) => persistArtifactMarkup(selectedMode, markup)}
+              initialMarkup={artifactMarkup[selectedMode]?.markup}
+              initialTrustRecommendation={artifactMarkup[selectedMode]?.trustRecommendation}
+              onMarkupChange={(markup, trustRecommendation) => persistArtifactMarkup(selectedMode, markup, trustRecommendation)}
             />
           </div>
         )}
