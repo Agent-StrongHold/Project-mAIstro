@@ -16,7 +16,14 @@ from fastapi import APIRouter, HTTPException, Request
 from models.persona_feedback import PersonaFeedback, Thumb
 from models.workspace import AgentToolBinding, Workspace, WorkspaceRole
 from pydantic import BaseModel, ConfigDict, Field
-from services.agent_materialization import delete_workspace_agents, materialize_workspace_agents
+from services.agent_materialization import (
+    AgentDefinitionRejected,
+    AgentScannerUnavailable,
+    ScanBudgetExceeded,
+    delete_workspace_agents,
+    materialize_workspace_agents,
+)
+from services.default_workspace import DefaultWorkspaceUnavailable, resolve_default_workspace
 from services.persona_authoring import (
     PersonaTemplateIdConflict,
     all_persona_templates,
@@ -24,6 +31,12 @@ from services.persona_authoring import (
 )
 from services.persona_feedback import PersonaFeedbackSummary, summarize
 from services.themes import THEME_CATALOG, ThemeOption, is_valid_theme_id
+from services.workspace_agent import (
+    WorkspaceAgentConflict,
+    WorkspaceNotFound,
+    persona_template_id,
+    resolve_workspace_agent,
+)
 from services.workspace_authority import create_workspace as create_canonical_workspace
 from services.workspace_authority import delete_workspace as delete_canonical_workspace
 from services.workspace_authority import (
@@ -206,6 +219,33 @@ async def get_workspace(workspace_id: str, request: Request) -> Workspace:
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")
     return workspace
+
+
+class DefaultWorkspaceResponse(BaseModel):
+    workspace: Workspace
+    workspace_agent_id: str
+    persona_template_id: str
+
+
+@router.post("/default", response_model=DefaultWorkspaceResponse)
+async def ensure_default_workspace(request: Request) -> DefaultWorkspaceResponse:
+    """The caller's default Workspace and its Workspace Agent, created on first need (#1037)."""
+    user = getattr(request.state, "user", None) or {}
+    user_id = str(user.get("id") or user.get("username") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="a default workspace needs a known principal")
+    try:
+        workspace = await resolve_default_workspace(user_id)
+        agent = await resolve_workspace_agent(workspace.id)
+    except (DefaultWorkspaceUnavailable, WorkspaceNotFound, AgentScannerUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc) or "retry shortly") from exc
+    except (WorkspaceAgentConflict, AgentDefinitionRejected, ScanBudgetExceeded) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return DefaultWorkspaceResponse(
+        workspace=workspace,
+        workspace_agent_id=agent.id,
+        persona_template_id=persona_template_id(agent),
+    )
 
 
 class CreateWorkspaceBody(BaseModel):
