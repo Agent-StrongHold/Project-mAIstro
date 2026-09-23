@@ -3,6 +3,7 @@ inventory-delta:
   packages/maistro-core/tests: +9
   packages/maistro-design/tests: +31
   packages/hive-conductor/backend/tests: +1
+  packages/hive-conductor/tests/e2e: +1
 ---
 # Issue 817: Design trust active-markup corpus
 
