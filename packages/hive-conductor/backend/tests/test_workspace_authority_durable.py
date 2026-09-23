@@ -300,4 +300,35 @@ def test_compose_hive_shares_the_engine_database_and_waits_for_its_migration() -
     depends = hive["depends_on"]
     assert depends["maistro-engine"]["condition"] == "service_healthy"
     assert depends["postgres"]["condition"] == "service_healthy"
+    assert services["maistro-engine"]["healthcheck"]["start_period"]
     assert "alembic" not in yaml.safe_dump(hive)
+
+
+@pytest.mark.asyncio
+async def test_a_pathless_sqlite_url_keeps_the_mirror_as_recovery_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sqlite://` is SQLite on `:memory:`: a restart loses it, so it is not durable."""
+    monkeypatch.setattr(stores.workspaces, "_data", {})
+    process = _HiveProcess(tmp_path, monkeypatch, "sqlite://")
+    try:
+        await process.boot()
+        view = await workspace_authority.create_workspace(
+            creator_user_id="alice",
+            name="Ephemeral",
+            persona_template_id="content_creator",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+
+        assert view.id in process.mirror_rows()
+
+        await process.stop()
+        await process.boot()
+
+        assert await workspace_authority.is_member("alice", view.id)
+    finally:
+        await process.stop()
+        workspace_authority.reset_for_tests()

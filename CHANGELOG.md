@@ -326,6 +326,8 @@ or placeholder-only section.
   revoked canonically) and is no longer written or replayed; a configured
   database whose Container failed to start now fails Workspace authorization
   closed instead of reviving the mirror. The no-database dev path is unchanged.
+  Hive's whole embedded Container (Runs, sessions, learnings, schedules) now
+  uses that shared database too, not only its Workspace store.
 
 - **The Conductor frontend renders on the Workspace design system (#1046,
   #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`

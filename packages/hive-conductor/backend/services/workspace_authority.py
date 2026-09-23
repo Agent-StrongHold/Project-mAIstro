@@ -128,8 +128,16 @@ def _database_is_configured() -> bool:
     return bool(url) and not url.startswith("memory://")
 
 
+def _database_survives_restart() -> bool:
+    url = resolve_database_url()
+    if url.startswith("sqlite:"):
+        # `sqlite://` with no path is SQLite on `:memory:`.
+        return url.removeprefix("sqlite:///").removeprefix("sqlite://") not in ("", ":memory:")
+    return _database_is_configured()
+
+
 def _is_durable_store(store: WorkspaceStore) -> bool:
-    return not isinstance(store, InMemoryWorkspaceStore)
+    return not isinstance(store, InMemoryWorkspaceStore) and _database_survives_restart()
 
 
 def _initialize_adapter_stores() -> None:

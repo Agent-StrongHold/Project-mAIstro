@@ -64,6 +64,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+      # The entrypoint migrates before uvicorn listens. hive-conductor waits on
+      # service_healthy, so a first-boot migration longer than three probes
+      # must not mark the engine unhealthy and abort `compose up`.
+      start_period: 300s
 
   postgres-layout-check:
     # Mount the named volume at its parent so legacy layouts are visible before

@@ -73,21 +73,37 @@ durable store and maistro-server becomes secondary. The owner chose the third on
    the canonical store's state wins. A Workspace or membership deleted or
    revoked there, whether through Hive or through maistro-server, is never
    brought back from the mirror. The mirror row itself is left as it is.
-4. **Fail closed.** If a database is configured but the Container that holds
-   the canonical store did not start, Workspace authorization refuses. It does
-   not fall back to an in-process store rebuilt from the frozen mirror.
+4. **Fail closed.** Workspace authorization refuses when a database is
+   configured but the Container that holds the canonical store is not running.
+   That covers a bridge that failed to start. It also covers a bridge that was
+   never started, which happens when `MAISTRO_ROUTER_API_KEY` is empty.
+   `install.sh` always generates that key. Hive never falls back to an
+   in-process store rebuilt from the frozen mirror.
 5. **Dev path unchanged.** With no database configured, Hive keeps using an
    in-process canonical store with the mirror as restart recovery evidence.
+   This also applies when the database is in-process (`memory://`, or
+   `sqlite://` with no path), since it does not survive a restart either.
 
 ## Consequences
 
 ### Positive
-- Workspaces created in Hive and in maistro-server live in the same rows, so
-  Hive and `/v1/workspaces` see the same identity and membership.
+- Workspaces created in Hive and in maistro-server live in the same rows, with
+  the same ids and memberships. Hive's authorization (`is_member`,
+  `member_role`) reads those rows directly.
 - Revocations and deletions survive restarts. The divergence window between
   the canonical store and the mirror is gone on the shipped path.
 
 ### Negative / Trade-offs
+- Hive's Workspace *views* (list, get, member routes) still require a
+  Hive-owned `WorkspacePresentation`. A Workspace created only through
+  maistro-server authorizes in Hive but is not listed in Hive's UI until one
+  exists.
+- An import can be interrupted after its canonical `create`, leaving its
+  journal entry at `importing`. The next start then replays that row's legacy
+  roster. Any canonical revocation made in that window is lost, and so is a
+  deletion, because a missing Workspace is created again. The roster copy
+  holds a process-local lock only, so a concurrent revocation through
+  maistro-server can also be overwritten while the copy runs.
 - The journal that makes the import idempotent lives in Hive's local state. If
   that state is lost while the mirror rows survive, the next start imports the
   surviving rows again. That could bring back a Workspace deleted from the
@@ -100,6 +116,13 @@ durable store and maistro-server becomes secondary. The owner chose the third on
   store.
 
 ### Neutral
+- Hive's Container now puts all of its stores on the shared database, not only
+  Workspaces. That includes Runs, schedules and events. The stores already
+  support multiple writers: the production compose file runs two maistro-server
+  replicas on one database. Hive's recovery loops claim only Runs whose
+  `admission_source` is `hive_legacy_dag`.
+- The PostgreSQL legs of the tests run only where `MAISTRO_TEST_PG_DSN` points
+  at a migrated database. Their SQLite twins run everywhere.
 - These remain open under #37 and are out of scope here: the Turing backend's
   private per-process `InMemoryWorkspaceStore`; maistro-server's
   `WorkspaceRoutingAdmitter` minting Root Projects for Workspace ids that have
