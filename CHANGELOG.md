@@ -228,6 +228,21 @@ or placeholder-only section.
 
 ### Added
 
+- **Stable Workspace Agent identity and per-user default Workspace
+  ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
+  ADR-092326-7ed7).** Hive's `services/workspace_agent.py`
+  `resolve_workspace_agent()` returns a Workspace's single canonical Agent
+  (`workspace-agent:{workspace_id}`). It is materialized once, insert-if-absent,
+  through the one roster writer (#840), so concurrent first calls converge even
+  across processes, and a Workspace deleted mid-materialization leaves no Agent. Its persona
+  template (default `program_manager`) can be swapped without changing the id.
+  `services/default_workspace.py` `resolve_default_workspace()` gives each
+  caller one owned default Workspace. The default is chosen by a durable
+  insert-once claim, so racing first requests yield one Workspace. A deleted,
+  revoked or demoted default is replaced and never handed back.
+  `POST /v1/workspaces/default` (gated by `workspaces.write`) returns the
+  caller's default Workspace with its Workspace Agent id. Chat turns do not
+  consume either resolver yet; that is the next #1037 slice.
 - **Every maistro-core node kind is proven to get the Container's own
   authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
   resolves each registered core kind that declares an authority through a real
