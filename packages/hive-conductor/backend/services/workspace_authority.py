@@ -108,6 +108,20 @@ def _engine_workspace_store() -> WorkspaceStore:
     return _fallback_store
 
 
+def canonical_store_available() -> bool:
+    """Whether a Workspace request can reach its canonical store right now.
+
+    False only when a database is configured and the Container owning it never
+    started: every Workspace request then raises ``EmbeddedRuntimeUnavailable``,
+    so readiness must not report the instance usable.
+    """
+    try:
+        _engine_workspace_store()
+    except EmbeddedRuntimeUnavailable:
+        return False
+    return True
+
+
 async def canonical_workspace_store() -> WorkspaceStore:
     """Return the live canonical Workspace authority for authorization.
 

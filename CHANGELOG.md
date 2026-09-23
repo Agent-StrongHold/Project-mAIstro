@@ -328,6 +328,11 @@ or placeholder-only section.
   closed instead of reviving the mirror. The no-database dev path is unchanged.
   Hive's whole embedded Container (Runs, sessions, learnings, schedules) now
   uses that shared database too, not only its Workspace store.
+  Hive's `/health/ready` now counts that store: with a database configured
+  and no Container it answers 503 with `ready: false`, so Compose stops
+  reporting an instance whose Workspace API only fails. The Hive image now
+  ships the agent roster (`agents/` → `/app/backend/agents`), which the
+  embedded bridge requires to start at all.
 
 - **The Conductor frontend renders on the Workspace design system (#1046,
   #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`

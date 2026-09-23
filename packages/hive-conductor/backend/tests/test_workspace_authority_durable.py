@@ -268,6 +268,87 @@ async def test_a_configured_database_without_a_container_refuses_the_mirror_fall
         await workspace_authority.canonical_workspace_store()
 
 
+def test_readiness_fails_when_the_configured_canonical_store_is_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed bridge leaves every Workspace request refusing; the probe must say so.
+
+    Otherwise Compose and load balancers keep routing to an instance whose
+    Workspace API answers nothing but 500s.
+    """
+    from fastapi.testclient import TestClient
+    from main import app
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://maistro:pw@postgres:5432/maistro")
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["ready"] is False
+    assert body["checks"]["workspace_authority"] is False
+
+
+@BACKENDS
+@pytest.mark.asyncio
+async def test_readiness_passes_once_the_canonical_store_is_running(hive: _HiveProcess) -> None:
+    from fastapi.testclient import TestClient
+    from main import app
+
+    await hive.boot()
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["checks"]["workspace_authority"] is True
+
+
+def _image_path_of_default_roster() -> tuple[str, dict[str, str]]:
+    """Where the image's default ``maistro_agents_dir`` lands, and its COPY map.
+
+    ``_construct_runtime`` resolves a relative roster dir against the backend
+    directory, which the runtime stage places at ``/app/backend``.
+    """
+    dockerfile = (REPO_ROOT / "packages/hive-conductor/Dockerfile").read_text(encoding="utf-8")
+    runtime_stage = dockerfile.rsplit("\nFROM ", 1)[1]
+    copies: dict[str, str] = {}
+    env_dir: str | None = None
+    for line in runtime_stage.splitlines():
+        words = line.split()
+        if words[:1] == ["COPY"] and not any(w.startswith("--from") for w in words):
+            source, dest = [w for w in words[1:] if not w.startswith("--")]
+            copies[dest.rstrip("/")] = source.rstrip("/")
+        if "MAISTRO_AGENTS_DIR=" in line:
+            env_dir = line.split("MAISTRO_AGENTS_DIR=", 1)[1].split()[0]
+    agents_dir = env_dir or Settings().maistro_agents_dir
+    if agents_dir.startswith("/"):
+        return agents_dir, copies
+    return f"/app/backend/{agents_dir}", copies
+
+
+@pytest.mark.contract("boundary")
+def test_the_image_packages_the_roster_its_bridge_requires() -> None:
+    """``create_agents(require_agents=True)`` rejects a missing roster (#37 review).
+
+    With ``DATABASE_URL`` now set in Compose, a bridge that cannot build its
+    roster leaves every Workspace request failing closed, so the shipped image
+    must carry the roster where Hive looks for it by default.
+    """
+    image_path, copies = _image_path_of_default_roster()
+    dest = max(
+        (d for d in copies if image_path == d or image_path.startswith(d + "/")),
+        key=len,
+        default=None,
+    )
+    assert dest is not None, f"nothing in the runtime stage is copied to {image_path}"
+    source = REPO_ROOT / copies[dest] / image_path[len(dest) :].lstrip("/")
+
+    assert (source / "PREAMBLE.md").is_file(), f"{image_path} <- {source} has no roster"
+    assert list(source.glob("*/agent.yaml")), f"{image_path} <- {source} has no agents"
+
+
 @pytest.mark.asyncio
 async def test_without_a_database_the_ephemeral_fallback_still_serves(
     monkeypatch: pytest.MonkeyPatch,
