@@ -61,6 +61,7 @@ class TestScanDesignOutput:
             ('<a href="java&#x0A;script:alert(1)">x</a>', "dangerous resource"),
             (r"<style>.x { background: u\72l(https://evil.example/leak) }</style>", "CSS"),
             ("<svg><foreignObject><div>active</div></foreignObject></svg>", "SVG element"),
+            ("<math><mi>x</mi></math>", "visual artifact active-element"),
         ],
     )
     def test_hostile_active_markup_corpus_is_blocking(self, payload: str, flag: str):

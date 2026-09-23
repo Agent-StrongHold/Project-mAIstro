@@ -329,11 +329,13 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     '<div onclick="alert(1)">handler</div>',
     '<a href="data:text/html,<script>alert(1)</script>">navigation</a>',
     '<div style="background-image:url(http://attacker.invalid/css)">network</div>',
+    '<math><mi>x</mi></math>',
   ]);
   expect(scanResults.every((result) => result.blocked)).toBe(true);
   expect(scanResults[0].reasons).toContain("event-handler");
   expect(scanResults[1].reasons.length).toBeGreaterThan(0);
   expect(scanResults[2].reasons).toContain("css-network-or-code");
+  expect(scanResults[3].reasons).toContain("active-element");
 
   const recommendations = await page.evaluate(() => {
     const recommend = (
@@ -343,9 +345,10 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
       recommend('<div onclick="alert(1)">handler</div>'),
       recommend('<p>safe presentation</p>'),
       recommend('<p class="marketing-copy">Safe prose</p>'),
+      recommend('<math><mi>x</mi></math>'),
     ];
   });
-  expect(recommendations).toEqual(["review", "upgrade", "upgrade"]);
+  expect(recommendations).toEqual(["review", "upgrade", "upgrade", "review"]);
 
   const safePresentation = await page.evaluate(() => {
     const sanitize = (

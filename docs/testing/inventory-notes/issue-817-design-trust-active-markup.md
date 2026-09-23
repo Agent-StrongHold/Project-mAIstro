@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +9
-  packages/maistro-design/tests: +28
+  packages/maistro-design/tests: +31
   packages/hive-conductor/backend/tests: +1
 ---
 # Issue 817: Design trust active-markup corpus
@@ -25,4 +25,7 @@ PDF/PPTX/DOCX/PNG renderer entry points now call the same `scan_design_text` bou
 before backend dispatch, so selecting a renderer cannot bypass returned-artifact
 enforcement. The browser regression also proves ordinary `class` presentation
 markup has the same upgrade classification across the browser and Python trust
-paths.
+paths. MathML, which the browser's HTML/SVG allowlist strips as an active element,
+is now covered at both boundaries: the shared Warden visual-artifact vocabulary
+blocks it before an admin trust recommendation, and the browser regression pins
+the same `active-element` review classification.

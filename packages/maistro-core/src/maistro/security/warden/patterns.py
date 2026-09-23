@@ -76,7 +76,7 @@ VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
         regex.compile(
             r"<\s*/?\s*(?:script|style|iframe|form|img|object|embed|link|base|"
             r"foreignobject|use|image|meta|input|button|video|audio|source|track|"
-            r"textarea|select|option|a|animate|set|mpath)\b",
+            r"textarea|select|option|a|animate|set|mpath|math|annotation-xml)\b",
             regex.IGNORECASE,
         ),
         "active-element",
