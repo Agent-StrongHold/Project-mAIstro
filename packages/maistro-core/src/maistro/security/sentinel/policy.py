@@ -340,6 +340,7 @@ class Sentinel:
             await self._log_audit(
                 boundary="pre_call",
                 user_id=auth.user_id,
+                org_id=auth.org_id,
                 team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="denied",
@@ -354,6 +355,7 @@ class Sentinel:
             await self._log_audit(
                 boundary="pre_call",
                 user_id=auth.user_id,
+                org_id=auth.org_id,
                 team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="denied",
@@ -376,6 +378,7 @@ class Sentinel:
         await self._log_audit(
             boundary="pre_call",
             user_id=auth.user_id,
+            org_id=auth.org_id,
             team_id=auth.team_id,
             tool_name=tool_name,
             verdict="allowed" if verdict.allowed else "denied",
@@ -439,6 +442,7 @@ class Sentinel:
             await self._log_audit(
                 boundary="post_call",
                 user_id=auth.user_id,
+                org_id=auth.org_id,
                 team_id=auth.team_id,
                 tool_name=tool_name,
                 verdict="flagged",
@@ -468,6 +472,7 @@ class Sentinel:
         await self._log_audit(
             boundary="post_call",
             user_id=auth.user_id,
+            org_id=auth.org_id,
             team_id=auth.team_id,
             tool_name=tool_name,
             verdict="clean" if not violations else "flagged",
@@ -527,6 +532,7 @@ class Sentinel:
         *,
         boundary: str,
         user_id: str,
+        org_id: str = "",
         team_id: str = "",
         tool_name: str,
         verdict: str,
@@ -543,6 +549,7 @@ class Sentinel:
                 AuditEntry(
                     boundary=boundary,
                     user_id=user_id,
+                    org_id=org_id,
                     team_id=team_id,
                     tool_name=tool_name,
                     verdict=verdict,
