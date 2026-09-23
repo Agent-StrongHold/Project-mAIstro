@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
 
@@ -32,7 +32,14 @@ from pydantic import BaseModel, Field
 
 from maistro.a2a.delegate import A2ADelegator, DelegationMode
 from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
-from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
+from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    AcceptedNodeOutcome,
+    AttemptResult,
+    AttemptStatus,
+    RunStatus,
+)
 
 from . import register_node
 from .base import (
@@ -46,7 +53,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from maistro.graph.definitions import Graph
+    from maistro.graph.definitions import Graph, Node
     from maistro.runs.model import NodeRun, Run
     from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
@@ -272,6 +279,15 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             existing = await self._existing_child(self._delegation_key(inputs, ctx))
             if existing is None:
                 raise
+            # Whatever is durable under this key -- the durable stores'
+            # unique index hands a concurrent replica a winner that may still
+            # be mid-write, and a fault in this process leaves its own
+            # half-admitted child -- is adopted only once its canonical
+            # evidence exists. Adopting a bare Run row is the #147 verification
+            # defect: the parent paused on a child with zero NodeRuns, a shape
+            # no answer could ever settle because there was nothing to attach
+            # the answer's Attempt to.
+            await self._ensure_child_evidence(existing.run_id)
             return existing.run_id
 
     async def _release_unaccepted_child(self, run_id: str) -> None:
@@ -564,6 +580,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             child_id = child.run_id
             if await self._pause_on_existing_receipt(inputs, child, child_id, mode="guest_peer"):
                 return DelegateRemoteOut()
+            await self._ensure_child_evidence(child_id)
 
         claimed = await self._claim_transport_attempt(child_id)
         if not claimed:
@@ -705,6 +722,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             child_id = child.run_id
             if await self._pause_on_existing_receipt(inputs, child, child_id, mode="in_process"):
                 return DelegateRemoteOut()
+            await self._ensure_child_evidence(child_id)
 
         claimed = await self._claim_transport_attempt(child_id)
         if not claimed:
@@ -852,36 +870,119 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 "target_agent": target,
                 "peer_name": inputs.peer_name,
             },
-            initial_status=RunStatus.QUEUED,
+            # CREATED, never QUEUED. The evidence writes below are what move
+            # the child through RUNNING and park it WAITING; admitting the row
+            # in QUEUED instead left a window where a Run was durable in the
+            # one state consumers read as "admitted work waiting to execute"
+            # while carrying no NodeRun and no Attempt (#147 verification). It
+            # was unrecoverable precisely because a2a_delegation is not a
+            # consumable source and must never be -- the child is a projection
+            # of work executing at a peer, not work this instance executes
+            # (ADR-082426-6201). CREATED is the recovery model's own resting
+            # state for such projections, and `_ensure_child_evidence` finishes
+            # one on the next visit through this node.
+            initial_status=RunStatus.CREATED,
         )
-        # The external transport is already the physical worker. Persist its
-        # admission as a yielded Attempt instead of leaving a Run with no
-        # NodeRun/Attempt or inventing a second scheduler for the child.
+        await self._write_child_evidence(child.run_id, graph.nodes, task_id=task_id, mode=mode)
+        return child.run_id
+
+    async def _write_child_evidence(
+        self, run_id: str, nodes: Sequence[Node], *, task_id: str, mode: str
+    ) -> None:
+        """Give the child its NodeRuns and their yielded transport Attempts.
+
+        The external transport is already the physical worker. Persisting its
+        admission as a yielded Attempt is what keeps the universal
+        Run -> NodeRun -> Attempt hierarchy intact without inventing a second
+        scheduler for the child; until this returns, the child is a reserved
+        projection, not yet evidence-bearing work.
+        """
+        assert self._run_store is not None
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
         lifecycle = AttemptLifecycleReconciler(self._run_store)
-        for child_node in graph.nodes:
+        for child_node in nodes:
             child_node_run = await self._run_store.create_node_run(
-                child.run_id, node_id=child_node.node_id
+                run_id, node_id=child_node.node_id
             )
-            await lifecycle.prepare_execution(child_node_run.node_run_id)
-            attempt = await self._run_store.create_attempt(
-                child_node_run.node_run_id,
-                runtime_id="a2a",
-                executor_id=f"agent.delegate_remote:{mode}",
+            await self._yield_transport_attempt(
+                child_node_run.node_run_id, lifecycle, task_id=task_id, mode=mode
             )
-            token = attempt.execution_lease.fencing_token if attempt.execution_lease else None
-            attempt = await self._run_store.transition_attempt(
-                attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token
+
+    async def _ensure_child_evidence(self, run_id: str) -> None:
+        """Complete an interrupted reservation, idempotently.
+
+        Reservation is two durable stages -- the child Run, then its
+        NodeRun/Attempt evidence -- and a process can die between them, on this
+        replica or on a concurrent one that lost the unique-key race mid-write.
+        Resting is not finished: a resume against an evidence-less child has no
+        NodeRun to attach an answer's Attempt to. This finishes whatever any
+        interrupted reservation started: every graph node gets its NodeRun, and
+        every NodeRun its yielded transport Attempt. A no-op on a complete
+        child, and on a terminal one, which owes nothing.
+
+        Two writers racing here converge rather than split the work: the
+        durable stores hold one *active* Attempt per NodeRun and `YIELDED` is
+        terminal, so the slower writer's evidence lands beside the faster's
+        under the same logical NodeRun instead of forking it.
+        """
+        if self._run_store is None or not run_id:
+            return
+        child = await self._run_store.get_run(run_id)
+        if child is None or child.status in TERMINAL_RUN_STATUSES:
+            return
+        task_id = str(child.provenance.get("a2a_task_id") or "")
+        mode = str(child.provenance.get("delegation_mode") or "in_process")
+        from maistro.runs.reconciliation import AttemptLifecycleReconciler
+
+        lifecycle = AttemptLifecycleReconciler(self._run_store)
+        observed: set[str] = set()
+        for node_run in await self._run_store.list_node_runs(run_id):
+            observed.add(node_run.node_id)
+            if not await self._has_terminal_attempt(node_run.node_run_id):
+                await self._yield_transport_attempt(
+                    node_run.node_run_id, lifecycle, task_id=task_id, mode=mode
+                )
+        for child_node in child.graph.materialize().nodes:
+            if child_node.node_id in observed:
+                continue
+            node_run = await self._run_store.create_node_run(run_id, node_id=child_node.node_id)
+            await self._yield_transport_attempt(
+                node_run.node_run_id, lifecycle, task_id=task_id, mode=mode
             )
-            attempt = await self._run_store.transition_attempt(
-                attempt.attempt_id,
-                AttemptStatus.YIELDED,
-                result={"task_id": task_id, "mode": mode},
-                fencing_token=token,
-            )
-            await lifecycle.reconcile(attempt)
-        return child.run_id
+
+    async def _has_terminal_attempt(self, node_run_id: str) -> bool:
+        assert self._run_store is not None
+        attempts = await self._run_store.list_attempts(node_run_id)
+        return any(attempt.status in TERMINAL_ATTEMPT_STATUSES for attempt in attempts)
+
+    async def _yield_transport_attempt(
+        self,
+        node_run_id: str,
+        lifecycle: AttemptLifecycleReconciler,
+        *,
+        task_id: str,
+        mode: str,
+    ) -> None:
+        """Record the transport's one yielded physical Attempt under a NodeRun."""
+        assert self._run_store is not None
+        await lifecycle.prepare_execution(node_run_id)
+        attempt = await self._run_store.create_attempt(
+            node_run_id,
+            runtime_id="a2a",
+            executor_id=f"agent.delegate_remote:{mode}",
+        )
+        token = attempt.execution_lease.fencing_token if attempt.execution_lease else None
+        attempt = await self._run_store.transition_attempt(
+            attempt.attempt_id, AttemptStatus.RUNNING, fencing_token=token
+        )
+        attempt = await self._run_store.transition_attempt(
+            attempt.attempt_id,
+            AttemptStatus.YIELDED,
+            result={"task_id": task_id, "mode": mode},
+            fencing_token=token,
+        )
+        await lifecycle.reconcile(attempt)
 
     def _child_graph(self, inputs: DelegateRemoteIn, *, parent: Run, target: str) -> Graph:
         """Snapshot the delegated request without inventing executable work.

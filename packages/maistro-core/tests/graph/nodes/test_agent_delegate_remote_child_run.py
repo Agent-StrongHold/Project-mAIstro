@@ -38,11 +38,13 @@ from maistro.graph.durable_runs import (
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.agent_delegate_remote import (
     AgentDelegateRemoteNode,
+    DelegateRemoteIn,
     DelegationNotConfiguredError,
 )
 from maistro.http import set_test_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunStatus
+from maistro.runs.store import RunIntegrityError
 
 
 async def _spine(
@@ -222,6 +224,201 @@ class TestTheEscapeGuardsFire:
         assert result.status == "failed"
         assert result.error_code == "RunIntegrityError"
         assert "Project boundaries" in (result.error_message or "")
+
+
+class TestInterruptedChildAdmission:
+    """Reservation is two durable stages; a death between them must neither
+    pause the parent on an unanswerable child nor strand one nothing revisits.
+
+    These are the #147 verification findings made executable: adopting a
+    partially-created child left a paused parent plus a child with zero
+    NodeRuns, and the child was admitted QUEUED before its evidence while
+    `a2a_delegation` is deliberately not a consumable source — so that partial
+    child had no recovery path at all.
+    """
+
+    @staticmethod
+    async def _parent(store: InMemoryRunStore, project: Any) -> tuple[Any, Any]:
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        return parent, parent_node_run
+
+    async def test_a_transient_fault_during_evidence_writing_is_healed_before_the_pause(
+        self,
+    ) -> None:
+        """The verification fault: the store dies after `create_run`.
+
+        `_reserve_child` used to adopt its own half-written child and pause,
+        leaving a paused parent beside a child with zero NodeRuns that no
+        answer could ever settle. Adoption now completes the child's canonical
+        evidence first, so the pause lands on an answerable Run.
+        """
+        store, _projects, project = await _spine()
+        parent, parent_node_run = await self._parent(store, project)
+        real_create_node_run = store.create_node_run
+        calls = 0
+
+        async def fail_once(run_id: str, *, node_id: str) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RunIntegrityError("injected: store died mid-admission")
+            return await real_create_node_run(run_id, node_id=node_id)
+
+        store.create_node_run = fail_once  # type: ignore[method-assign]
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused", result.error_message
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        node_runs = await store.list_node_runs(child.run_id)
+        assert len(node_runs) == 1, "the adopted child was completed, not adopted half-way"
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded"]
+        assert child.status.value == "waiting"
+
+    async def test_a_persistent_fault_fails_the_dispatch_loudly_without_pausing(
+        self,
+    ) -> None:
+        """A store that stays broken must not park the parent on an unanswerable
+        child. The dispatch fails as an Attempt error the retry machinery can
+        act on, and the reservation it leaves behind is a CREATED resting
+        projection — never a QUEUED Run that reads as admitted work while no
+        consumer will ever execute it.
+        """
+        store, _projects, project = await _spine()
+        parent, parent_node_run = await self._parent(store, project)
+
+        async def always_fails(run_id: str, *, node_id: str) -> Any:
+            raise RunIntegrityError("injected: store unavailable")
+
+        store.create_node_run = always_fails  # type: ignore[method-assign]
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "failed"
+        assert result.error_code == "RunIntegrityError"
+        children = [
+            run
+            for run in store._runs.values()
+            if run.parent_run_id == parent.run_id  # type: ignore[attr-defined]
+        ]
+        assert len(children) == 1
+        leftover = children[0]
+        assert leftover.status is RunStatus.CREATED, (
+            "an interrupted reservation rests in CREATED, not in QUEUED-with-no-evidence"
+        )
+        assert leftover.provenance.get("a2a_task_id", "") == ""
+        assert await store.list_node_runs(leftover.run_id) == []
+
+    async def test_a_crashed_replicas_partial_child_is_completed_and_answerable(
+        self,
+    ) -> None:
+        """Recoverability, not just non-repetition. A replica that died between
+        the child Run row and its evidence leaves a durable partial; the next
+        dispatch through this node completes it — `a2a_delegation` has no
+        consumer by design (ADR-082426-6201), so this visit is the recovery
+        path — and the resumed answer settles the healed child.
+        """
+        store, _projects, project = await _spine()
+        parent, parent_node_run = await self._parent(store, project)
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        inputs = DelegateRemoteIn(from_agent="planner", task="research X", to_agent="researcher")
+        ctx = _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id)
+
+        # What a crashed replica leaves behind: the child Run row, durable and
+        # keyed, with none of its canonical evidence.
+        child = await store.create_run(
+            node._child_graph(inputs, parent=parent, target="researcher"),
+            parent_run_id=parent.run_id,
+            parent_node_run_id=parent_node_run.node_run_id,
+            provenance={
+                "admission_source": "a2a_delegation",
+                "delegation_key": node._delegation_key(inputs, ctx),
+                "delegation_mode": "in_process",
+            },
+        )
+
+        first = await node.run(inputs, ctx)
+
+        assert first.status == "paused", first.error_message
+        healed = await store.get_run(child.run_id)
+        assert healed is not None
+        node_runs = await store.list_node_runs(child.run_id)
+        assert len(node_runs) == 1
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded"]
+        assert healed.provenance["a2a_task_id"] == first.metadata["task_id"]
+
+        answered = await node.run(
+            inputs,
+            ctx.model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                "task_id": first.metadata["task_id"],
+                                "result": "ok",
+                                "_pause": {"run_id": child.run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        assert answered.output.status == "completed"
+        settled = await store.get_run(child.run_id)
+        assert settled is not None
+        assert settled.status.value == "completed"
+
+    async def test_the_child_row_is_admitted_created_and_only_parks_with_evidence(
+        self,
+    ) -> None:
+        """Pins the ordering that closes the unrecoverable window: the child Run
+        becomes durable in CREATED — the recovery model's resting state for a
+        projection — and reaches WAITING only through its yielded Attempt,
+        never through a QUEUED row with no NodeRun.
+        """
+        store, _projects, project = await _spine()
+        parent, parent_node_run = await self._parent(store, project)
+        real_create_run = store.create_run
+        admitted_as: list[str] = []
+
+        async def spy_create_run(graph: Any, **kwargs: Any) -> Any:
+            run = await real_create_run(graph, **kwargs)
+            if run.parent_run_id == parent.run_id:
+                admitted_as.append(run.status.value)
+            return run
+
+        store.create_run = spy_create_run  # type: ignore[method-assign]
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused", result.error_message
+        assert admitted_as == ["created"], (
+            "the child row must be durable in CREATED before its evidence exists"
+        )
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        assert child.status.value == "waiting"
+        assert len(await store.list_node_runs(child.run_id)) == 1
 
 
 class TestAnUnknownParentIsRefused:
