@@ -4,14 +4,20 @@ The aggregate quota row cannot provide at-most-once accounting or explain a
 missing provider usage report by itself.  Keep one immutable evidence row per
 canonical physical Invocation, then project it into the existing aggregate.
 
-Revision ID: 039
-Revises: 038
+Revision ID: 041_quota_invocation_evidence
+Revises: 040
 Create Date: 2026-09-08
 
-Re-ID'd from 035 during the develop integration: the same revision id was
-claimed by develop's capability-invocation migration, which left alembic
-with two heads and a duplicate "035". Chaining after 038 keeps one linear
-chain.
+Re-ID'd twice during the develop integration. First 035 -> 039: the same
+revision id was claimed by develop's capability-invocation migration, which
+left alembic with two heads and a duplicate "035". Then 039 ->
+041_quota_invocation_evidence: merging develop brought its own numeric
+`039_canvas_job_admission_key` (and `040`, which chains onto it), so the
+numeric slot was taken too. Following develop's string-suffixed naming and
+chaining after the develop chain tip 040 keeps exactly one head; the id stays
+under alembic's 32-character `alembic_version.version_num` limit (the live
+chain test applies the whole chain to an empty database, which is where a
+too-long id fails).
 """
 
 from __future__ import annotations
@@ -19,8 +25,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "039"
-down_revision = "038"
+revision = "041_quota_invocation_evidence"
+down_revision = "040"
 branch_labels = None
 depends_on = None
 

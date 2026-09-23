@@ -11,4 +11,4 @@ Develop-integration repair for #718 (canonical Invocation quota ledger). The mer
 - `NOT_APPLIED` and `INDETERMINATE` settlements leave the ledger untouched;
 - a physically `COMPLETED` call is recorded once and a late duplicate reconciliation report cannot add a second row.
 
-Also re-ids the lane's quota evidence migration `035 -> 039` (chained after develop's `038`) because the merge left two revisions named `035` and two alembic heads, and adds `quota_invocation_evidence` to the migration-chain catalog test.
+Also re-ids the lane's quota evidence migration twice during the integration — `035 -> 039 -> 041_quota_invocation_evidence` — because both numeric slots collided with migrations develop landed in the same window (its capability-invocation migration, then `039_canvas_job_admission_key`), and adds `quota_invocation_evidence` to the migration-chain catalog test.

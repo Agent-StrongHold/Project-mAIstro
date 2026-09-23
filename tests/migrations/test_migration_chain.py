@@ -104,7 +104,7 @@ EXPECTED_TABLES = frozenset(
         "prompt_labels",
         "prompts",
         "quota_usage",
-        # One immutable evidence row per canonical physical Invocation (039,
+        # One immutable evidence row per canonical physical Invocation (041,
         # #718): at-most-once quota accounting and explicit unreported usage
         # evidence, projected into `quota_usage`.
         "quota_invocation_evidence",
