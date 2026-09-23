@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.security import AuditEntry
 
 if TYPE_CHECKING:
@@ -66,6 +67,7 @@ class SqliteAuditLog:
         self._conn = conn
 
     async def ensure_schema(self) -> None:
+<<<<<<< HEAD
         """Create or upgrade the audit_log table and its scope index.
 
         SQLite has no ``ADD COLUMN IF NOT EXISTS``. Inspecting the table keeps
@@ -83,6 +85,11 @@ class SqliteAuditLog:
             "CREATE INDEX IF NOT EXISTS ix_audit_log_scope ON audit_log (org_id, timestamp)"
         )
         await self._conn.commit()
+=======
+        """Create the audit_log table if it doesn't exist."""
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+>>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
 
     async def log(self, entry: AuditEntry) -> None:
         """Record an audit entry."""
