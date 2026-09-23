@@ -23,6 +23,13 @@ contracts:
 tests:
   - packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
   - packages/hive-conductor/backend/tests/test_default_workspace.py
+ac-modules:
+  AC-1: '@flat/hive-conductor/services.workspace_agent'
+  AC-2: '@flat/hive-conductor/services.workspace_agent'
+  AC-3: '@flat/hive-conductor/services.workspace_agent'
+  AC-4: '@flat/hive-conductor/services.default_workspace'
+  AC-5: '@flat/hive-conductor/services.workspace_agent'
+  AC-6: '@flat/hive-conductor/routes.workspaces'
 layer: Agents
 owners:
   - '@BlakeMatthews-dev'
@@ -97,22 +104,49 @@ turns.
 
 ## Acceptance criteria
 
-- AC-1: Repeated resolutions for one Workspace return the same Agent id and
-  `created_at`. A second Workspace gets a different id.
-- AC-2: Ten concurrent first resolutions materialize exactly one Agent row,
-  including on SQLite across a store reopen.
-- AC-3: Swapping the persona keeps the id, and the new persona is read back.
-  A malformed template id is refused before anything is written.
-- AC-4: The first default-Workspace call creates a Workspace owned by the
-  caller. Later and concurrent calls return the same Workspace. Another user
-  gets their own. A lost durable claim converges on the winner, or answers
-  retryably, and leaves no second Workspace. A deleted, revoked or demoted
-  default is replaced, and it is never handed back, even after the caller is
-  re-added to it. `POST /v1/workspaces/default` returns the same Workspace and
-  Workspace Agent on repeat calls, and refuses a caller without
-  `workspaces.write` without writing anything.
-- AC-5: The roster gains only the Workspace Agents. It gains no demo rows and
-  no duplicates.
+```gherkin
+@AC-1
+Scenario: One stable Workspace Agent per Workspace
+  Given two canonical Workspaces
+  When the Workspace Agent is resolved repeatedly for each
+  Then each Workspace always yields the same Agent id and created_at
+  And the two Workspaces yield different Agents
+
+@AC-2
+Scenario: Concurrent first resolutions materialize one Agent
+  Given a Workspace with no Workspace Agent yet
+  When ten resolutions run concurrently, also against SQLite across a reopen
+  Then exactly one Agent row exists for that Workspace
+
+@AC-3
+Scenario: The persona is swappable without changing identity
+  Given a Workspace Agent running the program_manager persona
+  When its persona is swapped, including concurrently with first materialization
+  Then the id and created_at are unchanged and the new persona is read back
+  And a malformed persona template id is refused before anything is written
+
+@AC-4
+Scenario: A Workspace-less caller has exactly one owned default Workspace
+  Given a caller with no default Workspace
+  When the default is resolved once, concurrently, or after a lost durable claim
+  Then exactly one Workspace owned by the caller exists and is returned
+  And another user gets their own
+  And a deleted, revoked or demoted default is replaced and never handed back
+
+@AC-5
+Scenario: The roster gains only Workspace Agents
+  Given the canonical roster
+  When Workspace Agents are resolved for several Workspaces
+  Then only their rows are added, with no demo rows and no duplicates
+
+@AC-6
+Scenario: The default route returns the default Workspace with its Agent
+  Given a caller holding workspaces.write
+  When POST /v1/workspaces/default is called repeatedly
+  Then the same Workspace and Workspace Agent are returned
+  And a caller without workspaces.write is refused without any write
+  And a scanner outage is answered 503
+```
 
 ## Consequences
 

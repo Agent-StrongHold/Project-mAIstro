@@ -43,6 +43,8 @@ def _drop_recovery_evidence() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
 async def test_first_call_creates_a_workspace_owned_by_the_caller(
     canonical: InMemoryWorkspaceStore,
 ) -> None:
@@ -54,6 +56,8 @@ async def test_first_call_creates_a_workspace_owned_by_the_caller(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
 async def test_later_and_concurrent_calls_return_the_same_workspace(
     canonical: InMemoryWorkspaceStore,
 ) -> None:
@@ -67,6 +71,8 @@ async def test_later_and_concurrent_calls_return_the_same_workspace(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
 async def test_each_user_gets_their_own_default(canonical: InMemoryWorkspaceStore) -> None:
     alice, bob = await asyncio.gather(
         default_workspace.resolve_default_workspace("alice"),
@@ -79,6 +85,8 @@ async def test_each_user_gets_their_own_default(canonical: InMemoryWorkspaceStor
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
 async def test_a_deleted_default_is_replaced_never_resurrected(
     canonical: InMemoryWorkspaceStore,
 ) -> None:
@@ -109,6 +117,8 @@ async def test_a_revoked_default_is_not_handed_back(canonical: InMemoryWorkspace
     assert await canonical.get(first.id) is not None
 
 
+@pytest.mark.ac("ADR-092326-7ed7/AC-6")
+@pytest.mark.contract("behavioral")
 def test_the_default_route_returns_one_owned_workspace_with_its_agent(admin_client) -> None:
     first = admin_client.post("/v1/workspaces/default")
     second = admin_client.post("/v1/workspaces/default")
@@ -126,6 +136,8 @@ def test_the_default_route_returns_one_owned_workspace_with_its_agent(admin_clie
     assert admin_client.get(f"/v1/workspaces/{workspace_id}").status_code == 200
 
 
+@pytest.mark.ac("ADR-092326-7ed7/AC-6")
+@pytest.mark.contract("behavioral")
 def test_the_default_route_keeps_the_workspaces_write_gate(authed_client) -> None:
     before = set(stores.agents.keys())
 
@@ -136,6 +148,8 @@ def test_the_default_route_keeps_the_workspaces_write_gate(authed_client) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
 async def test_a_revoked_default_stays_retired_when_the_caller_is_readded() -> None:
     first = await default_workspace.resolve_default_workspace("alice")
     await workspace_authority.set_member(first.id, user_id="carol", role="owner")
@@ -147,6 +161,8 @@ async def test_a_revoked_default_stays_retired_when_the_caller_is_readded() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
 async def test_a_default_the_caller_no_longer_owns_is_replaced() -> None:
     first = await default_workspace.resolve_default_workspace("alice")
     await workspace_authority.set_member(first.id, user_id="carol", role="owner")
@@ -169,6 +185,8 @@ async def test_an_unreadable_durable_claim_is_skipped_not_looped_on(
     assert [w.workspace_id for w in await canonical.list_for_user("alice")] == [view.id]
 
 
+@pytest.mark.ac("ADR-092326-7ed7/AC-6")
+@pytest.mark.contract("behavioral")
 def test_the_default_route_maps_a_scanner_outage_to_503(
     admin_client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,6 +209,8 @@ async def test_a_blank_principal_is_refused() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
 async def test_losing_the_durable_claim_to_another_process_converges_on_the_winner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -239,6 +259,8 @@ async def test_losing_the_durable_claim_to_another_process_converges_on_the_winn
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
 async def test_a_winner_this_process_cannot_compose_is_unavailable_not_duplicated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

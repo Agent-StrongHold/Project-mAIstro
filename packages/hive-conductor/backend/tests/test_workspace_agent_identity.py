@@ -45,6 +45,8 @@ async def _workspace(owner: str = "alice", name: str = "Ops") -> str:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-1")
+@pytest.mark.contract("behavioral")
 async def test_repeated_resolution_returns_one_stable_agent_per_workspace() -> None:
     first_ws = await _workspace()
     second_ws = await _workspace(name="Other")
@@ -63,6 +65,8 @@ async def test_repeated_resolution_returns_one_stable_agent_per_workspace() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-2")
+@pytest.mark.contract("behavioral")
 async def test_concurrent_first_resolution_materializes_exactly_one_agent() -> None:
     ws = await _workspace()
 
@@ -77,6 +81,8 @@ async def test_concurrent_first_resolution_materializes_exactly_one_agent() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-3")
+@pytest.mark.contract("behavioral")
 async def test_swapping_the_persona_keeps_the_agent_identity() -> None:
     ws = await _workspace()
     original = await workspace_agent.resolve_workspace_agent(ws)
@@ -92,6 +98,8 @@ async def test_swapping_the_persona_keeps_the_agent_identity() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-3")
+@pytest.mark.contract("behavioral")
 async def test_persona_swap_racing_first_materialization_is_not_lost() -> None:
     ws = await _workspace()
 
@@ -107,6 +115,8 @@ async def test_persona_swap_racing_first_materialization_is_not_lost() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persona", ["", "Program Manager", "../etc", "x" * 65])
+@pytest.mark.ac("ADR-092326-7ed7/AC-3")
+@pytest.mark.contract("behavioral")
 async def test_an_unshaped_persona_is_refused_before_anything_is_written(persona: str) -> None:
     ws = await _workspace()
     original = await workspace_agent.resolve_workspace_agent(ws)
@@ -118,6 +128,8 @@ async def test_an_unshaped_persona_is_refused_before_anything_is_written(persona
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-1")
+@pytest.mark.contract("behavioral")
 async def test_a_missing_or_deleted_workspace_gets_no_agent(
     canonical: InMemoryWorkspaceStore,
 ) -> None:
@@ -176,6 +188,8 @@ async def test_a_foreign_row_under_the_agent_id_is_refused_not_adopted() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-5")
+@pytest.mark.contract("behavioral")
 async def test_the_canonical_roster_gains_only_the_workspace_agents() -> None:
     before = dict(stores.agents.items())
     first_ws = await _workspace()
@@ -195,6 +209,9 @@ async def test_the_canonical_roster_gains_only_the_workspace_agents() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-2")
+@pytest.mark.ac("ADR-092326-7ed7/AC-3")
+@pytest.mark.contract("behavioral")
 async def test_identity_and_persona_survive_a_sqlite_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
