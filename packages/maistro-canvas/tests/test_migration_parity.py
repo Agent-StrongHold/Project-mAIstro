@@ -35,7 +35,19 @@ class _SingleJobStore:
         self.job = deepcopy(claimed)
         return deepcopy(self.job)
 
-    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
+    async def update_job(
+        self,
+        job: GenerationJobRecord,
+        *,
+        org_id: str,
+        expected_leased_by: str | None = None,
+    ) -> GenerationJobRecord:
+        if expected_leased_by is not None and self.job.leased_by != expected_leased_by:
+            from maistro_canvas.types import JobLeaseLostError
+
+            raise JobLeaseLostError(
+                f"job {job.id!r} lease no longer held by {expected_leased_by!r}"
+            )
         self.job = deepcopy(job)
         return deepcopy(self.job)
 
