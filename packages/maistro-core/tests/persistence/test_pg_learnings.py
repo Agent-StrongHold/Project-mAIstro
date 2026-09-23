@@ -12,12 +12,15 @@ from typing import Any
 
 import pytest
 
+from maistro.memory.vectors import EMBEDDING_DIMENSIONS
 from maistro.persistence.pg_learnings import (
     _PG_INSERT_FIELDS,
     PgLearningStore,
     similarity_query,
 )
 from maistro.types.memory import Learning, MemoryScope
+
+from .conftest import requires_postgres
 
 
 class FakeRecord(dict):
@@ -671,3 +674,190 @@ def test_a_malformed_trigger_keys_row_costs_that_row_and_no_others() -> None:
     assert _load_keys("not json at all") == []
     assert _load_keys('{"not": "an array"}') == []
     assert _load_keys(object()) == []
+
+
+# --------------------------------------------------------------------------
+# real-PostgreSQL legs: the similarity query's scope axes (#1156)
+#
+# The fakes above pin the SQL strings; only a real server proves that the
+# vector cast, the `<=>` ordering and the scope predicate resolve together.
+# The migrations suite (tests/migrations/test_memory_embeddings.py) drives
+# this method's org and agent axes, but no covered producer ever passed
+# `team_id` or `user_id` — the exact axes #1156 makes exact — so the
+# diff-coverage gate scored the team/user branches of the changed query as
+# untested code. These legs close that: every arc out of the changed
+# conditionals runs against a real pgvector column, with out-of-scope rows
+# deliberately the *better* vector match so a missing filter is visible in
+# the result set rather than hidden by the ranking.
+# --------------------------------------------------------------------------
+
+
+def _e1() -> list[float]:
+    """The unit vector along axis 0; its negation is the opposite direction."""
+    return [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
+
+
+def _hit_texts(hits: list[Learning]) -> list[str]:
+    return sorted(hit.learning for hit in hits)
+
+
+@requires_postgres
+async def test_find_similar_scope_axes_bind_exactly_against_a_real_server(
+    pg_pool: Any,
+) -> None:
+    store = PgLearningStore(pg_pool)
+    org = "org-embed-scope"
+    vector = _e1()
+    rows = [
+        make_learning(
+            learning="in every scope",
+            trigger_keys=["k-a"],
+            org_id=org,
+            team_id="team-red",
+            user_id="u1",
+            agent_id="scribe",
+        ),
+        make_learning(
+            learning="other team",
+            trigger_keys=["k-b"],
+            org_id=org,
+            team_id="team-blue",
+            user_id="u1",
+            agent_id="scribe",
+        ),
+        make_learning(
+            learning="other user",
+            trigger_keys=["k-c"],
+            org_id=org,
+            team_id="team-red",
+            user_id="u2",
+            agent_id="scribe",
+        ),
+        make_learning(
+            learning="other agent",
+            trigger_keys=["k-d"],
+            org_id=org,
+            team_id="team-red",
+            user_id="u1",
+            agent_id="wright",
+        ),
+        make_learning(
+            learning="shared pool",
+            trigger_keys=["k-e"],
+            org_id=org,
+            team_id="team-red",
+            user_id="u1",
+            agent_id="",
+        ),
+        make_learning(
+            learning="other org",
+            trigger_keys=["k-f"],
+            org_id="org-elsewhere",
+            team_id="team-red",
+            user_id="u1",
+            agent_id="scribe",
+        ),
+    ]
+    for learning in rows:
+        learning_id = await store.store(learning)
+        await store.set_embedding(learning_id, vector)
+    # Same team/user/agent as `in every scope`, but never embedded: the
+    # `embedding IS NOT NULL` predicate must keep it out of every result.
+    await store.store(
+        make_learning(
+            learning="never embedded",
+            trigger_keys=["k-g"],
+            org_id=org,
+            team_id="team-red",
+            user_id="u1",
+            agent_id="scribe",
+        )
+    )
+
+    assert _hit_texts(await store.find_similar(vector, org_id=org, team_id="team-red")) == [
+        "in every scope",
+        "other agent",
+        "other user",
+        "shared pool",
+    ]
+    assert _hit_texts(await store.find_similar(vector, org_id=org, user_id="u1")) == [
+        "in every scope",
+        "other agent",
+        "other team",
+        "shared pool",
+    ]
+    # `agent_id` stays the one widening axis: an agent-scoped read still sees
+    # the org shared pool (the same rule the SQL twins and the memory store
+    # share via `learning_scope.AGENT_EMPTY_WIDENS`).
+    assert _hit_texts(await store.find_similar(vector, org_id=org, agent_id="scribe")) == [
+        "in every scope",
+        "other team",
+        "other user",
+        "shared pool",
+    ]
+    assert _hit_texts(
+        await store.find_similar(
+            vector, org_id=org, team_id="team-red", user_id="u1", agent_id="scribe"
+        )
+    ) == ["in every scope", "shared pool"]
+    assert _hit_texts(await store.find_similar(vector, org_id=org)) == [
+        "in every scope",
+        "other agent",
+        "other team",
+        "other user",
+        "shared pool",
+    ]
+    assert _hit_texts(await store.find_similar(vector, org_id="org-elsewhere")) == [
+        "other org",
+    ]
+
+
+@requires_postgres
+async def test_find_similar_orders_by_cosine_distance_nearest_first(
+    pg_pool: Any,
+) -> None:
+    store = PgLearningStore(pg_pool)
+    org = "org-embed-rank"
+    far = await store.store(make_learning(learning="far", trigger_keys=["k-rank-far"], org_id=org))
+    near = await store.store(
+        make_learning(learning="near", trigger_keys=["k-rank-near"], org_id=org)
+    )
+    query = _e1()
+    await store.set_embedding(far, [-1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1))
+    await store.set_embedding(near, query)
+
+    hits = await store.find_similar(query, org_id=org)
+
+    assert [hit.learning for hit in hits] == ["near", "far"]
+
+
+@requires_postgres
+async def test_find_similar_refuses_a_width_the_column_cannot_hold(
+    pg_pool: Any,
+) -> None:
+    store = PgLearningStore(pg_pool)
+
+    with pytest.raises(ValueError, match=f"vector\\({EMBEDDING_DIMENSIONS}\\)"):
+        await store.find_similar([0.1, 0.2], org_id="org-x")
+
+
+@requires_postgres
+async def test_set_embedding_refuses_a_width_the_column_cannot_hold(
+    pg_pool: Any,
+) -> None:
+    store = PgLearningStore(pg_pool)
+    learning_id = await store.store(make_learning())
+
+    with pytest.raises(ValueError, match=f"vector\\({EMBEDDING_DIMENSIONS}\\)"):
+        await store.set_embedding(learning_id, [0.1, 0.2])
+
+
+@requires_postgres
+async def test_text_of_reads_the_text_that_actually_persisted(pg_pool: Any) -> None:
+    """`store` deduplicates, so a caller embedding after a write must read the
+    surviving row — provenance for the vector, per `DurableHybridLearningStore`."""
+    store = PgLearningStore(pg_pool)
+    learning_id = await store.store(make_learning(learning="surviving text"))
+
+    assert await store.text_of(learning_id) == "surviving text"
+    assert await store.text_of(10**9) == ""
