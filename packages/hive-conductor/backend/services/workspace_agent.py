@@ -25,7 +25,12 @@ from config import get_settings
 from models.schemas import Agent
 
 from services import workspace_authority
-from services.agent_materialization import update_agent_definition, upsert_agent_definition
+from services.agent_materialization import (
+    delete_agent_definition,
+    insert_agent_definition_once,
+    update_agent_definition,
+    workspace_agent_id,
+)
 
 DEFAULT_PERSONA_TEMPLATE_ID = "program_manager"
 #: Provenance source stamped on the Workspace Agent's row.
@@ -43,11 +48,6 @@ class WorkspaceNotFound(LookupError):
 
 class WorkspaceAgentConflict(RuntimeError):
     """The Workspace Agent's id holds a row that belongs to another Workspace."""
-
-
-def workspace_agent_id(workspace_id: str) -> str:
-    """The Workspace Agent's stable id; a pure function of the Workspace id."""
-    return f"workspace-agent:{workspace_id}"
 
 
 def persona_template_id(agent: Agent) -> str:
@@ -85,11 +85,7 @@ async def _existing_or_materialized(workspace_id: str) -> Agent:
     aid = workspace_agent_id(workspace_id)
     existing = stores.agents.get(aid)
     if existing is not None:
-        if existing.workspace_id != workspace_id:
-            raise WorkspaceAgentConflict(
-                f"{aid} is held by a row of workspace {existing.workspace_id!r}"
-            )
-        return existing
+        return _owned_by(existing, workspace_id)
     now = datetime.now(UTC)
     definition = Agent(
         id=aid,
@@ -102,15 +98,38 @@ async def _existing_or_materialized(workspace_id: str) -> Agent:
         created_at=now,
         config=_persona_config({}, DEFAULT_PERSONA_TEMPLATE_ID),
     )
-    return await upsert_agent_definition(definition, source=WORKSPACE_AGENT_SOURCE)
+    # Insert-if-absent: a row another process materialized first -- its
+    # creation time, a persona it already swapped -- is adopted, never replaced.
+    stored = _owned_by(
+        await insert_agent_definition_once(definition, source=WORKSPACE_AGENT_SOURCE),
+        workspace_id,
+    )
+    # The Workspace may have been deleted while the scan was awaited, after its
+    # delete cascade already ran; this row must not outlive it. A deletion
+    # landing after this read runs its cascade after the insert, so it
+    # removes the row itself.
+    canonical = await workspace_authority.canonical_workspace_store()
+    if await canonical.get(workspace_id) is None:
+        delete_agent_definition(aid)
+        raise WorkspaceNotFound(workspace_id)
+    return stored
+
+
+def _owned_by(agent: Agent, workspace_id: str) -> Agent:
+    if agent.workspace_id != workspace_id:
+        raise WorkspaceAgentConflict(
+            f"{agent.id} is held by a row of workspace {agent.workspace_id!r}"
+        )
+    return agent
 
 
 async def resolve_workspace_agent(workspace_id: str) -> Agent:
     """Return the Workspace's single canonical Agent, materializing it once.
 
     Concurrent first calls converge: in-process they serialize on the
-    Workspace's lock, and across processes the deterministic id makes every
-    writer upsert the same roster row rather than add one. A Workspace the
+    Workspace's lock, and across processes the deterministic id is inserted
+    once -- the durable primary key picks one winner and every other writer
+    adopts that row, identity fields and persona included. A Workspace the
     canonical store does not hold -- never created, or deleted -- raises
     `WorkspaceNotFound` and writes nothing.
     """

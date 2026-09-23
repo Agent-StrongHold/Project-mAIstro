@@ -63,8 +63,13 @@ owned by the canonical `WorkspaceStore` behind
 
 **1. Each Workspace has one dedicated Workspace Agent.** It is a canonical
 row in the one roster. It is materialized once per Workspace on first need,
-through `agent_materialization.upsert_agent_definition`, so it gets the same
-Warden scan-before-store and provenance stamp as every other definition. Its
+through `agent_materialization.insert_agent_definition_once`, so it gets the
+same Warden scan-before-store and provenance stamp as every other definition.
+The write is insert-if-absent: a row another process materialized first is
+adopted with its creation time and persona, never replaced. If the Workspace
+is deleted while the scan is awaited, the resolver removes the row it just
+wrote and raises `WorkspaceNotFound`; the delete cascade also removes the
+Workspace Agent by its id, even when the deleting process never cached it. Its
 id is `workspace-agent:{workspace_id}`, a pure function of the Workspace id.
 No other producer can mint an id in that namespace: spawns and chat actions
 key `{workspace}.{name}` with no dot in the name, CRUD rows are uuid4, Forge
@@ -88,7 +93,9 @@ concurrent first requests race, exactly one claim wins. Each loser deletes the
 Workspace it created and adopts the winner's. If the winner's Workspace
 presentation is not yet loaded in the loser's process, the loser answers
 `DefaultWorkspaceUnavailable` (retryable). It never mints a second default.
-Resolution starts at the caller's latest generation. A default that was
+Resolution starts at the caller's latest generation, read forward from the
+durable claims so one another process claimed since this process loaded is
+never missed. A default that was
 deleted, or that the caller no longer owns, is therefore retired for good: the
 next generation is claimed for a fresh Workspace, and re-adding the caller to
 the old one never makes it the default again. (`services/default_workspace.py`)
@@ -157,9 +164,10 @@ Scenario: The default route returns the default Workspace with its Agent
 
 ### Negative / Trade-offs
 - In-process serialization uses per-key `asyncio` locks. Across processes, the
-  Agent's convergence comes from the deterministic id (every writer upserts
-  the same row). A persona swap that races a first materialization in
-  *another* process can therefore be overwritten by it. Hive runs as a single
+  Agent's convergence comes from the deterministic id and the durable primary
+  key: the first insert wins and every other writer adopts that row. Two
+  persona swaps in different processes remain last-writer-wins, and a
+  process's roster cache can lag a swap made elsewhere. Hive runs as a single
   process today.
 - A crash between creating a default Workspace and committing its claim
   leaves an unclaimed "Personal" Workspace that the caller owns. The next

@@ -345,3 +345,52 @@ async def test_the_default_survives_a_sqlite_restart(
 
     assert after_restart.id == created.id
     assert [w.workspace_id for w in owned] == [created.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-4")
+@pytest.mark.contract("behavioral")
+async def test_a_later_generation_another_process_claimed_wins_over_the_cached_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aiosqlite
+
+    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+    from maistro.state import PersistedStore, State
+    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
+
+    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
+    state = State(db_path=str(tmp_path / "hive.db"))
+    try:
+        scopes = SqliteProjectScopeStore(conn)
+        await scopes.ensure_schema()
+        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
+        await canonical.ensure_schema()
+        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
+        persisted = PersistedStore(state)
+        persisted.initialize()
+        monkeypatch.setattr(stores, "_persisted", persisted)
+
+        retired = await default_workspace.resolve_default_workspace("alice")
+        # Another worker saw alice demoted, retired generation 0 and claimed
+        # generation 1; alice was later restored as an owner of the old one.
+        # This process's claim cache still holds generation 0 only.
+        successor = await canonical.create(creator_user_id="alice", name="Successor")
+        workspace_authority.presentation_store()[successor.workspace_id] = WorkspacePresentation(
+            workspace_id=successor.workspace_id,
+            persona_template_id="personal",
+            updated_at=datetime.now(UTC),
+        )
+        assert persisted.put_raw_if_absent(
+            default_workspace.CLAIM_STORE,
+            default_workspace.claim_key("alice", 1),
+            json.dumps({"user_id": "alice", "workspace_id": successor.workspace_id}),
+        )
+        assert await workspace_authority.member_role("alice", retired.id) == "owner"
+
+        resolved = await default_workspace.resolve_default_workspace("alice")
+    finally:
+        state.close()
+        await conn.close()
+
+    assert resolved.id == successor.workspace_id

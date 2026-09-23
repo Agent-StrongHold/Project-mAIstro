@@ -53,6 +53,11 @@ def _latest_generation(store: JsonStore, user_id: str) -> int:
         owner, _, generation = key.rpartition("#")
         if owner == user_id and generation.isdigit():
             latest = max(latest, int(generation))
+    # The cache is loaded once per bind; another process may have claimed
+    # later generations since. Claims are insert-once and contiguous, so
+    # probing forward from the cached head finds the durable one.
+    while store.refresh(claim_key(user_id, latest + 1)):
+        latest += 1
     return latest
 
 

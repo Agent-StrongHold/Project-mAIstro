@@ -257,3 +257,110 @@ async def test_identity_and_persona_survive_a_sqlite_restart(
 
     assert list(rows) == [resolved[0].id]
     assert workspace_agent.persona_template_id(rows[resolved[0].id]) == "delivery"
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-2")
+@pytest.mark.contract("behavioral")
+async def test_a_row_another_process_materialized_first_is_adopted_not_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from models.schemas import Agent
+
+    from maistro.state import PersistedStore, State
+
+    state = State(db_path=str(tmp_path / "hive.db"))
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    monkeypatch.setattr(stores.agents, "_persisted", persisted)
+    try:
+        ws = await _workspace()
+        aid = workspace_agent.workspace_agent_id(ws)
+        # Another worker materialized this Workspace's Agent and swapped its
+        # persona; this process's roster cache has never seen that row.
+        born = datetime.now(UTC) - timedelta(days=1)
+        persisted.put(
+            "agents",
+            aid,
+            Agent(
+                id=aid,
+                workspace_id=ws,
+                name=aid,
+                description="Workspace Agent",
+                model="m",
+                status="idle",
+                created_at=born,
+                config={"workspace_agent": True, "persona": {"template_id": "delivery"}},
+            ),
+        )
+        assert aid not in stores.agents
+
+        resolved = await workspace_agent.resolve_workspace_agent(ws)
+        durable = persisted.get("agents", aid, Agent)
+    finally:
+        monkeypatch.setattr(stores.agents, "_persisted", None)
+        state.close()
+
+    assert resolved.created_at == born
+    assert workspace_agent.persona_template_id(resolved) == "delivery"
+    assert durable is not None
+    assert durable.created_at == born
+    assert workspace_agent.persona_template_id(durable) == "delivery"
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-1")
+@pytest.mark.contract("behavioral")
+async def test_a_workspace_deleted_during_the_scan_leaves_no_orphan_agent(
+    canonical: InMemoryWorkspaceStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from services import agent_materialization
+
+    ws = await _workspace()
+
+    async def _scan_while_the_workspace_is_deleted(*_args, **_kwargs):
+        # The delete route: canonical delete, then the roster cascade -- both
+        # finish while materialization awaits its Warden scan.
+        await workspace_authority.delete_workspace(ws)
+        agent_materialization.delete_workspace_agents(ws)
+        return {"findings": [], "status": "clean"}
+
+    monkeypatch.setattr(agent_materialization, "scan_config", _scan_while_the_workspace_is_deleted)
+
+    with pytest.raises(workspace_agent.WorkspaceNotFound):
+        await workspace_agent.resolve_workspace_agent(ws)
+
+    assert await canonical.get(ws) is None
+    assert workspace_agent.workspace_agent_id(ws) not in stores.agents
+
+
+@pytest.mark.asyncio
+@pytest.mark.ac("ADR-092326-7ed7/AC-1")
+@pytest.mark.contract("behavioral")
+async def test_the_delete_cascade_removes_a_workspace_agent_this_process_never_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from models.schemas import Agent
+    from services.agent_materialization import delete_workspace_agents
+
+    from maistro.state import PersistedStore, State
+
+    state = State(db_path=str(tmp_path / "hive.db"))
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    monkeypatch.setattr(stores.agents, "_persisted", persisted)
+    try:
+        ws = await _workspace()
+        agent = await workspace_agent.resolve_workspace_agent(ws)
+        # The deleting process loaded its roster before the Agent existed.
+        stores.agents._data.pop(agent.id)
+
+        delete_workspace_agents(ws)
+        durable = persisted.get("agents", agent.id, Agent)
+    finally:
+        monkeypatch.setattr(stores.agents, "_persisted", None)
+        state.close()
+
+    assert durable is None
