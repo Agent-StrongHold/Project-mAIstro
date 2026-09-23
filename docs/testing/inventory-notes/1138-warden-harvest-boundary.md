@@ -44,3 +44,19 @@ admission fails 2 tests; both mutations reverted with the tree byte-verified
 clean. One unrelated pre-existing upstream failure
 (`maistro-core/tests/security/test_log_redaction.py::test_install_is_idempotent`)
 reproduces on canonical develop and is out of scope for this lane.
+
+Revalidated at merge head `e9d16cdcc` (develop base `411a21856`, no test
+delta): that develop merge added only a CHANGELOG entry, the #44 container-
+resolver inventory note, and a maistro-core composition test — it touched no
+`maistro-rsi`/`maistro-evolve` file. Full battery re-executed at this head:
+756 rsi tests pass, 645 evolve tests pass (6 skipped), 13
+non-production-reachability node IDs pass, 46 targeted adversarial tests
+(shape relocation, hostile resume, unavailable policy, correlation/redaction)
+pass, ruff check/format clean, suite-inventory (13 suites), security-inventory
+(59 paths), and the four reachability gates pass. Mutation checks re-executed
+at this head: removing the runner injected-llm_call guard fails
+`test_injected_llm_call_is_guarded_for_both_genome_evals` +
+`test_llm_call_reaches_evaluate_genome`; ignoring the resume-patch admission
+fails `test_hostile_resumed_patch_is_refused_before_apply` +
+`test_unavailable_warden_refuses_resumed_patch`; both mutations reverted with
+`git status --porcelain` empty and the files byte-identical to HEAD.
