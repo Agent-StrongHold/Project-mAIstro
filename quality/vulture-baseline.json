@@ -1050,7 +1050,6 @@
         "packages/maistro-core/src/maistro/orchestrator/planner.py::unused method 'execute_ensemble'",
         "packages/maistro-core/src/maistro/orchestrator/waves/ensemble.py::unused class 'AsyncResultComparator'",
         "packages/maistro-core/src/maistro/orchestrator/waves/ensemble.py::unused function 'task_to_wave_task'",
-        "packages/maistro-core/src/maistro/orchestrator/waves/ensemble.py::unused method 'recover'",
         "packages/maistro-core/src/maistro/orchestrator/waves/ensemble.py::unused method 'run_ensemble'",
         "packages/maistro-core/src/maistro/orchestrator/waves/fan_in.py::unused function 'fan_in'",
         "packages/maistro-core/src/maistro/orchestrator/waves/fan_out.py::unused function 'validate_fan_out_width'",
