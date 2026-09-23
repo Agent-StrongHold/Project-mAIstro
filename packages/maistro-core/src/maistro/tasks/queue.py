@@ -499,7 +499,10 @@ class TaskQueue:
         the same durable write as admission. Rehydrating from that source closes
         both process-death windows without adding a second queue lifecycle.
         A malformed snapshot is claimed and failed on the canonical Run so it
-        cannot remain an invisible QUEUED row forever.
+        cannot remain an invisible QUEUED row forever. Task Runs left RUNNING
+        with no physical execution evidence — the residue of a refused
+        terminalization, or of a dispatch that wrote RUNNING separately from
+        its Attempt — are failed visibly for the same reason (#1114).
         """
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -535,7 +538,60 @@ class TaskQueue:
                 )
             if len(queued) < batch_size:
                 break
+        await self._terminalize_stranded_claims(run_store, batch_size=batch_size)
         return recovered
+
+    async def _terminalize_stranded_claims(self, run_store: Any, *, batch_size: int) -> None:
+        """Fail task Runs claiming execution with no physical evidence (#1114).
+
+        A task Run that is RUNNING with no NodeRun has no Attempt, no lease and
+        no dispatch path: on a claiming store RUNNING is only ever committed
+        together with the NodeRun and leased Attempt that make it true, so this
+        state is the residue of a terminalization whose FAILED write was
+        refused, of a pre-repair worker that wrote RUNNING before creating its
+        evidence, or of a legacy worker mid-dispatch during a rolling upgrade —
+        whose execute then fails visibly against the terminal Run rather than
+        silently racing the recovering process. Failing it is the honest
+        disposition, and every restart retries it, so it cannot outlive
+        recovery as an immortal RUNNING Run.
+        """
+        from maistro.runs.store import run_cursor_key
+
+        after: tuple[str, str] | None = None
+        while True:
+            running = await run_store.list_by_status(
+                RunStatus.RUNNING, limit=batch_size, after=after
+            )
+            if not running:
+                return
+            for run in running:
+                after = run_cursor_key(run)
+                if run.provenance.get(ADMISSION_SOURCE) != TASK_QUEUE_SOURCE:
+                    continue
+                if await run_store.list_node_runs(run.run_id):
+                    # Physical evidence exists: the Attempt lease sweep (#232)
+                    # owns reclaiming it, not this scan.
+                    continue
+                try:
+                    await run_store.transition_run(
+                        run.run_id,
+                        RunStatus.FAILED,
+                        error=(
+                            "task_recovery_failed: running task Run has no physical "
+                            "execution evidence (stranded dispatch)"
+                        ),
+                    )
+                    await logger.awarning(
+                        "task_recovery_stranded_claim_failed",
+                        run_id=run.run_id,
+                    )
+                except Exception:
+                    await logger.awarning(
+                        "task_recovery_stranded_claim_not_terminalized",
+                        run_id=run.run_id,
+                    )
+            if len(running) < batch_size:
+                return
 
     async def _fail_unrecoverable_run(self, run_store: Any, run_id: str, reason: str) -> None:
         """Record malformed admitted work as a terminal canonical failure."""
@@ -553,6 +609,11 @@ class TaskQueue:
                 error=f"task_recovery_failed: {reason}",
             )
         except Exception:
+            # Not terminalized this pass — but no longer invisible either: the
+            # Run is now RUNNING with no NodeRun, which
+            # `_terminalize_stranded_claims` re-examines on this and every
+            # later restart until the FAILED write lands. Eventual, explicit
+            # disposition rather than an immortal Run (#1114).
             logger.warning("task recovery failure was not terminalized", run_id=run_id)
 
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskResponse | None:

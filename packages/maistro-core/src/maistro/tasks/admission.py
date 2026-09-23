@@ -133,6 +133,13 @@ class TaskRunAdmitter:
         self._project_id = project_id
         self._projects = project_store
         self._intents = intents
+        # Whether dispatch on this store is claimed atomically with its
+        # physical evidence (#544, #1114). On a claiming store the Run's
+        # QUEUED->RUNNING write belongs to `claim_consumer_run` — the same
+        # transaction as the NodeRun and leased Attempt that make RUNNING
+        # true — so `record_transition` must not make that write separately
+        # for a task phase and reopen the crash window this repair closes.
+        self._consumer_claims = callable(getattr(run_store, "claim_consumer_run", None))
 
     async def _resolve_project_id(self) -> str:
         if self._project_id is not None:
@@ -262,6 +269,21 @@ class TaskRunAdmitter:
         run = await self._runs.get_run(run_id)
         if run is None:
             return False
+        if (
+            self._consumer_claims
+            and target is RunStatus.RUNNING
+            and run.status in (RunStatus.QUEUED, RunStatus.RUNNING)
+        ):
+            # A phase of one execution, not a Run lifecycle event. On a claiming
+            # store the QUEUED->RUNNING dispatch write is the atomic consumer
+            # claim: it lands in the same transaction as the NodeRun and leased
+            # Attempt, so a worker death before it leaves the Run QUEUED for
+            # `TaskQueue.recover` and one after it leaves leased evidence for
+            # the Attempt sweep. Writing RUNNING here, separately from that
+            # evidence, is exactly the gap that stranded a RUNNING Run with no
+            # Attempt and no recovery path (#1114). The receipt may record its
+            # phase; terminal targets below still write and still refuse.
+            return True
         if run.status is target:
             # QUEUED -> RUNNING is the physical dispatch fence. A second
             # recovered receipt must not treat another worker's claim as its

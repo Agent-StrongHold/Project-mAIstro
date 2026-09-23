@@ -11,6 +11,7 @@ import structlog
 
 from maistro.agents.types import ConductorOutput
 from maistro.constants import WORKER_POLL_TIMEOUT
+from maistro.runs.consumer_claim import ConsumerClaimLost
 from maistro.tasks.execution import TaskAttemptExecutor, TaskExecutionFailed
 from maistro.tasks.lanes import Lane, LaneGate
 from maistro.tasks.models import TaskCreate, TaskProgress, TaskResult, TaskStatus
@@ -333,6 +334,14 @@ class TaskRunner:
 
             try:
                 result = await self._execute_work(task.run_id, request)
+            except ConsumerClaimLost:
+                # Another dispatcher won the atomic claim (#1114). No work ran
+                # here, so there is nothing to fail: recording a failure would
+                # terminalize the winner's Run out from under it. Same
+                # disposition as a refused Run — put the receipt down and let
+                # the claim's owner finish the work.
+                await logger.awarning("task_abandoned_claim_lost", task_id=task_id)
+                return
             except TaskExecutionFailed as exc:
                 # The Attempt already recorded the failure. The receipt's own
                 # failure branch below is unchanged, so a `/tasks` caller reads

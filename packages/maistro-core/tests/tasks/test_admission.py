@@ -304,6 +304,150 @@ async def test_two_recovery_receipts_have_one_canonical_transition_winner(scoped
     assert run is not None and run.status is RunStatus.RUNNING
 
 
+# ── the dispatch claim is atomic with its physical evidence (#1114) ──
+
+
+@pytest.fixture
+async def claiming():
+    """A store with the canonical consumer-claim capability, the shape every
+    durable deployment wires (`wire_execution_spine`)."""
+    from maistro.runs.consumer_claim import ClaimingInMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    runs = ClaimingInMemoryRunStore(project_store=projects)
+    return runs, TaskRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+
+
+async def test_a_phase_transition_does_not_write_the_dispatch_claim(claiming) -> None:
+    """On a claiming store the Run's QUEUED→RUNNING write belongs to the atomic
+    consumer claim, not to the receipt's phase. Writing it here — separately
+    from the NodeRun and leased Attempt that make it true — was the crash gap
+    that stranded a RUNNING Run with no Attempt and no recovery path."""
+    runs, admitter = claiming
+    queue = TaskQueue(admitter=admitter)
+    task = await queue.submit(TaskCreate(description="phase only"))
+
+    assert await queue.update_status(task.task_id, TaskStatus.PLANNING) is True
+
+    run = await runs.get_run(task.run_id or "")
+    assert run is not None and run.status is RunStatus.QUEUED
+
+
+async def test_death_after_the_dispatch_phase_leaves_the_run_queued_and_recoverable(
+    claiming,
+) -> None:
+    """Crash between the receipt's PLANNING move and the physical claim — the
+    #1114 boundary one step after admission: the Run is still QUEUED, so a
+    restart re-dispatches it and it executes under its original identity."""
+    from maistro.agents.types import ConductorOutput
+    from maistro.tasks.execution import TaskAttemptExecutor
+    from maistro.tasks.runner import TaskRunner
+
+    runs, admitter = claiming
+    queue = TaskQueue(admitter=admitter)
+    submitted = await queue.submit(TaskCreate(description="survive the phase gap"))
+    assert await queue.update_status(submitted.task_id, TaskStatus.PLANNING) is True
+
+    # The pre-repair dispatch wrote RUNNING here; a death in that window left
+    # it stranded with no Attempt and no recovery path.
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.QUEUED
+
+    restarted = TaskQueue(admitter=admitter)
+    assert await restarted.recover(runs) == 1
+
+    async def execute(request: TaskCreate) -> ConductorOutput:
+        return ConductorOutput(success=True, final_answer=request.description)
+
+    await TaskRunner(restarted, execute, attempts=TaskAttemptExecutor(runs))._execute_task(
+        submitted.task_id
+    )
+
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.COMPLETED
+    node_runs = await runs.list_node_runs(submitted.run_id or "")
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status.value == "completed"
+
+
+async def test_first_dispatch_writes_running_together_with_its_evidence(claiming) -> None:
+    """The claim commits the Run transition, the NodeRun and a leased Attempt
+    in one store transaction, so RUNNING is never a claim without evidence
+    and a crash after it leaves a lease the Attempt sweep can reclaim."""
+    from maistro.agents.types import ConductorOutput
+    from maistro.tasks.execution import TASK_EXECUTOR_ID, TaskAttemptExecutor
+    from maistro.tasks.runner import TaskRunner
+
+    runs, admitter = claiming
+    queue = TaskQueue(admitter=admitter)
+    submitted = await queue.submit(TaskCreate(description="claim with evidence"))
+
+    async def execute(request: TaskCreate) -> ConductorOutput:
+        return ConductorOutput(success=True, final_answer=request.description)
+
+    await TaskRunner(queue, execute, attempts=TaskAttemptExecutor(runs))._execute_task(
+        submitted.task_id
+    )
+
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.COMPLETED
+    node_runs = await runs.list_node_runs(submitted.run_id or "")
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status.value == "completed"
+    assert attempts[0].executor_id == TASK_EXECUTOR_ID
+    assert attempts[0].execution_lease is not None
+
+
+async def test_a_duplicate_delivery_loses_the_claim_without_touching_the_winner(
+    claiming,
+) -> None:
+    """The claim is the duplicate-delivery fence: a dispatcher that races a
+    winner holding the claim abandons before any work runs, and its failure
+    path must not terminalize the winner's Run."""
+    from maistro.agents.types import ConductorOutput
+    from maistro.tasks.execution import DEFAULT_TASK_LEASE_TTL, TaskAttemptExecutor
+    from maistro.tasks.runner import TaskRunner
+
+    runs, admitter = claiming
+    queue = TaskQueue(admitter=admitter)
+    submitted = await queue.submit(TaskCreate(description="race the claim"))
+
+    # The winner: an in-flight atomic claim (RUNNING + NodeRun + leased Attempt).
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    node_id = run.graph.materialize().nodes[0].node_id
+    await runs.claim_consumer_run(
+        submitted.run_id or "",
+        node_id=node_id,
+        runtime_id="PythonExecutionRuntime",
+        executor_id="task_runner",
+        lease_ttl=DEFAULT_TASK_LEASE_TTL,
+    )
+
+    async def execute(_request: TaskCreate) -> ConductorOutput:
+        raise AssertionError("a lost claim must not execute the work")
+
+    await TaskRunner(queue, execute, attempts=TaskAttemptExecutor(runs))._execute_task(
+        submitted.task_id
+    )
+
+    # The winner's Run is untouched — not failed, not completed — and no
+    # second Attempt was stacked under its NodeRun.
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.RUNNING
+    node_runs = await runs.list_node_runs(submitted.run_id or "")
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    receipt = queue.get(submitted.task_id)
+    assert receipt is not None and receipt.status is not TaskStatus.COMPLETED
+
+
 async def test_malformed_recovery_payload_fails_the_canonical_run(scoped) -> None:
     _projects, runs, _root, project = scoped
     admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
@@ -377,9 +521,11 @@ async def test_recovery_rejects_a_non_positive_batch_size(scoped) -> None:
 
 async def test_recovery_ignores_queued_runs_from_other_admission_sources(scoped) -> None:
     """QUEUED Runs admitted by another source are owned by their own consumer
-    (#251); the task queue must not steal them into a second lifecycle."""
+    (#251); the task queue must not steal them into a second lifecycle. The
+    stranded-claim scan honours the same boundary: a RUNNING Run from another
+    source is its owner's business even without a NodeRun."""
     _projects, runs, root, _project = scoped
-    await admit_direct_work(
+    scheduled = await admit_direct_work(
         runs,
         workspace_id="w1",
         project_id=root.project_id,
@@ -388,12 +534,25 @@ async def test_recovery_ignores_queued_runs_from_other_admission_sources(scoped)
         source="schedule",
         initial_status=RunStatus.QUEUED,
     )
+    stranded_schedule = await admit_direct_work(
+        runs,
+        workspace_id="w1",
+        project_id=root.project_id,
+        node_type=DELEGATE_NODE_KIND,
+        name="scheduled work left running",
+        source="schedule",
+        initial_status=RunStatus.QUEUED,
+    )
+    await runs.transition_run(stranded_schedule.run_id, RunStatus.RUNNING)
 
     restarted = TaskQueue()
     assert await restarted.recover(runs) == 0
     queued = await runs.list_by_status(RunStatus.QUEUED)
     assert len(queued) == 1
     assert queued[0].status is RunStatus.QUEUED
+    running = await runs.get_run(stranded_schedule.run_id)
+    assert running is not None and running.status is RunStatus.RUNNING
+    assert scheduled.run_id != stranded_schedule.run_id
 
 
 async def test_recovery_does_not_double_enqueue_a_receipt_still_in_memory(scoped) -> None:
@@ -427,6 +586,9 @@ class _RefusingStore:
     async def list_by_status(self, status: Any, **kwargs: Any) -> Any:
         return await self._store.list_by_status(status, **kwargs)
 
+    async def list_node_runs(self, run_id: str) -> Any:
+        return await self._store.list_node_runs(run_id)
+
     async def transition_run(self, run_id: str, target: Any, **kwargs: Any) -> Any:
         if target is RunStatus.RUNNING and self._refuse_running:
             raise RuntimeError("run claimed by a concurrent worker")
@@ -455,7 +617,9 @@ async def test_recovery_yields_the_run_a_worker_already_claimed(scoped) -> None:
 
 async def test_recovery_survives_a_refused_terminalization(scoped) -> None:
     """A store that refuses the FAILED write must not crash recovery of the
-    remaining runs; the claimed Run is no longer QUEUED, so it cannot strand."""
+    remaining runs — and the half-terminalized Run cannot outlive recovery:
+    RUNNING with no NodeRun is re-examined by every later pass, so the
+    disposition lands as soon as the store accepts it (#1114)."""
     _projects, runs, _root, project = scoped
     admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
     submitted = await TaskQueue(admitter=admitter).submit(TaskCreate(description="stuck"))
@@ -468,6 +632,61 @@ async def test_recovery_survives_a_refused_terminalization(scoped) -> None:
     run = await runs.get_run(submitted.run_id or "")
     assert run is not None
     assert run.status is RunStatus.RUNNING
+
+    # The refused write is retried by the next restart's stranded-claim scan,
+    # so a transiently failing store cannot leave an immortal RUNNING Run.
+    settled = TaskQueue()
+    assert await settled.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+    assert run.error is not None and "stranded dispatch" in run.error
+
+
+async def test_recovery_terminalizes_a_stranded_running_claim(claiming) -> None:
+    """A task Run left RUNNING with no NodeRun — what a pre-repair worker
+    wrote before creating its evidence, or a refused terminalization left
+    behind — is failed visibly rather than skipped forever (#1114)."""
+    runs, admitter = claiming
+    submitted = await TaskQueue(admitter=admitter).submit(TaskCreate(description="stranded"))
+    await runs.transition_run(submitted.run_id or "", RunStatus.RUNNING)
+
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    assert run.status is RunStatus.FAILED
+    assert run.error is not None and "stranded dispatch" in run.error
+
+
+async def test_recovery_leaves_a_claimed_run_to_the_attempt_sweep(claiming) -> None:
+    """RUNNING *with* physical evidence is a live claim: the Attempt lease
+    sweep (#232) owns reclaiming it, and recovery must neither re-queue nor
+    terminalize it as stranded."""
+    from maistro.tasks.execution import DEFAULT_TASK_LEASE_TTL
+
+    runs, admitter = claiming
+    submitted = await TaskQueue(admitter=admitter).submit(
+        TaskCreate(description="claimed and live")
+    )
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None
+    node_id = run.graph.materialize().nodes[0].node_id
+    await runs.claim_consumer_run(
+        submitted.run_id or "",
+        node_id=node_id,
+        runtime_id="PythonExecutionRuntime",
+        executor_id="task_runner",
+        lease_ttl=DEFAULT_TASK_LEASE_TTL,
+    )
+
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.RUNNING
+    node_runs = await runs.list_node_runs(submitted.run_id or "")
+    assert len(node_runs) == 1
+    assert restarted.list_tasks()[0] == []
 
 
 async def test_postgres_queued_task_rehydrates_after_queue_restart(pg_pool) -> None:
@@ -589,6 +808,135 @@ async def test_postgres_malformed_admission_gets_a_terminal_disposition(pg_pool)
     run = await runs.get_run(submitted.run_id or "")
     assert run is not None and run.status is RunStatus.FAILED
     assert run.error is not None and "missing durable task payload" in run.error
+
+
+async def test_postgres_death_after_receipt_before_notification_executes_original_identity(
+    pg_pool,
+) -> None:
+    """Crash at boundary 2 against the durable store: the receipt and its
+    durable payload are committed, but the enqueue notification never
+    happened. Recovery from PostgreSQL alone must re-dispatch the task under
+    its original Run/NodeRun/Attempt chain (#1114)."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.agents.types import ConductorOutput
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.runs.consumer_claim import ClaimingPgRunStore
+    from maistro.tasks.execution import TaskAttemptExecutor
+    from maistro.tasks.runner import TaskRunner
+
+    class _ProcessDeath(BaseException):
+        pass
+
+    class _CrashQueue:
+        async def put(self, _task_id):
+            raise _ProcessDeath
+
+    projects = PgProjectScopeStore(pg_pool)
+    root = await projects.create_root("pg-crash-notification")
+    runs = ClaimingPgRunStore(pg_pool, project_store=projects)
+    admitter = TaskRunAdmitter(
+        runs, workspace_id="pg-crash-notification", project_id=root.project_id
+    )
+    queue = TaskQueue(admitter=admitter)
+    queue._pending = _CrashQueue()  # type: ignore[assignment]
+    with pytest.raises(_ProcessDeath):
+        await queue.submit(TaskCreate(description="pg death before notification"))
+
+    restarted = TaskQueue(admitter=admitter)
+    assert await restarted.recover(runs) == 1
+    queued = restarted.list_tasks()[0]
+    assert len(queued) == 1 and queued[0].run_id is not None
+
+    async def execute(request: TaskCreate) -> ConductorOutput:
+        return ConductorOutput(success=True, final_answer=request.description)
+
+    await TaskRunner(
+        restarted,
+        execute,
+        attempts=TaskAttemptExecutor(runs),
+    )._execute_task(queued[0].task_id)
+
+    run = await runs.get_run(queued[0].run_id or "")
+    assert run is not None and run.status is RunStatus.COMPLETED
+    node_runs = await runs.list_node_runs(queued[0].run_id or "")
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status.value == "completed"
+
+
+async def test_postgres_death_between_dispatch_phase_and_claim_executes_original_identity(
+    pg_pool,
+) -> None:
+    """The repair's own boundary on the durable store: a worker moved the
+    receipt to PLANNING and died before the atomic claim. PostgreSQL still
+    shows the Run QUEUED, so the restart re-dispatches and executes the
+    original identity instead of finding an immortal RUNNING Run."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.agents.types import ConductorOutput
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.runs.consumer_claim import ClaimingPgRunStore
+    from maistro.tasks.execution import TaskAttemptExecutor
+    from maistro.tasks.runner import TaskRunner
+
+    projects = PgProjectScopeStore(pg_pool)
+    root = await projects.create_root("pg-crash-phase")
+    runs = ClaimingPgRunStore(pg_pool, project_store=projects)
+    admitter = TaskRunAdmitter(runs, workspace_id="pg-crash-phase", project_id=root.project_id)
+    queue = TaskQueue(admitter=admitter)
+    submitted = await queue.submit(TaskCreate(description="pg death after the phase move"))
+    assert await queue.update_status(submitted.task_id, TaskStatus.PLANNING) is True
+
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.QUEUED
+
+    restarted = TaskQueue(admitter=admitter)
+    assert await restarted.recover(runs) == 1
+
+    async def execute(request: TaskCreate) -> ConductorOutput:
+        return ConductorOutput(success=True, final_answer=request.description)
+
+    await TaskRunner(
+        restarted,
+        execute,
+        attempts=TaskAttemptExecutor(runs),
+    )._execute_task(submitted.task_id)
+
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.COMPLETED
+    node_runs = await runs.list_node_runs(submitted.run_id or "")
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status.value == "completed"
+    assert attempts[0].execution_lease is not None
+
+
+async def test_postgres_stranded_running_claim_gets_a_terminal_disposition(pg_pool) -> None:
+    """A task Run left RUNNING with no NodeRun on the durable store - the
+    pre-repair crash residue - is failed visibly on recovery rather than
+    remaining an immortal RUNNING Run (#1114)."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
+    from maistro.runs.consumer_claim import ClaimingPgRunStore
+
+    projects = PgProjectScopeStore(pg_pool)
+    root = await projects.create_root("pg-stranded-claim")
+    runs = ClaimingPgRunStore(pg_pool, project_store=projects)
+    admitter = TaskRunAdmitter(runs, workspace_id="pg-stranded-claim", project_id=root.project_id)
+    submitted = await TaskQueue(admitter=admitter).submit(
+        TaskCreate(description="pg stranded running")
+    )
+    await runs.transition_run(submitted.run_id or "", RunStatus.RUNNING)
+
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 0
+    run = await runs.get_run(submitted.run_id or "")
+    assert run is not None and run.status is RunStatus.FAILED
+    assert run.error is not None and "stranded dispatch" in run.error
 
 
 async def test_an_unwired_queue_admits_without_a_run() -> None:
