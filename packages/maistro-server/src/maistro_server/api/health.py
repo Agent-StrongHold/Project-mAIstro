@@ -14,12 +14,15 @@ from pydantic import BaseModel
 import maistro.agents.circuit_breaker as circuit_breaker
 from maistro.config.settings import Settings, get_settings
 from maistro.http import shared_client_stats
+from maistro.security.container_limits import CGROUP_V2_ROOT, read_effective_container_limits
 from maistro_server.api.schemas import HealthResponse
 from maistro_server.startup import StartupPhase, get_startup_phase
 
 router = APIRouter(tags=["health"])
 
 _start_time = time.monotonic()
+
+CGROUP_ROOT = CGROUP_V2_ROOT
 
 
 class ProbeResult(BaseModel):
@@ -40,6 +43,7 @@ class DetailedHealthResponse(BaseModel):
     version: str
     checks: dict[str, ProbeResult]
     effective_resource_policy: dict[str, int | float | bool]
+    container_limits: dict[str, int | float | str]
     strike_tracker: dict[str, str | bool]
 
 
@@ -184,6 +188,7 @@ async def readiness(
         version=request.app.version,
         checks=checks,
         effective_resource_policy=settings.effective_resource_policy().as_dict(),
+        container_limits=read_effective_container_limits(CGROUP_ROOT).as_dict(),
         strike_tracker=_strike_tracker_diagnostics(container),
     )
 

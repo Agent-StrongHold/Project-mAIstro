@@ -228,6 +228,15 @@ or placeholder-only section.
 
 ### Added
 
+- **`GET /health/ready` reports the container ceilings the kernel actually
+  enforces (#75, partial).** A new `container_limits` field reads cgroup v2
+  `memory.max`, `pids.max` and `cpu.max` for the serving process and reports
+  `memory_max_bytes`, `pids_max` and `cpu_max_cores`. Each value is a number,
+  `"unbounded"` when the deployment profile set no limit, or `"unknown"` when
+  there is no cgroup v2 hierarchy or the file cannot be parsed. The field is
+  informational only and never changes readiness status. Compose profiles
+  still declare no ceilings (#862).
+
 - **Every maistro-core node kind is proven to get the Container's own
   authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
   resolves each registered core kind that declares an authority through a real

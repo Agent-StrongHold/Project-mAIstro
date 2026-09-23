@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from maistro.config.settings import Settings, get_settings
+from maistro_server.api import health
 from maistro_server.api.health import ProbeResult
 from maistro_server.main import app
 
@@ -55,3 +57,39 @@ def test_readiness_exposes_effective_resource_policy() -> None:
         "circuit_breaker_recovery_timeout_s": 90.0,
         "unsafe_overrides_enabled": False,
     }
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        (
+            {"memory.max": "536870912\n", "pids.max": "max\n", "cpu.max": "200000 100000\n"},
+            {"memory_max_bytes": 536870912, "pids_max": "unbounded", "cpu_max_cores": 2.0},
+        ),
+        (
+            None,
+            {"memory_max_bytes": "unknown", "pids_max": "unknown", "cpu_max_cores": "unknown"},
+        ),
+    ],
+)
+def test_readiness_exposes_effective_container_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    files: dict[str, str] | None,
+    expected: dict[str, int | float | str],
+) -> None:
+    root = tmp_path / "cgroup"
+    if files is not None:
+        root.mkdir()
+        for name, content in files.items():
+            (root / name).write_text(content)
+    monkeypatch.setattr(health, "CGROUP_ROOT", root)
+    ok = ProbeResult(status="ok")
+    with (
+        patch("maistro_server.api.health._check_docker", AsyncMock(return_value=ok)),
+        patch("maistro_server.api.health._check_postgres", AsyncMock(return_value=ok)),
+    ):
+        response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["container_limits"] == expected
