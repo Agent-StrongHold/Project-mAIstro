@@ -44,6 +44,7 @@ import maistro.graph.nodes.base as base
 from maistro.graph.durable_runs import recovery
 from maistro.graph.durable_runs.executor import _is_human_pause
 from maistro.graph.durable_runs.stores import answer_record, settle_hitl_record
+from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.nodes.base import (
     PAUSE_AWAITING_DELEGATION_RECONCILIATION,
     PAUSE_AWAITING_HARNESS,
@@ -183,11 +184,16 @@ def _production_files(root: pathlib.Path) -> list[pathlib.Path]:
 
 
 @cache
-def _parsed(root: pathlib.Path) -> tuple[tuple[pathlib.Path, ast.Module], ...]:
-    return tuple(
-        (path, ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-        for path in _production_files(root)
-    )
+def _call_sites(root: pathlib.Path) -> dict[str, tuple[tuple[pathlib.Path, int], ...]]:
+    """Callee name -> where it is called. Kept instead of the ASTs themselves,
+    which would pin a few hundred MB for the rest of the suite."""
+    sites: dict[str, list[tuple[pathlib.Path, int]]] = {}
+    for path in _production_files(root):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for call in ast.walk(tree):
+            if isinstance(call, ast.Call) and (name := _callee(call)) is not None:
+                sites.setdefault(name, []).append((path.resolve(), call.lineno))
+    return {name: tuple(where) for name, where in sites.items()}
 
 
 def _callee(call: ast.Call) -> str | None:
@@ -248,14 +254,10 @@ def _has_production_caller(root: pathlib.Path, entry: Entry, fn: ast.AST) -> boo
     """A call by name anywhere in a production tree, except inside `fn` itself."""
     own_file = (root / entry.path).resolve()
     first, last = getattr(fn, "lineno", 0), getattr(fn, "end_lineno", 0)
-    for path, tree in _parsed(root):
-        for call in ast.walk(tree):
-            if not isinstance(call, ast.Call) or _callee(call) != entry.name:
-                continue
-            if path.resolve() == own_file and first <= call.lineno <= (last or first):
-                continue
-            return True
-    return False
+    return any(
+        not (path == own_file and first <= line <= (last or first))
+        for path, line in _call_sites(root).get(entry.name, ())
+    )
 
 
 #: Kinds that must fire without anyone asking. A registered route is how a
@@ -396,7 +398,7 @@ def _tree(tmp_path: pathlib.Path, files: Mapping[str, str]) -> pathlib.Path:
 
 def test_a_waker_only_tests_call_is_unreachable(tmp_path: pathlib.Path) -> None:
     root = _tree(
-        tmp_path,
+        tmp_path / "unwired",
         {
             "packages/pkg/src/pkg/waker.py": "def wake():\n    resume_due_graph_runs()\n",
             "packages/pkg/tests/test_waker.py": "from pkg.waker import wake\nwake()\n",
@@ -409,11 +411,14 @@ def test_a_waker_only_tests_call_is_unreachable(tmp_path: pathlib.Path) -> None:
         "packages/pkg/src/pkg/waker.py:wake: no reachable production caller outside tests"
     ]
 
-    (root / "packages/pkg/src/pkg/tick.py").write_text(
-        "async def tick():\n    await wake()\n", encoding="utf-8"
+    wired = _tree(
+        tmp_path / "wired",
+        {
+            "packages/pkg/src/pkg/waker.py": "def wake():\n    resume_due_graph_runs()\n",
+            "packages/pkg/src/pkg/tick.py": "async def tick():\n    await wake()\n",
+        },
     )
-    _parsed.cache_clear()
-    assert entry_problems(root, entry) == []
+    assert entry_problems(wired, entry) == []
 
 
 def test_a_renamed_entrypoint_fails(tmp_path: pathlib.Path) -> None:
@@ -461,7 +466,7 @@ def test_an_entrypoint_that_skips_its_canonical_api_fails() -> None:
 # -- VIA_ACCEPTS is pinned to the shipped APIs, not asserted -------------------
 
 
-def _waiting_delegation_record() -> object:
+def _waiting_delegation_record() -> DurableRunRecord:
     return durable_record(
         {"id": "delegate", "nodes": [{"id": "d", "kind": "agent.delegate_remote"}], "edges": []},
         run_id="run-1192",
@@ -472,13 +477,17 @@ def _waiting_delegation_record() -> object:
 
 def test_the_hitl_answer_api_refuses_a_waiting_run() -> None:
     with pytest.raises(ValueError, match="not paused"):
-        answer_record(_waiting_delegation_record(), "d", {"ok": True})  # type: ignore[arg-type]
+        answer_record(_waiting_delegation_record(), "d", {"ok": True})
 
 
-@pytest.mark.parametrize("outcome", ["timed_out", "cancelled"])
-def test_hitl_settlement_refuses_a_waiting_run(outcome: str) -> None:
+def test_hitl_timeout_refuses_a_waiting_run() -> None:
     with pytest.raises(ValueError, match="not paused"):
-        settle_hitl_record(_waiting_delegation_record(), "d", outcome)  # type: ignore[arg-type]
+        settle_hitl_record(_waiting_delegation_record(), "d", "timed_out")
+
+
+def test_hitl_cancel_refuses_a_waiting_run() -> None:
+    with pytest.raises(ValueError, match="not paused"):
+        settle_hitl_record(_waiting_delegation_record(), "d", "cancelled")
 
 
 def test_timed_resume_accepts_exactly_its_declared_statuses() -> None:

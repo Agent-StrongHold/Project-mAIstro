@@ -17,6 +17,6 @@ Issue #1192 adds `packages/maistro-core/tests/graph/durable_runs/test_pause_reas
   answer aimed at a WAITING reason, timer aimed at an answer-gated reason,
   test-only caller, renamed entrypoint, unregistered route, a deadline only a
   manual route reaches, skipped API).
-- 4 behavioural pins (one parametrized over 2 outcomes, so 5 node IDs) tying the declared
+- 5 behavioural pins tying the declared
   accepted statuses to the shipped `answer_record`, `settle_hitl_record`, and
   `resume_due_graph_runs` eligibility, and the parked status to the executor.
