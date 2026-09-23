@@ -85,6 +85,16 @@ def _engine_workspace_store() -> WorkspaceStore:
     return _fallback_store
 
 
+async def canonical_workspace_store() -> WorkspaceStore:
+    """Return the live canonical Workspace authority for authorization.
+
+    Authorization must not trigger legacy-row migration.  Startup/convergence
+    code may import recovery evidence through ``_ensure_ready``; an execution
+    request reads the already-wired canonical store only.
+    """
+    return _engine_workspace_store()
+
+
 def canonical_store_for_tests() -> WorkspaceStore:
     """Expose the canonical test seam without making legacy rows authoritative."""
     return _engine_workspace_store()

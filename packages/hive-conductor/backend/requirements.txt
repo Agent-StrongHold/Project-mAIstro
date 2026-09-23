@@ -1,9 +1,9 @@
 pyyaml>=6.0.0,<7
 fastapi>=0.115.0,<1
 uvicorn[standard]>=0.32.0,<1
-pydantic>=2.0.0,<3
+pydantic>=2.4.0,<3
 pydantic-settings>=2.0.0,<3
-python-multipart>=0.0.9,<1
+python-multipart>=0.0.31,<1
 httpx>=0.27.0,<1
 # langfuse was listed here and imported nowhere. The Langfuse integration
 # is backend/adapters/telemetry_langfuse.py, which talks OTLP to a Langfuse
@@ -25,17 +25,18 @@ bcrypt>=4.0.0,<6
 cryptography>=50.0.0,<51
 # maistro-core's OAuth module imports PyJWT at import time; hive-conductor
 # consumes core via sys.path, so core's deps must be restated here (#839).
-pyjwt[crypto]>=2.10,<3
+pyjwt[crypto]>=2.13.0,<3
 # The backend imports maistro.identity through its auth wiring. The CI backend
 # suite uses the system interpreter after installing this file, so the core
 # identity extra must be restated here rather than relying on the uv workspace
-# environment (which already carries it).
-bip-utils>=2.9,<3
+# environment (which already carries it). Avoid pulling it into the default
+# Python 3.14 image path unless the caller explicitly chooses to do so.
+bip-utils>=2.9,<3; python_version < "3.14"
 # Transitive consumers may otherwise resolve 1.1.x. Trivy blocks 1.1.2 for
 # GHSA-6v7p-g79w-8964; 1.2.1 is the first fixed release.
 msgpack>=1.2.1,<2
 structlog>=24.1.0,<26
-pytest>=8.0.0,<10
+pytest>=9.0.3,<10
 pytest-asyncio>=0.25,<2
 pytest-bdd>=8.0.0,<9
 hypothesis>=6.0.0,<7
@@ -46,3 +47,9 @@ sqlalchemy[asyncio]>=2.0.0,<3
 # ran the security scanner on stdlib `re` with no timeout support at all —
 # the exact degraded mode the conditional fallback was deleted for hiding.
 regex>=2024.5.15,<2027
+# The scheduler's configured Container imports maistro.identity during startup;
+# this backend installs maistro-core through sys.path rather than its identity
+# extra, so keep the identity runtime dependency explicit for Python 3.12 CI.
+# The shipped Python 3.14 image intentionally omits it: coincurve has no cp314
+# wheel and its source build is not currently compatible with that image.
+bip-utils>=2.9,<3; python_version < "3.14"

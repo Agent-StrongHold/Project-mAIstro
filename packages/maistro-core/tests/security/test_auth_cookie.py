@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from maistro.protocols.auth import AuthError, CredentialNotApplicable
 from maistro.security._types import AuthContext
 from maistro.security.auth_cookie import CookieAuthProvider
 
@@ -30,31 +31,31 @@ def make_ctx(user_id: str = "u1") -> AuthContext:
 
 async def test_authenticate_raises_when_no_headers_provided() -> None:
     provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
-    with pytest.raises(ValueError, match="No headers provided"):
+    with pytest.raises(CredentialNotApplicable, match="No headers provided"):
         await provider.authenticate(None, headers=None)
 
 
 async def test_authenticate_raises_when_headers_empty_dict() -> None:
     provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
-    with pytest.raises(ValueError, match="No headers provided"):
+    with pytest.raises(CredentialNotApplicable, match="No headers provided"):
         await provider.authenticate(None, headers={})
 
 
 async def test_authenticate_raises_when_no_cookie_header() -> None:
     provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
-    with pytest.raises(ValueError, match="No cookie header present"):
+    with pytest.raises(CredentialNotApplicable, match="No cookie header present"):
         await provider.authenticate(None, headers={"other": "value"})
 
 
 async def test_authenticate_raises_when_named_cookie_missing() -> None:
     provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
-    with pytest.raises(ValueError, match="Cookie 'maistro_session' not found"):
+    with pytest.raises(CredentialNotApplicable, match="Cookie 'maistro_session' not found"):
         await provider.authenticate(None, headers={"cookie": "other_cookie=abc"})
 
 
 async def test_authenticate_uses_custom_cookie_name() -> None:
     provider = CookieAuthProvider(jwt_provider=_StubJWTProvider(), cookie_name="custom_session")
-    with pytest.raises(ValueError, match="Cookie 'custom_session' not found"):
+    with pytest.raises(CredentialNotApplicable, match="Cookie 'custom_session' not found"):
         await provider.authenticate(None, headers={"cookie": "maistro_session=abc"})
 
 
@@ -80,8 +81,27 @@ async def test_authenticate_extracts_token_among_multiple_cookies() -> None:
 
 async def test_authenticate_swallows_cookie_parse_error_and_treats_as_not_found() -> None:
     provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
-    with pytest.raises(ValueError, match="Cookie 'maistro_session' not found"):
+    with pytest.raises(CredentialNotApplicable, match="Cookie 'maistro_session' not found"):
         await provider.authenticate(None, headers={"cookie": "====="})
+
+
+async def test_authenticate_rejects_malformed_recognized_cookie() -> None:
+    provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
+    with pytest.raises(AuthError, match="Empty session cookie"):
+        await provider.authenticate(None, headers={"cookie": 'maistro_session="'})
+
+
+async def test_authenticate_rejects_nested_not_applicable_result() -> None:
+    jwt_provider = _StubJWTProvider(error=CredentialNotApplicable("not a bearer token"))
+    provider = CookieAuthProvider(jwt_provider=jwt_provider)
+    with pytest.raises(AuthError, match="Invalid session cookie"):
+        await provider.authenticate(None, headers={"cookie": "maistro_session=abc"})
+
+
+async def test_authenticate_rejects_empty_recognized_cookie() -> None:
+    provider = CookieAuthProvider(jwt_provider=_StubJWTProvider())
+    with pytest.raises(AuthError, match="Empty session cookie"):
+        await provider.authenticate(None, headers={"cookie": "maistro_session="})
 
 
 async def test_authenticate_propagates_jwt_provider_errors() -> None:
