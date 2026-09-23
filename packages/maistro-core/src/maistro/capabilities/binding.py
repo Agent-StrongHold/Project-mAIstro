@@ -55,6 +55,10 @@ class Binding(BaseModel):
     capability: str
     node_id: str = ""
     provider_name: str = ""
+    # Operator kill-switch (#56): a disabled Binding still resolves its
+    # identity but authorizes nothing, so an effect that references it fails
+    # truthfully instead of silently falling back to another provider.
+    disabled: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
     credential_refs: tuple[str, ...] = ()
     policy_refs: tuple[str, ...] = ()
