@@ -233,6 +233,33 @@ class TestTuringSecurityBridge:
         result = await bridge.scan_tool_result("content", tool_name="grep")
         assert result == {"verdict": "blocked", "flags": ["warden_unavailable"]}
 
+    async def test_unauditable_verdict_is_blocked_not_allowed(self) -> None:
+        """An audit hook failure must not turn a scanned verdict into an allow."""
+
+        async def failing_hook(_result: Any, _content: str, _boundary: str) -> None:
+            raise RuntimeError("audit sink down")
+
+        bridge = TuringSecurityBridge(warden=FakeWarden(verdict="allowed"), audit_hook=failing_hook)
+
+        result = await bridge.scan_user_input("content")
+
+        assert result == {"verdict": "blocked", "flags": ["security_audit_unavailable"]}
+
+    async def test_audited_verdict_returns_the_warden_result(self) -> None:
+        seen: list[tuple[Any, str, str]] = []
+
+        async def hook(result: Any, content: str, boundary: str) -> None:
+            seen.append((result, content, boundary))
+
+        bridge = TuringSecurityBridge(warden=FakeWarden(verdict="allowed"), audit_hook=hook)
+
+        result = await bridge.scan_user_input("content")
+
+        assert result == {"verdict": "allowed", "flags": []}
+        assert len(seen) == 1
+        assert seen[0][1] == "content"
+        assert seen[0][2] == "user_input"
+
 
 # ------------------------------------------------------- TuringProviderBridge
 

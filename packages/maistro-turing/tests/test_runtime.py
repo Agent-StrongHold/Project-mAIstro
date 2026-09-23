@@ -210,6 +210,129 @@ class TestTuringActor:
         assert security.tool_result_calls == [("some output", "grep")]
 
 
+class SelectiveSecurity(FakeSecurityBridge):
+    """Scan like the canonical Warden: hostile strings blocked, others allowed."""
+
+    async def scan_self_write(self, content: str, *, kind: str = "") -> dict[str, Any]:
+        self.self_write_calls.append((content, kind))
+        if "hostile" in content:
+            return {"verdict": "blocked", "flags": ["injection"]}
+        return {"verdict": "allowed", "flags": []}
+
+
+class TestTuringActorStructuredMetadata:
+    async def test_blocked_mapping_key_blocks_the_memory_write(self) -> None:
+        memory = FakeMemoryBridge()
+        actor = TuringActor(
+            memory=memory,  # type: ignore[arg-type]
+            security=SelectiveSecurity(),  # type: ignore[arg-type]
+            provider=TuringProviderBridge(),
+            self_id="self-1",
+        )
+
+        result = await actor.handle_memory_event(
+            "safe content", "observation", context={"hostile-key": "value"}
+        )
+
+        assert result == ""
+        assert memory.calls == []
+
+    async def test_blocked_nested_mapping_value_blocks_the_memory_write(self) -> None:
+        memory = FakeMemoryBridge()
+        actor = TuringActor(
+            memory=memory,  # type: ignore[arg-type]
+            security=SelectiveSecurity(),  # type: ignore[arg-type]
+            provider=TuringProviderBridge(),
+            self_id="self-1",
+        )
+
+        result = await actor.handle_memory_event(
+            "safe content", "observation", context={"meta": {"inner": "hostile value"}}
+        )
+
+        assert result == ""
+        assert memory.calls == []
+
+    async def test_blocked_sequence_element_blocks_the_memory_write(self) -> None:
+        memory = FakeMemoryBridge()
+        actor = TuringActor(
+            memory=memory,  # type: ignore[arg-type]
+            security=SelectiveSecurity(),  # type: ignore[arg-type]
+            provider=TuringProviderBridge(),
+            self_id="self-1",
+        )
+
+        result = await actor.handle_memory_event(
+            "safe content", "observation", context={"tags": ["fine", "hostile tag"]}
+        )
+
+        assert result == ""
+        assert memory.calls == []
+
+    async def test_clean_structured_metadata_still_stores(self) -> None:
+        memory = FakeMemoryBridge()
+        actor = TuringActor(
+            memory=memory,  # type: ignore[arg-type]
+            security=SelectiveSecurity(),  # type: ignore[arg-type]
+            provider=TuringProviderBridge(),
+            self_id="self-1",
+        )
+
+        result = await actor.handle_memory_event(
+            "safe content", "observation", context={"tags": ["fine", "also-fine"], "n": 3}
+        )
+
+        assert result == "mem-id"
+        assert memory.calls[0]["context"] == {"tags": ["fine", "also-fine"], "n": 3}
+
+
+class ScanningSecurityBridge(FakeSecurityBridge):
+    """Bridge shape that exposes the canonical ``scan_user_input`` seam."""
+
+    def __init__(self, verdict: str = "allowed") -> None:
+        super().__init__(verdict=verdict)
+        self.user_input_calls: list[str] = []
+
+    async def scan_user_input(self, content: str) -> dict[str, Any]:
+        self.user_input_calls.append(content)
+        return {"verdict": self._verdict, "flags": []}
+
+
+class TestTuringChatSessionUserInputBoundary:
+    async def test_user_input_goes_through_scan_user_input_when_exposed(self) -> None:
+        security = ScanningSecurityBridge(verdict="allowed")
+        session = TuringChatSession(
+            memory=FakeMemoryBridge(),  # type: ignore[arg-type]
+            provider=FakeChatProvider(reply="ok"),  # type: ignore[arg-type]
+            classifier=FakeClassifierBridge(),  # type: ignore[arg-type]
+            security=security,  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+
+        reply = await session.handle_message("hello")
+
+        assert reply == "ok"
+        assert security.user_input_calls == ["hello"]
+        assert security.self_write_calls == []  # chat input uses the dedicated seam
+
+    async def test_blocked_user_input_never_reaches_the_provider(self) -> None:
+        from maistro_turing.runtime import TuringContentBlocked
+
+        provider = FakeChatProvider(reply="must not run")
+        session = TuringChatSession(
+            memory=FakeMemoryBridge(),  # type: ignore[arg-type]
+            provider=provider,  # type: ignore[arg-type]
+            classifier=FakeClassifierBridge(),  # type: ignore[arg-type]
+            security=ScanningSecurityBridge(verdict="blocked"),  # type: ignore[arg-type]
+            self_id="self-1",
+        )
+
+        with pytest.raises(TuringContentBlocked, match="user input refused"):
+            await session.handle_message("hostile message")
+        assert provider.prompts == []
+        assert session._history == []
+
+
 # ---------------------------------------------------------------- chat -------
 
 

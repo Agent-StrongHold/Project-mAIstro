@@ -26,6 +26,30 @@ def test_runtime_security_refuses_without_canonical_run_context():
     assert not asyncio.run(app.state.turing_security.audit_log.get_entries(user_id="turing"))
 
 
+def test_runtime_security_audit_refuses_when_the_run_has_no_actor():
+    """A Run that vanished (or never recorded a principal) cannot absorb a verdict."""
+    from types import SimpleNamespace
+
+    from maistro.observability.correlation import bind_execution_context
+
+    from ..state import get_state
+
+    verdict = SimpleNamespace(clean=True, flags=())
+    with (
+        bind_execution_context(run_id="run-that-never-existed"),
+        pytest.raises(RuntimeError, match="canonical Run actor is unavailable"),
+    ):
+        asyncio.run(get_state()._audit_runtime_verdict(verdict, "content", "user_input"))
+
+
+def test_get_state_refuses_when_never_composed(monkeypatch):
+    from .. import state as state_module
+
+    monkeypatch.setattr(state_module, "_state", None)
+    with pytest.raises(RuntimeError, match="canonical Turing security has not been composed"):
+        state_module.get_state()
+
+
 def test_composed_actor_scans_memory_events_before_storage():
     from ..state import get_state
 
