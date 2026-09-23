@@ -1,0 +1,1335 @@
+{
+  "schemaVersion": 1,
+  "format": "od-design-tokens/v1",
+  "contract": "TOKEN_SCHEMA",
+  "generatedAt": "2026-09-16T00:00:00.000Z",
+  "source": {
+    "tokensCss": "tokens.css",
+    "note": "Only the :root block is exported; scheme and persona rebindings live in tokens.css and are enumerated in manifest.json#personas."
+  },
+  "summary": {
+    "totalTokens": 109,
+    "declaredTokens": 109,
+    "sourceBackedTokens": 109,
+    "aliasTokens": 23,
+    "layerCounts": {
+      "A1-identity": 12,
+      "A2": 51,
+      "A1-structure": 28,
+      "B-slot": 18
+    },
+    "score": 100,
+    "grade": "excellent",
+    "recommendRebuild": false
+  },
+  "tokens": [
+    {
+      "name": "--bg",
+      "value": "#eff4ec",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:39"
+      ],
+      "sourceName": "--bg"
+    },
+    {
+      "name": "--surface",
+      "value": "#f7faf5",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:40"
+      ],
+      "sourceName": "--surface"
+    },
+    {
+      "name": "--surface-warm",
+      "value": "#ffffff",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:41"
+      ],
+      "sourceName": "--surface-warm"
+    },
+    {
+      "name": "--fg",
+      "value": "#161b26",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:46"
+      ],
+      "sourceName": "--fg"
+    },
+    {
+      "name": "--fg-2",
+      "value": "#333b4c",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:47"
+      ],
+      "sourceName": "--fg-2"
+    },
+    {
+      "name": "--muted",
+      "value": "#5a6376",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:48"
+      ],
+      "sourceName": "--muted"
+    },
+    {
+      "name": "--meta",
+      "value": "#626c80",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:49"
+      ],
+      "sourceName": "--meta"
+    },
+    {
+      "name": "--border",
+      "value": "rgba(255, 255, 255, 0.85)",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:52"
+      ],
+      "sourceName": "--border"
+    },
+    {
+      "name": "--border-soft",
+      "value": "rgba(20, 30, 50, 0.08)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:53"
+      ],
+      "sourceName": "--border-soft"
+    },
+    {
+      "name": "--accent",
+      "value": "#2f7d4f",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:57"
+      ],
+      "sourceName": "--accent"
+    },
+    {
+      "name": "--accent-on",
+      "value": "#ffffff",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:58"
+      ],
+      "sourceName": "--accent-on"
+    },
+    {
+      "name": "--accent-hover",
+      "value": "color-mix(in oklab, var(--accent), black 8%)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:59"
+      ],
+      "sourceName": "--accent-hover"
+    },
+    {
+      "name": "--accent-active",
+      "value": "color-mix(in oklab, var(--accent), black 14%)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:60"
+      ],
+      "sourceName": "--accent-active"
+    },
+    {
+      "name": "--accent-soft",
+      "value": "color-mix(in srgb, var(--accent) 14%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:61"
+      ],
+      "sourceName": "--accent-soft"
+    },
+    {
+      "name": "--success",
+      "value": "#14604c",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:64"
+      ],
+      "sourceName": "--success"
+    },
+    {
+      "name": "--warn",
+      "value": "#784d0e",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:65"
+      ],
+      "sourceName": "--warn"
+    },
+    {
+      "name": "--danger",
+      "value": "#a41f15",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:66"
+      ],
+      "sourceName": "--danger"
+    },
+    {
+      "name": "--success-soft",
+      "value": "color-mix(in srgb, var(--success) 14%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:67"
+      ],
+      "sourceName": "--success-soft"
+    },
+    {
+      "name": "--warn-soft",
+      "value": "color-mix(in srgb, var(--warn) 16%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:68"
+      ],
+      "sourceName": "--warn-soft"
+    },
+    {
+      "name": "--danger-soft",
+      "value": "color-mix(in srgb, var(--danger) 14%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:69"
+      ],
+      "sourceName": "--danger-soft"
+    },
+    {
+      "name": "--font-display",
+      "value": "\"Bricolage Grotesque\", system-ui, sans-serif",
+      "type": "fontFamily",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:76"
+      ],
+      "sourceName": "--font-display"
+    },
+    {
+      "name": "--font-body",
+      "value": "\"Bricolage Grotesque\", system-ui, sans-serif",
+      "type": "fontFamily",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:77"
+      ],
+      "sourceName": "--font-body"
+    },
+    {
+      "name": "--font-mono",
+      "value": "\"JetBrains Mono\", ui-monospace, Menlo, monospace",
+      "type": "fontFamily",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:78"
+      ],
+      "sourceName": "--font-mono"
+    },
+    {
+      "name": "--text-xs",
+      "value": "12px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:81"
+      ],
+      "sourceName": "--text-xs"
+    },
+    {
+      "name": "--text-sm",
+      "value": "13px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:82"
+      ],
+      "sourceName": "--text-sm"
+    },
+    {
+      "name": "--text-base",
+      "value": "15px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:83"
+      ],
+      "sourceName": "--text-base"
+    },
+    {
+      "name": "--text-lg",
+      "value": "16px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:84"
+      ],
+      "sourceName": "--text-lg"
+    },
+    {
+      "name": "--text-xl",
+      "value": "18px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:85"
+      ],
+      "sourceName": "--text-xl"
+    },
+    {
+      "name": "--text-2xl",
+      "value": "24px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:86"
+      ],
+      "sourceName": "--text-2xl"
+    },
+    {
+      "name": "--text-3xl",
+      "value": "38px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:87"
+      ],
+      "sourceName": "--text-3xl"
+    },
+    {
+      "name": "--text-4xl",
+      "value": "38px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:88"
+      ],
+      "sourceName": "--text-4xl"
+    },
+    {
+      "name": "--leading-body",
+      "value": "1.5",
+      "type": "number",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:90"
+      ],
+      "sourceName": "--leading-body"
+    },
+    {
+      "name": "--leading-tight",
+      "value": "1.05",
+      "type": "number",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:91"
+      ],
+      "sourceName": "--leading-tight"
+    },
+    {
+      "name": "--tracking-display",
+      "value": "-0.02em",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:92"
+      ],
+      "sourceName": "--tracking-display"
+    },
+    {
+      "name": "--space-1",
+      "value": "4px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:95"
+      ],
+      "sourceName": "--space-1"
+    },
+    {
+      "name": "--space-2",
+      "value": "8px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:96"
+      ],
+      "sourceName": "--space-2"
+    },
+    {
+      "name": "--space-3",
+      "value": "12px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:97"
+      ],
+      "sourceName": "--space-3"
+    },
+    {
+      "name": "--space-4",
+      "value": "16px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:98"
+      ],
+      "sourceName": "--space-4"
+    },
+    {
+      "name": "--space-5",
+      "value": "20px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:99"
+      ],
+      "sourceName": "--space-5"
+    },
+    {
+      "name": "--space-6",
+      "value": "24px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:100"
+      ],
+      "sourceName": "--space-6"
+    },
+    {
+      "name": "--space-8",
+      "value": "32px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:101"
+      ],
+      "sourceName": "--space-8"
+    },
+    {
+      "name": "--space-12",
+      "value": "48px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:102"
+      ],
+      "sourceName": "--space-12"
+    },
+    {
+      "name": "--section-y-desktop",
+      "value": "36px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:104"
+      ],
+      "sourceName": "--section-y-desktop"
+    },
+    {
+      "name": "--section-y-tablet",
+      "value": "28px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:105"
+      ],
+      "sourceName": "--section-y-tablet"
+    },
+    {
+      "name": "--section-y-phone",
+      "value": "20px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:106"
+      ],
+      "sourceName": "--section-y-phone"
+    },
+    {
+      "name": "--radius-sm",
+      "value": "12px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:109"
+      ],
+      "sourceName": "--radius-sm"
+    },
+    {
+      "name": "--radius-md",
+      "value": "14px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:110"
+      ],
+      "sourceName": "--radius-md"
+    },
+    {
+      "name": "--radius-lg",
+      "value": "20px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:111"
+      ],
+      "sourceName": "--radius-lg"
+    },
+    {
+      "name": "--radius-pill",
+      "value": "9999px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:112"
+      ],
+      "sourceName": "--radius-pill"
+    },
+    {
+      "name": "--elev-flat",
+      "value": "none",
+      "type": "shadow",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:116"
+      ],
+      "sourceName": "--elev-flat"
+    },
+    {
+      "name": "--elev-ring",
+      "value": "0 0 0 1px var(--border)",
+      "type": "shadow",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:117"
+      ],
+      "sourceName": "--elev-ring"
+    },
+    {
+      "name": "--elev-raised",
+      "value": "inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 18px 50px rgba(40, 50, 80, 0.12)",
+      "type": "shadow",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:118"
+      ],
+      "sourceName": "--elev-raised"
+    },
+    {
+      "name": "--focus-ring",
+      "value": "0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent)",
+      "type": "shadow",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:121"
+      ],
+      "sourceName": "--focus-ring"
+    },
+    {
+      "name": "--motion-fast",
+      "value": "150ms",
+      "type": "duration",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:124"
+      ],
+      "sourceName": "--motion-fast"
+    },
+    {
+      "name": "--motion-base",
+      "value": "200ms",
+      "type": "duration",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:125"
+      ],
+      "sourceName": "--motion-base"
+    },
+    {
+      "name": "--ease-standard",
+      "value": "cubic-bezier(0.2, 0, 0, 1)",
+      "type": "cubicBezier",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:126"
+      ],
+      "sourceName": "--ease-standard"
+    },
+    {
+      "name": "--container-max",
+      "value": "1280px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:129"
+      ],
+      "sourceName": "--container-max"
+    },
+    {
+      "name": "--container-gutter-desktop",
+      "value": "40px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:130"
+      ],
+      "sourceName": "--container-gutter-desktop"
+    },
+    {
+      "name": "--container-gutter-tablet",
+      "value": "20px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:131"
+      ],
+      "sourceName": "--container-gutter-tablet"
+    },
+    {
+      "name": "--container-gutter-phone",
+      "value": "16px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:132"
+      ],
+      "sourceName": "--container-gutter-phone"
+    },
+    {
+      "name": "--glass",
+      "value": "rgba(255, 255, 255, 0.58)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:138"
+      ],
+      "sourceName": "--glass"
+    },
+    {
+      "name": "--glass-2",
+      "value": "rgba(255, 255, 255, 0.82)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:139"
+      ],
+      "sourceName": "--glass-2"
+    },
+    {
+      "name": "--edge",
+      "value": "var(--border)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:140"
+      ],
+      "sourceName": "--edge"
+    },
+    {
+      "name": "--hair",
+      "value": "var(--border-soft)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:141"
+      ],
+      "sourceName": "--hair"
+    },
+    {
+      "name": "--well",
+      "value": "rgba(255, 255, 255, 0.70)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:142"
+      ],
+      "sourceName": "--well"
+    },
+    {
+      "name": "--bar",
+      "value": "rgba(255, 255, 255, 0.55)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:143"
+      ],
+      "sourceName": "--bar"
+    },
+    {
+      "name": "--blur",
+      "value": "18px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:144"
+      ],
+      "sourceName": "--blur"
+    },
+    {
+      "name": "--glow",
+      "value": "none",
+      "type": "string",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:145"
+      ],
+      "sourceName": "--glow"
+    },
+    {
+      "name": "--field",
+      "value": "var(--bg)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:149"
+      ],
+      "sourceName": "--field"
+    },
+    {
+      "name": "--bloom",
+      "value": "radial-gradient(1000px 700px at 8% 0%, rgba(140, 200, 150, 0.48), transparent 62%), radial-gradient(900px 700px at 96% 12%, rgba(215, 225, 150, 0.40), transparent 60%), radial-gradient(1100px 800px at 50% 65%, rgba(190, 220, 195, 0.35), transparent 65%), radial-gradient(700px 500px at 90% 100%, rgba(240, 190, 205, 0.30), transparent 60%), linear-gradient(180deg, #f3f7ee, #eff4ec 50%, #e9f0e6)",
+      "type": "gradient",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:150"
+      ],
+      "sourceName": "--bloom"
+    },
+    {
+      "name": "--actor-human",
+      "value": "#1d49b0",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:163"
+      ],
+      "sourceName": "--actor-human"
+    },
+    {
+      "name": "--actor-agent",
+      "value": "#5c4396",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:164"
+      ],
+      "sourceName": "--actor-agent"
+    },
+    {
+      "name": "--actor-gate",
+      "value": "#14604c",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:165"
+      ],
+      "sourceName": "--actor-gate"
+    },
+    {
+      "name": "--actor-system",
+      "value": "#4d5867",
+      "type": "color",
+      "layer": "A1-identity",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:166"
+      ],
+      "sourceName": "--actor-system"
+    },
+    {
+      "name": "--actor-human-soft",
+      "value": "color-mix(in srgb, var(--actor-human) 14%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:167"
+      ],
+      "sourceName": "--actor-human-soft"
+    },
+    {
+      "name": "--actor-agent-soft",
+      "value": "color-mix(in srgb, var(--actor-agent) 16%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:168"
+      ],
+      "sourceName": "--actor-agent-soft"
+    },
+    {
+      "name": "--actor-gate-soft",
+      "value": "color-mix(in srgb, var(--actor-gate) 16%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:169"
+      ],
+      "sourceName": "--actor-gate-soft"
+    },
+    {
+      "name": "--actor-system-soft",
+      "value": "color-mix(in srgb, var(--actor-system) 16%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:170"
+      ],
+      "sourceName": "--actor-system-soft"
+    },
+    {
+      "name": "--face-loading",
+      "value": "linear-gradient(90deg, rgba(20, 30, 50, 0.06), rgba(20, 30, 50, 0.12), rgba(20, 30, 50, 0.06))",
+      "type": "gradient",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:174"
+      ],
+      "sourceName": "--face-loading"
+    },
+    {
+      "name": "--face-empty-bg",
+      "value": "var(--glass)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:175"
+      ],
+      "sourceName": "--face-empty-bg"
+    },
+    {
+      "name": "--face-empty-fg",
+      "value": "var(--muted)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:176"
+      ],
+      "sourceName": "--face-empty-fg"
+    },
+    {
+      "name": "--face-error-bg",
+      "value": "var(--warn-soft)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:177"
+      ],
+      "sourceName": "--face-error-bg"
+    },
+    {
+      "name": "--face-error-fg",
+      "value": "var(--warn)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:178"
+      ],
+      "sourceName": "--face-error-fg"
+    },
+    {
+      "name": "--face-error-border",
+      "value": "color-mix(in srgb, var(--warn) 30%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:179"
+      ],
+      "sourceName": "--face-error-border"
+    },
+    {
+      "name": "--face-denied-bg",
+      "value": "var(--actor-system-soft)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:180"
+      ],
+      "sourceName": "--face-denied-bg"
+    },
+    {
+      "name": "--face-denied-fg",
+      "value": "var(--actor-system)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:181"
+      ],
+      "sourceName": "--face-denied-fg"
+    },
+    {
+      "name": "--undo-ok-bg",
+      "value": "var(--success-soft)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:184"
+      ],
+      "sourceName": "--undo-ok-bg"
+    },
+    {
+      "name": "--undo-ok-fg",
+      "value": "var(--success)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:185"
+      ],
+      "sourceName": "--undo-ok-fg"
+    },
+    {
+      "name": "--undo-partial-bg",
+      "value": "var(--warn-soft)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:186"
+      ],
+      "sourceName": "--undo-partial-bg"
+    },
+    {
+      "name": "--undo-partial-fg",
+      "value": "var(--warn)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:187"
+      ],
+      "sourceName": "--undo-partial-fg"
+    },
+    {
+      "name": "--undo-logged-fg",
+      "value": "var(--success)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:188"
+      ],
+      "sourceName": "--undo-logged-fg"
+    },
+    {
+      "name": "--age-fresh",
+      "value": "var(--muted)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:191"
+      ],
+      "sourceName": "--age-fresh"
+    },
+    {
+      "name": "--age-stale",
+      "value": "var(--warn)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:192"
+      ],
+      "sourceName": "--age-stale"
+    },
+    {
+      "name": "--age-stale-after",
+      "value": "28800s",
+      "type": "duration",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:193"
+      ],
+      "sourceName": "--age-stale-after"
+    },
+    {
+      "name": "--ledger-ok",
+      "value": "var(--success)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:196"
+      ],
+      "sourceName": "--ledger-ok"
+    },
+    {
+      "name": "--ledger-ok-bg",
+      "value": "var(--success-soft)",
+      "type": "alias",
+      "layer": "B-slot",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:197"
+      ],
+      "sourceName": "--ledger-ok-bg"
+    },
+    {
+      "name": "--ledger-ok-border",
+      "value": "color-mix(in srgb, var(--success) 35%, transparent)",
+      "type": "color",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:198"
+      ],
+      "sourceName": "--ledger-ok-border"
+    },
+    {
+      "name": "--text-floor",
+      "value": "12px",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:202"
+      ],
+      "sourceName": "--text-floor"
+    },
+    {
+      "name": "--text-prose",
+      "value": "var(--text-base)",
+      "type": "alias",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:203"
+      ],
+      "sourceName": "--text-prose"
+    },
+    {
+      "name": "--text-prose-2",
+      "value": "var(--text-sm)",
+      "type": "alias",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:204"
+      ],
+      "sourceName": "--text-prose-2"
+    },
+    {
+      "name": "--text-sentence",
+      "value": "var(--text-lg)",
+      "type": "alias",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:205"
+      ],
+      "sourceName": "--text-sentence"
+    },
+    {
+      "name": "--text-attention",
+      "value": "var(--text-xl)",
+      "type": "alias",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:206"
+      ],
+      "sourceName": "--text-attention"
+    },
+    {
+      "name": "--text-machine",
+      "value": "var(--text-xs)",
+      "type": "alias",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:207"
+      ],
+      "sourceName": "--text-machine"
+    },
+    {
+      "name": "--opsz-display",
+      "value": "96",
+      "type": "number",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:208"
+      ],
+      "sourceName": "--opsz-display"
+    },
+    {
+      "name": "--opsz-text",
+      "value": "14",
+      "type": "number",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:209"
+      ],
+      "sourceName": "--opsz-text"
+    },
+    {
+      "name": "--control-min-height",
+      "value": "36px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:212"
+      ],
+      "sourceName": "--control-min-height"
+    },
+    {
+      "name": "--touch-min",
+      "value": "44px",
+      "type": "dimension",
+      "layer": "A2",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:213"
+      ],
+      "sourceName": "--touch-min"
+    },
+    {
+      "name": "--col-attention",
+      "value": "5fr",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:216"
+      ],
+      "sourceName": "--col-attention"
+    },
+    {
+      "name": "--col-timeline",
+      "value": "7fr",
+      "type": "dimension",
+      "layer": "A1-structure",
+      "confidence": "high",
+      "reason": "Declared in tokens.css :root (greenhouse light, the default persona and scheme).",
+      "sources": [
+        "tokens.css:217"
+      ],
+      "sourceName": "--col-timeline"
+    }
+  ]
+}

@@ -57,12 +57,20 @@ EXPECTED_HUMAN = {
     "awaiting_remote_delegation",
 }
 
+<<<<<<< HEAD
 #: Pauses that wait on a system retry or poll. WAITING is the right record for
 #: these, and that is a decision the table states, not a default: the
 #: structural guard below is what makes it one.
+=======
+#: Pauses that wait on a system -- a remote agent, a harness, a polled API,
+#: or the reconciliation poll for a delegation whose acceptance is unknown.
+#: WAITING is the right record for these, and that is a decision the table
+#: states, not a default: the structural guard below is what makes it one.
+>>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
 EXPECTED_SYSTEM = {
     "awaiting_harness",
     "waiting_on_jira_subtasks",
+    "awaiting_delegation_reconciliation",
 }
 
 
