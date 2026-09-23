@@ -82,3 +82,32 @@ no test counts changed, so the deltas above stand:
   canonical clone and at the develop base (files byte-identical between base
   and head — the lane never touched them). Repair belongs to a log-redaction
   or test-infra lane.
+
+## Independent re-validation at head `cad92981e` (second repair pass)
+
+Re-executed the full battery from scratch, trusting no prior claims; head
+`cad92981e` differs from `8c7424edfc43` only by this note file:
+
+- `pytest packages/maistro-core/tests/security` → 1263 passed / 19 skipped /
+  1 failed (only the documented `test_install_is_idempotent` red);
+  `test_sentinel_policy.py` 43 passed; `test_warden_regex_equivalence.py` 7
+  passed **unskipped** (`import re2` verified — the accelerated/fallback
+  comparison really ran); warden/ + `test_pii_evasion_normalization.py` 70
+  passed; strategies + `test_warden_pii_bypass.py` 37 passed;
+  `formal/models/test_warden_semantic.py --hypothesis-seed=0` 12 passed.
+- Gates: vulture (CI args) exit 0, 1415/1415, unclassified 0;
+  `check-security-inventory.py` exit 0 (65 paths, 23 rows, 2 counted claims);
+  `check-doc-links.py` exit 0; `check-suite-inventory.py` 13/13 suites;
+  `ruff check .` + `ruff format --check .` clean; mypy 712 files clean.
+- Alembic: `alembic history` constructs the full linear map
+  034→035→035_thumb→036_cursors→…→040→036_audit_log_org_scope (single head,
+  `alembic branches` empty, 033/034 unique) — exit 0; `pytest tests/migrations`
+  17 passed.
+- The `test_install_is_idempotent` mechanism was re-reproduced independently:
+  fixture-phase install over 1 real handler returns 1, a second install with no
+  new handlers returns 0 (product idempotent), and attaching two
+  pytest-9-style capture handlers (plain formatters) before the second install
+  makes it return 2 — exactly the documented pytest-interaction root cause.
+  `test_log_redaction.py`, `log_redaction.py`, `redact.py`, `uv.lock` and
+  `pyproject.toml` are all byte-identical develop-base↔head, so the red is
+  provably pre-existing.
