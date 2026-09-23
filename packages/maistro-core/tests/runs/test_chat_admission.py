@@ -338,7 +338,14 @@ async def test_concurrent_admissions_sweep_without_colliding(spine) -> None:
 
     assert len({run.run_id for run in admitted}) == 8
     for run in admitted:
-        assert await runs.get_run(run.run_id) is not None
+        await runs.transition_run(run.run_id, RunStatus.QUEUED)
+        await runs.transition_run(run.run_id, RunStatus.CANCELLED)
+    # A concurrent burst can finish after its last admission. The execution
+    # seam calls this same hook; keep the direct admitter contract explicit too.
+    await admitter.sweep()
+
+    surviving = [run for run in admitted if await runs.get_run(run.run_id) is not None]
+    assert len(surviving) <= 2
 
 
 async def test_a_turn_with_no_intent_hint_names_no_agent(spine) -> None:
@@ -395,6 +402,34 @@ async def test_deleting_a_run_with_a_child_is_refused(spine) -> None:
         await runs.delete_run(parent.run_id)
 
     assert await runs.get_run(parent.run_id) is not None
+
+
+async def test_retention_walks_past_a_terminal_parent_with_a_child(spine) -> None:
+    """One undeletable parent must not strand younger eligible chat Runs."""
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
+    parent = await admitter.admit(_turn("parent"))
+    await runs.transition_run(parent.run_id, RunStatus.QUEUED)
+    await runs.transition_run(parent.run_id, RunStatus.RUNNING)
+    child_graph = parent.graph.materialize().model_copy(
+        update={"graph_id": "child-graph"}, deep=True
+    )
+    child = await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    await runs.transition_run(child.run_id, RunStatus.QUEUED)
+    await runs.transition_run(child.run_id, RunStatus.RUNNING)
+    await runs.transition_run(child.run_id, RunStatus.COMPLETED)
+    await runs.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    second = await admitter.admit(_turn("second"))
+    await runs.transition_run(second.run_id, RunStatus.QUEUED)
+    await runs.transition_run(second.run_id, RunStatus.RUNNING)
+    await runs.transition_run(second.run_id, RunStatus.COMPLETED)
+    third = await admitter.admit(_turn("third"))
+
+    assert admitter.retained == 2
+    assert await runs.get_run(parent.run_id) is not None
+    assert await runs.get_run(second.run_id) is None
+    assert await runs.get_run(third.run_id) is not None
 
 
 def test_a_turns_outcome_records_its_answer() -> None:

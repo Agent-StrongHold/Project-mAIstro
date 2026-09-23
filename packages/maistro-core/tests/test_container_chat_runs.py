@@ -22,6 +22,7 @@ from maistro.runs.chat_admission import (
     CHAT_SOURCE,
     EXECUTION_NEVER_STARTED,
     SESSION_ID_KEY,
+    ChatRunAdmitter,
 )
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
@@ -52,13 +53,16 @@ async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     container.conduit = _Conduit()
 
     result = await container.route_request(
-        [{"role": "user", "content": "what broke?"}], session_id="sess-1"
+        [{"role": "user", "content": "what broke?"}],
+        session_id="sess-1",
+        request_id="req-1",
     )
 
     run = await container.run_store.get_run(result["run_id"])
     assert run is not None
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
     assert run.provenance[SESSION_ID_KEY] == "sess-1"
+    assert run.provenance["request_id"] == "req-1"
 
 
 async def test_the_openai_shape_is_untouched() -> None:
@@ -163,6 +167,80 @@ async def test_the_chat_admitter_is_wired_by_the_container() -> None:
 
     assert container.chat_admitter is not None
     assert container.chat_admitter.retained == 0
+
+
+async def test_terminalized_concurrent_chat_burst_is_swept() -> None:
+    """The bound still holds when no later admission arrives to sweep."""
+    container = await _container()
+    container.chat_admitter = ChatRunAdmitter(
+        container.run_store,
+        workspace_id=container.config.workspace_id,
+        project_store=container.project_scope_store,
+        max_retained=2,
+    )
+    container.conduit = _Conduit()
+
+    results = await asyncio.gather(
+        *(container.route_request([{"role": "user", "content": f"turn {i}"}]) for i in range(8))
+    )
+
+    assert all("run_id" in result for result in results)
+    assert container.chat_admitter.retained <= 2
+    terminal_chat_runs = [
+        run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    ]
+    assert len(terminal_chat_runs) <= 2
+    assert all(run.status in TERMINAL_RUN_STATUSES for run in terminal_chat_runs)
+
+
+async def test_the_close_sweep_tolerates_a_container_without_an_admitter() -> None:
+    """`_sweep_chat_runs` is a no-op when no admitter is wired.
+
+    The close path invokes the sweep unconditionally after terminalizing, so a
+    Container running without chat admission must still settle its Runs cleanly
+    rather than trading a closed Run for a bookkeeping absence.
+    """
+    container = await _container()
+    store = container.run_store
+    admitter = container.chat_admitter
+    assert admitter is not None
+    run = await admitter.admit([{"role": "user", "content": "hi"}])
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    container.chat_admitter = None  # type: ignore[assignment]
+
+    assert await container._close_chat_run(run) is True
+
+    closed = await store.get_run(run.run_id)
+    assert closed is not None
+    assert closed.status is RunStatus.COMPLETED
+
+
+async def test_a_failing_retention_sweep_does_not_fail_the_close() -> None:
+    """Retention is housekeeping: a sweep failure must not fail the close.
+
+    The terminal write already landed, so a broken sweeper may log its failure
+    but must never turn a settled turn into an error the caller has to handle.
+    """
+    container = await _container()
+    store = container.run_store
+    admitter = container.chat_admitter
+    assert admitter is not None
+    run = await admitter.admit([{"role": "user", "content": "hi"}])
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+
+    class _ExplodingSweep:
+        async def sweep(self) -> int:
+            raise RuntimeError("retention store unavailable")
+
+    container.chat_admitter = _ExplodingSweep()  # type: ignore[assignment]
+
+    assert await container._close_chat_run(run) is True
+
+    closed = await store.get_run(run.run_id)
+    assert closed is not None
+    assert closed.status is RunStatus.COMPLETED
 
 
 def _chat_runs(container: Container):
