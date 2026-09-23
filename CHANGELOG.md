@@ -340,6 +340,15 @@ or placeholder-only section.
   Attempt still bound on the same event loop tick. The id is correlation
   metadata only; unlike the signed Workspace-scope headers, it can never
   assert scope or authorization.
+- **Recurring schedule admission has cross-backend parity tests (#46).** One
+  scenario runs through `ScheduleRunAdmitter` on the in-memory, SQLite and
+  PostgreSQL stores (wired by `wire_execution_spine`): an hourly schedule with
+  `max_runs=2` fires, is disabled and re-enabled without losing its
+  `runs_so_far`/`last_run_id`, fires its last run and is disabled with
+  `next_due_at` cleared in the same write. A schedule whose first occurrence
+  has not arrived records its `next_due_at` and leaves `due()`. All three
+  backends must leave identical cursor state (`enabled`, `runs_so_far`,
+  `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
 
