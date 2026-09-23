@@ -55,13 +55,14 @@ class BindingDisabled(BindingResolutionError):
 
 @runtime_checkable
 class BindingStore(Protocol):
-    """Canonical Binding definition and scope-resolution contract."""
+    """Canonical Binding definition and scope-resolution contract.
+
+    Implementable by both the ephemeral in-memory authority and durable
+    (SQLite/PostgreSQL) backends: every member is either async or usable at
+    boot over an open connection.
+    """
 
     async def put(self, binding: Binding) -> Binding: ...
-
-    def register(self, binding: Binding) -> Binding: ...
-
-    async def revoke(self, binding_id: str) -> None: ...
 
     async def get(self, binding_id: str) -> Binding | None: ...
 
@@ -74,6 +75,21 @@ class BindingStore(Protocol):
         node_id: str,
         capability: str,
     ) -> Binding: ...
+
+
+@runtime_checkable
+class RevocableBindingStore(BindingStore, Protocol):
+    """A BindingStore that additionally supports operator revocation (#846).
+
+    The canonical shipped wiring uses :class:`InMemoryBindingStore`, so a
+    capability can be cut off for already-constructed actors without a
+    process restart. Durable backends implement revocation through #1133;
+    until then they must not silently satisfy this contract.
+    """
+
+    def register(self, binding: Binding) -> Binding: ...
+
+    async def revoke(self, binding_id: str) -> None: ...
 
 
 def _scope_checked(
@@ -338,5 +354,6 @@ __all__ = [
     "BindingStore",
     "InMemoryBindingStore",
     "PgBindingStore",
+    "RevocableBindingStore",
     "SqliteBindingStore",
 ]

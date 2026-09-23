@@ -14,7 +14,7 @@ from functools import lru_cache
 from typing import Any
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import BindingStore, InMemoryBindingStore
+from maistro.capabilities.binding_store import InMemoryBindingStore, RevocableBindingStore
 from maistro.capabilities.credential_routing import CredentialRouting
 from maistro.capabilities.governed_invocation import (
     GovernedInvocationExecutionService,
@@ -71,7 +71,7 @@ async def _unconfigured_policy(
 class CapabilityEffectContext:
     """Wired canonical Binding and Invocation authorities for effect consumers."""
 
-    bindings: BindingStore
+    bindings: RevocableBindingStore
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
