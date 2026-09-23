@@ -37,3 +37,13 @@ Residual limits: remote CI and browser/UI e2e were not rerun. The API e2e suite 
 
 Completion: checked 1 issue, done 1 repair, skipped 0 issues, errors 0 in final validation. Next: reviewer handoff of local commit only; no integration or GitHub actions.
 
+## Independent re-validation at head 3100509c (repair-verification job 0100ad81)
+
+Re-ran every gate from scratch against the exact lane base `8bb344e32` / candidate `3100509c39bb`; no code changes were needed, so this section records evidence only (inventory deltas above are unchanged).
+
+- `scripts/check-public-routes.py` passed: both production apps imported (hive + turing service-registry log lines), public-routes ratchet 12 -> 12 identities, 20 unauthenticated paths declared, "both live route tables are declared and authorized".
+- Focused suites: root gate/policy/enumeration/provenance 144 passed; `packages/maistro-turing/backend/tests` 52 passed; `packages/hive-conductor/backend/tests` 2671 passed, 1 existing skip; `packages/maistro-core/tests/security` 1301 passed with the single `test_log_redaction.py::test_install_is_idempotent` failure, which fails identically at base `8bb344e32` (pre-existing log-redaction test-isolation defect, untouched by this branch, out of #1140 scope).
+- Reported-CI-failure gates re-run green at this head: radon ratchet 70 -> 70 C-blocks; formal `security-constants.json` regenerated with no drift; diff-coverage gate replicated with the CI producers (core, turing src, turing backend, hive backend, root `tests/` as the scripts producer — 10127+177+52+2671+3510 collected) reports all 9 measured changed files at or above the 90%/80% floors.
+- Docker E2E re-run in isolated project `maistro-1140-e2e` with `ports: !reset []` (host 8101 is occupied by an unrelated service — the earlier failure was environmental, not a code failure): `up --build --abort-on-container-exit --exit-code-from api-tests` exited 0, 10 passed / 13 existing skips, including the two previously regressed cases (`GET /v1/audit`, `GET /v1/settings` -> 200 for `pmuser`). The built image also proves the packaged registry resolution (`/app/backend/middleware` -> `/app/quality/route-permissions.json`) boots.
+- `uv run ruff check .` and `uv run ruff format --check .` clean; suite inventory gates match (Conductor 2672 collected); live enumeration gate reports no new gaps.
+
