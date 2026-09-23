@@ -48,3 +48,37 @@ Four product-path security regressions extend the initial #74 evidence:
 - The prior semantic false positive is reproduced through `Sentinel.post_call`: a
   complete-object phrase before `capture` remains clean, while the ordered
   capture/full-conversation form remains blocked.
+
+## Post-merge re-validation at head `8c7424edfc43`
+
+Re-verified against the merged head (develop `8bb344e32` merged into the lane);
+no test counts changed, so the deltas above stand:
+
+- Vulture gate (CI args, `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) exits 0 at the merged head: 1415 reviewed identities →
+  1415 findings, `unclassified: 0`, `never_allowlist: 0` (the two extra
+  identities over the 1413 recorded pre-merge come from develop, all classified).
+- Alembic chain (prior formal-conformance failure `KeyError: '033'`):
+  `alembic heads` → single head `036_audit_log_org_scope`, `alembic branches`
+  → empty, revisions 033/034 unique
+  (`033_project_membership_unique_per_principal`, `034_hitl_deadline_index`),
+  chain linear 032→…→036_audit_log_org_scope; `pytest tests/migrations` 17
+  passed. The KeyError was a revision-map construction failure, which these
+  map-level checks rule out without a database.
+- Battery at the merged head: `ruff check .` and `ruff format --check .` clean;
+  mypy 712 source files clean; `pytest packages/maistro-core/tests/security`
+  1263 passed / 19 skipped / 1 failed; `pytest formal/models/
+  test_warden_semantic.py --hypothesis-seed=0` 12 passed; strategies +
+  `test_warden_pii_bypass.py` 75 passed; `test_warden_regex_equivalence.py` 7
+  passed unskipped (google-re2 installed).
+- Known red, out of #74 scope, root-caused not fixed here:
+  `test_log_redaction.py::test_install_is_idempotent`. pytest 9.1.1 (CI pins
+  `pytest >=9.0.3,<10`) `catching_logs.__enter__` now attaches a
+  `LogCaptureHandler` to every *non-propagating* logger, so during the call
+  phase the fixture logger `maistro.test.redaction` gains two capture handlers
+  with `ColoredLevelFormatter`; the second `install_log_redaction` call then
+  correctly wraps those two and returns 2. The product is idempotent: an
+  out-of-pytest repro returns 1 then 0, and the same test fails on the
+  canonical clone and at the develop base (files byte-identical between base
+  and head — the lane never touched them). Repair belongs to a log-redaction
+  or test-infra lane.
