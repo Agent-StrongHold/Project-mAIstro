@@ -363,6 +363,15 @@ or placeholder-only section.
 
 ### Changed
 
+- **A declared correlation field must have a production producer (#63).** A
+  fitness test scans `packages/*/src` and `hive-conductor/backend` for
+  `bind_execution_context(...)` keywords and fails when a `FIELD_NAMES` entry
+  is bound nowhere, so a field that is declared but never emitted cannot come
+  back. `invocation_id` and `session_id` have no producer yet and sit on a
+  reviewed allowlist that names the owning #63 slice. The test also fails once
+  an allowlisted field gains a producer, which keeps the allowlist from going
+  stale.
+
 - **The Conductor frontend renders on the Workspace design system (#1046,
   #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`
   is a byte-for-byte copy of the bundled `workspace` tokens, held identical by
