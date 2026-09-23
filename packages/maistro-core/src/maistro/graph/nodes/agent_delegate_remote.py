@@ -22,11 +22,8 @@ only path that already defines one) rather than a new one.
 
 from __future__ import annotations
 
-<<<<<<< HEAD
-=======
 import hashlib
 import json
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
@@ -34,12 +31,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
 from pydantic import BaseModel, Field
 
 from maistro.a2a.delegate import A2ADelegator, DelegationMode
-<<<<<<< HEAD
-from maistro.a2a.guest_peers import GuestPeerManager
-from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
-=======
 from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
+from maistro.runs.model import AcceptedNodeOutcome, AttemptResult, AttemptStatus, RunStatus
 
 from . import register_node
 from .base import (
@@ -490,7 +483,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 "delegation acceptance could not be reconciled before the "
                 f"delegation timeout: {error}"
             )
-            await self._terminalize_child(
+            await self._record_child_outcome(
                 child_id, DelegateRemoteOut(status="failed", error=message)
             )
             raise DelegationReconciliationExpired(message)

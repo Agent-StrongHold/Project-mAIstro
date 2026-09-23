@@ -4,7 +4,8 @@ inventory-delta:
 ---
 # 147-delegation-receipt
 
-Adds one regression case covering a cross-instance peer response that claims
-submission without returning an A2A `task_id`. The delegate node now refuses to
-pause or create a child Run because the child would have no receipt with which
-to correlate a later result.
+Covers a cross-instance peer response that claims submission without returning
+an A2A `task_id`. The delegate node retains the reserved child Run and parks on
+the system-owned reconciliation pause; it does not advance the parent as a
+completed failed delegation before the transport receipt is recovered or its
+deadline expires.

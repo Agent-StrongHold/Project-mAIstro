@@ -461,8 +461,10 @@ class TestCrossInstanceDelegationFilesAChildRun:
         ]
         assert children == []
 
-    async def test_a_submitted_peer_response_without_a_receipt_does_not_pause(self) -> None:
-        """A child without the A2A receipt cannot be resumed or correlated."""
+    async def test_a_submitted_peer_response_without_a_receipt_pauses_for_reconciliation(
+        self,
+    ) -> None:
+        """An uncertain transport keeps its reserved child and polls for its receipt."""
         store, _projects, project = await _spine()
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
@@ -475,16 +477,12 @@ class TestCrossInstanceDelegationFilesAChildRun:
             _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
         )
 
-        assert result.status == "completed"
-        assert result.output.status == "failed"
-        assert "invalid delegation receipt" in (result.output.error or "")
-        assert result.output.run_id == ""
-        children = [
-            run
-            for run in store._runs.values()  # type: ignore[attr-defined]
-            if run.parent_run_id == parent.run_id
-        ]
-        assert children == []
+        assert result.status == "paused"
+        assert result.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
+        child = await store.get_run(result.metadata["child_run_id"])
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+        assert child.provenance["a2a_task_id"] == ""
 
     async def test_durable_parent_resumes_from_the_answer_and_settles_child(self) -> None:
         """The production checkpoint can accept the remote answer.

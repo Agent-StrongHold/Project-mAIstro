@@ -850,14 +850,6 @@ class TestWhatTheChildRecords:
         assert [node.node_type for node in graph.nodes] == ["agent.remote_work"]
         assert graph.workspace_id == parent.workspace_id
         assert graph.project_id == parent.project_id
-<<<<<<< HEAD
-        assert graph.nodes[0].inputs["requested_subgraph"] == {
-            "workspace_id": "somewhere-else",
-            "project_id": "some-other-project",
-            "name": "Research pipeline",
-            "nodes": [{"node_id": "summarise", "node_type": "llm.summarize"}],
-        }
-=======
 
 
 async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
@@ -910,4 +902,3 @@ async def test_guest_peer_recovery_reconciles_without_a_second_post() -> None:
     assert second.status == "paused"
     assert calls == {"post": 1, "get": 1}
     assert (await store.get_run(second.metadata["run_id"])).provenance["a2a_task_id"] == "remote-1"
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
