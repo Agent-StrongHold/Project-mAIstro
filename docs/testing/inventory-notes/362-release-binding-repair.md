@@ -201,3 +201,53 @@ Verdict recorded for this lane: MERGE-READY (writer handoff only, not
 integration approval). Residual UNVERIFIED: first production Actions evidence
 run and a real tag release require maintainer GitHub mutations, which are
 prohibited here.
+
+## Repair-phase validation at HEAD 9f39a9796 (job 33c1d658c2e348cc9a771d05575486fa)
+
+Role: repair/writer. The prior verify run (86fe3fd7) was rejected by the driver
+only because its worktree changed mid-run (the note section above was committed
+during verification); no defect was found in that commit — it appends this note
+only. Per the do-not-assume rule, every acceptance criterion was re-executed
+fresh at this HEAD. No check-*.log files existed in this job's directory
+(manifest checks: []), so nothing was taken from driver output. Code, registry,
+workflows, and COMPLIANCE.md are untouched; the only edit is this section.
+
+- `uv run python scripts/check-compliance.py`: exit 0 (at rest: 28 controls,
+  zero implemented, zero evidence; ART-15/17 unverified). Also exit 0 under
+  plain `python3` (CI's system-interpreter path, PyYAML 6.0.3).
+- Release mode without resolve, `--require-release-evidence --release-digest
+  9f39a9796...`: exit 1, 79 problems (fail-closed at rest; a commit cannot
+  contain its own digest).
+- Same + `--resolve-release-evidence --resolved-output <tmp>`: exit 1, 52
+  problems explicitly naming EU-AI-ACT-ART-15/-17 as `unverified`; the resolved
+  output file was NOT written (no green fabricated).
+- `uv run pytest tests/test_check_compliance.py tests/test_release_guard.py
+  tests/test_branch_policy.py -q`: 132 passed in 9.88s.
+- `uv run ruff check .` / `uv run ruff format --check .`: passed.
+- `uv run python scripts/check-ratchet-provenance.py`: OK, 0 violations.
+  `uv run python scripts/check-suite-inventory.py --suite tests/`: ok.
+- Live AC2 probe driving `validate_registry` (out-of-tree script): forged
+  implemented claims BLOCKED for disabled workflow, manual-only, never-run,
+  failing result, 91-day stale observation, wrong evidence digest, expired
+  expiry, empty evidence, empty test_refs, and non-test executable refs; a
+  locator resolving against live GitHub (404 run/artifact lookups) also fails
+  closed. `_workflow_state` on a real workflow_dispatch-only YAML fixture
+  derived (enabled=False, manual_only=True).
+- AC3/AC4 cross-check: 28/28 registry controls appear in the COMPLIANCE.md
+  table in order with matching statuses; status distribution 17
+  partially_implemented / 5 documented / 2 planned / 2 not_applicable / 2
+  unverified; no `verification_requested` is set; every evidence cell is `none`.
+- AC6/DoD: human-ownership statement present in COMPLIANCE.md and the checker
+  docstring. The only disabled workflow in the repo (mutation.yml, "temporarily
+  disabled" header) is cited solely as a `control_ref` of NIST-MEASURE, which
+  is `partially_implemented` with `evidence: []` — no disabled workflow backs
+  any implemented-and-tested claim, and the implemented path derives and
+  rejects workflow state mismatch (probe + tests).
+- Adjacent executable-control sanity: 49 tests passed across two registry-
+  cited suites (quota tracker, sentinel policy).
+
+Every acceptance criterion maps to executed evidence above; nothing was
+accepted from prior claims. Residual UNVERIFIED (unchanged, requires
+maintainer GitHub mutations prohibited here): the first production
+compliance-evidence Actions run and the first real tag release. Handoff:
+MERGE-READY as writer handoff only, never integration approval.
