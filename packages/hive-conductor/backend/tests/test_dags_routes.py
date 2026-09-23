@@ -542,58 +542,6 @@ def test_run_dag_parks_a_hitl_node_as_paused_not_finished(
     assert all(state != "completed" for state in projection["node_states"].values())
 
 
-def test_ws_run_button_executes_one_canonical_run(
-    admin_client: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The shipped DagBuilder Run button's socket executes the registered path.
-
-    The button opens ``/v1/ws/dags/{id}/run``; #736 moves that socket onto the
-    same ``run_registered_dag`` seam as the POST route, so both stores name one
-    canonical Run for a button execution too.
-    """
-    import services.graph_runner as graph_runner
-    import stores
-    from services.dag_run_store import get_dag_run_store
-
-    workspace_id = "route-workspace"
-    container = _canonical_container(monkeypatch, workspace_id)
-    _install_route_workspace(workspace_id, "admin")
-    dag_id = "route-canonical-ws"
-    stores.dags[dag_id] = _route_dag(dag_id, kind="transform.alias_keys")
-
-    async def legacy_stream_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("the DAG socket must not call graph_runner.execute_dag_streaming")
-        yield  # pragma: no cover - keeps this an (unreachable) async generator
-
-    monkeypatch.setattr(graph_runner, "execute_dag_streaming", legacy_stream_must_not_run)
-
-    with admin_client.websocket_connect(
-        f"/v1/ws/dags/{dag_id}/run?workspace_id={workspace_id}"
-    ) as ws:
-        started = ws.receive_json()
-        node_event = ws.receive_json()
-        final = ws.receive_json()
-
-    assert started["status"] == "started"
-    assert started["node_count"] == 1
-    run_id = final["run_id"]
-    assert final["status"] == "completed"
-    assert node_event["status"] == "node_complete"
-    assert node_event["success"] is True
-    assert node_event["run_id"] == run_id
-
-    canonical = asyncio.run(container.run_store.get_run(run_id))
-    projection = get_dag_run_store().get_run(run_id)
-    assert canonical is not None
-    assert canonical.run_id == run_id
-    assert canonical.workspace_id == workspace_id
-    assert canonical.status.value == "completed"
-    assert projection is not None
-    assert projection["canonical_run_id"] == canonical.run_id
-    assert projection["workspace_id"] == workspace_id
-    assert projection["status"] == canonical.status.value
-
-
 def test_run_dag_missing_scope_fails_before_execution(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

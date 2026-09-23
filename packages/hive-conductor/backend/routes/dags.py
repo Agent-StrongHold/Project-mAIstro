@@ -271,12 +271,14 @@ async def _execute_registered_dag(
 ) -> dict[str, Any]:
     """Register the saved DAG and execute it on the canonical Run path.
 
-    The one execution seam shared by the Hive DAG-run producers (#736): the
-    HTTP button route and the streaming socket both resolve an authorized
-    ``DagExecutionScope`` up front, register the saved snapshot as a
-    descriptor, and admit/execute exactly one canonical Run through
+    The POST route's execution seam (#736): it resolves an authorized
+    ``DagExecutionScope`` up front, registers the saved snapshot as a
+    descriptor, and admits/executes exactly one canonical Run through
     ``run_registered_dag``. Returns the canonical Run/NodeRun projection in
-    the historical DAG response shape.
+    the historical DAG response shape. The DagBuilder socket
+    (``/v1/ws/dags/{id}/run``) is a separate producer whose convergence onto
+    this seam is deferred to #53: this issue's collision boundary names only
+    the HTTP route, so the missing seam is recorded here rather than crossed.
     """
     from services.dag_agents import get_registry, run_registered_dag
 

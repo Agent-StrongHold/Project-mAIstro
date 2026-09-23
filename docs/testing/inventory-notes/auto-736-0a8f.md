@@ -85,3 +85,43 @@ guarantees rather than picking one:
    `test_run_dag_cannot_project_a_failed_canonical_node_as_completed`
    (jira.poll e2e) — same assertions against a durable Run. Net collected
 count for the suite still matches the recorded ledger (2487).
+
+# Repair round 4 (boundary reconciliation)
+
+Round 3's verification ruled the `routes/ws.py` diff outside #736's
+may-modify collision boundary (the boundary names only `routes/dags.py`
+among route files; the issue defers other producers' convergence to parent
+#53). Repairs applied:
+
+1. `routes/ws.py` and `tests/test_ws_auth.py` restored to the develop-base
+   content; the socket keeps executing through
+   `graph_runner.execute_dag_streaming` until #53 converges it (the removed
+   round-2/3 work is preserved in branch history and in
+   `../salvage-736/ws-convergence-deferred.patch`).
+2. `test_ws_run_button_executes_one_canonical_run` removed from
+   `test_dags_routes.py`; the WS bullet moved to the deferral section of
+   `736-dag-route-canonical-run.md`, whose delta drops +4 -> +3 (this note's
+   +1 is unchanged, net +4 for the branch).
+3. `_execute_registered_dag`'s docstring no longer claims the socket as a
+   caller; it records the missing seam explicitly.
+
+Boundary note on the two service files that remain in the diff:
+
+- `services/dag_run_store.py` carries projection/correlation behavior only
+  (non-terminal statuses no longer stamp `finished_at`; docstrings), which
+  is the boundary's stated allowance for that file.
+- `services/dag_agents.py` adds one optional, default-preserving
+  `node_resolver` parameter plus `get_node_resolver()`. This is the
+  demonstrable route-facing gap in its already-public contract: the route's
+  saved DAGs are legacy role-shaped nodes built per-node from the snapshot
+  (`LegacyConductorNode`, the same construction `canonical_dag_runner`'s
+  resolver and `recover_stranded_dag_runs`' `node_resolver_factory` use),
+  which `run_registered_dag`'s fixed catalog resolver
+  (`compose_node(kind, authorities)`) cannot construct — authorities are
+  execution-wide, not per-node. Without the seam the route could not execute
+  the shipped DAG shapes through the canonical path at all. Admission,
+  traversal, and lifecycle remain owned by `run_registered_dag`; the seam is
+  node-implementation only and defaults to the previous behavior.
+
+The POST-route convergence, owner-scope resolution, projection correlation,
+and both-stores tests from rounds 1-3 are unchanged.
