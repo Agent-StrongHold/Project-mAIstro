@@ -1382,6 +1382,8 @@ async def test_a_death_before_the_mint_takes_over_without_a_duplicate(scoped, mo
     assert retry.run_id is not None
     runs_named = [run for run in runs._runs.values() if run.provenance.get("task_id") is not None]
     assert [run.run_id for run in runs_named] == [retry.run_id]
+
+
 async def test_the_bound_evicts_expired_claims_first() -> None:
     """Past ``_MAX_ENTRIES`` the store sheds load: expired claims go first —
     evicting one is merely early window expiry — and the claim being admitted

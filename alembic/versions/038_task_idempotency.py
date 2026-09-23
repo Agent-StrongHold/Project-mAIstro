@@ -78,18 +78,23 @@ branch_labels = None
 depends_on = None
 
 #: The columns this migration and ``ensure_schema`` both own, spelled once so
-#: the create and the reconciliation check cannot drift apart.
+#: the create and the reconciliation check cannot drift apart. The uppercase
+#: generic spellings are deliberate: they compile to the same DDL as the
+#: title-case aliases, and they are the exact classes a dialect's reflection
+#: hands back for those DDL types (``TEXT`` for ``Text``, ``BIGINT`` for
+#: ``BigInteger``) — so the reconcile path's strict type identity holds on a
+#: live server instead of failing on a class-alias technicality.
 CLAIM_COLUMNS: Final = (
-    sa.Column("scope_key", sa.Text, nullable=False),
-    sa.Column("claim_token", sa.Text, nullable=False),
-    sa.Column("fingerprint", sa.Text, nullable=False),
-    sa.Column("request", sa.Text, nullable=False),
-    sa.Column("task_id", sa.Text, nullable=True),
-    sa.Column("run_id", sa.Text, nullable=True),
-    sa.Column("completed_at", sa.BigInteger, nullable=False, server_default="0"),
-    sa.Column("created_at", sa.BigInteger, nullable=False),
-    sa.Column("expires_at", sa.BigInteger, nullable=False),
-    sa.Column("lease_expires_at", sa.BigInteger, nullable=False),
+    sa.Column("scope_key", sa.TEXT, nullable=False),
+    sa.Column("claim_token", sa.TEXT, nullable=False),
+    sa.Column("fingerprint", sa.TEXT, nullable=False),
+    sa.Column("request", sa.TEXT, nullable=False),
+    sa.Column("task_id", sa.TEXT, nullable=True),
+    sa.Column("run_id", sa.TEXT, nullable=True),
+    sa.Column("completed_at", sa.BIGINT, nullable=False, server_default="0"),
+    sa.Column("created_at", sa.BIGINT, nullable=False),
+    sa.Column("expires_at", sa.BIGINT, nullable=False),
+    sa.Column("lease_expires_at", sa.BIGINT, nullable=False),
 )
 
 
@@ -142,7 +147,7 @@ def _validate_claim_columns(inspector: sa.Inspector) -> None:
     missing = {col.name for col in CLAIM_COLUMNS} - actual_columns.keys()
     if missing:
         raise RuntimeError(
-            "task_idempotency already exists without the columns migration 034 "
+            "task_idempotency already exists without the columns migration 038 "
             f"owns (missing: {sorted(missing)}); it is not the runtime-"
             "provisioned claim table, and the migration will not stamp over it"
         )

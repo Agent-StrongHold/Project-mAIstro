@@ -78,15 +78,11 @@ EXPECTED_TABLES = frozenset(
         # until migration 019 gave the Workspace a table of its own.
         "canonical_workspaces",
         "canonical_workspace_memberships",
-        # The capability and Workspace lifecycle tables are provisioned by the
-        # shared deployment foundation alongside this migration chain. The
-        # live-catalog assertion must account for them or report a false drift
-        # after a clean CI database is upgraded.
-        "canonical_workspace_lifecycle",
-        "capability_approvals",
-        "capability_bindings",
-        "capability_invocation_effects",
-        "capability_invocations",
+        # NOTE: tables the runtime provisions at wire time (capability
+        # approvals/bindings/invocation effects, canonical_workspace_lifecycle)
+        # are deliberately absent: they are not chain-owned, and a clean
+        # database upgraded through the chain alone must not be expected to
+        # hold them.
         "child_profiles",
         "design_outputs",
         "design_projects",
@@ -267,7 +263,7 @@ class TestIndexIntent:
 class TestTheChainSurvivesRuntimeSelfProvisioning:
     """The claims table has two owners (#1176): this chain, and the runtime —
     `PgTaskIdempotencyStore.ensure_schema` provisions it at wire time, before
-    the chain has necessarily reached 034. The first cut of the migration met
+    the chain has necessarily reached 038. The first cut of the migration met
     that table and died on `DuplicateTable`, so `alembic upgrade head` — the
     command every documented Postgres setup path runs — exited 1 on exactly
     the deployments that provisioned early. The upgrade now adopts a table
@@ -326,7 +322,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
                 "select indexname from pg_indexes where tablename = 'task_idempotency'"
             )
         }
-        assert _query("select version_num from alembic_version") == [("034",)]
+        assert _query("select version_num from alembic_version") == [("038",)]
 
     def test_adopts_runtime_provisioned_table_without_a_primary_key(self, empty_database) -> None:
         """A provisioning that predates the PRIMARY KEY in ensure_schema leaves
@@ -354,7 +350,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
         try:
             result = _alembic("upgrade", "head")
             assert result.returncode == 0, result.stderr
-            assert _query("select version_num from alembic_version") == [("034",)]
+            assert _query("select version_num from alembic_version") == [("038",)]
             pks = {
                 str(row[0])
                 for row in _query(
@@ -393,7 +389,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
             _execute("drop table task_idempotency")
 
     def test_upgrade_refuses_to_stamp_over_a_foreign_table_shape(self, empty_database) -> None:
-        """A table under the claims name WITHOUT the columns migration 034
+        """A table under the claims name WITHOUT the columns migration 038
         owns is not the runtime's provisioning, and stamping head over a shape
         the store cannot read would hide the damage behind a green upgrade."""
         _alembic("upgrade", "033")
@@ -403,7 +399,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
 
             assert result.returncode != 0
             assert "missing" in result.stderr
-            assert _query("select version_num from alembic_version") == [("032",)]
+            assert _query("select version_num from alembic_version") == [("033",)]
             # And the foreign table was left exactly as found — visible, not
             # silently adopted or dropped.
             assert self._claim_columns() == {"scope_key"}
