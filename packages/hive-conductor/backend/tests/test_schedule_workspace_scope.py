@@ -299,3 +299,54 @@ def test_delete_of_an_already_deleted_row_is_a_404_not_a_500(
     assert principals["alice"].delete(f"/v1/schedules/{sid}").status_code == 404
     assert principals["alice"].put(f"/v1/schedules/{sid}", json={"name": "x"}).status_code == 404
     assert sid not in stores.schedules, "an update must not resurrect a deleted row"
+
+
+def test_a_request_with_no_principal_is_a_401_never_system() -> None:
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from routes.schedules import _actor
+
+    for user in (None, {}, {"id": ""}, {"id": "  "}):
+        with pytest.raises(HTTPException) as refused:
+            _actor(SimpleNamespace(state=SimpleNamespace(user=user)))  # type: ignore[arg-type]
+        assert refused.value.status_code == 401
+
+
+def test_a_row_deleted_during_the_write_checks_is_a_404(
+    principals: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stores
+    from services import workspace_authority
+
+    sid = _create(principals, "alice")["id"]
+    real = workspace_authority.member_role
+
+    async def racing(user_id: str, workspace_id: str) -> Any:
+        role = await real(user_id, workspace_id)
+        stores.schedules.pop(sid, None)
+        return role
+
+    monkeypatch.setattr(workspace_authority, "member_role", racing)
+
+    response = principals["alice"].put(f"/v1/schedules/{sid}", json={"name": "x"})
+    assert response.status_code == 404, response.text
+    assert sid not in stores.schedules, "an update must not resurrect a deleted row"
+
+
+def test_a_row_deleted_while_it_fires_is_a_404_not_a_500(
+    principals: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import services.scheduler as scheduler
+    import stores
+
+    sid = _create(principals, "alice")["id"]
+
+    async def fire_then_lose_the_row(schedule_id: str) -> str:
+        stores.schedules.pop(schedule_id, None)
+        return "run-1"
+
+    monkeypatch.setattr(scheduler, "fire_now", fire_then_lose_the_row)
+
+    response = principals["alice"].post(f"/v1/schedules/{sid}/run")
+    assert response.status_code == 404, response.text
