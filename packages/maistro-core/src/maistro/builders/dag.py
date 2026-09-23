@@ -9,13 +9,8 @@ layers that already exist:
   execution; it *describes* a builders pipeline (stages, edges, gates,
   loop-back targets) and lowers that description onto the existing
   :class:`~maistro.builders.graph.PipelineGraph` +
-<<<<<<< HEAD
-  :class:`~maistro.builders.graph_executor.GraphPipelineExecutor`.
-- :mod:`maistro.graph` — the graph-domain description protocol.
-=======
   :class:`~maistro.builders.graph_executor.CanonicalGraphPipelineExecutor`.
-- :mod:`maistro.graph` — the ADR-062 graph execution protocol.
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
+- :mod:`maistro.graph` — the graph-domain description protocol.
   :func:`builders_dag_to_graph` converts a :class:`BuildersDAG` into the
   legacy role-level description used by migration tooling; physical execution
   belongs to the canonical durable Graph entrypoint.

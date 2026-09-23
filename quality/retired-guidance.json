@@ -97,6 +97,26 @@
         "used to"
       ],
       "issue": "388"
+    },
+    {
+      "id": "pre-durable-run-graph",
+      "pattern": "(?i)(from\\s+maistro\\.graph[\\w.]*\\s+import\\s+[^\\n]*\\brun_graph\\b|\\bmaistro\\.graph\\.run_graph\\b)",
+      "retired_by": "#1154",
+      "also_recorded_in": [
+        "docs/adr/ADR-062-graph-execution-protocol.md top-of-file retirement note",
+        "docs/architecture/CONVERGENCE-MATRIX.md Graph execution rows (RETIRED by #1154)",
+        "packages/maistro-core/tests/graph/test_retired_executor.py"
+      ],
+      "replacement": "Canonical durable execution is maistro.graph.durable_runs.run_durable_graph, which records Run/NodeRun/Attempt evidence and is re-derivable after a crash. The pre-durable run_graph wrapper recorded none of it, so work reached through it was invisible to every recovery path. The wrapper is no longer exported from maistro.graph, and the maistro.graph.run / maistro.graph.strategy modules that carried GraphRun and the strategy protocol are deleted (tests/graph/test_retired_executor.py pins this); maistro.testing.harness builds a Container with a faux provider and executes no Graph work itself.",
+      "citation_markers": [
+        "#1154",
+        "supersed",
+        "stale",
+        "retired",
+        "used to",
+        "no longer"
+      ],
+      "issue": "1154"
     }
   ]
 }

@@ -16,4 +16,9 @@ under `tests/graph/durable_runs/` and cover Graph-domain routing and lifecycle t
 canonical Run/NodeRun/Attempt evidence. The chat-to-Graph integration fixture now
 stops at classification/spec/spawn and explicitly does not execute physical Graph work.
 The execution-lifecycle ledger no longer retains the deleted `GraphPhase`/`NodePhase`
-identities, and the Vulture ledger prunes the remaining deleted node/lifecycle findings.
+identities, and the Vulture ledger prunes the remaining deleted node/lifecycle findings
+(including the retired `testing.harness` event assertions). The same scan banked the
+19 identities the retirement unmasked (former `run_graph` name matches such as
+`parallel_generations` plus the pre-durable scout/strategy/backoff call surfaces that
+the reachability ledger already holds for #44/#63 wiring); those bankings still need
+the trusted-base grants per the ratchet's two-merge rule.
