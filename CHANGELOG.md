@@ -217,8 +217,8 @@ or placeholder-only section.
   template (default `program_manager`) can be swapped without changing the id.
   `services/default_workspace.py` `resolve_default_workspace()` gives each
   caller one owned default Workspace. The default is chosen by a durable
-  insert-once claim, so racing first requests yield one Workspace, and a
-  deleted or revoked default is replaced rather than resurrected.
+  insert-once claim, so racing first requests yield one Workspace. A deleted,
+  revoked or demoted default is replaced and never handed back.
   `POST /v1/workspaces/default` (gated by `workspaces.write`) returns the
   caller's default Workspace with its Workspace Agent id. Chat turns do not
   consume either resolver yet; that is the next #1037 slice.

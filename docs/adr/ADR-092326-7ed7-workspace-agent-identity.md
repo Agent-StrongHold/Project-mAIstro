@@ -64,7 +64,9 @@ key `{workspace}.{name}` with no dot in the name, CRUD rows are uuid4, Forge
 rows are `forge-*`, and manifest rows use bare names. The persona is a
 template reference on the row, `config.persona.template_id`, and defaults to
 `program_manager`. Swapping the persona rewrites only that attribute. The id
-and `created_at` never change. A Workspace the canonical store does not hold,
+and `created_at` do not change. A Workspace owner can still edit or delete the
+row through the agents CRUD routes. After a delete, the next resolution
+re-materializes the same id with a fresh `created_at` and the default persona. A Workspace the canonical store does not hold,
 whether it was never created or has been deleted, gets no Agent. A row of
 another Workspace that holds the id is refused, not adopted.
 (`services/workspace_agent.py`)
@@ -75,14 +77,19 @@ created on first need through `workspace_authority.create_workspace` with the
 caller as owner. An insert-once claim, keyed `{user_id}#{generation}` in
 Hive's persisted store, decides which Workspace is the default. The claim's
 durable half is the backend's primary-key conflict (`put_if_absent`), so when
-concurrent first requests race, including requests from separate processes,
-exactly one wins. Each loser deletes the Workspace it created and adopts the
-winner's. If the caller's default has been deleted, or the caller is no
-longer a member of it, it is never revived or handed back. The next
-generation is claimed for a fresh Workspace. (`services/default_workspace.py`)
+concurrent first requests race, exactly one claim wins. Each loser deletes the
+Workspace it created and adopts the winner's. If the winner's Workspace
+presentation is not yet loaded in the loser's process, the loser answers
+`DefaultWorkspaceUnavailable` (retryable). It never mints a second default.
+Resolution starts at the caller's latest generation. A default that was
+deleted, or that the caller no longer owns, is therefore retired for good: the
+next generation is claimed for a fresh Workspace, and re-adding the caller to
+the old one never makes it the default again. (`services/default_workspace.py`)
 `POST /v1/workspaces/default` returns the caller's default Workspace together
 with its Workspace Agent id and persona. It keeps the `workspaces.write` gate
-that every other `/v1/workspaces` mutation except plain creation carries.
+that every other `/v1/workspaces` mutation except plain creation carries. The
+next slice's chat admission calls the resolvers directly rather than this
+route.
 
 The following options were considered and not chosen: reusing an existing
 persona spawn as the Workspace Agent's identity, and refusing Workspace-less
@@ -98,9 +105,10 @@ turns.
   A malformed template id is refused before anything is written.
 - AC-4: The first default-Workspace call creates a Workspace owned by the
   caller. Later and concurrent calls return the same Workspace. Another user
-  gets their own. A lost durable claim converges on the winner and leaves no
-  second Workspace. A deleted or revoked default is replaced, never
-  resurrected. `POST /v1/workspaces/default` returns the same Workspace and
+  gets their own. A lost durable claim converges on the winner, or answers
+  retryably, and leaves no second Workspace. A deleted, revoked or demoted
+  default is replaced, and it is never handed back, even after the caller is
+  re-added to it. `POST /v1/workspaces/default` returns the same Workspace and
   Workspace Agent on repeat calls, and refuses a caller without
   `workspaces.write` without writing anything.
 - AC-5: The roster gains only the Workspace Agents. It gains no demo rows and
@@ -119,6 +127,9 @@ turns.
   the same row). A persona swap that races a first materialization in
   *another* process can therefore be overwritten by it. Hive runs as a single
   process today.
+- A crash between creating a default Workspace and committing its claim
+  leaves an unclaimed "Personal" Workspace that the caller owns. The next
+  request creates and claims another one.
 - The persona is recorded as a template reference only. Turning the reference
   into runtime behaviour is the next slice's concern.
 

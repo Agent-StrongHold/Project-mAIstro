@@ -136,6 +136,55 @@ def test_the_default_route_keeps_the_workspaces_write_gate(authed_client) -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_revoked_default_stays_retired_when_the_caller_is_readded() -> None:
+    first = await default_workspace.resolve_default_workspace("alice")
+    await workspace_authority.set_member(first.id, user_id="carol", role="owner")
+    await workspace_authority.remove_member(first.id, user_id="alice")
+    replacement = await default_workspace.resolve_default_workspace("alice")
+    await workspace_authority.set_member(first.id, user_id="alice", role="viewer")
+
+    assert (await default_workspace.resolve_default_workspace("alice")).id == replacement.id
+
+
+@pytest.mark.asyncio
+async def test_a_default_the_caller_no_longer_owns_is_replaced() -> None:
+    first = await default_workspace.resolve_default_workspace("alice")
+    await workspace_authority.set_member(first.id, user_id="carol", role="owner")
+    await workspace_authority.set_member(first.id, user_id="alice", role="viewer")
+
+    replacement = await default_workspace.resolve_default_workspace("alice")
+
+    assert replacement.id != first.id
+    assert await workspace_authority.member_role("alice", replacement.id) == "owner"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_durable_claim_is_skipped_not_looped_on(
+    canonical: InMemoryWorkspaceStore,
+) -> None:
+    default_workspace._claims_store()._data[default_workspace.claim_key("alice", 0)] = None
+
+    view = await default_workspace.resolve_default_workspace("alice")
+
+    assert [w.workspace_id for w in await canonical.list_for_user("alice")] == [view.id]
+
+
+def test_the_default_route_maps_a_scanner_outage_to_503(
+    admin_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from services import agent_materialization
+
+    async def _down(*_args, **_kwargs):
+        raise RuntimeError("scanner offline")
+
+    monkeypatch.setattr(agent_materialization, "scan_config", _down)
+
+    response = admin_client.post("/v1/workspaces/default")
+
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_a_blank_principal_is_refused() -> None:
     with pytest.raises(ValueError):
         await default_workspace.resolve_default_workspace("  ")
@@ -186,6 +235,48 @@ async def test_losing_the_durable_claim_to_another_process_converges_on_the_winn
         await conn.close()
 
     assert resolved.id == winner.workspace_id
+    assert [w.workspace_id for w in owned] == [winner.workspace_id]
+
+
+@pytest.mark.asyncio
+async def test_a_winner_this_process_cannot_compose_is_unavailable_not_duplicated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aiosqlite
+
+    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+    from maistro.state import PersistedStore, State
+    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
+
+    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
+    state = State(db_path=str(tmp_path / "hive.db"))
+    try:
+        scopes = SqliteProjectScopeStore(conn)
+        await scopes.ensure_schema()
+        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
+        await canonical.ensure_schema()
+        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
+        persisted = PersistedStore(state)
+        persisted.initialize()
+        monkeypatch.setattr(stores, "_persisted", persisted)
+
+        # Another worker created and claimed alice's default; its presentation
+        # never reached this process's cache.
+        winner = await canonical.create(creator_user_id="alice", name="Winner")
+        assert persisted.put_raw_if_absent(
+            default_workspace.CLAIM_STORE,
+            default_workspace.claim_key("alice", 0),
+            json.dumps({"user_id": "alice", "workspace_id": winner.workspace_id}),
+        )
+        monkeypatch.setattr(default_workspace._claims_store(), "_data", {})
+
+        with pytest.raises(default_workspace.DefaultWorkspaceUnavailable):
+            await default_workspace.resolve_default_workspace("alice")
+        owned = await canonical.list_for_user("alice")
+    finally:
+        state.close()
+        await conn.close()
+
     assert [w.workspace_id for w in owned] == [winner.workspace_id]
 
 
