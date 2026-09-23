@@ -25,6 +25,14 @@ or placeholder-only section.
 
 ### Security
 
+- **Design trust review no longer recommends upgrading content the engine blocks
+  (#817, partial).** `scan_and_record` now runs the shared Design
+  `scan_blocking_patterns` over every discovery response instead of assigning
+  empty flags, so script/iframe/`javascript:` markup, prompt-injection phrasing,
+  base64 blobs and hidden Unicode are recorded as SKULL with explicit flags and a
+  `banish` recommendation. `upgrade` is recommended only when the same scanner the
+  output scan uses finds nothing.
+
 - **Concurrent registrations can no longer publish two identities under the
   same username (#1248).** The register route's availability check and the
   UUID-keyed write were separate steps, so the store's key (a fresh UUID, not
