@@ -54,3 +54,9 @@ through now. The full real-PG concurrency suite
 This is test-and-store hardening adjacent to #1242's own fix (see
 `1242-requested-cancellation-stops-work.md`); it does not change task
 cancellation behavior.
+
+Re-verified at exact head 25fd3551c (2026-09-23): full persistence suite
+624 passed against a live pgvector pg17 on :55917, and
+`test_pg_sessions_concurrency.py` green 5× in isolation back-to-back —
+no recurrence of the line-89 flake. See the verification record in
+`1242-requested-cancellation-stops-work.md`.

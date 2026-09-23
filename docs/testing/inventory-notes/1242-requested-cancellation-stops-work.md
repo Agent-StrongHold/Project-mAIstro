@@ -139,3 +139,46 @@ prior run's claims:
   pyproject.toml uv.lock .pre-commit-config.yaml` is empty — every
   workflow/gate delta on this branch came in from the develop side of the
   merge, not from the #1242 repair commits.
+
+## Independent verification at exact head 25fd3551c669687b4410aaad558db1568b16ecd9
+
+Re-executed after the aud6 branch absorbed the develop base 8bb344e32 via
+25fd3551c. Not taken from any prior run's claims; job 36f3416a (repair lane
+LAUD6, 2026-09-23). The prior repair attempt at this job died at startup with
+zero tree changes, so this record is the first verification made at this head.
+
+- `uv run pytest packages/maistro-core/tests/tasks/test_requested_cancellation.py -q`
+  → 10 passed; re-run 3× in one invocation (30 test executions), all green.
+- `uv run pytest packages/maistro-core/tests/tasks -q` → 319 passed.
+- Bite check, re-derived here: throwaway copy of the head in `/tmp/bite1242`
+  with the execution-stop block of `TaskQueue.cancel` replaced by `return True`
+  (restoring the audited receipt-only terminalization), run via
+  `PYTHONPATH=/tmp/bite1242/src uv run pytest ... -o pythonpath=`: **4 failed /
+  6 passed** — `test_cancel_stops_the_running_work`
+  (`AssertionError: the executor ran to completion after cancel`),
+  `test_cancel_does_not_report_success_before_work_settles`,
+  `test_cancelled_work_cannot_attach_a_late_failure`,
+  `test_a_cancelled_receipt_keeps_no_result_after_the_work_stopped`. The
+  regression bites on exactly the audited defect.
+- Full CI-parity suites at this head against a live pgvector pg17 container on
+  :55917 (`MAISTRO_TEST_PG_DSN`/`MAISTRO_TEST_DATABASE_URL`, `REQUIRE_AUTH=false`,
+  `MAISTRO_DRY_RUN=1`): `packages/maistro-core/tests` → **10702 passed, 46
+  skipped, 1 xfailed, 0 failed** in 3m37s; `packages/maistro-server/tests` →
+  369 passed (includes DELETE /tasks/{id} → 200 `cancelled: true` and status
+  `cancelled`, the product path this fix serves).
+- Persistence suite in that run: 624 passed including
+  `test_pg_sessions_concurrency.py` (the prior exact-head flake at line 89);
+  that file additionally green 5× in isolation back-to-back — the 23b4de340
+  DB-clock retention fix holds under repetition on this host.
+- Gates at this head: `uv run ruff check .` clean; `uv run ruff format --check .`
+  clean (2528 files); nine-package `uv run mypy` Success (831 files);
+  `scripts/check-suite-inventory.py --suite packages/maistro-core/tests` ok;
+  `scripts/check-doc-links.py` all links resolve.
+- No gate weakening, re-proven at this head: `git diff
+  8bb344e32..25fd3551c -- .github/ scripts/ pyproject.toml uv.lock
+  .pre-commit-config.yaml` is empty, and a regex over the full branch diff for
+  added `skip|xfail|deselect` lines finds none (`tests/config/__init__.py` is
+  an import-isolation proxy, not a skip).
+- Closure-keyword scan over every commit message in
+  `8bb344e32..25fd3551c` (subject+body): no `fixes/closes/resolves #NNN`
+  forms. No PR body exists for a local branch; no GitHub mutations were made.
