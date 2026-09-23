@@ -174,6 +174,7 @@ def canvas_egress(
         }, run_store
 
     context, run_store = asyncio.run(_seed_execution())
+    _seed_canonical_workspace("ws-canvas", member="user")
     registry = InMemoryProviderRegistry(
         models=[
             ModelMetadata(
@@ -506,11 +507,25 @@ def _request_with_state(
     return Request(scope)
 
 
+def _seed_canonical_workspace(workspace_id: str, *, member: str) -> None:
+    """Admit `member` to a canonical Workspace; Canvas eval authorizes by membership."""
+    import asyncio
+
+    from services import workspace_authority
+
+    asyncio.run(
+        workspace_authority.canonical_store_for_tests().create(
+            creator_user_id=member, name=workspace_id, workspace_id=workspace_id
+        )
+    )
+
+
 def _seed_run(
     run_store: Any,
     *,
     project_id: str,
     actor_principal_id: str | None,
+    workspace_id: str = "ws-canvas",
     node_type: str = "canvas.visual_quality",
     with_node_run: bool = True,
     with_attempt: bool = True,
@@ -521,7 +536,7 @@ def _seed_run(
         run = await run_store.create_run(
             Graph(
                 graph_id=f"canvas-graph-{node_type}-{actor_principal_id}",
-                workspace_id="ws-canvas",
+                workspace_id=workspace_id,
                 project_id=project_id,
                 name="Canvas quality",
                 nodes=[Node(node_id="canvas-quality", node_type=node_type)],
@@ -540,11 +555,84 @@ def _seed_run(
     return asyncio.run(_create())
 
 
-def test_canvas_route_refuses_run_owned_by_another_principal(
+def _eval_as(username: str, password: str, run_id: str) -> Any:
+    client = TestClient(app)
+    login = client.post("/v1/auth/login", json={"username": username, "password": password})
+    assert login.status_code == 200
+    return client.post(
+        "/v1/canvas/eval",
+        json={"description": "A blue city at dusk", "run_id": run_id},
+    )
+
+
+def _foreign_workspace_run(components: Any, *, actor_principal_id: str) -> Any:
+    import asyncio
+
+    _seed_canonical_workspace("ws-foreign", member="someone-else")
+    project = asyncio.run(components.run_store._project_store.create_root("ws-foreign"))
+    run, _node_run, attempt = _seed_run(
+        components.run_store,
+        project_id=project.project_id,
+        actor_principal_id=actor_principal_id,
+        workspace_id="ws-foreign",
+    )
+    return run, attempt
+
+
+def test_canvas_route_answers_foreign_workspace_run_exactly_like_missing_run(
     canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A Run minted by another principal is refused, never re-owned."""
+    """A Run outside the caller's Workspace is indistinguishable from no Run (#1152)."""
+    egress, effects, _context, components = canvas_egress
+    run, attempt = _foreign_workspace_run(components, actor_principal_id="user")
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+
+    foreign = _eval_as("testuser", "testpass", run.run_id)
+    missing = _eval_as("testuser", "testpass", "run-that-does-not-exist")
+
+    assert foreign.status_code == missing.status_code == 503
+    assert foreign.content == missing.content
+    assert "score" not in foreign.json()
+    import asyncio
+
+    unchanged = asyncio.run(components.run_store.get_attempt(attempt.attempt_id))
+    assert unchanged == attempt
+    invocations = asyncio.run(
+        effects.invocation_store.list_effect(
+            run_id=run.run_id,
+            node_run_id=attempt.node_run_id,
+            binding_id="canvas-quality-binding",
+            effect_key="canvas.visual_quality.evaluate",
+        )
+    )
+    assert invocations == []
+
+
+def test_canvas_route_gives_admin_no_bypass_of_workspace_membership(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visibility is Workspace membership for every role, as in DAG-run inspection."""
+    egress, _effects, _context, components = canvas_egress
+    run, attempt = _foreign_workspace_run(components, actor_principal_id="someone-else")
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+
+    foreign = _eval_as("testadmin", "adminpass", run.run_id)
+    missing = _eval_as("testadmin", "adminpass", "run-that-does-not-exist")
+
+    assert foreign.status_code == missing.status_code == 503
+    assert foreign.content == missing.content
+    import asyncio
+
+    assert asyncio.run(components.run_store.get_attempt(attempt.attempt_id)) == attempt
+
+
+def test_canvas_route_lets_workspace_member_evaluate_run_started_by_another_member(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The initiating principal is provenance, not a visibility gate (#1152)."""
     egress, _effects, _context, components = canvas_egress
     run, _node_run, _attempt = _seed_run(
         components.run_store,
@@ -552,24 +640,18 @@ def test_canvas_route_refuses_run_owned_by_another_principal(
         actor_principal_id="someone-else",
     )
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
-    client = TestClient(app)
-    login = client.post("/v1/auth/login", json={"username": "testuser", "password": "testpass"})
-    assert login.status_code == 200
 
-    response = client.post(
-        "/v1/canvas/eval",
-        json={"description": "A blue city at dusk", "run_id": run.run_id},
-    )
+    response = _eval_as("testuser", "testpass", run.run_id)
 
-    assert response.status_code == 403
-    assert "score" not in response.json()
+    assert response.status_code == 200, response.text
+    assert response.json()["score"] == 91
 
 
 def test_canvas_route_refuses_run_without_execution_principal(
     canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An admin may inspect any Run, but a principal-less Run still refuses."""
+    """A principal-less Run in the caller's Workspace refuses like a missing one."""
     egress, _effects, _context, components = canvas_egress
     run, _node_run, _attempt = _seed_run(
         components.run_store,
@@ -577,17 +659,13 @@ def test_canvas_route_refuses_run_without_execution_principal(
         actor_principal_id=None,
     )
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
-    client = TestClient(app)
-    login = client.post("/v1/auth/login", json={"username": "testadmin", "password": "adminpass"})
-    assert login.status_code == 200
 
-    response = client.post(
-        "/v1/canvas/eval",
-        json={"description": "A blue city at dusk", "run_id": run.run_id},
-    )
+    actorless = _eval_as("testuser", "testpass", run.run_id)
+    missing = _eval_as("testuser", "testpass", "run-that-does-not-exist")
 
-    assert response.status_code == 503
-    assert "score" not in response.json()
+    assert actorless.status_code == missing.status_code == 503
+    assert actorless.content == missing.content
+    assert "score" not in actorless.json()
 
 
 def test_canvas_route_refuses_run_without_quality_node(
