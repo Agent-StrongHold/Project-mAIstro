@@ -235,9 +235,11 @@ or placeholder-only section.
   `memory_max_bytes`, `pids_max` and `cpu_max_cores`. Each value is a
   number, `"unbounded"` when no limit is set at that level (an enclosing
   cgroup may still impose one), or `"unknown"` when nothing readable is
-  there: cgroup v1, a host-root view, or unparseable content. The field is
-  informational only and never changes readiness status. Compose profiles
-  still declare no ceilings (#862).
+  there: cgroup v1, a host-root view, or unparseable content. Because the
+  `/health` prefix is public and rate-limit exempt, the field is `null`
+  unless the caller presents an admin bearer token (or API auth is
+  disabled). It never changes readiness status. Compose profiles still
+  declare no ceilings (#862).
 
 - **Every maistro-core node kind is proven to get the Container's own
   authorities through `Container.node_resolver()` (#44, #1082).** A new sweep

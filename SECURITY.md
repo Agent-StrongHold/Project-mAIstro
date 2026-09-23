@@ -161,9 +161,12 @@ CPU ceilings set at the hierarchy root. Under a private cgroup namespace, which
 is the Docker/containerd default on v2 hosts, that root is the container's own
 cgroup. `"unbounded"` means no limit is set at that level, though an enclosing
 cgroup may still impose one. `"unknown"` means nothing readable is there:
-cgroup v1, a non-namespaced host-root view, or unparseable content. The engine
-reports these values but does not enforce them, and the supported Compose
-profiles do not set them yet (#862).
+cgroup v1, a non-namespaced host-root view, or unparseable content. Deployment
+capacity helps an attacker size a resource-exhaustion attempt, and `/health` is
+unauthenticated and exempt from rate limiting, so `container_limits` is `null`
+unless the request carries an admin bearer token (or API auth is disabled).
+The engine reports these values but does not enforce them, and the supported
+Compose profiles do not set them yet (#862).
 
 ### Gaps against Stronghold's inventory
 

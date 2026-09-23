@@ -9,12 +9,14 @@ from typing import Annotated, Any, Literal
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 import maistro.agents.circuit_breaker as circuit_breaker
 from maistro.config.settings import Settings, get_settings
 from maistro.http import shared_client_stats
 from maistro.security.container_limits import CGROUP_V2_ROOT, read_effective_container_limits
+from maistro_server.api.auth import resolve_token_principal, security_scheme
 from maistro_server.api.schemas import HealthResponse
 from maistro_server.startup import StartupPhase, get_startup_phase
 
@@ -43,8 +45,20 @@ class DetailedHealthResponse(BaseModel):
     version: str
     checks: dict[str, ProbeResult]
     effective_resource_policy: dict[str, int | float | bool]
-    container_limits: dict[str, int | float | str]
+    container_limits: dict[str, int | float | str] | None
     strike_tracker: dict[str, str | bool]
+
+
+def _container_limits_for(
+    credentials: HTTPAuthorizationCredentials | None, settings: Settings
+) -> dict[str, int | float | str] | None:
+    """Deployment capacity helps size a resource-exhaustion attack, and the
+    `/health` prefix is public and rate-limit exempt, so only an admin sees it."""
+    token = credentials.credentials if credentials is not None else ""
+    principal = resolve_token_principal(token, settings)
+    if principal is None or not principal.is_admin:
+        return None
+    return read_effective_container_limits(CGROUP_ROOT).as_dict()
 
 
 def _strike_tracker_diagnostics(container: Any) -> dict[str, str | bool]:
@@ -141,6 +155,7 @@ async def startup(request: Request, response: Response) -> StartupHealthResponse
 async def readiness(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security_scheme)],
 ) -> DetailedHealthResponse | JSONResponse:
     """Readiness probe — checks Docker, Postgres, LLM, and HTTP pool state."""
     uptime = time.monotonic() - _start_time
@@ -180,7 +195,7 @@ async def readiness(
         "http_pool": http_pool_result,
     }
     all_ok = all(c.status == "ok" for c in checks.values())
-    container_limits = read_effective_container_limits(CGROUP_ROOT).as_dict()
+    container_limits = _container_limits_for(credentials, settings)
 
     result = DetailedHealthResponse(
         status="ok" if all_ok else "degraded",

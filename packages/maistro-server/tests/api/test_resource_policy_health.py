@@ -93,3 +93,52 @@ def test_readiness_exposes_effective_container_limits(
 
     assert response.status_code == 200
     assert response.json()["container_limits"] == expected
+
+
+def _cgroup_tree(root: Path) -> Path:
+    root.mkdir()
+    (root / "memory.max").write_text("536870912\n")
+    (root / "pids.max").write_text("max\n")
+    (root / "cpu.max").write_text("200000 100000\n")
+    return root
+
+
+@pytest.mark.parametrize(
+    ("headers", "visible"),
+    [
+        ({}, False),
+        ({"Authorization": "Bearer wrong"}, False),
+        ({"Authorization": "Bearer user-secret"}, False),
+        ({"Authorization": "Bearer admin-secret"}, True),
+    ],
+)
+def test_container_limits_are_withheld_from_non_admin_callers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    headers: dict[str, str],
+    visible: bool,
+) -> None:
+    """`/health` is a public probe prefix; deployment capacity is admin-only."""
+    monkeypatch.setattr(health, "CGROUP_ROOT", _cgroup_tree(tmp_path / "cgroup"))
+    settings = Settings(api_keys=["ops:admin:admin-secret", "alice:user-secret"])
+    app.dependency_overrides[get_settings] = lambda: settings
+    ok = ProbeResult(status="ok")
+    try:
+        with (
+            patch("maistro_server.api.health._check_docker", AsyncMock(return_value=ok)),
+            patch("maistro_server.api.health._check_postgres", AsyncMock(return_value=ok)),
+        ):
+            response = TestClient(app).get("/health/ready", headers=headers)
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
+
+    assert response.status_code == 200
+    limits = response.json()["container_limits"]
+    if visible:
+        assert limits == {
+            "memory_max_bytes": 536870912,
+            "pids_max": "unbounded",
+            "cpu_max_cores": 2.0,
+        }
+    else:
+        assert limits is None
