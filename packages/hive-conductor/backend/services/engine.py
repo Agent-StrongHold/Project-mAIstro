@@ -200,9 +200,23 @@ class EngineService:
         # Start it only after the core bridge has established the canonical Run
         # and Graph-continuation stores so another replica can recover a process
         # that died between Run admission and checkpoint 1 (#835/#837).
+        from services.canonical_recovery import start_canonical_recovery
         from services.dag_recovery import start_dag_recovery
 
         start_dag_recovery()
+        # The Container's own recovery ticks (lease reclaim, stranded chat
+        # admissions, elapsed-pause resume) are operator-scheduled (ADR-019);
+        # this process is their operator (#62).
+        start_canonical_recovery()
+
+        # Canonical Evolve Run recovery (#1064) is bracketed by the Evolve
+        # service's own lifecycle (`services.evolution.start_evolution`/
+        # `stop_evolution`), not the engine's: `services.evolution_graph`'s
+        # recovery resolver requires the Evolve singleton to exist, and this
+        # engine start runs before `start_evolution()` does in application
+        # startup. Starting the cadence here raced that ordering -- a due
+        # RUNNING Run inspected in the gap terminalized FAILED for no reason
+        # but startup sequencing. See `services.evolution.start_evolution`.
 
         try:
             if settings.hive_mode == "demo":
@@ -297,9 +311,13 @@ class EngineService:
             logger.warning("capability wiring failed (%s) — slots use baselines/SAFE_NOOP", exc)
 
     async def stop(self) -> None:
+        from services.canonical_recovery import stop_canonical_recovery
         from services.dag_recovery import stop_dag_recovery
 
         await stop_dag_recovery()
+        await stop_canonical_recovery()
+        # Evolve recovery cadence stop moved to `services.evolution.stop_evolution`
+        # (#1064) -- see the matching note in `start()`.
         if self._backend is not None:
             import contextlib
 
