@@ -74,3 +74,33 @@ inherited from the addendum above):
   setup_incomplete with identity_required=false; after five-step setup with
   crypto_identity deselected -> disabled, readiness identity=true. The
   documented support-matrix states were each observed on a running image.
+
+Repair-phase re-verification at final head f682c4f16 (independent execution;
+previous verify job 8b5d3ef6 failed on worker exit, all 7 driver checks green):
+
+- Branch hygiene: base 750edd84d is not an ancestor of HEAD; the #1192 test/
+  CHANGELOG deltas in the base..HEAD diff are unmerged upstream work, not
+  deletions by this branch. Branch's 9 commits touch only #291 surfaces.
+- Gates re-run green at this head: ruff check, ruff format --check (2529
+  files), engine identity 69 passed, conductor test_api/test_identity_health/
+  test_setup_guard 55 passed, tests/test_prepull_base_images.py 25 passed,
+  suite inventories match (conductor 2663, core 10737), security.yml parses
+  with both image builds and both in-image verification steps under the
+  `containers` job.
+- In-image verification re-executed verbatim against the existing l291-final
+  builds of both profiles: default printed identity=operational (python
+  3.13.15, bip-utils 2.12.1, coincurve 21.0.0, pynacl 1.6.2, msgpack/setuptools
+  floors held); observability printed observability=importable
+  identity=operational. The image's /app/backend diffed byte-identical against
+  the worktree's packages/hive-conductor/backend, proving image provenance.
+- Live Playwright setup.spec.ts 8/8 against a fresh default-profile container
+  (host port 18291): unavailable- and misconfigured-health gating disabled the
+  Crypto Identity toggle; full five-step completion reached Live Operations.
+  Observed /health arc on one boot: fresh -> misconfigured/setup_incomplete
+  (required=false), post-setup -> disabled with readiness identity=true.
+- Residuals unchanged: GitHub Actions execution of the security container job
+  remains UNVERIFIED (no GitHub mutations permitted from this lane; job fires
+  on PR-to-main/main pushes/nightly, not develop PRs) — the verbatim local
+  replication above is the evidence of record; frontend/e2e still has no CI
+  owner (compose e2e runs tests/e2e only), which no #291 acceptance criterion
+  requires.
