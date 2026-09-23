@@ -49,3 +49,16 @@ passed 2666, `ruff check .` was clean, and the suite-inventory gate matched.
 Live rollup on this head reported formal-conformance, exact-debt-ledger, and
 the Quality gate SUCCESS; integration-scope, the CI test job, docker-build, the
 coverage gate, and gates-ran were still pending at verification time.
+
+Fourth round (post-rejection re-validation at 147d44a89): the third round's
+evidence was discarded solely because the provenance commit landed after the
+verifier snapshotted bdcbe7f2c ("worktree_changed"), so the entire battery was
+re-executed anchored at 147d44a89, where the only delta is this note: ruff
+check clean, ruff format clean, focused idle-policy suite 12/12, full backend
+suite 2666 passed, suite-inventory gate ok. Code inspection re-confirmed every
+acceptance path at this head: the locked min(absolute, idle) resolve in
+`routes/auth.py::_resolve_session`, the middleware and WS resolve -> authorize
+-> touch ordering (denied `dags.write` handshakes leave `last_activity_at`
+untouched; the accepted-handshake control refreshes), observational whoami,
+all six locked session mutation paths, and the Profile session-health card
+without secrets. Remote CI completion remains the only unverified item.
