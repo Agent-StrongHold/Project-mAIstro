@@ -42,5 +42,15 @@ async def test_replayed_a2a_create_returns_one_canonical_run(client: TestClient)
         assert first.status_code == second.status_code == 202
         assert first.json() == second.json()
         assert len(await run_store.list_by_status(RunStatus.CREATED)) == 1
+
+        # The reconciliation half of transport idempotency: a worker that lost
+        # its lease after an ambiguous POST polls the key and gets the original
+        # receipt back, never a second admission.
+        receipt = client.get(f"/a2a/tasks/by-idempotency-key/{payload['idempotency_key']}")
+        assert receipt.status_code == 200
+        assert receipt.json()["task_id"] == first.json()["task_id"]
+
+        unknown = client.get("/a2a/tasks/by-idempotency-key/never-claimed")
+        assert unknown.status_code == 404
     finally:
         a2a.configure_a2a_admission(None, None)

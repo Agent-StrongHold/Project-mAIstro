@@ -131,7 +131,7 @@ class TestDelegationFilesAChildRun:
         assert (
             await store.find_child_run_by_effect(
                 parent.run_id,
-                node._effect_key(node.input_schema.model_validate(inputs), context),
+                node.replay_effect_key(node.input_schema.model_validate(inputs), context),
             )
             is not None
         )

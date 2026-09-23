@@ -98,3 +98,24 @@ async def create_a2a_task(
         },
     )
     return A2ATaskCreated(task_id=claim.run.run_id, run_id=claim.run.run_id)
+
+
+@router.get("/tasks/by-idempotency-key/{idempotency_key}")
+async def get_a2a_task_by_idempotency_key(
+    idempotency_key: str,
+    auth: RequireAuth,
+) -> dict[str, str]:
+    """Reconcile one admitted delegation without re-submitting it (#1194).
+
+    The other half of transport idempotency: a dispatching worker that lost its
+    lease after an ambiguous POST polls this endpoint with the same key and
+    receives the original receipt. A key nobody claimed is a 404, so the
+    caller can distinguish "never accepted" from "accepted, receipt lost".
+    """
+    store, _projects, _workspace_id = _stores()
+    run = await store.find_run_by_effect(idempotency_key)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown idempotency key")
+    # The receipt is the canonical Run id -- the same value the admitting POST
+    # returned as `task_id`, so a reconciling caller resumes the original work.
+    return {"task_id": run.run_id}

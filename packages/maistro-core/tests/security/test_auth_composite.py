@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from maistro.security._types import SYSTEM_AUTH, AuthContext
 from maistro.security.auth_composite import (
     AuthError,
     CompositeAuthProvider,
@@ -26,7 +27,7 @@ class _FakeProvider:
         if self.behavior == "auth_error":
             raise AuthError("rejected")
         if self.behavior == "value_error":
-            raise ValueError("legacy not applicable")
+            raise ValueError("unclassified provider failure")
         if self.behavior == "boom":
             raise RuntimeError("boom")
         raise AssertionError("unreachable")
@@ -59,19 +60,20 @@ class TestCompositeAuthProvider:
         assert second.calls == []
 
     @pytest.mark.asyncio
-    async def test_value_error_falls_through_to_next_provider(self) -> None:
+    async def test_unclassified_value_error_does_not_fall_through(self) -> None:
         first = _FakeProvider("value_error")
         second = _FakeProvider("success", result="ctx3")
         composite = CompositeAuthProvider([first, second])
-        result = await composite.authenticate("token")
-        assert result == "ctx3"
+        with pytest.raises(AuthError, match="Authentication infrastructure failure"):
+            await composite.authenticate("token")
+        assert second.calls == []
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_aborts_and_wraps_as_autherror(self) -> None:
         first = _FakeProvider("boom")
         second = _FakeProvider("success")
         composite = CompositeAuthProvider([first, second])
-        with pytest.raises(AuthError, match="Authentication infrastructure failure: RuntimeError"):
+        with pytest.raises(AuthError, match="Authentication infrastructure failure"):
             await composite.authenticate("token")
         assert second.calls == []
 
@@ -95,3 +97,173 @@ class TestCompositeAuthProvider:
         composite = CompositeAuthProvider([provider])
         await composite.authenticate(None)
         assert provider.calls == [(None, None)]
+
+    @pytest.mark.asyncio
+    async def test_provider_order_is_first_success(self) -> None:
+        first = _FakeProvider("success", result="first")
+        second = _FakeProvider("success", result="second")
+        result = await CompositeAuthProvider([first, second]).authenticate("token")
+        assert result == "first"
+        assert second.calls == []
+
+    @pytest.mark.asyncio
+    async def test_static_key_rejection_is_terminal_for_ambiguous_bearer_shape(self) -> None:
+        from maistro.security.auth_static import StaticKeyAuthProvider
+
+        later = _FakeProvider("success", result=SYSTEM_AUTH)
+        composite = CompositeAuthProvider([StaticKeyAuthProvider("static-secret"), later])
+        with pytest.raises(AuthError, match="Invalid API key"):
+            await composite.authenticate("Bearer another-credential")
+        assert later.calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorization", ["Bearer", "Bearer\t"])
+    async def test_static_rejection_is_terminal_for_bare_bearer_shape(
+        self, authorization: str
+    ) -> None:
+        from maistro.security.auth_static import StaticKeyAuthProvider
+
+        later = _FakeProvider("success", result=SYSTEM_AUTH)
+        composite = CompositeAuthProvider([StaticKeyAuthProvider("static-secret"), later])
+        with pytest.raises(AuthError, match="Invalid API key"):
+            await composite.authenticate(authorization)
+        assert later.calls == []
+
+    @pytest.mark.asyncio
+    async def test_empty_static_key_rejection_is_terminal_for_empty_bearer_shape(self) -> None:
+        from maistro.security.auth_static import StaticKeyAuthProvider
+
+        later = _FakeProvider("success", result=SYSTEM_AUTH)
+        composite = CompositeAuthProvider([StaticKeyAuthProvider(""), later])
+        with pytest.raises(AuthError, match="Invalid API key"):
+            await composite.authenticate("Bearer")
+        assert later.calls == []
+
+    @pytest.mark.asyncio
+    async def test_jwt_rejection_is_terminal_for_empty_bearer_shape(self) -> None:
+        from maistro.security.auth_jwt import JWTAuthProvider
+
+        later = _FakeProvider("success", result=SYSTEM_AUTH)
+        composite = CompositeAuthProvider(
+            [
+                JWTAuthProvider(
+                    jwks_url="",
+                    issuer="https://idp.example.com",
+                    audience="maistro",
+                ),
+                later,
+            ]
+        )
+        with pytest.raises(AuthError, match="Empty token"):
+            await composite.authenticate("Bearer    ")
+        assert later.calls == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_shape_reaches_a_later_provider(self) -> None:
+        from maistro.security.auth_static import StaticKeyAuthProvider
+
+        later = _FakeProvider("success", result="later-context")
+        composite = CompositeAuthProvider([StaticKeyAuthProvider("static-secret"), later])
+        result = await composite.authenticate("Basic later-credential")
+        assert result == "later-context"
+
+    @pytest.mark.asyncio
+    async def test_malformed_recognized_cookie_is_terminal(self) -> None:
+        from maistro.security.auth_cookie import CookieAuthProvider
+
+        class _UnusedJWT:
+            async def authenticate(
+                self, authorization: str | None, headers: dict[str, str] | None = None
+            ) -> AuthContext:
+                raise AssertionError("malformed cookies must not reach JWT validation")
+
+        later = _FakeProvider("success", result=SYSTEM_AUTH)
+        composite = CompositeAuthProvider(
+            [
+                CookieAuthProvider(jwt_provider=_UnusedJWT()),  # type: ignore[arg-type]
+                later,
+            ]
+        )
+        with pytest.raises(AuthError, match="Empty session cookie"):
+            await composite.authenticate(None, headers={"cookie": 'maistro_session="'})
+        assert later.calls == []
+
+    @pytest.mark.asyncio
+    async def test_valid_cookie_credential_reaches_later_provider(self) -> None:
+        from maistro.security.auth_cookie import CookieAuthProvider
+        from maistro.security.auth_static import StaticKeyAuthProvider
+
+        class _ValidJWT:
+            async def authenticate(
+                self, authorization: str | None, headers: dict[str, str] | None = None
+            ) -> AuthContext:
+                assert authorization == "Bearer valid-session-token"
+                return AuthContext(user_id="cookie-user")
+
+        composite = CompositeAuthProvider(
+            [
+                StaticKeyAuthProvider("static-secret"),
+                CookieAuthProvider(jwt_provider=_ValidJWT()),  # type: ignore[arg-type]
+            ]
+        )
+        result = await composite.authenticate(
+            None, headers={"cookie": "maistro_session=valid-session-token"}
+        )
+        assert result.user_id == "cookie-user"
+
+    @pytest.mark.asyncio
+    async def test_rejection_audit_does_not_render_provider_exception_metadata(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class CredentialLeakSentinel(AuthError):
+            pass
+
+        class _Provider:
+            async def authenticate(
+                self, authorization: str | None, headers: dict[str, str] | None = None
+            ) -> AuthContext:
+                raise CredentialLeakSentinel("provider detail")
+
+        composite = CompositeAuthProvider([_Provider()])
+        with (
+            caplog.at_level("INFO", logger="maistro.auth.composite"),
+            pytest.raises(CredentialLeakSentinel),
+        ):
+            await composite.authenticate("Bearer credential")
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "auth_provider_rejected scheme=custom_provider" in message for message in messages
+        )
+        assert all("CredentialLeakSentinel" not in message for message in messages)
+        assert all("provider detail" not in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_rejection_audit_names_scheme_without_credential(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from maistro.security.auth_static import StaticKeyAuthProvider
+
+        secret = "static-secret"
+        composite = CompositeAuthProvider([StaticKeyAuthProvider(secret)])
+        with caplog.at_level("INFO", logger="maistro.auth.composite"), pytest.raises(AuthError):
+            await composite.authenticate(f"Bearer {secret}-wrong")
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("scheme=static_api_key" in message for message in messages)
+        assert any("auth_provider_rejected" in message for message in messages)
+        assert all(secret not in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_audit_scheme_ignores_credential_derived_class_metadata(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from maistro.security.auth_static import StaticKeyAuthProvider
+
+        secret = "credential-derived-secret"
+        provider = StaticKeyAuthProvider(secret)
+        monkeypatch.setattr(StaticKeyAuthProvider, "scheme", f"Bearer {secret}")
+        composite = CompositeAuthProvider([provider])
+        with caplog.at_level("INFO", logger="maistro.auth.composite"), pytest.raises(AuthError):
+            await composite.authenticate(f"Bearer {secret}-wrong")
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("scheme=static_api_key" in message for message in messages)
+        assert all(secret not in message for message in messages)
