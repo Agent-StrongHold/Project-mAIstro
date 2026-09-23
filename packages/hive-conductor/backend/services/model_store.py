@@ -39,11 +39,14 @@ class ModelStore(Generic[T]):
         store_name: str,
         model_class: type[T],
         persisted: Any | None = None,
+        unique_fields: tuple[str, ...] = (),
     ) -> None:
         self._store_name = store_name
         self._model_class = model_class
         self._data: dict[str, T] = {}
         self._persisted = persisted
+        self._unique_fields = unique_fields
+        self._unique_lock = threading.Lock()
 
     def initialize(self) -> None:
         if self._persisted is None:
@@ -70,6 +73,18 @@ class ModelStore(Generic[T]):
         return self._data[key]
 
     def __setitem__(self, key: str, value: T) -> None:
+        if self._unique_fields:
+            with self._unique_lock:
+                if self._persisted is not None:
+                    put_unique = getattr(self._persisted, "put_model_unique", None)
+                    if not callable(put_unique):
+                        raise RuntimeError("configured persistence cannot enforce unique fields")
+                    if not bool(put_unique(self._store_name, key, value, self._unique_fields)):
+                        raise ValueError(f"duplicate unique field in {self._store_name}")
+                else:
+                    self._reject_duplicate_unique_fields(key, value)
+                self._data[key] = value
+            return
         if self._persisted is not None:
             # Acknowledged persistence BEFORE the in-memory mutation (#1238):
             # PersistedStore.put blocks until the writer commits and raises on
@@ -79,6 +94,78 @@ class ModelStore(Generic[T]):
             # records resurrect) after a restart.
             self._persisted.put(self._store_name, key, value)
         self._data[key] = value
+
+    def _reject_duplicate_unique_fields(self, key: str, value: T) -> None:
+        for other_key, other in self._data.items():
+            if other_key == key:
+                continue
+            if any(
+                str(getattr(other, field)).casefold() == str(getattr(value, field)).casefold()
+                for field in self._unique_fields
+            ):
+                raise ValueError(f"duplicate unique field in {self._store_name}")
+
+    def put_if_unique(self, key: str, value: T, field_name: str) -> bool:
+        """Insert a record only if its field value is unique.
+
+        The configured persistence backend makes the claim and UUID-keyed row
+        one transaction; the lock covers the in-memory fallback.
+        """
+        with self._unique_lock:
+            if self._persisted is not None:
+                put_once = getattr(self._persisted, "put_model_if_unique", None)
+                if not callable(put_once):
+                    raise RuntimeError("configured persistence cannot enforce unique fields")
+                if not bool(put_once(self._store_name, key, value, field_name)):
+                    return False
+            elif any(
+                str(getattr(other, field_name)).casefold()
+                == str(getattr(value, field_name)).casefold()
+                for other_key, other in self._data.items()
+                if other_key != key
+            ):
+                return False
+            self._data[key] = value
+            return True
+
+    def put_if_absent(self, key: str, value: T) -> bool:
+        """Insert once; on a conflict, adopt the record that holds the key.
+
+        Across processes the durable backend's primary key decides (the same
+        ``ON CONFLICT DO NOTHING`` insert ``JsonStore.put_if_absent`` uses),
+        so a writer whose cache missed another process's record loads that
+        record instead of overwriting it. Returns whether this call inserted.
+        """
+        if self._unique_fields:
+            raise TypeError(f"{self._store_name} enforces unique fields; use put_if_unique")
+        with self._unique_lock:
+            if key in self._data:
+                return False
+            if self._persisted is not None:
+                put_once = getattr(self._persisted, "put_raw_if_absent", None)
+                if not callable(put_once):
+                    raise RuntimeError(
+                        "configured persistence cannot perform conflict-safe inserts"
+                    )
+                if not bool(put_once(self._store_name, key, value.model_dump_json())):
+                    winner = self._persisted.get(self._store_name, key, self._model_class)
+                    if winner is None:
+                        raise RuntimeError("conflicting durable record could not be read")
+                    self._data[key] = winner
+                    return False
+            self._data[key] = value
+            return True
+
+    def discard(self, key: str) -> None:
+        """Remove ``key`` durably even when this process never cached it.
+
+        ``pop`` only reaches the backend for a key this process holds; a
+        record another process wrote after this one loaded would survive it.
+        """
+        if key in self._data:
+            self.pop(key)
+        elif self._persisted is not None:
+            self._persisted.delete(self._store_name, key)
 
     def __contains__(self, key: str) -> bool:
         return key in self._data
@@ -200,6 +287,20 @@ class JsonStore:
 
     def __len__(self) -> int:
         return len(self._data)
+
+    def refresh(self, key: str) -> bool:
+        """Adopt ``key``'s durable record, if any; return whether it is held.
+
+        The cache is loaded once per bind, so a record another process wrote
+        since is invisible until this re-reads it from the backend.
+        """
+        if self._persisted is not None:
+            raw = self._persisted.get_raw(self._store_name, key)
+            if raw is not None:
+                # SECURITY-REVIEW: Durable JSON is untrusted at the
+                # deserialization boundary and is validated by the caller.
+                self._data[key] = json.loads(raw)
+        return key in self._data
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)

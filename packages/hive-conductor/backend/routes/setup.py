@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from maistro.security.passwords import (  # pyright: ignore[reportMissingImports]
     validate_password as validate_canonical_password,
@@ -208,6 +208,23 @@ class SetupCompleteBody(BaseModel):
     @classmethod
     def validate_password(cls, value: str) -> str:
         return validate_canonical_password(value)
+
+    @model_validator(mode="after")
+    def validate_usernames_differ(self) -> SetupCompleteBody:
+        """Reject identical admin/user usernames before either account is written.
+
+        `stores.users` now enforces username uniqueness (#1248), so an admin
+        write followed by a same-username user write would fail mid-setup:
+        the admin account already exists, so the durable setup claim is
+        retained (setup cannot be an unauthenticated do-over after an account
+        landed), yet the response is a 500 and the operator has no way to
+        retry. Catching this here, before `_provision_first_run` writes
+        anything, keeps that failure mode from being reachable at all (Codex
+        review, PR #1528).
+        """
+        if self.admin_username.casefold() == self.user_username.casefold():
+            raise ValueError("admin_username and user_username must differ")
+        return self
 
 
 def _validate_direct_setup_body(body: object) -> SetupCompleteBody:

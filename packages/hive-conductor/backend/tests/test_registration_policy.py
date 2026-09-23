@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import copy
 import json
+import multiprocessing
 import pathlib
 import sys
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fastapi import HTTPException
@@ -92,6 +94,58 @@ def _register_body(username: str, invitation: str | None = None) -> dict:
 def _login(client: TestClient, username: str, password: str) -> None:
     r = client.post("/v1/auth/login", json={"username": username, "password": password})
     assert r.status_code == 200, r.text
+
+
+def _durable_registration_worker(db_path: str, barrier: Any, outcomes: Any, worker_id: int) -> None:
+    """Run the real register route from an independent state writer."""
+    import stores
+    from fastapi import Request, Response
+    from fastapi.exceptions import HTTPException
+    from routes import auth as auth_routes
+    from services import registration_policy
+    from services.model_store import ModelStore
+
+    from maistro.state import PersistedStore, State
+
+    state = State(db_path)
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    stores.users = ModelStore(
+        "users", stores.users._model_class, persisted=persisted, unique_fields=("username",)
+    )
+    stores.users.initialize()
+    registration_policy.reset()
+    registration_policy.set_mode("open", actor="test")
+    auth_routes._REGISTER_THROTTLE = auth_routes.AuthThrottle(auth_routes._STRICTER.register)
+    barrier.wait(timeout=10)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/auth/register",
+            "headers": [],
+            "client": ("127.0.0.1", 8080 + worker_id),
+            "scheme": "http",
+            "server": ("127.0.0.1", 8000),
+            "query_string": b"",
+        }
+    )
+    response = Response()
+    try:
+        auth_routes.register(
+            auth_routes.RegisterBody(
+                username="cross-process-name",
+                password="securepass1",
+                confirm_password="securepass1",
+            ),
+            request,
+            response,
+        )
+    except HTTPException as exc:
+        outcomes.put(exc.status_code)
+    else:
+        outcomes.put(200)
+    state.close()
 
 
 class TestPostSetupRegistrationIsClosed:
@@ -445,6 +499,199 @@ class TestInvitations:
         assert outcomes.count(200) == 1
         assert outcomes.count(403) == 7
         assert len(stores.users) == before + 1
+
+    def test_concurrent_open_registration_claims_username_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The UUID-keyed user store cannot be the uniqueness boundary (#1248).
+
+        Slow the post-check password step so every pre-fix request observes the
+        username as available before any UUID row is written. The route's
+        critical section must turn that check-then-write into one winner and
+        seven 409 responses, rather than seven identities with one username.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        rp.set_mode("open", actor="admin:test")
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+
+        def slow_hash(_password: str) -> str:
+            # Release the GIL while the old route's check-to-write window is
+            # open, without spending Argon2 work on eight test accounts.
+            time.sleep(0.1)
+            return "test-registration-hash"
+
+        monkeypatch.setattr(auth_routes, "hash_password", slow_hash)
+        before = len(stores.users)
+        barrier = threading.Barrier(8)
+
+        def attempt(_index: int) -> int:
+            barrier.wait(timeout=10)
+            response = TestClient(app).post(
+                "/v1/auth/register", json=_register_body("same-username")
+            )
+            return response.status_code
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outcomes = list(pool.map(attempt, range(8)))
+
+        assert outcomes.count(200) == 1
+        assert outcomes.count(409) == 7
+        assert len(stores.users) == before + 1
+        assert [u.username for u in stores.users.values()].count("same-username") == 1
+
+    def test_durable_claim_loses_after_the_in_memory_check_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The atomic allocation is authoritative even when `_username_taken` said yes (#1248).
+
+        `_username_taken` is only an advisory indexed read; the durable
+        claim+row transaction in ``username_registry.create_users`` decides.
+        A writer that lost the durable race after its own availability check
+        passed (another writer's claim landed between the two steps) must
+        still be refused — the route maps the allocation-stage
+        ``UsernameTakenError`` to its own 409, not the earlier
+        `_username_taken` one, and the throttle still charges the failure.
+        Reconciled onto #1061's canonical allocator: the loser is refused by
+        the real atomic allocation logic, not a stubbed seam.
+        """
+        from uuid import uuid4
+
+        import stores
+        from main import app
+        from models.schemas import HiveUser
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+        from services import username_registry
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        rp.set_mode("open", actor="admin:test")
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+        real_create_users = username_registry.create_users
+        calls: list[str] = []
+
+        def winning_then_losing_create_users(users: Any) -> None:
+            # `_username_taken` has already returned False for this name by
+            # the time this runs. Simulate the other replica winning the
+            # durable race in that window: allocate a complete account under
+            # the same normalized username first, then let this request's own
+            # allocation run and observe the claim is no longer free.
+            calls.append(users[0].username)
+            other_id = str(uuid4())
+            real_create_users(
+                [
+                    HiveUser(
+                        id=other_id,
+                        username=users[0].username,
+                        password_hash="sha256$reconciled$other",
+                        role="user",
+                        is_active=True,
+                        permissions=[],
+                        did=None,
+                        created_at=datetime.now(UTC),
+                    )
+                ]
+            )
+            real_create_users(users)
+
+        monkeypatch.setattr(
+            auth_routes.username_registry,
+            "create_users",
+            winning_then_losing_create_users,
+        )
+        before = len(stores.users)
+        before_failures = {
+            key: len(times)
+            for key, times in auth_routes._REGISTER_THROTTLE._store._failures.items()
+        }
+
+        client = TestClient(app)
+        response = client.post("/v1/auth/register", json=_register_body("durable-race-loser"))
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Username is already taken."
+        assert calls, "the atomic allocation must have been reached"
+        assert len(stores.users) == before + 1, "only the race winner gets a row"
+        # Exactly one canonical identity holds the name, and login resolves
+        # to the winner through the claim index — including across casing.
+        resolved = username_registry.resolve("DURABLE-RACE-LOSER")
+        assert resolved is not None
+        matching = [
+            u
+            for u in stores.users.values()
+            if username_registry.normalize_username(u.username) == "durable-race-loser"
+        ]
+        assert len(matching) == 1 and resolved.id == matching[0].id
+        after_failures = {
+            key: len(times)
+            for key, times in auth_routes._REGISTER_THROTTLE._store._failures.items()
+        }
+        assert after_failures != before_failures
+
+    def test_independent_process_writers_publish_one_username(self, tmp_path: pathlib.Path) -> None:
+        """The SQLite uniqueness claim survives separate application processes (#1248)."""
+        from models.schemas import HiveUser
+
+        from maistro.state import PersistedStore, State
+
+        db_path = tmp_path / "registration-race.db"
+        bootstrap = State(db_path)
+        persisted = PersistedStore(bootstrap)
+        persisted.initialize()
+        from services.model_store import ModelStore
+
+        users = ModelStore("users", HiveUser, persisted=persisted, unique_fields=("username",))
+        assert users.put_if_unique(
+            "existing-user",
+            HiveUser(
+                id="existing-user",
+                username="existing-user",
+                password_hash="test-hash",
+                role="user",
+                created_at=datetime.now(UTC),
+            ),
+            "username",
+        )
+        bootstrap.close()
+
+        ctx = multiprocessing.get_context("spawn")
+        barrier = ctx.Barrier(2)
+        outcomes = ctx.Queue()
+        workers = [
+            ctx.Process(
+                target=_durable_registration_worker,
+                args=(str(db_path), barrier, outcomes, worker_id),
+            )
+            for worker_id in range(2)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=20)
+            assert worker.exitcode == 0
+
+        assert sorted(outcomes.get(timeout=5) for _ in workers) == [200, 409]
+
+        state = State(db_path)
+        persisted = PersistedStore(state)
+        persisted.initialize()
+        users = persisted.list_all("users", HiveUser)
+        state.close()
+        usernames = [user.username for user in users]
+        assert usernames.count("existing-user") == 1
+        assert usernames.count("cross-process-name") == 1
 
     def test_invitation_that_loses_the_redemption_race_is_refused(
         self, monkeypatch: pytest.MonkeyPatch

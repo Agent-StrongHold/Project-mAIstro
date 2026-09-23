@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time as _time
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -56,6 +57,10 @@ router = APIRouter(tags=["auth"])
 _STRICTER = StricterLimits()
 _LOGIN_THROTTLE = AuthThrottle()
 _REGISTER_THROTTLE = AuthThrottle(_STRICTER.register)
+# The username check and UUID-keyed write must be one critical section. A
+# UUID is unique even when two requests claim the same username, so relying on
+# the store's key uniqueness would still admit duplicate identities (#1248).
+_REGISTRATION_LOCK = threading.Lock()
 _ELEVATE_THROTTLE = AuthThrottle(_STRICTER.elevate)
 # In one state lifetime, anonymous starts cannot fill the bounded state store
 # even when distributed across client addresses.
@@ -694,28 +699,42 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
         if body.invitation_token:
             raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
         raise HTTPException(status_code=403, detail="Registration is closed on this hive.")
-    if _username_taken(body.username):
-        # Charged as a failure: "is this name taken?" is itself an enumeration
-        # primitive, and an unbudgeted one would let someone walk the user list
-        # for free.
-        _REGISTER_THROTTLE.record_failure(client_key=_client_key(request), account=body.username)
-        raise HTTPException(status_code=409, detail="Username is already taken.")
-    if (
-        body.invitation_token is not None
-        and decision.reason == "invitation"
-        and not registration_policy.redeem_invitation(body.invitation_token, username=body.username)
-    ):
-        # The invitation lost a redemption race (or expired between the check
-        # and the spend). Anything that fails after a successful spend leaves
-        # the token spent — fail-closed; an operator reissues.
-        log_audit(
-            "register_blocked",
-            body.username,
-            detail={"reason": "invitation_race"},
-            severity="warning",
-        )
-        raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
+    # The store key is a UUID, not the username. The lock serializes the
+    # advisory availability check and the invitation spend so neither races a
+    # sibling request in this process; the durable authority for the username
+    # itself is the atomic claim+row transaction in create_users (#1248),
+    # which holds across processes without the lock.
+    with _REGISTRATION_LOCK:
+        if _username_taken(body.username):
+            # Charged as a failure: "is this name taken?" is itself an enumeration
+            # primitive, and an unbudgeted one would let someone walk the user list
+            # for free.
+            _REGISTER_THROTTLE.record_failure(
+                client_key=_client_key(request), account=body.username
+            )
+            raise HTTPException(status_code=409, detail="Username is already taken.")
+        if (
+            body.invitation_token is not None
+            and decision.reason == "invitation"
+            and not registration_policy.redeem_invitation(
+                body.invitation_token, username=body.username
+            )
+        ):
+            # The invitation lost a redemption race (or expired between the check
+            # and the spend). Anything that fails after a successful spend leaves
+            # the token spent — fail-closed; an operator reissues.
+            log_audit(
+                "register_blocked",
+                body.username,
+                detail={"reason": "invitation_race"},
+                severity="warning",
+            )
+            raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
 
+    # Allocation happens outside the lock on purpose: the 64 MiB Argon2id hash
+    # must not serialize every registration, and atomicity comes from the
+    # durable claim transaction, not from process-local mutual exclusion. A
+    # loser of the durable claim still gets the uniform 409.
     user_id = str(uuid4())
     password_hash = hash_password(body.password)
     now_ts = datetime.now(UTC)

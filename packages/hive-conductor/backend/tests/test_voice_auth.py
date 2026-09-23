@@ -222,7 +222,13 @@ class TestTheCredentialResolvesToARealAccount:
 
         duplicate_ids = ("voice-duplicate-a", "voice-duplicate-b")
         for user_id, username in zip(duplicate_ids, ("VoiceAlice", "voicealice"), strict=True):
-            stores.users[user_id] = stores.users._model_class(
+            # Historical duplicates predate the users-store unique constraint
+            # (#1248): they exist at rest in the durable DB and are loaded by
+            # ModelStore.initialize without ever passing through __setitem__,
+            # which now refuses NEW duplicate writes by design. Plant them at
+            # rest the same way so quarantine still has a legacy state to
+            # fail closed on.
+            stores.users._data[user_id] = stores.users._model_class(
                 id=user_id,
                 username=username,
                 password_hash="",
