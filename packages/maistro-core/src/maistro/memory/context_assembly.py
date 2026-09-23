@@ -141,10 +141,20 @@ class DefaultContextAssemblyPolicy:
     async def layer2(self, session_id: str, budget_tokens: int) -> str:
         return ""
 
-    async def layer3(self, project_id: str, n: int = 20, budget_tokens: int | None = None) -> str:
-        experience = await self.outcome_store.get_experience_context(
-            task_type="", limit=n, project_id=project_id
-        )
+    async def layer3(
+        self,
+        project_id: str,
+        n: int = 20,
+        budget_tokens: int | None = None,
+        org_id: str = "",
+    ) -> str:
+        # Outcome text is a scoped prompt input. Callers that have no resolved
+        # org/project must not turn this into a global read.
+        experience = ""
+        if org_id and project_id:
+            experience = await self.outcome_store.get_experience_context(
+                task_type="", limit=n, org_id=org_id, project_id=project_id
+            )
         wisdom_memories = await self.episodic_store.list_by_scope(
             project_id=project_id, min_weight=WISDOM_WEIGHT, limit=n
         )
@@ -172,6 +182,7 @@ class DefaultContextAssemblyPolicy:
         session_id: str,
         budget_tokens: int,
         query: str = "",
+        org_id: str = "",
     ) -> str:
         """Layers 0-4 in order, spending the budget in ADR-091's priority.
 
@@ -189,7 +200,10 @@ class DefaultContextAssemblyPolicy:
         layer2_text = await self.layer2(session_id, remaining)
         remaining = max(remaining - _estimate_tokens(layer2_text), 0)
 
-        layer3_text = await self.layer3(project_id, budget_tokens=remaining)
+        # Layer 3 also carries project-scoped episodic wisdom. Keep that
+        # non-Outcome portion available without an org, while layer3 itself
+        # refuses the unscoped Outcome read.
+        layer3_text = await self.layer3(project_id, budget_tokens=remaining, org_id=org_id)
         remaining = max(remaining - _estimate_tokens(layer3_text), 0)
 
         layer4_text = await self.layer4(project_id)

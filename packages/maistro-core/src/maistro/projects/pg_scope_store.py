@@ -14,13 +14,20 @@ than a backstop: two callers can both see no root, and only one can insert one.
 Payloads are JSONB and come back as dicts, because the pool registers a JSON
 codec (`maistro.persistence._register_json_codecs`). That is why this reads
 `model_validate` where the SQLite store reads `model_validate_json`.
+
+This store also satisfies `TransactionalProjectScopeStore` (#1121):
+`transaction()` acquires a connection from the pool and opens a transaction on
+it, and `create_root_in` / `purge_workspace_in` issue their statements on a
+connection the caller holds. `PgWorkspaceStore` writes the Workspace row, the
+owner membership and the Root Project on one such connection, so a crash
+between them can no longer leave half a Workspace behind. `create_root` and
+`purge_workspace` are those methods inside a `transaction()` of their own.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -49,22 +56,26 @@ class PgProjectScopeStore:
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
-        self._transaction_connection: ContextVar[Any | None] = ContextVar(
-            "pg_project_transaction_connection", default=None
-        )
 
     @asynccontextmanager
-    async def workspace_transaction(self) -> AsyncIterator[Any]:
-        """Expose one connection for Workspace and Root Project provisioning."""
-        async with self._pool.acquire() as connection, connection.transaction():
-            token = self._transaction_connection.set(connection)
-            try:
-                yield connection
-            finally:
-                self._transaction_connection.reset(token)
+    async def transaction(self) -> AsyncIterator[Any]:
+        """One pooled connection with a transaction open on it.
+
+        The handle `TransactionalProjectScopeStore` names: a Workspace store on
+        the same pool writes its own rows on the yielded connection and passes
+        it to `create_root_in` / `purge_workspace_in`, so both stores' rows
+        commit or roll back as one (#1121).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            yield conn
 
     async def purge_workspace(self, workspace_id: str) -> None:
-        """Tear down every Project row this Workspace owns.
+        """Tear down every Project row this Workspace owns, in a transaction of its own."""
+        async with self.transaction() as conn:
+            await self.purge_workspace_in(conn, workspace_id)
+
+    async def purge_workspace_in(self, conn: Any, workspace_id: str) -> None:
+        """Tear down every Project row this Workspace owns, on the caller's connection.
 
         Children before parents, because both schemas declare
         `ON DELETE RESTRICT` on the self-referencing parent link and on the
@@ -78,45 +89,47 @@ class PgProjectScopeStore:
         fail it, and a loop whose termination depends on an invariant enforced
         somewhere else should say so out loud when the invariant breaks.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                "DELETE FROM canonical_project_resources WHERE workspace_id = $1",
+        await conn.execute(
+            "DELETE FROM canonical_project_resources WHERE workspace_id = $1",
+            workspace_id,
+        )
+        await conn.execute(
+            "DELETE FROM canonical_project_memberships WHERE workspace_id = $1",
+            workspace_id,
+        )
+        for _ in range(_MAX_PURGE_PASSES):
+            status = await conn.execute(
+                """DELETE FROM canonical_projects
+                    WHERE workspace_id = $1
+                      AND project_id NOT IN (
+                          SELECT parent_project_id
+                            FROM canonical_projects
+                           WHERE workspace_id = $1
+                             AND parent_project_id IS NOT NULL)""",
                 workspace_id,
             )
-            await conn.execute(
-                "DELETE FROM canonical_project_memberships WHERE workspace_id = $1",
-                workspace_id,
-            )
-            for _ in range(_MAX_PURGE_PASSES):
-                status = await conn.execute(
-                    """DELETE FROM canonical_projects
-                        WHERE workspace_id = $1
-                          AND project_id NOT IN (
-                              SELECT parent_project_id
-                                FROM canonical_projects
-                               WHERE workspace_id = $1
-                                 AND parent_project_id IS NOT NULL)""",
-                    workspace_id,
-                )
-                if status.endswith(" 0"):
-                    return
-            msg = (
-                f"Project tree for workspace {workspace_id} did not drain in "
-                f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
-            )
-            raise ProjectIntegrityError(msg)
+            if status.endswith(" 0"):
+                return
+        msg = (
+            f"Project tree for workspace {workspace_id} did not drain in "
+            f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
+        )
+        raise ProjectIntegrityError(msg)
 
     async def create_root(self, workspace_id: str) -> Project:
-        """Create or return the Workspace's durable Root Project.
+        """Create or return the Workspace's durable Root Project, in a transaction of its own."""
+        async with self.transaction() as conn:
+            return await self.create_root_in(conn, workspace_id)
+
+    async def create_root_in(self, conn: Any, workspace_id: str) -> Project:
+        """Create or return the Workspace's durable Root Project on the caller's connection.
 
         `ON CONFLICT DO NOTHING` against the partial unique index, then read
-        back. Checking first and inserting second would let two concurrent
-        callers both find no root and both try to create one — the loser gets a
-        unique violation rather than the root that now exists.
+        back on the same connection. Checking first and inserting second would
+        let two concurrent callers both find no root and both try to create
+        one — the loser gets a unique violation rather than the root that now
+        exists.
         """
-        active_connection = self._transaction_connection.get()
-        if active_connection is not None:
-            return await self.create_root_in_transaction(workspace_id, active_connection)
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
         root = Project(
@@ -125,29 +138,7 @@ class PgProjectScopeStore:
             parent_project_id=None,
             is_root=True,
         )
-        async with self.workspace_transaction() as conn:
-            await conn.execute(
-                """INSERT INTO canonical_projects
-                   (project_id, workspace_id, parent_project_id, is_root, payload)
-                   VALUES ($1, $2, NULL, TRUE, $3::text::jsonb)
-                   ON CONFLICT DO NOTHING""",
-                root.project_id,
-                root.workspace_id,
-                json_of(root),
-            )
-        return await self.root_for_workspace(workspace_id)
-
-    async def create_root_in_transaction(self, workspace_id: str, connection: Any) -> Project:
-        """Provision a Root Project without committing the caller's transaction."""
-        if not workspace_id.strip():
-            raise ValueError("workspace_id must be a non-empty string")
-        root = Project(
-            workspace_id=workspace_id,
-            name="Root",
-            parent_project_id=None,
-            is_root=True,
-        )
-        await connection.execute(
+        await conn.execute(
             """INSERT INTO canonical_projects
                (project_id, workspace_id, parent_project_id, is_root, payload)
                VALUES ($1, $2, NULL, TRUE, $3::text::jsonb)
@@ -156,11 +147,12 @@ class PgProjectScopeStore:
             root.workspace_id,
             json_of(root),
         )
-        payload = await connection.fetchval(
-            "SELECT payload FROM canonical_projects WHERE workspace_id = $1 AND is_root",
-            workspace_id,
-        )
-        return model_of(Project, payload)
+        # Read back inside the transaction: a read on another pooled
+        # connection would not see an uncommitted insert.
+        written = await self._root_or_none(workspace_id, conn=conn)
+        if written is None:
+            raise ProjectNotFound(f"Root Project for Workspace {workspace_id!r}")
+        return written
 
     async def root_for_workspace(self, workspace_id: str) -> Project:
         root = await self._root_or_none(workspace_id)
@@ -508,10 +500,11 @@ class PgProjectScopeStore:
         async with self._pool.acquire() as acquired:
             await acquired.execute(sql, *params)
 
-    async def _root_or_none(self, workspace_id: str) -> Project | None:
+    async def _root_or_none(self, workspace_id: str, *, conn: Any = None) -> Project | None:
         payload = await self._payload(
             "SELECT payload FROM canonical_projects WHERE workspace_id = $1 AND is_root",
             workspace_id,
+            conn=conn,
         )
         return model_of(Project, payload) if payload is not None else None
 

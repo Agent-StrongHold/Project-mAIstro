@@ -1,11 +1,22 @@
-"""SQLite persistence for the canonical Workspace Project scope tree."""
+"""SQLite persistence for the canonical Workspace Project scope tree.
+
+This store also satisfies `TransactionalProjectScopeStore` (#1121). Its
+`transaction()` is `_serialized_write` with the connection yielded: the one
+`asyncio.Lock` this connection has, a `BEGIN IMMEDIATE`, and a commit or
+rollback at the end. `SqliteWorkspaceStore` shares the connection, so it takes
+*this* critical section for its own writes rather than a lock of its own --
+two locks over one connection is how "cannot start a transaction within a
+transaction" happens -- and issues `create_root_in` / `purge_workspace_in`
+inside it, so a Workspace and its Root Project commit together or not at all.
+`create_root` and `purge_workspace` are those methods inside a `transaction()`
+of their own.
+"""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +29,7 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -96,30 +108,6 @@ class SqliteProjectScopeStore:
         # `BEGIN IMMEDIATE` raise "cannot start a transaction within a
         # transaction" the moment their awaits interleaved.
         self._write_lock = asyncio.Lock()
-        self._transaction_connection: ContextVar[Any | None] = ContextVar(
-            "sqlite_project_transaction_connection", default=None
-        )
-
-    @property
-    def write_lock(self) -> asyncio.Lock:
-        """The connection-wide write lock shared with Workspace provisioning."""
-        return self._write_lock
-
-    @asynccontextmanager
-    async def workspace_transaction(self) -> AsyncIterator[aiosqlite.Connection]:
-        """Expose one transaction for Workspace rows and its Root Project."""
-        async with self._write_lock:
-            await self._conn.execute("BEGIN IMMEDIATE")
-            token = self._transaction_connection.set(self._conn)
-            try:
-                yield self._conn
-            except BaseException:
-                await self._conn.rollback()
-                raise
-            else:
-                await self._conn.commit()
-            finally:
-                self._transaction_connection.reset(token)
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
@@ -146,12 +134,26 @@ class SqliteProjectScopeStore:
             else:
                 await self._conn.commit()
 
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """`_serialized_write`, with the connection it guards yielded.
+
+        The handle `TransactionalProjectScopeStore` names. A Workspace store
+        on this connection writes its rows inside this block and passes the
+        connection to `create_root_in` / `purge_workspace_in`; the lock is
+        this store's because the connection is, and there must be exactly one
+        (#1121).
+        """
+        async with self._serialized_write():
+            yield self._conn
+
     async def ensure_schema(self) -> None:
         """Create canonical Project tables and integrity indexes."""
 
-        await self._migrate_legacy_membership_primary_key()
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        await self._conn.execute("PRAGMA foreign_keys = ON")
+        async with serialized_schema_upgrade(self._conn):
+            await self._migrate_legacy_membership_primary_key()
+            await execute_schema_script(self._conn, _SCHEMA)
 
     async def _migrate_legacy_membership_primary_key(self) -> None:
         """Upgrade a pre-#1148 `canonical_project_memberships` table in place.
@@ -175,7 +177,7 @@ class SqliteProjectScopeStore:
             "ALTER TABLE canonical_project_memberships "
             "RENAME TO canonical_project_memberships_legacy_pk"
         )
-        await self._conn.executescript(_SCHEMA)
+        await execute_schema_script(self._conn, _SCHEMA)
         await self._conn.execute(
             """INSERT INTO canonical_project_memberships
                    (project_id, principal_id, workspace_id, membership_id, payload)
@@ -192,10 +194,14 @@ class SqliteProjectScopeStore:
                 )"""
         )
         await self._conn.execute("DROP TABLE canonical_project_memberships_legacy_pk")
-        await self._conn.commit()
 
     async def purge_workspace(self, workspace_id: str) -> None:
-        """Tear down every Project row this Workspace owns.
+        """Tear down every Project row this Workspace owns, in a transaction of its own."""
+        async with self.transaction() as conn:
+            await self.purge_workspace_in(conn, workspace_id)
+
+    async def purge_workspace_in(self, conn: aiosqlite.Connection, workspace_id: str) -> None:
+        """Tear down every Project row this Workspace owns, inside the caller's transaction.
 
         Children before parents, because both schemas declare
         `ON DELETE RESTRICT` on the self-referencing parent link and on the
@@ -209,59 +215,56 @@ class SqliteProjectScopeStore:
         fail it, and a loop whose termination depends on an invariant enforced
         somewhere else should say so out loud when the invariant breaks.
         """
-        async with self._serialized_write():
-            await self._conn.execute(
-                "DELETE FROM canonical_project_resources WHERE workspace_id = ?",
-                (workspace_id,),
+        await conn.execute(
+            "DELETE FROM canonical_project_resources WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        await conn.execute(
+            "DELETE FROM canonical_project_memberships WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        for _ in range(_MAX_PURGE_PASSES):
+            cursor = await conn.execute(
+                """DELETE FROM canonical_projects
+                    WHERE workspace_id = ?
+                      AND project_id NOT IN (
+                          SELECT parent_project_id
+                            FROM canonical_projects
+                           WHERE workspace_id = ?
+                             AND parent_project_id IS NOT NULL)""",
+                (workspace_id, workspace_id),
             )
-            await self._conn.execute(
-                "DELETE FROM canonical_project_memberships WHERE workspace_id = ?",
-                (workspace_id,),
-            )
-            for _ in range(_MAX_PURGE_PASSES):
-                cursor = await self._conn.execute(
-                    """DELETE FROM canonical_projects
-                        WHERE workspace_id = ?
-                          AND project_id NOT IN (
-                              SELECT parent_project_id
-                                FROM canonical_projects
-                               WHERE workspace_id = ?
-                                 AND parent_project_id IS NOT NULL)""",
-                    (workspace_id, workspace_id),
-                )
-                if cursor.rowcount == 0:
-                    return
-            msg = (
-                f"Project tree for workspace {workspace_id} did not drain in "
-                f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
-            )
-            raise ProjectIntegrityError(msg)
+            if cursor.rowcount == 0:
+                return
+        msg = (
+            f"Project tree for workspace {workspace_id} did not drain in "
+            f"{_MAX_PURGE_PASSES} passes; it is deeper than that or cyclic"
+        )
+        raise ProjectIntegrityError(msg)
 
     async def create_root(self, workspace_id: str) -> Project:
-        """Create or return the Workspace's durable Root Project."""
+        """Create or return the Workspace's durable Root Project, in a transaction of its own."""
 
-        active_connection = self._transaction_connection.get()
-        if active_connection is not None:
-            return await self.create_root_in_transaction(workspace_id, active_connection)
-        async with self.workspace_transaction() as connection:
-            return await self.create_root_in_transaction(workspace_id, connection)
+        async with self.transaction() as conn:
+            return await self.create_root_in(conn, workspace_id)
 
-    async def create_root_in_transaction(
-        self, workspace_id: str, connection: aiosqlite.Connection
-    ) -> Project:
-        """Provision a Root Project without committing the caller's transaction."""
+    async def create_root_in(self, conn: aiosqlite.Connection, workspace_id: str) -> Project:
+        """Create or return the Workspace's durable Root Project inside the caller's transaction.
+
+        `INSERT OR IGNORE` against the partial unique index and a read back on
+        the same connection, both under the caller's `BEGIN IMMEDIATE`, so the
+        existence check cannot race a second writer.
+        """
+
         if not workspace_id.strip():
             raise ValueError("workspace_id must be a non-empty string")
-        existing = await self._root_or_none(workspace_id)
-        if existing is not None:
-            return existing
         root = Project(
             workspace_id=workspace_id,
             name="Root",
             parent_project_id=None,
             is_root=True,
         )
-        await connection.execute(
+        await conn.execute(
             """INSERT OR IGNORE INTO canonical_projects
                (project_id, workspace_id, parent_project_id, is_root, payload)
                VALUES (?, ?, NULL, 1, ?)""",

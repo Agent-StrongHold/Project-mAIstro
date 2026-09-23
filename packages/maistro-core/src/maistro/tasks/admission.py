@@ -33,10 +33,12 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any, Protocol
 
+from maistro.observability.correlation import current_execution_context
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.task_kinds import resolve_direct_work
+from maistro.tasks.idempotency import IDEMPOTENCY_KEY_PROVENANCE
 from maistro.tasks.models import TaskStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -70,6 +72,7 @@ TASK_QUEUE_SOURCE = "task_queue"
 #: Provenance keys correlating the Run back to the receipt that admitted it.
 TASK_ID_KEY = "task_id"
 SESSION_ID_KEY = "session_id"
+REQUEST_ID_KEY = "request_id"
 
 
 class WorkspaceNotAdmissible(ValueError):
@@ -98,6 +101,10 @@ class TaskAdmitter(Protocol):
         error: str | None = None,
     ) -> bool:
         """Advance the Run to match a task transition. False if it refused."""
+        ...
+
+    async def cancel_run(self, run_id: str) -> bool:
+        """Cancel the canonical Run and signal its physical Attempt owner."""
         ...
 
 
@@ -168,6 +175,23 @@ class TaskRunAdmitter:
             provenance[SESSION_ID_KEY] = task.session_id
         if task.user_id:
             provenance["user_id"] = task.user_id
+        # The request that submitted this task, read off the ambient context
+        # rather than a TaskCreate/TaskResponse field (#1063): admit() runs
+        # inside the same coroutine chain RequestIDMiddleware bound it in
+        # (HTTP submission), or whatever a background caller explicitly
+        # bound (scheduled admission) -- either way, one vocabulary, not a
+        # second correlation path threaded through the task's own body.
+        request_id = current_execution_context().request_id
+        if request_id:
+            provenance[REQUEST_ID_KEY] = request_id
+        if task.idempotency_key:
+            # The caller's explicit key, on the Run (#1176): the claim store is
+            # the reconciliation mechanism, but an auditor correlating a retry
+            # storm reads the Run, so the key the caller chose is recorded
+            # where the admission it produced lives. Derived keys are absent —
+            # the derivation is admission machinery, not something the caller
+            # said.
+            provenance[IDEMPOTENCY_KEY_PROVENANCE] = task.idempotency_key
         run = await admit_direct_work(
             self._runs,
             workspace_id=self._workspace_id,
@@ -198,6 +222,20 @@ class TaskRunAdmitter:
                 await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
             raise
         return run.run_id
+
+    async def cancel_run(self, run_id: str) -> bool:
+        """Cancel through the canonical Run/Attempt execution service."""
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        try:
+            updated = await RunExecutionService(
+                store=self._runs,
+                runtime=PythonExecutionRuntime(),
+            ).cancel_run(run_id)
+        except ValueError:
+            return False
+        return updated.status is RunStatus.CANCELLED
 
     async def record_transition(
         self,
@@ -332,6 +370,20 @@ class WorkspaceRoutingAdmitter:
         """Admit one task into the Workspace the submission named."""
         admitter = await self.admitter_for(workspace_id)
         return await admitter.admit(task)
+
+    async def cancel_run(self, run_id: str) -> bool:
+        """Cancel a Run without creating a product-local status authority."""
+        from maistro.runs.service import RunExecutionService
+        from maistro.runtime import PythonExecutionRuntime
+
+        try:
+            updated = await RunExecutionService(
+                store=self._runs,
+                runtime=PythonExecutionRuntime(),
+            ).cancel_run(run_id)
+        except ValueError:
+            return False
+        return updated.status is RunStatus.CANCELLED
 
     async def record_transition(
         self,

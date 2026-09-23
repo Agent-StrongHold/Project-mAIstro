@@ -13,6 +13,7 @@ from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 
 
@@ -518,7 +519,7 @@ async def test_blank_permission_action_is_rejected_before_route_logic(api) -> No
 
 
 def test_production_app_mounts_project_routes_at_v1_and_legacy_paths() -> None:
-    paths = {route.path for route in server_app.routes}
+    paths = {route.path for route in iter_effective_routes(server_app.routes)}
     assert "/v1/workspaces/{workspace_id}/projects/root" in paths
     assert "/workspaces/{workspace_id}/projects/root" in paths
 

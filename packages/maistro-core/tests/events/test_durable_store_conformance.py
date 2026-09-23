@@ -27,6 +27,7 @@ import os
 
 import pytest
 
+from maistro.events.consumer_cursor import InMemoryConsumerCursorStore, SqliteConsumerCursorStore
 from maistro.events.durable_log import InMemoryEventLog, SqliteEventLog
 from maistro.events.invocations import (
     HandlerInvocation,
@@ -121,6 +122,21 @@ async def invocations(request):
     from maistro.events.pg_stores import PgInvocationStore
 
     return PgInvocationStore(await _pg_pool())
+
+
+@pytest.fixture(params=BACKENDS)
+async def cursor_store(request):
+    if request.param == "memory":
+        return InMemoryConsumerCursorStore()
+    if request.param == "sqlite":
+        store = SqliteConsumerCursorStore(await _sqlite_conn())
+        await store.ensure_schema()
+        return store
+    from maistro.events.pg_stores import PgConsumerCursorStore
+
+    pool = await _pg_pool()
+    await pool.execute("TRUNCATE consumer_cursors")
+    return PgConsumerCursorStore(pool)
 
 
 class TestEventLog:
@@ -408,3 +424,95 @@ class TestIdempotencyUnderConcurrency:
         again = await invocations.get_or_create("t1", 1)
         assert again.status is InvocationStatus.SUCCESS
         assert len(await invocations.list_for_event(1)) == 1
+
+
+class TestConsumerCursorStore:
+    """The legacy-bridge replay cursor (#1163): a durable position plus a
+    claim lease, so a restart resumes near the last settled point and two
+    replicas ticking the bridge at once do not both redo the same range.
+
+    This is a resume *optimisation* on top of `InvocationStore`'s idempotency
+    guarantee (ADR-082426-82c7: "the occurrence is the claim, not the
+    cursor"), not a replacement for it — these tests are about the cursor
+    store's own contract in isolation.
+    """
+
+    async def test_a_fresh_consumer_starts_at_position_zero(self, cursor_store):
+        lease = await cursor_store.claim("c1", holder="h1")
+        assert lease is not None
+        assert lease.position == 0
+
+    async def test_advance_persists_the_position_for_the_next_claim(self, cursor_store):
+        lease = await cursor_store.claim("c1", holder="h1")
+        assert await cursor_store.advance("c1", fencing_token=lease.fencing_token, position=42)
+
+        again = await cursor_store.claim("c1", holder="h1")
+        assert again is not None
+        assert again.position == 42
+
+    async def test_a_second_holder_is_refused_while_the_lease_is_live(self, cursor_store):
+        first = await cursor_store.claim("c1", holder="h1")
+        assert first is not None
+        assert await cursor_store.claim("c1", holder="h2") is None
+
+    async def test_the_same_holder_can_renew_before_expiry(self, cursor_store):
+        """A replica ticking repeatedly must not lock itself out."""
+        first = await cursor_store.claim("c1", holder="h1")
+        assert first is not None
+        second = await cursor_store.claim("c1", holder="h1")
+        assert second is not None
+        assert second.fencing_token == first.fencing_token
+
+    async def test_an_expired_lease_can_be_taken_over(self, cursor_store):
+        expired = await cursor_store.claim("c1", holder="h1", lease_seconds=-1.0)
+        assert expired is not None
+
+        taken_over = await cursor_store.claim("c1", holder="h2")
+        assert taken_over is not None
+        assert taken_over.fencing_token != expired.fencing_token
+
+    async def test_a_stale_fencing_token_cannot_advance_the_cursor(self, cursor_store):
+        """Once a lease is taken over, the old holder's `advance` must be a
+        no-op rather than clobbering the new holder's position."""
+        stale = await cursor_store.claim("c1", holder="h1", lease_seconds=-1.0)
+        assert stale is not None
+        new_holder = await cursor_store.claim("c1", holder="h2")
+        assert new_holder is not None
+        await cursor_store.advance("c1", fencing_token=new_holder.fencing_token, position=10)
+
+        accepted = await cursor_store.advance("c1", fencing_token=stale.fencing_token, position=999)
+        assert accepted is False
+
+        current = await cursor_store.claim("c1", holder="h2")
+        assert current is not None
+        assert current.position == 10
+
+    async def test_advance_never_moves_the_position_backwards(self, cursor_store):
+        """A monotonic write as a second, independent guard against a stale
+        or reordered advance regressing the cursor (defence in depth beyond
+        the fencing-token check above)."""
+        lease = await cursor_store.claim("c1", holder="h1")
+        assert lease is not None
+        await cursor_store.advance("c1", fencing_token=lease.fencing_token, position=50)
+
+        await cursor_store.advance("c1", fencing_token=lease.fencing_token, position=10)
+
+        again = await cursor_store.claim("c1", holder="h1")
+        assert again is not None
+        assert again.position == 50
+
+    async def test_different_consumers_do_not_share_a_cursor(self, cursor_store):
+        lease_a = await cursor_store.claim("a", holder="h1")
+        assert lease_a is not None
+        await cursor_store.advance("a", fencing_token=lease_a.fencing_token, position=100)
+
+        lease_b = await cursor_store.claim("b", holder="h1")
+        assert lease_b is not None
+        assert lease_b.position == 0
+
+    async def test_only_one_of_many_racing_claims_succeeds(self, cursor_store):
+        claims = await asyncio.gather(
+            *(cursor_store.claim("c1", holder=f"h{i}") for i in range(16))
+        )
+        winners = [c for c in claims if c is not None]
+        assert len(winners) == 1, f"{len(winners)} replicas would have ticked concurrently"
