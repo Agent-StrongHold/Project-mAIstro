@@ -28,3 +28,21 @@ and the `check-{enumerations,public-routes,suite-inventory,security-inventory,ow
 mutation check (no-op `authorize_project`, authentication intact) fails
 exactly the two isolation tests, confirming the suite detects removed scope
 checks.
+
+## Repair-phase re-validation (head `ef24661fe`)
+
+The 2026-09-23 repair pass found the tree already implementing the branch's
+scope model and re-proved it from scratch at the assigned head (no check logs
+had been produced by the driver): 27/27 door+timeout tests, 430 passed /
+21 skipped in `maistro-core` durable_runs, the full hive-conductor backend
+suite (2567 passed / 1 skipped), ruff check + format clean, mypy clean across
+all six package sources (711 files), and the `check_enumerations`,
+`check-enumerations-provenance`, `check-public-routes`, `check-suite-inventory`,
+`check-security-inventory`, `check-owned-store-access`, and
+`check-agent-store-writes` gates. The mutation check was re-executed live:
+no-op'ing `authorize_project` (authentication intact) fails exactly
+`test_hitl_routes_are_scoped_to_the_callers_workspaces` and
+`test_project_reviewer_isolated_from_sibling_hitl_work`; restoring the
+function returns the suite to 27/27. Inventory delta re-counted against the
+develop base: exactly +2 test functions in
+`packages/hive-conductor/backend/tests`.
