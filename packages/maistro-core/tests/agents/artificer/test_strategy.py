@@ -356,6 +356,19 @@ class TestSanitizeResult:
         )
         assert result == "raw result"
 
+    async def test_agent_pipeline_skips_standalone_sanitization(self) -> None:
+        strategy = ArtificerStrategy()
+        sentinel = _FakeSentinel()
+        result = await strategy._sanitize_result(
+            "write_file",
+            "raw result",
+            sentinel=sentinel,
+            auth=_Auth(),
+            warden=None,
+            security_pipeline=True,
+        )
+        assert result == "raw result"
+
 
 class TestEmitResultStatus:
     @pytest.mark.asyncio

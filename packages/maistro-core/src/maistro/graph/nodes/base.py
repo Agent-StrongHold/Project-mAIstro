@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import contextlib
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, Generic, Literal, Protocol, TypeVar, runtime_checkable
+from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 
@@ -160,6 +160,20 @@ class BaseNode(Generic[InputT, OutputT]):
     display_name: ClassVar[str] = ""
     description: ClassVar[str] = ""
 
+    #: Container-owned authorities this node cannot do its work without, as
+    #: ``{constructor keyword: authority name}`` (#1193, #1082). The production
+    #: resolver reads this declaration and refuses to construct the node when
+    #: one is missing — a node that declares ``run_store`` here can never be
+    #: built with ``run_store=None`` and then report success for work it did
+    #: not do. The constructor default stays permissive for direct, in-test
+    #: construction; the declaration is what production composition obeys.
+    required_authorities: ClassVar[Mapping[str, str]] = {}
+    #: Authorities the node uses when the resolver has them and degrades
+    #: truthfully without — the delegate node fails its NodeResult with "no
+    #: a2a_delegator configured", the effect nodes keep a context that
+    #: authorizes nothing. Same shape as ``required_authorities``.
+    optional_authorities: ClassVar[Mapping[str, str]] = {}
+
     async def run(
         self, inputs: InputT | BaseModel | dict[str, Any], ctx: NodeContext
     ) -> NodeResult:
@@ -204,6 +218,24 @@ class BaseNode(Generic[InputT, OutputT]):
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""
         raise NotImplementedError(f"{type(self).__name__}._execute not implemented")
+
+
+class NodeCompositionError(RuntimeError):
+    """A node was asked for without an authority it declares as required.
+
+    Raised by the production resolver before construction (#1193), and by a
+    node that was constructed directly without one and then asked to run: the
+    node's own answer to "do the work" is this, never a success-shaped output
+    saying nothing happened.
+    """
+
+    def __init__(self, kind: str, *, missing: Sequence[str]) -> None:
+        self.kind = kind
+        self.missing = tuple(missing)
+        super().__init__(
+            f"node kind {kind!r} requires {', '.join(self.missing)} and none was supplied; "
+            "a node cannot be composed without an authority it declares as required"
+        )
 
 
 class _NodePaused(Exception):
@@ -253,6 +285,7 @@ PAUSE_AWAITING_ROLE_DELEGATE = "awaiting_role_delegate"
 PAUSE_AWAITING_REMOTE_DELEGATION = "awaiting_remote_delegation"
 PAUSE_AWAITING_HARNESS = "awaiting_harness"
 PAUSE_WAITING_ON_JIRA_SUBTASKS = "waiting_on_jira_subtasks"
+PAUSE_AWAITING_DELEGATION_RECONCILIATION = "awaiting_delegation_reconciliation"
 
 #: Who each pause waits on. "human" means a person owes the next action and the
 #: NodeRun parks PAUSED; "system" means a retry decision is owed and it parks
@@ -266,6 +299,7 @@ PAUSE_REASON_OWNERS: dict[str, str] = {
     PAUSE_AWAITING_REMOTE_DELEGATION: "system",
     PAUSE_AWAITING_HARNESS: "system",
     PAUSE_WAITING_ON_JIRA_SUBTASKS: "system",
+    PAUSE_AWAITING_DELEGATION_RECONCILIATION: "system",
 }
 
 #: The reasons a *person* is owed an action, derived from the table above so
@@ -306,6 +340,14 @@ PAUSE_RESUME_CONDITIONS: dict[str, str] = {
     PAUSE_AWAITING_REMOTE_DELEGATION: RESUME_ON_ANSWER,
     PAUSE_AWAITING_HARNESS: RESUME_ON_ANSWER,
     PAUSE_WAITING_ON_JIRA_SUBTASKS: RESUME_ON_ELAPSED,
+    # Reconciliation is the polling half of a delegation whose transport
+    # acceptance is unknown: re-entering re-reads the receipt sources (the
+    # local task map, the peer's reconciliation endpoint) instead of
+    # re-dispatching, which is the elapsed-timer contract, not the answer
+    # contract. It is a distinct reason from `awaiting_remote_delegation`
+    # precisely because that one re-dispatches on re-entry and this one must
+    # not.
+    PAUSE_AWAITING_DELEGATION_RECONCILIATION: RESUME_ON_ELAPSED,
 }
 
 #: The reasons a timer alone may re-enter, derived so the two cannot disagree.
@@ -375,12 +417,16 @@ def pause_until(
     *,
     resume_at: datetime | None = None,
     metadata: dict[str, Any] | None = None,
-) -> None:
+) -> NoReturn:
     """Signal that the current node should pause and the run should checkpoint.
 
     Wait/HITL node `_execute` bodies call this to suspend execution. The
     runtime catches the signal, persists the run state, and resumes later
     (when the polled condition becomes true or the user supplies input).
+
+    Typed `NoReturn` rather than `None` because it never returns -- the raise
+    is unconditional -- and a caller that parks on it is entitled to have the
+    type checker know its own code after the call is unreachable.
     """
     raise _NodePaused(reason, resume_at=resume_at, metadata=metadata)
 
