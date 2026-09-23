@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Workspace access decisions now live in one core seam (#1150, partial).**
+  `maistro.workspaces.WorkspaceAuthorizer` answers "may this principal VIEW or
+  ADMINISTER this Workspace?" from the Workspace store, with one
+  `WorkspaceAuthorizationDenied` for a missing Workspace, a foreign Workspace
+  and a blank principal. maistro-server's `require_workspace_membership` and
+  `require_workspace_owner` now delegate to it. Unknown actions and non-string
+  principals are denied. Responses are unchanged: a denial is 404
+  `Workspace not found`, and a member who is not an owner still gets 403.
+  Project-level actions and the hive-conductor membership checks do not use
+  the seam yet.
+
 - **Design trust review records no longer recommend upgrading content the engine
   blocks (#817, partial).** `scan_and_record` now runs the shared Design
   `scan_blocking_patterns` over the content it records, instead of assigning
@@ -359,6 +370,15 @@ or placeholder-only section.
   Attempt still bound on the same event loop tick. The id is correlation
   metadata only; unlike the signed Workspace-scope headers, it can never
   assert scope or authorization.
+- **Recurring schedule admission has cross-backend parity tests (#46).** One
+  scenario runs through `ScheduleRunAdmitter` on the in-memory, SQLite and
+  PostgreSQL stores (wired by `wire_execution_spine`): an hourly schedule with
+  `max_runs=2` fires, is disabled and re-enabled without losing its
+  `runs_so_far`/`last_run_id`, fires its last run and is disabled with
+  `next_due_at` cleared in the same write. A schedule whose first occurrence
+  has not arrived records its `next_due_at` and leaves `due()`. All three
+  backends must leave identical cursor state (`enabled`, `runs_so_far`,
+  `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
 
@@ -430,6 +450,19 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **Scheduled multi-node registered DAGs are recovered and woken by Hive's
+  recovery cadence (#837).**
+  `run_registered_dag` admits schedule Runs as `executor=durable_graph`, but
+  the cadence only owned `hive_legacy_dag` and Evolve Runs and the schedule
+  consumer leaves multi-node QUEUED Runs to the durable Graph traversal, so
+  such a Run lost before checkpoint 1, parked on an elapsed timer, or answered
+  after a HITL pause was never picked up again. New
+  `services/registered_dag_recovery.py` hands exactly those Runs (schedule
+  source, durable-graph executor; multi-node for the QUEUED half) to the
+  canonical `recover_queued_graph_runs` / `resume_due_graph_runs` seams with
+  the admitting path's node resolver, each half on its own held scan
+  continuation, and `dag_recovery` runs both with per-half isolation.
 
 - **The DAG Builder's Run button reports the canonical Run truthfully
   (#53).**
@@ -829,6 +862,22 @@ or placeholder-only section.
   answering a turn whose spine could not be written before the model was
   called — is unchanged; #1108's other half (refusing a turn outright when no
   canonical spine is wired) is not addressed here.
+- **A raw store or driver error after the model answered no longer loses the
+  answer (#1108).** Only `RunIntegrityError` was classified by
+  `ChatAttemptExecutor`, but the PostgreSQL and SQLite stores wrap integrity
+  violations and nothing else, so a dropped connection or a locked database on
+  the Attempt's COMPLETED write or the NodeRun reconciliation escaped as the
+  driver's own exception: the endpoint returned 500 for a turn the model had
+  already answered, the Run was closed FAILED over a still-RUNNING Attempt,
+  and a client retry meant a second model charge and a second session append.
+  Any spine failure after the dispatch now raises `ChatDispatchUnrecorded`
+  with the answer, the Run is left open for recovery, and a dispatch failure
+  whose recording also failed still arrives as the dispatch's own exception.
+  A runtime deadline that cancelled the dispatch still arrives as
+  `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
+  fails arrives as the cancellation, never as a bare store error the
+  pre-dispatch fallback would answer again; and a failure before the dispatch
+  still propagates unchanged without reaching the model.
 - **A launch the store refuses no longer masks itself as a lifecycle error
   (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
   the executor's failure path asked the lifecycle for `FAILED` from `CREATED`
