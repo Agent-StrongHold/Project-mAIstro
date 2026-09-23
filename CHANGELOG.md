@@ -385,6 +385,15 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Hive now ticks the Container's canonical recovery seams (#62).**
+  `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
+  `resume_parked_runs` are operator-scheduled (ADR-019) and had no production
+  caller, so an expired chat or task Attempt lease was never reclaimed and an
+  elapsed `RESUME_ON_ELAPSED` pause never woke. A new 10s
+  `services/canonical_recovery.py` cadence, started and stopped with the
+  engine beside the legacy DAG recovery cadence, ticks all three, and one
+  failing half is logged without silencing the others.
+
 - **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
   predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
   keyword argument, with a default, when `Schedule.recovered_occurrences`
