@@ -217,6 +217,15 @@ or placeholder-only section.
 
 ### Added
 
+- **Every maistro-core node kind is proven to get the Container's own
+  authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
+  resolves each registered core kind that declares an authority through a real
+  `create_container()` Container and asserts it receives the exact
+  Container-owned harness adapters, usage log, A2A delegator, guest peers,
+  canonical and graph Run stores, capability-effect context, provider
+  registry, LLM router, and resolver, so the Container dropping one and
+  letting `build_node_resolver`'s bare default stand in now fails CI. Test
+  only; no wiring gap was found.
 - **`GET /v1/runs/{run_id}/node-runs` now lists each NodeRun's Attempts,
   including the agent a chat turn dispatched to (#223).** Every NodeRun carries
   an additive `attempts` array of `attempt_id`, `ordinal`, `status`,
