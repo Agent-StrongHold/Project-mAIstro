@@ -435,12 +435,15 @@ or placeholder-only section.
 - **A Graph Run stranded RUNNING by a crash between its continuation write and
   the canonical mirror is now settled or resumed (#1151).** The persistence
   reconcile that starts every due and queued tick now repairs a RUNNING Run
-  whose continuation is already COMPLETED, FAILED or (non-HITL) CANCELLED,
-  carrying the matching NodeRun result/error over or stating that the original
-  error was not persisted, once the Run's spine has been quiet for 60 seconds
-  (so a walker between its two writes is never mistaken for a crash). A continuation still QUEUED under a RUNNING Run
-  whose resume claim has elapsed is rewritten to mirror RUNNING, so the due
-  tick resumes it; a live claim is left alone. Canonical RUNNING Runs are
+  whose continuation is already COMPLETED, FAILED or (non-HITL) CANCELLED. A
+  COMPLETED Run carries the completed NodeRun's result; a FAILED or CANCELLED
+  one states that its original error was not persisted rather than passing a
+  NodeRun's error off as the Run's cause. It acts only once the Run's spine has
+  been quiet and the same terminal continuation version has been observed for
+  60 seconds, so a walker between its two writes is never mistaken for a
+  crash. A continuation still QUEUED under a RUNNING Run whose resume claim has
+  elapsed (judged at the tick's own evaluation time) is rewritten to mirror
+  RUNNING, so the due tick resumes it; a live claim is left alone. Canonical RUNNING Runs are
   swept with a cursor that advances across ticks, so a stranded Run behind any
   number of other RUNNING Runs is reached in a bounded number of ticks.
 

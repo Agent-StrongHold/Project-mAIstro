@@ -29,6 +29,7 @@ from maistro.graph.durable_runs import (
     resume_due_graph_runs,
     run_durable_graph,
 )
+from maistro.graph.durable_runs.canonical_store import TERMINAL_SETTLE_QUIET_PERIOD
 from maistro.graph.durable_runs.continuation import GraphContinuation, GraphContinuationStore
 from maistro.graph.durable_runs.spine import mirror_node_run
 from maistro.graph.durable_runs.types import DurableRunRecord
@@ -227,15 +228,73 @@ async def test_a_failed_continuation_whose_error_was_lost_settles_with_a_truthfu
     assert node_run.status is RunStatus.CANCELLED
 
 
-async def test_a_failed_continuation_carries_the_mirrored_node_error_onto_the_run(
+async def test_a_mirrored_node_error_is_not_passed_off_as_the_runs_lost_cause(
     spine: _Spine,
 ) -> None:
-    run_id = await _crash_at_terminal_write(spine, _Fails(), mirror_node_runs=True)
+    """The NodeRuns were mirrored, the Run was not, and its cause was the Run's own.
+
+    A halt, an exhausted step budget or a cancellation is written only on the
+    Run, and `first_exhausted_failure` need not pick the NodeRun a re-derivation
+    would. The node's error is evidence about the node, so it stays there and
+    the Run says its own error was lost.
+    """
+
+    async def halted(record: DurableRunRecord) -> DurableRunRecord:
+        running = await spine.run_store.get_run(record.run_id)
+        assert running is not None
+        run = transition_run(running, RunStatus.FAILED, error="HaltRequested: operator stop")
+        return record.model_copy(update={"run": run})
+
+    run_id = await _crash_at_terminal_write(spine, _Fails(), rewrite=halted, mirror_node_runs=True)
 
     record = await _assert_settled(spine, run_id, RunStatus.FAILED)
 
-    assert record.run.error == "ValueError: domain failure"
-    assert [item.status for item in record.node_runs] == [RunStatus.FAILED]
+    assert record.run.error is not None
+    assert "settled failed before canonical settlement" in record.run.error
+    assert _UNPERSISTED in record.run.error
+    [node_run] = record.node_runs
+    assert node_run.status is RunStatus.FAILED
+    assert node_run.error == "ValueError: domain failure"
+
+
+async def test_a_terminal_write_newer_than_a_quiet_spine_waits_out_the_period(
+    spine: _Spine,
+) -> None:
+    """A spine can look quiet while its walker has only just written terminal.
+
+    A node that ran past the quiet period and then raised leaves nothing on the
+    spine newer than its Attempt's start. Only a terminal version this store has
+    seen unchanged for the whole period is treated as crash residue.
+    """
+    run_id = await _crash_at_terminal_write(spine, _Fails(), mirror_node_runs=True)
+    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
+    quiet = datetime.now(UTC) + TERMINAL_SETTLE_QUIET_PERIOD * 2
+
+    assert await patient.reconcile_persistence(now=quiet) == 0
+    assert await patient.reconcile_persistence(now=quiet + timedelta(seconds=59)) == 0
+    still = await spine.run_store.get_run(run_id)
+    assert still is not None and still.status is RunStatus.RUNNING
+
+    assert await patient.reconcile_persistence(now=quiet + TERMINAL_SETTLE_QUIET_PERIOD) == 1
+    settled = await spine.run_store.get_run(run_id)
+    assert settled is not None and settled.status is RunStatus.FAILED
+
+
+async def test_a_new_terminal_version_restarts_the_observation(spine: _Spine) -> None:
+    """The period is per version: a rewrite means a writer is still active."""
+    run_id = await _crash_at_terminal_write(spine, _Fails(), mirror_node_runs=True)
+    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
+    quiet = datetime.now(UTC) + TERMINAL_SETTLE_QUIET_PERIOD * 2
+
+    assert await patient.reconcile_persistence(now=quiet) == 0
+    continuation = await spine.continuations.get(run_id)
+    assert continuation is not None
+    await spine.continuations.update(
+        continuation.model_copy(update={"version": continuation.version + 1})
+    )
+    later = quiet + TERMINAL_SETTLE_QUIET_PERIOD
+    assert await patient.reconcile_persistence(now=later) == 0
+    assert await patient.reconcile_persistence(now=later + TERMINAL_SETTLE_QUIET_PERIOD) == 1
 
 
 async def test_a_cancelled_continuation_without_hitl_evidence_settles_its_running_run(
@@ -332,6 +391,29 @@ async def test_the_due_tick_alone_recovers_a_queued_continuation_under_a_running
         run_store=spine.run_store,
         node_resolver=lambda node_id, graph: _Step(),
         now=datetime.now(UTC),
+    )
+
+    assert resumed == 1
+    finished = await spine.run_store.get_run(run_id)
+    assert finished is not None and finished.status is RunStatus.COMPLETED
+
+
+async def test_a_claim_elapsed_in_the_ticks_own_time_is_resumed_by_that_tick(
+    spine: _Spine,
+) -> None:
+    """Reconciliation judges the claim by the moment the due scan uses.
+
+    Judged by the wall clock instead, a claim already elapsed for the tick
+    would stay QUEUED, outside the due index the same tick then reads.
+    """
+    now = datetime.now(UTC)
+    run_id = await _claimed_but_not_running(spine, claim_until=now + timedelta(minutes=5))
+
+    resumed = await resume_due_graph_runs(
+        store=spine.store,
+        run_store=spine.run_store,
+        node_resolver=lambda node_id, graph: _Step(),
+        now=now + timedelta(minutes=10),
     )
 
     assert resumed == 1

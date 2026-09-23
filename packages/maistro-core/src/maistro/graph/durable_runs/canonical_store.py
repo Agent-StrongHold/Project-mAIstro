@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -157,6 +157,9 @@ class CanonicalDurableRunStore:
         self._terminal_quiet_period = terminal_settle_quiet_period
         self._lock = asyncio.Lock()
         self._running_scan: ScanContinuation[RunCursor] = ScanContinuation()
+        # run_id -> (continuation version, when this instance first saw it
+        # terminal over a RUNNING Run). See `_reconcile_terminal_graph`.
+        self._terminal_first_seen: dict[str, tuple[int, datetime]] = {}
 
     async def create(self, record: DurableRunRecord) -> DurableRunRecord:
         if await self._run_store.get_run(record.run_id) is None:
@@ -197,13 +200,24 @@ class CanonicalDurableRunStore:
             await mirror_lifecycle(record, run_store=self._run_store)
             return await self._require(record.run_id)
 
-    async def reconcile_persistence(self, *, limit: int = 100) -> int:
-        """Boundedly repair cross-store crash residue and purge true orphans."""
+    async def reconcile_persistence(
+        self,
+        *,
+        limit: int = 100,
+        now: datetime | None = None,
+    ) -> int:
+        """Boundedly repair cross-store crash residue and purge true orphans.
+
+        ``now`` is the tick's evaluation time, so the time-dependent repairs
+        (an elapsed resume claim, a quiet spine) agree with the due scan that
+        follows them; it defaults to the wall clock.
+        """
         if limit <= 0:
             return 0
 
+        moment = now if now is not None else datetime.now(UTC)
         seen: set[str] = set()
-        changed = await self._reconcile_running_page(limit, seen)
+        changed = await self._reconcile_running_page(limit, seen, moment)
         swept = len(seen)
         # Terminal settlement residue first, and from the side that shrinks. A
         # crash between the continuation write and the spine mirror leaves the
@@ -212,12 +226,8 @@ class CanonicalDurableRunStore:
         # COMPLETED bucket in front of those statuses only ever grows, so such
         # residue behind a full prefix would never be reached. PAUSED canonical
         # Runs are few and transient: a scan over them always reaches its end.
-        for run in await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit):
-            if run.run_id in seen:
-                continue
-            seen.add(run.run_id)
-            if await self._reconcile_isolated(run.run_id):
-                changed += 1
+        paused = await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit)
+        changed += await self._reconcile_unseen((run.run_id for run in paused), seen, moment)
         for status in RunStatus:
             remaining = limit - (len(seen) - swept)
             if remaining <= 0:
@@ -226,15 +236,23 @@ class CanonicalDurableRunStore:
                 status,
                 limit=remaining,
             )
-            for run_id in run_ids:
-                if run_id in seen:
-                    continue
-                seen.add(run_id)
-                if await self._reconcile_isolated(run_id):
-                    changed += 1
+            changed += await self._reconcile_unseen(run_ids, seen, moment)
         return changed
 
-    async def _reconcile_running_page(self, limit: int, seen: set[str]) -> int:
+    async def _reconcile_unseen(
+        self, run_ids: Iterable[str], seen: set[str], moment: datetime
+    ) -> int:
+        """Reconcile each Run not already visited this tick; count the repairs."""
+        changed = 0
+        for run_id in run_ids:
+            if run_id in seen:
+                continue
+            seen.add(run_id)
+            if await self._reconcile_isolated(run_id, moment):
+                changed += 1
+        return changed
+
+    async def _reconcile_running_page(self, limit: int, seen: set[str], moment: datetime) -> int:
         """Reconcile one cursor-advancing page of canonical RUNNING Runs.
 
         A crash between the continuation write and the spine mirror strands a
@@ -258,14 +276,9 @@ class CanonicalDurableRunStore:
             max_inspected=limit,
             continuation=self._running_scan,
         )
-        changed = 0
-        for run in runs:
-            seen.add(run.run_id)
-            if await self._reconcile_isolated(run.run_id):
-                changed += 1
-        return changed
+        return await self._reconcile_unseen((run.run_id for run in runs), seen, moment)
 
-    async def _reconcile_isolated(self, run_id: str) -> bool:
+    async def _reconcile_isolated(self, run_id: str, moment: datetime) -> bool:
         """Reconcile one Run without letting its lifecycle refusal stop the sweep.
 
         The sweep runs at the head of every due and queued tick, so a refusal
@@ -273,12 +286,12 @@ class CanonicalDurableRunStore:
         them on every tick. Store failures still propagate (#1143).
         """
         try:
-            return await self._reconcile_run(run_id)
+            return await self._reconcile_run(run_id, moment)
         except InvalidLifecycleTransition as exc:
             logger.warning("cannot reconcile Graph Run %s: %s", run_id, exc)
             return False
 
-    async def _reconcile_run(self, run_id: str) -> bool:
+    async def _reconcile_run(self, run_id: str, moment: datetime) -> bool:
         """Repair one run's cross-store residue; report whether state changed."""
         continuation = await self._continuations.get(run_id)
         if continuation is None:
@@ -299,9 +312,9 @@ class CanonicalDurableRunStore:
             return await self._continuations.delete(run_id)
         if await self._reconcile_terminal_hitl(continuation, canonical):
             return True
-        if await self._reconcile_terminal_graph(continuation, canonical):
+        if await self._reconcile_terminal_graph(continuation, canonical, moment):
             return True
-        if await self._reconcile_unstarted_claim(continuation, canonical):
+        if await self._reconcile_unstarted_claim(continuation, canonical, moment):
             return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
@@ -366,34 +379,67 @@ class CanonicalDurableRunStore:
         self,
         continuation: GraphContinuation,
         canonical: Run,
+        moment: datetime,
     ) -> bool:
         """Settle a Run whose Graph continuation was persisted terminal first.
 
         The terminal record itself was lost with the crash; what survives is
-        its status and whatever NodeRun evidence was mirrored before it. The
-        Run's payload is re-derived from that evidence, and where none carries
-        the original error, the error says so rather than inventing one. Open
-        NodeRuns are settled by the spine's own terminal cascade.
+        its status and whatever NodeRun evidence was mirrored before it. Only
+        a COMPLETED result is re-derived from that evidence: `_mark_completed`
+        is the one path that completes a Run, and it derives the result the
+        same way. A FAILED or CANCELLED Run may have been terminalized for a
+        Run-level cause (a halt, an exhausted step budget, a cancellation)
+        that was written only on the Run, while its open NodeRuns got cascade
+        errors -- and `mirror_lifecycle` writes those NodeRuns before the Run.
+        So its error says the original was not persisted rather than passing
+        a NodeRun's error off as the Run's. Open NodeRuns are settled by the
+        spine's own terminal cascade.
         """
         target = continuation.status
+        run_id = canonical.run_id
         if target not in _GRAPH_TERMINAL_STATUSES or canonical.status is not RunStatus.RUNNING:
+            self._terminal_first_seen.pop(run_id, None)
             return False
         if target is RunStatus.CANCELLED and _matching_hitl_settlement(continuation, target):
             return False
-        record = await self.get(canonical.run_id)
-        if record is None or not self._spine_is_quiet(record):
+        if not self._terminal_long_observed(continuation, moment):
             return False
-        result, error = terminal_run_payload(record.node_runs, target)
-        if target is not RunStatus.COMPLETED and error is None:
+        record = await self.get(run_id)
+        if record is None or not self._spine_is_quiet(record, moment):
+            return False
+        if target is RunStatus.COMPLETED:
+            result, error = terminal_run_payload(record.node_runs, target)
+        else:
+            result = None
             error = (
                 f"Graph continuation settled {target.value} before canonical settlement; "
                 "original error not persisted"
             )
         desired_run = transition_run(record.run, target, result=result, error=error)
         desired = record.model_copy(update={"run": desired_run})
-        return await self._mirror_terminal_hitl(desired, canonical.run_id, target)
+        settled = await self._mirror_terminal_hitl(desired, run_id, target)
+        self._terminal_first_seen.pop(run_id, None)
+        return settled
 
-    def _spine_is_quiet(self, record: DurableRunRecord) -> bool:
+    def _terminal_long_observed(self, continuation: GraphContinuation, moment: datetime) -> bool:
+        """Whether this terminal continuation version has been seen for the quiet period.
+
+        The continuation carries no write time, and the spine's timestamps can
+        be older than the quiet period for a walker that has only just written
+        it -- a node that ran past the period and then raised leaves nothing on
+        the spine newer than its Attempt's start. The first sighting of a
+        version is no earlier than its write, so a version seen unchanged for
+        the whole period has outlived any walker between that write and its
+        mirror. A restarted replica waits the period again; that only delays.
+        """
+        run_id = continuation.run_id
+        seen = self._terminal_first_seen.get(run_id)
+        if seen is None or seen[0] != continuation.version:
+            seen = (continuation.version, moment)
+            self._terminal_first_seen[run_id] = seen
+        return moment - seen[1] >= self._terminal_quiet_period
+
+    def _spine_is_quiet(self, record: DurableRunRecord, moment: datetime) -> bool:
         """Whether nothing on the Run's spine moved within the quiet period.
 
         A walker writes its terminal continuation and mirrors it moments
@@ -406,12 +452,13 @@ class CanonicalDurableRunStore:
             attempt.finished_at or attempt.started_at or attempt.created_at
             for attempt in record.attempts
         )
-        return datetime.now(UTC) - max(moments) >= self._terminal_quiet_period
+        return moment - max(moments) >= self._terminal_quiet_period
 
     async def _reconcile_unstarted_claim(
         self,
         continuation: GraphContinuation,
         canonical: Run,
+        moment: datetime,
     ) -> bool:
         """Make an expired resume claim visible to the due index again.
 
@@ -424,7 +471,7 @@ class CanonicalDurableRunStore:
         """
         if continuation.status is not RunStatus.QUEUED or canonical.status is not RunStatus.RUNNING:
             return False
-        if continuation.resume_at is None or continuation.resume_at > datetime.now(UTC):
+        if continuation.resume_at is None or continuation.resume_at > moment:
             return False
         visible = continuation.model_copy(
             update={"status": RunStatus.RUNNING, "version": continuation.version + 1}
@@ -616,7 +663,7 @@ class CanonicalDurableRunStore:
         now: datetime,
     ) -> DurableRunRecord | None:
         if record.run.status is not RunStatus.PAUSED:
-            repaired = await self._reconcile_run(record.run_id)
+            repaired = await self._reconcile_run(record.run_id, now)
             if repaired:
                 refreshed = await self.get(record.run_id)
                 if refreshed is not None:
