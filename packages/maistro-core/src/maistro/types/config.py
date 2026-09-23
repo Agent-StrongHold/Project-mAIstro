@@ -139,7 +139,9 @@ class ModelBindingConfig(BaseModel):
     This is authorization/configuration, not a credential container. A blank
     ``workspace_id`` inherits the deployment's canonical ``AgentConfig.workspace_id``;
     ``project_id`` and ``binding_id`` remain explicit so a Graph cannot authorize
-    itself merely by choosing a model name.
+    itself merely by choosing a model name. ``provider_name`` is the canonical
+    Binding pin used by model routing and may be blank to allow normal router
+    selection.
     """
 
     binding_id: str

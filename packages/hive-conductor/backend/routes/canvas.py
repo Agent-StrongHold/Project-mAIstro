@@ -150,7 +150,7 @@ def _quality_binding_id(settings: Any, run: Any, node_id: str, context: Mapping[
     default_workspace = str(getattr(settings, "hive_default_workspace_id", "default"))
     candidates = [
         declaration.binding_id
-        for declaration in settings.model_bindings
+        for declaration in getattr(settings, "maistro_model_bindings", ())
         if (declaration.workspace_id.strip() or default_workspace) == run.workspace_id
         and declaration.project_id == run.project_id
         and (not declaration.node_id or declaration.node_id == node_id)

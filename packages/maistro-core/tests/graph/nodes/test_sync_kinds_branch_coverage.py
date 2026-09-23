@@ -58,8 +58,14 @@ async def llm_binding_id() -> str:
 
     from maistro.capabilities.binding import Binding
     from maistro.capabilities.effect_context import default_effect_context
+    from maistro.capabilities.providers.llm_gateway import (
+        DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+        MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    )
+    from maistro.credentials.types import CredentialRecord
 
-    await default_effect_context().bindings.put(
+    effects = default_effect_context()
+    await effects.bindings.put(
         Binding(
             # fixed created_at keeps the idempotent re-put legal across tests
             created_at=datetime(2026, 9, 1, tzinfo=UTC),
@@ -67,8 +73,34 @@ async def llm_binding_id() -> str:
             workspace_id="w1",
             project_id="p",
             capability="model.chat",
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
         )
     )
+    # Binding-scoped credential routing (#1091): the governed egress refuses
+    # with CredentialScopeError before any call reaches the gateway unless a
+    # credential is registered in this exact Workspace/Project/provider scope.
+    effects.credentials.add(
+        workspace_id="w1",
+        project_id="p",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    # default_effect_context() is a process-wide singleton (by design — see
+    # its docstring), and CredentialRouter.add() deliberately upserts rather
+    # than replacing (#1079 finding 2: re-registering a key must not wipe the
+    # blocked/cooldown state a real outcome set). That means an earlier test
+    # in this file blocking this same shared key_id (e.g. on a real 401, once
+    # #1079 finding 5 made status-classification work) would otherwise leak
+    # into every later test reusing it. Reset health state explicitly so each
+    # test starts from a clean, available credential.
+    pool = effects.credentials.pool_for(
+        workspace_id="w1", project_id="p", provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER
+    )
+    if pool is not None:
+        pool.clear_cooldown(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF)
     return "llm-summarize-test-binding-bc"
 
 
@@ -270,7 +302,9 @@ async def test_llm_summarize_unknown_style_falls_back_to_bullet(
 async def test_llm_summarize_401_raises_permission(
     monkeypatch: pytest.MonkeyPatch, llm_binding_id: str
 ) -> None:
-    """Line 114: 401 → PermissionError."""
+    """Line 114: 401 → LlmAuthError (a PermissionError subclass carrying
+    status_code, #1079 finding 5 — the credential router reads status_code
+    off the exception, so a bare PermissionError could never be classified)."""
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake")
     _patch_httpx(monkeypatch, payload={}, status_code=401, verb="post")
     node = _llm_node()
@@ -279,14 +313,14 @@ async def test_llm_summarize_401_raises_permission(
         _ctx(node_run_id="nr-401"),
     )
     assert out.success is False
-    assert out.error_code == "PermissionError"
+    assert out.error_code == "LlmAuthError"
     assert "llm_auth_failed" in (out.error_message or "")
 
 
 async def test_llm_summarize_429_raises_runtime(
     monkeypatch: pytest.MonkeyPatch, llm_binding_id: str
 ) -> None:
-    """Line 116: 429 → RuntimeError."""
+    """Line 116: 429 → LlmHttpError (a RuntimeError subclass carrying status_code)."""
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake")
     _patch_httpx(monkeypatch, payload={}, status_code=429, verb="post")
     node = _llm_node()
@@ -295,14 +329,14 @@ async def test_llm_summarize_429_raises_runtime(
         _ctx(node_run_id="nr-429"),
     )
     assert out.success is False
-    assert out.error_code == "RuntimeError"
+    assert out.error_code == "LlmHttpError"
     assert "rate_limited" in (out.error_message or "")
 
 
 async def test_llm_summarize_500_raises_runtime(
     monkeypatch: pytest.MonkeyPatch, llm_binding_id: str
 ) -> None:
-    """Line 118: generic ≥400 → RuntimeError."""
+    """Line 118: generic ≥400 → LlmHttpError (carries status_code=500)."""
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://fake")
     _patch_httpx(monkeypatch, payload={}, status_code=500, verb="post")
     node = _llm_node()
@@ -311,7 +345,7 @@ async def test_llm_summarize_500_raises_runtime(
         _ctx(node_run_id="nr-500"),
     )
     assert out.success is False
-    assert out.error_code == "RuntimeError"
+    assert out.error_code == "LlmHttpError"
     assert "status=500" in (out.error_message or "")
 
 
