@@ -217,3 +217,34 @@ branch commits (sole regex hit is prose "closes the prior finding"). Residuals
 unchanged: live GitHub CI rollup for PR 1452 UNVERIFIED (push prohibited); org
 rulesets require 0 approvals; gate-script self-neutering co-change remains
 visible-in-diff (follow-up #160).
+
+Independent verifier pass at lane head `c83eb9b28` (exact SHA, clean worktree;
+`c83eb9b28` differs from `d85f39b16` only by the notes append below, verified
+via `git show --stat`). Driver logs (uv sync / ruff / format) re-supplemented
+with a full re-execution: `uv run ruff check .` clean; gate unit tests →
+**3 passed**; targeted
+`pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0` →
+**256 passed**; full required-CI equivalent `pytest formal/models/ -q
+--timeout=300 --hypothesis-seed=0` → **664 passed** against a fresh dedicated
+pgvector:pg18 container (127.0.0.1:55495) after `alembic upgrade head`, with
+`maistro-evolve`/`formal`/`maistro-core` reinstalled editable as the workflow
+does. Mutation battery in an isolated stacked venv (`--system-site-packages`,
+resolution proven: `patterns.__file__` inside the sandbox), each reinstall
+content-verified before running the unmutated-conformance suite: rm-weakening
+`[/~]`→`/` → **6 failed** (remove-home oracle, composition ×3, property,
+production enforcement); 21-of-22 deletion retaining only `sudo\s+` →
+**193 failed**; benign-prefix allowlist shadow short-circuit in
+`is_dangerous_command` → **95 failed**; `MicroVMSandbox.exec` deny check
+removed → **41 failed**. Gate end-to-end (real script): worktree vs base
+`8bb344e` → bootstrap exit 0 (oracle absent at base via `git cat-file`);
+scratch clone at this head: oracle-only committed change → exit 0,
+oracle+implementation committed co-change → **exit 1**, unresolvable base →
+**exit 2**. `formal-conformance` confirmed required for develop and main
+(`branch-protection.json`); `formal/extractors`/`formal/generated` absent, zero
+live references; production consumers live (`docker.py:65`, `microvm.py:135`,
+`server.py:77,112`); `test_external_content.py` imports no implementation
+constants. Live GitHub (read-only refresh at this head): `formal-conformance`
+COMPLETED SUCCESS; PR body "Refs #341" only, no closure keywords; overall
+rollup still had `integration-scope` IN_PROGRESS → merge-readiness of the
+live rollup remains UNVERIFIED (push prohibited); org-ruleset and
+gate-script-alone residuals unchanged.
