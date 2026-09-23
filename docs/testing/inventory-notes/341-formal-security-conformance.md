@@ -51,3 +51,30 @@ later oracle+implementation co-change exit 1, oracle-only change exit 0.
 `formal-conformance` remains a required status check
 (`.github/branch-protection.json`); the develop base `8bb344e` carries no
 oracle, so this PR legitimately takes the checker's bootstrap path.
+
+Independent verifier pass at head `b7356d5` (this lane's review head; worktree
+unmodified — all mutations sandboxed outside it): targeted
+`pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0` →
+**256 passed**; full required-CI equivalent `pytest formal/models/ -q
+--hypothesis-seed=0` → **664 passed** against a dedicated pgvector:pg18
+container after `alembic upgrade head` (with `maistro-core` and
+`maistro-evolve` installed as the required workflow does — the bare
+`uv sync --extra dev` venv lacks `maistro_evolve`, which the CI job installs
+explicitly). `uv run ruff check .` clean in the same pass. Mutation battery
+re-executed via PYTHONPATH-shadowed copies under `/tmp` (shadow verified via
+`patterns.__file__`; unmutated shadow baseline 256 passed):
+21-of-22 raw-string deletion (one detector retained) → **189 failed** on the
+exact required CI command; `rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/` weakening →
+**6 failed** (`remove-home` incl. the production `MicroVMSandbox.exec`
+enforcement case). Oracle-independence gate exercised end-to-end: real script
+on this PR → bootstrap exit 0 (oracle absent at develop base `8bb344e`,
+verified via `git cat-file`); scratch-clone oracle-only change → exit 0;
+scratch-clone oracle+implementation co-change (weakened oracle + pattern
+rewrite) → **exit 1** with the co-change rejection.
+`tests/test_check_formal_oracle_independence.py` → 3 passed.
+Residual (unchanged, org-side): live GitHub rulesets require 0 approvals and
+no code-owner review, so CODEOWNERS alone cannot stop a co-change PR — the
+in-repo mechanical control is the required `formal-conformance` check running
+`scripts/check-formal-oracle-independence.py`, which rejects the co-change
+diff itself. Live GitHub CI green for this PR head remains UNVERIFIED (no push
+permitted from verification).
