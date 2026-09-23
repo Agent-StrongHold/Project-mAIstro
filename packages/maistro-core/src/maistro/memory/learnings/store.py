@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 
+from maistro.memory.learnings.scope import matches_learning_scope
 from maistro.memory.types import Learning
 from maistro.observability.correlation import observed_provenance
-from maistro.persistence.learning_scope import matches_learning_scope
 
 logger = logging.getLogger(__name__)
 

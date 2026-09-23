@@ -6,12 +6,12 @@ import itertools
 import json
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.learnings.scope import learning_scope_predicate
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
 )
-from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import Learning, MemoryScope
 

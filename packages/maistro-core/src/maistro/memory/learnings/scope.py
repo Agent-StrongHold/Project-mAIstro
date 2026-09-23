@@ -1,4 +1,13 @@
-"""Shared learning visibility predicates for memory and SQL stores."""
+"""Shared learning visibility predicates for memory and SQL stores.
+
+These live in the memory layer rather than `maistro.persistence` on purpose:
+the persistence package imports asyncpg eagerly, and the in-memory store must
+stay importable in asyncpg-free environments — hive-conductor consumes
+maistro-core via sys.path and deliberately restates only the deps its own code
+paths need. Persistence already imports memory at module level (`pg_learnings`
+uses `maistro.memory.vectors` the same way), so this placement keeps the
+dependency arrow pointing the one allowed direction.
+"""
 
 from __future__ import annotations
 

@@ -7,13 +7,13 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.learnings.scope import learning_scope_predicate
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
 from maistro.observability.correlation import observed_provenance
 from maistro.persistence.learning_contract import (
     LEARNING_GENERATED_FIELDS,
     LEARNING_PERSISTED_FIELDS,
 )
-from maistro.persistence.learning_scope import learning_scope_predicate
 from maistro.types.memory import Learning
 
 if TYPE_CHECKING:
