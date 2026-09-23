@@ -58,3 +58,21 @@ clean, canonical mypy clean (711 files), all seven gates listed above green,
 and the same live mutation check reproduced — no-op `authorize_project`
 fails exactly the two isolation tests, revert restores 27/27 with a clean
 tree.
+
+## Post-merge repair re-validation (head `8b949893f`)
+
+The next repair worker re-proved the branch at the merge head that composes
+develop `8bb344e32` (no driver check logs existed for this job either):
+27/27 door+timeout tests, 430 passed / 21 skipped in
+durable_runs (`test_hitl_settlement.py` 32/32), the full hive-conductor
+backend suite at this head (2655 passed / 1 skipped), `ruff check` +
+`ruff format --check` clean, mypy clean over the 17 `durable_runs` sources,
+and the `check_enumerations`, `check-public-routes`, `check-suite-inventory`,
+`check-security-inventory`, `check-owned-store-access`, and
+`check-agent-store-writes` gates green. The live mutation check was executed
+again at this head: no-op `authorize_project` (authentication intact) fails
+exactly `test_hitl_routes_are_scoped_to_the_callers_workspaces` and
+`test_project_reviewer_isolated_from_sibling_hitl_work`; the precise edit
+restore returns 27/27 with a clean tree. The `inventory-delta` count was
+re-verified against the develop base: exactly +2 test functions
+(20→21 door, 5→6 timeout/cancel).
