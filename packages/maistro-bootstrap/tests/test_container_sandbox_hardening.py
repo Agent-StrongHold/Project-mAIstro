@@ -126,6 +126,39 @@ def test_seed_allowlist_reads_split_git_index(tmp_path: Path) -> None:
     assert listed.split(b"\0") == [b"added.py", b"tracked.py", b""]
 
 
+def test_missing_or_replaced_harness_refuses_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only the startup `sleep infinity` child may survive agent reaping."""
+    monkeypatch.setattr(
+        csbx_mod,
+        "_docker",
+        lambda args, **kwargs: subprocess.CompletedProcess(
+            args, 0, stdout="123 1 unexpected command\n", stderr=""
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="harness process is missing"):
+        ContainerBuilderSandbox(tmp_path)._find_harness_pid("cid")
+
+
+def test_gitdir_marker_seed_path_is_validated_and_resolved(tmp_path: Path) -> None:
+    """Linked worktrees may seed, while malformed Git markers fail closed."""
+    marker = tmp_path / ".git"
+    marker.write_text("not-a-gitdir\n", encoding="utf-8")
+    sandbox = ContainerBuilderSandbox(tmp_path)
+    with pytest.raises(RuntimeError, match="not a valid worktree gitdir marker"):
+        sandbox._git_index_path()
+
+    gitdir = tmp_path / "linked-gitdir"
+    gitdir.mkdir()
+    index = gitdir / "index"
+    index.touch()
+    marker.write_text("gitdir: linked-gitdir\n", encoding="utf-8")
+
+    assert sandbox._git_index_path() == index
+
+
 def _docker_calls(rec: _Recording) -> list[list[str]]:
     return [argv for argv in rec.calls if argv[0] == "docker"]
 
@@ -303,3 +336,75 @@ def test_container_env_is_home_and_nothing_else(recorder: _Recording, tmp_path: 
                 f"HOME={csbx_mod._AGENT_HOME}",
                 *[f"{name}=" for name in csbx_mod._PROXY_ENV_NAMES],
             ], argv
+
+
+def test_failed_enter_removes_the_created_container(
+    recorder: _Recording, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A seed failure must not leave a partially configured container alive."""
+
+    def fail_seed(self: ContainerBuilderSandbox, cid: str) -> None:
+        raise RuntimeError(f"cannot seed {cid}")
+
+    monkeypatch.setattr(ContainerBuilderSandbox, "_seed", fail_seed)
+
+    with pytest.raises(RuntimeError, match="cannot seed fake-cid"):
+        ContainerBuilderSandbox(tmp_path).__enter__()
+
+    assert ["docker", "rm", "-f", "fake-cid"] in recorder.calls
+
+
+@pytest.mark.parametrize(
+    ("archive_status", "extract_statuses", "message"),
+    [
+        (1, [], "seed tar failed"),
+        (0, [1], "container tar extract failed"),
+        (0, [0, 1], "container baseline extract failed"),
+        (0, [0, 0], None),
+    ],
+)
+def test_seed_failure_at_every_transfer_stage_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    archive_status: int,
+    extract_statuses: list[int],
+    message: str | None,
+) -> None:
+    """Host archive and both container extracts fail closed and clean up.
+
+    The workspace extract and the clean Git baseline are distinct transfers; a
+    failure in either must remove the container rather than leaving seed data
+    accessible to a later caller.
+    """
+    sandbox = ContainerBuilderSandbox(tmp_path)
+    cleanup: list[object] = []
+    statuses = iter(extract_statuses)
+
+    monkeypatch.setattr(sandbox, "_tracked_seed_files", lambda: b"tracked.py\0")
+    monkeypatch.setattr(
+        csbx_mod.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, archive_status, stdout=b"archive", stderr=b"tar error"
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "_extract_seed",
+        lambda cid, archive, destination: subprocess.CompletedProcess(
+            ["docker", "exec"], next(statuses), stdout=b"", stderr=b"extract error"
+        ),
+    )
+    monkeypatch.setattr(
+        ContainerBuilderSandbox,
+        "__exit__",
+        lambda self, *exc: cleanup.append(exc),
+    )
+
+    if message is None:
+        sandbox._seed("cid")
+        assert cleanup == []
+    else:
+        with pytest.raises(RuntimeError, match=message):
+            sandbox._seed("cid")
+        assert cleanup == [(None, None, None)]
