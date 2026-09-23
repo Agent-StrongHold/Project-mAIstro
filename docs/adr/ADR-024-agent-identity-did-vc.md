@@ -32,7 +32,7 @@ history:
 
 # ADR-024: Agent Identity & Verifiable Credentials (DID + VC)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-07
 **Depends on:** ADR-021 (Conductor Seed), ADR-029 (Networking Substrate)
 
