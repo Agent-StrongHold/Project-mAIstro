@@ -52,7 +52,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, NotRequired, TypedDict
 
-from maistro.projects.scope_store import TransactionalProjectScopeStore
+from maistro.projects.scope_store import DurableProjectScopeStore, TransactionalProjectScopeStore
 from maistro.runs.evidence_json import json_of, model_of
 from maistro.workspaces.model import (
     Workspace,
@@ -88,7 +88,12 @@ class PgWorkspaceStore:
             )
             raise TypeError(msg)
         self._pool = pool
-        self.project_store: TransactionalProjectScopeStore = project_store
+        self._project_store: DurableProjectScopeStore = project_store
+
+    @property
+    def project_store(self) -> ProjectScopeStore:
+        """The paired Project store, satisfying `WorkspaceStore`'s read-only contract."""
+        return self._project_store
 
     async def create(
         self,
@@ -124,10 +129,10 @@ class PgWorkspaceStore:
         # written *last* and read back on the same connection, so a failure
         # anywhere rolls the Workspace and membership back with it; there is
         # nothing to compensate.
-        async with self.project_store.transaction() as conn:
+        async with self._project_store.transaction() as conn:
             await self._insert_workspace(conn, workspace)
             await self._insert_membership(conn, owner)
-            await self.project_store.create_root_in(conn, workspace.workspace_id)
+            await self._project_store.create_root_in(conn, workspace.workspace_id)
         return workspace
 
     async def get(self, workspace_id: str) -> Workspace | None:
@@ -161,8 +166,8 @@ class PgWorkspaceStore:
         # Purge first, then the Workspace row, in one transaction (#1121).
         # `WorkspaceNotFound` from the row delete rolls the purge back with
         # it, so deleting an absent Workspace touches nothing.
-        async with self.project_store.transaction() as conn:
-            await self.project_store.purge_workspace_in(conn, workspace_id)
+        async with self._project_store.transaction() as conn:
+            await self._project_store.purge_workspace_in(conn, workspace_id)
             await self._delete_workspace_row(conn, workspace_id)
 
     async def list_for_user(self, user_id: str) -> list[Workspace]:
