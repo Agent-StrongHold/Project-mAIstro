@@ -178,7 +178,7 @@ class RunRetentionSweeper:
         self._last_sweep[scope] = time.monotonic()
         self._last_sweep.move_to_end(scope)
         while len(self._last_sweep) > self._max_tracked_scopes:
-            self._last_sweep.popitem(last=False)
+            del self._last_sweep[next(iter(self._last_sweep))]
 
     async def maybe_sweep(
         self,
@@ -259,8 +259,8 @@ class RunRetentionSweeper:
                 _BACKLOGGED_SCOPES.discard(scope)
             backlogged = sum(
                 1
-                for held in _BACKLOGGED_SCOPES
-                if isinstance(held, GlobalRetentionScope) == is_global
+                for backlogged_scope in _BACKLOGGED_SCOPES
+                if isinstance(backlogged_scope, GlobalRetentionScope) == is_global
             )
             retention_backlog_remaining.set(
                 float(backlogged), mode="global" if is_global else "workspace"
