@@ -1,0 +1,847 @@
+{
+  "_doc": "Retention of every durable table in the tree (#325). Checked by scripts/check-durable-table-inventory.py against alembic migrations, runtime CREATE TABLE and ORM __tablename__. 'undecided' means no driven deletion path exists today and the decision is tracked on the named issue.",
+  "policy_scope": "The engine owns retention mechanisms and this inventory. Legal hold, tamper-evident audit history and lawful-deletion semantics belong to the importing product (owner decision on #325, 2026-09-23; docs/adr/OUT-OF-SCOPE.md). No entry here implements them.",
+  "retention_values": {
+    "run_purge": "Deleted by the canonical Run purge; dependents follow packages/maistro-core/src/maistro/runs/retention_scope.py.",
+    "ttl_purge": "Deleted by a driven TTL purge on every backend listed.",
+    "window_prune": "Rows outside a sliding window or population bound are deleted by a driven path.",
+    "bounded_by_parent": "Deleted with its parent row; lives exactly as long as the parent.",
+    "indefinite_by_decision": "Kept forever on purpose; the issue records the decision.",
+    "undecided": "No driven deletion path today. deletion_path, if any, is an explicit or undriven delete, not a retention sweep."
+  },
+  "created_outside_this_repo": {
+    "tables": [
+      "canvas_blobs",
+      "canvases",
+      "composite_records",
+      "generation_jobs",
+      "layers"
+    ],
+    "note": "maistro_canvas.canvas.store reads and writes these, but no migration or DDL in this repository creates them (alembic/versions/002 calls them 'created elsewhere'), so this gate cannot see them. They are uninventoried until their DDL lands here; tracked on #325."
+  },
+  "tables": [
+    {
+      "table": "_migrations",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/__init__.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Applied-migration ledger; one row per migration, bounded by the migration count."
+    },
+    {
+      "table": "agents",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/pg_agents.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per registered agent; no delete path."
+    },
+    {
+      "table": "asset_definitions",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "asset_instances",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": "maistro_canvas.canvas.asset_store:PostgresAssetStore.remove_instance",
+      "issue": "#325",
+      "notes": "Deleted only on an explicit DELETE /asset-instances/{id}; no retention sweep."
+    },
+    {
+      "table": "asset_sheets",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "audit_log",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/pg_audit.py",
+      "data_class": "audit",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Append-only audit trail with no retention. Legal hold and tamper-evidence are the importing product's (owner decision on #325)."
+    },
+    {
+      "table": "books",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "canonical_attempts",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/runs/sqlite_store.py",
+      "data_class": "execution_state",
+      "retention": "run_purge",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.sweep_now",
+      "issue": "#1175",
+      "parent": "canonical_runs",
+      "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
+      "notes": "Deleted in the Run purge transaction; the reference policy is runs/retention_scope.py."
+    },
+    {
+      "table": "canonical_event_log",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/envelope.py",
+      "data_class": "event_history",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
+      "notes": "Preserved by the Run purge on purpose (runs/retention_scope.py). Has no retention of its own."
+    },
+    {
+      "table": "canonical_event_outbox",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/outbox.py",
+      "data_class": "event_history",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "canonical_node_runs",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/runs/sqlite_store.py",
+      "data_class": "execution_state",
+      "retention": "run_purge",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.sweep_now",
+      "issue": "#1175",
+      "parent": "canonical_runs",
+      "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
+      "notes": "Deleted in the Run purge transaction; the reference policy is runs/retention_scope.py."
+    },
+    {
+      "table": "canonical_project_memberships",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/projects/sqlite_scope_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.projects.sqlite_scope_store:SqliteProjectScopeStore.purge_workspace",
+      "issue": null,
+      "parent": "canonical_workspaces",
+      "notes": "Removed with its Workspace (purge_workspace_in in the Workspace delete transaction) or on explicit member removal."
+    },
+    {
+      "table": "canonical_project_resources",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/projects/sqlite_scope_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.projects.sqlite_scope_store:SqliteProjectScopeStore.purge_workspace",
+      "issue": null,
+      "parent": "canonical_workspaces",
+      "notes": "Removed with its Workspace (purge_workspace_in in the Workspace delete transaction)."
+    },
+    {
+      "table": "canonical_projects",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/projects/sqlite_scope_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.projects.sqlite_scope_store:SqliteProjectScopeStore.purge_workspace",
+      "issue": null,
+      "parent": "canonical_workspaces",
+      "notes": "Removed with its Workspace, or by an explicit DELETE /projects/{id}."
+    },
+    {
+      "table": "canonical_runs",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/runs/sqlite_store.py",
+      "data_class": "execution_state",
+      "retention": "run_purge",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.sweep_now",
+      "issue": "#1175",
+      "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
+      "notes": "Chat-admitted Runs carry a retention deadline and are purged by the sweeper riding on admission; other Runs are archived (runs/archival.py) rather than deleted. Dependents are listed in runs/retention_scope.py."
+    },
+    {
+      "table": "canonical_workspace_memberships",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.workspaces.sqlite_store:SqliteWorkspaceStore.delete",
+      "issue": null,
+      "parent": "canonical_workspaces",
+      "notes": "Deleted with the Workspace or on explicit member removal."
+    },
+    {
+      "table": "canonical_workspaces",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": "maistro.workspaces.sqlite_store:SqliteWorkspaceStore.delete",
+      "issue": "#325",
+      "notes": "Deleted only on an explicit DELETE /workspaces/{id}; lives as long as the tenant wants it. Needs an explicit indefinite_by_decision."
+    },
+    {
+      "table": "capability_approvals",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/capabilities/approval_store.py",
+      "data_class": "audit",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "capability_bindings",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/capabilities/binding_store.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "capability_invocations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/capabilities/invocation_store.py",
+      "data_class": "audit",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment. One row per capability effect."
+    },
+    {
+      "table": "character_references",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/tool.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "characters",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/character.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC schema (frontend/alembic). No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "child_profiles",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/asset_store.py",
+      "data_class": "customer_pii",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Personalisation data about a child. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "consumer_cursors",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/consumer_cursor.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per consumer; bounded by the consumer count, not by time."
+    },
+    {
+      "table": "creators",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/creator.py",
+      "data_class": "customer_pii",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC schema. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "customers",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/customer.py",
+      "data_class": "customer_pii",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC schema. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "design_outputs",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/stores.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "design_projects",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/stores.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": "maistro_design.stores:PgDesignProjectStore.delete",
+      "issue": "#325",
+      "notes": "Deleted only on explicit request; no retention sweep."
+    },
+    {
+      "table": "durable_graph_runs",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
+      "data_class": "execution_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "episodic_memories",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_episodic.py",
+      "data_class": "memory",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Memory decays in weight but rows are never deleted."
+    },
+    {
+      "table": "event_log",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/durable_log.py",
+      "data_class": "event_history",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "feature_corrections",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/feature_correction.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC schema. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "generation_attempts",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/generation_attempt.py",
+      "data_class": "execution_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC schema. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "genomes",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-evolve/src/maistro_evolve/population.py",
+      "data_class": "runtime_state",
+      "retention": "window_prune",
+      "deletion_path": "maistro_evolve.population:PopulationStore.cull_bottom",
+      "issue": null,
+      "notes": "Each evolve cycle culls the bottom of the population (cycle.py)."
+    },
+    {
+      "table": "graph_continuations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/graph/durable_runs/continuation.py",
+      "data_class": "execution_state",
+      "retention": "run_purge",
+      "deletion_path": "maistro.runs.retention:RunRetentionSweeper.sweep_now",
+      "issue": "#1175",
+      "parent": "canonical_runs",
+      "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
+      "notes": "Deleted with its Run in the purge transaction, and when a graph run completes."
+    },
+    {
+      "table": "graph_templates",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/graph/sqlite_templates.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "handler_invocations",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/invocations.py",
+      "data_class": "event_history",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per event handler invocation. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "knowledge_nodes",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/store.py",
+      "data_class": "memory",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "kv_store",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/state.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": "maistro.state:PersistedStore.delete",
+      "issue": "#325",
+      "notes": "Generic homelab key-value store; callers delete their own keys, no retention sweep."
+    },
+    {
+      "table": "learnings",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_learnings.py",
+      "data_class": "memory",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Memory decays in weight but rows are never deleted."
+    },
+    {
+      "table": "memory_entries",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/store.py",
+      "data_class": "memory",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "node_templates",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/graph/sqlite_templates.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "orders",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/order.py",
+      "data_class": "customer_pii",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC schema; order and shipping data. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "orgs",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "alembic/versions/003_design_projects_outputs.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "FK anchor created by migrations 003/024. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "outcomes",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "page_layout_versions",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/page_layout_version.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC schema. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "product_formats",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/product_format.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC catalogue."
+    },
+    {
+      "table": "prompt_labels",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_prompts.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "prompts",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_prompts.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Every prompt version is kept. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "quota_usage",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per provider per billing cycle; raw-vs-aggregate retention is still open on #325."
+    },
+    {
+      "table": "reactor_log",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/reactor.py",
+      "data_class": "event_history",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "schedules",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/scheduling/store.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": "maistro.scheduling.store:SqliteScheduleStore.delete",
+      "issue": "#325",
+      "notes": "Deleted only on explicit request; no retention sweep."
+    },
+    {
+      "table": "schema_migrations",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/state.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Applied-migration ledger; bounded by the migration count."
+    },
+    {
+      "table": "security_rate_limits",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/security/pg_strikes.py",
+      "data_class": "runtime_state",
+      "retention": "window_prune",
+      "deletion_path": "maistro.security.pg_strikes:PgRateLimiter.check_and_record",
+      "issue": null,
+      "notes": "Expired windows are deleted inline on every rate-limit check."
+    },
+    {
+      "table": "security_strikes",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/security/pg_strikes.py",
+      "data_class": "security_evidence",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One row per user. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "security_violations",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/security/pg_strikes.py",
+      "data_class": "security_evidence",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Appended on every strike and read in full on every lock check; nothing deletes it. Tamper-evidence and legal hold are the importing product's (owner decision on #325)."
+    },
+    {
+      "table": "session_turns",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_sessions.py",
+      "data_class": "conversation_history",
+      "retention": "undecided",
+      "deletion_path": "maistro.persistence.sqlite_sessions:SqliteSessionStore.purge_expired",
+      "issue": "#325",
+      "notes": "SQLite purges expired rows inline on every write. PgSessionStore.purge_expired exists but nothing in production calls it, so on PostgreSQL rows accumulate."
+    },
+    {
+      "table": "sessions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_sessions.py",
+      "data_class": "conversation_history",
+      "retention": "undecided",
+      "deletion_path": "maistro.persistence.sqlite_sessions:SqliteSessionStore.purge_expired",
+      "issue": "#325",
+      "notes": "SQLite purges expired rows inline on every write. PgSessionStore.purge_expired exists but nothing in production calls it, so on PostgreSQL rows accumulate."
+    },
+    {
+      "table": "story_templates",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/frontend/server/models/story_template.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Book-maker POC catalogue."
+    },
+    {
+      "table": "task_idempotency",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/tasks/idempotency.py",
+      "data_class": "runtime_state",
+      "retention": "undecided",
+      "deletion_path": "maistro.tasks.idempotency:PgTaskIdempotencyStore.purge_expired",
+      "issue": "#325",
+      "notes": "purge_expired exists on every backend but nothing in production calls it, so expired claims on POST /tasks accumulate."
+    },
+    {
+      "table": "tasks",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/memory/store.py",
+      "data_class": "execution_state",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "policy_ref": "packages/maistro-core/src/maistro/runs/retention_scope.py",
+      "notes": "tasks.run_id is preserved by the Run purge on purpose (runs/retention_scope.py). No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "teams",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "alembic/versions/003_design_projects_outputs.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "FK anchor created by migrations 003/024. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "trigger_definitions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/events/trigger_store.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": "maistro.events.trigger_store:SqliteTriggerStore.remove",
+      "issue": "#325",
+      "notes": "Deleted only on explicit request; no retention sweep."
+    },
+    {
+      "table": "unique_fields",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/state.py",
+      "data_class": "runtime_state",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.state:PersistedStore.delete",
+      "issue": null,
+      "parent": "kv_store",
+      "notes": "Deleted with the kv_store record it indexes."
+    },
+    {
+      "table": "usage_events",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/quota/sqlite_usage_log.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "No DELETE, and restore full-scans the table. SqliteUsageLog is not wired into any production path yet."
+    }
+  ]
+}
