@@ -10,10 +10,10 @@ purpose: a production registry nobody imports would itself be unreachable
 code. Each waker is checked mechanically rather than trusted, within limits:
 
 * the entrypoint exists and has a production caller (a registered route for a
-  person's answer or cancel; a call from a non-test tree for anything that must
-  fire on its own), so a waker only tests reach does not count. Callers are
-  matched by name, one hop deep: a tick loop that is itself never started would
-  still pass;
+  person's answer or cancel; a call from, or a hand-off as an argument in, a
+  non-test tree for anything that must fire on its own), so a waker only tests
+  reach does not count. Callers are matched by name, one hop deep: a tick loop
+  that is itself never started would still pass;
 * the entrypoint calls the canonical API it claims to go through, and that
   API's accepted parked status -- pinned behaviourally at the end of this file
   -- matches the status the executor parks the reason in. That is the
@@ -25,20 +25,20 @@ code. Each waker is checked mechanically rather than trusted, within limits:
   carries the reason. A tick that filters to one admission source owns only
   the node kinds that source builds Graphs from (its module's `node_type=`
   arguments), and one of those kinds must be a node that can emit the reason
-  (its defining module names it). A tick over Runs that can never pause this
-  way is not a waker, however reachable it is.
+  (its defining module names it). A filtered tick whose module builds no Graph
+  runs registered definitions, so it owns any registered kind. A tick over Runs
+  that can never pause this way is not a waker, however reachable it is.
 
 `UNWOKEN` is the known-gap ledger. It is strict both ways against the map: a
 reason missing from both fails, and a ledgered reason given a waker entry
 fails until it leaves the ledger.
 
-What that leaves: the only production ticks own Runs admitted by the legacy
-Hive DAG adapter (every node `hive.legacy_node`) and by Evolve (`evolve.*`
-nodes), and neither kind ever pauses. So the elapsed-timer reasons are
-ledgered, and a human pause is released only by cancel: an answer queues the
-Run, but no drain selects a Run holding a canonical human node. Both close when
-`Container.resume_parked_runs` gets its #62 cadence and #837 lands
-registered-DAG recovery.
+Scope: the legacy Hive DAG (every node `hive.legacy_node`) and Evolve
+(`evolve.*`) ticks own Runs that never pause, so the Runs these wakers actually
+reach are schedule-admitted registered DAGs, via #837's recovery halves. A
+registered DAG run by hand, the orchestrator's, or a synthesized one has no
+production drain for an answered or elapsed pause until
+`Container.resume_parked_runs` gets its #62 cadence.
 """
 
 from __future__ import annotations
@@ -132,21 +132,24 @@ VIA_ACCEPTS: dict[str, frozenset[RunStatus]] = {
     "recover_queued_graph_runs": frozenset({RunStatus.QUEUED}),
 }
 
-_QUEUED_RECOVERY = (
+_REGISTERED = "packages/hive-conductor/backend/services/registered_dag_recovery.py"
+
+#: Drain QUEUED Runs of their own admissions only, whose nodes never pause.
+_LEGACY_QUEUED_RECOVERY = (
     Entry(_DAG_RUNNER, "recover_stranded_dag_runs", "recover_queued_graph_runs"),
     Entry(_EVOLUTION, "recover_stranded_evolution_runs", "recover_queued_graph_runs"),
 )
-#: Queues an answered Run for `_QUEUED_RECOVERY`, which owns only legacy-DAG
-#: and Evolve Runs -- and neither holds a node that pauses on human input. So
-#: it is not in the map (`test_no_drain_resumes_an_answered_canonical_pause`);
-#: it goes back in once a drain serves canonical-node admissions (#62).
+_QUEUED_RECOVERY = (
+    *_LEGACY_QUEUED_RECOVERY,
+    Entry(_REGISTERED, "recover_stranded_registered_dag_runs", "recover_queued_graph_runs"),
+)
 _HITL_ANSWER = Waker(
     "answer",
     Entry(_HITL_ROUTES, "answer_human_work", "submit_hitl_answer"),
     resumed_by=_QUEUED_RECOVERY,
 )
-#: Cancel terminalizes the Run by id, whatever admitted it.
-_HUMAN_WAKERS = (Waker("cancel", Entry(_HITL_ROUTES, "cancel_human_work", "cancel_hitl")),)
+_HITL_CANCEL = Waker("cancel", Entry(_HITL_ROUTES, "cancel_human_work", "cancel_hitl"))
+_HUMAN_WAKERS = (_HITL_ANSWER, _HITL_CANCEL)
 # `expire_human_work` is not listed: it expires HITL deadlines only when
 # someone calls `POST /v1/hitl/expire`, and a deadline nobody ticks is not a
 # waker (`test_a_deadline_only_a_route_reaches_is_not_a_waker`).
@@ -154,12 +157,15 @@ _HUMAN_WAKERS = (Waker("cancel", Entry(_HITL_ROUTES, "cancel_human_work", "cance
 # `Container.resume_parked_runs` also re-enters these for consumer-executed
 # Runs, but has no production caller until the #62 cadence ticks it.
 
-#: The due ticks: reachable, and `resume_due_graph_runs` accepts WAITING, but
-#: each owns only its own admission's Runs, none of which can hold a Jira or
-#: delegation node (`test_the_due_ticks_own_no_run_that_can_emit_a_timer_reason`).
-_TIMER_WAKERS = (
+#: Reachable, and `resume_due_graph_runs` accepts WAITING, but each owns only
+#: its own admission's Runs, none of which can hold a Jira or delegation node
+#: (`test_the_legacy_due_ticks_own_no_run_that_can_emit_a_timer_reason`).
+_LEGACY_TIMER_WAKERS = (
     Waker("timer", Entry(_DAG_RUNNER, "wake_due_dag_runs", "resume_due_graph_runs")),
     Waker("timer", Entry(_EVOLUTION, "wake_due_evolution_runs", "resume_due_graph_runs")),
+)
+_TIMER_WAKERS = (
+    Waker("timer", Entry(_REGISTERED, "wake_due_registered_dag_runs", "resume_due_graph_runs")),
 )
 
 PAUSE_REASON_WAKERS: dict[str, tuple[Waker, ...]] = {
@@ -167,16 +173,15 @@ PAUSE_REASON_WAKERS: dict[str, tuple[Waker, ...]] = {
     PAUSE_AWAITING_HUMAN_APPROVAL: _HUMAN_WAKERS,
     PAUSE_AWAITING_HUMAN_REVIEW: _HUMAN_WAKERS,
     PAUSE_AWAITING_ROLE_DELEGATE: _HUMAN_WAKERS,
+    PAUSE_WAITING_ON_JIRA_SUBTASKS: _TIMER_WAKERS,
+    PAUSE_AWAITING_DELEGATION_RECONCILIATION: _TIMER_WAKERS,
 }
 
-#: Known gaps. Removing an entry is how its issue closes.
+#: Known gaps: answer-gated reasons that park WAITING, which no production
+#: path delivers an answer to. Removing an entry is how #1192 closes.
 UNWOKEN: dict[str, str] = {
-    # Answer-gated, parks WAITING; no production path delivers an answer.
     PAUSE_AWAITING_REMOTE_DELEGATION: "#1192",
     PAUSE_AWAITING_HARNESS: "#1192",
-    # Elapsed-timer reasons whose nodes no ticked admission can hold.
-    PAUSE_WAITING_ON_JIRA_SUBTASKS: "#62",
-    PAUSE_AWAITING_DELEGATION_RECONCILIATION: "#62",
 }
 
 
@@ -245,7 +250,7 @@ def _production_files(root: pathlib.Path) -> list[pathlib.Path]:
 
 @dataclass(frozen=True)
 class _Index:
-    #: Callee name -> where it is called.
+    #: Function name -> where it is called, or handed to a call as an argument.
     call_sites: dict[str, tuple[tuple[pathlib.Path, int], ...]]
     #: Node kind -> the modules defining a node class of that kind.
     kind_modules: dict[str, tuple[pathlib.Path, ...]]
@@ -261,8 +266,11 @@ def _index(root: pathlib.Path) -> _Index:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         strings = _module_strings(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and (name := _callee(node)) is not None:
-                sites.setdefault(name, []).append((path.resolve(), node.lineno))
+            if isinstance(node, ast.Call):
+                handed = [*node.args, *(keyword.value for keyword in node.keywords)]
+                names = [_callee(node), *(a.id for a in handed if isinstance(a, ast.Name))]
+                for name in filter(None, names):
+                    sites.setdefault(name, []).append((path.resolve(), node.lineno))
             elif isinstance(node, ast.ClassDef):
                 for kind in _class_kinds(node, strings):
                     kinds.setdefault(kind, []).append(path.resolve())
@@ -364,7 +372,7 @@ def _is_registered_route(root: pathlib.Path, path: str, fn: ast.AST) -> bool:
 
 
 def _has_production_caller(root: pathlib.Path, entry: Entry, fn: ast.AST) -> bool:
-    """A call by name anywhere in a production tree, except inside `fn` itself."""
+    """A call or hand-off by name anywhere in a production tree, except inside `fn`."""
     own_file = (root / entry.path).resolve()
     first, last = getattr(fn, "lineno", 0), getattr(fn, "end_lineno", 0)
     return any(
@@ -425,7 +433,9 @@ def admitted_kinds(root: pathlib.Path, entry: Entry) -> frozenset[str] | None:
     An entry that hands its canonical API an `eligible=` filter owns only its
     own admission's Runs, whose Graphs that same module builds -- so their
     kinds are the module's `node_type=` arguments. One that acts on a Run by id
-    (a route) takes whatever Run it is given.
+    (a route) takes whatever Run it is given, and so does a filtered one whose
+    module builds no Graph: it runs registered definitions, whose resolver
+    serves every registered kind.
     """
     tree = ast.parse((root / entry.path).read_text(encoding="utf-8"))
     fn = _module_function(tree, entry.name)
@@ -438,13 +448,14 @@ def admitted_kinds(root: pathlib.Path, entry: Entry) -> frozenset[str] | None:
     if not filtered:
         return None
     strings = _module_strings(tree)
-    return frozenset(
+    built = frozenset(
         kind
         for call in ast.walk(tree)
         if isinstance(call, ast.Call)
         for keyword in call.keywords
         if keyword.arg == "node_type" and (kind := _string(keyword.value, strings))
     )
+    return built or None
 
 
 def _reason_names(reason: str) -> frozenset[str]:
@@ -673,8 +684,8 @@ def test_an_entrypoint_that_skips_its_canonical_api_fails() -> None:
     ]
 
 
-def test_the_due_ticks_own_no_run_that_can_emit_a_timer_reason() -> None:
-    wakers = {PAUSE_WAITING_ON_JIRA_SUBTASKS: _TIMER_WAKERS}
+def test_the_legacy_due_ticks_own_no_run_that_can_emit_a_timer_reason() -> None:
+    wakers = {PAUSE_WAITING_ON_JIRA_SUBTASKS: _LEGACY_TIMER_WAKERS}
 
     assert waker_problems(REPO_ROOT, wakers) == [
         f"{PAUSE_WAITING_ON_JIRA_SUBTASKS} <- timer wake_due_dag_runs: wake_due_dag_runs "
@@ -686,9 +697,11 @@ def test_the_due_ticks_own_no_run_that_can_emit_a_timer_reason() -> None:
     ]
 
 
-def test_no_drain_resumes_an_answered_canonical_pause() -> None:
+def test_an_answer_only_legacy_drains_resume_is_not_a_waker() -> None:
     """Reachable, calls its API, accepts PAUSED -- and still not a waker."""
-    problems = waker_problems(REPO_ROOT, {PAUSE_AWAITING_HUMAN_ANSWER: (_HITL_ANSWER,)})
+    answer = replace(_HITL_ANSWER, resumed_by=_LEGACY_QUEUED_RECOVERY)
+
+    problems = waker_problems(REPO_ROOT, {PAUSE_AWAITING_HUMAN_ANSWER: (answer,)})
 
     assert problems == [
         f"{PAUSE_AWAITING_HUMAN_ANSWER} <- answer answer_human_work: "
@@ -730,8 +743,21 @@ def test_a_tick_owning_a_node_that_emits_the_reason_is_a_waker(tmp_path: pathlib
 
 
 def test_a_route_acting_by_run_id_takes_any_admission() -> None:
-    assert admitted_kinds(REPO_ROOT, _HUMAN_WAKERS[0].entry) is None
+    assert admitted_kinds(REPO_ROOT, _HITL_CANCEL.entry) is None
     assert admitted_kinds(REPO_ROOT, _HITL_ANSWER.entry) is None
+
+
+def test_a_tick_handed_to_its_loop_by_reference_is_reachable(tmp_path: pathlib.Path) -> None:
+    root = _tree(
+        tmp_path,
+        {
+            "packages/pkg/src/pkg/waker.py": "def wake():\n    resume_due_graph_runs()\n",
+            "packages/pkg/src/pkg/loop.py": "async def run():\n    await tick('w', half=wake)\n",
+        },
+    )
+    entry = Entry("packages/pkg/src/pkg/waker.py", "wake", "resume_due_graph_runs")
+
+    assert entry_problems(root, entry, route_counts=False) == []
 
 
 def test_a_mixed_frontier_only_its_timer_could_wake_fails() -> None:
@@ -786,11 +812,15 @@ def test_parked_status_follows_the_executor() -> None:
 
 
 def test_the_due_ticks_admit_exactly_their_own_node_kinds() -> None:
-    """Pins what `admitted_kinds` reads from the two shipped ticks' modules."""
-    assert admitted_kinds(REPO_ROOT, _TIMER_WAKERS[0].entry) == {"hive.legacy_node"}
-    assert admitted_kinds(REPO_ROOT, _TIMER_WAKERS[1].entry) == _EVOLVE_KINDS
-    for drain, kinds in zip(_QUEUED_RECOVERY, ({"hive.legacy_node"}, _EVOLVE_KINDS), strict=True):
+    """Pins what `admitted_kinds` reads from the shipped ticks' modules."""
+    legacy = ({"hive.legacy_node"}, _EVOLVE_KINDS)
+    for tick, kinds in zip(_LEGACY_TIMER_WAKERS, legacy, strict=True):
+        assert admitted_kinds(REPO_ROOT, tick.entry) == kinds
+    for drain, kinds in zip(_LEGACY_QUEUED_RECOVERY, legacy, strict=True):
         assert admitted_kinds(REPO_ROOT, drain) == kinds
+    # Registered-DAG recovery builds no Graph: it runs registered definitions.
+    assert admitted_kinds(REPO_ROOT, _TIMER_WAKERS[0].entry) is None
+    assert admitted_kinds(REPO_ROOT, _QUEUED_RECOVERY[-1]) is None
 
 
 def test_can_emit_finds_the_shipped_emitters() -> None:
