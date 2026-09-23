@@ -96,3 +96,28 @@ clone oracle-only change → exit 0; scratch clone oracle+implementation
 co-change → **exit 1**; `tests/test_check_formal_oracle_independence.py` →
 3 passed. `formal/extractors` and `formal/generated` remain absent with zero
 references. No repair was required; no acceptance criterion regressed.
+
+Independent acceptance verification at head `8c25ef4e` (worktree unmodified;
+mutations in a `/tmp` shadow copy verified via `patterns.__file__`;
+scratch-clone gate runs under `/tmp/clone`): targeted
+`pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0` →
+**256 passed**; full required-CI equivalent `pytest formal/models/ -q
+--timeout=300 --hypothesis-seed=0` → **664 passed** against a dedicated
+pgvector:pg18 container on 127.0.0.1:54329 after `alembic upgrade head`, with
+`maistro-evolve` installed as the workflow does; `uv run ruff check .` and
+`uv run ruff format --check .` clean;
+`tests/test_check_formal_oracle_independence.py` → 3 passed. Mutation battery
+(all fail the suite, worktree untouched): rm-weakening `[/~]`→`/` → **6
+failed** (`remove-home` incl. the production `MicroVMSandbox.exec` case);
+21-of-22 deletion retaining only `sudo\s+` → **193 failed** on the exact
+required-CI command; safe-prefix shadow short-circuit in
+`is_dangerous_command` → **125 failed**; deny-check removed from
+`MicroVMSandbox.exec` → **41 failed**. Gate end-to-end (real script, scratch
+clone): oracle-only change vs PR head → exit 0; oracle+implementation
+co-change → **exit 1**; this PR vs develop base `8bb344e` → bootstrap exit 0.
+`formal/extractors`/`formal/generated` absent with zero references;
+CODEOWNERS covers `/formal/fixtures/` and `/formal/SECURITY-CONFORMANCE.md`;
+no closure keywords in PR body or branch commits. Residual: live GitHub CI
+status for PR 1452 remains UNVERIFIED (push prohibited); org rulesets still
+require 0 approvals — the in-repo mechanical control is the required
+formal-conformance job rejecting the co-change diff itself.
