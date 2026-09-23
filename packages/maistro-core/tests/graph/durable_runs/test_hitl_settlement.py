@@ -600,6 +600,121 @@ async def test_two_workspace_late_race_cannot_settle_foreign_pause() -> None:
     assert foreign is not None and foreign.status is RunStatus.PAUSED
 
 
+async def _canonical_two_workspace_fixture() -> tuple[Any, Any, Any, Any]:
+    """Two real `human.approve_draft` Runs, paused in two canonical Workspaces."""
+    projects = InMemoryProjectScopeStore()
+    run_store = InMemoryRunStore(project_store=projects)
+    store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    paused: dict[str, Any] = {}
+    for workspace_id in ("ws-1058-member", "ws-1058-foreign"):
+        root = await projects.create_root(workspace_id)
+        project = await projects.create(
+            workspace_id=workspace_id,
+            parent_project_id=root.project_id,
+            name=f"two-workspace settlement {workspace_id}",
+        )
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project.project_id,
+            name="approval",
+            nodes=[
+                Node(
+                    node_id="ask",
+                    node_type="human.approve_draft",
+                    inputs={"draft": {"ticket": "PROJ-1"}, "timeout_seconds": 100},
+                )
+            ],
+        )
+        admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+        paused[workspace_id] = await run_durable_graph(
+            graph,
+            store=store,
+            node_resolver=lambda node_id, current_graph: get_node("human.approve_draft")(),
+            run_id=admitted.run_id,
+            run_store=run_store,
+        )
+    return store, run_store, paused["ws-1058-member"], paused["ws-1058-foreign"]
+
+
+async def test_canonical_mutations_refuse_a_foreign_workspace_authorization() -> None:
+    """Object authorization binds at the canonical spine, not only its copies.
+
+    The in-memory and SQLite stores each carry their own membership
+    predicate; the spine-backed `CanonicalDurableRunStore` must refuse the
+    same foreign settlement through its `_mutate_hitl` boundary, and an
+    expiry tick scoped to the member Workspace must never settle the foreign
+    Run. Removing the `permits` predicate there must fail this test.
+    """
+    store, _run_store, member, foreign = await _canonical_two_workspace_fixture()
+    authorization = HitlAuthorization.for_verified_session(
+        HitlAuthenticatedSession.from_authenticated_boundary("member-user", _allow_test_membership),
+        ["ws-1058-member"],
+    )
+
+    mutations = [
+        lambda: store.submit_hitl_answer(
+            foreign.run_id,
+            "ask",
+            {"answer": "late"},
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        lambda: store.timeout_hitl(foreign.run_id, "ask", at=_AFTER, authorization=authorization),
+        lambda: store.cancel_hitl(foreign.run_id, "ask", at=_AFTER, authorization=authorization),
+    ]
+    for mutate in mutations:
+        with pytest.raises(KeyError, match="outside the authorized Workspace"):
+            await mutate()
+
+    unsettled = await store.get(foreign.run_id)
+    assert unsettled is not None and unsettled.status is RunStatus.PAUSED
+
+    deadline = hitl_deadline(foreign, "ask")
+    assert deadline is not None
+    expired = await expire_hitl_pauses(
+        store, now=deadline + timedelta(seconds=1), authorization=authorization
+    )
+    assert [record.run_id for record in expired] == [member.run_id]
+
+    still_paused = await store.get(foreign.run_id)
+    assert still_paused is not None and still_paused.status is RunStatus.PAUSED
+    timed_out = await store.get(member.run_id)
+    assert timed_out is not None and timed_out.status is RunStatus.TIMED_OUT
+
+
+async def test_inmemory_mutations_refuse_a_foreign_workspace_authorization() -> None:
+    """The store-level predicate itself, not a deadline, refuses the mutation.
+
+    Settled before the pause deadline so no `HitlDeadlineElapsed` can mask the
+    refusal: only the Workspace membership predicate can produce this
+    KeyError. Removing it from the in-memory store must fail this test.
+    """
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("foreign-direct", workspace_id="foreign-workspace"))
+    authorization = HitlAuthorization.for_verified_session(
+        HitlAuthenticatedSession.from_authenticated_boundary("member-user", _allow_test_membership),
+        ["owned-workspace"],
+    )
+
+    mutations = [
+        lambda: store.submit_hitl_answer(
+            "foreign-direct",
+            "ask",
+            {"answer": "yes"},
+            at=_BEFORE,
+            authorization=authorization,
+        ),
+        lambda: store.timeout_hitl("foreign-direct", "ask", at=_AFTER, authorization=authorization),
+        lambda: store.cancel_hitl("foreign-direct", "ask", at=_BEFORE, authorization=authorization),
+    ]
+    for mutate in mutations:
+        with pytest.raises(KeyError, match="outside the authorized Workspace"):
+            await mutate()
+
+    record = await store.get("foreign-direct")
+    assert record is not None and record.run.status is RunStatus.PAUSED
+
+
 async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> None:
     db = tmp_path / "hitl-race.db"
     answer_store = SqliteDurableRunStore(db)
