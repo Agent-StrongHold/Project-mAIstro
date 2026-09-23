@@ -96,3 +96,33 @@ validation failures. Next: review the repair and exercise the evidence workflow
 on a reviewed branch commit before tagging; the current release remains blocked
 on missing control evidence. Handoff verdict: NEEDS-DEEP-REVIEW, not integration
 approval.
+
+## Independent re-validation at HEAD ad1c7d530 (job 18e7ee8400c64d1a9df267dcfce69524)
+
+Prior verification findings were re-checked against executable behavior, not
+accepted as fact:
+
+- `uv run python scripts/check-compliance.py`: exit 0 (registry + COMPLIANCE.md
+  valid).
+- The verifier's exact command `--require-release-evidence --release-digest
+  99b56539f...`: exit 1 with missing/incomplete evidence errors. This is the
+  fail-closed guard working as designed: the at-rest registry intentionally has
+  `release_digest: null` (a commit cannot contain its own SHA) and requests are
+  only promoted at release time from a same-SHA push run. The release workflow
+  never invokes release mode without `--resolve-release-evidence`.
+- `--require-release-evidence --release-digest <HEAD> --resolve-release-evidence
+  --resolved-output <tmp>`: exit 1, 52 problems incl. EU-AI-ACT-ART-15/17, no
+  resolved output written (fail closed, no green fabricated).
+- `uv run pytest tests/test_check_compliance.py -q`: 97 passed; the
+  `release_candidate` fixture uses a real git repo, real annotated tag, and a
+  real pytest subprocess; only GitHub HTTP transport is substituted.
+- `uv run ruff check .` / `uv run ruff format --check .`: passed.
+- Wiring re-read: ci.yml runs the required `Compliance registry` check on every
+  PR; compliance-evidence.yml produces `compliance-evidence-<sha>` on push to
+  main/develop/integration; release.yml guard resolves + requires evidence for
+  the exact tag SHA before wheels/pypi/images/publish.
+
+Conclusion: all three prior findings describe intended fail-closed behavior or
+the transport-only test substitution, not defects. Live GitHub artifact
+resolution and a first production Actions run remain UNVERIFIED and require a
+reviewed push/tag by a maintainer (GitHub mutations are prohibited here).
