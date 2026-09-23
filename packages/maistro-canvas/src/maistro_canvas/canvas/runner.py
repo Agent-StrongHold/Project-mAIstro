@@ -9,6 +9,7 @@ must never terminalize the receipt without reconciling the canonical Run first.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -64,25 +65,45 @@ class CanvasJobRunner:
         self._running = False
 
     async def reap_once(self) -> list[GenerationJobRecord]:
-        """Reap expired Canvas leases and reconcile exhausted jobs canonically."""
+        """Reap expired Canvas leases and reconcile exhausted jobs canonically.
+
+        ``reap_expired_leases`` only requeues candidates with retry budget
+        left (returned already ``pending``); a candidate at its retry
+        ceiling comes back still ``running`` — its stale lease holder
+        cleared, but not yet terminal — specifically so this method decides
+        when it becomes ``failed``: only after canonical reconciliation
+        (``fail_job_execution``) has actually run and returned. If that call
+        raises, or this worker dies before the follow-up ``update_job``
+        commits, the row stays ``running`` with its already-expired lease
+        and is picked up again on the next sweep — it never silently
+        diverges from its canonical Run/NodeRun/Attempt.
+        """
         from maistro_canvas.types import JobStatus
 
         reaped: list[GenerationJobRecord] = await self._store.reap_expired_leases()
         terminal_failure = getattr(self._executor, "fail_job_execution", None)
-        if terminal_failure is None:
-            return reaped
         for job in reaped:
-            if job.status == JobStatus.FAILED:
-                error = RuntimeError(job.error_message or "canvas worker lease expired")
+            if job.status != JobStatus.RUNNING:
+                continue
+            error = RuntimeError(job.error_message or "canvas worker lease expired")
+            if terminal_failure is not None:
                 job.error_message = await terminal_failure(job, error)
-                # Scope rides the receipt (#857): the reaper reconciles the
-                # job under the org it was admitted in, never a global one.
-                await self._store.update_job(job, org_id=job.org_id)
+            else:
+                # Compatibility for runner-focused test doubles whose executor
+                # predates the canonical adapter and has no reconciliation to run.
+                job.error_message = job.error_message or str(error)
+            job.status = JobStatus.FAILED
+            job.completed_at = job.completed_at or datetime.now(UTC)
+            job.leased_by = None
+            job.lease_expires_at = None
+            # Scope rides the receipt (#857): the reaper reconciles the
+            # job under the org it was admitted in, never a global one.
+            await self._store.update_job(job, org_id=job.org_id)
         return reaped
 
     async def tick_once(self) -> bool:
         """Claim and execute one job. Returns True if work was done."""
-        from maistro_canvas.types import JobStatus
+        from maistro_canvas.types import JobLeaseLostError, JobStatus
 
         # A real CanvasExecutor exposes this flag. Refuse before taking a lease
         # when production composition forgot the canonical binding: claiming
@@ -110,7 +131,7 @@ class CanvasJobRunner:
         )
 
         try:
-            await self._executor._execute_claimed(job)
+            await self._execute_claimed_with_lease_renewal(job)
             job.status = JobStatus.DONE
             job.completed_at = datetime.now(UTC)
             job.leased_by = None
@@ -138,5 +159,52 @@ class CanvasJobRunner:
                 job.leased_by = None
                 job.lease_expires_at = None
 
-        await self._store.update_job(job, org_id=job.org_id)
+        try:
+            await self._store.update_job(job, org_id=job.org_id, expected_leased_by=self._worker_id)
+        except JobLeaseLostError:
+            # The lease expired and was reaped (another worker may now hold
+            # it, or a retry is pending) before this completion write landed.
+            # This worker's result is stale; discard it rather than clobber
+            # whatever the new holder — or the reaper — has since written.
+            logger.warning(
+                "canvas_job_lease_reclaimed job=%s worker=%s; discarding stale completion",
+                job.id,
+                self._worker_id,
+            )
         return True
+
+    async def _execute_claimed_with_lease_renewal(self, job: GenerationJobRecord) -> None:
+        """Run one claimed job while periodically renewing its lease.
+
+        Provider calls (image generation) can outlast a single
+        ``lease_seconds`` window. Without a heartbeat, `reap_expired_leases`
+        would treat this worker as dead partway through and let another
+        worker reclaim and re-execute the same job while the original
+        provider call is still in flight — canonical Attempt fencing guards
+        the Run/NodeRun/Attempt records but cannot cancel an in-flight
+        external provider request, so this risks a duplicate paid
+        generation. A store without `renew_lease` (a narrow test double
+        predating it) simply gets no heartbeat, matching prior behavior.
+        """
+        renew = getattr(self._store, "renew_lease", None)
+        if renew is None:
+            await self._executor._execute_claimed(job)
+            return
+
+        interval = max(1.0, self._lease_seconds / 3)
+
+        async def _heartbeat() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await renew(job.id, self._worker_id, self._lease_seconds)
+                except Exception:
+                    logger.exception("canvas_lease_renew_error job=%s", job.id)
+
+        heartbeat = asyncio.create_task(_heartbeat())
+        try:
+            await self._executor._execute_claimed(job)
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
