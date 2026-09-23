@@ -443,6 +443,19 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Scheduled multi-node registered DAGs are recovered and woken by Hive's
+  recovery cadence (#837).**
+  `run_registered_dag` admits schedule Runs as `executor=durable_graph`, but
+  the cadence only owned `hive_legacy_dag` and Evolve Runs and the schedule
+  consumer leaves multi-node QUEUED Runs to the durable Graph traversal, so
+  such a Run lost before checkpoint 1, parked on an elapsed timer, or answered
+  after a HITL pause was never picked up again. New
+  `services/registered_dag_recovery.py` hands exactly those Runs (schedule
+  source, durable-graph executor; multi-node for the QUEUED half) to the
+  canonical `recover_queued_graph_runs` / `resume_due_graph_runs` seams with
+  the admitting path's node resolver, each half on its own held scan
+  continuation, and `dag_recovery` runs both with per-half isolation.
+
 - **The DAG Builder's Run button reports the canonical Run truthfully
   (#53).**
   The execution log now shows the canonical `run_id` the run socket already
@@ -841,6 +854,22 @@ or placeholder-only section.
   answering a turn whose spine could not be written before the model was
   called — is unchanged; #1108's other half (refusing a turn outright when no
   canonical spine is wired) is not addressed here.
+- **A raw store or driver error after the model answered no longer loses the
+  answer (#1108).** Only `RunIntegrityError` was classified by
+  `ChatAttemptExecutor`, but the PostgreSQL and SQLite stores wrap integrity
+  violations and nothing else, so a dropped connection or a locked database on
+  the Attempt's COMPLETED write or the NodeRun reconciliation escaped as the
+  driver's own exception: the endpoint returned 500 for a turn the model had
+  already answered, the Run was closed FAILED over a still-RUNNING Attempt,
+  and a client retry meant a second model charge and a second session append.
+  Any spine failure after the dispatch now raises `ChatDispatchUnrecorded`
+  with the answer, the Run is left open for recovery, and a dispatch failure
+  whose recording also failed still arrives as the dispatch's own exception.
+  A runtime deadline that cancelled the dispatch still arrives as
+  `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
+  fails arrives as the cancellation, never as a bare store error the
+  pre-dispatch fallback would answer again; and a failure before the dispatch
+  still propagates unchanged without reaching the model.
 - **A launch the store refuses no longer masks itself as a lifecycle error
   (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
   the executor's failure path asked the lifecycle for `FAILED` from `CREATED`
