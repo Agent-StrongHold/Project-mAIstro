@@ -252,18 +252,8 @@ ${slides.map(s => `<div class="slide">${sanitizeVisualArtifactMarkup(s.html)}</d
             onPaste={handlePreviewPaste}
             onDrop={handlePreviewDrop}
             onBlur={e => updateSlide(active, e.currentTarget.innerHTML)}
-<<<<<<< HEAD
-<<<<<<< HEAD
             markup={slides[active]?.html || ""}
             style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "0.7rem" }} />
-=======
-            dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
-            style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "var(--text-floor)" }} />
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
-=======
-            dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
-            style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "var(--text-floor)" }} />
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
           <textarea value={slides[active]?.notes || ""} onChange={e => setSlides(s => s.map((sl, i) => i === active ? { ...sl, notes: e.target.value } : sl))}
             placeholder="Speaker notes..."
             style={{ width: "100%", marginTop: 8, minHeight: 60, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.muted, fontSize: "var(--text-floor)", resize: "vertical", outline: "none", fontFamily: "inherit" }} />

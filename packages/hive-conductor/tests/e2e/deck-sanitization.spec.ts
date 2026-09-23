@@ -324,7 +324,7 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     const scan = (
       window as Window & { __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string } }
     ).__scanVisualArtifactMarkup;
-    return items.slice(0, 3).map((item) => scan(item));
+    return items.slice(0, 4).map((item) => scan(item));
   }, [
     '<div onclick="alert(1)">handler</div>',
     '<a href="data:text/html,<script>alert(1)</script>">navigation</a>',
