@@ -876,11 +876,8 @@ class Container:
             run_store=self.run_store,
             effect_context=self.capability_effects,
             graph_run_store=self.graph_run_store,
-<<<<<<< HEAD
-=======
             provider_registry=self.provider_registry,
             llm_router=self.llm_router,
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
         )
 
     async def recover_abandoned_attempts(
@@ -2593,12 +2590,9 @@ def build_node_resolver(
     guest_peers: Any = None,
     run_store: RunStore | None = None,
     effect_context: CapabilityEffectContext | None = None,
-    graph_run_store: DurableRunStore | None = None,
-<<<<<<< HEAD
-=======
     provider_registry: LLMProviderRegistry | None = None,
     llm_router: LLMRouter | None = None,
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
+    graph_run_store: DurableRunStore | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -2634,9 +2628,9 @@ def build_node_resolver(
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
     resolved_usage_log = usage_log if usage_log is not None else get_default_usage_log()
     # The container passes its own capability_effects so resolver-built
-    # spawn_harness nodes resolve the same Binding/Invocation authorities the
-    # container's own node does (#55). Bare callers keep the process default,
-    # which registers no Bindings and therefore authorizes nothing.
+    # effect nodes resolve the same Binding/Invocation authorities the
+    # container's own node does (#55). Bare callers keep no populated model
+    # collaborators and therefore authorize/route nothing implicitly.
     resolved_effect_context = effect_context
 
     def _resolver(node_id: str, graph: Any) -> Any:
@@ -2669,15 +2663,12 @@ def build_node_resolver(
         "run_store": run_store,
         "graph_run_store": graph_run_store,
         "effect_context": resolved_effect_context,
-        "node_resolver": _resolver,
-<<<<<<< HEAD
-=======
         # The Container's populated model authorities (#1079): a resolver-built
         # `llm.summarize` routes through the same registry/cost-aware router
         # the rest of the deployment uses, instead of a private empty registry
         # that can only ever gateway-passthrough a named alias.
         "provider_registry": provider_registry,
         "llm_router": llm_router,
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
+        "node_resolver": _resolver,
     }
     return _resolver

@@ -598,10 +598,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
                 region=str(body.get("region", "full")),
                 strength=float(body.get("strength", 0.6)),
                 actor_principal_id=auth.user_id,
-<<<<<<< HEAD
-=======
                 idempotency_key=resolved_idempotency_key,
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
             )
         except (
             TextLayerNoGenError,

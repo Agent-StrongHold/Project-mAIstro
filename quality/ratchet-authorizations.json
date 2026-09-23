@@ -246,8 +246,6 @@
       "issue": "#1162",
       "reason": "SqliteEventOutbox.dead_letters is the #1162 public read surface for the terminal dead-letter disposition: it returns the rows whose durable append exhausted the attempt bound, oldest first, with their failure evidence (attempts, last_error, failed_at). No production entry point in this repository drains it yet - pending_count() deliberately excludes dead-lettered rows and points at this accessor, and the readers today are the test suite (test_outbox.py asserts its contents and ordering; invisible to the src-only scan) plus downstream consumers of the SQLite outbox, for which maistro-core is a published library. Expected to gain an in-repo reader when a shipped process surfaces dead-letter evidence, at which point the entry leaves the baseline."
     },
-<<<<<<< HEAD
-=======
     "packages/maistro-core/src/maistro/testing/harness.py::unused method 'run_graph'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#1154",
@@ -258,7 +256,6 @@
       "issue": "#1154",
       "reason": "A declared TierConfig field (SPEC-177: beam search when parallel_generations > 1; ADR-004/ADR-009 place the Ultra Think paths at T9), assigned at its two construction sites and read by nothing in src today. It surfaces now for the same name-match reason as the harness method: the retired run_graph carried a parallel_generations parameter. The field is a documented per-tier setting for an unwired feature, not residue of #1154 -- deleting it would drop a spec'd config surface, so it is banked in pydantic-declarative-field where 424 analogous declared-but-unread model fields already sit."
     },
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     "packages/maistro-core/src/maistro/state.py::unused method 'put_model_unique'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#1248",

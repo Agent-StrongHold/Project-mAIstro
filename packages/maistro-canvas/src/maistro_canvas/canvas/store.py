@@ -34,6 +34,7 @@ from maistro_canvas.types import (
     DuplicateZIndexError,
     GenerationJobRecord,
     IncompleteReorderError,
+    JobLeaseLostError,
     JobNotFoundError,
     LayerLimitExceededError,
     LayerNotFoundError,
@@ -134,11 +135,7 @@ def _coerce_job(row: Any) -> GenerationJobRecord:
         max_attempts=int(d.get("max_attempts", 3)),
         leased_by=d.get("leased_by"),
         lease_expires_at=d.get("lease_expires_at"),
-<<<<<<< HEAD
-        org_id=d.get("org_id", ""),
-=======
         org_id=str(d.get("org_id", "")),
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     )
 
 
@@ -643,11 +640,7 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text(
-<<<<<<< HEAD
-                    "SELECT j.*, c.org_id FROM generation_jobs j"
-=======
                     "SELECT j.*, c.org_id AS org_id FROM generation_jobs j"
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
                     " JOIN layers l ON l.id = j.layer_id"
                     " JOIN canvases c ON c.id = l.canvas_id"
                     " WHERE j.id = :id AND c.org_id = :org"
@@ -657,37 +650,91 @@ class PgCanvasStore:
             row = result.mappings().first()
             return _coerce_job(row) if row else None
 
-    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
+    async def update_job(
+        self,
+        job: GenerationJobRecord,
+        *,
+        org_id: str,
+        expected_leased_by: str | None = None,
+    ) -> GenerationJobRecord:
+        """Persist a job's fields, refusing a canvas outside ``org_id`` (#857).
+
+        ``expected_leased_by`` fences a worker-owned completion write (mirrors
+        ``ConsumerCursorStore``'s fencing-token convention in
+        ``maistro.events.consumer_cursor``): the caller claimed this job under
+        that worker id, and by the time it finishes, the lease may have expired
+        and been reclaimed by another worker via ``reap_expired_leases``. When
+        given, the write only applies if the row's *current* ``leased_by``
+        still matches — otherwise it is refused with ``JobLeaseLostError``
+        rather than silently clobbering the new holder's lease, attempt count,
+        or result with this caller's stale ones.
+        """
+        params: dict[str, Any] = {
+            "id": job.id,
+            "org": org_id,
+            "status": job.status,
+            "paths": json.dumps(job.result_paths),
+            "sel": job.selected_index,
+            "err": job.error_message,
+            "start": job.started_at,
+            "done": job.completed_at,
+            "attempts": job.attempts,
+            "max_attempts": job.max_attempts,
+            "leased_by": job.leased_by,
+            "lease_expires_at": job.lease_expires_at,
+        }
+        # Two literal statements rather than one f-string-assembled one: the
+        # fence clause never carries caller data (it's either absent or this
+        # fixed bind-parameterized text), but a literal is still the better
+        # answer than a `# nosemgrep` on python.sqlalchemy.security.audit.
+        # avoid-sqlalchemy-text — it's greppable, mypy/semgrep can see there's
+        # nothing but bind params in either statement, and (#857) the org
+        # predicate stays inline in this method's own source for
+        # ``test_every_canvas_read_and_mutation_predicates_on_org``.
         async with AsyncSession(self._engine) as session:
-            result = await session.execute(
-                text("""
-                    UPDATE generation_jobs SET
-                        status = :status, result_paths = CAST(:paths AS jsonb),
-                        selected_index = :sel, error_message = :err,
-                        started_at = :start, completed_at = :done,
-                        attempts = :attempts, max_attempts = :max_attempts,
-                        leased_by = :leased_by, lease_expires_at = :lease_expires_at
-                    WHERE id = :id AND layer_id IN
-                        (SELECT l.id FROM layers l
-                         JOIN canvases c ON c.id = l.canvas_id
-                         WHERE c.org_id = :org)
-                """),
-                {
-                    "id": job.id,
-                    "org": org_id,
-                    "status": job.status,
-                    "paths": json.dumps(job.result_paths),
-                    "sel": job.selected_index,
-                    "err": job.error_message,
-                    "start": job.started_at,
-                    "done": job.completed_at,
-                    "attempts": job.attempts,
-                    "max_attempts": job.max_attempts,
-                    "leased_by": job.leased_by,
-                    "lease_expires_at": job.lease_expires_at,
-                },
-            )
+            if expected_leased_by is not None:
+                params["expected_leased_by"] = expected_leased_by
+                result = await session.execute(
+                    text("""
+                        UPDATE generation_jobs SET
+                            status = :status, result_paths = CAST(:paths AS jsonb),
+                            selected_index = :sel, error_message = :err,
+                            started_at = :start, completed_at = :done,
+                            attempts = :attempts, max_attempts = :max_attempts,
+                            leased_by = :leased_by, lease_expires_at = :lease_expires_at
+                        WHERE id = :id AND layer_id IN
+                            (SELECT l.id FROM layers l
+                             JOIN canvases c ON c.id = l.canvas_id
+                             WHERE c.org_id = :org) AND leased_by = :expected_leased_by
+                    """),
+                    params,
+                )
+            else:
+                result = await session.execute(
+                    text("""
+                        UPDATE generation_jobs SET
+                            status = :status, result_paths = CAST(:paths AS jsonb),
+                            selected_index = :sel, error_message = :err,
+                            started_at = :start, completed_at = :done,
+                            attempts = :attempts, max_attempts = :max_attempts,
+                            leased_by = :leased_by, lease_expires_at = :lease_expires_at
+                        WHERE id = :id AND layer_id IN
+                            (SELECT l.id FROM layers l
+                             JOIN canvases c ON c.id = l.canvas_id
+                             WHERE c.org_id = :org)
+                    """),
+                    params,
+                )
             if cast(CursorResult[Any], result).rowcount == 0:
+                if expected_leased_by is not None:
+                    still_present = await session.execute(
+                        text("SELECT 1 FROM generation_jobs WHERE id = :id"),
+                        {"id": job.id},
+                    )
+                    if still_present.first() is not None:
+                        raise JobLeaseLostError(
+                            f"job {job.id!r} lease no longer held by {expected_leased_by!r}"
+                        )
                 raise JobNotFoundError(job.id)
             await session.commit()
         return job
@@ -698,11 +745,7 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text("""
-<<<<<<< HEAD
-                    SELECT j.*, c.org_id FROM generation_jobs j
-=======
                     SELECT j.*, c.org_id AS org_id FROM generation_jobs j
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
                     JOIN layers l ON l.id = j.layer_id
                     JOIN canvases c ON c.id = l.canvas_id
                     WHERE j.layer_id = :lid AND c.org_id = :org
@@ -718,11 +761,7 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text(
-<<<<<<< HEAD
-                    "SELECT j.*, c.org_id FROM generation_jobs j"
-=======
                     "SELECT j.*, c.org_id AS org_id FROM generation_jobs j"
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
                     " JOIN layers l ON l.id = j.layer_id"
                     " JOIN canvases c ON c.id = l.canvas_id"
                     " WHERE j.layer_id = :lid AND c.org_id = :org"
@@ -784,41 +823,72 @@ class PgCanvasStore:
             return _coerce_job(job_row)
 
     async def reap_expired_leases(self) -> list[GenerationJobRecord]:
-        """Requeue expired leases or terminalize receipts at their retry ceiling."""
+        """Requeue expired leases that still have retry budget.
+
+        A receipt at its retry ceiling is deliberately *not* made terminal
+        here: only the caller (``CanvasJobRunner.reap_once``) knows whether
+        canonical reconciliation (``CanvasExecutor.fail_job_execution``) has
+        actually run and succeeded. Flipping ``status`` to ``failed`` in this
+        same statement — before that canonical call happens, or when it
+        raises, or when the process dies between the two — would commit a
+        receipt as terminal while its canonical Run/NodeRun/Attempt stays
+        live, and a 'failed' row never matches this query's ``status =
+        'running'`` again, so it would be excluded from every future reap
+        sweep: a permanent divergence between the two sides.
+
+        Instead, an exhausted candidate's stale ``leased_by`` is cleared but
+        its ``status`` stays ``running`` with its already-expired
+        ``lease_expires_at`` left untouched, so it remains eligible for this
+        same query on every subsequent sweep until the caller's own
+        ``update_job`` call — made only after canonical reconciliation
+        succeeds — finally marks it ``failed``. A caller can tell the two
+        outcomes returned here apart by ``status``: ``pending`` needed no
+        further action; ``running`` still does.
+        """
         async with AsyncSession(self._engine) as session:
-            reaped = await session.execute(
+            requeued = await session.execute(
                 text("""
-                    WITH expired AS (
+                    WITH candidate AS (
                         SELECT j.id
                         FROM generation_jobs j
                         WHERE j.status = 'running'
                           AND j.lease_expires_at IS NOT NULL
                           AND j.lease_expires_at < now()
+                          AND j.attempts < j.max_attempts
                         FOR UPDATE OF j SKIP LOCKED
                     )
                     UPDATE generation_jobs AS j
-                    SET status = CASE
-                            WHEN j.attempts >= j.max_attempts THEN 'failed'
-                            ELSE 'pending'
-                        END,
-                        error_message = CASE
-                            WHEN j.attempts >= j.max_attempts
-                                THEN COALESCE(j.error_message,
-                                    'Generation failed: worker lost (lease expired).')
-                            ELSE j.error_message
-                        END,
-                        completed_at = CASE
-                            WHEN j.attempts >= j.max_attempts THEN now()
-                            ELSE j.completed_at
-                        END,
+                    SET status = 'pending',
                         leased_by = NULL,
                         lease_expires_at = NULL
-                    FROM expired
-                    WHERE j.id = expired.id
+                    FROM candidate
+                    WHERE j.id = candidate.id
                     RETURNING j.id
                 """),
             )
-            ids = [row[0] for row in reaped]
+            requeued_ids = [row[0] for row in requeued]
+
+            exhausted = await session.execute(
+                text("""
+                    WITH candidate AS (
+                        SELECT j.id
+                        FROM generation_jobs j
+                        WHERE j.status = 'running'
+                          AND j.lease_expires_at IS NOT NULL
+                          AND j.lease_expires_at < now()
+                          AND j.attempts >= j.max_attempts
+                        FOR UPDATE OF j SKIP LOCKED
+                    )
+                    UPDATE generation_jobs AS j
+                    SET leased_by = NULL
+                    FROM candidate
+                    WHERE j.id = candidate.id
+                    RETURNING j.id
+                """),
+            )
+            exhausted_ids = [row[0] for row in exhausted]
+
+            ids = requeued_ids + exhausted_ids
             if not ids:
                 await session.commit()
                 return []
@@ -836,6 +906,34 @@ class PgCanvasStore:
             rows = result.mappings().all()
             await session.commit()
             return [_coerce_job(row) for row in rows]
+
+    async def renew_lease(self, job_id: str, worker_id: str, lease_seconds: int) -> bool:
+        """Extend the current holder's claim lease (SPEC-203 heartbeat).
+
+        Long-running provider work (image generation) can outlast a single
+        ``lease_seconds`` window; without a periodic renewal, this row would
+        look worker-lost to ``reap_expired_leases`` while the original call is
+        still in flight, letting another worker re-claim and re-execute it —
+        risking a duplicate paid generation. Fenced the same way a completion
+        write is (``update_job``'s ``expected_leased_by``): a no-op ``False``,
+        not an error, when the row is no longer held by ``worker_id`` — the
+        lease has already been reaped out from under this caller and a
+        replacement worker (or none) now owns it.
+        """
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        async with AsyncSession(self._engine) as session:
+            result = await session.execute(
+                text("""
+                    UPDATE generation_jobs
+                    SET lease_expires_at = now() + (:lease_seconds * INTERVAL '1 second')
+                    WHERE id = :id AND leased_by = :worker AND status = 'running'
+                """),
+                {"id": job_id, "worker": worker_id, "lease_seconds": lease_seconds},
+            )
+            renewed = cast(CursorResult[Any], result).rowcount > 0
+            await session.commit()
+            return renewed
 
     # ── Composites ────────────────────────────────────────────────────
 

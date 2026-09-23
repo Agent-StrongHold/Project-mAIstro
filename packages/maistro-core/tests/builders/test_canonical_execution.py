@@ -345,8 +345,6 @@ async def test_gate_revision_is_new_node_run_and_attempt_evidence_with_feedback(
 
 
 @pytest.mark.asyncio
-<<<<<<< HEAD
-=======
 async def test_revision_dominates_a_concurrent_wave_after_it_settles() -> None:
     """#1067 defect 1: legacy gathers a whole wave, *then* applies gate failures.
 
@@ -519,7 +517,6 @@ async def test_stale_guard_defer_does_not_survive_a_genuine_later_failure() -> N
 
 
 @pytest.mark.asyncio
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 async def test_gate_without_revise_target_reoffers_itself_and_records_new_evidence() -> None:
     graph = PipelineGraph([_node("review", gate=lambda _ctx: False, max_revisions=1)])
     dispatcher = ScriptedDispatcher()
@@ -571,8 +568,6 @@ async def test_dispatch_failure_fails_canonical_run_and_never_starts_downstream(
 
 
 @pytest.mark.asyncio
-<<<<<<< HEAD
-=======
 async def test_two_concurrent_stage_failures_project_one_consistent_authoritative_failure() -> None:
     """#1067 defect 4: the projected stage and its error must come from the same failure.
 
@@ -610,7 +605,6 @@ async def test_two_concurrent_stage_failures_project_one_consistent_authoritativ
 
 
 @pytest.mark.asyncio
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 async def test_timeout_never_runs_the_on_complete_hook() -> None:
     hook_outputs: list[str] = []
 

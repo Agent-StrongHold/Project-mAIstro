@@ -79,16 +79,12 @@ async def test_start_evolution_schedules_cadence_when_owner_is_available(
     import services.evolution as evo
 
     owner = SimpleNamespace(
-<<<<<<< HEAD
-        run_store=object(), graph_run_store=object(), project_scope_store=object()
-=======
         run_store=object(),
         graph_run_store=object(),
         project_scope_store=object(),
         # `start_evolution` now also starts the recovery cadence (#1064),
         # which reaches `owner.event_bus` on its first tick.
         event_bus=object(),
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     )
     monkeypatch.setattr(
         engine_module,
@@ -113,8 +109,6 @@ async def test_start_evolution_schedules_cadence_when_owner_is_available(
         await evo.stop_evolution()
 
 
-<<<<<<< HEAD
-=======
 # --- #1064 finding 6: recovery cadence brackets the service's own lifecycle,
 # not the engine's --------------------------------------------------------
 
@@ -212,7 +206,6 @@ async def test_starting_the_engine_alone_does_not_start_the_evolve_recovery_cade
         await recovery_driver.stop_evolution_recovery()
 
 
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 def test_initialize_domain_state_is_idempotent() -> None:
     from services.evolution import _EvolutionService
 
@@ -854,14 +847,10 @@ def _available_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     import services.evolution_graph as evolution_graph
 
     owner = SimpleNamespace(
-<<<<<<< HEAD
-        run_store=object(), graph_run_store=object(), project_scope_store=object()
-=======
         run_store=object(),
         graph_run_store=object(),
         project_scope_store=object(),
         event_bus=object(),
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     )
     monkeypatch.setattr(engine_module, "get_engine", lambda: SimpleNamespace())
     monkeypatch.setattr(evolution_graph, "canonical_execution_owner", lambda *_a, **_k: owner)

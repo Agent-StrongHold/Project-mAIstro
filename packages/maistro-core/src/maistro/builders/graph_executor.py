@@ -306,13 +306,7 @@ def _gate_decision(
     # canonical graph therefore gets a real conditional back-edge instead of
     # silently treating the failed gate as terminal.
     target = node.revise_target or node.name
-<<<<<<< HEAD
-    stale = {target} | set(graph.descendants(target))
-    run.skipped_stages[:] = [name for name in run.skipped_stages if name not in stale]
-
-=======
     stale = frozenset({target} | set(graph.descendants(target)))
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     feedback = run.context.get(node.name, "")
     # Queued, not applied: see _RevisionLedger.
     ledger.queue_revision(stale, f"{node.name}_feedback", feedback)
@@ -693,14 +687,9 @@ def _project_run_status(
 ) -> None:
     if record.run.status is RunStatus.COMPLETED:
         run.status = "completed"
-<<<<<<< HEAD
-    elif failed_stage is not None:
-        if "iteration budget exhausted" in run.failed_stage_error:
-=======
     elif failure is not None:
         failed_stage, message = failure
         if "iteration budget exhausted" in message:
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
             run.status = f"halted at {failed_stage}: iteration budget exhausted"
         else:
             run.status = f"failed at {failed_stage}"
@@ -735,12 +724,6 @@ def _project_stage(
 def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
     """Refresh the compatibility receipt from canonical execution evidence."""
     latest_by_stage = _latest_stage_runs(record)
-<<<<<<< HEAD
-    failed_stage = _failed_stage(record)
-    _project_run_status(run, record, failed_stage)
-    for stage in getattr(run, "stages", ()):
-        _project_stage(run, stage, latest_by_stage.get(stage.name), failed_stage)
-=======
     failure = _failed_stage(record)
     if failure is not None:
         # Overwrite whichever concurrently-dispatched stage last raced to set
@@ -750,7 +733,6 @@ def _project_canonical_record(run: Any, record: DurableRunRecord) -> None:
     _project_run_status(run, record, failure)
     for stage in getattr(run, "stages", ()):
         _project_stage(run, stage, latest_by_stage.get(stage.name), failure)
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 
 
 def _stage_status(value: str) -> Any:

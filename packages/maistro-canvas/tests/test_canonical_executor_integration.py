@@ -82,9 +82,30 @@ class _CanvasStore:
     async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None:
         return self.jobs.get(job_id)
 
-    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord:
+    async def update_job(
+        self,
+        job: GenerationJobRecord,
+        *,
+        org_id: str,
+        expected_leased_by: str | None = None,
+    ) -> GenerationJobRecord:
+        if expected_leased_by is not None:
+            current = self.jobs.get(job.id)
+            if current is not None and current.leased_by != expected_leased_by:
+                from maistro_canvas.types import JobLeaseLostError
+
+                raise JobLeaseLostError(
+                    f"job {job.id!r} lease no longer held by {expected_leased_by!r}"
+                )
         self.jobs[job.id] = job
         return job
+
+    async def renew_lease(self, job_id: str, worker_id: str, lease_seconds: int) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or job.leased_by != worker_id or job.status != JobStatus.RUNNING:
+            return False
+        job.lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
+        return True
 
     async def claim_next_pending(
         self,
@@ -336,11 +357,7 @@ async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> Non
     assert "credential=secret" not in (attempts[0].error or "")
 
 
-<<<<<<< HEAD
-async def test_receipt_persistence_failure_compensates_admitted_run() -> None:
-=======
 async def test_receipt_persistence_failure_leaves_run_for_durable_reconciliation() -> None:
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     store = _CanvasStore()
     store.fail_create = True
     canonical = _CanonicalStub()
@@ -544,17 +561,22 @@ async def test_runner_idle_and_reap_terminal_failure_paths() -> None:
 
     assert await runner.tick_once() is False
 
-    failed = GenerationJobRecord(
+    # reap_expired_leases leaves an exhausted candidate ``running`` — the
+    # store never terminalizes it directly (Codex #1527 finding 1); only
+    # reap_once does, and only after canonical reconciliation runs.
+    exhausted = GenerationJobRecord(
         id="job-reaped",
         layer_id="layer-1",
         canvas_id="canvas-1",
-        status=JobStatus.FAILED,
+        status=JobStatus.RUNNING,
         model_id="draft-model",
-        error_message="canvas worker lease expired",
+        attempts=3,
+        max_attempts=3,
     )
-    store.reaped = [failed]
-    assert await runner.reap_once() == [failed]
-    assert failed.error_message == "Generation failed: provider service temporarily unavailable."
+    store.reaped = [exhausted]
+    assert await runner.reap_once() == [exhausted]
+    assert exhausted.status == JobStatus.FAILED
+    assert exhausted.error_message == "Generation failed: provider service temporarily unavailable."
     assert executor.failures == ["canvas worker lease expired"]
 
 

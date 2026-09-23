@@ -13,18 +13,11 @@ second execution lifecycle alongside Run/NodeRun/Attempt.
 
 from __future__ import annotations
 
-<<<<<<< HEAD
-import hashlib
-import logging
-import random
-from collections.abc import Sequence
-=======
 import contextlib
 import hashlib
 import logging
 import random
 from collections.abc import AsyncIterator, Sequence
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 from copy import deepcopy
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -60,8 +53,6 @@ class CanonicalExecutionUnavailable(RuntimeError):
         self.availability = availability
 
 
-<<<<<<< HEAD
-=======
 class EvolveRecoveryBlocked(RuntimeError):
     """A stranded/due Evolve Run cannot be safely resumed by this process (#1064).
 
@@ -96,7 +87,6 @@ class FinalizeReconciliationRequired(RuntimeError):
     """
 
 
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 class _EvaluateInput(BaseModel):
     genome_id: str
 
@@ -424,11 +414,7 @@ class _BattleNode(BaseNode[_BattleInput, _BattleOutput]):
             )
         # Validate graph capacity before recording tournament evidence so a
         # malformed immutable graph cannot leave a domain battle half-applied.
-<<<<<<< HEAD
-        return self._tournament_work.run_pair(inputs)
-=======
         return self._tournament_work.run_pair(inputs, ctx)
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 
 
 def _source_evaluation_refs(population: Any, genome: Any) -> list[dict[str, str]]:
@@ -895,6 +881,7 @@ async def run_canonical_evolution_cycle(
     battle_slots = len(membership_ids) // 2
     provenance = {
         "admission_source": _ADMISSION_SOURCE,
+        "executor": "durable_graph",
         "product": "evolve",
         "cycle_number": cycle_number,
         "evolve_membership_ids": list(membership_ids),

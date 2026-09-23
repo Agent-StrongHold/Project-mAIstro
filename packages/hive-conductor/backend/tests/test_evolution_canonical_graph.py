@@ -10,9 +10,6 @@ import pytest
 from fastapi import HTTPException
 from routes.evolution import trigger_cycle
 from services.evolution import _EvolutionService
-<<<<<<< HEAD
-from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
-=======
 from services.evolution_graph import (
     FinalizeReconciliationRequired,
     _BattleInput,
@@ -21,7 +18,6 @@ from services.evolution_graph import (
     _TournamentWork,
     run_canonical_evolution_cycle,
 )
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import (
@@ -222,6 +218,11 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     assert stored is not None
     assert stored.status is RunStatus.COMPLETED
     assert stored.provenance["admission_source"] == "evolve"
+    # #51: every Evolve canonical Run records the durable execution owner in
+    # Run provenance at admission (not left to run_durable_graph() to infer
+    # or backfill it — it ignores the `provenance` kwarg entirely once a
+    # canonical `run_store` already holds an admitted Run for that run_id).
+    assert stored.provenance["executor"] == "durable_graph"
 
     node_runs = await owner.run_store.list_node_runs(record.run_id)
     assert [item.node_id for item in node_runs] == [

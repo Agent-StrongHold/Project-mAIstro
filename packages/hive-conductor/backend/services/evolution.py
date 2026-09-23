@@ -65,8 +65,6 @@ async def start_evolution() -> None:
     if _service.execution_available:
         # Keep a reference to the background task so it isn't garbage-collected mid-flight.
         _service.task = asyncio.ensure_future(_service.run_loop())
-<<<<<<< HEAD
-=======
 
     # The restart/recovery cadence (#1064) is bracketed by THIS service's own
     # lifecycle, not the engine's. Application startup previously started it
@@ -83,7 +81,6 @@ async def start_evolution() -> None:
     from services.evolution_recovery import start_evolution_recovery
 
     start_evolution_recovery()
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 
 
 async def stop_evolution() -> None:
@@ -200,8 +197,6 @@ class _EvolutionService:
     def last_run_id(self) -> str | None:
         return self._last_run_id
 
-<<<<<<< HEAD
-=======
     @property
     def cycle_lock(self) -> asyncio.Lock:
         """The lock manual/cadence cycles and seeding share (#1064).
@@ -233,7 +228,6 @@ class _EvolutionService:
         else:
             self._last_cycle_error = error or f"canonical Run ended {status.value}"
 
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     async def run_loop(self) -> None:
         self.initialize_domain_state()
         if self._population is None or self._tournament is None:
