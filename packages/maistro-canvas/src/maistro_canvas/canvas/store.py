@@ -134,7 +134,11 @@ def _coerce_job(row: Any) -> GenerationJobRecord:
         max_attempts=int(d.get("max_attempts", 3)),
         leased_by=d.get("leased_by"),
         lease_expires_at=d.get("lease_expires_at"),
+<<<<<<< HEAD
         org_id=d.get("org_id", ""),
+=======
+        org_id=str(d.get("org_id", "")),
+>>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     )
 
 
@@ -639,7 +643,11 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text(
+<<<<<<< HEAD
                     "SELECT j.*, c.org_id FROM generation_jobs j"
+=======
+                    "SELECT j.*, c.org_id AS org_id FROM generation_jobs j"
+>>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
                     " JOIN layers l ON l.id = j.layer_id"
                     " JOIN canvases c ON c.id = l.canvas_id"
                     " WHERE j.id = :id AND c.org_id = :org"
@@ -690,7 +698,11 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text("""
+<<<<<<< HEAD
                     SELECT j.*, c.org_id FROM generation_jobs j
+=======
+                    SELECT j.*, c.org_id AS org_id FROM generation_jobs j
+>>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
                     JOIN layers l ON l.id = j.layer_id
                     JOIN canvases c ON c.id = l.canvas_id
                     WHERE j.layer_id = :lid AND c.org_id = :org
@@ -706,7 +718,11 @@ class PgCanvasStore:
         async with AsyncSession(self._engine) as session:
             result = await session.execute(
                 text(
+<<<<<<< HEAD
                     "SELECT j.*, c.org_id FROM generation_jobs j"
+=======
+                    "SELECT j.*, c.org_id AS org_id FROM generation_jobs j"
+>>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
                     " JOIN layers l ON l.id = j.layer_id"
                     " JOIN canvases c ON c.id = l.canvas_id"
                     " WHERE j.layer_id = :lid AND c.org_id = :org"

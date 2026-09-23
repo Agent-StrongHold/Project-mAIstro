@@ -25,6 +25,25 @@ or placeholder-only section.
 
 ### Security
 
+<<<<<<< HEAD
+=======
+- **Concurrent registrations can no longer publish two identities under the
+  same username (#1248).** The register route's availability check and the
+  UUID-keyed write were separate steps, so the store's key (a fresh UUID, not
+  the username) never enforced uniqueness — two requests racing the same
+  username could both pass the check and both write, leaving two identities
+  answering to one username. The check, invitation spend, and write are now
+  one critical section (an in-process lock) backed by a durable claim:
+  `ModelStore.put_if_unique` and `PersistedStore.put_model_if_unique` make the
+  username claim and the row's insert one SQLite transaction, so the
+  uniqueness boundary survives across independent application processes, not
+  just within one. `test_concurrent_open_registration_claims_username_once`
+  drives eight threads at the same username through the real route (one 200,
+  seven 409, one stored identity); `test_independent_process_writers_publish_one_username`
+  proves the same claim holds across two separate `multiprocessing` writers
+  sharing one SQLite file.
+
+>>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 - **pydantic-ai-slim removed from the API and research images, clearing
   CVE-2026-25580 (HIGH) (#1515).** ADR-094 already cut pydantic-ai from the codebase
   (zero `pydantic_ai` imports remain), but both Dockerfiles still installed
@@ -350,6 +369,42 @@ or placeholder-only section.
 
 ### Fixed
 
+<<<<<<< HEAD
+=======
+- **Builders' canonical pipeline executor no longer disagrees with legacy
+  gate/revision, step-budget, and failure-reporting semantics (#1067).** A
+  post-merge audit of #734/#744 found 4 parity defects in
+  `CanonicalGraphPipelineExecutor`, two of which could silently mark a Run
+  `COMPLETED` while a gate was still failing or dropping a same-wave
+  sibling's stale output into a revised stage's input: (1) a same-wave gate
+  revision now invalidates its stale descendants only after the whole ready
+  frontier settles, instead of racing a slower sibling's own commit inside
+  the failing node's coroutine; (2) a gated stage with no `revise_target`
+  already re-offered itself correctly (fixed on `develop` before this audit
+  landed); (3) the durable walk's step bound is now derived from Builders'
+  own admitted pipeline size and iteration budget instead of inheriting an
+  unrelated generic 256-step ceiling that could fail a large valid pipeline;
+  (4) two stages failing in the same concurrent wave now project one
+  consistent authoritative failed stage and error, derived from canonical's
+  own selected failure, instead of a reversed `NodeRun` scan paired with a
+  separately racing shared error variable. A follow-up review found three
+  correctness gaps in that same fix before merge: the revision ledger's
+  `flush()` was applied once per *stage dispatch* rather than once per
+  *frontier*, so a fast/immediate dispatcher could still fail a genuine
+  wave-mate out of its own admitted wave (the flush now runs from the
+  canonical node resolver, which only ever fires once per frontier, strictly
+  after the previous frontier's whole dispatch batch has returned); the
+  transient "stale guard" skip marker was not cleared before a stage's real
+  redispatch, so a stage that failed for real after an earlier stale defer
+  was misreported `SKIPPED` instead of `FAILED` (now cleared as soon as the
+  stale guard is passed, before any real work is attempted); and the derived
+  step bound assumed a skip-only frontier happens at most once per graph
+  node for the whole run, undercounting a revision that repeatedly replays
+  an already-skipped node's frontier (now scales the free-frontier
+  allowance by graph size per real dispatch, not by a flat one-per-node
+  total).
+
+>>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 - **Every ADR body status line now agrees with its front matter, and the
   body-status ratchet is empty (no linked issue: completes the `#387` cleanup
   begun in the entry below).** The 28 legacy contradictions `#387` banked are
@@ -392,6 +447,27 @@ or placeholder-only section.
   the query, which both SQL backends push down. The per-candidate source check
   stays as defense in depth.
 
+<<<<<<< HEAD
+=======
+- **Ratchet bases resolve for rebased topic pushes (no linked issue: CI infra).**
+  Restores the #727/#534 base rule in three workflows that had drifted off it.
+  `quality.yml`'s coverage gate, `ci.yml`'s root suite and
+  `vulture-ratchet.yml` named
+  `RATCHET_BASE_REV` themselves and fell through to `github.event.before` for
+  *every* push. That is right only for a protected branch, which really does
+  replace that revision; on a topic branch `before` is the branch's own
+  previous tip, and any rebase orphans it — unreachable from every ref, so
+  `fetch-depth: 0` (which fetches refs, not orphans) cannot supply it. The
+  ratchet then refused with "base revision could not be resolved" and the
+  candidate went red on base provenance while its pull-request run passed on
+  byte-identical content; a re-run could not clear it, because `before` is
+  fixed in the stored event payload. All three now use the integration base
+  for topic pushes, matching the two sibling declarations that were already
+  correct and what `ratchet_provenance._push_event_base` computes when no base
+  is named. A new test pins the shape of every declaration so the two
+  behaviours cannot drift apart again.
+
+>>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 - **The Simple/Power toggle is removed rather than left silently inert
   (#1409, #1411, #1410).** It promised "Power Mode (DAGs, prompts, topology)" but
   changed nothing observable: `AppShell.tsx`'s navigation never branched on
