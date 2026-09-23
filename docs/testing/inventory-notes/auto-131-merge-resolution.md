@@ -3,6 +3,36 @@
 
 # auto-131 repair round: develop merge resolution (2cf218fd)
 
+## Follow-up merge resolution (8ebbf751b, this round)
+
+Found mid-merge again, this time with 8ebbf751b ("Expose each NodeRun's
+Attempts, with the dispatched agent, on GET /v1/runs/{run_id}/node-runs
+(#223) (#1548)", carrying be46a228c "Classify real content in Design trust
+pre-scan (#817)"). Single conflict, resolved as union:
+
+- `packages/maistro-server/tests/api/test_chat_completions.py`: both
+  imports kept (lane's `RunStatus` for `TestAdmissionCompensation`,
+  upstream's `ATTEMPT_AGENT_KEY` for the #223 attempt-exposure tests); both
+  sides' test blocks already coexisted. No inventory delta — upstream's
+  tests arrived with their own note
+  (claude-ws-223-expose-each-noderun-s-attempts-including-c676.md) and the
+  lane's tests were already inventoried.
+- Everything else (trust.py, runs.py, schemas.py, test_runs_api.py,
+  CHANGELOG) auto-merged; `check-suite-inventory.py` ok 13 suites after.
+
+Evidence this round (all executed post-resolution): independent retained-bound
+reproduction re-run against shipped code (max_retained=2, terminal parent with
+a terminal child: window=2/chat_in_store=2, protected parent survives, younger
+run forgotten, no exception escapes `admit()`), plus its negative control —
+with the `_sweep` `except RunIntegrityError` neutralised, the exact prior
+finding reproduces (RunIntegrityError escapes, window=3/chat_in_store=3),
+proving the catch load-bearing;
+`packages/maistro-core/tests/runs/` 850 passed / 202 skipped;
+`packages/maistro-server/tests/api/` 356 passed; container chat batteries
+83 passed / 3 skipped; ruff check/format, check-suite-inventory.py,
+check-execution-lifecycles.py, check-adr-index.py,
+verify-monorepo-layout.sh all OK.
+
 No test inventory change this round, so no `inventory-delta:` block: the
 develop merge unioned tests that already carried notes
 (issue-131-repair.md, auto-131-0f5f.md).
