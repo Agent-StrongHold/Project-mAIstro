@@ -766,6 +766,12 @@ async def test_build_llm_call_uses_canonical_egress_and_correlates_invocation(
     config_model = AgentConfig(
         router_api_key="test-router-key",
         workspace_id="ws-evolve",
+        # The deployment's gateway secret: bootstrap_model_bindings registers it
+        # as the default scoped credential and backfills the Binding's empty
+        # credential_refs with it. Without it the governed egress refuses with
+        # CredentialScopeError before any transport (#1079 production
+        # composition) -- the fail-closed behavior Evolve now inherits too.
+        litellm_key="test-litellm-key",
         model_bindings=[
             {
                 "binding_id": "evolve-model",
@@ -893,6 +899,7 @@ async def test_run_one_cycle_shipped_path_records_governed_invocation(  # noqa: 
         AgentConfig(
             router_api_key="test-router-key",
             workspace_id="ws-service",
+            litellm_key="test-litellm-key",
             model_bindings=[
                 {
                     "binding_id": "service-model",

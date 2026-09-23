@@ -15,6 +15,18 @@ itemized in `auto-1087-6da5.md`; none are counted here because that note
 already banks this issue's backend test additions against develop's merged
 #1064/#1065 baseline).
 
+Repair note: after develop merged #1079's production composition
+(f695d491), the two service-adapter integration tests
+(`test_build_llm_call_uses_canonical_egress_and_correlates_invocation`,
+`test_run_one_cycle_shipped_path_records_governed_invocation`) failed with
+`CredentialScopeError` because their `AgentConfig` declared model Bindings
+with no deployment gateway secret. The governed egress refusing before any
+transport is the correct fail-closed behavior Evolve inherits; the tests now
+declare `litellm_key` exactly as a real deployment does, so
+`bootstrap_model_bindings` registers the scoped credential and the
+shipped-path assertions hold through the governed boundary. No production
+code changed and no test was added or removed.
+
 After the develop merge, the maestro-core model-egress composition tests
 (`test_model_egress_container_composition.py`) are develop's own superset —
 including the disabled-Binding kill-switch and blank-scope validators — so
