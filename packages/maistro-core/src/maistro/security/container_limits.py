@@ -78,10 +78,7 @@ def _parse_cpu(raw: str | None) -> float | Unbounded | Unknown:
     value = _count(quota)
     if value is None:
         return UNKNOWN
-    try:
-        return value / period
-    except OverflowError:
-        return UNKNOWN
+    return value / period
 
 
 def read_effective_container_limits(root: Path = CGROUP_V2_ROOT) -> EffectiveContainerLimits:
