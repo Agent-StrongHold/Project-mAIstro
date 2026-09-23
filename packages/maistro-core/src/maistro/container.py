@@ -489,12 +489,9 @@ class Container:
         every turn to catch a mistake that is not reachable from within one
         process.
         """
-<<<<<<< HEAD
         # Resolve identity once at the canonical chat boundary. Anonymous
         # turns must still reach the same security strategies as authenticated
         # turns; passing None would let identity-gated checks silently skip.
-=======
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
         auth = self._resolve_chat_auth(auth)
 
         if run is None:
