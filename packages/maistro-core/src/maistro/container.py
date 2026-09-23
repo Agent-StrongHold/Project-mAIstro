@@ -2663,6 +2663,10 @@ def build_node_resolver(
         "run_store": run_store,
         "graph_run_store": graph_run_store,
         "effect_context": resolved_effect_context,
+        # The Container's populated model authorities (#1079): a resolver-built
+        # `llm.summarize` routes through the same registry/cost-aware router
+        # the rest of the deployment uses, instead of a private empty registry
+        # that can only ever gateway-passthrough a named alias.
         "provider_registry": provider_registry,
         "llm_router": llm_router,
         "node_resolver": _resolver,

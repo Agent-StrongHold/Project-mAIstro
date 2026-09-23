@@ -49,6 +49,10 @@ class BindingScopeDenied(BindingResolutionError):
     """A Binding exists but does not cover the requesting execution scope."""
 
 
+class BindingDisabled(BindingResolutionError):
+    """A Binding exists but its operator disabled it, so it authorizes nothing."""
+
+
 @runtime_checkable
 class BindingStore(Protocol):
     """Canonical Binding definition and scope-resolution contract."""
@@ -125,6 +129,8 @@ async def _resolve(
     binding = await store.get(binding_id)
     if binding is None:
         raise BindingNotFound(f"Binding {binding_id!r} is not registered")
+    if binding.disabled:
+        raise BindingDisabled(f"Binding {binding_id!r} is disabled and cannot authorize effects")
     return _scope_checked(
         binding,
         binding_id=binding_id,
@@ -296,6 +302,7 @@ class PgBindingStore:
 
 
 __all__ = [
+    "BindingDisabled",
     "BindingNotFound",
     "BindingResolutionError",
     "BindingScopeDenied",

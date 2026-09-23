@@ -197,6 +197,15 @@ class Settings(BaseSettings):
     allow_stub_llm: bool = False
 
     maistro_router_api_key: str | None = None
+    # Provider metadata is operator config, not inferred from the gateway URL.
+    # The bridge passes it into the canonical Container so Canvas and graph
+    # nodes share one provider registry. Model-Binding authorizations are
+    # `maistro_model_bindings` below -- one canonical list, shared by Canvas
+    # and every other `model.chat`-consuming node, not a second competing one.
+    provider_config_path: str = ""
+    # Optional explicit binding selector for the server-side Canvas quality
+    # route. If omitted, exactly one matching model binding is required.
+    canvas_model_binding_id: str = ""
     # The Workspace a submission that names none lands in (#158). Passed
     # explicitly into `AgentConfig.workspace_id` rather than left to core's own
     # default, so "which Workspace did this Run go to" has one answer this
