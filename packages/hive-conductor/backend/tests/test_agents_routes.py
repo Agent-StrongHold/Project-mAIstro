@@ -272,6 +272,8 @@ def test_agent_scan_fails_closed_without_container_security_composition(
     import services.engine as engine_mod
 
     monkeypatch.setattr(engine_mod.get_engine(), "_agent_port", SimpleNamespace(container=None))
+    # No Container AND no installed composition: the fail-closed contract.
+    monkeypatch.setattr(engine_mod.get_engine(), "_warden_composition", None)
     r = admin_client.post("/v1/agents/scan", json={"description": "clean"})
     assert r.status_code == 503
     assert "security scan could not run" in r.json()["detail"]

@@ -51,5 +51,53 @@ Re-derived all eight acceptance criteria at the exact head and re-executed:
   session-scoped conftest fake container predates develop's Run-store reads;
   unrelated to Warden (scheduler/HITL lanes).
 
+## Repair round 2 (job ada94cfec, head d2ed9974): regression in the session
+conftest, now fixed
+
+The prior round's residual attribution was **wrong**. Re-running the full
+`packages/hive-conductor/backend/tests` suite at the develop base `8bb344e3`
+in an isolated worktree passed completely (2653 passed, 1 skipped), so the
+43 failures + 20 errors observed at the branch head were a regression
+introduced by this branch's `conftest.py` edit, not pre-existing scheduler
+debris.
+
+Mechanics: the branch's session fixture replaced `StubAgentPort()` with
+`SimpleNamespace(container=SimpleNamespace(warden=Warden()))`. Store/scheduler
+services read the full Container surface off `_agent_port.container` and treat
+"container present" as "canonical spine present" — a partial fake turned those
+reads into `AttributeError` (`graph_run_store`, `capability_effects`) and
+fail-closed `ScheduleAdmissionUnavailable`, while the same truthy-but-bare
+fake also broke the fail-closed semantics those services define for
+"container absent". Conversely, reverting to a container-less session engine
+fail-closed the chat/voice/HITL gate stack (`scan_config` → `engine.warden`),
+which is correct production behavior under #66 but broke ~20 tests written
+when the scanner was the removed process-global bare Warden.
+
+Repair (no production semantics weakened):
+
+- `services/engine.py` gains an explicit `set_warden_composition()` slot:
+  the composition-root seam for a host with no Container. `warden` reads the
+  Container first, then the installed composition, and raises
+  `WardenCompositionUnavailable` when neither exists — fail-closed preserved;
+  routes still construct nothing.
+- `conftest.py` restores `StubAgentPort()` (standalone semantics for every
+  store service) and installs one canonical `Warden()` via the new slot, so
+  chat/voice/HITL/harness/agent-scan routes all share a single detector —
+  still one composition, not a route-local instance.
+- The three tests that express "no composition" via `container=None`
+  (`test_agent_scan_fails_closed_without_container_security_composition`,
+  `test_start_fails_closed_without_container_security_composition`, and the
+  manager-rebuild test) now also clear the slot with monkeypatch, which is
+  the exact condition they mean to exercise.
+
+Evidence at the repaired head: full backend suite **2663 passed, 1 skipped**
+(10 more than base — the new security tests), no hang (the prior stall was
+the scanner-error path inside a stream-cancellation test, unreachable once
+scanning works); core issue suites 393 passed / 51 skipped; conductor issue
+suites + hitl door 100 passed; `ruff check`/`format` clean;
+`check-suite-inventory.py` (both suites), `check-wiring-reads.py`, and
+`check-reachability.py` all exit 0; no test-count delta (inventory unchanged:
+2664 / 10744 collected).
+
 No closure keywords (`fixes/closes/resolves #…`) in branch commit messages;
 PR #1447 body says "Refs #1171" only and remains draft.

@@ -84,3 +84,34 @@ context). Verified against current code, not claims:
   repair (tree parses again). Belongs to the scheduler/HITL lanes.
 - `test_log_redaction.py::test_install_is_idempotent` fails standalone at the
   pre-merge head too; log-redaction concern, not #1171.
+
+## Repair round 2 (job ada94cfec, head d2ed9974) — residual re-attributed and FIXED
+
+The "residual, out of scope" claim above was wrong: at develop base `8bb344e3`
+the full backend suite passes completely (2653 passed / 1 skipped, verified in
+an isolated worktree). The 43F + 20E at the branch head were introduced by this
+branch's conftest swap (`StubAgentPort()` → bare `SimpleNamespace` container):
+store/scheduler services read the full Container surface and treat "container
+present" as "canonical spine present", so a partial fake broke ~60 tests
+(AttributeError on `graph_run_store`/`capability_effects`,
+`ScheduleAdmissionUnavailable`), while a container-less session engine
+(correctly) fail-closed the chat/voice/HITL gate stack, breaking ~20 tests
+written against the removed process-global Warden.
+
+Fix:
+- `services/engine.py`: explicit `set_warden_composition()` slot — the
+  composition-root seam for hosts without a Container. `warden` reads the
+  Container first, then the slot, else raises `WardenCompositionUnavailable`
+  (fail-closed preserved; routes still construct nothing).
+- `conftest.py`: `StubAgentPort()` restored + one canonical `Warden()`
+  installed via the slot; every scanning route shares it.
+- The three fail-closed tests that patch `container=None` now also clear the
+  slot (monkeypatch) — the exact condition they test.
+
+Evidence at repaired head: full backend suite **2663 passed / 1 skipped / 0
+failed**, no hang; core issue suites 393 passed / 51 skipped; conductor issue
+suites + hitl door 100 passed; ruff clean; `check-suite-inventory` (both),
+`check-wiring-reads`, `check-reachability` exit 0. Named acceptance tests
+(equivalence across chat/scan/harness/event re-entry, L3 wiring, labelled
+re-entry scan, blocked-preview refusal, missing-warden refusal) all pass.
+Details: docs/testing/inventory-notes/auto-1171-warden-composition.md.

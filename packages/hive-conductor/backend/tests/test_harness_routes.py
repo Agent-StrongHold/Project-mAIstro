@@ -114,6 +114,8 @@ def test_start_fails_closed_without_container_security_composition(admin_client,
     import services.engine as engine_mod
 
     monkeypatch.setattr(engine_mod.get_engine(), "_agent_port", SimpleNamespace(container=None))
+    # No Container AND no installed composition: the fail-closed contract.
+    monkeypatch.setattr(engine_mod.get_engine(), "_warden_composition", None)
     harness_mod._manager = None
     r = admin_client.post("/v1/harness/sessions", json={"description": "x"})
     assert r.status_code == 503
@@ -155,6 +157,9 @@ def test_cached_manager_does_not_survive_container_security_teardown(admin_clien
     # The old manager must not be returned after the canonical composition is
     # unavailable, even though it still holds a usable-looking Warden.
     monkeypatch.setattr(engine_mod.get_engine(), "_agent_port", SimpleNamespace(container=None))
+    # And with no installed composition either, the route must refuse rather
+    # than quietly reuse the manager from the replaced composition.
+    monkeypatch.setattr(engine_mod.get_engine(), "_warden_composition", None)
     with pytest.raises(engine_mod.WardenCompositionUnavailable):
         harness_mod._get_manager()
     assert harness_mod._manager is second
