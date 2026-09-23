@@ -127,6 +127,92 @@ def test_ws_runs_in_two_workspaces_are_distinct_canonical_runs_with_projections(
 
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
+def test_http_runs_in_two_workspaces_are_distinct_canonical_runs_with_projections(
+    admin_client: TestClient, stored_dag: str
+) -> None:
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_a = _create_workspace(admin_client, "HTTP parity A")
+    workspace_b = _create_workspace(admin_client, "HTTP parity B")
+
+    body_a = admin_client.post(f"/v1/dags/{stored_dag}/run", json={"workspace_id": workspace_a})
+    body_b = admin_client.post(f"/v1/dags/{stored_dag}/run", json={"workspace_id": workspace_b})
+
+    run_a, run_b = body_a.json()["run_id"], body_b.json()["run_id"]
+    assert run_a and run_b and run_a != run_b
+    record_a, record_b = _canonical_record(run_a), _canonical_record(run_b)
+    assert (record_a.run.workspace_id, record_b.run.workspace_id) == (workspace_a, workspace_b)
+    assert record_a.run.project_id != record_b.run.project_id
+    for run_id, workspace_id in ((run_a, workspace_a), (run_b, workspace_b)):
+        projection = get_dag_run_store().get_run(run_id)
+        assert projection is not None
+        assert projection["workspace_id"] == workspace_id
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+def test_ws_run_is_interactive_and_audited_like_http(
+    admin_client: TestClient, stored_dag: str
+) -> None:
+    import stores
+
+    workspace_id = _create_workspace(admin_client, "Parity mode")
+    audited_before = {
+        key
+        for key, entry in stores.audit_log.items()
+        if entry["action"] == "dag_run" and entry["target"] == stored_dag
+    }
+
+    ws_run = _run_over_socket(admin_client, stored_dag, workspace_id)[-1]["run_id"]
+    http_run = admin_client.post(
+        f"/v1/dags/{stored_dag}/run", json={"workspace_id": workspace_id}
+    ).json()["run_id"]
+
+    for run_id in (ws_run, http_run):
+        assert _canonical_record(run_id).run.provenance["execution_mode"] == "interactive"
+    audited = [
+        entry
+        for key, entry in stores.audit_log.items()
+        if entry["action"] == "dag_run"
+        and entry["target"] == stored_dag
+        and key not in audited_before
+    ]
+    assert [entry["actor"] for entry in audited] == ["admin", "admin"]
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+@pytest.mark.asyncio
+async def test_stream_hands_over_the_canonical_result_before_any_node_frame(
+    stored_dag: str,
+) -> None:
+    """A socket whose client left fails on the first NodeRun frame it sends;
+    the result must already be with ``on_result`` by then."""
+    import stores
+    from services.dag_execution_scope import authorize_hive_dag_scope
+    from services.graph_runner import execute_dag_streaming
+    from services.workspace_authority import canonical_store_for_tests
+
+    await canonical_store_for_tests().create(
+        creator_user_id="admin", workspace_id="parity-abandoned", name="Abandoned"
+    )
+    scope = await authorize_hive_dag_scope(workspace_id="parity-abandoned", user_id="admin")
+    handed_over: list[dict[str, Any]] = []
+
+    async def on_result(result: dict[str, Any]) -> None:
+        handed_over.append(result)
+
+    stream = execute_dag_streaming(stores.dags[stored_dag], scope=scope, on_result=on_result)
+    assert (await anext(stream))["status"] == "started"
+    first_node_frame = await anext(stream)
+    await stream.aclose()
+
+    assert first_node_frame["status"] == "node_complete"
+    assert [result["run_id"] for result in handed_over] == [first_node_frame["run_id"]]
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
 def test_ws_failed_node_projects_the_canonical_run_like_http(
     admin_client: TestClient, stored_dag: str
 ) -> None:
@@ -225,6 +311,10 @@ def test_http_run_in_foreign_workspace_is_refused_before_execution(
 
     assert response.status_code == 403
     assert response.json()["detail"] == "DAG Workspace scope is not authorized"
+    unknown = admin_client.post(
+        f"/v1/dags/{stored_dag}/run", json={"workspace_id": "parity-no-such-workspace"}
+    )
+    assert unknown.status_code == 403
     assert _run_ids() == before
 
 

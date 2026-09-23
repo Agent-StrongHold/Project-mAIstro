@@ -415,11 +415,14 @@ or placeholder-only section.
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**
   A run started over `/v1/ws/dags/{id}/run` now records the same Recent Runs
-  (`DagRunStore`) projection as the HTTP route, keyed by the canonical `run_id`,
-  before the terminal frame is sent. An unexpected failure frame now shows only
-  `<ExcType>: execution failed; see server logs`, never the raw exception
-  message, and the traceback goes to the server log. The shipped-surface
-  ledger now lists the socket as `canonical` instead of `unresolved`.
+  (`DagRunStore`) projection as the HTTP route, keyed by the canonical `run_id`.
+  The projection is written as soon as the Run settles, so it is recorded even
+  if the client disconnects mid-stream. Like HTTP, the socket runs in
+  `interactive` mode and writes a `dag_run` audit entry. A failure that is not
+  a Run outcome now shows only `<ExcType>: execution failed; see server logs`,
+  never the raw exception message, and the traceback goes to the server log.
+  The shipped-surface ledger now lists the socket as `canonical` instead of
+  `unresolved`.
 
 - **The DAG Builder's Run button reports the canonical Run truthfully
   (#53).**

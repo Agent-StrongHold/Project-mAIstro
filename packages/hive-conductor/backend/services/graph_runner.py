@@ -95,9 +95,9 @@ async def execute_dag_streaming(
 ) -> AsyncIterator[dict[str, Any]]:
     """Project canonical Run/NodeRun outcomes onto the historical websocket shape.
 
-    ``on_result`` receives the canonical result before the terminal frame is
-    yielded, so a caller can record its projection while the client is still
-    connected.
+    ``on_result`` receives the canonical result as soon as the Run settles,
+    before any NodeRun frame is sent, so a client that disconnects mid-stream
+    cannot keep the caller from recording its projection.
     """
     entry = dag_data.get("entry_node") or (
         dag_data.get("nodes", [{}])[0].get("id") if dag_data.get("nodes") else ""
@@ -128,10 +128,10 @@ async def execute_dag_streaming(
             "annotations": result.get("annotations", {}),
         }
 
-    for frame in _node_frames(result):
-        yield frame
     if on_result is not None:
         await on_result(result)
+    for frame in _node_frames(result):
+        yield frame
     yield terminal
 
 

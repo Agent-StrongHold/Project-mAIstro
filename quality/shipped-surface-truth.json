@@ -1470,7 +1470,7 @@
       "handler": "stream_dag_run",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming is a frame facade over canonical_dag_runner.execute_dag, so the button's run is one durable Run/NodeRun/Attempt in the authorized Workspace/Project, and the same dag_run_store projection POST /{dag_id}/run records is written under the canonical run_id before the terminal frame; failure frames carry only the exception kind (#766)",
+      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming is a frame facade over canonical_dag_runner.execute_dag, so the button's run is one interactive durable Run/NodeRun/Attempt in the authorized Workspace/Project, audited as dag_run, and the same dag_run_store projection POST /{dag_id}/run records is written under the canonical run_id as soon as the Run settles; an unexpected (non-Run) failure frame carries only the exception kind, while a failed Run reports its canonical error exactly as the HTTP route does (#766)",
       "effect_owner": "services.dag_execution_scope.authorize_hive_dag_scope -> services.graph_runner.execute_dag_streaming -> services.canonical_dag_runner.execute_dag (durable Run/NodeRun/Attempt) + services.dag_run_store projection"
     },
     {
