@@ -108,6 +108,23 @@ def _authorized_roots() -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def _beneath_an_authorized_root(resolved: Path, roots: tuple[Path, ...]) -> bool:
+    """Whether an already-resolved path sits in one of the authorized roots.
+
+    Two spellings of one question. The string-prefix form is the containment a
+    scanner can follow; `is_relative_to` is the one that states it. Both read
+    the *resolved* path, so neither can be satisfied by a spelling the other
+    rejects — and the separator in the prefix form is what keeps `/srv/rsi-evil`
+    from passing as a child of `/srv/rsi`.
+    """
+    resolved_str = str(resolved)
+    lexical = any(
+        resolved_str == str(root) or resolved_str.startswith(str(root) + os.sep) for root in roots
+    )
+    semantic = any(resolved == root or resolved.is_relative_to(root) for root in roots)
+    return lexical and semantic
+
+
 def resolve_repo(raw: str) -> Path:
     """The repository an RSI run may target, or `RsiPolicyError`.
 
@@ -115,6 +132,14 @@ def resolve_repo(raw: str) -> Path:
     the escape everyone blocks; a symlink planted inside an authorized root
     points outward while every component of the requested path reads as legal,
     and a check on the literal string would pass it.
+
+    Resolution therefore comes first, and *both* checks below run against the
+    resolved path. Comparing the requested string to an already-resolved root
+    is not a cheap extra guard, it is a wrong one: where the configured root is
+    itself a symlink (`RSI_REPO_ROOTS=/srv/rsi` with `/srv/rsi -> /data/rsi`),
+    every legitimate request under the spelling the operator configured fails
+    the string check, and the deployment's way out of that is to widen the
+    root — a refusal that teaches the wrong lesson is worse than no refusal.
     """
     if not raw or not raw.strip():
         raise RsiPolicyError("repo_path is required")
@@ -127,11 +152,11 @@ def resolve_repo(raw: str) -> Path:
         )
 
     try:
-        resolved = Path(raw).expanduser().resolve()
+        resolved = Path(os.path.expanduser(raw)).resolve()
     except (OSError, RuntimeError) as exc:  # RuntimeError: symlink loop
         raise RsiPolicyError(f"repo_path could not be resolved: {exc}") from exc
 
-    if not any(resolved == root or resolved.is_relative_to(root) for root in roots):
+    if not _beneath_an_authorized_root(resolved, roots):
         raise RsiPolicyError(
             f"repo_path is not beneath an authorized root ({', '.join(str(r) for r in roots)})"
         )

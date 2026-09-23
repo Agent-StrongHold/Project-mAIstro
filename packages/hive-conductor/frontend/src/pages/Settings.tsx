@@ -71,17 +71,17 @@ export default function Settings() {
           and "keep the generic branch" would have removed it — which is a
           product call, not the mechanical one that rule is for. */}
       <div className="card" style={{ marginBottom: 16, maxWidth: 480 }}>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 6 }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 6 }}>
           Integration tokens (Jira, GitHub, …) are stored encrypted on the server per account.
         </div>
-        <Link to="/credentials" className="btn btn-accent" style={{ fontSize: 10, display: "inline-block" }}>
+        <Link to="/credentials" className="btn btn-accent" style={{ fontSize: 12, display: "inline-block" }}>
           Manage credentials →
         </Link>
       </div>
 
       {elevating && elevatingFor && (
         <div className="card" style={{ borderLeft: "3px solid var(--danger)", marginBottom: 12, maxWidth: 400 }}>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--danger)", marginBottom: 6 }}>ELEVATION REQUIRED to edit {elevatingFor}</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)", marginBottom: 6 }}>ELEVATION REQUIRED to edit {elevatingFor}</div>
           <div style={{ display: "flex", gap: 8 }}>
             <SecretField
               label={`Your password, to edit ${elevatingFor}`}
@@ -92,8 +92,8 @@ export default function Settings() {
               onKeyDown={(e) => { if (e.key === "Enter") void elevateAndSave(elevatingFor); }}
               style={{ flex: 1 }}
             />
-            <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => void elevateAndSave(elevatingFor)}>elevate</button>
-            <button className="btn" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => { setElevating(false); setElevatingFor(null); }}>cancel</button>
+            <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void elevateAndSave(elevatingFor)}>elevate</button>
+            <button className="btn" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => { setElevating(false); setElevatingFor(null); }}>cancel</button>
           </div>
         </div>
       )}
@@ -102,7 +102,7 @@ export default function Settings() {
         <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
           {Object.entries(settings).map(([key, value]) => (
             <div key={key} style={{ display: "grid", gridTemplateColumns: "200px 1fr auto", gap: 8, padding: "6px 8px", borderBottom: "1px dotted var(--rule)", alignItems: "center" }}>
-              <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--accent)" }}>{key}</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)" }}>{key}</div>
               {editing === key ? (
                 <div style={{ display: "flex", gap: 4 }}>
                   {typeof value === "boolean" ? (
@@ -118,24 +118,24 @@ export default function Settings() {
                   ) : (
                     <input aria-label={`New value for ${key}`} className="input-field" value={editVal} onChange={(e) => setEditVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveSetting(key); if (e.key === "Escape") setEditing(null); }} />
                   )}
-                  <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void saveSetting(key)}>save</button>
-                  <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>
+                  <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => void saveSetting(key)}>save</button>
+                  <button className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setEditing(null)}>cancel</button>
                 </div>
               ) : (
-                <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)", cursor: "pointer" }} onClick={() => startEdit(key)} title="click to edit">
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)", cursor: "pointer" }} onClick={() => startEdit(key)} title="click to edit">
                   {typeof value === "boolean" ? (
                     <span style={{ color: value ? "var(--ok)" : "var(--pencil)" }}>{value ? "true" : "false"}</span>
                   ) : typeof value === "number" ? (
                     <span style={{ color: "var(--accent)" }}>{value}</span>
                   ) : typeof value === "object" ? (
-                    <pre style={{ margin: 0, fontSize: 9 }}>{JSON.stringify(value, null, 2)}</pre>
+                    <pre style={{ margin: 0, fontSize: 12 }}>{JSON.stringify(value, null, 2)}</pre>
                   ) : (
                     String(value)
                   )}
                 </div>
               )}
               {editing !== key && (
-                <button className="btn" style={{ fontSize: 8, padding: "1px 6px", opacity: 0.6 }} onClick={() => startEdit(key)}>edit</button>
+                <button className="btn" style={{ fontSize: 12, padding: "1px 6px", opacity: 0.6 }} onClick={() => startEdit(key)}>edit</button>
               )}
             </div>
           ))}

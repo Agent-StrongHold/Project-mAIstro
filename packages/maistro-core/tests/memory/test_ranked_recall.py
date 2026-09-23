@@ -83,6 +83,7 @@ def _outcome(error: str, project_id: str) -> Outcome:
         task_type="",
         success=False,
         error_type=error,
+        org_id="org-1",
         project_id=project_id,
     )
 
@@ -306,6 +307,8 @@ class TestAssembledMemoryReachesThePrompt:
             prompt_manager=_EmptyPromptManager(),
             context_assembly_policy=policy,
             agent_id="agent-1",
+            org_id="org-1",
+            project_id="p1",
         )
         return str(messages[0]["content"]) if messages[0].get("role") == "system" else ""
 
@@ -347,8 +350,8 @@ class TestLayer3SpendsItsBudgetOnWholeUnits:
             _outcome("the deploy needs a database migration first", "p1")
         )
 
-        generous = await policy.layer3("p1", budget_tokens=10_000)
-        stingy = await policy.layer3("p1", budget_tokens=1)
+        generous = await policy.layer3("p1", budget_tokens=10_000, org_id="org-1")
+        stingy = await policy.layer3("p1", budget_tokens=1, org_id="org-1")
 
         assert "migration" in generous
         assert stingy == ""
@@ -363,7 +366,7 @@ class TestLayer3SpendsItsBudgetOnWholeUnits:
         await policy.outcome_store.record(_outcome("some experience", "p1"))
         await policy.episodic_store.store(_mem("never deploy on a Friday", 0.95, "wisdom"))
 
-        text = await policy.layer3("p1", budget_tokens=2)
+        text = await policy.layer3("p1", budget_tokens=2, org_id="org-1")
 
         assert "never deploy on a Friday" in text
 
@@ -376,7 +379,7 @@ class TestLayer3SpendsItsBudgetOnWholeUnits:
         await policy.outcome_store.record(_outcome("some experience", "p1"))
         await policy.episodic_store.store(_mem("never deploy on a Friday", 0.95, "wisdom"))
 
-        text = await policy.layer3("p1")
+        text = await policy.layer3("p1", org_id="org-1")
 
         assert "some experience" in text
         assert "never deploy on a Friday" in text

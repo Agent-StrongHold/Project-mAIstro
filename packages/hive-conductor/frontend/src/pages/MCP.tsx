@@ -82,11 +82,11 @@ export default function MCP() {
         helpHref="/docs#mcp"
         actions={
           <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => void testConnections()}>
+            <button className="btn" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => void testConnections()}>
               Test connection
             </button>
             {/* POC mode *hid* this; retiring the flag restores it for everyone (#190). */}
-            <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 8px" }} onClick={() => setAdding(true)}>
+            <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 8px" }} onClick={() => setAdding(true)}>
               + add server
             </button>
           </div>
@@ -94,37 +94,37 @@ export default function MCP() {
       />
 
       <div className="card" style={{ marginBottom: 14, padding: 14, borderLeft: "4px solid var(--accent)" }}>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 8 }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>
           FORCE CONVERGENCE · MULTI-MCP
         </div>
         <p style={{ fontFamily: "var(--hand)", fontSize: 13, margin: "0 0 10px", lineHeight: 1.45 }}>
           Hive runs inside your <strong>leased sandbox container</strong> (parent-project). Agents call MCP tools
           from this catalog using secrets in <a href="/credentials" style={{ color: "var(--accent)" }}>Credentials</a> or
           Launch env vars — <strong>not</strong> via Cursor. Canonical manifests live in MAISTRO{" "}
-          <code style={{ fontFamily: "var(--mono)", fontSize: 10 }}>container_registry/MCP_servers/</code>.
+          <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>container_registry/MCP_servers/</code>.
         </p>
-        <p style={{ fontFamily: "var(--hand)", fontSize: 11, margin: "0 0 8px", color: "var(--pencil)" }}>
+        <p style={{ fontFamily: "var(--hand)", fontSize: 12, margin: "0 0 8px", color: "var(--pencil)" }}>
           Atlassian Rovo endpoint: {ROVO_MCP_URL}. Local dev engineers may optionally use{" "}
-          <code style={{ fontFamily: "var(--mono)", fontSize: 10 }}>.cursor/mcp.json</code> — that path does not run in production sandboxes.
+          <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>.cursor/mcp.json</code> — that path does not run in production sandboxes.
         </p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <a
             className="btn btn-accent"
-            style={{ fontSize: 9, padding: "4px 10px", textDecoration: "none" }}
+            style={{ fontSize: 12, padding: "4px 10px", textDecoration: "none" }}
             href="https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/"
             target="_blank"
             rel="noreferrer"
           >
             Rovo MCP docs
           </a>
-          <a className="btn" style={{ fontSize: 9, padding: "4px 10px", textDecoration: "none" }} href="/credentials">
+          <a className="btn" style={{ fontSize: 12, padding: "4px 10px", textDecoration: "none" }} href="/credentials">
             Configure credentials
           </a>
         </div>
       </div>
       <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 12 }}>
         {(["servers", "tools"] as const).map((t) => (
-          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 10, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
+          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
         ))}
       </div>
 
@@ -135,8 +135,8 @@ export default function MCP() {
             <input className="input-field" placeholder="description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
             <input className="input-field" placeholder="URL (e.g. http://localhost:9999/mcp)" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} />
             <div style={{ display: "flex", gap: 4 }}>
-              <button className="btn btn-accent" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!form.name.trim() || !form.url.trim()}>add</button>
-              <button className="btn" style={{ fontSize: 9, padding: "2px 10px" }} onClick={() => setAdding(false)}>cancel</button>
+              <button className="btn btn-accent" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => void addServer()} disabled={!form.name.trim() || !form.url.trim()}>add</button>
+              <button className="btn" style={{ fontSize: 12, padding: "2px 10px" }} onClick={() => setAdding(false)}>cancel</button>
             </div>
           </div>
         </div>
@@ -152,11 +152,11 @@ export default function MCP() {
                   <div style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
                   <div>
                     <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>{s.description}</div>
+                    <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{s.description}</div>
                   </div>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
                   <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
-                  <button className="btn" style={{ fontSize: 8, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); }}>remove</button>
+                  <button className="btn" style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); }}>remove</button>
                 </div>
 
                 {sel?.id === s.id && (
@@ -169,7 +169,7 @@ export default function MCP() {
                     </div>
                     {s.capabilities.length > 0 && (
                       <div style={{ marginBottom: 8 }}>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                           {s.capabilities.map((c) => <Hex key={c}>{c}</Hex>)}
                         </div>
@@ -177,12 +177,12 @@ export default function MCP() {
                     )}
                     {serverTools.length > 0 && (
                       <div>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 3 }}>TOOLS</div>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>TOOLS</div>
                         {serverTools.map((t) => (
                           <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, padding: "4px 6px", borderBottom: "1px dotted var(--rule)" }}>
                             <div>
-                              <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--accent)" }}>{t.name}</span>
-                              <span style={{ fontFamily: "var(--hand)", fontSize: 10, color: "var(--pencil)", marginLeft: 8 }}>{t.description}</span>
+                              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)" }}>{t.name}</span>
+                              <span style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginLeft: 8 }}>{t.description}</span>
                             </div>
                             {t.category && <Hex variant="muted">{t.category}</Hex>}
                           </div>
@@ -208,7 +208,7 @@ export default function MCP() {
                   <td style={{ color: "var(--accent)" }}>{t.name}</td>
                   <td style={{ color: "var(--pencil)" }}>{servers.find((s) => s.id === t.server_id)?.name ?? t.server_id}</td>
                   <td>{t.category ? <Hex variant="muted">{t.category}</Hex> : "—"}</td>
-                  <td style={{ color: "var(--pencil)", fontSize: 8 }}>{t.description}</td>
+                  <td style={{ color: "var(--pencil)", fontSize: 12 }}>{t.description}</td>
                 </tr>
               ))}
             </tbody>

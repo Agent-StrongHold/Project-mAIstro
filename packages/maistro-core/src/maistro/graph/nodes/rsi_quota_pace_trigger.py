@@ -36,7 +36,7 @@ node's own static input, and it's merged underneath the pacer-owned keys
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -95,6 +95,9 @@ class RsiQuotaPaceTriggerOut(BaseModel):
 @register_node
 class RsiQuotaPaceTriggerNode(BaseNode[RsiQuotaPaceTriggerIn, RsiQuotaPaceTriggerOut]):
     kind: ClassVar[str] = "rsi.quota_pace_trigger"
+    # The Container's usage log when there is one; an unwired node reads a
+    # fresh, empty log, which is the state a freshly-booted process has.
+    optional_authorities: ClassVar[Mapping[str, str]] = {"source": "usage_log"}
     kind_category: ClassVar = "sync.tool"
     input_schema: ClassVar[type[BaseModel]] = RsiQuotaPaceTriggerIn
     output_schema: ClassVar[type[BaseModel]] = RsiQuotaPaceTriggerOut

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib import import_module
 from pathlib import Path
 
 from config import get_settings
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
@@ -64,6 +65,8 @@ from services import foundation as foundation_service
 from services.ha_tools import get_all_confirms, get_pending_confirms, respond_confirm
 from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
+
+from maistro.observability.middleware import REQUEST_ID_HEADER, RequestIDMiddleware
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "frontend" / "dist"
@@ -165,7 +168,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     import logging as _logging
 
-    import stores
     from settings_defaults import apply_default_settings_if_needed
 
     from maistro.security.transport import assert_session_transport_is_safe
@@ -193,11 +195,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         profile="hive-conductor",
     )
 
-    try:
-        await foundation_service.start_foundation(get_settings())
-    except Exception as exc:
-        _lifespan_log.warning("foundation_start_failed: %s", exc, exc_info=True)
-        stores.initialize_stores()
+    # The state database owns provisioned accounts, sessions, settings, and
+    # registration policy. A startup failure must stop the API rather than
+    # rebinding those security-critical surfaces to a fresh in-memory registry.
+    await foundation_service.start_foundation(get_settings())
     apply_default_settings_if_needed()
     try:
         await engine_service.start_engine(get_settings())
@@ -254,6 +255,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await foundation_service.stop_foundation()
 
 
+async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
+    """A 500 must still carry the request id every other response does (#1063).
+
+    With no handler registered for this, an unhandled exception propagates
+    past `RequestIDMiddleware` (its `call_next` raises rather than
+    returning a response), straight to Starlette's outer
+    `ServerErrorMiddleware` -- which builds the 500 with no knowledge of
+    the id at all, exactly when a caller most needs it to report the
+    failure. The body/status is Starlette's own unhandled-exception
+    default (`PlainTextResponse("Internal Server Error", 500)`); only the
+    header is new. Module-level (not nested in `create_app()`) so a test
+    can exercise it against an isolated app, independent of the shared
+    production `app` singleton and whatever order other test files touch it.
+    """
+    from starlette.responses import PlainTextResponse
+
+    request_id = getattr(request.state, "request_id", "")
+    logging.getLogger("hive").exception(
+        "unhandled_exception: %s", exc, extra={"request_id": request_id}
+    )
+    response = PlainTextResponse("Internal Server Error", status_code=500)
+    if request_id:
+        response.headers[REQUEST_ID_HEADER] = request_id
+    return response
+
+
 def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="Hive Conductor", version="0.9.0", lifespan=lifespan)
@@ -263,6 +290,13 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Response headers a browser client may actually read (#1063): without
+        # this, `response.headers` in browser JS only exposes the
+        # CORS-safelisted set, so a server-generated X-Request-ID would have
+        # been sent and then invisible to any cross-origin caller that didn't
+        # supply its own -- the same hazard maistro-server's own CORS config
+        # already names for this exact header.
+        expose_headers=[REQUEST_ID_HEADER],
     )
     app.add_middleware(RequestLogMiddleware)
     # Privilege boundary — added before Auth so Auth wraps it and the
@@ -272,6 +306,14 @@ def create_app() -> FastAPI:
     # application rewiring (#63, the disposition root this fulfils).
     app.add_middleware(PrivilegeMiddleware)
     app.add_middleware(AuthMiddleware)
+
+    # Request correlation — wraps Auth/Privilege/RequestLog/CORS and the route
+    # handler, so a request id is bound onto the canonical execution context
+    # (#1063) before any of them run: forwarding to maistro-server's own
+    # /tasks call, and everything the handler logs, can see it. Missing,
+    # invalid, or duplicate `X-Request-ID` values become a fresh server id
+    # (see `maistro.observability.middleware`), never an unvalidated pass-through.
+    app.add_middleware(RequestIDMiddleware)
 
     # Security headers — the true outermost middleware (added last), so
     # headers land on every response, including early rejections from the
@@ -291,6 +333,8 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=503, content={"detail": f"settings were not persisted: {exc}"}
         )
+
+    app.add_exception_handler(Exception, unhandled_exception_handler)
 
     app.include_router(health.router)
     app.include_router(auth.router, prefix="/v1/auth")
@@ -373,9 +417,15 @@ def create_app() -> FastAPI:
             # and the "v1/" guard above never fires for such a path. `..` traversal
             # is the other half. resolve() collapses both (and any symlink escape),
             # and is_relative_to() is the actual boundary check.
-            fp = (static_root / full_path).resolve()
-            if fp.is_relative_to(static_root) and fp.is_file():
-                return FileResponse(fp)
+            # Two boundary checks on purpose: the normalized string check is
+            # the containment a scanner can follow, and `resolve()` closes the
+            # symlink escape the string check cannot see.
+            root_text = os.path.normpath(str(static_root))
+            candidate = os.path.normpath(os.path.join(root_text, full_path))
+            if candidate.startswith(root_text + os.sep):
+                fp = Path(candidate).resolve()
+                if fp.is_relative_to(static_root) and fp.is_file():
+                    return FileResponse(fp)
             return FileResponse(static_root / "index.html")
 
     return app

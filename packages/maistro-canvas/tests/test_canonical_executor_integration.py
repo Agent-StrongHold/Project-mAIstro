@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
@@ -15,6 +18,7 @@ from maistro_canvas.canvas.canonical_execution import (
     canonical_run_id,
     correlate_run,
 )
+from maistro_canvas.canvas.composition import build_canvas_router, build_canvas_runtime
 from maistro_canvas.canvas.executor import CanvasExecutor
 from maistro_canvas.canvas.runner import CanvasJobRunner
 from maistro_canvas.protocols import ImageData
@@ -108,6 +112,17 @@ class _ImageClient:
         return ImageData(width=64, height=64, url="image://refined")
 
 
+class _FailThenSucceedImageClient(_ImageClient):
+    def __init__(self) -> None:
+        self.generate_calls = 0
+
+    async def generate(self, **kwargs: object) -> list[ImageData]:
+        self.generate_calls += 1
+        if self.generate_calls == 1:
+            raise RuntimeError("503 provider body contains credential=secret")
+        return await super().generate(**kwargs)
+
+
 class _Registry:
     def is_registered(self, model_id: str) -> bool:
         return model_id == "draft-model"
@@ -161,23 +176,83 @@ class _FailingRunnerExecutor:
         return "Generation failed: provider service temporarily unavailable."
 
 
-async def test_generation_request_and_runner_are_visible_on_canonical_spine() -> None:
+async def test_production_router_factory_admits_and_runs_canonical_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mounted production factory cannot bypass the canonical adapter."""
+    monkeypatch.setenv("CANVAS_API_TOKEN", "canvas-test-token")
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
     runs = InMemoryRunStore(project_store=projects)
-    canonical = CanvasCanonicalExecution(
-        runs,
-        workspace_id="workspace-1",
-        project_id=root.project_id,
-    )
     store = _CanvasStore()
-    executor = CanvasExecutor(
+    store.ORG = "default"
+    store.canvas.org_id = store.ORG
+    router = build_canvas_router(
         store=store,  # type: ignore[arg-type]
         image_client=_ImageClient(),  # type: ignore[arg-type]
         model_registry=_Registry(),
         warden=_Warden(),
-        canonical_execution=canonical,
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+        compositor=object(),  # type: ignore[arg-type]
+        poll_interval=0.001,
     )
+    app = FastAPI()
+    app.include_router(router, prefix="/api/canvas")
+
+    with TestClient(
+        app,
+        raise_server_exceptions=True,
+        headers={"Authorization": "Bearer canvas-test-token"},
+    ) as client:
+        response = client.post(
+            "/api/canvas/canvas-1/layers/layer-1/generate",
+            json={"prompt": "a safe landscape"},
+        )
+        assert response.status_code == 202, response.text
+        job_id = response.json()["job_id"]
+        for _ in range(500):
+            job = await store.get_job(job_id, org_id=_CanvasStore.ORG)
+            if job is not None and job.status == JobStatus.DONE:
+                break
+            await asyncio.sleep(0.001)
+        assert job is not None
+        assert job.status == JobStatus.DONE
+
+    job = await store.get_job(job_id, org_id=_CanvasStore.ORG)
+    assert job is not None
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    admitted = await runs.get_run(run_id)
+    assert admitted is not None
+    assert admitted.actor_principal_id == "default"
+
+    assert job is not None
+    assert job.status == JobStatus.DONE
+    assert job.result_paths == ["image://generated"]
+    node_runs = await runs.list_node_runs(run_id)
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
+
+
+async def test_generation_request_and_runner_are_visible_on_canonical_spine() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    store = _CanvasStore()
+    runtime = build_canvas_runtime(
+        store=store,
+        image_client=_ImageClient(),
+        model_registry=_Registry(),
+        warden=_Warden(),
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    executor = runtime.executor
 
     job = await executor.start_job(
         org_id=_CanvasStore.ORG,
@@ -194,7 +269,7 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     assert admitted.status is RunStatus.QUEUED
     assert admitted.actor_principal_id == "user-1"
 
-    runner = CanvasJobRunner(store=store, executor=executor)
+    runner = runtime.runner
     assert await runner.tick_once() is True
 
     receipt = await store.get_job(job.id, org_id=_CanvasStore.ORG)
@@ -212,6 +287,53 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     completed = await runs.get_run(run_id)
     assert completed is not None
     assert completed.status is RunStatus.COMPLETED
+
+
+async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    canonical = CanvasCanonicalExecution(
+        runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_FailThenSucceedImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        canonical_execution=canonical,
+    )
+
+    job = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+    )
+    job.max_attempts = 2
+
+    runner = CanvasJobRunner(store=store, executor=executor)
+    assert await runner.tick_once() is True
+    assert job.status == JobStatus.PENDING
+
+    assert await runner.tick_once() is True
+    assert job.status == JobStatus.DONE
+    assert job.result_paths == ["image://generated"]
+
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    node_runs = await runs.list_node_runs(run_id)
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [
+        AttemptStatus.FAILED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert attempts[0].error == "Generation failed: provider service temporarily unavailable."
+    assert "credential=secret" not in (attempts[0].error or "")
 
 
 async def test_receipt_persistence_failure_compensates_admitted_run() -> None:

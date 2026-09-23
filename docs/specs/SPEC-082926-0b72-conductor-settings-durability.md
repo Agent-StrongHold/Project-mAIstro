@@ -46,7 +46,7 @@ owners:
 
 # SPEC-082926-0b72: Conductor Settings Durability
 
-- **Status:** Active
+- **Status:** AC Defined
 - **Decision:** ADR-082926-0b72
 - **Closes:** #334
 

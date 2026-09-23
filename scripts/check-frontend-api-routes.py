@@ -361,7 +361,9 @@ def registered_routes() -> tuple[dict[str, frozenset[str]], list[str]]:
         if cause is not None
     ]
     table: dict[str, set[str]] = {}
-    for route in app.routes:
+    from maistro_server.api.route_table import iter_effective_routes
+
+    for route in iter_effective_routes(app.routes):
         path = getattr(route, "path", None)
         if path is None:
             continue

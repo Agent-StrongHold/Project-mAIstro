@@ -1,4 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { fallbackMessage } from "../lib/api";
+import { randomId } from "../lib/ids";
+import { useWorkspaces } from "../context/WorkspaceContext";
 
 type Role = "user" | "assistant";
 type StepStatus = "running" | "done" | "error";
@@ -21,11 +24,74 @@ interface Message {
   timestamp: Date;
 }
 
+/** The brief so far, as the chat stream's `brief` event carries it
+ * (SPEC-091726-7c2a): the interview's summary and next question while it is
+ * open, or the draft once the person committed. */
+interface BriefField {
+  key: string;
+  label: string;
+  value: string | null;
+  source: "user" | "verbatim" | "record" | "assumed" | "open";
+}
+interface BriefView {
+  event: string;
+  summary: { known: number; needed: number; ready: boolean; fields: BriefField[]; notes: string[] } | null;
+  question: { key: string; label: string; question: string; can_assume: boolean } | null;
+  draft?: { fields: Record<string, string>; assumed: string[]; notes: string[] };
+}
+
 interface Session {
   id: string;
   title: string;
   messages: Message[];
   createdAt: Date;
+  brief?: BriefView | null;
+}
+
+const SOURCE_LABEL: Record<BriefField["source"], string> = {
+  user: "you",
+  verbatim: "as said",
+  record: "from record",
+  assumed: "assumed",
+  open: "open",
+};
+
+function BriefSoFar({ brief }: { brief: BriefView }) {
+  if (brief.draft) {
+    return (
+      <aside className="brief-panel card" aria-label="Brief draft">
+        <div className="brief-panel-head">
+          <span>Draft ready</span>
+          <span className="brief-panel-meta">nothing written yet</span>
+        </div>
+        {Object.entries(brief.draft.fields).map(([key, value]) => (
+          <div key={key} className={`brief-row${brief.draft?.assumed.includes(key) ? " brief-row--assumed" : ""}`}>
+            <span className="brief-row-label">{key}</span>
+            <span className="brief-row-value">{value}</span>
+            <span className="brief-tag">{brief.draft?.assumed.includes(key) ? "assumed" : "known"}</span>
+          </div>
+        ))}
+      </aside>
+    );
+  }
+  if (!brief.summary) return null;
+  return (
+    <aside className="brief-panel card" aria-label="Brief so far" aria-live="polite">
+      <div className="brief-panel-head">
+        <span>Brief so far</span>
+        <span className="brief-panel-meta">
+          {brief.summary.known} of {brief.summary.needed} needed · nothing written yet
+        </span>
+      </div>
+      {brief.summary.fields.map((f) => (
+        <div key={f.key} className={`brief-row brief-row--${f.source}`}>
+          <span className="brief-row-label">{f.label}</span>
+          <span className="brief-row-value">{f.value ?? "not yet"}</span>
+          <span className="brief-tag">{SOURCE_LABEL[f.source]}</span>
+        </div>
+      ))}
+    </aside>
+  );
 }
 
 const SUGGESTED_PROMPTS_HEADING = "Chat, then turn it into an agent, a DAG, or a recurring workflow";
@@ -39,7 +105,10 @@ const SUGGESTED_PROMPTS = [
 const HISTORY_LIMIT = 20;
 
 function generateId() {
-  return Math.random().toString(36).slice(2, 10);
+  // Ids name messages and sessions that later requests refer back to, so
+  // they come from the CSPRNG rather than Math.random -- via `randomId`,
+  // which works over plain HTTP too (see lib/ids.ts).
+  return randomId();
 }
 
 function formatTime(date: Date) {
@@ -175,6 +244,7 @@ function ToolSteps({ steps }: { steps: ToolStep[] }) {
 }
 
 export default function ChatPage() {
+  const { activeWorkspaceId } = useWorkspaces();
   const suggestedPromptsHeading = SUGGESTED_PROMPTS_HEADING;
   const suggestedPrompts = SUGGESTED_PROMPTS;
   const [models, setModels] = useState<string[]>([]);
@@ -264,9 +334,11 @@ export default function ChatPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
-          body: JSON.stringify({ model, messages: outbound }),
+          // The active workspace lets the backend answer a work request with
+          // the brief interview instead of the model (SPEC-091726-7c2a).
+          body: JSON.stringify({ model, messages: outbound, workspace_id: activeWorkspaceId ?? undefined }),
         });
-        if (!res.ok || !res.body) throw new Error(`stream failed: ${res.status}`);
+        if (!res.ok || !res.body) throw new Error(fallbackMessage(res.status));
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -291,7 +363,12 @@ export default function ChatPage() {
             } catch {
               continue;
             }
-            if (evt.type === "status") {
+            if (evt.type === "brief") {
+              // The interview's state after this turn: open (summary + question),
+              // drafted (the draft, nothing written), or gone (dropped).
+              const view: BriefView | null = evt.interview || evt.draft ? evt : null;
+              updateSession(sessionId, (s) => ({ ...s, brief: view }));
+            } else if (evt.type === "status") {
               patchAssistant((m) => ({ ...m, status: evt.message }));
             } else if (evt.type === "delta") {
               if (evt.content) {
@@ -347,7 +424,7 @@ export default function ChatPage() {
         setTimeout(() => textareaRef.current?.focus(), 0);
       }
     },
-    [activeId, streaming, model, sessions, updateSession],
+    [activeId, streaming, model, sessions, updateSession, activeWorkspaceId],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -439,6 +516,7 @@ export default function ChatPage() {
           </div>
         </header>
         <main className="chat-main">
+          {activeSession.brief && <BriefSoFar brief={activeSession.brief} />}
           <div role="log" aria-live="polite" aria-label="Chat messages" className="message-list">
             {isEmpty && (
               <div className="empty-state">

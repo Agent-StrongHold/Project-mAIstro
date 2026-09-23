@@ -28,10 +28,16 @@ from maistro.capabilities.invocation import (
     InMemoryInvocationStore,
     Invocation,
     InvocationExecutionService,
+    InvocationReconciliation,
+    InvocationReconciliationEvidence,
     InvocationStatus,
+    ProviderReconciliationAdapter,
+    ReconciliationDisposition,
+    StaleInvocationUpdate,
     UnsafeEffectRetry,
 )
-from maistro.capabilities.invocation_store import PgInvocationStore, SqliteInvocationStore
+from maistro.capabilities.invocation_store import SqliteInvocationStore
+from maistro.capabilities.pg_invocation_store import PgInvocationStore
 from maistro.capabilities.protocols import CapabilityProvider
 from maistro.capabilities.providers.harness_safety import (
     ActionGate,
@@ -92,11 +98,15 @@ __all__ = [
     "InvocationDenied",
     "InvocationExecutionService",
     "InvocationPolicyContext",
+    "InvocationReconciliation",
+    "InvocationReconciliationEvidence",
     "InvocationStatus",
     "OpencodeHarnessRunner",
     "PgBindingStore",
     "PgInvocationStore",
     "ProviderHealth",
+    "ProviderReconciliationAdapter",
+    "ReconciliationDisposition",
     "ResolvedBinding",
     "SafeHarnessRunner",
     "SandboxExec",
@@ -104,6 +114,7 @@ __all__ = [
     "SqliteApprovalStore",
     "SqliteBindingStore",
     "SqliteInvocationStore",
+    "StaleInvocationUpdate",
     "SubprocessHarnessRunner",
     "Unavailable",
     "UnsafeEffectRetry",

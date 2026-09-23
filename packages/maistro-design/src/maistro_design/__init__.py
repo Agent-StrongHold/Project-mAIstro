@@ -53,6 +53,7 @@ from maistro_design.trust import (
 from maistro_design.types import (
     ArtifactKind,
     ArtifactNode,
+    CatalogImportPolicyError,
     ColorToken,
     DesignError,
     DesignOutput,
@@ -80,6 +81,7 @@ __all__ = [
     "NATIVE_SLOTS",
     "ArtifactKind",
     "ArtifactNode",
+    "CatalogImportPolicyError",
     "ColorToken",
     "DesignEngine",
     "DesignEngineProtocol",

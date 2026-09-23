@@ -25,6 +25,12 @@ MACOS_RUNTIME="${MAISTRO_MACOS_RUNTIME:-}"
 INSTALL_CLI="${MAISTRO_INSTALL_CLI:-1}"
 OPEN_BROWSER="${MAISTRO_OPEN_BROWSER:-1}"
 
+# Docker API floor the embedded docker CLI can negotiate (Engine 25 exposes
+# API 1.44; Engine 24 tops out at 1.43). The engine images COPY the CLI from
+# docker:29-cli, whose floor rose with the go1.26.8 toolchain rebuild that
+# fixed CVE-2025-68121 (+21 HIGHs) in the previously embedded go1.22.11 CLI.
+MIN_DOCKER_API_VERSION="1.44"
+
 # Container tag the generated image_pull compose pins to (E5/#298). get.sh
 # exports this to match the release it just checked out; when install.sh is run
 # directly out of a tree, derive it from the tag that tree is sitting on so a
@@ -571,6 +577,46 @@ docker_daemon_ready() {
     command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
+# Numeric dotted-version comparison: true when $1 >= $2. Pure bash on purpose —
+# macOS ships a sort too old for `sort -V`, and these are always short API
+# versions like "1.43".
+version_ge() {
+    local -a left right
+    IFS=. read -r -a left <<< "$1"
+    IFS=. read -r -a right <<< "$2"
+    local segment l r
+    for segment in 0 1 2; do
+        l="${left[$segment]:-0}"
+        r="${right[$segment]:-0}"
+        [[ "$l" =~ ^[0-9]+$ ]] || l=0
+        [[ "$r" =~ ^[0-9]+$ ]] || r=0
+        if (( l > r )); then return 0; fi
+        if (( l < r )); then return 1; fi
+    done
+    return 0
+}
+
+# The engine images embed the docker CLI v29, which only negotiates API 1.44+ —
+# a daemon older than Engine 25 would break the builder sandboxes mid-install
+# with a cryptic negotiation error. Refuse it here instead. Skips quietly when
+# there is no docker CLI (podman-only hosts) or no answering daemon — the
+# bootstrap paths already report those.
+ensure_docker_engine_supported() {
+    command -v docker >/dev/null 2>&1 || return 0
+
+    local api
+    api="$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null || true)"
+    if [[ -z "$api" ]]; then
+        return 0
+    fi
+
+    if version_ge "$api" "$MIN_DOCKER_API_VERSION"; then
+        ok "Docker Engine API $api meets the required minimum $MIN_DOCKER_API_VERSION."
+    else
+        fail "Docker Engine 25+ (API $MIN_DOCKER_API_VERSION+) required — the embedded docker CLI (v29) cannot negotiate with older daemons (detected API $api). Upgrade Docker Engine, then re-run."
+    fi
+}
+
 ensure_homebrew() {
     if command -v brew >/dev/null 2>&1; then
         ok "Homebrew found: $(brew --version | head -n 1)"
@@ -929,6 +975,7 @@ start_engine() {
     fi
 
     ensure_compose_runtime
+    ensure_docker_engine_supported
     record_docker_sock
     report_arch
     compose_files

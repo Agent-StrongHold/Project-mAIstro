@@ -103,6 +103,7 @@ cli_sessions: JsonStore = JsonStore("cli_sessions")
 users: ModelStore = ModelStore("users", HiveUser)
 sessions: JsonStore = JsonStore("sessions")
 program_contexts: JsonStore = JsonStore("program_contexts")
+brief_interviews: JsonStore = JsonStore("brief_interviews")
 work_item_drafts: JsonStore = JsonStore("work_item_drafts")
 dags: JsonStore = JsonStore("dags")
 messages: JsonStore = JsonStore("messages")
@@ -150,6 +151,7 @@ _all_json_stores: list[JsonStore] = [
     cli_sessions,
     sessions,
     program_contexts,
+    brief_interviews,
     work_item_drafts,
     dags,
     messages,

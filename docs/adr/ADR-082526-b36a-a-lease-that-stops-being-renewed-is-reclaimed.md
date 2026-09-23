@@ -122,6 +122,19 @@ Attempt terminalizing would race the terminal write. A failed renewal stops the 
 rather than killing the work — the store may be briefly unreachable, and the correct response
 is the same as death, which is safe.
 
+> **Amended 2026-08-28 (#1244): only a *permanent* renewal refusal stops the heartbeat.**
+> That sentence was wrong about what a failed renewal means. Death stops the executor;
+> stopping only the heartbeat while the executor keeps running in this process is not death
+> — it is a lapse through nobody's death, and the lease then makes a live Attempt
+> reclaimable while its work continues, which is the double-execution window: recovery
+> redispatches work whose physical try never stopped. So: a permanent refusal
+> (`AttemptNotFound`, `InvalidLifecycleTransition`, `StaleLeaseRenewal` — terminalized,
+> lapsed or superseded) still ends the heartbeat, because no retry can ever succeed. Any
+> other failure — a store blip — costs one tick, not the lease: the cadence is TTL/3, so
+> the next tick renews in time and liveness keeps being proven. Renewals failing for a
+> full TTL still lapse the lease, and that remains the genuine-death outcome reclamation
+> exists for.
+
 ### No TTL means no reclamation, ever
 
 An Attempt with no lease, or a lease with no `expires_at`, is never expired. This is what keeps

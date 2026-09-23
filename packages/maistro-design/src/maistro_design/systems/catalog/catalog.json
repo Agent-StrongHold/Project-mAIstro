@@ -2360,6 +2360,22 @@
     "scan_external_urls": []
   },
   {
+    "slug": "workspace",
+    "name": "Workspace",
+    "category": "First-party product surface",
+    "description": "First-party design system for the Workspace product surface: frosted glass over a persona bloom, a fixed four-colour actor grammar, four honest state faces, cited why-panels, three undo outcomes and a 12px floor.",
+    "tier": "bundled",
+    "trust_tier": "t1",
+    "license": "Apache-2.0",
+    "source": {
+      "repo": "Agent-StrongHold/Project-mAIstro",
+      "path": "packages/maistro-design/src/maistro_design/systems/bundled/workspace",
+      "ref": "first-party"
+    },
+    "scan_status": "clean",
+    "scan_external_urls": []
+  },
+  {
     "slug": "x-ai",
     "name": "xAI",
     "category": "AI & LLM",

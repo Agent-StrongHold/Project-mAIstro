@@ -27,7 +27,6 @@ from maistro.builders.graph import PipelineGraph, PipelineNode, RunContext
 from maistro.builders.graph_executor import (
     CanonicalGraphPipelineExecutor,
     DispatchResult,
-    GraphPipelineExecutor,
     PipelineDispatcher,
 )
 from maistro.builders.orchestrator import BuildersOrchestrator, RunState
@@ -63,7 +62,6 @@ __all__ = [
     "DagRun",
     "DispatchResult",
     "Gate",
-    "GraphPipelineExecutor",
     "InMemoryArtifactStore",
     "InMemoryEventBus",
     "InMemoryGitHubService",

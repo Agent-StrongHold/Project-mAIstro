@@ -26,7 +26,7 @@ export function PageHeader({ title, subtitle, actions, helpHref }: { title: stri
               display: "inline-flex", alignItems: "center", justifyContent: "center",
               width: 20, height: 20, borderRadius: "50%",
               border: "1.3px solid var(--pencil)", color: "var(--pencil)",
-              fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700,
+              fontFamily: "var(--mono)", fontSize: 12, fontWeight: 700,
               textDecoration: "none", lineHeight: 1, flexShrink: 0,
             }}
             title="Learn more"
@@ -175,7 +175,7 @@ export function Modal({
           </div>
           <div style={{ padding: 16 }}>
             {description ? (
-              <div id={descriptionId} style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink)", marginBottom: 16 }}>{description}</div>
+              <div id={descriptionId} style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)", marginBottom: 16 }}>{description}</div>
             ) : null}
             {children}
           </div>
@@ -210,12 +210,20 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={addToast}>
       {children}
-      <div style={{ position: "fixed", bottom: 16, right: 16, zIndex: 2000, display: "flex", flexDirection: "column", gap: 6 }}>
+      {/* A live region (WCAG 4.1.3, #1405): a toast is a status message, so
+          it is announced without taking focus. The region is always in the
+          DOM so assistive technology has registered it before the first
+          toast lands; only its contents change. */}
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ position: "fixed", bottom: 16, right: 16, zIndex: 2000, display: "flex", flexDirection: "column", gap: 6 }}
+      >
         {toasts.map((t) => (
           <div key={t.id} style={{
             background: "var(--paper)", border: `1.3px solid ${colorMap[t.type] || colorMap.ok}`,
             borderLeftWidth: 4, borderRadius: 5, padding: "8px 14px",
-            fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink)",
+            fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)",
             boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
           }}>
             {t.msg}
@@ -238,7 +246,7 @@ export function Tabs({ tabs, active, onChange }: { tabs: string[]; active: numbe
           style={{
             background: "none", border: "none",
             borderBottom: i === active ? "2px solid var(--accent)" : "2px solid transparent",
-            padding: "6px 14px", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10,
+            padding: "6px 14px", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12,
             color: i === active ? "var(--ink)" : "var(--pencil)", fontWeight: i === active ? 600 : 400,
           }}
         >
@@ -260,7 +268,7 @@ export function EmptyState({ icon, title, action, onAction }: { icon?: string; t
         <button onClick={onAction} style={{
           background: "var(--accent)", color: "var(--paper)",
           border: "1.3px solid var(--accent)", borderRadius: 4,
-          padding: "6px 16px", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10,
+          padding: "6px 16px", cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12,
         }}>
           {action}
         </button>
@@ -279,7 +287,7 @@ export function SearchInput({ value, onChange, placeholder }: { value: string; o
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder || "Search..."}
-        style={{ background: "transparent", border: "none", outline: "none", fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)", width: "100%" }}
+        style={{ background: "transparent", border: "none", outline: "none", fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)", width: "100%" }}
       />
     </div>
   );
@@ -325,14 +333,14 @@ export type FieldProps = {
 const FIELD_LABEL: CSSProperties = {
   display: "block",
   fontFamily: "var(--mono)",
-  fontSize: 9,
+  fontSize: 12,
   color: "var(--pencil)",
   marginBottom: 3,
 };
 
 const FIELD_NOTE: CSSProperties = {
   fontFamily: "var(--mono)",
-  fontSize: 9,
+  fontSize: 12,
   color: "var(--pencil)",
   marginTop: 3,
 };
@@ -485,7 +493,7 @@ export function SecretField({
           style={{
             background: "none", border: "1.3px solid var(--rule)", borderRadius: 4,
             padding: "3px 8px", cursor: "pointer", color: "var(--pencil)",
-            fontFamily: "var(--mono)", fontSize: 9, flexShrink: 0,
+            fontFamily: "var(--mono)", fontSize: 12, flexShrink: 0,
           }}
         >
           {revealed ? "hide" : "show"}
@@ -506,8 +514,8 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, message }: { op
     // read out when the dialog opens, not only if focus happens to reach it.
     <Modal open={open} onClose={onClose} title={title} description={message}>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-        <button onClick={onClose} style={{ border: "1.3px solid var(--ink)", background: "var(--paper)", color: "var(--ink)", padding: "5px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10 }}>Cancel</button>
-        <button onClick={() => { onConfirm(); onClose(); }} style={{ border: "1.3px solid var(--danger, #c4452a)", background: "var(--danger, #c4452a)", color: "var(--paper)", padding: "5px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10 }}>Confirm</button>
+        <button onClick={onClose} style={{ border: "1.3px solid var(--ink)", background: "var(--paper)", color: "var(--ink)", padding: "5px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12 }}>Cancel</button>
+        <button onClick={() => { onConfirm(); onClose(); }} style={{ border: "1.3px solid var(--danger, #c4452a)", background: "var(--danger, #c4452a)", color: "var(--paper)", padding: "5px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12 }}>Confirm</button>
       </div>
     </Modal>
   );
@@ -517,10 +525,11 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, message }: { op
 
 export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
-    <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink)" }}>
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer", fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)" }}>
       <button
         role="switch"
         aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
         style={{
           width: 28, height: 16, borderRadius: 8, border: "none", padding: 0,
@@ -554,7 +563,7 @@ export function TrustBadge({ tier }: { tier: "T0" | "T1" | "T2" | "T3" | "SKULL"
     <span style={{
       display: "inline-flex", alignItems: "center", justifyContent: "center",
       padding: "3px 10px", minWidth: 40, height: 24,
-      fontFamily: "var(--mono)", fontSize: 8, fontWeight: 600,
+      fontFamily: "var(--mono)", fontSize: 12, fontWeight: 600,
       letterSpacing: "0.03em",
       clipPath: "polygon(10% 0%, 90% 0%, 100% 50%, 90% 100%, 10% 100%, 0% 50%)",
       background: c.bg, color: c.fg, textTransform: "uppercase",

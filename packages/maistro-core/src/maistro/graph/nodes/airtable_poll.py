@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -57,6 +58,9 @@ class AirtablePollNode(BaseNode[AirtablePollIn, AirtablePollOut]):
     idempotent: ClassVar[bool] = True
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Airtable: poll table"
+    # The resolver must hand over the container's Binding/Invocation authority;
+    # the constructor default is a process-wide context that authorizes nothing.
+    optional_authorities: ClassVar[Mapping[str, str]] = {"effect_context": "effect_context"}
     description: ClassVar[str] = (
         "Read records through a pre-authorized Airtable capability Binding. "
         "Credentials are resolved from the Binding's credential references."

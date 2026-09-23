@@ -280,7 +280,7 @@ export default function Docs() {
       <div className="page-header">
         <div>
           <h1 style={{ fontFamily: "var(--hand)", fontSize: 28, fontWeight: 700 }}>Documentation</h1>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--pencil)", marginTop: 4 }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
             Everything you need to know about Hive Conductor
           </div>
         </div>
@@ -309,7 +309,7 @@ export default function Docs() {
               {isOpen && (
                 <div style={{
                   padding: "0 4px 14px",
-                  fontFamily: "var(--mono)", fontSize: 11,
+                  fontFamily: "var(--mono)", fontSize: 12,
                   lineHeight: 1.7, color: "var(--ink)",
                   whiteSpace: "pre-wrap",
                 }}>

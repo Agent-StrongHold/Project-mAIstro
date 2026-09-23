@@ -8,12 +8,13 @@ import {
 } from "react";
 import { escapeDeckText, sanitizeDeckMarkup } from "../lib/deckSanitizer";
 import { DECK_TEMPLATES } from "../lib/deckTemplates";
+import { randomId } from "../lib/ids";
 
 const C = { bg: "#0a0914", card: "#11101e", border: "rgba(196,166,97,0.14)", gold: "#c4a661", ink: "#f3f0fb", muted: "#8b83a8", dim: "#5a5478", acc: "#a78bfa", danger: "#e87c7c" };
 
 interface Slide { id: string; html: string; notes: string; }
 
-function uid() { return Math.random().toString(36).slice(2, 10); }
+function uid() { return randomId(); }
 
 function safeSlide(slide: Slide): Slide {
   return { ...slide, html: sanitizeDeckMarkup(slide.html) };
@@ -96,7 +97,7 @@ function DeckChat({ slides, onUpdateSlides, activeIdx }: { slides: Slide[]; onUp
       {msgs.length > 0 && (
         <div ref={ref} style={{ maxHeight: 150, overflowY: "auto", marginBottom: 8, display: "flex", flexDirection: "column", gap: 4 }}>
           {msgs.slice(-6).map((m, i) => (
-            <div key={i} style={{ fontSize: "0.65rem", color: m.role === "user" ? C.gold : C.muted, lineHeight: 1.4 }}>
+            <div key={i} style={{ fontSize: "var(--text-floor)", color: m.role === "user" ? C.gold : C.muted, lineHeight: 1.4 }}>
               <span style={{ fontWeight: 600 }}>{m.role === "user" ? "You" : "✦"}: </span>
               {m.content.replace(/<slide[^>]*>[\s\S]*?<\/slide>/gi, "[slide generated]").slice(0, 200)}
             </div>
@@ -107,8 +108,8 @@ function DeckChat({ slides, onUpdateSlides, activeIdx }: { slides: Slide[]; onUp
         <input value={value} onChange={e => setValue(e.target.value)}
           onKeyDown={e => e.key === "Enter" && submit()}
           placeholder="✦ Describe slides to generate, or ask to edit..."
-          style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.ink, fontSize: "0.72rem", outline: "none" }} />
-        <button onClick={submit} disabled={loading} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: C.acc, color: "#fff", fontSize: "0.68rem", fontWeight: 600, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+          style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.ink, fontSize: "var(--text-floor)", outline: "none" }} />
+        <button onClick={submit} disabled={loading} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: C.acc, color: "#fff", fontSize: "var(--text-floor)", fontWeight: 600, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
           {loading ? "..." : "Generate"}
         </button>
       </div>
@@ -209,7 +210,7 @@ ${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join
               dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(s.html) }} />
           ))}
         </div>
-        <button onClick={() => setPresenting(false)} style={{ position: "fixed", top: 12, right: 12, background: "rgba(0,0,0,0.6)", border: "none", color: C.ink, padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: "0.7rem" }}>Exit (Esc)</button>
+        <button onClick={() => setPresenting(false)} style={{ position: "fixed", top: 12, right: 12, background: "rgba(0,0,0,0.6)", border: "none", color: C.ink, padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: "var(--text-floor)" }}>Exit (Esc)</button>
       </div>
     );
   }
@@ -219,47 +220,47 @@ ${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <input value={title} onChange={e => setTitle(e.target.value)} style={{ background: "transparent", border: "none", color: C.ink, fontSize: "1.2rem", fontWeight: 700, fontFamily: "Georgia, serif", outline: "none", width: 300 }} />
-          <span style={{ fontSize: "0.6rem", color: C.muted }}>{slides.length} slides</span>
+          <span style={{ fontSize: "var(--text-floor)", color: C.muted }}>{slides.length} slides</span>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={() => setPresenting(true)} style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: C.acc, color: "#fff", fontSize: "0.68rem", fontWeight: 600, cursor: "pointer" }}>Present</button>
-          <button onClick={exportHTML} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.ink, fontSize: "0.68rem", cursor: "pointer" }}>Export HTML</button>
-          <button onClick={exportPDF} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.ink, fontSize: "0.68rem", cursor: "pointer" }}>Print/PDF</button>
+          <button onClick={() => setPresenting(true)} style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: C.acc, color: "#fff", fontSize: "var(--text-floor)", fontWeight: 600, cursor: "pointer" }}>Present</button>
+          <button onClick={exportHTML} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.ink, fontSize: "var(--text-floor)", cursor: "pointer" }}>Export HTML</button>
+          <button onClick={exportPDF} style={{ padding: "5px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.ink, fontSize: "var(--text-floor)", cursor: "pointer" }}>Print/PDF</button>
         </div>
       </div>
 
       <div style={{ display: "flex", gap: "1rem" }}>
         <div style={{ width: 140, flexShrink: 0 }}>
           {slides.map((s, i) => (
-            <div key={s.id} onClick={() => setActive(i)} style={{ padding: "8px 10px", borderRadius: 8, marginBottom: 4, cursor: "pointer", border: `1px solid ${i === active ? C.acc : C.border}`, background: i === active ? "rgba(167,139,250,0.08)" : C.card, fontSize: "0.65rem", color: i === active ? C.ink : C.muted }}>
+            <div key={s.id} onClick={() => setActive(i)} style={{ padding: "8px 10px", borderRadius: 8, marginBottom: 4, cursor: "pointer", border: `1px solid ${i === active ? C.acc : C.border}`, background: i === active ? "rgba(167,139,250,0.08)" : C.card, fontSize: "var(--text-floor)", color: i === active ? C.ink : C.muted }}>
               Slide {i + 1}
             </div>
           ))}
-          <button onClick={addSlide} style={{ width: "100%", padding: "6px", borderRadius: 6, border: `1px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: "0.65rem", cursor: "pointer", marginTop: 4 }}>+ Add Slide</button>
+          <button onClick={addSlide} style={{ width: "100%", padding: "6px", borderRadius: 6, border: `1px dashed ${C.border}`, background: "transparent", color: C.muted, fontSize: "var(--text-floor)", cursor: "pointer", marginTop: 4 }}>+ Add Slide</button>
         </div>
 
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
-            <button onClick={() => moveSlide(active, -1)} disabled={active === 0} style={{ background: "none", border: "none", color: active === 0 ? C.dim : C.muted, cursor: "pointer", fontSize: "0.7rem" }}>◀ Move</button>
-            <button onClick={() => moveSlide(active, 1)} disabled={active === slides.length - 1} style={{ background: "none", border: "none", color: active === slides.length - 1 ? C.dim : C.muted, cursor: "pointer", fontSize: "0.7rem" }}>Move ▶</button>
-            <button onClick={() => removeSlide(active)} disabled={slides.length <= 1} style={{ background: "none", border: "none", color: slides.length <= 1 ? C.dim : C.danger, cursor: "pointer", fontSize: "0.7rem", marginLeft: "auto" }}>Delete</button>
+            <button onClick={() => moveSlide(active, -1)} disabled={active === 0} style={{ background: "none", border: "none", color: active === 0 ? C.dim : C.muted, cursor: "pointer", fontSize: "var(--text-floor)" }}>◀ Move</button>
+            <button onClick={() => moveSlide(active, 1)} disabled={active === slides.length - 1} style={{ background: "none", border: "none", color: active === slides.length - 1 ? C.dim : C.muted, cursor: "pointer", fontSize: "var(--text-floor)" }}>Move ▶</button>
+            <button onClick={() => removeSlide(active)} disabled={slides.length <= 1} style={{ background: "none", border: "none", color: slides.length <= 1 ? C.dim : C.danger, cursor: "pointer", fontSize: "var(--text-floor)", marginLeft: "auto" }}>Delete</button>
           </div>
           <div ref={previewRef} contentEditable suppressContentEditableWarning
             onPaste={handlePreviewPaste}
             onDrop={handlePreviewDrop}
             onBlur={e => updateSlide(active, e.currentTarget.innerHTML)}
             dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
-            style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "0.7rem" }} />
+            style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "var(--text-floor)" }} />
           <textarea value={slides[active]?.notes || ""} onChange={e => setSlides(s => s.map((sl, i) => i === active ? { ...sl, notes: e.target.value } : sl))}
             placeholder="Speaker notes..."
-            style={{ width: "100%", marginTop: 8, minHeight: 60, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.muted, fontSize: "0.72rem", resize: "vertical", outline: "none", fontFamily: "inherit" }} />
+            style={{ width: "100%", marginTop: 8, minHeight: 60, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.muted, fontSize: "var(--text-floor)", resize: "vertical", outline: "none", fontFamily: "inherit" }} />
 
           <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: "0.6rem", color: C.muted, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Templates</div>
+            <div style={{ fontSize: "var(--text-floor)", color: C.muted, marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Templates</div>
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               {DECK_TEMPLATES.map(t => (
                 <button key={t.name} onClick={() => { setSlides(s => [...s, safeSlide({ id: uid(), html: t.html, notes: "" })]); setActive(slides.length); }}
-                  style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: "0.6rem", cursor: "pointer" }}>
+                  style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: "var(--text-floor)", cursor: "pointer" }}>
                   {t.name}
                 </button>
               ))}

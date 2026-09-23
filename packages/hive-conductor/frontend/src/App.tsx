@@ -1,39 +1,45 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, lazy, Suspense, useContext, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { ModeProvider } from "./components/ModeToggle";
 import { Onboarding } from "./components/Onboarding";
 import { ToastProvider } from "./components/shared";
+import { claimUiState } from "./lib/uiState";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
-import Agents from "./pages/Agents";
-import AuditLog from "./pages/AuditLog";
-import Chat from "./pages/Chat";
-import CLI from "./pages/CLI";
-import Containers from "./pages/Containers";
-import DagBuilder from "./pages/DagBuilder";
-import DagRuns from "./pages/DagRuns";
-import Dashboard from "./pages/Dashboard";
-import DesignStudio from "./pages/DesignStudio";
-import Docs from "./pages/Docs";
-import Evolution from "./pages/Evolution";
-import RSI from "./pages/RSI";
 import Login from "./pages/Login";
-import MCP from "./pages/MCP";
-import Memory from "./pages/Memory";
-import MessageBoard from "./pages/MessageBoard";
-import Missions from "./pages/Missions";
-import OptimizationInbox from "./pages/OptimizationInbox";
-import Quotas from "./pages/Quotas";
-import Schedules from "./pages/Schedules";
-import Settings from "./pages/Settings";
-import Profile from "./pages/Profile";
-import Credentials from "./pages/Credentials";
 import Setup from "./pages/Setup";
-import Skills from "./pages/Skills";
-import Topology from "./pages/Topology";
-import WorkItems from "./pages/WorkItems";
-import KnowledgeBase from "./pages/KnowledgeBase";
+
+// Routed pages (#1435): each is its own chunk, fetched only when its route
+// is visited, instead of every page's code riding along in the one bundle
+// Setup and Login (above) stay eager -- one of them is needed for the very
+// first paint of every session, so splitting them would only add a round
+// trip with nothing to show meanwhile.
+const Agents = lazy(() => import("./pages/Agents"));
+const AuditLog = lazy(() => import("./pages/AuditLog"));
+const Chat = lazy(() => import("./pages/Chat"));
+const CLI = lazy(() => import("./pages/CLI"));
+const Containers = lazy(() => import("./pages/Containers"));
+const DagBuilder = lazy(() => import("./pages/DagBuilder"));
+const DagRuns = lazy(() => import("./pages/DagRuns"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const DesignStudio = lazy(() => import("./pages/DesignStudio"));
+const Docs = lazy(() => import("./pages/Docs"));
+const Evolution = lazy(() => import("./pages/Evolution"));
+const RSI = lazy(() => import("./pages/RSI"));
+const MCP = lazy(() => import("./pages/MCP"));
+const Memory = lazy(() => import("./pages/Memory"));
+const MessageBoard = lazy(() => import("./pages/MessageBoard"));
+const Missions = lazy(() => import("./pages/Missions"));
+const OptimizationInbox = lazy(() => import("./pages/OptimizationInbox"));
+const Quotas = lazy(() => import("./pages/Quotas"));
+const Schedules = lazy(() => import("./pages/Schedules"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Profile = lazy(() => import("./pages/Profile"));
+const Credentials = lazy(() => import("./pages/Credentials"));
+const Skills = lazy(() => import("./pages/Skills"));
+const Topology = lazy(() => import("./pages/Topology"));
+const WorkItems = lazy(() => import("./pages/WorkItems"));
+const KnowledgeBase = lazy(() => import("./pages/KnowledgeBase"));
 
 type UserInfo = {
   id: string;
@@ -48,6 +54,40 @@ type UserInfo = {
 const UserCtx = createContext<UserInfo | null>(null);
 export const useUser = () => useContext(UserCtx);
 
+/** Application chrome, painted before the setup/whoami round trip resolves
+ * (#1408): the same sidebar-plus-content grid the real shell uses, standing
+ * in for what is about to render rather than a sentence on a blank screen.
+ * Nothing here is interactive -- it carries no nav labels or real counts,
+ * so it never claims to be data the fetch hasn't answered yet. */
+function AppShellSkeleton() {
+  return (
+    <div className="app-shell" aria-busy="true" aria-label="Loading Hive Conductor">
+      <div className="icon-sidebar">
+        {Array.from({ length: 6 }, (_, i) => (
+          <div key={i} className="skeleton-nav-icon" />
+        ))}
+      </div>
+      <main className="main-content">
+        <div className="skeleton-block" style={{ width: "40%", height: 22, marginBottom: 18 }} />
+        <div className="skeleton-block" style={{ width: "100%", height: 120, marginBottom: 12 }} />
+        <div className="skeleton-block" style={{ width: "70%", height: 16 }} />
+      </main>
+    </div>
+  );
+}
+
+function whoamiToUser(whoData: { authenticated?: boolean; user?: UserInfo }): UserInfo | null {
+  if (whoData.authenticated && whoData.user) {
+    const next = whoData.user;
+    // Before anything under the guard mounts and reads localStorage: a
+    // different account's remembered tab, scheme or tour state is cleared
+    // here, not inherited (#1418, #1433).
+    claimUiState(next.id);
+    return next;
+  }
+  return null;
+}
+
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [setupDone, setSetupDone] = useState(false);
@@ -55,25 +95,31 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
   async function loadSession(): Promise<UserInfo | null> {
     const whoRes = await fetch("/v1/auth/whoami", { credentials: "same-origin" });
-    const whoData = await whoRes.json();
-    if (whoData.authenticated && whoData.user) {
-      return whoData.user as UserInfo;
-    }
-    return null;
+    return whoamiToUser(await whoRes.json());
   }
 
   useEffect(() => {
     (async () => {
       try {
-        const setupRes = await fetch("/v1/setup/status", { credentials: "same-origin" });
-        const setupData = await setupRes.json();
+        // Fired together, not one after another (#1408): whoami's answer
+        // does not depend on setup being finished -- it reports
+        // unauthenticated either way, since no session cookie exists before
+        // setup runs -- so paying for the two round trips in series bought
+        // nothing but the wait. But only setup's own response gates the
+        // Setup wizard: on a fresh, unconfigured instance a slow or
+        // never-settling whoami must not hold up detecting that setup isn't
+        // done, so whoami is only awaited once setup is confirmed complete.
+        const setupPromise = fetch("/v1/setup/status", { credentials: "same-origin" });
+        const whoPromise = fetch("/v1/auth/whoami", { credentials: "same-origin" });
+        const setupData = await (await setupPromise).json();
         if (!setupData.setup_complete) {
           setSetupDone(false);
           setReady(true);
           return;
         }
+        const whoData = await (await whoPromise).json();
         setSetupDone(true);
-        setUser(await loadSession());
+        setUser(whoamiToUser(whoData));
       } catch {
         setSetupDone(false);
       }
@@ -89,11 +135,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (!ready) {
-    return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9e3d3", fontFamily: "var(--hand)", fontSize: 24, color: "var(--pencil)" }}>
-        loading hive...
-      </div>
-    );
+    return <AppShellSkeleton />;
   }
 
   if (!setupDone) {
@@ -132,42 +174,44 @@ function AppRoutes() {
         path="/*"
         element={
           <AuthGuard>
-            <Routes>
-              <Route path="/" element={<AppShell />}>
-                <Route index element={<Navigate to="dashboard" replace />} />
-                <Route path="dashboard" element={<Dashboard />} />
-                <Route path="chat" element={<Chat />} />
-                <Route path="missions" element={<Missions />} />
-                <Route path="dags" element={<DagBuilder />} />
-                <Route path="dag-runs" element={<DagRuns />} />
-                <Route path="schedules" element={<Schedules />} />
-                <Route path="agents" element={<Agents />} />
-                <Route path="work-items" element={<WorkItems />} />
-                <Route path="knowledge" element={<KnowledgeBase />} />
-                {/* M0 containment for #311: model-authored Deck markup reaches
-                    raw browser HTML/SVG sinks. Keep the executable surface
-                    unreachable until the M2 sanitizer/structured renderer lands. */}
-                <Route path="decks" element={<Navigate to="/dashboard" replace />} />
-                <Route path="skills" element={<Skills />} />
-                <Route path="mcp" element={<MCP />} />
-                <Route path="topology" element={<Topology />} />
-                <Route path="optimizer" element={<OptimizationInbox />} />
-                <Route path="optimization-inbox" element={<OptimizationInbox />} />
-                <Route path="messages" element={<MessageBoard />} />
-                <Route path="quotas" element={<Quotas />} />
-                <Route path="audit" element={<AuditLog />} />
-                <Route path="cli" element={<CLI />} />
-                <Route path="cli/canvas" element={<DesignStudio />} />
-                <Route path="containers" element={<Containers />} />
-                <Route path="docs" element={<Docs />} />
-                <Route path="evolution" element={<Evolution />} />
-                <Route path="rsi" element={<RSI />} />
-                <Route path="memory" element={<Memory />} />
-                <Route path="settings" element={<Settings />} />
-                <Route path="profile" element={<Profile />} />
-                <Route path="credentials" element={<Credentials />} />
-              </Route>
-            </Routes>
+            <Suspense fallback={<AppShellSkeleton />}>
+              <Routes>
+                <Route path="/" element={<AppShell />}>
+                  <Route index element={<Navigate to="dashboard" replace />} />
+                  <Route path="dashboard" element={<Dashboard />} />
+                  <Route path="chat" element={<Chat />} />
+                  <Route path="missions" element={<Missions />} />
+                  <Route path="dags" element={<DagBuilder />} />
+                  <Route path="dag-runs" element={<DagRuns />} />
+                  <Route path="schedules" element={<Schedules />} />
+                  <Route path="agents" element={<Agents />} />
+                  <Route path="work-items" element={<WorkItems />} />
+                  <Route path="knowledge" element={<KnowledgeBase />} />
+                  {/* M0 containment for #311: model-authored Deck markup reaches
+                      raw browser HTML/SVG sinks. Keep the executable surface
+                      unreachable until the M2 sanitizer/structured renderer lands. */}
+                  <Route path="decks" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="skills" element={<Skills />} />
+                  <Route path="mcp" element={<MCP />} />
+                  <Route path="topology" element={<Topology />} />
+                  <Route path="optimizer" element={<OptimizationInbox />} />
+                  <Route path="optimization-inbox" element={<OptimizationInbox />} />
+                  <Route path="messages" element={<MessageBoard />} />
+                  <Route path="quotas" element={<Quotas />} />
+                  <Route path="audit" element={<AuditLog />} />
+                  <Route path="cli" element={<CLI />} />
+                  <Route path="cli/canvas" element={<DesignStudio />} />
+                  <Route path="containers" element={<Containers />} />
+                  <Route path="docs" element={<Docs />} />
+                  <Route path="evolution" element={<Evolution />} />
+                  <Route path="rsi" element={<RSI />} />
+                  <Route path="memory" element={<Memory />} />
+                  <Route path="settings" element={<Settings />} />
+                  <Route path="profile" element={<Profile />} />
+                  <Route path="credentials" element={<Credentials />} />
+                </Route>
+              </Routes>
+            </Suspense>
           </AuthGuard>
         }
       />
@@ -179,9 +223,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <ModeProvider>
-          <AppRoutes />
-        </ModeProvider>
+        <AppRoutes />
       </ToastProvider>
     </ErrorBoundary>
   );

@@ -33,6 +33,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
@@ -377,6 +378,44 @@ class TestCanvasTwoTenants:
         assert await canvas_store.active_job_for_layer(job.layer_id, org_id=ORG_A) is not None
         assert await canvas_store.list_jobs_for_layer(job.layer_id, org_id=ORG_B) == []
         assert len(await canvas_store.list_jobs_for_layer(job.layer_id, org_id=ORG_A)) == 1
+
+    async def test_claiming_a_job_returns_its_authenticated_canvas_scope(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        await self._job(canvas_store, ORG_A)
+
+        claimed = await canvas_store.claim_next_pending("canvas-worker", 60)
+
+        assert claimed is not None
+        assert claimed.org_id in {ORG_A, ORG_B}
+        scoped = await canvas_store.get_job(claimed.id, org_id=claimed.org_id)
+        assert scoped is not None
+        assert scoped.id == claimed.id
+        assert claimed.status == "running"
+        assert claimed.attempts >= 1
+        assert claimed.leased_by == "canvas-worker"
+        assert claimed.lease_expires_at is not None
+
+    async def test_reaping_a_lease_preserves_scope_and_retry_projection(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        job = await self._job(canvas_store, ORG_A)
+        job.status = "running"
+        job.attempts = 1
+        job.max_attempts = 2
+        job.leased_by = "dead-worker"
+        job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await canvas_store.update_job(job, org_id=ORG_A)
+
+        reaped = await canvas_store.reap_expired_leases()
+
+        assert len(reaped) == 1
+        assert reaped[0].id == job.id
+        assert reaped[0].org_id == ORG_A
+        assert reaped[0].status == "pending"
+        assert reaped[0].attempts == 1
+        assert reaped[0].leased_by is None
+        assert reaped[0].lease_expires_at is None
 
     async def test_jobs_cannot_be_written_from_another_org(
         self, canvas_store: PgCanvasStore

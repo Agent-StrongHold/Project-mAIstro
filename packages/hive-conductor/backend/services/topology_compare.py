@@ -111,6 +111,8 @@ async def _fold_in_thumbs(
     *,
     dag_id: str,
     group_by: str,
+    org_id: str = "",
+    project_id: str = "",
 ) -> None:
     """For each Outcome with a thumb in scope of this DAG, attribute to
     the bucket whose label matches the outcome's `node_id` (only valid
@@ -127,7 +129,9 @@ async def _fold_in_thumbs(
     """
     if group_by != "node_id":
         return
-    for node_id, counts in (await collect_thumbs(dag_id)).items():
+    for node_id, counts in (
+        await collect_thumbs(dag_id, org_id=org_id, project_id=project_id)
+    ).items():
         label = node_id or "(unset)"
         if label not in buckets:
             buckets[label] = VariantBucket(label=label)
@@ -191,6 +195,8 @@ async def compare_variants(
     group_by: str = "model_used",
     window_seconds: int = 24 * 3600,
     now: Any = None,
+    org_id: str = "",
+    project_id: str = "",
 ) -> dict[str, Any]:
     """Compare recent runs grouped by the chosen field. Returns a
     ranked variant table.
@@ -227,7 +233,13 @@ async def compare_variants(
         now=now,
     )
     buckets = _bucket_observations(obs, group_by)
-    await _fold_in_thumbs(buckets, dag_id=dag_id, group_by=group_by)
+    await _fold_in_thumbs(
+        buckets,
+        dag_id=dag_id,
+        group_by=group_by,
+        org_id=org_id,
+        project_id=project_id,
+    )
 
     if not buckets:
         return {"dag_id": dag_id, "group_by": group_by, "variants": [], "winner": ""}

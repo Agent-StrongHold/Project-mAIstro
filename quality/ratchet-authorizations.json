@@ -61,6 +61,26 @@
     }
   },
   "vulture": {
+    "packages/maistro-core/src/maistro/container.py::unused method 'recover_stranded_chat_admissions'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#338",
+      "reason": "Container.recover_stranded_chat_admissions is the bounded, idempotent, operator-scheduled recovery entry point proposed by PR #1280 for #338. It compensates a chat Run left RUNNING with no NodeRun after a process crash between admission and the turn's first physical Attempt. The public API is intentionally called by an external operator scheduler rather than in-package code, matching the public recovery-tick pattern. Regression coverage belongs to packages/maistro-core/tests/test_container_chat_runs.py in #1280. This grant authorizes only this exact Vulture identity; it does not approve the implementation, prove shipped recovery wiring, or close #338."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/agent_delegate_remote.py::unused class 'AgentDelegateRemoteNode'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1193",
+      "reason": "AgentDelegateRemoteNode is a registered Graph node kind reached only through the node registry: `build_node_resolver` used to import and construct it by name in a hand-maintained `if kind == ...` branch, and #1193 replaces that list with construction from the authorities each node class declares (`BaseNode.required_authorities` / `optional_authorities`, resolved via `compose_node`). The class is therefore no longer referenced by name anywhere in core, exactly like its already-banked sibling AgentSynthDagNode; it remains registered, catalogued, resolved and executed through `get_node(kind)`, and is exercised directly by packages/maistro-core/tests/graph/nodes/test_agent_delegate_remote.py and test_agent_delegate_remote_child_run.py."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/llm_summarize.py::unused class 'LlmSummarizeNode'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1193",
+      "reason": "LlmSummarizeNode is a registered Graph node kind reached only through the node registry: `build_node_resolver` used to import and construct it by name in a hand-maintained `if kind == ...` branch, and #1193 replaces that list with construction from the authorities each node class declares (`BaseNode.required_authorities` / `optional_authorities`, resolved via `compose_node`). The class is therefore no longer referenced by name anywhere in core, exactly like its already-banked sibling AgentSynthDagNode; it remains registered, catalogued, resolved and executed through `get_node(kind)`, and is exercised directly by packages/maistro-core/tests/graph/nodes/test_sync_kinds.py."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/rsi_quota_pace_trigger.py::unused class 'RsiQuotaPaceTriggerNode'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1193",
+      "reason": "RsiQuotaPaceTriggerNode is a registered Graph node kind reached only through the node registry: `build_node_resolver` used to import and construct it by name in a hand-maintained `if kind == ...` branch, and #1193 replaces that list with construction from the authorities each node class declares (`BaseNode.required_authorities` / `optional_authorities`, resolved via `compose_node`). The class is therefore no longer referenced by name anywhere in core, exactly like its already-banked sibling AgentSynthDagNode; it remains registered, catalogued, resolved and executed through `get_node(kind)`, and is exercised directly by packages/maistro-core/tests/graph/nodes/test_rsi_quota_pace_trigger.py."
+    },
     "packages/maistro-core/src/maistro/agents/factory.py::unused function 'instantiate_agent'": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#840",
@@ -95,6 +115,21 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#56",
       "reason": "InvocationUsage._validate_usage is the framework-invoked pydantic @model_validator(mode='after') that #56's governed model egress relies on to keep usage accounting honest: it rejects blank units, negative input/output unit counts, and negative cost_cents before an Invocation can settle token and cost totals. Vulture reports it at 60% confidence as an unused method because no in-scan code calls a dunder-style hook by name -- pydantic invokes it on every InvocationUsage construction. Same banked-debt class as approval_store.py::_validate_state. maistro-core is a published library; deleting or renaming the validator to appease the scanner would remove the model's invariant enforcement on PR #1040's recorded-state surface."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused method '_validate_evidence'": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "InvocationReconciliationEvidence._validate_evidence is the framework-invoked pydantic @model_validator(mode='after') that #1310's invocation reconciliation relies on to keep provider-adapter evidence honest: it rejects blank source, actor, and reason before an evidence report can be applied to a stranded invocation. Vulture reports it at 60% confidence as an unused method because no in-scan code calls a dunder-style hook by name -- pydantic invokes it on every InvocationReconciliationEvidence construction. Same banked-debt class as invocation.py::_validate_usage (#56) and approval_store.py::_validate_state. Post-merge reconciliation: this identity reached trunk through #1310's merge before a vulture ledger row or grant existed, so merge-queue groups fail the trusted-base comparison (run 34798380137, job 103835854949). Landed via #1310 (invocation reconciliation); wiring/removal tracked -- deleting or renaming the validator to appease the scanner would remove the evidence record's invariant enforcement."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused method '_validate_reconciliation'": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "InvocationReconciliation._validate_reconciliation is the framework-invoked pydantic @model_validator(mode='after') that #1310's invocation reconciliation relies on to keep the durable audit record honest: it rejects blank source, actor, reason, run_id, node_run_id, attempt_id, or invocation_id before a reconciliation row can settle an ambiguous invocation. Vulture reports it at 60% confidence as an unused method because no in-scan code calls a dunder-style hook by name -- pydantic invokes it on every InvocationReconciliation construction. Same banked-debt class as invocation.py::_validate_usage (#56) and approval_store.py::_validate_state. Post-merge reconciliation: this identity reached trunk through #1310's merge before a vulture ledger row or grant existed, so merge-queue groups fail the trusted-base comparison (run 34798380137, job 103835854949). Landed via #1310 (invocation reconciliation); wiring/removal tracked -- deleting or renaming the validator to appease the scanner would remove the audit record's invariant enforcement."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::unused variable 'observed_at'": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "InvocationReconciliation.observed_at is a declarative pydantic model field (default_factory=datetime.now(UTC)), not a local variable: vulture's 60%-confidence 'unused variable' report misclassifies the schema declaration because the field is assigned by every constructor call and persisted with every reconciliation row rather than read by name in-scan. Same banked-debt class as the other pydantic-declarative-field rows. Post-merge reconciliation: this identity reached trunk through #1310's merge before a vulture ledger row or grant existed, so merge-queue groups fail the trusted-base comparison (run 34798380137, job 103835854949). Landed via #1310 (invocation reconciliation); wiring/removal tracked -- removing the field would drop the recorded time of every reconciliation from the durable audit surface."
     },
     "packages/maistro-core/src/maistro/personas/schema.py::unused variable 'tagline'": {
       "owner": "@BlakeMatthews-dev",
@@ -200,6 +235,26 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1162",
       "reason": "SqliteEventOutbox.dead_letters is the #1162 public read surface for the terminal dead-letter disposition: it returns the rows whose durable append exhausted the attempt bound, oldest first, with their failure evidence (attempts, last_error, failed_at). No production entry point in this repository drains it yet - pending_count() deliberately excludes dead-lettered rows and points at this accessor, and the readers today are the test suite (test_outbox.py asserts its contents and ordering; invisible to the src-only scan) plus downstream consumers of the SQLite outbox, for which maistro-core is a published library. Expected to gain an in-repo reader when a shipped process surfaces dead-letter evidence, at which point the entry leaves the baseline."
+    },
+    "packages/maistro-core/src/maistro/state.py::unused method 'put_model_unique'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1248",
+      "reason": "PersistedStore.put_model_unique is the #1248 concurrency-safe write primitive behind the username-registration race fix: it claims a row in the new unique_fields table inside the same write transaction as the model row, so two concurrent registrations for the same username can no longer both succeed. Its only caller, ModelStore.__setitem__ (packages/hive-conductor/backend/services/model_store.py), reaches it through getattr(self._persisted, \"put_model_unique\", None) duck-typed indirection so the same ModelStore works against non-PersistedStore backends in tests; Vulture's static analysis cannot trace a getattr-dispatched call, hence the 60% confidence. Exercised directly by packages/maistro-core/tests/state/test_persisted_store.py::TestPutModelUnique and indirectly by packages/hive-conductor/backend/tests/test_registration_policy.py's concurrent-registration tests."
+    },
+    "packages/maistro-core/src/maistro/state.py::unused method 'put_model_if_unique'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1248",
+      "reason": "PersistedStore.put_model_if_unique is put_model_unique's non-raising twin, returning False instead of raising when the unique claim is already held -- the primitive ModelStore.put_if_unique needs to report a conflict as a normal return rather than an exception. Reached the same way, through ModelStore.__setitem__/put_if_unique's getattr(self._persisted, \"put_model_if_unique\", None) duck-typed indirection, invisible to Vulture's static call graph. Exercised directly by packages/maistro-core/tests/state/test_persisted_store.py::TestPutModelIfUnique and indirectly by packages/hive-conductor/backend/tests/test_registration_policy.py's concurrent-registration tests."
+    },
+    "packages/maistro-evolve/src/maistro_evolve/population.py::unused method 'record_cycle_marker'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1064",
+      "reason": "PopulationStore.record_cycle_marker is the #1064 finalize-idempotency ledger write: it durably marks a cycle's finalize step \"committed\" (with its cached output) or \"faulted\" so a replay after a crash or partial-mutation fault can detect prior progress instead of silently re-mutating population/tournament state or falsely reporting success. Its only caller, packages/hive-conductor/backend/services/evolution_graph.py's _finalize_cycle, is a flat-layout app backend outside the packages/*/src Vulture scan set, so the call is invisible to static analysis. Exercised directly by packages/maistro-evolve/tests and packages/hive-conductor/backend/tests/test_evolution_canonical_graph.py's finalize-replay tests."
+    },
+    "packages/maistro-evolve/src/maistro_evolve/population.py::unused method 'get_cycle_marker'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1064",
+      "reason": "PopulationStore.get_cycle_marker is record_cycle_marker's read half: _finalize_cycle checks it first on every call, replaying the cached committed output untouched rather than re-running finalize's many in-place mutations (cull/breed/self-improve/migrate/lineage) a second time. Reached the same way, through hive-conductor's evolution_graph.py, outside the packages/*/src Vulture scan set. Exercised directly by packages/maistro-evolve/tests and packages/hive-conductor/backend/tests/test_evolution_canonical_graph.py's finalize-replay tests."
     }
   },
   "model-egress": {
@@ -219,6 +274,41 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#737",
       "reason": "settle_hitl_record is the single durable HITL settlement rule #737 serializes answer, timeout, and cancellation through: it validates the paused NodeRun, applies the settlement outcome (timed_out/cancelled) or attaches an answer, resolves resume_at vs the persisted deadline, and mirrors the terminal canonical lifecycle. The shared predicate for three settlement paths lands at cyclomatic complexity 16 (rank C); the per-path wrappers stay trivial. Tracked under ADR-083026-6c72."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService.invoke@13": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1310's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/capabilities/invocation.py::InvocationExecutionService._reconcile_values_locked@12": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1310's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/scheduling/admission.py::ScheduleRunAdmitter.admit_due@11": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1311",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1311's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_usage_breakdown@11": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1310",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1310's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py::_load_tool_calls@12": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1391",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1391's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/executor.py::_build_ctx@11": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1263",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1263's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
+    },
+    "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::answer_record@11": {
+      "owner": "reconciliation lane (maistro-glm-implementer)",
+      "issue": "#1263",
+      "reason": "Post-merge reconciliation: this block reached trunk through #1263's merge before a ledger row or grant existed, so every merge-queue group fails the trusted-base comparison (run 34796592566, job 103830780176). The grant authorizes the already-merged complexity that quality/radon-baseline.json now records at its measured value in the same reconciliation change; tracked under SPEC-264."
     }
   },
   "contract-markers": {
@@ -226,6 +316,18 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#329",
       "reason": "ADR-090726-9a4e is an accepted-decision ADR (operator ratification d5, 2026-09-07) that ratifies the Hybrid crypto-bound approvals decision (WebAuthn + Biscuit + hash chain). Its behavioral contract evidence is the crypto-bound machinery of Phases 2-4, which remain open under #329; the Phase 0 document deliberately records the accepted decision ahead of the contract-marked tests that will implement it. Banking the declared-kind-unproven state follows the accepted-decision-ADR precedent (~40 ADRs banked in this category, e.g. ADR-082926-d0dc). Expected to leave the ledger when Phases 2-4 add contract-marked behavioral tests for the ratified decision."
+    }
+  },
+  "execution-lifecycles": {
+    "services.rsi::RunStatus": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1136",
+      "reason": "Pre-existing code, not new: `services.rsi.RunStatus = Literal[\"pending\", \"running\", \"completed\", \"errored\", \"stopped\"]` has driven hive-conductor's RSI run-tracking dataclass since RSI was wired into the product. #1136 widens check-execution-lifecycles.py to discover Literal-backed status vocabularies (previously Enum-only), which makes this pre-existing lifecycle visible to the ratchet for the first time rather than introducing it. This grant authorizes exactly that one newly-visible, pre-existing entry; the follow-up PR that lands the widened scanner also classifies it in quality/execution-lifecycles.json (expected CONVERGE, tracked under the RSI canonical-convergence epics, M4-A/M5-B) rather than banking it as CANONICAL. It does not authorize any other new execution-lifecycle debt."
+    },
+    "maistro.graph.nodes.agent_delegate_remote::DelegationStatus": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#1136",
+      "reason": "Pre-existing code, not new: `DelegationStatus = Literal[\"completed\", \"failed\", \"rejected\", \"timed_out\"]` is the outcome vocabulary a remote/in-process delegate answers `agent.delegate_remote` with, immediately translated onto the canonical child Run's RunStatus via the module's `_CHILD_OUTCOME` map -- it is an input shape, not a second execution authority. #1136 widens check-execution-lifecycles.py to discover Literal-backed status vocabularies (previously Enum-only), which makes this pre-existing vocabulary visible to the ratchet for the first time rather than introducing it. This grant authorizes exactly that one newly-visible, pre-existing entry; the follow-up PR that lands the widened scanner also classifies it in quality/execution-lifecycles.json (expected DOMAIN, since it maps onto canonical RunStatus rather than competing with it) rather than banking it as CANONICAL. It does not authorize any other new execution-lifecycle debt."
     }
   }
 }

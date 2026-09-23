@@ -47,3 +47,29 @@ class TestTypesSecurityConfig:
 
     def test_defaults_construct(self) -> None:
         assert TypesSecurityConfig().warden_enabled is True
+
+
+class TestPermissionGrantsAreConfigurable:
+    """The two security knobs that *are* read (#1165 review).
+
+    The Sentinel table is fail-closed, so a deployment that configures nothing
+    denies every tool. `maistro-server` copies these two onto
+    `AgentConfig.security`; without them here no YAML deployment could ever
+    grant tool authority.
+    """
+
+    def test_defaults_are_the_empty_fail_closed_table(self) -> None:
+        cfg = SettingsSecurityConfig()
+        assert cfg.permission_preset == "none"
+        assert cfg.permissions == {}
+
+    def test_a_preset_and_explicit_grants_are_accepted(self) -> None:
+        cfg = SettingsSecurityConfig(
+            permission_preset="dangerous_tools_admin", permissions={"shell": ["admin"]}
+        )
+        assert cfg.permission_preset == "dangerous_tools_admin"
+        assert cfg.permissions == {"shell": ["admin"]}
+
+    def test_an_unknown_preset_is_refused_at_load(self) -> None:
+        with pytest.raises(ValueError, match="Unknown permission preset 'typo'"):
+            SettingsSecurityConfig(permission_preset="typo")

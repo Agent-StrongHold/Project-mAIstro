@@ -34,7 +34,7 @@ history:
 
 # ADR-080: Memory Dynamics
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-30
 **Specifies the behavioral dynamics** of the ADR-013/016 memory tiers — how weight decays and is
 reinforced, how memories consolidate, and how they cross scope boundaries — that the tier model

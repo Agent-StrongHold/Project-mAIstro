@@ -545,11 +545,20 @@ class TestTheChatProducerDrivenEndToEnd:
 
     @staticmethod
     def _install(monkeypatch: Any, store: Any, *, events_fail: bool, exec_fails: bool) -> None:
+        import services.dag_execution_scope as scope_module
         import services.dag_run_store as run_store_module
         import services.graph_runner as graph_runner_module
         import stores
+        from services.dag_execution_scope import DagExecutionScope
 
         stores.dags["d-1"] = {"id": "d-1", "nodes": [], "edges": []}
+
+        async def _authorize(*_args: Any, **_kwargs: Any) -> DagExecutionScope:
+            return DagExecutionScope(
+                workspace_id="test-workspace", project_id="test-project", user_id="u-1"
+            )
+
+        monkeypatch.setattr(scope_module, "authorize_hive_dag_scope", _authorize)
         monkeypatch.setattr(run_store_module, "get_dag_run_store", lambda: store)
 
         async def _execute(dag_data: Any, **kwargs: Any) -> dict[str, Any]:

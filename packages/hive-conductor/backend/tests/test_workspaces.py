@@ -365,16 +365,16 @@ class TestWorkspaceTheme:
     def test_list_themes_returns_the_catalog(self, admin_client) -> None:
         r = admin_client.get("/v1/workspaces/themes")
         assert r.status_code == 200
-        ids = {t["id"] for t in r.json()}
-        assert ids == {"default", "fantasia", "dark"}
+        ids = [t["id"] for t in r.json()]
+        assert ids == ["greenhouse", "slate", "studio"]
 
     def test_create_workspace_honors_explicit_theme_id(self, admin_client) -> None:
         r = admin_client.post(
             "/v1/workspaces",
-            json={"persona_template_id": "pm_fleet", "name": "PM Fleet", "theme_id": "fantasia"},
+            json={"persona_template_id": "pm_fleet", "name": "PM Fleet", "theme_id": "slate"},
         )
         assert r.status_code == 201
-        assert r.json()["theme_id"] == "fantasia"
+        assert r.json()["theme_id"] == "slate"
 
     def test_create_workspace_rejects_unknown_theme_id(self, admin_client) -> None:
         r = admin_client.post(

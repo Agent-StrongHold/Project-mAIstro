@@ -38,6 +38,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -78,9 +79,9 @@ class SqliteUsageLog:
 
     async def ensure_schema(self) -> None:
         """Create the usage_events table + its (scope_key, timestamp) index."""
-        await self._conn.execute(_SCHEMA)
-        await self._conn.execute(_INDEX)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            await self._conn.execute(_INDEX)
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:
         """Persist events recorded since the last `snapshot` call.

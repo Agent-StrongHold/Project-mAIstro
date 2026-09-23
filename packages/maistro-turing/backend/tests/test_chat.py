@@ -198,7 +198,7 @@ def test_retention_window_preserves_active_runs_and_drops_missing_entries():
         )
         plane._retained_runs[active.run_id] = None
 
-        await plane._track_admission("missing-run")
+        await plane._track_admission("missing-run", workspace_id=workspace_id)
 
         assert list(plane._retained_runs) == [active.run_id]
         assert await plane.run_store.get_run(active.run_id) is not None
@@ -303,7 +303,7 @@ def test_cancelled_partial_admission_is_compensated_before_dispatch(monkeypatch)
         plane = TuringExecutionPlane()
         admitted = asyncio.Event()
 
-        async def block_after_create(_run_id: str) -> None:
+        async def block_after_create(_run_id: str, *, workspace_id: str) -> None:
             admitted.set()
             await asyncio.Event().wait()
 

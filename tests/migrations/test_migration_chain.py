@@ -56,6 +56,8 @@ EXPECTED_TABLES = frozenset(
         "asset_sheets",
         "audit_log",
         "books",
+        "capability_invocations",
+        "consumer_cursors",
         # The canonical execution spine (012) and the template registry it
         # instantiates Runs from (014). Six tables and one, not seven of a
         # kind: `canonical_projects` and its two child tables are the scope a
@@ -109,6 +111,10 @@ EXPECTED_TABLES = frozenset(
         # live on the message table (#327).
         "session_turns",
         "sessions",
+        # Admission claims for task submission (037). Durable and replica-shareable
+        # so a retried submit resolves to the original receipt rather than minting
+        # a second Run (#1176).
+        "task_idempotency",
         "tasks",
         "trigger_definitions",
     }

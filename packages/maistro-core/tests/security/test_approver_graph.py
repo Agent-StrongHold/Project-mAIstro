@@ -89,6 +89,7 @@ class TestSentinelIntegration:
             permission_table={},
             tier_policy={("deploy", "team:2"): Tier.DELEGATED},
             approver_graph=graph,
+            allow_on_miss=True,  # COMPATIBILITY (#1165): suite tests approver-graph wiring
         )
         principal = _human("u1", scopes=("team:2",))
 
@@ -101,7 +102,9 @@ class TestSentinelIntegration:
         graph = ApproverGraph(
             [ApproverBinding(action="deploy", for_scope="team:2", approved_by="team:1")]
         )
-        sentinel = Sentinel(warden=Warden(), permission_table={}, approver_graph=graph)
+        sentinel = Sentinel(
+            warden=Warden(), permission_table={}, approver_graph=graph, allow_on_miss=True
+        )  # COMPATIBILITY (#1165): suite tests approver-graph wiring
         principal = _human("u1", scopes=("team:2",))
 
         decision = await sentinel.authorize(

@@ -3,4 +3,4 @@
 fastapi>=0.115
 uvicorn[standard]>=0.32
 httpx>=0.28
-pydantic>=2.0
+pydantic>=2.4.0

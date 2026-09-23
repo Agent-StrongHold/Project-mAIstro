@@ -29,7 +29,7 @@ history:
 
 # ADR-085: Cost, Quota, and Rate Limiting
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-30
 **Governs token spend** at three nested levels so that no single task, principal, or background
 process can run the bill away, and so that crossing a limit asks rather than fails.

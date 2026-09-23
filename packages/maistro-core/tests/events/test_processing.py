@@ -20,6 +20,7 @@ from maistro.events.processing import (
     HandlerCallError,
     HTTPHandlerCaller,
     process_events,
+    process_events_batch,
 )
 from maistro.events.trigger_store import InMemoryTriggerStore, TriggerDefinition
 
@@ -380,3 +381,100 @@ class TestConcurrentWorkersDispatchOnce:
 
         assert caller.calls == []
         assert cursor == 0, "the cursor advanced past an event still being handled"
+
+
+class HidingLog:
+    """An event log whose reads skip chosen ids: PostgreSQL between allocation
+    and commit, where a `BIGSERIAL` id exists but its row is not yet visible."""
+
+    def __init__(self, inner: InMemoryEventLog, hidden: set[int]) -> None:
+        self._inner = inner
+        self.hidden = hidden
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def query(self, **kwargs: object) -> list[LoggedEvent]:
+        return [e for e in await self._inner.query(**kwargs) if e.id not in self.hidden]  # type: ignore[arg-type]
+
+
+class TestTheBatchReportsWhatTheLogSkipped:
+    """#1163 review: a durable cursor must be able to see an id the log has
+    handed out but not committed, or it persists past the event for good."""
+
+    async def test_contiguous_ids_report_no_holes(
+        self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
+    ) -> None:
+        log, triggers, invocations = stores
+        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
+        await log.append("agent.created")
+        await log.append("agent.created")
+
+        batch = await process_events_batch(log, triggers, invocations, RecordingCaller())
+
+        assert batch.cursor == 2
+        assert batch.holes == ()
+
+    async def test_every_gap_is_reported_by_its_first_missing_id(
+        self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
+    ) -> None:
+        inner, triggers, invocations = stores
+        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
+        for _ in range(6):
+            await inner.append("agent.created")
+        log = HidingLog(inner, hidden={2, 4, 5})
+        caller = RecordingCaller()
+
+        batch = await process_events_batch(log, triggers, invocations, caller)  # type: ignore[arg-type]
+
+        # The visible events were still processed: a hole delays only the
+        # persisted resume point, never the work.
+        assert [event_id for _, event_id in caller.calls] == [1, 3, 6]
+        assert batch.cursor == 6
+        assert batch.holes == (2, 4)
+
+    async def test_a_hole_at_the_very_start_is_reported_too(
+        self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
+    ) -> None:
+        inner, triggers, invocations = stores
+        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
+        await inner.append("agent.created")
+        await inner.append("agent.created")
+        log = HidingLog(inner, hidden={1})
+
+        batch = await process_events_batch(log, triggers, invocations, RecordingCaller())  # type: ignore[arg-type]
+
+        assert batch.cursor == 2
+        assert batch.holes == (1,)
+
+    async def test_holes_are_only_counted_below_the_settled_cursor(
+        self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
+    ) -> None:
+        """An unsettled event holds the cursor; a hole above it is next tick's
+        business, since nothing above the cursor is persisted anyway."""
+        inner, triggers, invocations = stores
+        t = TriggerDefinition(name="agents", event_pattern="agent.*")
+        await triggers.add(t)
+        for _ in range(4):
+            await inner.append("agent.created")
+        log = HidingLog(inner, hidden={3})
+        caller = RecordingCaller()
+        caller.fail_times[(t.trigger_id, 2)] = 1
+
+        batch = await process_events_batch(log, triggers, invocations, caller)  # type: ignore[arg-type]
+
+        assert batch.cursor == 1
+        assert batch.holes == ()
+
+    async def test_process_events_returns_the_batch_cursor(
+        self, stores: tuple[InMemoryEventLog, InMemoryTriggerStore, InMemoryInvocationStore]
+    ) -> None:
+        inner, triggers, invocations = stores
+        await triggers.add(TriggerDefinition(name="agents", event_pattern="agent.*"))
+        for _ in range(3):
+            await inner.append("agent.created")
+        log = HidingLog(inner, hidden={2})
+
+        cursor = await process_events(log, triggers, invocations, RecordingCaller())  # type: ignore[arg-type]
+
+        assert cursor == 3

@@ -83,11 +83,36 @@ TestSentinelPermissionMachine = SentinelPermissionMachine.TestCase
     role=st.sampled_from(["admin", "user", "viewer"]),
 )
 @settings(max_examples=50)
-def test_no_permission_entry_means_allowed(user_id, tool_name, role):
+def test_no_permission_entry_means_denied(user_id, tool_name, role):
+    """Amended I6 (issue #1165, ADR-072726-0d6b accepted 2026-09-09).
+
+    The original property asserted the opposite: an absent table entry
+    *permitted*. That was the allow-all failure mode #1165 closes — a
+    deployment that configures nothing authorized every tool for every role.
+    The amendment is its own change, ahead of the semantic flip, exactly as
+    the ADR's sequencing rule requires; see the ADR's implementation
+    reconciliation for the preconditions met and consciously deferred.
+    """
     auth = AuthContext(user_id=user_id, roles=frozenset({role}))
     table = {}
 
-    assert check_permission(auth, tool_name, table) is True
+    assert check_permission(auth, tool_name, table) is False
+
+
+@given(
+    user_id=st.text(min_size=1, max_size=20),
+    tool_name=st.text(min_size=1, max_size=20),
+    role=st.sampled_from(["admin", "user", "viewer"]),
+)
+@settings(max_examples=30)
+def test_no_permission_entry_compat_mode_allows(user_id, tool_name, role):
+    """The compatibility mode is real but explicit: allow-on-miss exists only
+    where a caller passes ``allow_on_miss=True``, which production wiring
+    never does (ADR-072726-0d6b implementation, issue #1165)."""
+    auth = AuthContext(user_id=user_id, roles=frozenset({role}))
+    table = {}
+
+    assert check_permission(auth, tool_name, table, allow_on_miss=True) is True
 
 
 @given(
@@ -154,7 +179,9 @@ def test_pre_call_allowed_with_permission(user_id, tool_name, role):
     tool_name=st.text(min_size=1, max_size=20),
 )
 @settings(max_examples=30)
-def test_pre_call_open_by_default(user_id, tool_name):
+def test_pre_call_empty_table_denies_by_default(user_id, tool_name):
+    """Amended I6 (issue #1165, ADR-072726-0d6b accepted 2026-09-09): the
+    previously-allow-all case — an empty table — now denies everything."""
     sentinel = Sentinel(
         warden=_StubWarden(),
         permission_table={},
@@ -162,7 +189,8 @@ def test_pre_call_open_by_default(user_id, tool_name):
     auth = AuthContext(user_id=user_id, roles=frozenset())
 
     verdict = _run(sentinel.pre_call(tool_name, {}, auth, _STUB_SCHEMA))
-    assert verdict.allowed
+    assert not verdict.allowed
+    assert any(v.rule == "permission_denied" for v in verdict.violations)
 
 
 @given(
@@ -219,8 +247,11 @@ def test_post_call_clean_result(user_id, result_text):
 )
 @settings(max_examples=20)
 def test_can_use_tool_no_entry(tool_name):
+    """Amended I6 (issue #1165, ADR-072726-0d6b accepted 2026-09-09): a
+    permission-table miss denies. Absence of an explicit decision must not
+    grant tool authority."""
     auth = AuthContext(user_id="u1", roles=frozenset({"user"}))
-    assert auth.can_use_tool(tool_name, {})
+    assert not auth.can_use_tool(tool_name, {})
 
 
 @given(

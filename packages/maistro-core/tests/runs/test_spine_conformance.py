@@ -644,6 +644,30 @@ async def test_status_listing_decodes_the_same_evidence_as_get_run(spine: Any) -
     assert listed[0].result["nested"][0] == float("-inf")
 
 
+async def test_status_listing_can_filter_by_durable_admission_source(spine: Any) -> None:
+    """A consumer must spend its bounded page on owned Runs on every backend."""
+    store, workspace, project_id = spine
+    foreign = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "foreign-consumer"},
+        initial_status=RunStatus.QUEUED,
+    )
+    owned = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "owned-consumer"},
+        initial_status=RunStatus.QUEUED,
+    )
+
+    listed = await store.list_by_status(
+        RunStatus.QUEUED,
+        limit=1,
+        admission_source="owned-consumer",
+    )
+
+    assert [run.run_id for run in listed] == [owned.run_id]
+    assert foreign.run_id not in {run.run_id for run in listed}
+
+
 async def test_non_finite_evidence_survives_inside_a_container(spine: Any) -> None:
     """Results are `Any`: the non-finite value is as likely to be nested in the
     dict an executor returned as to be the whole result."""
@@ -1088,13 +1112,44 @@ def _occurrence(schedule_id: str = "sched-1", when: str = "2026-08-24T12:00:00+0
 
 async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     store, workspace, project_id = spine
-    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    first = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     with pytest.raises(DuplicateOccurrence) as caught:
         await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     assert caught.value.schedule_id == "sched-1"
     assert caught.value.scheduled_for == "2026-08-24T12:00:00+00:00"
+    resolved = await store.get_run_for_occurrence(
+        caught.value.schedule_id, caught.value.scheduled_for
+    )
+    assert resolved is not None
+    assert resolved.run_id == first.run_id
+
+
+async def test_concurrent_occurrence_claims_converge_on_one_run(spine: Any) -> None:
+    """A replica race has one winner, and every loser can resolve that winner."""
+    store, workspace, project_id = spine
+    results = await asyncio.gather(
+        *(
+            store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    duplicates = [result for result in results if isinstance(result, DuplicateOccurrence)]
+    unexpected = [
+        result
+        for result in results
+        if isinstance(result, BaseException) and not isinstance(result, DuplicateOccurrence)
+    ]
+    assert unexpected == []
+    assert len(winners) == 1
+    assert len(duplicates) == 7
+    resolved = await store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00")
+    assert resolved is not None
+    assert resolved.run_id == winners[0].run_id
 
 
 async def test_a_catch_up_fire_collides_with_the_on_time_one(spine: Any) -> None:
@@ -1903,3 +1958,90 @@ async def test_an_unleased_attempt_is_never_reclaimed_in_memory(memory_spine: An
 @pytest.mark.ac("ADR-082526-b36a/AC-6")
 async def test_a_stale_token_cannot_renew_in_memory(memory_spine: Any) -> None:
     await _assert_a_stale_token_cannot_renew(memory_spine)
+
+
+# ── workspace-scoped status listing (#1240) ─────────────────────────
+
+
+async def test_status_listing_honors_the_workspace_boundary(spine: Any) -> None:
+    """A workspace-scoped listing returns only that Workspace's runs.
+
+    `workspace_id` exists so scoped callers (the HITL backlog) filter before
+    paging. The boundary only means something if a principal scoped to one
+    Workspace cannot enumerate another's rows — on every backend, including
+    the two that are systems of record.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(_graph(workspace, project_id))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    await store.transition_run(run.run_id, RunStatus.FAILED)
+
+    mine = await store.list_by_status(RunStatus.FAILED, workspace_id=workspace)
+    assert [item.run_id for item in mine] == [run.run_id]
+    assert await store.list_by_status(RunStatus.FAILED, workspace_id="workspace-nobody") == []
+
+
+# ── delegation reservation and receipt (#1090 review round) ──────────
+
+
+async def test_a_delegation_reservation_and_receipt_round_trip(spine: Any) -> None:
+    """The receipt-side identity the remote node leans on, on every backend.
+
+    `find_delegation_run` is how a retry adopts a concurrent replica's
+    reservation instead of minting a second child; `attach_delegation_receipt`
+    is how the transport's answer becomes durable evidence. Both must behave
+    identically where the run actually lives — memory in tests, SQLite or
+    PostgreSQL in production — including the refusal to overwrite an existing
+    receipt with a different task: two receipts for one logical hand-off is
+    the same "second lifecycle" the delegation node exists to prevent.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-round-trip"},
+    )
+
+    found = await store.find_delegation_run("key-round-trip")
+    assert found is not None
+    assert found.run_id == run.run_id
+    assert await store.find_delegation_run("key-unknown") is None
+
+    attached = await store.attach_delegation_receipt(
+        run.run_id, "task-1", target_agent="researcher"
+    )
+    assert attached.provenance["a2a_task_id"] == "task-1"
+    assert attached.provenance["target_agent"] == "researcher"
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["a2a_task_id"] == "task-1"
+
+    # Re-attaching the same task is idempotent; a different task is a conflict.
+    again = await store.attach_delegation_receipt(run.run_id, "task-1")
+    assert again.provenance["a2a_task_id"] == "task-1"
+    with pytest.raises(RunIntegrityError):
+        await store.attach_delegation_receipt(run.run_id, "task-2")
+
+
+async def test_the_transport_boundary_claim_is_one_winner(spine: Any) -> None:
+    """The CAS that keeps a lost receipt from becoming a second dispatch.
+
+    A replica adopts the reservation, then claims the one allowed transport
+    attempt before calling the peer. The claim must be a winner-take-all
+    transition that survives a reload — on every backend, because "the
+    boundary was already crossed" is exactly what a retry on another replica
+    (or another process against SQLite) must be able to observe.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-claim"},
+    )
+
+    assert await store.claim_delegation_transport_attempt(run.run_id) is True
+    assert await store.claim_delegation_transport_attempt(run.run_id) is False
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["transport_attempted"] is True

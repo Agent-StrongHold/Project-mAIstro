@@ -22,12 +22,19 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
+from services.dag_execution_scope import DagExecutionScope
 
 from maistro.graph.durable_runs import RunStatus
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
+
+
+def _execution_scope() -> DagExecutionScope:
+    return DagExecutionScope(
+        workspace_id="test-workspace", project_id="test-project", user_id="test-user"
+    )
 
 
 # --- _build_llm_call ----------------------------------------------------
@@ -175,7 +182,8 @@ async def test_execute_dag_streaming_fails_when_llm_unconfigured(
                     }
                 ],
                 "edges": [],
-            }
+            },
+            scope=_execution_scope(),
         )
     ]
 
@@ -461,7 +469,8 @@ async def test_execute_dag_builds_config_and_returns_shape(
             ],
             "edges": [{"from_node": "n1", "to_node": "n2"}],
             "entry_node": "n1",
-        }
+        },
+        scope=_execution_scope(),
     )
     assert out["status"] == "completed"
     assert out["cycles"] == 2  # wave 1: n1, wave 2: n2
@@ -498,7 +507,8 @@ async def test_execute_dag_entry_node_fallback_to_first_node(
             "edges": [],
             # entry_node missing — wave executor needs no explicit entry; any
             # node with no inbound edges is a start node
-        }
+        },
+        scope=_execution_scope(),
     )
     assert out["status"] == "completed"
     assert out["cycles"] == 1
@@ -705,7 +715,8 @@ async def test_execute_dag_streaming_yields_full_lifecycle(
             "nodes": [{"id": "n1", "role": "worker", "name": "W"}],
             "edges": [],
             "entry_node": "n1",
-        }
+        },
+        scope=_execution_scope(),
     ):
         events.append(ev)
     statuses = [e["status"] for e in events]
@@ -732,7 +743,8 @@ async def test_execute_dag_streaming_yields_failed_on_exception(
             "nodes": [{"id": "n1", "role": "worker", "name": "W"}],
             "edges": [],
             "entry_node": "n1",
-        }
+        },
+        scope=_execution_scope(),
     ):
         events.append(ev)
     assert events[0]["status"] == "started"

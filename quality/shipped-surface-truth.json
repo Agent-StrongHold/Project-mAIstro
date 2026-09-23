@@ -1,6 +1,40 @@
 {
-  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating backend route and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
+  "_comment": "Truthful shipped-surface matrix (#465). Generated classification is reviewed content: every discovered mutating/security backend route and frontend execution signal must carry an exact disposition; scripts/check-shipped-surface-truth.py fails closed on drift. Facades stay visible as unresolved/disabled with owning issues rather than being hidden.",
   "schema_version": 2,
+  "known_facade_issues": [
+    {
+      "issue": 286,
+      "disposition": "disabled",
+      "scope": "Design render and Canvas publish surfaces"
+    },
+    {
+      "issue": 292,
+      "disposition": "tracked",
+      "scope": "Conductor CLI page contract"
+    },
+    {
+      "issue": 294,
+      "disposition": "tracked",
+      "scope": "agent Forge artifacts"
+    },
+    {
+      "issue": 295,
+      "disposition": "removed/non-shipped",
+      "scope": "Tools Lab controls; no production route or UI action remains"
+    },
+    {
+      "issue": 382,
+      "disposition": "unresolved",
+      "scope": "container image build facade"
+    }
+  ],
+  "product_status_checks": [
+    {
+      "surface": "packages/hive-conductor/backend/routes/design.py:POST:/projects/{project_id}/render:create_render_job",
+      "file": "README.md",
+      "contains": "| `/v1/design/*` | **Partial** |"
+    }
+  ],
   "backend_roots": [
     "packages"
   ],
@@ -137,6 +171,26 @@
       "production_enabled": true,
       "reason": "authenticated start of an explicit provider-identity link flow; allocates PKCE state only, the callback binds the verified external subject (#491)",
       "effect_owner": "OAuth state store + durable identity-link store (link happens at callback)"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "GET",
+      "route": "/oauth/{provider}/callback",
+      "handler": "oauth_callback",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "verifies the provider callback and either binds an identity or issues a Hive session",
+      "effect_owner": "OAuth single-use state store + identity/session stores + audit log"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/auth.py",
+      "method": "GET",
+      "route": "/oauth/{provider}/start",
+      "handler": "oauth_start",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "starts the OAuth authorization-code flow and persists browser-bound PKCE state",
+      "effect_owner": "OAuth state store + HttpOnly state cookie"
     },
     {
       "source": "packages/hive-conductor/backend/routes/auth.py",
@@ -369,6 +423,16 @@
       "effect_owner": "credential vault store + audit log"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/dag_runs.py",
+      "method": "POST",
+      "route": "/{run_id}/cancel",
+      "handler": "cancel_run",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "cancels a visible DAG run by delegating to RunExecutionService.cancel_run on the durable Run spine, preferring the projection's canonical_run_id mapping",
+      "effect_owner": "maistro.runs.service.RunExecutionService.cancel_run (Run transition + physical Attempt cancellation)"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/dags.py",
       "method": "DELETE",
       "route": "/{dag_id}",
@@ -493,9 +557,9 @@
       "method": "POST",
       "route": "/projects/{project_id}/render",
       "handler": "create_render_job",
-      "disposition": "unresolved",
-      "production_enabled": true,
-      "reason": "creates a pending render job that no worker advances: no bytes are produced or served (D-14 facade, #286)",
+      "disposition": "disabled",
+      "production_enabled": false,
+      "reason": "rendering is explicitly unavailable until a canonical worker, durable artifact store, and output-serving route exist (D-14 facade, #286)",
       "owner_issue": 286
     },
     {
@@ -515,8 +579,9 @@
       "handler": "trigger_cycle",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "runs one real evolution cycle",
-      "effect_owner": "services.evolution run cycle"
+      "reason": "admits one canonical Graph -> Run -> NodeRun -> Attempt evolution cycle; unavailable canonical execution returns an explicit availability error and terminal Run failures preserve their identity",
+      "effect_owner": "services.evolution -> services.evolution_graph canonical Run spine",
+      "truth_contract": "POST /cycle is executable only when the engine exposes a canonical Container with Run, Graph continuation, and Project scope stores; canonical failed/cancelled/timed-out Runs are projected with run_id, status, and diagnostic rather than as service-unavailable"
     },
     {
       "source": "packages/hive-conductor/backend/routes/evolution.py",
@@ -877,6 +942,46 @@
       "production_enabled": true,
       "reason": "replaces the profile and returns the store's read-back",
       "effect_owner": "services.profile_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "DELETE",
+      "route": "/brief",
+      "handler": "drop_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "forgets the caller's open brief interview in this workspace; nothing was committed from it",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/answer",
+      "handler": "answer_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "applies one free-text turn to the open brief interview and persists it",
+      "effect_owner": "services.brief_store"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/draft",
+      "handler": "draft_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "the commit gate: returns the Goal/CreativeBrief draft or 409 with the missing fields; writes nothing (no Goal store yet), audits the draft",
+      "effect_owner": "routes.audit.log_audit"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/program.py",
+      "method": "POST",
+      "route": "/brief/start",
+      "handler": "start_brief",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "opens a brief interview from the turn that asked for work and persists it per (user, workspace)",
+      "effect_owner": "services.brief_store"
     },
     {
       "source": "packages/hive-conductor/backend/routes/program.py",
@@ -1739,6 +1844,16 @@
       "effect_owner": "project scope store"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/runs.py",
+      "method": "POST",
+      "route": "/{run_id}/cancel",
+      "handler": "cancel_run",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "cancels one owner-visible Run through the canonical physical execution seam (RunExecutionService.cancel_run)",
+      "effect_owner": "maistro.runs.service.RunExecutionService.cancel_run (Run transition + physical Attempt cancellation)"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/tasks.py",
       "method": "DELETE",
       "route": "/{task_id}",
@@ -1987,8 +2102,8 @@
       "route": "${API}/cycle",
       "disposition": "canonical",
       "production_enabled": true,
-      "reason": "triggers an evolution cycle through the real backend route",
-      "effect_owner": "routes/evolution.py trigger_cycle"
+      "reason": "requests a canonical evolution cycle when status reports executable; unavailable or terminal Run failure truth remains visible in the backend response",
+      "effect_owner": "routes/evolution.py trigger_cycle -> canonical Run response"
     },
     {
       "source": "packages/hive-conductor/frontend/src/pages/Evolution.tsx",
@@ -2194,7 +2309,7 @@
       "source": "packages/maistro-canvas/frontend/server.js",
       "signal": "mutating-api-call",
       "method": "POST",
-      "route": "${LULU_SERVICE_URL}/orders/${req.params.id}/cancel",
+      "route": "${LULU_SERVICE_URL}/orders/${id}/cancel",
       "disposition": "canonical",
       "production_enabled": true,
       "reason": "cancels a real print order through the lulu service",
@@ -2329,6 +2444,236 @@
       "production_enabled": true,
       "reason": "redeems a handoff code for a session token",
       "effect_owner": "server.js /api/handoff/redeem (handoff code -> session token)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "${AZURE_ENDPOINT}/openai/deployments/${AZURE_DEPLOYMENT}/images/generations?api-version=2025-03-01-preview",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "performs a real upstream image-generation request",
+      "effect_owner": "Azure OpenAI image-generation upstream call"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/books",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/books/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/characters/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/characters/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "DELETE",
+      "route": "/api/templates/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/templates/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "PATCH",
+      "route": "/api/generation-attempts/:id/verdict",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/generation-attempts/:id/verdict"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/books/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/books/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/characters/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/characters/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/export",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/export"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/generation-attempts",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/generation-attempts"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/handoff/redeem",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/handoff/redeem"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/layout-versions",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/layout-versions"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/chat",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/chat"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/image"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/image-edit",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/image-edit"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/llm/pipeline-image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/llm/pipeline-image"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/print/order",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/print/order"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/print/orders/:id/cancel",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/print/orders/:id/cancel"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/server.js",
+      "signal": "mutating-api-route",
+      "method": "POST",
+      "route": "/api/templates/:key",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "Express handler performs the real Canvas server effect",
+      "effect_owner": "server.js /api/templates/:key"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/chat",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/chat (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/image (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/image-edit",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/image-edit (provider proxy)"
+    },
+    {
+      "source": "packages/maistro-canvas/frontend/src/lib/llmClient.js",
+      "signal": "mutating-api-call",
+      "method": "POST",
+      "route": "/api/llm/pipeline-image",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "routes the browser request through the real Canvas server proxy",
+      "effect_owner": "server.js /api/llm/pipeline-image (provider proxy)"
     }
   ]
 }

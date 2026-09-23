@@ -15,7 +15,9 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunStore
+from maistro.runtime import PythonExecutionRuntime
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
 from maistro_server.api.schemas import NodeRunSummary, RunSummary
@@ -72,6 +74,32 @@ async def get_run(
 ) -> RunSummary:
     """The canonical execution state behind a submitted task."""
     run = await _require_visible_run(store, run_id, _owner_id(auth))
+    return RunSummary(
+        run_id=run.run_id,
+        status=run.status.value,
+        workspace_id=run.workspace_id,
+        project_id=run.project_id,
+        graph_id=run.graph.graph_id,
+        provenance=dict(run.provenance),
+        created_at=run.created_at,
+        finished_at=run.finished_at,
+        result=run.result,
+        error=run.error,
+    )
+
+
+@router.post("/{run_id}/cancel")
+async def cancel_run(
+    run_id: str,
+    auth: RequireAuth,
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> RunSummary:
+    """Request cancellation through the canonical physical execution seam."""
+    await _require_visible_run(store, run_id, _owner_id(auth))
+    run = await RunExecutionService(
+        store=store,
+        runtime=PythonExecutionRuntime(),
+    ).cancel_run(run_id)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,

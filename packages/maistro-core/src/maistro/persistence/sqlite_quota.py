@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from maistro.persistence.pg_quota import cycle_key
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -30,8 +31,8 @@ class SqliteQuotaTracker:
 
     async def ensure_schema(self) -> None:
         """Create the quota_usage table if it doesn't exist."""
-        await self._conn.execute(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
 
     async def record_usage(
         self,

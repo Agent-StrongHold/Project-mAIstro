@@ -34,9 +34,24 @@ class FakePwRoute:
     raises, like Playwright does.
     """
 
-    def __init__(self, request: FakePwRequest) -> None:
+    def __init__(self, request: FakePwRequest, context: FakePwContext) -> None:
         self.request = request
+        self._context = context
         self.action: tuple[str, ...] | None = None
+        self.fulfilled = False
+
+    async def fetch(
+        self, *, url: str | None = None, max_redirects: int | None = None
+    ) -> FakeHttpResponse:
+        target = url or self.request.url
+        self._context.network_urls.append(target)
+        return self._context.responses.get(target, FakeHttpResponse(200))
+
+    async def fulfill(self, *, response: FakeHttpResponse) -> None:
+        if self.action is not None:
+            raise RuntimeError("route already handled")
+        self.fulfilled = True
+        self.action = ("continue",)
 
     async def continue_(self, **kwargs: Any) -> None:
         if self.action is not None:
@@ -60,17 +75,30 @@ class FakePwWebSocketRoute:
         self.action = ("close", code)
 
 
-class FakePwContext:
-    """A Playwright `BrowserContext` driven by hand.
+class FakeHttpResponse:
+    """The small part of an HTTP response needed to model redirects."""
 
-    `navigate` / `open_web_socket` push a request through every registered
-    handler — the point in real Chromium where the network stack is about
-    to connect, and where the guard's decision applies.
+    def __init__(self, status: int, *, location: str = "") -> None:
+        self.status = status
+        self.headers = {"location": location} if location else {}
+
+
+class FakePwContext:
+    """A controlled Playwright `BrowserContext` with a tiny HTTP wire.
+
+    `navigate` sends a request through registered route handlers before the
+    controlled wire is consulted. A continued redirect is then fed back
+    through the handlers automatically, matching Chromium's per-hop route
+    dispatch rather than requiring a test to manually call the handler for
+    each hop.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, responses: dict[str, FakeHttpResponse] | None = None) -> None:
         self.route_handlers: list[tuple[str, Any]] = []
         self.ws_handlers: list[tuple[str, Any]] = []
+        self.responses = responses or {}
+        self.network_urls: list[str] = []
+        self.redirects: list[tuple[str, str]] = []
         self.closed = False
         #: Whether service workers were blocked at creation.
         self.init_kwargs: dict[str, Any] = {}
@@ -81,11 +109,23 @@ class FakePwContext:
     async def route_web_socket(self, pattern: str, handler: Any) -> None:
         self.ws_handlers.append((pattern, handler))
 
-    async def navigate(self, url: str, resource_type: str = "document") -> FakePwRoute:
+    async def navigate(
+        self,
+        url: str,
+        resource_type: str = "document",
+        _redirect_count: int = 0,
+    ) -> FakePwRoute:
+        if _redirect_count > 10:
+            raise RuntimeError("too many controlled redirects")
         request = FakePwRequest(url, resource_type)
-        route = FakePwRoute(request)
+        route = FakePwRoute(request, self)
         for _pattern, handler in self.route_handlers:
             await handler(route, request)
+        if route.action == ("continue",) and not route.fulfilled:
+            response = self.responses.get(url)
+            if response is not None and 300 <= response.status < 400 and response.location:
+                self.redirects.append((url, response.location))
+                return await self.navigate(response.location, resource_type, _redirect_count + 1)
         return route
 
     async def open_web_socket(self, url: str) -> FakePwWebSocketRoute:

@@ -60,7 +60,14 @@ def _classify_path(path: str, out: dict[str, bool]) -> None:
             core
             and any(
                 token in path
-                for token in ("persistence", "workspace", "container", "storage", "run_store")
+                for token in (
+                    "persistence",
+                    "workspace",
+                    "container",
+                    "storage",
+                    "run_store",
+                    "/runs/",
+                )
             )
         )
     ):

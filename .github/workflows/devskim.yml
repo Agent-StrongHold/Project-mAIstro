@@ -1,0 +1,59 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+name: DevSkim
+
+on:
+  push:
+    branches: [ "develop" ]
+  pull_request:
+    branches: [ "develop" ]
+  schedule:
+    - cron: '28 17 * * 1'
+
+jobs:
+  lint:
+    name: DevSkim
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # DevSkim ran unconfigured, so it scanned the test and vendored trees
+      # alongside the shipped ones. Those trees are where `http://` and
+      # `localhost` legitimately live in bulk -- fixtures asserting that an
+      # insecure URL is refused, loopback addresses in test servers, vendored
+      # benchmark corpora -- and they produced 619 of the 912 findings. A
+      # scanner whose output is two-thirds noise is one nobody reads, which
+      # costs more than the rule it enforces.
+      #
+      # Every glob names a *location* that holds no shipped code, never a
+      # filename shape: a shape reaches across the tree into `packages/` and
+      # silently drops a shipped module (exactly what `**/test_*.py` did to
+      # the CodeQL config, where it also matched `maistro_rsi/test_inventory.py`).
+      # `tests/test_devskim_scan_scope.py` fails if any glob here matches a
+      # file that is neither a test nor vendored.
+      #
+      # Setting this input REPLACES the action's default, so `**/.git/**` and
+      # `**/bin/**` are repeated rather than inherited.
+      #
+      # Deliberately NOT excluded: `docs/**` (a document telling an operator to
+      # use `http://` is a finding worth having, and the pattern would also
+      # reach shipped `templates/*/docs/**.jinja`), and no `exclude-rules` --
+      # suppressing a rule repo-wide would silence it on shipped code too,
+      # which is the opposite of the intent here.
+      - name: Run DevSkim scanner
+        uses: microsoft/DevSkim-Action@v1
+        with:
+          ignore-globs: "**/.git/**,**/bin/**,**/node_modules/**,**/dist/**,**/build/**,**/third_party/**,**/tests/**,**/__tests__/**,**/*.test.js,**/*.test.jsx,**/*.test.ts,**/*.test.tsx,**/*.test.yml"
+
+      - name: Upload DevSkim scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: devskim-results.sarif

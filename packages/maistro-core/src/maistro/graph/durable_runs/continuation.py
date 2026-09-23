@@ -7,7 +7,8 @@ frontier, a blackboard and a routing history are not execution lifecycle
 (ADR-062, ADR-082826-d9f5). This module is that second half, stored beside the
 canonical rows rather than wrapped around them.
 
-The index columns (`status`, `project_id`, `created_at`, `resume_at`) are
+The index columns (`status`, `project_id`, `created_at`, `resume_at`,
+`hitl_deadline_at`) are
 denormalized from the canonical Run/continuation on every write. They exist so
 recovery can find eligible graph runs with bounded indexed queries rather than
 a scan of every Run on the spine; the Run remains the lifecycle authority, and
@@ -25,7 +26,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.traversal_commit import TraversalCheckpoint, TraversalCommit
 from maistro.runs.model import RunStatus
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
+from .fair_scan import cursor_time
+from .hitl import earliest_hitl_deadline, earliest_hitl_deadline_from_state
 from .types import DurableRunRecord
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -44,6 +48,8 @@ class GraphContinuation(BaseModel):
     traversal_checkpoints: tuple[TraversalCheckpoint, ...] = Field(default_factory=tuple)
     traversal_commits: tuple[TraversalCommit, ...] = Field(default_factory=tuple)
     resume_at: datetime | None = None
+    # Lookup projection only; the pause entry in graph_state remains authoritative.
+    hitl_deadline_at: datetime | None = None
     version: int = Field(default=0, ge=0)
     status: RunStatus = RunStatus.CREATED
     project_id: str = ""
@@ -57,6 +63,7 @@ class GraphContinuation(BaseModel):
             traversal_checkpoints=record.traversal_checkpoints,
             traversal_commits=record.traversal_commits,
             resume_at=record.resume_at,
+            hitl_deadline_at=earliest_hitl_deadline(record),
             version=record.version,
             status=record.run.status,
             project_id=record.run.project_id,
@@ -84,10 +91,33 @@ class GraphContinuationStore(Protocol):
         *,
         limit: int = 100,
         project_id: str | None = None,
-    ) -> list[str]: ...
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
+        """Run ids in ``status``, oldest-created-first.
 
-    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
-        """Return persisted wait/claim continuations whose deadline is due."""
+        ``after`` is a ``(created_at_iso, run_id)`` keyset cursor: strictly
+        newer than what a caller has already inspected. Fair bounded scans
+        (#1056, #1109) page through it rather than re-reading the same fixed
+        prefix every tick.
+        """
+        ...
+
+    async def list_due_run_ids(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
+        """Return persisted wait/claim continuations whose deadline is due.
+
+        ``after`` is a ``(resume_at_iso, run_id)`` keyset cursor, the same
+        deadline-then-run_id order the underlying index uses (#1098).
+        """
+        ...
+
+    async def list_hitl_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        """Return paused continuations whose indexed HITL deadline is due."""
         ...
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]: ...
@@ -95,6 +125,18 @@ class GraphContinuationStore(Protocol):
 
 def _clone(continuation: GraphContinuation) -> GraphContinuation:
     return GraphContinuation.model_validate_json(continuation.model_dump_json())
+
+
+def _created_cursor(row: GraphContinuation) -> tuple[str, str]:
+    """The ``(created_at_iso, run_id)`` keyset position of one row (#1056, #1109)."""
+    created = cursor_time(row.created_at) if row.created_at is not None else ""
+    return (created, row.run_id)
+
+
+def _due_cursor(row: GraphContinuation) -> tuple[str, str]:
+    """The ``(resume_at_iso, run_id)`` keyset position of one due row (#1098)."""
+    assert row.resume_at is not None  # narrowed by the due-status/deadline filter above
+    return (cursor_time(row.resume_at), row.run_id)
 
 
 class InMemoryGraphContinuationStore:
@@ -137,6 +179,7 @@ class InMemoryGraphContinuationStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[str]:
         rows = [
             row
@@ -144,9 +187,17 @@ class InMemoryGraphContinuationStore:
             if row.status is status and (project_id is None or row.project_id == project_id)
         ]
         rows.sort(key=lambda row: (row.created_at or datetime.min, row.run_id))
+        if after is not None:
+            rows = [row for row in rows if _created_cursor(row) > after]
         return [row.run_id for row in rows[:limit]]
 
-    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+    async def list_due_run_ids(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
         rows = [
             row
             for row in self._rows.values()
@@ -155,6 +206,19 @@ class InMemoryGraphContinuationStore:
             and row.resume_at <= now
         ]
         rows.sort(key=lambda row: (row.resume_at, row.run_id))
+        if after is not None:
+            rows = [row for row in rows if _due_cursor(row) > after]
+        return [row.run_id for row in rows[:limit]]
+
+    async def list_hitl_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        rows = [
+            row
+            for row in self._rows.values()
+            if row.status is RunStatus.PAUSED
+            and row.hitl_deadline_at is not None
+            and row.hitl_deadline_at <= now
+        ]
+        rows.sort(key=lambda row: (row.hitl_deadline_at, row.run_id))
         return [row.run_id for row in rows[:limit]]
 
     async def list_run_ids_for_project(self, project_id: str, *, limit: int = 25) -> list[str]:
@@ -173,6 +237,7 @@ CREATE TABLE IF NOT EXISTS graph_continuations (
     project_id        TEXT NOT NULL,
     created_at        TEXT,
     resume_at         TEXT,
+    hitl_deadline_at   TEXT,
     version           INTEGER NOT NULL DEFAULT 0,
     continuation_json TEXT NOT NULL
 );
@@ -196,8 +261,39 @@ class SqliteGraphContinuationStore:
         self._lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
+            columns = await self._conn.execute_fetchall("PRAGMA table_info(graph_continuations)")
+            if not any(row[1] == "hitl_deadline_at" for row in columns):
+                await self._conn.execute(
+                    "ALTER TABLE graph_continuations ADD COLUMN hitl_deadline_at TEXT"
+                )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_graph_continuations_hitl_deadline "
+                "ON graph_continuations (status, hitl_deadline_at)"
+            )
+            await self._backfill_hitl_deadlines()
+
+    async def _backfill_hitl_deadlines(self) -> None:
+        """Restore the lookup projection for continuations written pre-033."""
+        cursor = await self._conn.execute(
+            """SELECT run_id, continuation_json FROM graph_continuations
+                WHERE status = ? AND hitl_deadline_at IS NULL""",
+            (RunStatus.PAUSED.value,),
+        )
+        rows = await cursor.fetchall()
+        for run_id, payload in rows:
+            continuation = GraphContinuation.model_validate_json(payload)
+            deadline = earliest_hitl_deadline_from_state(
+                continuation.graph_state.active_node_ids,
+                continuation.graph_state.metadata,
+                run_id=str(run_id),
+            )
+            if deadline is not None:
+                await self._conn.execute(
+                    "UPDATE graph_continuations SET hitl_deadline_at = ? WHERE run_id = ?",
+                    (deadline.isoformat(), run_id),
+                )
 
     async def create(self, continuation: GraphContinuation) -> GraphContinuation:
         async with self._lock:
@@ -236,37 +332,55 @@ class SqliteGraphContinuationStore:
         *,
         limit: int = 100,
         project_id: str | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[str]:
-        if project_id is None:
-            cursor = await self._conn.execute(
-                "SELECT run_id FROM graph_continuations WHERE status = ? "
-                "ORDER BY created_at ASC, run_id ASC LIMIT ?",
-                (status.value, limit),
-            )
-        else:
-            cursor = await self._conn.execute(
-                "SELECT run_id FROM graph_continuations "
-                "WHERE status = ? AND project_id = ? "
-                "ORDER BY created_at ASC, run_id ASC LIMIT ?",
-                (status.value, project_id, limit),
-            )
+        sql = "SELECT run_id FROM graph_continuations WHERE status = ?"
+        params: list[object] = [status.value]
+        if project_id is not None:
+            sql += " AND project_id = ?"
+            params.append(project_id)
+        if after is not None:
+            sql += " AND (created_at, run_id) > (?, ?)"
+            params.extend(after)
+        sql += " ORDER BY created_at ASC, run_id ASC LIMIT ?"
+        params.append(limit)
+        cursor = await self._conn.execute(sql, params)
         return [str(row[0]) for row in await cursor.fetchall()]
 
-    async def list_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
-        cursor = await self._conn.execute(
-            """SELECT run_id FROM graph_continuations
+    async def list_due_run_ids(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ) -> list[str]:
+        sql = """SELECT run_id FROM graph_continuations
                 WHERE status IN (?, ?, ?)
                   AND resume_at IS NOT NULL
-                  AND resume_at <= ?
-             ORDER BY resume_at ASC, run_id ASC
+                  AND resume_at <= ?"""
+        params: list[object] = [
+            RunStatus.WAITING.value,
+            RunStatus.PAUSED.value,
+            RunStatus.RUNNING.value,
+            cursor_time(now),
+        ]
+        if after is not None:
+            sql += " AND (resume_at, run_id) > (?, ?)"
+            params.extend(after)
+        sql += " ORDER BY resume_at ASC, run_id ASC LIMIT ?"
+        params.append(limit)
+        cursor = await self._conn.execute(sql, params)
+        return [str(row[0]) for row in await cursor.fetchall()]
+
+    async def list_hitl_due_run_ids(self, *, now: datetime, limit: int = 100) -> list[str]:
+        cursor = await self._conn.execute(
+            """SELECT run_id FROM graph_continuations
+                WHERE status = ?
+                  AND hitl_deadline_at IS NOT NULL
+                  AND hitl_deadline_at <= ?
+             ORDER BY hitl_deadline_at ASC, run_id ASC
                 LIMIT ?""",
-            (
-                RunStatus.WAITING.value,
-                RunStatus.PAUSED.value,
-                RunStatus.RUNNING.value,
-                now.isoformat(),
-                limit,
-            ),
+            (RunStatus.PAUSED.value, cursor_time(now), limit),
         )
         return [str(row[0]) for row in await cursor.fetchall()]
 
@@ -292,27 +406,31 @@ class SqliteGraphContinuationStore:
         values = (
             continuation.status.value,
             continuation.project_id,
-            continuation.created_at.isoformat() if continuation.created_at else None,
-            continuation.resume_at.isoformat() if continuation.resume_at else None,
+            cursor_time(continuation.created_at) if continuation.created_at else None,
+            cursor_time(continuation.resume_at) if continuation.resume_at else None,
+            cursor_time(continuation.hitl_deadline_at) if continuation.hitl_deadline_at else None,
             continuation.version,
             continuation.model_dump_json(),
         )
         if insert:
             await self._conn.execute(
                 """INSERT INTO graph_continuations
-                       (status, project_id, created_at, resume_at, version,
-                        continuation_json, run_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       (status, project_id, created_at, resume_at, hitl_deadline_at,
+                        version, continuation_json, run_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (*values, continuation.run_id),
             )
         else:
-            await self._conn.execute(
+            cursor = await self._conn.execute(
                 """UPDATE graph_continuations
                       SET status = ?, project_id = ?, created_at = ?, resume_at = ?,
-                          version = ?, continuation_json = ?
-                    WHERE run_id = ?""",
-                (*values, continuation.run_id),
+                          hitl_deadline_at = ?, version = ?, continuation_json = ?
+                    WHERE run_id = ? AND version < ?""",
+                (*values, continuation.run_id, continuation.version),
             )
+            if cursor.rowcount != 1:
+                await self._conn.commit()
+                raise ValueError(f"version regression: incoming={continuation.version}")
         await self._conn.commit()
 
 

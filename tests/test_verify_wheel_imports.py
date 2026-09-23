@@ -246,10 +246,15 @@ class TestTheOptionalFileIsDeclared:
         assert tuple(check.ESSENTIAL_FILES) == tuple(ESSENTIAL_FILES)
 
     def test_every_essential_file_is_declared_per_system(self, check):
-        """Whatever the importer requires, declared for all six systems."""
+        """Whatever the importer requires, declared for every bundled system."""
+        sys.path.insert(0, str(ROOT / "packages" / "maistro-design" / "src"))
+        try:
+            from maistro_design.systems.importer import BUNDLED_SLUGS
+        finally:
+            sys.path.pop(0)
         pkg = next(p for p in check.PACKAGES if p.dist == "maistro-design")
         bundled = [r for r in pkg.data_files if r.startswith("systems/bundled/")]
-        assert len(bundled) == 6 * len(check.ESSENTIAL_FILES)
+        assert len(bundled) == len(BUNDLED_SLUGS) * len(check.ESSENTIAL_FILES)
 
     def test_a_catalog_payload_is_declared_not_only_the_index(self, check):
         """The index alone would let a wheel advertise 144 importable systems

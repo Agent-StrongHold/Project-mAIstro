@@ -48,7 +48,7 @@ owners:
 
 # SPEC-081226-7248: Event and Checkpoint Model
 
-- **Status:** Active
+- **Status:** AC Defined
 - **Date:** 2026-08-12
 - **ADR:** `ADR-081226-7248`
 

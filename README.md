@@ -64,6 +64,10 @@ uv run pytest                         # run the test suite
 docker compose up -d                  # full local stack (Postgres + LiteLLM + Langfuse)
 ```
 
+### Requirements
+
+- **Docker Engine 25+** (API 1.44+). The engine images embed the docker CLI v29, which only negotiates Docker API 1.44+ — the floor rose with the go1.26.8 toolchain rebuild that fixed CVE-2025-68121 (plus 21 HIGH-severity Go stdlib CVEs) in the previously embedded go1.22.11 CLI. `install.sh` enforces this before starting the stack and exits with an upgrade pointer; Engine ≤ 24 (API ≤ 1.43) daemons are unsupported. Upgrade via [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) or your distro's current `docker.io` package, then re-run `./install.sh`.
+
 The engine image applies migrations automatically before it starts the API.
 Migration runners serialize through a PostgreSQL advisory lock, so multiple
 replicas cannot race the schema. A migration failure keeps readiness down and
@@ -176,7 +180,7 @@ tested modules with no call path, so "the code is there" is not the bar.
 |---|---|---|
 | `maistro-server` — tasks, OpenAI-compatible chat, webhooks, WS, `/metrics` | **Complete** | Webhooks fail closed without a secret. |
 | Conductor `/v1/*` — the surfaces marked Complete above | **Complete** | |
-| `/v1/design/*` | **Complete** | No UI consumes it. |
+| `/v1/design/*` | **Partial** | Project generation is available; server-side rendering returns 501 until a canonical worker, durable artifact store, and output-serving route exist (`quality/shipped-surface-truth.json`, #286). |
 | `/v1/harness/*` (inbound foreign-harness API) | **Complete** | Lets another orchestrator drive this instance. |
 | `/v1/models` | **Partial** | Four hardcoded pseudo-models. |
 | `/v2/canvas` | **TODO** | Every route 503s — nothing injects the canvas store. |

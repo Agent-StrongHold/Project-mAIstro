@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from maistro.security.redact import redact as _redact
+
 
 class TrustTier(StrEnum):
     """Trust tiers for agents and skills."""
@@ -49,6 +51,15 @@ class Violation:
     severity: str = "error"
     detail: str = ""
     repair_action: str | None = None
+
+    def __post_init__(self) -> None:
+        # #1159: this Violation rides the persisted AuditEntry's violations
+        # tuple. The shipped Pg/SQLite audit stores happen not to serialize
+        # that tuple today, but the invariant may not rest on that omission:
+        # detail is scrubbed AT CONSTRUCTION so any future store that persists
+        # violations inherits redacted text. (The sentinel-side Violation in
+        # `maistro.security._types` applies the identical rule.)
+        object.__setattr__(self, "detail", _redact(self.detail))
 
 
 @dataclass(frozen=True)

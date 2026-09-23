@@ -14,6 +14,7 @@ from typing import Any
 from services import legacy_dag_node as _legacy_dag_node
 from services.canonical_dag_runner import execute_dag as _canonical_execute_dag
 from services.canonical_dag_runner import genome_to_dag
+from services.dag_execution_scope import DagExecutionScope
 
 # Historical helper imports remain available for existing tests and downstream
 # callers, but their implementation now lives with the one-node compatibility
@@ -113,7 +114,7 @@ async def execute_dag_streaming(dag_data: dict, **kwargs: Any):
     }
 
 
-async def execute_champion() -> dict[str, Any]:
+async def execute_champion(*, scope: DagExecutionScope | None = None) -> dict[str, Any]:
     """Run the current evolution champion through the same canonical DAG adapter."""
     try:
         from services.evolution import get_evolution_service
@@ -126,7 +127,7 @@ async def execute_champion() -> dict[str, Any]:
     champion = service.population.get_champion()
     if champion is None:
         return {"status": "error", "error": "no champion yet"}
-    result = await execute_dag(genome_to_dag(champion))
+    result = await execute_dag(genome_to_dag(champion), **({"scope": scope} if scope else {}))
     result["genome_id"] = champion.id
     result["fitness"] = champion.fitness_score
     result["generation"] = champion.generation

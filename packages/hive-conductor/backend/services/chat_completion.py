@@ -18,6 +18,7 @@ from typing import Any
 from adapters.llm_http import HttpOpenAIProtocolLLM, StubLLMPort
 from adapters.telemetry_langfuse import telemetry
 from config import get_settings
+from fastapi import HTTPException
 from models.schemas import ChatCompletionRequest
 from protocols.llm import LLMPort
 from routes.audit import log_audit
@@ -40,6 +41,7 @@ from services.chat_gate import (
     new_gate_id,
     refusal_content,
 )
+from services.owned_records import Owner, owned_memory_entries
 from services.secrets import litellm_api_key as _resolve_litellm_api_key
 from services.tool_primitives import (
     AIRTABLE_PROVIDER_IDS,
@@ -147,45 +149,53 @@ def _get_jira_pat(user_id: str) -> str | None:
         return None
 
 
-def _get_airtable_creds(user_id: str) -> tuple[str | None, str | None]:  # noqa: C901  layered credential fallbacks
-    """Pull Airtable token + base_id from env (CI/CD) or credential store."""
+def _get_airtable_creds(user_id: str) -> tuple[str | None, str | None]:
+    """Pull Airtable credentials for exactly ``user_id``.
+
+    ``AIRTABLE_*`` environment credentials are retained only for an explicitly
+    enabled, single-user deployment with at most one stored principal. They are
+    never a fallback on an authenticated multi-user request.
+    """
     import os
 
-    env_token = os.environ.get("AIRTABLE_TOKEN") or os.environ.get("AIRTABLE_API_KEY")
-    env_base = os.environ.get("AIRTABLE_BASE_ID")
-    if env_token:
-        return env_token, env_base or ""
     try:
         import stores
 
         from services import user_credentials as cred_svc
+
+        if _single_user_airtable_env_enabled(user_id):
+            env_token = os.environ.get("AIRTABLE_TOKEN") or os.environ.get("AIRTABLE_API_KEY")
+            if env_token:
+                return env_token, os.environ.get("AIRTABLE_BASE_ID", "")
 
         store = cred_svc.get_credential_store()
         if store is None:
             return None, None
         context = ToolCallContext(user_id)
         resolver = ToolCredentialResolver(store)
-        token = resolver.first_secret(context, AIRTABLE_PROVIDER_IDS, include_dev_fallback=True)
+        token = resolver.first_secret(context, AIRTABLE_PROVIDER_IDS)
         if not token:
             return None, None
-        # base_id is in user_provider_config — try multiple user_id patterns
-        base_id = ""
-        for uid in context.candidate_user_ids(include_dev_fallback=True):
-            config_raw = stores.user_provider_config.get(f"{uid}:airtable")
-            if isinstance(config_raw, dict) and config_raw.get("base_id"):
-                base_id = config_raw["base_id"]
-                break
-        # If still not found, scan all keys for any airtable config
-        if not base_id:
-            for key in stores.user_provider_config:
-                if key.endswith(":airtable"):
-                    val = stores.user_provider_config.get(key)
-                    if isinstance(val, dict) and val.get("base_id"):
-                        base_id = val["base_id"]
-                        break
+        config_raw = stores.user_provider_config.get(f"{user_id}:airtable")
+        base_id = config_raw.get("base_id") if isinstance(config_raw, dict) else ""
         return token, base_id.split("/")[0] if base_id else ""
     except Exception:
         return None, None
+
+
+def _single_user_airtable_env_enabled(user_id: str) -> bool:
+    """Gate legacy process-wide Airtable env vars to an explicit one-user mode."""
+    import os
+
+    if os.environ.get("AIRTABLE_SINGLE_USER_MODE", "").lower() not in {"1", "true", "yes"}:
+        return False
+    try:
+        import stores
+
+        principals = tuple(stores.users.keys())
+        return len(principals) <= 1 and (not principals or user_id in principals)
+    except Exception:
+        return False
 
 
 def _build_system_prompt(user_id: str) -> str:  # noqa: C901  many optional prompt sections
@@ -623,12 +633,16 @@ PM_TOOLS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "dag_id": {"type": "string", "description": "The DAG workflow ID to run"},
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "The authorized Workspace in which to run the workflow",
+                    },
                     "goal": {
                         "type": "string",
                         "description": "Optional goal/context to pass to the DAG nodes",
                     },
                 },
-                "required": ["dag_id"],
+                "required": ["dag_id", "workspace_id"],
             },
         },
     },
@@ -1249,9 +1263,7 @@ async def _tool_memory_add(
         created_at=t,
         updated_at=t,
     )
-    import stores
-
-    stores.memory_entries[eid] = entry
+    owned_memory_entries(Owner(id=user_id)).create(eid, entry)
     return {"saved": True, "id": eid, "content": content}
 
 
@@ -1291,10 +1303,8 @@ async def _tool_memory_search(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Search memories."""
-    import stores
-
     query = args.get("query", "").lower()
-    entries = [e for e in stores.memory_entries.values() if e.user_id == user_id]
+    entries = owned_memory_entries(Owner(id=user_id)).values()
     if query:
         entries = [
             e
@@ -1316,13 +1326,10 @@ async def _tool_memory_delete(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Delete a memory entry."""
-    import stores
-
     entry_id = args.get("entry_id", "")
     if not entry_id:
         return {"error": "entry_id required"}
-    if entry_id in stores.memory_entries and stores.memory_entries[entry_id].user_id == user_id:
-        del stores.memory_entries[entry_id]
+    if owned_memory_entries(Owner(id=user_id)).discard(entry_id):
         return {"deleted": True, "id": entry_id}
     return {"error": "not found"}
 
@@ -1331,21 +1338,21 @@ async def _tool_memory_edit(
     args: dict[str, Any], user_id: str, jira_pat: str | None
 ) -> dict[str, Any]:
     """Edit a memory entry."""
-    import stores
-
     entry_id = args.get("entry_id", "")
     value = args.get("value", "")
     if not entry_id or not value:
         return {"error": "entry_id and value required"}
-    if entry_id not in stores.memory_entries or stores.memory_entries[entry_id].user_id != user_id:
+    owned = owned_memory_entries(Owner(id=user_id))
+    try:
+        entry = owned.require(entry_id)
+    except HTTPException:
         return {"error": "not found"}
     from datetime import UTC, datetime
 
-    entry = stores.memory_entries[entry_id]
     updates: dict[str, Any] = {"value": value, "key": value[:60], "updated_at": datetime.now(UTC)}
     if "tags" in args:
         updates["tags"] = args["tags"]
-    stores.memory_entries[entry_id] = entry.model_copy(update=updates)
+    owned.update(entry_id, entry.model_copy(update=updates))
     return {"updated": True, "id": entry_id, "value": value}
 
 
@@ -1519,6 +1526,7 @@ async def _tool_run_workflow(
         return {"error": f"DAG '{dag_id}' not found. Use list_workflows to see available DAGs."}
 
     dag_data = stores.dags[dag_id]
+    workspace_id = str(args.get("workspace_id") or "").strip()
     goal = args.get("goal", "")
     if goal:
         dag_data = {**dag_data, "description": goal}
@@ -1533,21 +1541,19 @@ async def _tool_run_workflow(
     # whether the graph itself finished, so only that decides the status.
     executed = False
     try:
-        from services.canonical_dag_runner import resolve_execution_scope
+        from services.dag_execution_scope import authorize_hive_dag_scope
         from services.dag_run_store import get_dag_run_store
         from services.graph_runner import execute_dag
 
-        # The projection row opens before execution, so it must already carry
-        # the scope the execution will resolve -- resolved here by the same
-        # resolver `execute_dag` uses, never a second mapping (#1174).
-        workspace_id, project_id = await resolve_execution_scope(dag_data)
+        scope = await authorize_hive_dag_scope(workspace_id=workspace_id, user_id=user_id)
+        project_id = scope.project_id
         store = get_dag_run_store()
         await store.start_run(
             run_id=exec_id,
             workspace_id=workspace_id,
             project_id=project_id,
         )
-        result = await execute_dag(dag_data, user_id=user_id)
+        result = await execute_dag(dag_data, scope=scope)
         executed = True
 
         # Store events

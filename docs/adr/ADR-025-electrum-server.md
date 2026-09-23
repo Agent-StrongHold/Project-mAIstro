@@ -29,7 +29,7 @@ history:
 
 # ADR-025: Electrum Server — Medley plugin for household-private Bitcoin backend
 
-**Status:** Proposed
+**Status:** Deferred
 **Date:** 2026-05-07
 **Depends on:** ADR-023 (Agent Crypto Ops), ADR-029 (Networking Substrate)
 

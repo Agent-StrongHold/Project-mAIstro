@@ -147,9 +147,34 @@ def _merge_group_event_base(payload: dict[str, Any]) -> str | None:
     return None if not base_sha or _is_null_sha(base_sha) else base_sha
 
 
+_PROTECTED_PUSH_REFS = frozenset(
+    {"refs/heads/develop", "refs/heads/integration", "refs/heads/main"}
+)
+
+
 def _push_event_base(payload: dict[str, Any]) -> str | None:
+    """Use the candidate's integration base for topic-branch pushes.
+
+    A topic push's ``before`` is the previous tip of the candidate branch. It
+    can therefore already contain the candidate's own AC-state note, while a
+    pull-request event for the same candidate resolves the merge base with the
+    target branch. That event-keyed difference lets the candidate's note count
+    as an independent superseding landing. Protected-branch pushes are the
+    exception: their parent is the actual revision being replaced and must
+    remain the base for the merge-time guard.
+
+    GitHub always supplies ``ref`` in a push payload. Keeping the ``before``
+    fallback when a synthetic/local payload omits it preserves the resolver's
+    useful fail-soft behavior outside Actions.
+    """
     before = str(payload.get("before", "")).strip()
-    return None if not before or _is_null_sha(before) else before
+    if not before or _is_null_sha(before):
+        return None
+    ref = os.environ.get("GITHUB_REF", "").strip() or str(payload.get("ref", "")).strip()
+    if not ref or ref in _PROTECTED_PUSH_REFS:
+        return before
+    base_ref = os.environ.get("GITHUB_BASE_REF", "").strip() or "develop"
+    return f"origin/{base_ref}"
 
 
 def _github_event_base() -> str | None:
@@ -158,7 +183,9 @@ def _github_event_base() -> str | None:
     Pull requests use the current target ref rather than the historical base
     SHA carried by a long-lived PR event. GitHub's synthetic merge is therefore
     judged against the target tree it is actually integrating into. Merge
-    groups name their immutable base SHA directly; pushes compare to ``before``.
+    groups name their immutable base SHA directly; topic-branch pushes use the
+    same ``origin/develop`` integration base, while protected-branch pushes
+    compare to ``before`` because that is the revision they replace.
     """
     event_name = os.environ.get("GITHUB_EVENT_NAME", "").strip()
     event_path = os.environ.get("GITHUB_EVENT_PATH", "").strip()

@@ -8,8 +8,9 @@ the only third-party origins in the Content-Security-Policy.
 
 | Family | Version | Source package | Licence | Where it is used |
 |---|---|---|---|---|
-| Inter Variable | 5.3.0 | `@fontsource-variable/inter` | SIL OFL 1.1 | `--sans` in the `dark` and `fantasia` themes; the inline stacks on Dashboard, KnowledgeBase and DeckBuilder |
-| JetBrains Mono Variable | 5.3.0 | `@fontsource-variable/jetbrains-mono` | SIL OFL 1.1 | `--mono` in the `dark` and `fantasia` themes |
+| Bricolage Grotesque Variable | 5.3.0 | `@fontsource-variable/bricolage-grotesque` (with its `opsz.css` axis) | SIL OFL 1.1 | `--font-display` and `--font-body` of the Workspace design system (`themes/workspace-bridge.css` binds the token to this face); `--sans` and `--hand` resolve to it |
+| JetBrains Mono Variable | 5.3.0 | `@fontsource-variable/jetbrains-mono` | SIL OFL 1.1 | `--font-mono`, the machine register only (ids, seq numbers, budgets); `--mono` resolves to it |
+| Inter Variable | 5.3.0 | `@fontsource-variable/inter` | SIL OFL 1.1 | The inline stacks still on Dashboard, KnowledgeBase and DeckBuilder; leaves with them |
 
 **Caveat is not shipped.** It was in the Google Fonts request and no rule in
 this tree ever referenced it — four weights fetched on every page load for

@@ -9,6 +9,7 @@ import sys
 
 from settings_defaults import is_pm_poc_mode
 
+from maistro.observability.correlation import install_log_correlation
 from maistro.security.log_redaction import install_log_redaction
 
 _CONFIGURED = False
@@ -118,6 +119,14 @@ def configure_logging() -> str:
         logging.INFO if level <= logging.DEBUG else logging.WARNING
     )
     _install_oauth_access_log_filter()
+
+    # Before redaction, so the redacting formatter wraps this one and sees the
+    # correlated line, same ordering as maistro-core's own configure_logging
+    # (#707): without it, request_id/run_id/etc. are bound onto the execution
+    # context (#1063 wires request_id in) but never reach a Hive log line,
+    # since RequestLogMiddleware and most handlers log through plain stdlib
+    # `logging`, not structlog.
+    install_log_correlation()
 
     # ADR-064 — must be the last thing that touches the handler chain, since it
     # wraps the formatters that exist at this moment. The Conductor's own handler

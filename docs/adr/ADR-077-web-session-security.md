@@ -31,7 +31,7 @@ history:
 
 # ADR-077: Web and Session Security
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-30
 **Formalises the existing `hive_session`** mechanism and binds the web edge to the ADR-068
 authorization model, which is dynamic and therefore cannot be carried in a self-contained token.

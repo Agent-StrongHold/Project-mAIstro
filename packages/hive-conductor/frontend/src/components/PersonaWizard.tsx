@@ -189,7 +189,6 @@ export function PersonaWizard() {
                     value={id}
                     onChange={(e) => setId(e.target.value)}
                     placeholder="dinner_party"
-                    aria-label="Persona id"
                   />
                 </label>
                 <label>
@@ -253,7 +252,6 @@ export function PersonaWizard() {
                     value={uiScopeText}
                     onChange={(e) => setUiScopeText(e.target.value)}
                     placeholder="Guests, Menu, Schedule"
-                    aria-label="Nav sections"
                   />
                 </label>
               </div>
@@ -379,7 +377,11 @@ export function PersonaWizard() {
               </div>
             )}
 
-            {error && <div className="persona-wizard-error">{error}</div>}
+            {error && (
+              <div role="alert" className="persona-wizard-error">
+                {error}
+              </div>
+            )}
 
             <div className="persona-wizard-nav">
               {step > 0 && (

@@ -1,4 +1,10 @@
-"""Discover, benchmark, and select the best LiteLLM models for builders routing.
+"""Operator-only model probe and persisted cache maintenance.
+
+Disposition: intentional non-product diagnostic infrastructure. The explicit
+CLI may probe an operator-configured gateway, but ordinary Builders execution
+only reads a previously persisted cache or configured default. This module is
+not a reusable product model client and does not grant product credentials or
+model authority.
 
 Two tiers, two different probes:
 
@@ -11,9 +17,15 @@ Scoring: quality_pass * 1000 / latency_ms
 Quota/cost data is fetched from /model/info and folded into the output.
 Cache lives at ~/.config/maistro/builders/model_cache.json, TTL 24 h.
 
-Standalone:
+Standalone operator diagnostic (the explicit CLI is required):
     python -m maistro_bootstrap.builders.model_selector [--top N]
     python -m maistro_bootstrap.builders.model_selector --models gemini-flash cerebras-llama3.1-8b
+
+``run_benchmark`` refuses every caller except this module's own CLI process.
+The authorization is structural, not a self-attested flag (#1088): there is no
+``operator_probe=True`` keyword an arbitrary importer could pass to authorize
+ambient-credential model probes. Library consumers read only the persisted
+cache/default through :func:`best_model`.
 """
 
 from __future__ import annotations
@@ -271,12 +283,39 @@ def _winners(results: list[dict[str, Any]], cap_ms: float) -> list[dict[str, Any
     return sorted(passed, key=lambda r: r["score"], reverse=True)
 
 
+def _require_operator_cli() -> None:
+    """Refuse unless this process is running this module's own CLI.
+
+    The probe performs direct model HTTP with ambient operator credentials, so
+    its authorization must not be expressible as a function argument: a boolean
+    flag let any importer self-attest and turn the diagnostic into a reusable
+    product model client (#1088). Only a process launched as
+    ``python -m maistro_bootstrap.builders.model_selector`` — whose ``__main__``
+    module is this file — may probe. That is checkable, and faking it is a
+    deliberate act, not a silent default.
+    """
+
+    main = sys.modules.get("__main__")
+    main_file = getattr(main, "__file__", None)
+    if not main_file or Path(main_file).resolve() != Path(__file__).resolve():
+        raise RuntimeError(
+            "model selection probes are operator-only; run 'python -m "
+            "maistro_bootstrap.builders.model_selector'. Library callers must "
+            "read the persisted cache via best_model() and never probe."
+        )
+
+
 def run_benchmark(
     models: list[str] | None = None,
     *,
     verbose: bool = True,
 ) -> dict[str, Any]:
-    """Probe models with tier-appropriate tests. Returns results dict."""
+    """Probe models with tier-appropriate tests for an explicit operator run.
+
+    The guard keeps this diagnostic from becoming an accidental product model
+    client if a Builder or another library caller imports the helper later.
+    """
+    _require_operator_cli()
     with httpx.Client(timeout=_CAPABLE_LATENCY_CAP_S + 5) as client:
         if models is None:
             if verbose:
@@ -368,7 +407,12 @@ def load_cache() -> dict[str, Any] | None:
 
 
 def best_model(tier: str = "capable") -> str:
-    """Return the best cached model for a tier; runs benchmark if stale."""
+    """Return a persisted model choice; never probe from product composition.
+
+    Operators refresh the cache explicitly with this module's CLI. Keeping the
+    fallback cache-only prevents a stale diagnostic from becoming an implicit
+    product egress or credential-policy bypass.
+    """
     cache = load_cache()
     if cache and cache.get(f"{tier}_model"):
         return str(cache[f"{tier}_model"])
@@ -380,19 +424,12 @@ def best_model(tier: str = "capable") -> str:
             or "google-gemini-2.5-flash"
         )
 
-    logger.info("model cache stale — running benchmark (background)")
-    try:
-        results = run_benchmark(verbose=False)
-        save_cache(results)
-        winners = results[tier]
-        return (
-            winners[0]["model"]
-            if winners
-            else (os.environ.get("DEFAULT_MODEL") or "google-gemini-2.5-flash")
-        )
-    except Exception as exc:
-        logger.warning("benchmark failed (%s) — using env default", exc)
-        return os.environ.get("DEFAULT_MODEL") or "google-gemini-2.5-flash"
+    logger.info("model cache unavailable — using configured default")
+    return (
+        os.environ.get("MAISTRO_BUILDERS_MODEL")
+        or os.environ.get("DEFAULT_MODEL")
+        or "google-gemini-2.5-flash"
+    )
 
 
 # ---------------------------------------------------------------------------

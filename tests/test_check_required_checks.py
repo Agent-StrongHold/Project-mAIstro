@@ -105,7 +105,21 @@ class TestRendering:
 
 class TestMergeQueueRatchet:
     @staticmethod
-    def _write_contracts(tmp_path: Path, *, method: str = "SQUASH", max_merge: int = 1):
+    def _write_contracts(
+        tmp_path: Path,
+        *,
+        method: str = "SQUASH",
+        max_merge: object = 1,
+        min_merge: object = 1,
+        wait_minutes: object = 2,
+        grouping: object = "ALLGREEN",
+    ):
+        """Default to the reviewed batching posture; override one knob per test.
+
+        The queue knobs are typed ``object`` because the fail-closed tests must
+        be able to write values GitHub would never accept (strings, floats,
+        booleans) and prove the gate refuses them anyway.
+        """
         protection = tmp_path / "protection.json"
         protection.write_text(
             json.dumps({"branches": {"develop": {"required_status_checks": {"contexts": ["J"]}}}}),
@@ -118,7 +132,10 @@ class TestMergeQueueRatchet:
                     "branches": {
                         "develop": {
                             "merge_method": method,
+                            "min_entries_to_merge": min_merge,
                             "max_entries_to_merge": max_merge,
+                            "min_entries_to_merge_wait_minutes": wait_minutes,
+                            "grouping_strategy": grouping,
                         }
                     }
                 }
@@ -126,6 +143,30 @@ class TestMergeQueueRatchet:
             encoding="utf-8",
         )
         return protection, queue
+
+    @staticmethod
+    def _queue_capable_workflow(tmp_path: Path) -> Path:
+        workflow = tmp_path / "w.yml"
+        workflow.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "W",
+                    "on": {"merge_group": {"types": ["checks_requested"]}},
+                    "jobs": {"j": {"name": "J"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return workflow
+
+    def _policy_gaps(self, gate, tmp_path, monkeypatch, **policy) -> list[str]:
+        """Gaps for a queue contract carrying only policy-level violations."""
+        protection, queue = self._write_contracts(tmp_path, **policy)
+        workflow = self._queue_capable_workflow(tmp_path)
+        monkeypatch.setattr(gate, "PROTECTION", protection)
+        monkeypatch.setattr(gate, "MERGE_QUEUE", queue)
+        monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
+        return gate.merge_group_gaps([("W", "J", "every PR")])
 
     def test_missing_protection_contract_fails_closed(self, gate, tmp_path, monkeypatch) -> None:
         queue = tmp_path / "queue.json"
@@ -163,49 +204,87 @@ class TestMergeQueueRatchet:
         monkeypatch.setattr(gate, "PROTECTION", protection)
         monkeypatch.setattr(gate, "MERGE_QUEUE", queue)
         monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
-        assert any(
-            "no merge_group" in gap for gap in gate.merge_group_gaps([("W", "J", "every PR")])
-        )
+        assert gate.merge_group_gaps([("W", "J", "every PR")]) == [
+            "'J' is required on develop but 'W' has no merge_group gate"
+        ]
 
     def test_squash_is_required(self, gate, tmp_path, monkeypatch) -> None:
-        protection, queue = self._write_contracts(tmp_path, method="MERGE")
-        workflow = tmp_path / "w.yml"
-        workflow.write_text(
-            yaml.safe_dump(
-                {
-                    "name": "W",
-                    "on": {"merge_group": {"types": ["checks_requested"]}},
-                    "jobs": {"j": {"name": "J"}},
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(gate, "PROTECTION", protection)
-        monkeypatch.setattr(gate, "MERGE_QUEUE", queue)
-        monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
-        assert "develop merge queue must use merge_method=SQUASH" in gate.merge_group_gaps(
-            [("W", "J", "every PR")]
+        assert "develop merge queue must use merge_method=SQUASH" in self._policy_gaps(
+            gate, tmp_path, monkeypatch, method="MERGE"
         )
 
-    def test_initial_rollout_is_one_pr_per_merge_group(self, gate, tmp_path, monkeypatch) -> None:
-        protection, queue = self._write_contracts(tmp_path, max_merge=2)
-        workflow = tmp_path / "w.yml"
-        workflow.write_text(
-            yaml.safe_dump(
-                {
-                    "name": "W",
-                    "on": {"merge_group": {"types": ["checks_requested"]}},
-                    "jobs": {"j": {"name": "J"}},
-                }
-            ),
-            encoding="utf-8",
-        )
+    def test_batching_up_to_three_prs_per_group_is_the_reviewed_posture(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        assert self._policy_gaps(gate, tmp_path, monkeypatch, max_merge=3, wait_minutes=2) == []
+
+    def test_the_shipped_conservative_group_size_remains_valid(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        assert self._policy_gaps(gate, tmp_path, monkeypatch, max_merge=1, wait_minutes=0) == []
+
+    @pytest.mark.parametrize("max_merge", [0, 4, "3", 2.0, True])
+    def test_a_group_size_outside_the_reviewed_range_fails_closed(
+        self, gate, tmp_path, monkeypatch, max_merge
+    ) -> None:
+        gaps = self._policy_gaps(gate, tmp_path, monkeypatch, max_merge=max_merge)
+        assert any("PRs per group" in gap for gap in gaps)
+
+    def test_min_entries_above_max_entries_is_rejected(self, gate, tmp_path, monkeypatch) -> None:
+        gaps = self._policy_gaps(gate, tmp_path, monkeypatch, max_merge=3, min_merge=4)
+        assert any("min_entries_to_merge" in gap for gap in gaps)
+
+    def test_a_zero_min_entry_group_is_rejected(self, gate, tmp_path, monkeypatch) -> None:
+        gaps = self._policy_gaps(gate, tmp_path, monkeypatch, min_merge=0)
+        assert any("min_entries_to_merge" in gap for gap in gaps)
+
+    @pytest.mark.parametrize("wait_minutes", [0, 2, 3, 5])
+    def test_every_reviewed_wait_value_is_accepted(
+        self, gate, tmp_path, monkeypatch, wait_minutes
+    ) -> None:
+        assert self._policy_gaps(gate, tmp_path, monkeypatch, wait_minutes=wait_minutes) == []
+
+    @pytest.mark.parametrize("wait_minutes", [1, 4, 30, "2", True])
+    def test_an_unreviewed_wait_value_fails_closed(
+        self, gate, tmp_path, monkeypatch, wait_minutes
+    ) -> None:
+        gaps = self._policy_gaps(gate, tmp_path, monkeypatch, wait_minutes=wait_minutes)
+        assert any("min_entries_to_merge_wait_minutes" in gap for gap in gaps)
+
+    @pytest.mark.parametrize("grouping", ["HEADGREEN", "allgreen", None, True])
+    def test_any_grouping_other_than_allgreen_fails_closed(
+        self, gate, tmp_path, monkeypatch, grouping
+    ) -> None:
+        """Batching is safe only because ALLGREEN judges every member on its own
+        entry. HEADGREEN would merge a whole group on the head entry's checks,
+        so the strategy is part of the reviewed posture the gate pins."""
+        gaps = self._policy_gaps(gate, tmp_path, monkeypatch, grouping=grouping)
+        assert gaps == [
+            "develop merge queue must use grouping_strategy=ALLGREEN "
+            f"(every grouped candidate must pass its own checks); got {grouping!r}"
+        ]
+
+    def test_a_malformed_queue_contract_fails_closed(self, gate, tmp_path, monkeypatch) -> None:
+        protection, _queue = self._write_contracts(tmp_path)
+        queue = tmp_path / "queue.json"
+        queue.write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
         monkeypatch.setattr(gate, "PROTECTION", protection)
         monkeypatch.setattr(gate, "MERGE_QUEUE", queue)
-        monkeypatch.setattr(gate, "_workflow_files", lambda: [workflow])
-        assert "develop merge queue must initially merge one PR per group" in gate.merge_group_gaps(
-            [("W", "J", "every PR")]
-        )
+        gaps = gate.merge_group_gaps([])
+        assert len(gaps) == 1 and "is not readable JSON" in gaps[0]
+
+    def test_a_malformed_protection_contract_fails_closed(
+        self, gate, tmp_path, monkeypatch
+    ) -> None:
+        _protection, queue = self._write_contracts(tmp_path)
+        protection = tmp_path / "protection.json"
+        protection.write_text("[", encoding="utf-8")
+        monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(gate, "PROTECTION", protection)
+        monkeypatch.setattr(gate, "MERGE_QUEUE", queue)
+        gaps = gate.merge_group_gaps([])
+        assert len(gaps) == 1 and "is not readable JSON" in gaps[0]
 
 
 class TestAgainstTheRealWorkflows:
@@ -220,8 +299,17 @@ class TestAgainstTheRealWorkflows:
             ("CodeQL Advanced", "Analyze (actions)"),
             ("CodeQL Advanced", "Analyze (javascript-typescript)"),
             ("CodeQL Advanced", "Analyze (python)"),
+            ("DevSkim", "DevSkim"),
             ("security", "Container scan + SBOM + cosign"),
+            ("DevSkim", "DevSkim"),
         }
+
+    def test_advisory_devskim_is_not_required_on_either_branch(self, gate) -> None:
+        protection = json.loads((ROOT / ".github" / "branch-protection.json").read_text())
+        assert protection["advisory"]["DevSkim"]
+        for branch in ("develop", "main"):
+            contexts = protection["branches"][branch]["required_status_checks"]["contexts"]
+            assert "DevSkim" not in contexts
 
     def test_every_unfiltered_pr_workflow_cancels_superseded_runs(self, gate) -> None:
         offenders = []

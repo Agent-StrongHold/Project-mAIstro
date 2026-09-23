@@ -23,28 +23,6 @@
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
     },
-    "packages/hive-conductor/backend/routes/providers.py::activate_provider._register_and_test::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/routes/providers.py",
-      "qualname": "activate_provider._register_and_test",
-      "line": 232,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
-    "packages/hive-conductor/backend/services/benchmark_eval.py::evaluate_code_output::MODEL_EFFECT:openai-compatible-http#1": {
-      "path": "packages/hive-conductor/backend/services/benchmark_eval.py",
-      "qualname": "evaluate_code_output",
-      "line": 85,
-      "category": "MODEL_EFFECT",
-      "entry_point": "openai-compatible-http",
-      "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
-    },
     "packages/hive-conductor/backend/services/canonical_corpus.py::CanonicalCorpus._extract_patterns::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/hive-conductor/backend/services/canonical_corpus.py",
       "qualname": "CanonicalCorpus._extract_patterns",
@@ -316,9 +294,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "bootstrap",
+      "rationale": "Explicit operator-only diagnostic probe; ordinary product composition is cache-only and cannot invoke this physical effect."
     },
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py::_run_code_probe::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/model_selector.py",
@@ -327,9 +305,9 @@
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
       "callee": "client.post",
-      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
-      "owner": "#56",
-      "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
+      "owner": "bootstrap",
+      "rationale": "Explicit operator-only diagnostic probe; ordinary product composition is cache-only and cannot invoke this physical effect."
     },
     "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py::LiteLLMCallable._post_with_pacing::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py",

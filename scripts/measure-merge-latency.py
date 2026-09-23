@@ -27,11 +27,21 @@ Three figures over a window of recent merge-group activity on one base branch:
 - **Requeue rate**: merged PRs that needed more than one queue candidate. Each
   extra candidate is a full re-run of the gate set — the direct multiplier
   #654 exists to collapse.
+- **Rebuilt behind a failure**: candidates that did not verify because an
+  entry *ahead* of them in the queue failed. GitHub builds one entry branch
+  per queued PR on top of the entry ahead of it (the branch name carries the
+  SHA it was built on), so a batched group is a chain of entries; under
+  ALLGREEN a failing entry is ejected and everything behind it is rebuilt.
+  Those rebuilds are the batch's cost, not the rebuilt PR's fault, and once
+  groups carry several PRs they are what separates "the queue re-spent the
+  gate set on a bad head" from "the queue re-spent it on the good heads
+  behind one".
 
 Not measured here: job-minutes (that is `measure-ci-cost.py`'s figure, per
-head), and *why* a candidate was ejected — the Actions API records the re-run,
-not the reason. The requeue rate therefore bounds flake-plus-conflict cost
-without attributing it.
+head), and *why* a candidate's own tree failed — the Actions API records the
+re-run, not the reason. The requeue rate therefore bounds flake-plus-conflict
+cost; the rebuilt-behind count attributes only the share caused by another
+PR's entry.
 
 The window is "the last N pages of merge-group runs", not a calendar interval:
 the API pages newest-first, so the window is exact in runs and approximate in
@@ -63,10 +73,14 @@ API = "https://api.github.com"
 
 _TS = "%Y-%m-%dT%H:%M:%SZ"
 
-#: The branch GitHub's merge queue synthesizes for one candidate. The trailing
-#: SHA is the candidate's identity: a PR that is ejected and requeued comes
-#: back under the same `pr-N` with a different SHA, which is exactly the event
-#: the requeue rate counts.
+#: The branch GitHub's merge queue synthesizes for one queue entry. Every PR
+#: in a group has its own entry branch and its own run set; the trailing SHA
+#: is the commit the entry was built on — the entry ahead's head, or the base
+#: head at the front of the queue (observed: `pr-1381-62cfc8…` sat on the
+#: `pr-1384` entry whose runs had head_sha `62cfc8…`). That makes it the
+#: candidate's identity: a PR that is ejected and requeued, or rebuilt because
+#: the entry ahead of it fell out, comes back under the same `pr-N` with a
+#: different SHA, which is exactly the event the requeue rate counts.
 _QUEUE_BRANCH = re.compile(r"^gh-readonly-queue/(?P<base>.+)/pr-(?P<pr>\d+)-(?P<sha>\w+)$")
 
 
@@ -78,7 +92,7 @@ def _when(stamp: str | None) -> dt.datetime | None:
 
 
 def parse_queue_branch(branch: str | None, base: str) -> tuple[int, str] | None:
-    """`(pr_number, candidate_sha)` for a queue branch on `base`, else None.
+    """`(pr_number, parent_sha)` for a queue branch on `base`, else None.
 
     Matching on the branch shape rather than trusting `event == merge_group`
     alone keeps a differently-based queue (main promotions) out of a develop
@@ -99,6 +113,9 @@ def candidates(runs: list[dict[str, Any]], base: str) -> dict[tuple[int, str], d
     `started` is the earliest run start, `finished` the latest update among
     completed runs, and `done` only when every observed run has concluded — a
     candidate still executing must not contribute a foreshortened wall-clock.
+    `head` is that synthetic SHA and `parent` the SHA the entry was built on;
+    together they link a group's entries into the chain `attribute_rebuilds`
+    walks. `behind_failure` starts False and is set there.
     """
     out: dict[tuple[int, str], dict[str, Any]] = {}
     for run in runs:
@@ -110,9 +127,21 @@ def candidates(runs: list[dict[str, Any]], base: str) -> dict[tuple[int, str], d
         started = _when(run.get("run_started_at"))
         finished = _when(run.get("updated_at"))
         row = out.setdefault(
-            key, {"runs": 0, "started": None, "finished": None, "done": True, "success": True}
+            key,
+            {
+                "runs": 0,
+                "started": None,
+                "finished": None,
+                "done": True,
+                "success": True,
+                "head": None,
+                "parent": key[1],
+                "behind_failure": False,
+            },
         )
         row["runs"] += 1
+        if run.get("head_sha") and not row["head"]:
+            row["head"] = run["head_sha"]
         if started and (row["started"] is None or started < row["started"]):
             row["started"] = started
         if finished and (row["finished"] is None or finished > row["finished"]):
@@ -122,6 +151,39 @@ def candidates(runs: list[dict[str, Any]], base: str) -> dict[tuple[int, str], d
         if run.get("conclusion") != "success":
             row["success"] = False
     return out
+
+
+def attribute_rebuilds(
+    cands: dict[tuple[int, str], dict[str, Any]],
+) -> dict[tuple[int, str], dict[str, Any]]:
+    """Mark each unsuccessful candidate that sat behind another PR's failed entry.
+
+    A batched group is a chain: entry B's branch carries entry A's head SHA,
+    entry C's carries B's. Under ALLGREEN, when A fails the queue ejects A and
+    rebuilds B and C without it — their runs are cancelled (or, if one raced
+    the cancel, failed) through no fault of their own. Walking the chain from
+    an unsuccessful candidate to the first entry ahead of it that did not
+    verify tells that rebuild apart from a candidate that failed on its own
+    tree. A parent outside the window reads as the base head: the candidate
+    keeps its own failure, which is the reading that never flatters the queue.
+    Run this on the full candidate set, before the boundary cohort is dropped,
+    so a kept candidate can still see the dropped entry it was built on.
+    """
+    by_head = {row["head"]: key for key, row in cands.items() if row["head"]}
+    for (pr, parent), row in cands.items():
+        if row["success"]:
+            continue
+        seen: set[str] = set()
+        while parent in by_head and parent not in seen:
+            seen.add(parent)
+            ahead_key = by_head[parent]
+            if ahead_key[0] == pr:
+                break
+            if not cands[ahead_key]["success"]:
+                row["behind_failure"] = True
+                break
+            parent = ahead_key[1]
+    return cands
 
 
 #: How far a candidate's workflow runs can start apart. All of a candidate's
@@ -199,6 +261,7 @@ def summarize(
             {
                 "pr": pr,
                 "attempts": len(rows),
+                "rebuilt_behind": sum(1 for row in rows if row["behind_failure"]),
                 "merged": merged is not None,
                 "residency_min": residency,
                 "residency_from_admission": from_admission,
@@ -232,7 +295,9 @@ def figures(prs: list[dict[str, Any]]) -> dict[str, float]:
     PR that *did* land paid for the gate set more than once. The dequeue rate
     does not: every candidate that landed no merge counts, including those of
     PRs ejected and never requeued, so a queue that fails PRs outright gets a
-    worse number, not a better one.
+    worse number, not a better one. The bystander share then says how many of
+    those dequeued candidates were rebuilt behind another PR's failure — the
+    part of the multiplier batching itself pays, as opposed to bad heads.
     """
     merged = [p for p in prs if p["merged"]]
     residencies = [p["residency_min"] for p in merged if p["residency_min"] is not None]
@@ -240,6 +305,7 @@ def figures(prs: list[dict[str, Any]]) -> dict[str, float]:
     requeued = [p for p in merged if p["attempts"] > 1]
     candidates_run = sum(p["attempts"] for p in prs)
     dequeued = candidates_run - len(merged)
+    bystanders = sum(p["rebuilt_behind"] for p in prs)
     fallbacks = [
         p for p in merged if p["residency_min"] is not None and not p["residency_from_admission"]
     ]
@@ -253,6 +319,8 @@ def figures(prs: list[dict[str, Any]]) -> dict[str, float]:
         "requeue_rate": len(requeued) / len(merged) if merged else 0.0,
         "dequeued_candidates": float(dequeued),
         "dequeue_rate": dequeued / candidates_run if candidates_run else 0.0,
+        "bystander_candidates": float(bystanders),
+        "bystander_rate": bystanders / dequeued if dequeued else 0.0,
         "median_residency": percentile(residencies, 0.5),
         "p90_residency": percentile(residencies, 0.9),
         "median_candidate_wall": percentile(walls, 0.5),
@@ -263,16 +331,17 @@ def figures(prs: list[dict[str, Any]]) -> dict[str, float]:
 def render(prs: list[dict[str, Any]], figs: dict[str, float], base: str) -> str:
     """The report. Per-PR rows first — the aggregate must stay auditable."""
     lines = [
-        f"{'PR':>6}{'attempts':>10}{'merged':>8}{'residency-min':>15}",
-        "-" * 39,
+        f"{'PR':>6}{'attempts':>10}{'behind':>8}{'merged':>8}{'residency-min':>15}",
+        "-" * 47,
     ]
     for p in prs:
         residency = f"{p['residency_min']:.1f}" if p["residency_min"] is not None else "-"
+        merged = "yes" if p["merged"] else "no"
         lines.append(
-            f"{p['pr']:>6}{p['attempts']:>10}{'yes' if p['merged'] else 'no':>8}{residency:>15}"
+            f"{p['pr']:>6}{p['attempts']:>10}{p['rebuilt_behind']:>8}{merged:>8}{residency:>15}"
         )
     lines += [
-        "-" * 39,
+        "-" * 47,
         "",
         f"base branch               : {base}",
         f"PRs seen in queue         : {figs['prs_seen']:.0f} ({figs['prs_merged']:.0f} merged)",
@@ -281,6 +350,9 @@ def render(prs: list[dict[str, Any]], figs: dict[str, float], base: str) -> str:
         f"({figs['requeue_rate']:.0%} requeue rate)",
         f"dequeued candidates       : {figs['dequeued_candidates']:.0f} of "
         f"{figs['candidates']:.0f} ({figs['dequeue_rate']:.0%} landed no merge)",
+        f"rebuilt behind a failure  : {figs['bystander_candidates']:.0f} of "
+        f"{figs['dequeued_candidates']:.0f} dequeued ({figs['bystander_rate']:.0%}; "
+        "the batch's cost, not the rebuilt PR's own)",
         f"residency, median / p90   : {figs['median_residency']:.1f} / "
         f"{figs['p90_residency']:.1f} min (queue admission -> merged; "
         f"{figs['residency_fallbacks']:.0f} of {figs['residencies']:.0f} "
@@ -389,7 +461,7 @@ def main(argv: list[str]) -> int:
         print(f"FAIL: could not read the GitHub API: {exc}")
         return 1
 
-    cands = drop_boundary_cohort(candidates(runs, args.base), truncated)
+    cands = drop_boundary_cohort(attribute_rebuilds(candidates(runs, args.base)), truncated)
     if not cands:
         print(f"FAIL: no merge-group runs found for base {args.base}; nothing to measure")
         return 1
