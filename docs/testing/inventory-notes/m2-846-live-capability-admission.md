@@ -68,3 +68,11 @@ manager deny/disable/revoke/outage set, route-level
 `test_shipped_route_factory_rechecks_revoked_binding`,
 `test_revoke_infra_action_after_repair_initialization_blocks_effect`, and the
 no-AllowAllGate sweep over `packages/*/src` all pass at merge head 4059d1e70.
+
+Independent verification pass (auto-846, head c52070363): re-executed at the
+review head — capabilities slice 161 passed, hive-conductor route/wiring slice
+103 passed, `ruff check .` + `ruff format --check .` clean, both
+`check-suite-inventory.py` gates OK (conductor 2662, core 10747). No
+`AllowAllGate` symbol exists under `packages/*/src`; route `_get_manager` never
+constructs a policy-less manager (`_configured_harness_policy` bounded deny).
+PR #1439 body carries no closure keywords (draft, "Refs #846" only).
