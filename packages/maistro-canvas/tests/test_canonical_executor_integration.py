@@ -778,3 +778,162 @@ async def test_reconcile_admissions_without_canonical_binding_is_empty() -> None
 
 async def _async_value(value: list[str]) -> list[str]:
     return value
+
+
+class _StallThenSucceedImageClient(_ImageClient):
+    """First generate stalls past the execution deadline; the retry succeeds."""
+
+    def __init__(self) -> None:
+        self.generate_calls = 0
+
+    async def generate(self, **kwargs: object) -> list[ImageData]:
+        self.generate_calls += 1
+        if self.generate_calls == 1:
+            await asyncio.Event().wait()
+        return await super().generate(**kwargs)
+
+
+async def test_execution_deadline_is_a_retryable_timeout_not_a_user_cancellation() -> None:
+    """Codex #1560: a stalled provider call hitting ``max_execution_seconds``
+    must be recorded canonically as a timed-out Attempt the NodeRun can retry,
+    never as a requested cancellation that terminalizes the Run and breaks
+    every remaining retry."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    store = _CanvasStore()
+    runtime = build_canvas_runtime(
+        store=store,  # type: ignore[arg-type]
+        image_client=_StallThenSucceedImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+        max_execution_seconds=0.3,
+    )
+    job = await runtime.executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+    )
+    job.max_attempts = 2
+    runner = runtime.runner
+    assert isinstance(runner, CanvasJobRunner)
+
+    assert await asyncio.wait_for(runner.tick_once(), timeout=5) is True
+    assert job.status == JobStatus.PENDING
+    assert job.error_message is None
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    parked = await runs.get_run(run_id)
+    assert parked is not None
+    assert parked.status is not RunStatus.CANCELLED
+
+    assert await asyncio.wait_for(runner.tick_once(), timeout=5) is True
+    assert job.status == JobStatus.DONE
+    assert job.result_paths == ["image://generated"]
+    node_runs = await runs.list_node_runs(run_id)
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [
+        AttemptStatus.TIMED_OUT,
+        AttemptStatus.COMPLETED,
+    ]
+    completed = await runs.get_run(run_id)
+    assert completed is not None and completed.status is RunStatus.COMPLETED
+
+
+async def test_execution_deadline_at_the_retry_ceiling_fails_both_sides_consistently() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    store = _CanvasStore()
+    runtime = build_canvas_runtime(
+        store=store,  # type: ignore[arg-type]
+        image_client=_StallThenSucceedImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+        max_execution_seconds=0.3,
+    )
+    job = await runtime.executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+    )
+    job.max_attempts = 1
+
+    assert await asyncio.wait_for(runtime.runner.tick_once(), timeout=5) is True  # type: ignore[attr-defined]
+
+    assert job.status == JobStatus.FAILED
+    assert job.error_message == "Generation failed: provider request timed out."
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    failed = await runs.get_run(run_id)
+    assert failed is not None and failed.status is RunStatus.FAILED
+
+
+async def test_compatibility_path_bounds_a_stalled_stage_with_the_execution_timeout() -> None:
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_StallThenSucceedImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        execution_timeout_s=0.2,
+    )
+    job = GenerationJobRecord(
+        id="job-compat",
+        layer_id="layer-1",
+        canvas_id="canvas-1",
+        action=JobAction.GENERATE,
+        model_id="draft-model",
+        prompt="a safe landscape",
+        org_id=_CanvasStore.ORG,
+    )
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(executor._execute_claimed(job), timeout=5)
+    assert await executor.fail_job_execution(job, TimeoutError("x")) == (
+        "Generation failed: provider request timed out."
+    )
+
+
+async def test_a_stage_after_the_job_deadline_passed_is_not_started() -> None:
+    from maistro_canvas.canvas.executor import _JOB_DEADLINE
+
+    executor = CanvasExecutor(
+        store=_CanvasStore(),  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+    job = GenerationJobRecord(id="job-late", layer_id="layer-1", canvas_id="canvas-1")
+    started: list[str] = []
+
+    async def operation() -> list[str]:
+        started.append("provider")
+        return []
+
+    token = _JOB_DEADLINE.set(asyncio.get_running_loop().time() * 0)  # long past
+    try:
+        with pytest.raises(TimeoutError, match="exhausted its execution time limit"):
+            await executor._execute_stage(job, "generate", operation)
+    finally:
+        _JOB_DEADLINE.reset(token)
+    assert started == []
+
+
+async def test_executor_rejects_a_non_positive_execution_timeout() -> None:
+    with pytest.raises(ValueError, match="execution_timeout_s must be positive"):
+        CanvasExecutor(
+            store=_CanvasStore(),  # type: ignore[arg-type]
+            image_client=_ImageClient(),  # type: ignore[arg-type]
+            model_registry=_Registry(),
+            warden=_Warden(),
+            execution_timeout_s=0,
+        )

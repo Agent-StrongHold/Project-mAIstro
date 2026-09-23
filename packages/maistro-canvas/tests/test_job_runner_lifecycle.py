@@ -694,9 +694,12 @@ async def test_reap_once_reports_lease_expiry_not_a_provider_error_through_real_
     assert "provider error" not in (dead.error_message or "")
 
 
-async def test_lease_renewal_stops_and_call_is_cancelled_past_max_execution() -> None:
+async def test_lease_renewal_stops_past_max_execution_without_cancelling_the_call() -> None:
     """A provider await that never returns must not renew its lease forever:
-    past ``max_execution_seconds`` renewal stops and the call is cancelled."""
+    past ``max_execution_seconds`` renewal stops so the reaper can recover the
+    job. The runner itself does not cancel the call -- a cancellation of the
+    awaiting task is recorded canonically as a requested cancel (Codex #1560);
+    the executor's canonical deadline ends the call as a retryable timeout."""
     store = InMemoryJobStore()
     await _seed_pending_job(store, job_id="job1", max_attempts=1)
     claimed = await store.claim_next_pending("canvas-worker-1", 3)
@@ -709,12 +712,13 @@ async def test_lease_renewal_stops_and_call_is_cancelled_past_max_execution() ->
         return await original_renew(*args, **kwargs)  # type: ignore[arg-type]
 
     store.renew_lease = counting_renew  # type: ignore[method-assign]
+    release = asyncio.Event()
     cancelled: list[bool] = []
 
     class StalledExecutor:
         async def _execute_claimed(self, job: GenerationJobRecord) -> None:
             try:
-                await asyncio.Event().wait()
+                await release.wait()
             except asyncio.CancelledError:
                 cancelled.append(True)
                 raise
@@ -726,51 +730,16 @@ async def test_lease_renewal_stops_and_call_is_cancelled_past_max_execution() ->
         max_execution_seconds=1.5,
     )
 
-    from maistro_canvas.canvas.executor import PreclassifiedJobFailure
-    from maistro_canvas.canvas.runner import EXECUTION_TIMEOUT_MESSAGE
-
-    with pytest.raises(PreclassifiedJobFailure, match="execution time limit"):
-        await asyncio.wait_for(runner._execute_claimed_with_lease_renewal(claimed), timeout=5)
-    await asyncio.sleep(0)
-    assert cancelled == [True]
-    renewed_by_deadline = len(renewals)
-    assert renewed_by_deadline >= 1  # long legitimate calls still heartbeat
+    call = asyncio.create_task(runner._execute_claimed_with_lease_renewal(claimed))
     await asyncio.sleep(1.2)
-    assert len(renewals) == renewed_by_deadline, "lease kept renewing after the deadline"
-    assert str(PreclassifiedJobFailure(EXECUTION_TIMEOUT_MESSAGE)) == EXECUTION_TIMEOUT_MESSAGE
+    renewed_before_limit = len(renewals)
+    assert renewed_before_limit >= 1  # long legitimate calls still heartbeat
+    await asyncio.sleep(1.3)
+    assert len(renewals) == renewed_before_limit, "lease kept renewing past the limit"
+    assert not call.done() and cancelled == []
 
-
-async def test_cancellation_resistant_stalled_call_does_not_pin_the_worker() -> None:
-    """A provider coroutine that swallows cancellation still releases the
-    worker at the deadline; the tick fails the attempt instead of hanging."""
-    store = InMemoryJobStore()
-    await _seed_pending_job(store, job_id="job1", max_attempts=1)
-    release = asyncio.Event()
-
-    class StubbornExecutor:
-        async def _execute_claimed(self, job: GenerationJobRecord) -> None:
-            while not release.is_set():
-                try:
-                    await release.wait()
-                except asyncio.CancelledError:
-                    continue
-
-    runner = CanvasJobRunner(
-        store=store,
-        executor=StubbornExecutor(),  # type: ignore[arg-type]
-        max_execution_seconds=0.2,
-    )
-
-    try:
-        assert await asyncio.wait_for(runner.tick_once(), timeout=3) is True
-    finally:
-        release.set()
-        await asyncio.sleep(0)
-
-    failed = await store.get_job("job1")
-    assert failed is not None
-    assert failed.status == JobStatus.FAILED
-    assert failed.error_message is not None and "execution time limit" in failed.error_message
+    release.set()
+    await asyncio.wait_for(call, timeout=2)
 
 
 async def test_runner_rejects_non_positive_max_execution_seconds() -> None:

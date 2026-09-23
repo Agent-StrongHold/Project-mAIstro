@@ -25,9 +25,6 @@ logger = logging.getLogger("maistro.canvas.runner")
 #: generic sanitiser would otherwise report it as one.
 LEASE_EXPIRED_MESSAGE = "Generation failed: canvas worker lease expired before the job completed."
 
-#: Receipt/Run error for a provider call that outlived ``max_execution_seconds``.
-EXECUTION_TIMEOUT_MESSAGE = "Generation failed: provider request exceeded the execution time limit."
-
 
 class CanvasJobRunner:
     """Background job runner with atomic claim, lease reaping, and bounded retries."""
@@ -228,62 +225,49 @@ class CanvasJobRunner:
         generation. A store without `renew_lease` (a narrow test double
         predating it) simply gets no heartbeat, matching prior behavior.
 
-        The heartbeat is bounded (Codex #1535): the provider protocol imposes
-        no timeout, so a call that never returns would otherwise renew its
-        lease forever and the reaper could never recover the job. After
-        ``max_execution_seconds`` renewal stops, the call is cancelled without
-        waiting on it (a cancellation-resistant provider must not pin this
-        worker either), and the attempt fails with a preclassified timeout
-        that goes through the ordinary retry/terminal path.
+        Renewal is bounded (Codex #1535): the lease is renewed only for
+        ``max_execution_seconds``, then left to expire so the reaper can
+        recover a job whose call never returns. The runner does not cancel
+        the call itself -- cancelling the awaiting task would be recorded
+        canonically as a *requested* cancellation that terminalizes the Run
+        (Codex #1560). The deadline that ends the call is the executor's
+        ``execution_timeout_s``, enforced by the canonical Runtime as a
+        retryable timeout; composition gives both the same value.
         """
-        from maistro_canvas.canvas.executor import PreclassifiedJobFailure
-
-        heartbeat: asyncio.Task[None] | None = None
         renew = getattr(self._store, "renew_lease", None)
-        if renew is not None:
-            interval = max(1.0, self._lease_seconds / 3)
-            claimed_attempt = job.attempts
+        if renew is None:
+            await self._executor._execute_claimed(job)
+            return
 
-            async def _heartbeat() -> None:
-                while True:
-                    await asyncio.sleep(interval)
-                    try:
-                        await renew(
-                            job.id,
-                            self._worker_id,
-                            self._lease_seconds,
-                            expected_attempts=claimed_attempt,
-                        )
-                    except Exception:
-                        logger.exception("canvas_lease_renew_error job=%s", job.id)
+        interval = max(1.0, self._lease_seconds / 3)
+        claimed_attempt = job.attempts
+        loop = asyncio.get_running_loop()
+        renew_until = loop.time() + self._max_execution_seconds
 
-            heartbeat = asyncio.create_task(_heartbeat())
+        async def _heartbeat() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                if loop.time() >= renew_until:
+                    logger.error(
+                        "canvas_lease_renewal_stopped job=%s limit=%ss; lease left to expire",
+                        job.id,
+                        self._max_execution_seconds,
+                    )
+                    return
+                try:
+                    await renew(
+                        job.id,
+                        self._worker_id,
+                        self._lease_seconds,
+                        expected_attempts=claimed_attempt,
+                    )
+                except Exception:
+                    logger.exception("canvas_lease_renew_error job=%s", job.id)
 
-        execution = asyncio.ensure_future(self._executor._execute_claimed(job))
+        heartbeat = asyncio.create_task(_heartbeat())
         try:
-            done, _pending = await asyncio.wait({execution}, timeout=self._max_execution_seconds)
-        except asyncio.CancelledError:
-            execution.cancel()
-            raise
+            await self._executor._execute_claimed(job)
         finally:
-            if heartbeat is not None:
-                heartbeat.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await heartbeat
-        if not done:
-            execution.cancel()
-            # Deliberately not awaited: retrieve its eventual outcome so a late
-            # result or error is not reported as never retrieved.
-            execution.add_done_callback(_discard_outcome)
-            logger.error(
-                "canvas_job_execution_timeout job=%s limit=%ss; cancelled provider call",
-                job.id,
-                self._max_execution_seconds,
-            )
-            raise PreclassifiedJobFailure(EXECUTION_TIMEOUT_MESSAGE)
-        execution.result()
-
-
-def _discard_outcome(task: asyncio.Future[None]) -> None:
-    if not task.cancelled():
-        task.exception()
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat

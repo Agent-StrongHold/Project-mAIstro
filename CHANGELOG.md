@@ -443,15 +443,18 @@ or placeholder-only section.
   job reports "not found", not "lease lost", so it no longer reveals that the
   job exists. Lease expiry is reported as
   `Generation failed: canvas worker lease expired before the job completed.`
-  instead of a generic provider error. A provider call is bounded by the new
+  instead of a generic provider error. A claimed job is bounded by the new
   `max_execution_seconds` (default 1800, on `CanvasJobRunner`,
-  `build_canvas_runtime` and `build_canvas_router`). After that, lease renewal
-  stops and the call is cancelled. Application shutdown now stays bounded
-  even when the runner task ignores cancellation. Admission recovery and
+  `build_canvas_runtime` and `build_canvas_router`, and as
+  `execution_timeout_s` on `CanvasExecutor`). The canonical runtime enforces
+  it as a retryable timeout, not a user cancellation, and lease renewal stops
+  once it passes. The shutdown handler no longer waits indefinitely on a
+  runner task that ignores cancellation. Admission recovery and
   `claim_next_pending` enforce `max_attempts`, so a job whose worker keeps
   dying before its first stage can no longer run past its retry limit. An
   over-budget `pending` receipt is reaped and failed through canonical
-  reconciliation.
+  reconciliation. Recovery writes are a compare-and-set on the state they
+  read, and a job's attempt counter never moves backwards.
 
 - **Scheduled multi-node registered DAGs are recovered and woken by Hive's
   recovery cadence (#837).**

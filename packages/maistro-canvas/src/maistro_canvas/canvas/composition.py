@@ -104,6 +104,7 @@ def build_canvas_runtime(
         model_registry=cast(Any, model_registry),
         warden=cast(Any, warden),
         canonical_execution=canonical,
+        execution_timeout_s=max_execution_seconds,
     )
     # Keep the worker import at the composition boundary: the package's
     # reachability gate treats the runner as a lifecycle-loaded component.

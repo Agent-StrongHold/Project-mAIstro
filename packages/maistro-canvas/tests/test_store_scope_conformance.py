@@ -623,6 +623,34 @@ class TestCanvasJobFencing:
         assert reaped[0].lease_expires_at is not None
         assert reaped[0].attempts == 3
 
+    async def test_a_stale_detached_write_never_lowers_the_claim_generation(
+        self, canvas_store: PgCanvasStore
+    ) -> None:
+        """Codex #1560: ``attempts`` is the fencing generation, so a detached
+        copy written back after a re-claim must not move it backwards (which
+        would let the next claim reuse a generation number)."""
+        await self._pending(canvas_store)
+        first = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert first is not None and first.attempts == 1
+        stale = dataclasses.replace(first)
+        await self._expire(canvas_store, first.id)
+        await canvas_store.reap_expired_leases()
+        second = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert second is not None and second.attempts == 2
+
+        # A recovery-style write fenced on what it read is refused outright.
+        stale.status = "pending"
+        with pytest.raises(JobLeaseLostError):
+            await canvas_store.update_job(
+                stale, org_id=ORG_A, expected_status="running", expected_attempts=1
+            )
+        # Even an unfenced write of the stale copy cannot lower the counter.
+        await canvas_store.update_job(stale, org_id=ORG_A)
+        current = await canvas_store.get_job(first.id, org_id=ORG_A)
+        assert current is not None and current.attempts == 2
+        third = await canvas_store.claim_next_pending("canvas-worker-1", 60)
+        assert third is not None and third.attempts == 3
+
     async def test_reap_once_keeps_a_cancellation_that_lands_during_reconciliation(
         self, canvas_store: PgCanvasStore
     ) -> None:

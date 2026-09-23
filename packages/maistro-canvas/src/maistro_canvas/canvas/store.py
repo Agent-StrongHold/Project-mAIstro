@@ -678,6 +678,10 @@ class PgCanvasStore:
           terminal write made on behalf of a ``running`` receipt refuses to
           replace a concurrent user cancellation that landed first.
 
+        ``attempts`` never moves backwards here: only ``claim_next_pending``
+        advances it, and a detached copy written back later cannot lower it,
+        so it stays a usable claim generation (Codex #1560).
+
         A refused write whose row is absent *in this org* raises
         ``JobNotFoundError``, exactly as an unfenced one does: another org's
         job is indistinguishable from a missing one (#857).
@@ -715,7 +719,8 @@ class PgCanvasStore:
                         status = :status, result_paths = CAST(:paths AS jsonb),
                         selected_index = :sel, error_message = :err,
                         started_at = :start, completed_at = :done,
-                        attempts = :attempts, max_attempts = :max_attempts,
+                        attempts = GREATEST(attempts, :attempts),
+                        max_attempts = :max_attempts,
                         leased_by = :leased_by, lease_expires_at = :lease_expires_at
                     WHERE id = :id AND layer_id IN
                         (SELECT l.id FROM layers l
