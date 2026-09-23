@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "039"
-down_revision = "038"
+revision = "041"
+down_revision = "040"
 branch_labels = None
 depends_on = None
 

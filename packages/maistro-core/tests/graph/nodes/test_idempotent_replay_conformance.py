@@ -179,6 +179,8 @@ async def test_dashboard_append_section_replay_leaves_one_section() -> None:
     second = await node.run(inputs, retry_ctx)
 
     assert first.success and second.success
+    out_model = node.output_schema
+    assert isinstance(first.output, out_model) and isinstance(second.output, out_model)
     assert first.output.section_id == second.output.section_id
     sections = bb.metadata["dashboard:daily-status"]["sections"]
     assert len(sections) == 1, "replay appended a duplicate section"
