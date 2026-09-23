@@ -333,7 +333,6 @@ async def get_skill_discovery_form(skill_slug: str) -> list[dict[str, Any]]:
 async def create_render_job(
     project_id: str, request: Request, format: str = "pdf"
 ) -> dict[str, Any]:
-<<<<<<< HEAD
     """Report that project rendering is unavailable until its canonical seam exists.
 
     The former facade created an in-memory pending job, but no worker advanced
@@ -343,51 +342,21 @@ async def create_render_job(
 
     Query params:
       format: reserved output format (pdf, pptx, docx, png)
-=======
-    """Reject rendering until its canonical worker and artifact path exist.
-
-    The ownership lookup is intentionally retained below so this unavailable
-    capability cannot become a project-id probing endpoint.
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
     """
     _require_ready()
     org_id = _get_org_id(request)
     try:
-<<<<<<< HEAD
         store = _require_store()
 
         # Check the project within the caller's scope before reporting the
         # unavailable capability; another scope must remain indistinguishable.
-=======
-        store = get_design_store()
-        if store is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Design persistence not configured (DATABASE_URL not set)",
-            )
-
-        # Keep the ownership check even while rendering is unavailable. A
-        # disabled capability must not become a way to probe project ids.
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
         project = await store.get(project_id, org_id=org_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-<<<<<<< HEAD
         raise HTTPException(
             status_code=501,
             detail="Design rendering is unavailable until the canonical Canvas rendering seam is enabled",
-=======
-        # There is no worker or durable artifact-serving path yet. In
-        # particular, do not create an in-memory pending job that can never
-        # advance or claim a URL whose bytes were discarded.
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                "Design rendering is unavailable: no canonical renderer, durable "
-                "artifact store, or output-serving route is configured"
-            ),
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
         )
     except HTTPException:
         raise
@@ -396,7 +365,6 @@ async def create_render_job(
 
 
 @router.get("/projects/{project_id}/render/{job_id}")
-<<<<<<< HEAD
 async def get_render_job_status(project_id: str, job_id: str, request: Request) -> dict[str, Any]:
     """Report that render-job polling is unavailable until Canvas is connected.
 
@@ -423,15 +391,3 @@ async def get_render_job_status(project_id: str, job_id: str, request: Request) 
         raise HTTPException(
             status_code=500, detail=f"Render job status unavailable: {e!s}"
         ) from None
-=======
-async def get_render_job_status(project_id: str, job_id: str) -> dict[str, Any]:
-    """Report that render status is unavailable until a durable job exists."""
-    del project_id, job_id
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Design rendering is unavailable: no canonical renderer, durable "
-            "job store, or output-serving route is configured"
-        ),
-    )
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
