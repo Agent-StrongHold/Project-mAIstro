@@ -207,7 +207,15 @@ async def run_schedule(
         raise HTTPException(status_code=404, detail="schedule not found")
     from services.scheduler import ScheduleAdmissionUnavailable, ScheduleNotFireable, fire_now
 
-    fire_id = (body.fire_id if body is not None else None) or idempotency_key
+    raw = (body.fire_id if body is not None else None) or idempotency_key
+    # The header is held to the body's `fire_id` contract (#1120): stripped,
+    # opaque, and bounded, because the token becomes durable Run provenance
+    # and half of a unique occurrence claim. A blank header is no identity —
+    # the server mints one — rather than a 422, matching the absent case.
+    try:
+        fire_id = _check_fire_id(raw) if raw and raw.strip() else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         await fire_now(schedule_id, fire_id=fire_id)
     except ScheduleNotFireable as exc:

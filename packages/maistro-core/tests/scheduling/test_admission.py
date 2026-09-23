@@ -1466,6 +1466,59 @@ class TestManualFire:
         assert after == before
         assert len(runs._runs) == 0  # type: ignore[attr-defined]
 
+    async def test_a_retry_after_exhaustion_reconciles_to_the_winners_run(self, harness) -> None:
+        """The same token on an exhausted schedule is a retry, not a new fire.
+
+        The winner spent the last `max_runs` unit, so every refusal this
+        admitter can raise — the snapshot check, `reserve_fire` — would tell a
+        retried caller "could not be fired" about a fire whose Run
+        demonstrably exists. The claim is asked before any of them (#1120):
+        the loser is handed the winner's receipt, nothing is counted twice,
+        and the disable the winner earned stands.
+        """
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=1)
+
+        first = await admitter.admit_due(schedule, now=NOON, manual=True, fire_id="retry-1")
+        assert len(first.run_ids) == 1
+        current = await schedules.get(schedule.schedule_id)
+        assert current is not None
+        assert current.enabled is False, "the winner's fire spent the bound"
+
+        second = await admitter.admit_due(
+            current, now=NOON + timedelta(minutes=1), manual=True, fire_id="retry-1"
+        )
+
+        assert second.run_ids == ()
+        assert second.reconciled_run_id == first.run_ids[0]
+        assert len(runs._runs) == 1  # type: ignore[attr-defined]
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.runs_so_far == 1
+        assert recorded.enabled is False
+
+    async def test_a_retry_after_the_template_disappeared_still_reconciles(self, harness) -> None:
+        """The Run exists; there is nothing left to resolve for it.
+
+        A retry whose target template has since been deleted reconciles to
+        the winner rather than surfacing `GraphTemplateNotFound` — the fire
+        happened, and the claim answers before the template is consulted
+        (#1120).
+        """
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        first = await admitter.admit_due(schedule, now=NOON, manual=True, fire_id="retry-1")
+        # The in-memory store has no delete; evict it the way the store does.
+        templates._templates.pop((TEMPLATE_ID, 1))  # type: ignore[attr-defined]
+
+        second = await admitter.admit_due(
+            schedule, now=NOON + timedelta(minutes=1), manual=True, fire_id="retry-1"
+        )
+
+        assert second.reconciled_run_id == first.run_ids[0]
+        assert len(runs._runs) == 1  # type: ignore[attr-defined]
+
     async def test_an_unresolvable_template_refuses_and_keeps_the_schedule_unchanged(
         self, harness
     ) -> None:

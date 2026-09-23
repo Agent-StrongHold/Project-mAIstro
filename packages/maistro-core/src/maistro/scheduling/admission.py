@@ -715,7 +715,35 @@ class ScheduleRunAdmitter:
         unresolvable target, and the run store's for a Run that could not be
         created. A refusal before the reservation touches nothing; one after
         it releases the reservation, so the schedule reads as it did before.
+
+        One refusal a retry never meets: the claim is asked **first**. A
+        caller-stable `fire_id` whose Run already exists is that logical
+        firing's winner answering, so it reconciles even when the winner's
+        fire has since spent the last `max_runs` unit (or the template has
+        disappeared) — telling a retried caller "could not be fired" about a
+        fire whose Run demonstrably exists would be the one answer worse
+        than a refusal. A minted token skips the probe: it is fresh by
+        construction, so the read could only ever cost.
         """
+        token = fire_id if fire_id else uuid.uuid4().hex
+        if fire_id is not None:
+            winner = await self._runs.find_occurrence_run(
+                {
+                    SCHEDULE_ID_KEY: schedule.schedule_id,
+                    SCHEDULE_FIRE_ID_KEY: token,
+                }
+            )
+            if winner is not None:
+                logger.info(
+                    "schedule %s manual fire %s was already admitted as %s",
+                    schedule.schedule_id,
+                    token,
+                    winner.run_id,
+                )
+                return ScheduleAdmission(
+                    already_fired=(now,),
+                    reconciled_run_id=winner.run_id,
+                )
         if schedule.exhausted:
             raise ManualFireRefused(
                 f"schedule {schedule.schedule_id} has used all {schedule.max_runs} of its runs"
@@ -735,7 +763,6 @@ class ScheduleRunAdmitter:
             )
             raise
 
-        token = fire_id if fire_id else uuid.uuid4().hex
         try:
             reserved = await self._schedules.reserve_fire(schedule.schedule_id)
         except ScheduleExhausted as exc:

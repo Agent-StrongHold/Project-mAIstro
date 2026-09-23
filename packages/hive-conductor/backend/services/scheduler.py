@@ -528,10 +528,12 @@ class _ScheduleRunner:
             raise ScheduleNotFireable(
                 f"schedule {sid} names no mission template, so there is nothing to run"
             )
-        if definition.exhausted:
-            raise ScheduleNotFireable(
-                f"schedule {sid} has used all {definition.max_runs} of its runs"
-            )
+        # No local `exhausted` pre-check here, deliberately: the admitter asks
+        # the occurrence claim before it refuses (#1120), so a retry of the
+        # same fire_id reconciles to the winner's Run even when that fire
+        # spent the last `max_runs` unit — a refusal ordering in this layer
+        # would answer a retried caller "could not be fired" about a Run that
+        # demonstrably exists.
 
         await self._prime_template(definition, container)
         now = datetime.now(UTC)
@@ -562,7 +564,14 @@ class _ScheduleRunner:
                 fire_id,
                 winner_id,
             )
-            self._project_manual_receipt(sid, now, winner_id, exhausted=False)
+            # The winner's disable may live only in the durable row (its own
+            # projection answered a different process), so the loser's receipt
+            # reads the store — the authority — rather than assume the fire
+            # left the schedule enabled.
+            recorded = await container.schedule_store.get(sid)
+            self._project_manual_receipt(
+                sid, now, winner_id, exhausted=recorded is not None and not recorded.enabled
+            )
             await self._consume_promptly(container)
             # ``str()`` because the admission crosses back from duck-typed
             # Container land into typed Hive code: re-assert the receipt at

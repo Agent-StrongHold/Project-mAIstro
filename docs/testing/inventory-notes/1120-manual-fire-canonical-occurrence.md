@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +16
-  packages/hive-conductor/backend/tests: +10
+  packages/maistro-core/tests: +18
+  packages/hive-conductor/backend/tests: +12
 ---
 
 # #1120: manual schedule fire through the canonical admission spine
@@ -55,3 +55,26 @@ required) and asserts the reconciliation, and
 `test_schedule_manual_fire_canonical.py`'s route E2E asserts the Run is
 consumed to `COMPLETED` by the manual fire's prompt consumer tick rather than
 left `QUEUED` for the 30s recurring tick.
+
+## Second repair pass: the claim answers before any refusal (2026-09-23)
+
+Two edges surfaced by re-validating the merged head against reachable
+behavior, both reproduced before repair. First, a retry carrying the same
+`fire_id` after the winner's fire spent the last `max_runs` unit was refused
+("has used all 1 of its runs") instead of reconciling — telling a retried
+caller the fire failed when its Run demonstrably exists. `admit_due(manual=True)`
+now probes the occurrence claim *before* any refusal (exhaustion snapshot,
+`reserve_fire`, template resolution), so a caller-stable token whose Run
+exists always reconciles; `_fire_manual_canonical`'s own `exhausted`
+pre-check was removed as a stale-ordered duplicate of the admitter's, and its
+reconciliation branch reads the durable row for the disable so a retry's
+Hive-row projection cannot report a schedule the store has already disabled.
+Second, the `Idempotency-Key` header — the route's documented retry identity —
+bypassed the body's `fire_id` contract: a 5,000-character header flowed
+verbatim into durable Run provenance (reproduced). The header is now held to
+the same stripped/bounded contract (`_check_fire_id`), with a blank header
+behaving as an absent one. Coverage: `test_admission.py` gains the
+retry-after-exhaustion and retry-after-template-deletion reconciliations
+(+2); the Hive suite gains the service-level retry-after-exhaustion receipt
+and the route-level idempotency-key contract test (stripped keys reconcile
+to one Run; an over-long key is a 422 before any durable write) (+2).

@@ -283,6 +283,46 @@ def test_a_retry_after_completion_returns_the_same_receipt(
     asyncio.run(scenario())
 
 
+def test_a_retry_after_exhaustation_returns_the_winners_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry of the fire that spent the last `max_runs` unit is not a
+    refusal: its Run exists, and "could not be fired" would be the one
+    answer worse than refusing — the caller is holding a receipt-shaped
+    question about work that demonstrably happened. The claim answers
+    before any refusal (#1120), and the disable the winner earned stands on
+    both the durable row and the Hive projection."""
+    from services.scheduler import fire_now
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture(max_runs=1)
+        _install_row(row)
+        _canonical_container(container, monkeypatch)
+        try:
+            first = await fire_now("s-1", fire_id="last-unit")
+            recorded = await container.schedule_store.get("s-1")
+            assert recorded is not None
+            assert recorded.enabled is False, "the winner spent the bound"
+
+            second = await fire_now("s-1", fire_id="last-unit")
+
+            assert second == first
+            assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
+            after = await container.schedule_store.get("s-1")
+            assert after is not None
+            assert after.runs_so_far == 1
+            assert after.enabled is False
+            import stores
+
+            projected = stores.schedules["s-1"]
+            assert projected.last_run_id == first
+            assert projected.enabled is False, "the retry's receipt reads the store"
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
 def test_distinct_fire_ids_are_distinct_deliberate_firings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -528,6 +568,74 @@ def test_the_manual_fire_route_runs_the_canonical_spine_end_to_end(
             recorded = await container.schedule_store.get(row.id)
             assert recorded is not None
             assert recorded.runs_so_far == 1
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
+def test_an_idempotency_key_meets_the_fire_id_contract(
+    monkeypatch: pytest.MonkeyPatch, admin_client: Any
+) -> None:
+    """The header is the retry identity, so it carries the body's `fire_id`
+    contract (#1120): stripped — `" key-1 "` and `"key-1"` are one logical
+    request — and bounded, because the token becomes durable Run provenance
+    and half of a unique occurrence claim. An over-long key is a 422 before
+    any durable write."""
+    from services.scheduler import _ScheduleRunner
+
+    from maistro.container import AgentConfig, create_container
+    from maistro.graph.definitions import GraphTemplate, Node
+
+    async def scenario() -> None:
+        container = await create_container(AgentConfig(router_api_key="test-key"))
+        projects = container.project_scope_store
+        root = await projects.create_root("ws-idem")
+        await container.template_store.put(
+            GraphTemplate(
+                template_id="idem-template",
+                workspace_id="ws-idem",
+                version=1,
+                name="Idem template",
+                nodes=[
+                    Node(
+                        node_id="only",
+                        node_type="transform.alias_keys",
+                        parameters={"mapping": {}},
+                    )
+                ],
+                edges=[],
+                metadata={"entry_node": "only"},
+            )
+        )
+        row = _Row("s-idem", "idem-template", project_id=root.project_id)
+        row.workspace_id = "ws-idem"
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        try:
+            first = admin_client.post(
+                "/v1/schedules/s-idem/run", headers={"Idempotency-Key": "  key-1  "}
+            )
+            second = admin_client.post(
+                "/v1/schedules/s-idem/run", headers={"Idempotency-Key": "key-1"}
+            )
+            assert first.status_code == 200, first.text
+            assert second.status_code == 200, second.text
+
+            runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
+            assert len(runs) == 1, "a stripped key and its bare form are one identity"
+            (run,) = runs
+            assert run.provenance["schedule_fire_id"] == "key-1"
+            assert first.json()["last_run_id"] == run.run_id
+            assert second.json()["last_run_id"] == run.run_id
+
+            oversized = admin_client.post(
+                "/v1/schedules/s-idem/run", headers={"Idempotency-Key": "x" * 201}
+            )
+            assert oversized.status_code == 422
+            assert len(container.run_store._runs) == 1  # type: ignore[attr-defined]
         finally:
             _remove_row(row)
 
