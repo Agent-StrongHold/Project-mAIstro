@@ -282,8 +282,10 @@ async def test_find_relevant_filters_by_agent_id_when_given(
 
     call = conn.calls[0]
     # $1 is org_id (always bound); agent_id follows the optional scope axes.
+    # The agent clause keeps the widening both SQL twins shipped: the empty
+    # agent is the org-wide shared pool an agent-scoped read still sees.
     assert "AND org_id = $1" in call.query
-    assert "AND agent_id = $2" in call.query
+    assert "AND (agent_id = $2 OR agent_id = '')" in call.query
     assert call.args == ("", "scribe")
 
 

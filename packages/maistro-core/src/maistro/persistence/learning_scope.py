@@ -7,6 +7,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+#: The one optional axis whose empty value widens a read rather than matching
+#: nothing. A learning with no ``agent_id`` is the org-wide shared pool every
+#: agent-scoped read still sees — the convention both SQL twins shipped with
+#: (``(agent_id = ? OR agent_id = '')``) and that the migration-legs suite
+#: pins. ``org_id`` is not analogous: it is the security boundary and always
+#: exact. ``team_id``/``user_id`` are exact identity axes: an empty value there
+#: means "not recorded" (pre-#1156 rows), which must not silently widen a
+#: read, because that would republish unknown-provenance rows to every
+#: team or user in the org.
+AGENT_EMPTY_WIDENS = "agent_id"
+
 
 def matches_learning_scope(
     learning: object,
@@ -29,7 +40,15 @@ def matches_learning_scope(
         ("user_id", user_id),
         ("agent_id", agent_id),
     ):
-        if requested and getattr(learning, field, None) != requested:
+        if not requested:
+            continue
+        value = getattr(learning, field, None)
+        if field == AGENT_EMPTY_WIDENS:
+            # `or ""` keeps memory equivalent to the SQL twins, which store
+            # the dataclass's `None` as `''` ("no agent", the shared pool).
+            if (value or "") not in (requested, ""):
+                return False
+        elif value != requested:
             return False
     return True
 
@@ -50,10 +69,15 @@ def learning_scope_predicate(
         ("user_id", user_id),
         ("agent_id", agent_id),
     ):
-        if requested:
-            clauses.append(f"{field} = {next(placeholders)}")
-            params.append(requested)
+        if not requested:
+            continue
+        placeholder = next(placeholders)
+        if field == AGENT_EMPTY_WIDENS:
+            clauses.append(f"({field} = {placeholder} OR {field} = '')")
+        else:
+            clauses.append(f"{field} = {placeholder}")
+        params.append(requested)
     return " AND ".join(clauses), params
 
 
-__all__ = ["learning_scope_predicate", "matches_learning_scope"]
+__all__ = ["AGENT_EMPTY_WIDENS", "learning_scope_predicate", "matches_learning_scope"]

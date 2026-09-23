@@ -459,6 +459,27 @@ async def test_org_scope_is_exact_for_mutations(learning_store: Any) -> None:
     assert stored.status == "active"
 
 
+async def test_agent_scoped_reads_still_see_the_org_shared_pool(learning_store: Any) -> None:
+    """`agent_id = ''` is the org-wide shared pool in every backend.
+
+    Both SQL twins shipped `(agent_id = ? OR agent_id = '')` while the
+    in-memory twin matched exactly — the same read answered differently per
+    backend. The shared predicate now carries one rule: an agent-scoped read
+    sees its own rows plus the shared pool, never another agent's.
+    """
+    await learning_store.store(_learning(learning="shared", agent_id="", trigger_keys=["deploy"]))
+    await learning_store.store(
+        _learning(learning="mine", agent_id="agent-a", trigger_keys=["deploy"])
+    )
+    await learning_store.store(
+        _learning(learning="theirs", agent_id="agent-b", trigger_keys=["deploy"])
+    )
+
+    found = await learning_store.find_relevant("please deploy", agent_id="agent-a")
+
+    assert sorted(item.learning for item in found) == ["mine", "shared"]
+
+
 async def test_relevant_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
     """Every backend must apply the same three scope axes before ranking."""
     await learning_store.store(

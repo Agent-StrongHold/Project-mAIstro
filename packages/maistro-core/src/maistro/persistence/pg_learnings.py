@@ -63,6 +63,13 @@ def similarity_query(
     filter, rather than Python applying it after an unscoped fetch -- is only
     visible in the plan, and a plan check against a hand-copied query proves
     nothing about the query that actually runs.
+
+    The agent clause keeps the widening both SQL twins shipped: a learning
+    with `agent_id = ''` is the org-wide shared pool an agent-scoped read
+    still sees. `team_id`/`user_id` are exact — an empty value there means
+    "not recorded", which must not republish unknown-provenance rows to every
+    team or user in the org. See `persistence.learning_scope` for the shared
+    rule.
     """
     clauses = [
         "status = 'active'",
@@ -76,7 +83,10 @@ def similarity_query(
         (scoped_to_agent, "agent_id"),
     ):
         if enabled:
-            clauses.append(f"{column} = ${next_placeholder}")
+            if column == "agent_id":
+                clauses.append(f"({column} = ${next_placeholder} OR {column} = '')")
+            else:
+                clauses.append(f"{column} = ${next_placeholder}")
             next_placeholder += 1
     return (
         "SELECT * FROM learnings WHERE "
