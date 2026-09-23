@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -13,6 +14,8 @@ from services.workspace_authority import is_member
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.invocation import CapabilityUnavailable
 from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/canvas", tags=["canvas"])
 
@@ -88,6 +91,7 @@ async def _canonical_canvas_run(request: Request, run_id: str) -> Any:
     except Exception:
         # A membership-store failure must not surface as a different status
         # than a missing Run, or it would confirm the Run exists.
+        logger.exception("Canvas Run membership lookup failed; refusing")
         authorized = False
     if not authorized:
         raise refusal
