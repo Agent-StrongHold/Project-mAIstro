@@ -68,3 +68,32 @@ requests/urllib usage across services/evolution*.py; Invocation stamped
 with binding workspace/project + run/node_run/attempt (invocation.py);
 maistro_evolve.providers.openai_compatible imported only by its own package
 re-export, with no production wiring.
+
+Verification note (independent review, job 45176b2b, clean tree at head
+76ca31eaa): re-executed pytest on test_evolution_service.py +
+test_evolution_canonical_graph.py + test_evolution_recovery.py +
+test_evolution_recovery_cadence.py + test_evolution_persisted_pair_plan.py +
+test_evolution_canonical_edge_cases.py -> 95 passed; maistro-core
+test_model_egress_container_composition.py -> 6 passed; `ruff check .` clean;
+check-model-egress.py OK (baseline 23 -> candidate 22 direct callers,
+services.evolution pruned, no expansion) and direct-effect inventory matched
+(48 sites); check-reachability.py, check-wiring-reads.py, and
+check-suite-inventory.py all OK. Source-confirmed each acceptance criterion:
+per-call effect keys (`evolve.model:{node}:{n}:{digest}`) under
+ModelChatEgress -> effects.invocations.invoke; Invocation stamped with
+binding workspace/project + run/node_run/attempt (invocation.py invoke());
+effect-key dedup (COMPLETED returns prior, CREATED/RUNNING/UNKNOWN block,
+FAILED retriable); provider timeout terminalizes UNKNOWN and the
+first_failure latch + _raise_model_failure keep failed physical work from
+publishing evaluation/finalize mutations (faulted marker ->
+FinalizeReconciliationRequired); recovery is wired (start/stop_evolution
+bracket the cadence), fail-closed via _recovery_resolver/EvolveRecoveryBlocked
+with resume-strand NodeResolverUnavailable terminalizing FAILED, and
+serialized on the shared cycle_lock;
+maistro_evolve.providers.openai_compatible has no new wiring (only its own
+package re-export plus a pre-existing import in executable_terminal_runner.py
+that no production module imports; unchanged from base 8bb344e32). The
+shipped-path integration test enters _EvolutionService._run_one_cycle with
+real create_container composition (only the httpx transport stubbed) and
+asserts Invocation correlation without hand-built Provider/Binding. PR #1313
+body and branch commit messages carry no closure keywords (Refs only).
