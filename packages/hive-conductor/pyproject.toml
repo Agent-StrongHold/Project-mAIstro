@@ -59,11 +59,7 @@ dependencies = [
     # Bound is `>=0.9.0,<2` because 0.9.0 is what every package in this repo is
     # at today (root VERSION); nothing resolves at 1.0.0 yet. Tighten to
     # `>=1.0.0,<2` at tag time, per E1/E2 of the v1.0.0 release plan.
-    #
-    # `[sqlite]` for the same reason as `[bcrypt]`: a `sqlite:` DATABASE_URL
-    # puts the embedded Container on core's SQLite stores, which import
-    # aiosqlite (#37). The backend never imports it itself.
-    "maistro-core[bcrypt,sqlite]>=0.9.0,<2",
+    "maistro-core[bcrypt]>=0.9.0,<2",
 ]
 
 # `backend/adapters/telemetry_langfuse.py` exports spans to a Langfuse OTLP
