@@ -12,6 +12,7 @@
 // duration_ms, tool result preview). Day 9 ships this read-only view;
 // Day 13 will overlay eval-judge scores on each node.
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { apiGet } from "../lib/api";
 
 type EventType = "pm_node_started" | "pm_node_completed" | "pm_node_failed";
@@ -94,7 +95,8 @@ function fmtDuration(ms: unknown): string {
 
 export default function DagRuns() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() => searchParams.get("run"));
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
