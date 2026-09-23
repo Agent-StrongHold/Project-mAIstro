@@ -701,7 +701,6 @@
       "message_regex": "unused (function|class|method|variable|attribute)",
       "rationale": "maistro-core exports package APIs consumed by downstream products and sibling repos, so package-local vulture cannot distinguish all public consumers.",
       "findings": [
-        "packages/maistro-core/src/maistro/a2a/delegate.py::unused method 'register_agent_capability'",
         "packages/maistro-core/src/maistro/a2a/delegate.py::unused method 'update_task_status'",
         "packages/maistro-core/src/maistro/a2a/guest_peers.py::unused method 'list_peers'",
         "packages/maistro-core/src/maistro/a2a/guest_peers.py::unused method 'register_peer'",

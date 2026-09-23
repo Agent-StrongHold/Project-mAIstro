@@ -47,7 +47,8 @@ from .base import (
 
 if TYPE_CHECKING:
     from maistro.graph.definitions import Graph
-    from maistro.runs.model import Run
+    from maistro.runs.model import NodeRun, Run
+    from maistro.runs.reconciliation import AttemptLifecycleReconciler
     from maistro.runs.store import RunStore
 
 
@@ -349,79 +350,107 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if self._run_store is None or not run_id:
             return
 
-        from maistro.runs.model import TERMINAL_RUN_STATUSES
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
-        child = await self._run_store.get_run(run_id)
-        if child is None or child.status in TERMINAL_RUN_STATUSES:
-            return
-        node_runs = await self._run_store.list_node_runs(run_id)
-        if not node_runs:
-            raise DelegationNotConfiguredError(
-                f"child Run {run_id!r} has no NodeRun for its delegated work"
-            )
-        open_node_runs = [
-            node_run for node_run in node_runs if node_run.status not in TERMINAL_RUN_STATUSES
-        ]
+        open_node_runs = await self._open_child_node_runs(run_id)
         if not open_node_runs:
             return
 
         lifecycle = AttemptLifecycleReconciler(self._run_store)
         cancelled_node_runs: list[str] = []
         for node_run in open_node_runs:
-            await lifecycle.prepare_execution(node_run.node_run_id)
-            attempt = await self._run_store.create_attempt(
-                node_run.node_run_id,
-                runtime_id="a2a",
-                executor_id=f"agent.delegate_remote:{out.status}",
-            )
-            token = attempt.execution_lease.fencing_token if attempt.execution_lease else None
-            attempt = await self._run_store.transition_attempt(
-                attempt.attempt_id,
-                AttemptStatus.RUNNING,
-                fencing_token=token,
-            )
-
-            if out.status == "rejected":
-                attempt = await self._run_store.transition_attempt(
-                    attempt.attempt_id,
-                    AttemptStatus.CANCELLED,
-                    error=out.error,
-                    fencing_token=token,
-                )
-                # Reconcile after all siblings are marked, otherwise the first
-                # cancellation would terminalize the Run while later NodeRuns
-                # still need their evidence recorded.
+            if await self._record_node_run_attempt(node_run, out, lifecycle):
                 cancelled_node_runs.append(node_run.node_run_id)
-                continue
-
-            # The peer's response is a completed transport Attempt. The logical
-            # projection distinguishes a successful result from a remote
-            # failure while preserving the four-value DelegateRemoteOut contract.
-            attempt = await self._run_store.transition_attempt(
-                attempt.attempt_id,
-                AttemptStatus.COMPLETED,
-                result={"status": out.status, "task_id": out.task_id, "result": out.result},
-                error=out.error,
-                fencing_token=token,
-            )
-            accepted = AcceptedNodeOutcome(
-                node_run_id=node_run.node_run_id,
-                attempt_result=AttemptResult.from_attempt(attempt),
-                logical_status=(
-                    RunStatus.COMPLETED if out.status == "completed" else RunStatus.FAILED
-                ),
-                result=out.result if out.status == "completed" else None,
-                error=out.error,
-            )
-            await lifecycle.accept_outcome(accepted)
 
         if cancelled_node_runs:
-            for node_run_id in cancelled_node_runs:
-                await self._run_store.transition_node_run(
-                    node_run_id, RunStatus.CANCELLED, error=out.error
-                )
-            await self._run_store.transition_run(run_id, RunStatus.CANCELLED, error=out.error)
+            await self._cancel_child(run_id, cancelled_node_runs, error=out.error)
+
+    async def _open_child_node_runs(self, run_id: str) -> list[NodeRun]:
+        """The child's NodeRuns still owing terminal evidence, or none.
+
+        Empty when the child is gone, already terminal, or fully settled. A
+        child Run with no NodeRun at all is a wiring fault, not a settled
+        Run -- nothing would exist to attach the answer's Attempt to.
+        """
+        assert self._run_store is not None
+        from maistro.runs.model import TERMINAL_RUN_STATUSES
+
+        child = await self._run_store.get_run(run_id)
+        if child is None or child.status in TERMINAL_RUN_STATUSES:
+            return []
+        node_runs = await self._run_store.list_node_runs(run_id)
+        if not node_runs:
+            raise DelegationNotConfiguredError(
+                f"child Run {run_id!r} has no NodeRun for its delegated work"
+            )
+        return [node_run for node_run in node_runs if node_run.status not in TERMINAL_RUN_STATUSES]
+
+    async def _record_node_run_attempt(
+        self,
+        node_run: NodeRun,
+        out: DelegateRemoteOut,
+        lifecycle: AttemptLifecycleReconciler,
+    ) -> bool:
+        """Write the response as one NodeRun's Attempt evidence.
+
+        True when the NodeRun was cancelled: the Run may only terminalize
+        after every cancelled sibling has its own evidence recorded. False
+        when the outcome was accepted onto this NodeRun directly.
+        """
+        assert self._run_store is not None
+        await lifecycle.prepare_execution(node_run.node_run_id)
+        attempt = await self._run_store.create_attempt(
+            node_run.node_run_id,
+            runtime_id="a2a",
+            executor_id=f"agent.delegate_remote:{out.status}",
+        )
+        token = attempt.execution_lease.fencing_token if attempt.execution_lease else None
+        attempt = await self._run_store.transition_attempt(
+            attempt.attempt_id,
+            AttemptStatus.RUNNING,
+            fencing_token=token,
+        )
+
+        if out.status == "rejected":
+            await self._run_store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.CANCELLED,
+                error=out.error,
+                fencing_token=token,
+            )
+            # Reconcile after all siblings are marked, otherwise the first
+            # cancellation would terminalize the Run while later NodeRuns
+            # still need their evidence recorded.
+            return True
+
+        # The peer's response is a completed transport Attempt. The logical
+        # projection distinguishes a successful result from a remote
+        # failure while preserving the four-value DelegateRemoteOut contract.
+        attempt = await self._run_store.transition_attempt(
+            attempt.attempt_id,
+            AttemptStatus.COMPLETED,
+            result={"status": out.status, "task_id": out.task_id, "result": out.result},
+            error=out.error,
+            fencing_token=token,
+        )
+        accepted = AcceptedNodeOutcome(
+            node_run_id=node_run.node_run_id,
+            attempt_result=AttemptResult.from_attempt(attempt),
+            logical_status=(RunStatus.COMPLETED if out.status == "completed" else RunStatus.FAILED),
+            result=out.result if out.status == "completed" else None,
+            error=out.error,
+        )
+        await lifecycle.accept_outcome(accepted)
+        return False
+
+    async def _cancel_child(
+        self, run_id: str, node_run_ids: list[str], *, error: str | None
+    ) -> None:
+        """Terminalize cancelled sibling NodeRuns, then the child Run itself."""
+        assert self._run_store is not None
+        for node_run_id in node_run_ids:
+            await self._run_store.transition_node_run(node_run_id, RunStatus.CANCELLED, error=error)
+        await self._run_store.transition_run(run_id, RunStatus.CANCELLED, error=error)
 
     async def _recover_cross_instance(
         self, inputs: DelegateRemoteIn, key: str, child_id: str
@@ -543,6 +572,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._recover_cross_instance(inputs, key, child_id)
 
         result = await self._submit_to_peer(inputs, key)
+        return await self._settle_peer_submission(inputs, child_id, result)
+
+    async def _settle_peer_submission(
+        self, inputs: DelegateRemoteIn, child_id: str, result: DelegationResult
+    ) -> DelegateRemoteOut:
+        """Turn one peer POST response into the node's pause or outcome."""
         if result.status == "rejected":
             await self._release_unaccepted_child(child_id)
             # No child Run: nothing was admitted, so there is no execution to
