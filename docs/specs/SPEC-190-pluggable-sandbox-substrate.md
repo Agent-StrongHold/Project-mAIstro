@@ -124,8 +124,9 @@ caller's *execution mode* then sets a floor that decides whether execution is pe
 Unknown or unspecified modes get the `autonomous` (stricter) floor. There is no bare-subprocess
 tier in any mode. `SandboxProtocol.spawn` callers pass the mode (or assert
 `capabilities().isolation >= floor`) so the policy is enforced in the substrate, not re-implemented
-per caller. Reference implementation:
-`packages/hive-conductor/backend/services/hyperlight_executor.py`.
+per caller. Reference implementation: `maistro.sandbox.policy`/`selector` and
+`maistro.sandbox.wiring`; `packages/hive-conductor/backend/services/hyperlight_executor.py` is a
+compatibility adapter that maps its legacy `execute_node` API onto that authority.
 
 ### Wiring
 

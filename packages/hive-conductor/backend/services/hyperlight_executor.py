@@ -1,175 +1,214 @@
-"""Sandboxed code executor — defense-in-depth isolation with fail-closed semantics.
+"""Compatibility code-execution adapter over the canonical sandbox authority.
 
-Fallback chain (highest isolation → lowest), per ADR-093 Decision 5:
-1. Hyperlight  — hardware-enforced microVM (1-2ms cold start, hypervisor cage)   [tier 1: VM]
-2. Firecracker — lightweight VM (kernel-level isolation, ~125ms cold start)      [tier 1: VM]
-3. gVisor      — user-space kernel; syscalls terminate in the Sentry, not the
-                 host kernel (no io_uring exposure)                              [tier 2: userspace kernel]
-4. bubblewrap  — user-namespace sandbox (no root, no host FS, seccomp); still
-                 exposes the full host syscall surface                           [tier 3: shared kernel]
-5. Hardened container — OCI container, no-new-privs, read-only rootfs, seccomp   [tier 3: shared kernel]
-6. FAIL CLOSED — refuse to execute if no sandbox is available
+History, because the shape of this module is the lesson: this used to *be* a
+second sandbox authority. It carried its own tier integers, its own backend
+probes, and five private launcher implementations (hyperlight, firecracker,
+gVisor, bubblewrap, hardened container) while `maistro.sandbox` held the real
+protocol, policy ladder and selector. Two authorities meant two opinions about
+what "isolated enough" means, and this one's were worse:
 
-Execution-mode floors (ADR-093 Decision 6): the strongest available backend is
-always used, but `autonomous` (unattended / "overnight" / full-auto) execution
-requires tier 2 or better — on a host whose best backend is shared-kernel,
-full-auto refuses to run while `interactive` (human-supervised) execution
-proceeds with a warning.
+- it counted `runsc`-on-PATH as a Tier-2 boundary that
+  `docs/security/SANDBOX-SUPPORT-MATRIX.md` explicitly calls "detected, not
+  implemented" — a claim the canonical selector refuses to make;
+- it passed the host's whole environment through to the sandbox (`dict(os.environ)`
+  plus overrides), so ambient credentials rode into every unattended node;
+- it kept a private bubblewrap argv, so the flags that ARE the Tier-3 boundary
+  existed twice and could drift.
 
-The bare subprocess fallback is REMOVED. Untrusted code never runs without isolation.
+#18 retires the duplicate. Everything policy-shaped now lives behind the one
+canonical authority (`maistro.sandbox`, ADR-093): selection is
+`SandboxSelector` over `WorkloadPolicy`, egress is an explicit `EgressGrant`
+decided before the sandbox exists, backends are the canonical registered
+implementations, and this module owns only the legacy dict-shaped result
+contract that `legacy_dag_node` and the durable graph runner consume.
+`get_executor()` keeps its name and home so those consumers — and the
+injection tests that stub it — keep their seams.
+
+What this module still decides, and why it may: the *mapping* from the legacy
+`execute_node(...)` signature onto canonical machinery. `mode` becomes an
+`ExecutionMode` (unknown modes read as unattended — default deny, ADR-093
+decision 6), `allow_network` becomes an explicit host-scoped `EgressGrant`
+with a named reason or nothing at all, and `memory_mb`/`timeout_s` become
+policy ceilings that `build_config` clamps. The floor decision itself — which
+tier unattended work needs, and what happens on a host that cannot provide it
+— is not repeated here; `selector.select()` answers it, and a host without a
+qualifying backend gets the same fail-closed refusal the selector gives every
+other consumer.
 """
 
 from __future__ import annotations
 
-import asyncio
-import base64
-import contextlib
-import json
 import logging
-import os
-import shutil
-import subprocess
 import sys
-import time
+from pathlib import Path
 from typing import Any
+
+from maistro.sandbox import (
+    EgressGrant,
+    EgressMode,
+    EgressNotEnforceableError,
+    ExecResult,
+    ExecutionMode,
+    NoSuitableBackendError,
+    SandboxSelector,
+    WorkloadPolicy,
+    build_selector,
+)
+from maistro.sandbox.policy import IsolationTier
 
 logger = logging.getLogger("hive.sandbox")
 
-# ─── Isolation tiers and execution-mode floors (ADR-093) ─────────────────────
+#: The weakest boundary a legacy node may ever run under. Mode floors decide
+#: the rest: unattended execution effective-floors to `gvisor`, which no
+#: shipped backend provides yet, so a bubblewrap-only host refuses unattended
+#: nodes rather than downgrading them — the same answer every other consumer
+#: gets from the same selector.
+MIN_TIER: IsolationTier = "bubblewrap"
 
-TIER_VM = 1  # hardware virtualization boundary
-TIER_USERSPACE_KERNEL = 2  # gVisor Sentry between guest and host kernel
-TIER_SHARED_KERNEL = 3  # namespaces + seccomp only — guardrail, not a boundary
-
-BACKEND_TIERS: dict[str, int] = {
-    "hyperlight": TIER_VM,
-    "firecracker": TIER_VM,
-    "gvisor": TIER_USERSPACE_KERNEL,
-    "bubblewrap": TIER_SHARED_KERNEL,
-    "hardened-container": TIER_SHARED_KERNEL,
-}
-
-# Weakest tier each mode may execute under. Unknown modes get the autonomous
-# (stricter) floor — default deny.
-MODE_FLOORS: dict[str, int] = {
-    "interactive": TIER_SHARED_KERNEL,
-    "autonomous": TIER_USERSPACE_KERNEL,
-}
-
-# ─── Backend availability detection ──────────────────────────────────────────
+#: Why a networked legacy node gets the host's namespace. A grant without a
+#: reason cannot be constructed, and "the node script calls the configured LLM
+#: gateway" is the actual reason — the conductor owns that call, the sandbox
+#: merely executes it away from the host filesystem.
+LEGACY_NODE_EGRESS_REASON = (
+    "legacy DAG node calls the configured LLM gateway from inside its sandbox"
+)
 
 
-def _has_hyperlight() -> bool:
+def _mode_of(mode: str) -> ExecutionMode:
+    """Map the legacy mode string; anything unknown reads as unattended.
+
+    The retired ladder answered `MODE_FLOORS.get(mode, autonomous)` the same
+    way: a typo'd or novel mode must not weaken the floor. Default deny.
+    """
     try:
-        r = subprocess.run(
-            [sys.executable, "-c", "import hyperlight"], capture_output=True, timeout=5
+        return ExecutionMode(mode)
+    except ValueError:
+        return ExecutionMode.AUTONOMOUS
+
+
+def _default_guest_python() -> str:
+    """Interpreter path as seen *from inside* the sandbox.
+
+    Backends bind the host's runtime directories read-only; an interpreter
+    that lives outside them (a uv toolchain under `$HOME`, say) does not exist
+    in the guest, so the system interpreter is the honest default.
+    """
+    executable = sys.executable
+    if executable.startswith(("/usr/", "/bin/", "/sbin/")) and Path(executable).exists():
+        return executable
+    return "/usr/bin/python3"
+
+
+def _legacy_result(tier: str, result: ExecResult) -> dict[str, Any]:
+    """Map a canonical `ExecResult` onto the legacy dict contract.
+
+    The legacy shape is `{"output", "error", "success", "isolation"}` where
+    `error` carried stderr (capped at 500 chars) and `output` the stdout.
+    Host-side output bounds (#1197) are the backend's business; this mapping
+    only refuses to *lie* about them: a stream the host truncated is named in
+    `error` instead of being passed off as complete output.
+    """
+    if result.timed_out:
+        return {
+            "output": "",
+            "error": "timeout",
+            "success": False,
+            "isolation": tier,
+            "duration_ms": result.duration_ms,
+        }
+    error = result.stderr[:500]
+    if result.output_limit_exceeded:
+        error = (f"{error}\n" if error else "") + (
+            "output limit exceeded: host policy terminated the sandbox and "
+            "truncated captured streams"
         )
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
-def _has_firecracker() -> bool:
-    return shutil.which("firecracker") is not None and os.path.exists("/dev/kvm")
-
-
-def _has_bubblewrap() -> bool:
-    return shutil.which("bwrap") is not None
-
-
-def _has_gvisor() -> bool:
-    return shutil.which("runsc") is not None
-
-
-def _has_hardened_container() -> bool:
-    return shutil.which("docker") is not None or shutil.which("podman") is not None
-
-
-# ─── Config encoding (fix #2 — no f-string templating of config values) ──────
-
-
-def _encode_config(*, allow_network: bool, memory_mb: int, timeout_s: int) -> str:
-    """Encode all config as base64 JSON. Never template values into source."""
-    return base64.b64encode(
-        json.dumps(
-            {
-                "allow_network": bool(allow_network),
-                "memory_mb": int(memory_mb),
-                "timeout_s": int(timeout_s),
-            }
-        ).encode()
-    ).decode("ascii")
-
-
-# ─── Executor ─────────────────────────────────────────────────────────────────
+    return {
+        "output": result.stdout,
+        "error": error,
+        "success": result.exit_code == 0 and not result.output_limit_exceeded,
+        "isolation": tier,
+        "duration_ms": result.duration_ms,
+    }
 
 
 class SandboxExecutor:
-    """Execute code with the strongest available isolation, or refuse."""
+    """Execute one legacy node script through the canonical selector.
 
-    def __init__(self):
-        self._backend: str | None = None
-        self._detect()
+    `selector` is injectable so tests — and a deployment that has already
+    probed the host — can pin exactly what this executor may reach. Without
+    one, the executor assembles the real selector from what the host
+    evidenced, exactly like every other consumer of `build_selector`.
+    """
 
-    def _detect(self):
-        """Probe once at startup. Order = strongest isolation first (ADR-093)."""
-        if _has_hyperlight():
-            self._backend = "hyperlight"
-        elif _has_firecracker():
-            self._backend = "firecracker"
-        elif _has_gvisor():
-            self._backend = "gvisor"
-        elif _has_bubblewrap():
-            self._backend = "bubblewrap"
-        elif _has_hardened_container():
-            self._backend = "hardened-container"
-        else:
-            self._backend = None
-        if self._backend:
-            logger.info(
-                "sandbox_backend=%s (isolation tier %d) — code execution enabled",
-                self._backend,
-                BACKEND_TIERS[self._backend],
-            )
-            if not self.allows_mode("autonomous"):
-                logger.warning(
-                    "sandbox_backend=%s is shared-kernel — autonomous/overnight "
-                    "execution is BLOCKED (interactive only). Install gVisor (runsc) "
-                    "or a microVM backend to enable full-auto.",
-                    self._backend,
-                )
-        else:
-            logger.critical(
-                "╔══════════════════════════════════════════════════════════════╗\n"
-                "║  NO SANDBOX BACKEND AVAILABLE — CODE EXECUTION WILL REFUSE  ║\n"
-                "║  Install one of: bubblewrap, gVisor, Firecracker, Docker    ║\n"
-                "║  Any DAG node requiring sandbox tier will fail closed.       ║\n"
-                "╚══════════════════════════════════════════════════════════════╝"
-            )
+    def __init__(
+        self,
+        *,
+        selector: SandboxSelector | None = None,
+        guest_python: str | None = None,
+    ) -> None:
+        self._selector = selector if selector is not None else build_selector()
+        self._guest_python = guest_python or _default_guest_python()
+
+    # ─── capability surface (derived, never claimed) ──────────────────────
 
     @property
     def available(self) -> bool:
-        return self._backend is not None
+        return self._selector.strongest_tier is not None
 
     @property
     def backend(self) -> str | None:
-        return self._backend
+        """Strongest registered canonical tier, or `None` when nothing ships."""
+        return self._selector.strongest_tier
 
-    @property
-    def tier(self) -> int | None:
-        """Isolation tier of the selected backend (1=VM … 3=shared kernel)."""
-        return BACKEND_TIERS[self._backend] if self._backend else None
+    #: The retired ladder reported an int here; the canonical tier name is the
+    #: same fact without a second numbering to keep in sync.
+    tier = backend
 
     def allows_mode(self, mode: str) -> bool:
-        """Whether the selected backend satisfies the isolation floor for `mode`.
+        """Whether the canonical selector admits this mode on this host.
 
-        Lets schedulers/UI pre-check (and surface) that full-auto is blocked
-        instead of discovering it node-by-node at run time.
+        Asked with a deny-egress policy: mode admission is about isolation
+        tiers. Egress enforceability is checked again at selection time with
+        the real grant, so a `scoped` grant cannot slip past on the strength
+        of a pre-check that never saw it.
         """
-        if self._backend is None:
+        try:
+            self._selector.select(
+                self._policy(mode=mode, allow_network=False, memory_mb=256, timeout_s=120)
+            )
+        except (NoSuitableBackendError, EgressNotEnforceableError):
             return False
-        floor = MODE_FLOORS.get(mode, MODE_FLOORS["autonomous"])
-        return BACKEND_TIERS[self._backend] <= floor
+        return True
+
+    # ─── policy mapping ───────────────────────────────────────────────────
+
+    def _policy(
+        self,
+        *,
+        mode: str,
+        allow_network: bool,
+        memory_mb: int,
+        timeout_s: int,
+    ) -> WorkloadPolicy:
+        grant = (
+            EgressGrant(mode=EgressMode.HOST, reason=LEGACY_NODE_EGRESS_REASON)
+            if allow_network
+            else EgressGrant()
+        )
+        return WorkloadPolicy(
+            min_tier=MIN_TIER,
+            network_allowed=allow_network,
+            max_memory_mb=memory_mb,
+            max_timeout_s=timeout_s,
+            reason="legacy DAG node code execution (compatibility adapter)",
+            mode=_mode_of(mode),
+            # Node scripts are config-shaped, but they execute model-chosen
+            # task text and context, so the untrusted mode floors apply.
+            untrusted=True,
+            egress=grant,
+        )
+
+    # ─── execution ────────────────────────────────────────────────────────
 
     async def execute_node(
         self,
@@ -180,232 +219,65 @@ class SandboxExecutor:
         memory_mb: int = 256,
         mode: str = "autonomous",
     ) -> dict[str, Any]:
-        if self._backend is None:
-            return {
-                "output": "",
-                "error": "REFUSED: no sandbox backend available. Install bubblewrap, gVisor, or Firecracker.",
-                "success": False,
-                "isolation": "fail-closed",
-                "duration_ms": 0,
-            }
-        if not self.allows_mode(mode):
-            return {
-                "output": "",
-                "error": (
-                    f"REFUSED: {mode!r} execution requires gVisor or microVM isolation; "
-                    f"strongest available backend is '{self._backend}' (shared kernel). "
-                    "Run interactively, or install gVisor (runsc) / Firecracker / Kata "
-                    "to enable full-auto."
-                ),
-                "success": False,
-                "isolation": "fail-closed",
-                "duration_ms": 0,
-            }
+        """Run `code` under the strongest backend the selector admits.
 
-        start = time.monotonic()
-        encoded_code = base64.b64encode(code.encode("utf-8")).decode("ascii")
-        config_b64 = _encode_config(
-            allow_network=allow_network, memory_mb=memory_mb, timeout_s=timeout_s
-        )
-
-        dispatch = {
-            "hyperlight": self._run_hyperlight,
-            "firecracker": self._run_firecracker,
-            "bubblewrap": self._run_bubblewrap,
-            "gvisor": self._run_gvisor,
-            "hardened-container": self._run_hardened_container,
-        }
-        runner = dispatch[self._backend]
-        result = await runner(encoded_code, config_b64, env, timeout_s)
-        result["duration_ms"] = int((time.monotonic() - start) * 1000)
-        result["isolation"] = self._backend
-        return result
-
-    # ─── Backend implementations ──────────────────────────────────────────
-
-    async def _run_hyperlight(
-        self, code_b64: str, config_b64: str, env: dict | None, timeout_s: int
-    ) -> dict[str, Any]:
-        wrapper = f"""
-import base64, json, sys
-cfg = json.loads(base64.b64decode("{config_b64}"))
-code = base64.b64decode("{code_b64}").decode("utf-8")
-import hyperlight
-from hyperlight import Sandbox, SandboxConfig
-sc = SandboxConfig(memory_mb=cfg["memory_mb"], timeout_ms=cfg["timeout_s"]*1000, allow_network=cfg["allow_network"])
-with Sandbox(sc) as sb:
-    r = sb.execute_python(code)
-    print(r.stdout)
-    if r.stderr: print(r.stderr, file=sys.stderr)
-    exit(0 if r.returncode == 0 else 1)
-"""
-        return await self._subprocess(wrapper, env, timeout_s)
-
-    async def _run_firecracker(
-        self, code_b64: str, config_b64: str, env: dict | None, timeout_s: int
-    ) -> dict[str, Any]:
-        # Firecracker requires a rootfs + kernel — delegate to jailer
-        # For now, use the firectl pattern
-        return await self._subprocess_via_cmd(
-            ["firecracker-containerd", "--code-b64", code_b64, "--config-b64", config_b64],
-            env,
-            timeout_s,
-        )
-
-    async def _run_bubblewrap(
-        self, code_b64: str, config_b64: str, env: dict | None, timeout_s: int
-    ) -> dict[str, Any]:
-        wrapper = f'import base64,json,sys;cfg=json.loads(base64.b64decode("{config_b64}"));exec(base64.b64decode("{code_b64}").decode())'
-        cmd = [
-            "bwrap",
-            "--ro-bind",
-            "/usr",
-            "/usr",
-            "--ro-bind",
-            "/lib",
-            "/lib",
-            "--ro-bind",
-            "/lib64",
-            "/lib64",
-            "--symlink",
-            "usr/bin",
-            "/bin",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",  # nosec B108 — bwrap flag: mounts a fresh tmpfs INSIDE the sandbox, not host /tmp
-            "--unshare-all",
-            "--die-with-parent",
-            "--new-session",
-            sys.executable,
-            "-c",
-            wrapper,
-        ]
-        return await self._subprocess_via_cmd(cmd, env, timeout_s)
-
-    async def _run_gvisor(
-        self, code_b64: str, config_b64: str, env: dict | None, timeout_s: int
-    ) -> dict[str, Any]:
-        wrapper = f'import base64,json;cfg=json.loads(base64.b64decode("{config_b64}"));exec(base64.b64decode("{code_b64}").decode())'
-        runtime = "podman" if shutil.which("podman") else "docker"
-        cmd = [
-            runtime,
-            "run",
-            "--rm",
-            "--runtime=runsc",
-            "--read-only",
-            "--network=none",
-            f"--memory={256}m",
-            f"--timeout={timeout_s}",
-            "python:3.12-slim",
-            "python",
-            "-c",
-            wrapper,
-        ]
-        return await self._subprocess_via_cmd(cmd, env, timeout_s)
-
-    async def _run_hardened_container(
-        self, code_b64: str, config_b64: str, env: dict | None, timeout_s: int
-    ) -> dict[str, Any]:
-        wrapper = f'import base64,json;cfg=json.loads(base64.b64decode("{config_b64}"));exec(base64.b64decode("{code_b64}").decode())'
-        runtime = "podman" if shutil.which("podman") else "docker"
-        cmd = [
-            runtime,
-            "run",
-            "--rm",
-            "--read-only",
-            "--network=none",
-            "--security-opt=no-new-privileges",
-            "--cap-drop=ALL",
-            "--memory=256m",
-            "--pids-limit=64",
-            "python:3.12-slim",
-            "python",
-            "-c",
-            wrapper,
-        ]
-        return await self._subprocess_via_cmd(cmd, env, timeout_s)
-
-    # ─── Helpers ──────────────────────────────────────────────────────────
-
-    async def _subprocess(self, code: str, env: dict | None, timeout_s: int) -> dict[str, Any]:
-        run_env = {
-            "PATH": os.environ.get("PATH", ""),
-            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-        }
-        if env:
-            run_env.update(env)
-        return await self._run_cancellable([sys.executable, "-c", code], run_env, timeout_s)
-
-    async def _subprocess_via_cmd(
-        self, cmd: list[str], env: dict | None, timeout_s: int
-    ) -> dict[str, Any]:
-        run_env = dict(os.environ)
-        if env:
-            run_env.update(env)
-        return await self._run_cancellable(cmd, run_env, timeout_s)
-
-    async def _run_cancellable(
-        self, cmd: list[str], env: dict[str, str], timeout_s: int
-    ) -> dict[str, Any]:
-        """Run an isolated child whose process is killed with its Attempt.
-
-        ``run_in_executor(subprocess.run)`` cannot observe cancellation: it
-        abandons a thread while the child keeps running. The canonical Runtime
-        can only be truthful when this adapter owns an async child process and
-        explicitly terminates it on cancellation or deadline.
+        The sandbox sees exactly `env` — the legacy caller composes an
+        explicit, minimal environment (gateway coordinates, task data) — and
+        nothing else: canonical backends start from a cleared environment, so
+        the retired behavior of inheriting the host's whole `os.environ` is
+        structurally gone, not filtered.
         """
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        policy = self._policy(
+            mode=mode,
+            allow_network=allow_network,
+            memory_mb=memory_mb,
+            timeout_s=timeout_s,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
-        except asyncio.CancelledError:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
-            raise
-        except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
-            return {"output": "", "error": "timeout", "success": False}
-        except Exception as exc:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            await process.wait()
-            return {"output": "", "error": str(exc)[:200], "success": False}
-        return {
-            "output": stdout.decode(errors="replace"),
-            "error": stderr.decode(errors="replace")[:500],
-            "success": process.returncode == 0,
-        }
-
-    def _sync_run(self, cmd: list[str], env: dict, timeout_s: int) -> dict[str, Any]:
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=env)
+            tier, backend = self._selector.select(policy)
+        except (NoSuitableBackendError, EgressNotEnforceableError) as exc:
+            logger.warning("sandbox_refused mode=%s reason=%s", mode, exc)
             return {
-                "output": r.stdout,
-                "error": r.stderr[:500] if r.stderr else "",
-                "success": r.returncode == 0,
+                "output": "",
+                "error": f"REFUSED: {exc}",
+                "success": False,
+                "isolation": "fail-closed",
+                "duration_ms": 0,
             }
-        except subprocess.TimeoutExpired:
-            return {"output": "", "error": "timeout", "success": False}
-        except Exception as e:
-            return {"output": "", "error": str(e)[:200], "success": False}
+
+        config = self._selector.build_config(
+            policy,
+            memory_mb=memory_mb,
+            timeout_s=timeout_s,
+            env=dict(env or {}),
+        )
+        instance = await backend.spawn(config=config)
+        try:
+            result = await backend.exec(
+                instance,
+                [self._guest_python, "-c", code],
+                timeout_s=config.timeout_s,
+            )
+        finally:
+            await backend.destroy(instance)
+        return _legacy_result(tier, result)
 
 
 # ─── Singleton + public API ───────────────────────────────────────────────────
 
-_executor = SandboxExecutor()
+_executor: SandboxExecutor | None = None
 
 
 def get_executor() -> SandboxExecutor:
+    """The process's executor, assembled on first use.
+
+    Constructed lazily: assembly probes the host (a bubblewrap namespace
+    probe, a container runtime `info`), and import-time probing would make
+    every test process that imports this module pay for it.
+    """
+    global _executor
+    if _executor is None:
+        _executor = SandboxExecutor()
     return _executor
 
 
@@ -415,12 +287,13 @@ async def execute_in_sandbox(
     allow_network: bool = False,
     mode: str = "autonomous",
 ) -> dict[str, Any]:
-    """Execute code in the strongest available sandbox, or refuse.
+    """Execute code through the canonical selector, or refuse.
 
     `mode` is "interactive" (human-supervised) or "autonomous" (unattended);
-    autonomous requires gVisor-or-better isolation (ADR-093 Decision 6).
+    the canonical mode floors decide what each requires, and an unknown mode
+    reads as unattended.
     """
-    return await _executor.execute_node(code, env=env, allow_network=allow_network, mode=mode)
+    return await get_executor().execute_node(code, env=env, allow_network=allow_network, mode=mode)
 
 
 # Backward compat alias

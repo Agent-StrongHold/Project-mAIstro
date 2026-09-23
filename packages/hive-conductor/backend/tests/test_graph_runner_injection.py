@@ -215,32 +215,54 @@ def test_invoke_subprocess_usage_hooks_swallows_a_failing_hook() -> None:
     _invoke_subprocess_usage_hooks(["n1"], {"n1": {"usage": {"prompt_tokens": 1}}}, broken_hook)
 
 
-def test_hyperlight_wrapper_uses_base64_not_string_templating() -> None:
-    """The Hyperlight wrapper must base64-encode untrusted code, not splice it
-    into a triple-quoted literal (which broke on triple-quotes/backslashes)."""
+def test_untrusted_code_crosses_as_data_not_as_constructed_source() -> None:
+    """The retired hyperlight wrapper base64-encoded untrusted code because the
+    executor spliced it into generated Python. The adapter constructs no source
+    at all: the code crosses to the canonical backend as a `-c` argv element,
+    byte-for-byte, so there is no literal to break out of (#18)."""
     import asyncio
 
     from services.hyperlight_executor import SandboxExecutor
+
+    from maistro.sandbox import ExecResult, SandboxConfig, SandboxInstance, SandboxSelector
 
     malicious_code = (
         "print('a')\n''' + __import__('os').system('echo " + _PAYLOAD_MARKER + "') + '''"
     )
 
-    captured: dict[str, str] = {}
+    class _RecordingBackend:
+        tier = "bubblewrap"
 
-    async def _fake_subprocess(self: Any, script: str, env: Any, timeout_s: int) -> dict[str, Any]:
-        captured["script"] = script
-        return {"output": "ok", "error": "", "success": True}
+        async def spawn(self, *, config: SandboxConfig) -> SandboxInstance:
+            return SandboxInstance(id="rec", backend=self.tier, isolation_tier=self.tier)
 
-    ex = SandboxExecutor()
-    ex._backend = "hyperlight"  # force the hyperlight wrapper path
-    ex._subprocess = _fake_subprocess.__get__(ex, SandboxExecutor)  # type: ignore[attr-defined]
+        async def exec(
+            self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
+        ) -> ExecResult:
+            captured["command"] = command
+            return ExecResult(exit_code=0, stdout="ok", stderr="", duration_ms=1)
 
-    asyncio.run(ex.execute_node(malicious_code, allow_network=False))
+        async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
+            raise AssertionError("no file transfer: code crosses as argv")
 
-    wrapper = captured["script"]
-    # Wrapper is valid Python and does not contain the raw payload.
-    ast.parse(wrapper)
-    assert _PAYLOAD_MARKER not in wrapper
-    assert "os.system" not in wrapper
-    assert malicious_code not in wrapper
+        async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
+            raise AssertionError("no file transfer: code crosses as argv")
+
+        async def destroy(self, instance: SandboxInstance) -> None:
+            pass
+
+    captured: dict[str, list[str]] = {}
+    selector = SandboxSelector()
+    selector.register("bubblewrap", _RecordingBackend())  # type: ignore[arg-type]
+
+    asyncio.run(
+        SandboxExecutor(selector=selector).execute_node(
+            malicious_code, allow_network=False, mode="interactive"
+        )
+    )
+
+    command = captured["command"]
+    # The interpreter is fixed and the payload is the argv element after -c.
+    assert command[-2] == "-c"
+    assert command[-1] == malicious_code
+    assert _PAYLOAD_MARKER in command[-1]  # reaches the sandbox intact, as data
