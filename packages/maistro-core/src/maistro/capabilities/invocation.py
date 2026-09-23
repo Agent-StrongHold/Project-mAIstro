@@ -480,6 +480,7 @@ class InvocationExecutionService:
                         project_id=binding.project_id,
                         binding=resolved,
                         effect_key=effect_key,
+                        effect_scope=effect_scope or node_run_id,
                         request=request,
                     )
                 )

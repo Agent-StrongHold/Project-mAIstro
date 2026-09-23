@@ -67,9 +67,14 @@ class SqliteInvocationStore:
         async with serialized_schema_upgrade(self._conn):
             await execute_schema_script(self._conn, _SCHEMA)
             columns = await self._conn.execute("PRAGMA table_info(capability_invocations)")
-            if "revision" not in {str(row[1]) for row in await columns.fetchall()}:
+            present = {str(row[1]) for row in await columns.fetchall()}
+            if "revision" not in present:
                 await self._conn.execute(
                     "ALTER TABLE capability_invocations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+                )
+            if "effect_scope" not in present:
+                await self._conn.execute(
+                    "ALTER TABLE capability_invocations ADD COLUMN effect_scope TEXT NOT NULL DEFAULT ''"
                 )
 
     async def create(self, invocation: Invocation) -> Invocation:
@@ -104,8 +109,8 @@ class SqliteInvocationStore:
                 await self._conn.execute(
                     """INSERT INTO capability_invocations (
                         invocation_id, run_id, node_run_id, attempt_id, binding_id,
-                        effect_key, status, revision, created_at, payload_json
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        effect_key, effect_scope, status, revision, created_at, payload_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     self._row_values(invocation),
                 )
                 await self._conn.commit()
@@ -119,6 +124,7 @@ class SqliteInvocationStore:
             except BaseException:
                 await self._conn.rollback()
                 raise
+        return invocation.model_copy(deep=True)
 
     async def get(self, invocation_id: str) -> Invocation | None:
         cursor = await self._conn.execute(
@@ -133,7 +139,7 @@ class SqliteInvocationStore:
             cursor = await self._conn.execute(
                 """UPDATE capability_invocations SET
                     run_id = ?, node_run_id = ?, attempt_id = ?, binding_id = ?,
-                    effect_key = ?, status = ?, revision = ?, created_at = ?, payload_json = ?
+                    effect_key = ?, effect_scope = ?, status = ?, revision = ?, created_at = ?, payload_json = ?
                    WHERE invocation_id = ? AND revision = ?""",
                 (
                     invocation.run_id,
