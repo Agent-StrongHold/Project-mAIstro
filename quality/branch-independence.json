@@ -104,6 +104,14 @@
       "reason": "Versioned interoperability ontology is a reviewed specification."
     },
     {
+      "id": "durable-table-retention",
+      "kind": "specification",
+      "paths": [
+        "quality/durable-table-retention.json"
+      ],
+      "reason": "Reviewed per-table retention specification; changing a table's retention claim is the substantive change."
+    },
+    {
       "id": "shipped-surface-truth",
       "kind": "specification",
       "paths": [

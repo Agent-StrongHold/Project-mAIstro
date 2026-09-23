@@ -138,6 +138,14 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # `security_violations` and `usage_events` were appended to forever
+      # because no table had to say how long its rows live (#325). Every table
+      # an Alembic revision, runtime `CREATE TABLE` or `__tablename__` creates
+      # needs an entry in `quality/durable-table-retention.json`, and every
+      # claimed deletion path must import. No driven purge is `undecided`
+      # against its issue, written down rather than absent.
+      - name: Every durable table declares its retention
+        run: uv run python3 scripts/check-durable-table-inventory.py
       # `SENSITIVE_PATH_PATTERNS` decides which self-modifications need
       # adversarial review, and it was a hand-written list that kept falling
       # one entry behind: `local_loop.py` fast-forwards the baseline,
@@ -359,12 +367,26 @@ jobs:
       # exactly as vulture-ratchet.yml does, so the trusted baseline is the
       # revision this push replaces. tests/conftest.py captures this value and
       # keeps it away from every test except the gate self-checks that opt in.
+      #
+      # Only a protected-branch push replaces a revision, though. On a topic
+      # branch `before` is that branch's own previous tip, which any rebase
+      # orphans: unreachable from every ref, so `fetch-depth: 0` does not fetch
+      # it and the resolver refuses with "base revision could not be resolved".
+      # That reds the seven root-suite self-checks on a candidate whose
+      # pull-request run passes on identical content. Topic pushes use the
+      # integration base instead, matching their PR run.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)
             || github.event_name == 'merge_group'
             && github.event.merge_group.base_sha
-            || github.event.before }}
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
     steps:
       - uses: actions/checkout@v7
         with:
