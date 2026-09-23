@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/agents: +4
+  packages/maistro-core/tests: +4
 ---
 # #1156 User scope on produced learnings
 
