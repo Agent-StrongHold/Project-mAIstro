@@ -1,13 +1,14 @@
 /**
  * Browser-level security proof for Deck Builder's untrusted markup boundary (#752).
  *
- * The shipped SPA intentionally does NOT expose Deck Builder yet: App.tsx still
- * redirects /decks as the M0 containment for parent #311. Testing that route
- * would therefore prove only the redirect. This spec instead bundles the exact
- * DeckBuilder.tsx + deckSanitizer.ts copied into the Playwright image and mounts
- * them on an ephemeral localhost page inside the test container. Production
- * routing stays contained while the real component, React event path, browser
- * HTML parser, presentation mode, and HTML export are all exercised.
+ * #769 lifted the M0 /decks route containment once this sanitizer landed, so the
+ * shipped SPA now exposes Deck Builder. This spec deliberately keeps bundling
+ * the exact DeckBuilder.tsx + deckSanitizer.ts sources onto an ephemeral
+ * localhost page: it isolates the untrusted-markup boundary from auth, setup
+ * state, and routing, and proves the real component, React event path, browser
+ * HTML parser, presentation mode, and HTML export against attacker payload
+ * families. The keyboard/truthfulness journeys cover the routed /decks and
+ * /cli/canvas surfaces on top of this boundary proof.
  */
 
 import { build } from "esbuild";

@@ -153,7 +153,7 @@ export default function FixedPageEditor({ artifactName, initialPrompt, onExit, o
   }
 
   return (
-    <main aria-labelledby="fixed-editor-title" style={{ color: "var(--ink)" }}>
+    <div aria-labelledby="fixed-editor-title" style={{ color: "var(--ink)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
         <div>
           <h1 id="fixed-editor-title" ref={headingRef} tabIndex={-1} style={{ margin: 0, fontFamily: "var(--hand)", fontSize: 24 }}>
@@ -246,6 +246,6 @@ export default function FixedPageEditor({ artifactName, initialPrompt, onExit, o
           ) : <p>Select a layer to edit its properties.</p>}
         </section>
       </div>
-    </main>
+    </div>
   );
 }

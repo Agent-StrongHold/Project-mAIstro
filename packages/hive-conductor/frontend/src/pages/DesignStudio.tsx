@@ -38,7 +38,7 @@ function fieldValue(field: DiscoveryField): string {
 }
 
 export default function DesignStudio() {
-  const headingRef = useRef<HTMLHeadingElement>(null);
+  const headingRef = useRef<HTMLDivElement>(null);
   const [selectedMode, setSelectedMode] = useState<ArtifactModeId>("poster");
   const selectedModeRef = useRef<ArtifactModeId>("poster");
   const [prompt, setPrompt] = useState("");
@@ -131,9 +131,13 @@ export default function DesignStudio() {
   if (editor === "fixed") return <FixedPageEditor artifactName={mode.name} initialPrompt={prompt} onSave={canSaveProject ? saveProject : undefined} onExit={() => { setEditor(null); setStatus("Returned to the Design Studio brief."); }} />;
 
   return (
-    <main aria-labelledby="design-studio-title">
+    <div aria-label="Design Studio">
       <PageHeader title="Design Studio" subtitle="Create presentations, posters, infographics, and other visual artifacts" />
-      <h1 id="design-studio-title" ref={headingRef} tabIndex={-1} style={{ position: "absolute", width: 1, height: 1, overflow: "hidden" }}>Design Studio</h1>
+      {/* Focus anchor for editor transitions. The visible page heading comes
+          from PageHeader, so this textless target avoids rendering a second
+          h1 while still giving keyboard users a deterministic focus
+          destination when an editor opens or closes. */}
+      <div ref={headingRef} tabIndex={-1} style={{ position: "absolute", width: 1, height: 1, overflow: "hidden" }} />
 
       <section className="card" style={{ marginBottom: 16 }} aria-labelledby="artifact-types-title">
         <h2 id="artifact-types-title" style={{ fontFamily: "var(--hand)", fontSize: 16, margin: "0 0 4px" }}>What are you making?</h2>
@@ -186,7 +190,7 @@ export default function DesignStudio() {
       <section className="card" aria-labelledby="availability-title"><h2 id="availability-title" style={{ fontFamily: "var(--hand)", fontSize: 15, margin: "0 0 10px" }}>Availability</h2><div role="list" aria-label="Design Studio availability" style={{ display: "grid", gap: 8 }}>
         {[{ label: "Design resource discovery", state: catalog.status === "ready" ? "available" : catalog.status, detail: "Skills and design systems are discovered from the connected Design service." }, { label: "Editing + preview", state: "available", detail: "Fixed-page and Deck editors expose selection, property controls, keyboard movement, and visible status." }, { label: "Presentation + export", state: selectedMode === "deck" ? "available" : "available", detail: "Deck presentation, ordered-page navigation, and HTML/print export are keyboard-operable." }].map((step) => <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}><div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span><span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>{step.state}</span></div><div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>{step.detail}</div></div>)}
       </div></section>
-    </main>
+    </div>
 
   );
 }

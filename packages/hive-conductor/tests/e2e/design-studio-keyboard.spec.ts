@@ -90,17 +90,18 @@ test("current Design Studio parent surface is operable by keyboard without enabl
     await page.keyboard.press("Tab");
   }
   await expect(prompt).toBeFocused();
-  await page.keyboard.type("An accessible infographic about canonical Run lineage");
-  await expect(prompt).toHaveValue("An accessible infographic about canonical Run lineage");
 
+  // With no brief yet the only editor entry stays disabled; typing the brief
+  // is what enables it, entirely through keyboard interaction.
   const openEditor = page.getByRole("button", { name: "Open editor" });
   await expect(openEditor).toBeDisabled();
-  await page.getByLabel("Describe the artifact").fill("An accessible infographic about canonical Run lineage");
+  await page.keyboard.type("An accessible infographic about canonical Run lineage");
+  await expect(prompt).toHaveValue("An accessible infographic about canonical Run lineage");
   await expect(openEditor).toBeEnabled();
   await expect(page.getByText(/draft stays local until a durable project save is connected/)).toBeVisible();
-  await expect(page.getByText(/Keyboard: use Tab to move between artifact types/)).toBeVisible();
+  await expect(page.getByText(/Keyboard: Tab moves between artifact types; Enter or Space selects one/)).toBeVisible();
   await expect(page.getByLabel("Describe the artifact")).toHaveAccessibleDescription(
-    /Enter a brief for the selected artifact/,
+    /Enter a brief, then open the keyboard-complete editor/,
   );
   expect(canvasRequests).toEqual([]);
 });
@@ -159,7 +160,8 @@ test("fixed-page and Deck editors expose keyboard workflows and deterministic tr
   await page.getByRole("button", { name: "Add layer" }).press("Enter");
   await expect(page.getByRole("option", { name: /Layer 3/ })).toBeVisible();
   await page.getByRole("button", { name: "Move right" }).press("Enter");
-  await expect(page.getByRole("status")).toContainText("moved");
+  // The shell also renders status regions; scope to the one the editor moved.
+  await expect(page.getByRole("status").filter({ hasText: /moved/ })).toBeVisible();
   await page.getByRole("button", { name: "Back to Design Studio" }).press("Enter");
   await expect(page.getByText("What are you making?")).toBeVisible();
 

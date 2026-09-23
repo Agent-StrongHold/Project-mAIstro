@@ -191,6 +191,11 @@ test("Design Studio is the parent surface and never enables fake visual executio
 
   const openEditor = page.getByRole("button", { name: "Open editor" });
   await expect(openEditor).toBeDisabled();
+
+  // Select the Infographic artifact mode through the keyboard before editing;
+  // the editor that opens must be the one the user chose, not the default.
+  await page.getByRole("group", { name: "Design artifact types" })
+    .getByRole("button").filter({ hasText: "Infographic" }).press("Enter");
   await page.getByLabel("Describe the artifact").fill("An infographic explaining durable Run lineage");
   await expect(openEditor).toBeEnabled();
 
