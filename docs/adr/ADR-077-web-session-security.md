@@ -96,6 +96,15 @@ Revocation, account deactivation, and either expiry win over a concurrent activi
 expired records are removed. The browser receives only policy/health timestamps, never a session
 id or secret.
 
+**Serialization authority.** A supported Conductor deployment serves the `hive_session` store from
+one process: the session records live in that process's store (with local write-through durability
+so records survive a restart), and the Conductor is launched as a single server process. Every
+expiry, revocation, deactivation, and activity-refresh decision for a session record is therefore
+made inside one serialized critical section, which is what makes "revocation wins over a concurrent
+refresh" hold rather than being a timing assumption. Running a second serving process against the
+same session store is not a supported configuration; if it ever becomes one, the serialization must
+move into the shared store itself before idle expiry semantics can be claimed there.
+
 Workspace restoration and UI preferences identify product state (for example, the active
 Workspace) only. They cannot change, extend, or restore an authentication session; a restored SPA
 must obtain a still-valid server session again.
