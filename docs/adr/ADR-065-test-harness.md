@@ -46,24 +46,20 @@ owners:
   - '@BlakeMatthews-dev'
 history:
   - status: Proposed
+    date: 2026-05-20
   - status: Accepted
     date: 2026-06-10
-    date: 2026-05-20
 ---
 
 # ADR-065: Test harness with full wiring factory
 
-<<<<<<< HEAD
 > **Retirement note (#1154):** The harness remains a provider/container fixture.
 > Its former `GraphRun`/`run_graph` execution surface is retired; canonical Graph
 > tests use `maistro.graph.durable_runs` and persist Run/NodeRun/Attempt evidence.
 > The historical design details below are retained for provenance, not as a supported
 > execution path.
 
-**Status:** Proposed
-=======
 **Status:** Accepted
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
 **Date:** 2026-05-20
 **Impacts:** IMP-033
 
