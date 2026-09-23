@@ -12,13 +12,9 @@ import asyncio
 from collections.abc import Iterator
 from typing import Any
 
-import aiosqlite
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-
-from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
-from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
 POLICY_VIOLATION = 1008
 _SECRET = "postgres://svc:hunter2@db.internal/prod"
@@ -321,9 +317,15 @@ def test_http_run_in_foreign_workspace_is_refused_before_execution(
 @pytest.fixture
 def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """Wire a SQLite canonical WorkspaceStore; yield the member Workspace's Root Project."""
+    # maistro-core's optional `sqlite` extra: absent from Hive's requirements.txt
+    # job, installed by the `uv sync --all-extras` coverage job that runs this suite.
+    aiosqlite = pytest.importorskip("aiosqlite")
     import services.workspace_authority as workspace_authority
 
-    async def _open() -> tuple[aiosqlite.Connection, SqliteWorkspaceStore, str]:
+    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
+
+    async def _open() -> tuple[Any, Any, str]:
         conn = await aiosqlite.connect(":memory:")
         project_store = SqliteProjectScopeStore(conn)
         await project_store.ensure_schema()
