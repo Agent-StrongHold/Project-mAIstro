@@ -229,10 +229,11 @@ def test_http_run_in_foreign_workspace_is_refused_before_execution(
 
 
 @pytest.fixture
-def sqlite_workspace_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[SqliteWorkspaceStore]:
+def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Wire a SQLite canonical WorkspaceStore; yield the member Workspace's Root Project."""
     import services.workspace_authority as workspace_authority
 
-    async def _open() -> tuple[aiosqlite.Connection, SqliteWorkspaceStore]:
+    async def _open() -> tuple[aiosqlite.Connection, SqliteWorkspaceStore, str]:
         conn = await aiosqlite.connect(":memory:")
         project_store = SqliteProjectScopeStore(conn)
         await project_store.ensure_schema()
@@ -242,12 +243,13 @@ def sqlite_workspace_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[SqliteWo
         await store.create(
             creator_user_id="someone-else", workspace_id="sqlite-foreign", name="Theirs"
         )
-        return conn, store
+        root = await project_store.root_for_workspace("sqlite-member")
+        return conn, store, root.project_id
 
     loop = asyncio.new_event_loop()
-    conn, store = loop.run_until_complete(_open())
+    conn, store, root_project_id = loop.run_until_complete(_open())
     monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: store)
-    yield store
+    yield root_project_id
     loop.run_until_complete(conn.close())
     loop.close()
 
@@ -257,7 +259,7 @@ def sqlite_workspace_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[SqliteWo
 def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both_transports(
     admin_client: TestClient,
     stored_dag: str,
-    sqlite_workspace_store: SqliteWorkspaceStore,
+    sqlite_member_root_project: str,
 ) -> None:
     import stores
 
@@ -267,16 +269,18 @@ def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both
     member = admin_client.post(f"/v1/dags/{stored_dag}/run", json={"workspace_id": "sqlite-member"})
     assert member.status_code == 200, member.text
     assert member.json()["status"] == "completed"
+    assert member.json()["result"]["project_id"] == sqlite_member_root_project
 
     before = _run_ids()
     outsider = admin_client.post(
         f"/v1/dags/{stored_dag}/run", json={"workspace_id": "sqlite-foreign"}
     )
     assert outsider.status_code == 403
+    assert _run_ids() == before
 
     terminal = _run_over_socket(admin_client, stored_dag, "sqlite-member")[-1]
     assert terminal["status"] == "completed"
-    assert terminal["run_id"]
+    assert _canonical_record(terminal["run_id"]).run.project_id == sqlite_member_root_project
 
     before = _run_ids()
     with (

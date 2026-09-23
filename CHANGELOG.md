@@ -413,7 +413,7 @@ or placeholder-only section.
 ### Fixed
 
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
-  ([#766](https://github.com/Agent-StrongHold/Project-mAIstro/issues/766)).**
+  (#766).**
   A run started over `/v1/ws/dags/{id}/run` now records the same Recent Runs
   (`DagRunStore`) projection as the HTTP route, keyed by the canonical `run_id`,
   before the terminal frame is sent. An unexpected failure frame now shows only
