@@ -25,6 +25,27 @@ or placeholder-only section.
 
 ### Security
 
+- **Hive schedules are bound to their owner's Workspace (#1201, partial).**
+  `POST /v1/schedules` now requires a `workspace_id` selection (optional
+  `project_id`), admits it through the same canonical Workspace/Project
+  authorization as `POST /v1/dags/{id}/run` (403 when absent or not a
+  membership), and stamps `user_id`, `workspace_id` and `project_id` from the
+  authenticated session; a client-sent `user_id` is ignored and `PUT` cannot
+  change owner or scope. List returns only schedules in the caller's
+  Workspaces, and get/update/delete/manual run answer the same 404 for a
+  missing, foreign, or ownerless (pre-existing) schedule. Only a Workspace
+  owner or editor may create, change, delete or manually run a schedule
+  (viewers read); an archived Workspace refuses edits and manual runs.
+  Removing a member removes their API access; it does not yet stop automatic
+  fires of schedules that member owns (tracked in #1201).
+  With a configured Container, fires of a bound schedule create their Run in
+  the bound Workspace/Project instead of the configured default. Operators:
+  schedules created before this change (including the seeded `sch-1`) have no
+  Workspace, are no longer visible over the API, and still fire automatically
+  in the default Workspace until the automatic-fire half of #1201 lands;
+  remove them from the schedule store directly before recreating them from a
+  Workspace, or both copies will fire.
+
 - **Canvas visual evaluation no longer reveals whether a Run id exists (#1152,
   partial).** `POST /v1/canvas/eval` now authorizes the selected canonical Run
   against the caller's canonical Workspace universe, the same one DAG-run
