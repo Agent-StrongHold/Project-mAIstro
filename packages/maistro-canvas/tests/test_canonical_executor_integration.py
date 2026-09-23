@@ -20,7 +20,7 @@ from maistro_canvas.canvas.canonical_execution import (
 )
 from maistro_canvas.canvas.composition import build_canvas_router, build_canvas_runtime
 from maistro_canvas.canvas.executor import CanvasExecutor
-from maistro_canvas.canvas.runner import CanvasJobRunner
+from maistro_canvas.canvas.runner import LEASE_EXPIRED_MESSAGE, CanvasJobRunner
 from maistro_canvas.protocols import ImageData
 from maistro_canvas.types import (
     CanvasRecord,
@@ -88,21 +88,38 @@ class _CanvasStore:
         *,
         org_id: str,
         expected_leased_by: str | None = None,
+        expected_attempts: int | None = None,
+        expected_status: str | None = None,
     ) -> GenerationJobRecord:
-        if expected_leased_by is not None:
-            current = self.jobs.get(job.id)
-            if current is not None and current.leased_by != expected_leased_by:
-                from maistro_canvas.types import JobLeaseLostError
+        current = self.jobs.get(job.id)
+        if current is not None and current is not job:
+            fences = {
+                "leased_by": expected_leased_by,
+                "attempts": expected_attempts,
+                "status": expected_status,
+            }
+            for field, expected in fences.items():
+                if expected is not None and getattr(current, field) != expected:
+                    from maistro_canvas.types import JobLeaseLostError
 
-                raise JobLeaseLostError(
-                    f"job {job.id!r} lease no longer held by {expected_leased_by!r}"
-                )
+                    raise JobLeaseLostError(
+                        f"job {job.id!r} fenced write refused: {field}={expected!r}"
+                    )
         self.jobs[job.id] = job
         return job
 
-    async def renew_lease(self, job_id: str, worker_id: str, lease_seconds: int) -> bool:
+    async def renew_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        *,
+        expected_attempts: int | None = None,
+    ) -> bool:
         job = self.jobs.get(job_id)
         if job is None or job.leased_by != worker_id or job.status != JobStatus.RUNNING:
+            return False
+        if expected_attempts is not None and job.attempts != expected_attempts:
             return False
         job.lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
         return True
@@ -577,7 +594,7 @@ async def test_runner_idle_and_reap_terminal_failure_paths() -> None:
     assert await runner.reap_once() == [exhausted]
     assert exhausted.status == JobStatus.FAILED
     assert exhausted.error_message == "Generation failed: provider service temporarily unavailable."
-    assert executor.failures == ["canvas worker lease expired"]
+    assert executor.failures == [LEASE_EXPIRED_MESSAGE]
 
 
 async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> None:

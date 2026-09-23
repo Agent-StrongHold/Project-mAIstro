@@ -980,6 +980,56 @@ async def test_recovery_requeues_a_running_receipt_whose_lease_expired() -> None
     assert job.status == JobStatus.PENDING
 
 
+async def test_recovery_does_not_requeue_an_expired_lease_past_its_retry_budget() -> None:
+    """A worker that keeps dying between claim and its first stage leaves an
+    expired RUNNING receipt over a still-QUEUED Run. At the retry ceiling,
+    recovery must not requeue it -- the next claim would exceed
+    ``max_attempts`` -- but hand it to the lease reaper's exhausted path."""
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-exhausted-orphan")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-exhausted-orphan",
+        run_id,
+        status=JobStatus.RUNNING,
+        attempts=3,
+        max_attempts=3,
+        leased_by="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    store.jobs[("job-exhausted-orphan", "org-1")] = job
+
+    await adapter.reconcile_admissions(store)
+
+    assert job.status == JobStatus.RUNNING
+    assert job.leased_by is None
+    assert job.lease_expires_at is not None
+    assert job.lease_expires_at <= datetime.now(UTC)
+    assert job.completed_at is None
+
+
+async def test_recovery_stamps_an_expired_lease_on_an_unleased_exhausted_orphan() -> None:
+    """With no lease stamp the reaper (``lease_expires_at IS NOT NULL``) would
+    never see the row; recovery gives it an already-expired one."""
+    adapter, _runs, _project = await _adapter()
+    run_id = await _admit_with_receipt(adapter, "job-exhausted-unstamped")
+    store = _ReceiptStore()
+    job = _correlated_job(
+        "job-exhausted-unstamped",
+        run_id,
+        status=JobStatus.RUNNING,
+        attempts=2,
+        max_attempts=2,
+    )
+    store.jobs[("job-exhausted-unstamped", "org-1")] = job
+
+    await adapter.reconcile_admissions(store)
+
+    assert job.status == JobStatus.RUNNING
+    assert job.lease_expires_at is not None
+    assert store.updates == [job]
+
+
 async def test_reconcile_admissions_pages_past_the_first_batch_of_healthy_canvas_runs() -> None:
     """A missing receipt behind a full first page must still be reached.
 

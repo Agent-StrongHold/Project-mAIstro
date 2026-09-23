@@ -118,8 +118,22 @@ def _job_fingerprint(job: GenerationJobRecord) -> tuple[object, ...]:
     )
 
 
+class PreclassifiedJobFailure(RuntimeError):
+    """A job failure whose message was written by Canvas itself and is user-safe.
+
+    ``_sanitise_error`` exists to strip raw provider bodies; a failure Canvas
+    raises about its *own* machinery (a worker lease that expired, an
+    execution that ran past its bound) carries no provider text, and folding
+    it into the generic "provider error" message would misreport worker loss
+    as a provider fault (Codex #1535). Only construct this with a fixed,
+    caller-authored message -- never with provider or user data.
+    """
+
+
 def _sanitise_error(exc: Exception) -> str:
     """Return a safe error message — strips stack traces and raw provider bodies."""
+    if isinstance(exc, PreclassifiedJobFailure):
+        return str(exc)
     raw = str(exc)
     lower = raw.lower()
     if "429" in raw or "rate_limit" in lower or "too many" in lower or "ratelimit" in lower:

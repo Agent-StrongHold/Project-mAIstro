@@ -9,7 +9,6 @@ Run -> NodeRun -> Attempt adapter.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import importlib
 import logging
 from dataclasses import dataclass
@@ -83,6 +82,7 @@ def build_canvas_runtime(
     lease_seconds: int = 300,
     poll_interval: float = 1.0,
     reap_interval: float = 30.0,
+    max_execution_seconds: float = 1800.0,
 ) -> CanvasRuntime:
     """Build the canonical Canvas executor and its durable worker.
 
@@ -115,6 +115,7 @@ def build_canvas_runtime(
         lease_seconds=lease_seconds,
         poll_interval=poll_interval,
         reap_interval=reap_interval,
+        max_execution_seconds=max_execution_seconds,
     )
     return CanvasRuntime(
         store=store,
@@ -138,6 +139,7 @@ def build_canvas_router(
     lease_seconds: int = 300,
     poll_interval: float = 1.0,
     reap_interval: float = 30.0,
+    max_execution_seconds: float = 1800.0,
 ) -> APIRouter:
     """Build the HTTP boundary from the canonical Canvas runtime.
 
@@ -158,6 +160,7 @@ def build_canvas_router(
         lease_seconds=lease_seconds,
         poll_interval=poll_interval,
         reap_interval=reap_interval,
+        max_execution_seconds=max_execution_seconds,
     )
     from maistro_canvas.canvas.routes import make_canvas_router
 
@@ -183,6 +186,13 @@ def bind_canvas_runner_lifecycle(
     ``stop()`` alone cannot interrupt a `tick_once` blocked inside a
     provider call, so without this bound a stalled provider would block
     application shutdown indefinitely.
+
+    The deadline is a non-cancelling wait (``asyncio.wait``), not
+    ``asyncio.wait_for``: the latter cancels at the deadline and then keeps
+    waiting until the task actually finishes, so a provider coroutine that
+    swallows ``CancelledError`` would still hang shutdown (Codex #1535). After
+    cancelling, the task gets one more bounded grace window and is then
+    abandoned with an error log.
     """
 
     task: asyncio.Task[None] | None = None
@@ -198,22 +208,32 @@ def bind_canvas_runner_lifecycle(
         runtime.runner.stop()
         if task is None:
             return
-        try:
-            await asyncio.wait_for(task, timeout=shutdown_timeout)
-        except TimeoutError:
-            # wait_for already cancelled the task and awaited its
-            # cancellation before raising; this just clears the
-            # CancelledError it leaves behind on the task itself.
+        current, task = task, None
+        done, _pending = await asyncio.wait({current}, timeout=shutdown_timeout)
+        if not done:
             logger.warning(
-                "canvas_runner_shutdown_timeout timeout=%s; cancelled stuck tick",
+                "canvas_runner_shutdown_timeout timeout=%s; cancelling stuck tick",
                 shutdown_timeout,
             )
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        task = None
+            current.cancel()
+            done, _pending = await asyncio.wait({current}, timeout=shutdown_timeout)
+            if not done:
+                logger.error("canvas_runner_shutdown_abandoned; runner task ignored cancellation")
+                current.add_done_callback(_consume_runner_outcome)
+                return
+        _consume_runner_outcome(current)
 
     router.add_event_handler("startup", start_runner)
     router.add_event_handler("shutdown", stop_runner)
+
+
+def _consume_runner_outcome(task: asyncio.Task[None]) -> None:
+    """Retrieve a finished runner task's outcome, logging an unexpected error."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("canvas_runner_exited_with_error", exc_info=exc)
 
 
 __all__ = [

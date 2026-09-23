@@ -412,6 +412,27 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Canvas job leases are fenced per claim, and stalled or cancelled jobs
+  settle correctly (#735, follow-up to PR #1535).** A worker's completion write
+  and lease heartbeat are now fenced on the claim's attempt number, not just
+  the worker id. Before, every instance defaulted to `canvas-worker-1`, so a
+  stale call could overwrite a newer claim of the same job. Completion and
+  reaper writes are now a compare-and-set on `running`, so a user
+  cancellation that lands mid-call or during failure reconciliation is no
+  longer overwritten as `done`/`failed`. A fenced write against another org's
+  job reports "not found", not "lease lost", so it no longer reveals that the
+  job exists. Lease expiry is reported as
+  `Generation failed: canvas worker lease expired before the job completed.`
+  instead of a generic provider error. A provider call is bounded by the new
+  `max_execution_seconds` (default 1800, on `CanvasJobRunner`,
+  `build_canvas_runtime` and `build_canvas_router`). After that, lease renewal
+  stops and the call is cancelled. Application shutdown now stays bounded
+  even when the runner task ignores cancellation. Admission recovery and
+  `claim_next_pending` enforce `max_attempts`, so a job whose worker keeps
+  dying before its first stage can no longer run past its retry limit. An
+  over-budget `pending` receipt is reaped and failed through canonical
+  reconciliation.
+
 - **The DAG Builder's Run button reports the canonical Run truthfully
   (#53).**
   The execution log now shows the canonical `run_id` the run socket already

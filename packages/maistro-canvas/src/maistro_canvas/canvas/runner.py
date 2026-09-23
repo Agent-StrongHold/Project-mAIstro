@@ -20,6 +20,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("maistro.canvas.runner")
 
+#: Receipt/Run error for a job whose worker lease expired at its retry ceiling.
+#: Preclassified (Codex #1535): worker loss is not a provider failure, and the
+#: generic sanitiser would otherwise report it as one.
+LEASE_EXPIRED_MESSAGE = "Generation failed: canvas worker lease expired before the job completed."
+
+#: Receipt/Run error for a provider call that outlived ``max_execution_seconds``.
+EXECUTION_TIMEOUT_MESSAGE = "Generation failed: provider request exceeded the execution time limit."
+
 
 class CanvasJobRunner:
     """Background job runner with atomic claim, lease reaping, and bounded retries."""
@@ -33,13 +41,17 @@ class CanvasJobRunner:
         lease_seconds: int = 300,
         poll_interval: float = 1.0,
         reap_interval: float = 30.0,
+        max_execution_seconds: float = 1800.0,
     ) -> None:
+        if max_execution_seconds <= 0:
+            raise ValueError("max_execution_seconds must be positive")
         self._store = store
         self._executor = executor
         self._worker_id = worker_id
         self._lease_seconds = lease_seconds
         self._poll_interval = poll_interval
         self._reap_interval = reap_interval
+        self._max_execution_seconds = max_execution_seconds
         self._running = False
 
     async def start(self) -> None:
@@ -77,28 +89,46 @@ class CanvasJobRunner:
         commits, the row stays ``running`` with its already-expired lease
         and is picked up again on the next sweep — it never silently
         diverges from its canonical Run/NodeRun/Attempt.
+
+        The terminal write is a compare-and-set on ``running`` at the reaped
+        claim generation: a user cancellation can land while
+        ``fail_job_execution`` runs, and its ``cancelled`` receipt (matching an
+        already-cancelled canonical Run) must not be overwritten as
+        ``failed`` (Codex #1535).
         """
-        from maistro_canvas.types import JobStatus
+        from maistro_canvas.canvas.executor import PreclassifiedJobFailure
+        from maistro_canvas.types import JobLeaseLostError, JobStatus
 
         reaped: list[GenerationJobRecord] = await self._store.reap_expired_leases()
         terminal_failure = getattr(self._executor, "fail_job_execution", None)
         for job in reaped:
             if job.status != JobStatus.RUNNING:
                 continue
-            error = RuntimeError(job.error_message or "canvas worker lease expired")
+            error = PreclassifiedJobFailure(LEASE_EXPIRED_MESSAGE)
             if terminal_failure is not None:
                 job.error_message = await terminal_failure(job, error)
             else:
                 # Compatibility for runner-focused test doubles whose executor
                 # predates the canonical adapter and has no reconciliation to run.
-                job.error_message = job.error_message or str(error)
+                job.error_message = str(error)
             job.status = JobStatus.FAILED
             job.completed_at = job.completed_at or datetime.now(UTC)
             job.leased_by = None
             job.lease_expires_at = None
             # Scope rides the receipt (#857): the reaper reconciles the
             # job under the org it was admitted in, never a global one.
-            await self._store.update_job(job, org_id=job.org_id)
+            try:
+                await self._store.update_job(
+                    job,
+                    org_id=job.org_id,
+                    expected_status=JobStatus.RUNNING,
+                    expected_attempts=job.attempts,
+                )
+            except JobLeaseLostError:
+                logger.warning(
+                    "canvas_reap_terminal_superseded job=%s; a concurrent terminal write won",
+                    job.id,
+                )
         return reaped
 
     async def tick_once(self) -> bool:
@@ -125,6 +155,7 @@ class CanvasJobRunner:
         job = await self._store.claim_next_pending(self._worker_id, self._lease_seconds)
         if job is None:
             return False
+        claimed_attempt = job.attempts
 
         logger.info(
             "canvas_job_claimed job=%s worker=%s attempt=%d", job.id, self._worker_id, job.attempts
@@ -159,13 +190,24 @@ class CanvasJobRunner:
                 job.leased_by = None
                 job.lease_expires_at = None
 
+        # Fence on this exact claim: the worker id alone is reusable (every
+        # production instance defaults to the same id), so the claim's
+        # attempt number pins the generation, and ``running`` refuses to
+        # replace a cancellation that landed while the provider call ran.
         try:
-            await self._store.update_job(job, org_id=job.org_id, expected_leased_by=self._worker_id)
+            await self._store.update_job(
+                job,
+                org_id=job.org_id,
+                expected_leased_by=self._worker_id,
+                expected_attempts=claimed_attempt,
+                expected_status=JobStatus.RUNNING,
+            )
         except JobLeaseLostError:
-            # The lease expired and was reaped (another worker may now hold
-            # it, or a retry is pending) before this completion write landed.
-            # This worker's result is stale; discard it rather than clobber
-            # whatever the new holder — or the reaper — has since written.
+            # The lease expired and was reaped (another claim — possibly under
+            # this same worker id — may now hold it, or a retry is pending),
+            # or the receipt was cancelled, before this completion write
+            # landed. This worker's result is stale; discard it rather than
+            # clobber whatever the newer writer has since written.
             logger.warning(
                 "canvas_job_lease_reclaimed job=%s worker=%s; discarding stale completion",
                 job.id,
@@ -185,26 +227,63 @@ class CanvasJobRunner:
         external provider request, so this risks a duplicate paid
         generation. A store without `renew_lease` (a narrow test double
         predating it) simply gets no heartbeat, matching prior behavior.
+
+        The heartbeat is bounded (Codex #1535): the provider protocol imposes
+        no timeout, so a call that never returns would otherwise renew its
+        lease forever and the reaper could never recover the job. After
+        ``max_execution_seconds`` renewal stops, the call is cancelled without
+        waiting on it (a cancellation-resistant provider must not pin this
+        worker either), and the attempt fails with a preclassified timeout
+        that goes through the ordinary retry/terminal path.
         """
+        from maistro_canvas.canvas.executor import PreclassifiedJobFailure
+
+        heartbeat: asyncio.Task[None] | None = None
         renew = getattr(self._store, "renew_lease", None)
-        if renew is None:
-            await self._executor._execute_claimed(job)
-            return
+        if renew is not None:
+            interval = max(1.0, self._lease_seconds / 3)
+            claimed_attempt = job.attempts
 
-        interval = max(1.0, self._lease_seconds / 3)
+            async def _heartbeat() -> None:
+                while True:
+                    await asyncio.sleep(interval)
+                    try:
+                        await renew(
+                            job.id,
+                            self._worker_id,
+                            self._lease_seconds,
+                            expected_attempts=claimed_attempt,
+                        )
+                    except Exception:
+                        logger.exception("canvas_lease_renew_error job=%s", job.id)
 
-        async def _heartbeat() -> None:
-            while True:
-                await asyncio.sleep(interval)
-                try:
-                    await renew(job.id, self._worker_id, self._lease_seconds)
-                except Exception:
-                    logger.exception("canvas_lease_renew_error job=%s", job.id)
+            heartbeat = asyncio.create_task(_heartbeat())
 
-        heartbeat = asyncio.create_task(_heartbeat())
+        execution = asyncio.ensure_future(self._executor._execute_claimed(job))
         try:
-            await self._executor._execute_claimed(job)
+            done, _pending = await asyncio.wait({execution}, timeout=self._max_execution_seconds)
+        except asyncio.CancelledError:
+            execution.cancel()
+            raise
         finally:
-            heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
+            if heartbeat is not None:
+                heartbeat.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat
+        if not done:
+            execution.cancel()
+            # Deliberately not awaited: retrieve its eventual outcome so a late
+            # result or error is not reported as never retrieved.
+            execution.add_done_callback(_discard_outcome)
+            logger.error(
+                "canvas_job_execution_timeout job=%s limit=%ss; cancelled provider call",
+                job.id,
+                self._max_execution_seconds,
+            )
+            raise PreclassifiedJobFailure(EXECUTION_TIMEOUT_MESSAGE)
+        execution.result()
+
+
+def _discard_outcome(task: asyncio.Future[None]) -> None:
+    if not task.cancelled():
+        task.exception()
