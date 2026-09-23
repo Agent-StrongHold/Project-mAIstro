@@ -18,3 +18,13 @@ the fixture's fake default Project were re-seeded into each Workspace's
 canonical root Project, and the settlement suite's `_OverEagerIndexStore`
 fake was widened to the store protocol's `project_ids`/`workspace_ids`
 signature — discovery and settlement now only ever see canonical scopes.
+
+## Re-validation after the develop `84d937add` merge
+
+The `84d937add` merge (audit org scope, DagBuilder runs surface) touched no
+HITL path; the merged head was re-validated: 27/27 door+timeout tests,
+32/32 core settlement tests, ruff/format, mypy on the durable_runs modules,
+and the `check-{enumerations,public-routes,suite-inventory,security-inventory,owned-store-access,agent-store-writes}` gates. A manual
+mutation check (no-op `authorize_project`, authentication intact) fails
+exactly the two isolation tests, confirming the suite detects removed scope
+checks.
