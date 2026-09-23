@@ -134,6 +134,38 @@ async def test_an_executed_task_shows_its_real_node_run(wired, client: TestClien
     assert body[0]["node_id"] == run.graph.materialize().nodes[0].node_id
     assert body[0]["status"] == "completed"
     assert body[0]["finished_at"] is not None
+    (attempt,) = body[0]["attempts"]
+    assert attempt["executor_id"] == "task_runner"
+    assert attempt["status"] == "completed"
+    assert attempt["agent"] is None
+
+
+async def test_a_failed_task_attempt_is_visible_without_its_error_text(
+    wired, client: TestClient
+) -> None:
+    from maistro.agents.types import ConductorOutput
+    from maistro.tasks.execution import TaskAttemptExecutor
+    from maistro.tasks.models import TaskCreate
+
+    created = _submit(client)
+
+    async def _executor(_request: TaskCreate) -> ConductorOutput:
+        raise RuntimeError("token=sk-do-not-leak")
+
+    with pytest.raises(RuntimeError):
+        await TaskAttemptExecutor(wired).execute(
+            created["run_id"],
+            TaskCreate(description="Add a hello endpoint", workspace=WORKSPACE),
+            _executor,
+        )
+
+    response = client.get(f"/runs/{created['run_id']}/node-runs")
+    (attempt,) = response.json()[0]["attempts"]
+    assert attempt["status"] == "failed"
+    assert attempt["executor_id"] == "task_runner"
+    assert "error" not in attempt
+    assert "result" not in attempt
+    assert "sk-do-not-leak" not in response.text
 
 
 async def test_node_runs_for_an_unknown_run_are_404(wired, client: TestClient) -> None:
@@ -154,6 +186,7 @@ async def test_another_principals_run_is_not_visible(wired, client: TestClient) 
     other = await wired.create_run(graph, actor_principal_id="somebody-else")
 
     assert client.get(f"/runs/{other.run_id}").status_code == 404
+    assert client.get(f"/runs/{other.run_id}/node-runs").status_code == 404
 
 
 def test_the_endpoint_says_so_when_no_store_is_configured(client: TestClient) -> None:
