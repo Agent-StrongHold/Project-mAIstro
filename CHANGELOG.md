@@ -843,6 +843,22 @@ or placeholder-only section.
   answering a turn whose spine could not be written before the model was
   called — is unchanged; #1108's other half (refusing a turn outright when no
   canonical spine is wired) is not addressed here.
+- **A raw store or driver error after the model answered no longer loses the
+  answer (#1108).** Only `RunIntegrityError` was classified by
+  `ChatAttemptExecutor`, but the PostgreSQL and SQLite stores wrap integrity
+  violations and nothing else, so a dropped connection or a locked database on
+  the Attempt's COMPLETED write or the NodeRun reconciliation escaped as the
+  driver's own exception: the endpoint returned 500 for a turn the model had
+  already answered, the Run was closed FAILED over a still-RUNNING Attempt,
+  and a client retry meant a second model charge and a second session append.
+  Any spine failure after the dispatch now raises `ChatDispatchUnrecorded`
+  with the answer, the Run is left open for recovery, and a dispatch failure
+  whose recording also failed still arrives as the dispatch's own exception.
+  A runtime deadline that cancelled the dispatch still arrives as
+  `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
+  fails arrives as the cancellation, never as a bare store error the
+  pre-dispatch fallback would answer again; and a failure before the dispatch
+  still propagates unchanged without reaching the model.
 - **A launch the store refuses no longer masks itself as a lifecycle error
   (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
   the executor's failure path asked the lifecycle for `FAILED` from `CREATED`
