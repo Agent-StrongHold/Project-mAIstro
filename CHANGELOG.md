@@ -208,6 +208,19 @@ or placeholder-only section.
 
 ### Added
 
+- **Every parked Graph pause reason must name a reachable production waker
+  (#1192, partial).** A new architecture test maps each
+  `PAUSE_RESUME_CONDITIONS` reason to its production waker (Hive HITL
+  answer/expire/cancel for the four human reasons, drained by queued
+  recovery; the legacy-DAG and Evolve due ticks for the two elapsed-timer
+  reasons) and checks each one mechanically: the entrypoint exists, has a
+  non-test production caller, calls the canonical API it names, and that API
+  accepts the status the reason actually parks in. `awaiting_remote_delegation`
+  and `awaiting_harness` park WAITING while the only answer path accepts
+  PAUSED, so they sit in a strict known-gap ledger citing #1192. The test
+  fails for a new reason with no waker, and for a ledgered reason that gains
+  one until it leaves the ledger.
+
 - **Governed model egress is wired into production Container composition
   (#1079).** `AgentConfig.model_bindings` declares authorized Workspace/Project
   `model.chat` Bindings; `create_container()` bootstraps them into the exact
