@@ -380,6 +380,27 @@ class CanvasCanonicalExecution:
             # (`reap_expired_leases`) may decide a worker is lost; recovery
             # leaves a live lease alone.
             target = job.status
+        elif (
+            job.status is JobStatus.RUNNING
+            and job.attempts >= job.max_attempts
+            and run.status in {RunStatus.CREATED, RunStatus.QUEUED}
+        ):
+            # The worker is gone (its lease expired or was never stamped) and
+            # the receipt has used its whole retry budget. Requeueing it would
+            # bypass that budget: `claim_next_pending` bumps `attempts` without
+            # checking `max_attempts`, and this pass runs on every poll tick,
+            # far more often than the reaper sweeps. So a worker that kept
+            # dying before the Run left QUEUED could get the provider called
+            # again and again. The budget decision belongs to the reaper
+            # (`reap_expired_leases` / `CanvasJobRunner.reap_once`), which
+            # fails the Run canonically, so the receipt stays RUNNING for it.
+            # The reaper only matches a non-null expired lease, so an unleased
+            # receipt gets an already-expired one here to keep it from being
+            # stranded.
+            target = job.status
+            if job.lease_expires_at is None:
+                job.lease_expires_at = datetime.now(UTC)
+                changed = True
         else:
             # Only CREATED/QUEUED are admission states. Once canonical work is
             # RUNNING, recovery must not turn an owned Canvas lease back into

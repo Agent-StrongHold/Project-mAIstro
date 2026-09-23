@@ -112,6 +112,15 @@ class _ImageClient:
         return ImageData(width=64, height=64, url="image://refined")
 
 
+class _CountingImageClient(_ImageClient):
+    def __init__(self) -> None:
+        self.generate_calls = 0
+
+    async def generate(self, **kwargs: object) -> list[ImageData]:
+        self.generate_calls += 1
+        return await super().generate(**kwargs)
+
+
 class _FailThenSucceedImageClient(_ImageClient):
     def __init__(self) -> None:
         self.generate_calls = 0
@@ -531,6 +540,70 @@ async def test_runner_requeues_then_terminalizes_at_retry_budget() -> None:
     assert job.leased_by is None
     assert job.lease_expires_at is None
     assert executor.failures == ["provider 503"]
+
+
+async def test_worker_deaths_before_execution_cannot_bypass_the_retry_budget() -> None:
+    """Admission recovery cannot hand an exhausted job back to the claim path.
+
+    Each worker here dies after `claim_next_pending` but before
+    `execute_stage` moves the canonical Run out of QUEUED. That leaves the
+    receipt RUNNING with an expired lease. While budget remains,
+    reconciliation may requeue it. Once `attempts` reaches `max_attempts`,
+    the runner's next tick must not requeue, reclaim, and dispatch the
+    provider again. The job waits for the reaper to fail it canonically.
+    """
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    canonical = CanvasCanonicalExecution(
+        runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    store = _CanvasStore()
+    image_client = _CountingImageClient()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=image_client,  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        canonical_execution=canonical,
+    )
+    job = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+    )
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+
+    for death in range(1, job.max_attempts + 1):
+        assert await store.claim_next_pending("doomed-worker", 60) is job
+        assert job.attempts == death
+        # The worker dies here, before any stage runs, and its lease lapses.
+        job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        if death < job.max_attempts:
+            await executor.reconcile_admissions()
+            assert job.status == JobStatus.PENDING
+
+    runner = CanvasJobRunner(store=store, executor=executor)
+    assert await runner.tick_once() is False
+    assert image_client.generate_calls == 0
+    assert job.attempts == job.max_attempts
+    assert job.status == JobStatus.RUNNING
+    queued = await runs.get_run(run_id)
+    assert queued is not None
+    assert queued.status is RunStatus.QUEUED
+
+    # The reaper's canonical hook can still terminalize a Run that never left
+    # QUEUED, so leaving the receipt for the reaper does not strand the job.
+    await executor.fail_job_execution(job, RuntimeError("canvas worker lease expired"))
+    failed = await runs.get_run(run_id)
+    assert failed is not None
+    assert failed.status is RunStatus.FAILED
+    assert image_client.generate_calls == 0
 
 
 async def test_runner_idle_and_reap_terminal_failure_paths() -> None:
