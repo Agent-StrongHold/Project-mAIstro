@@ -46,6 +46,10 @@ HOSTILE_CORPUS = (
     "<svg><script>alert(1)</script></svg>",
     '<a href="data:text/html;base64,PHNjcmlwdD4=">x</a>',
     '<div style="background:url(http://evil.example/x)">y</div>',
+    # Leading-escape CSS spelling: a CSS parser reads `\75rl(` as `url(`.
+    # #817 repair regression: the shared decoder used to decode `ul(` here and
+    # hand the pre-scan a clean T3/`upgrade` record for fetchable content.
+    '<div style="background:\\75rl(http://evil.example/x)">y</div>',
 )
 CLEAN_BRIEF = "A calm spring bake-sale poster"
 

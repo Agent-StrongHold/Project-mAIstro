@@ -31,7 +31,12 @@ import html
 import re
 import unicodedata
 
-_CSS_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})(?:[ \\t\\r\\n\\f]?|(?=$))|\\([^\\r\\n\\f])")
+# The whitespace classes are single-escaped regex tokens: [ \t\r\n\f] must
+# match actual tab/CR/LF/FF. Doubling the backslashes would make the class
+# match the literal letters t/r/n/f instead, so a terminator like the `r` in
+# `\\75rl(` would be consumed as the escape's whitespace terminator and the
+# decoded view would read `ul(` where a CSS parser reads `url(`.
+_CSS_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})(?:[ \t\r\n\f]?|(?=$))|\\([^ \t\r\n\f])")
 
 
 def _decode_css_escapes(text: str) -> str:

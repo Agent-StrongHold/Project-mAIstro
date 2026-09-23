@@ -60,6 +60,9 @@ class TestScanDesignOutput:
             ),
             ('<a href="java&#x0A;script:alert(1)">x</a>', "dangerous resource"),
             (r"<style>.x { background: u\72l(https://evil.example/leak) }</style>", "CSS"),
+            # Leading-escape spelling: a CSS parser reads `\75rl(` as `url(`
+            # (#817 repair: the shared decoder used to read `ul(` here).
+            (r"<style>.x { background: \75rl(https://evil.example/leak) }</style>", "CSS"),
             ("<svg><foreignObject><div>active</div></foreignObject></svg>", "SVG element"),
             ("<math><mi>x</mi></math>", "visual artifact active-element"),
         ],

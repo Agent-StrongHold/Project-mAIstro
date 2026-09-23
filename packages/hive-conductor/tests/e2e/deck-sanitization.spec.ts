@@ -304,6 +304,9 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     '<a href="jav&#x61;script:window.__deckPwned=12">bad</a><em>safe</em>',
     '<svg><use href="http://attacker.invalid/icon#x"></use><image href="data:text/html,<script>alert(1)</script>"></image><circle cx="5" cy="5" r="4"></circle></svg>',
     '<div style="background:url(\\6a avascript:alert(1));color:#fff">safe</div>',
+    // Leading-escape spelling of the CSS url() primitive: a CSS parser reads
+    // `\\75rl(` as `url(` even though the literal token never appears (#817).
+    '<div style="background:\\75rl(http://attacker.invalid/escaped-css)">safe</div>',
     '<div style="background-image:image-set(url(http://attacker.invalid/a) 1x);font-size:20px">safe</div>',
     '<style>@import url(http://attacker.invalid/x);</style><p>safe</p>',
     '<iframe srcdoc="<script>window.__deckPwned=13<\/script>"></iframe><u>safe</u>',
@@ -324,18 +327,22 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     const scan = (
       window as Window & { __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string } }
     ).__scanVisualArtifactMarkup;
-    return items.slice(0, 4).map((item) => scan(item));
+    return items.slice(0, 5).map((item) => scan(item));
   }, [
     '<div onclick="alert(1)">handler</div>',
     '<a href="data:text/html,<script>alert(1)</script>">navigation</a>',
     '<div style="background-image:url(http://attacker.invalid/css)">network</div>',
     '<math><mi>x</mi></math>',
+    // #817: the leading-escape `\\75rl(` spelling of url() must classify the
+    // same as the literal token — the browser boundary may not score it clean.
+    '<div style="background:\\75rl(http://attacker.invalid/escaped-css)">network</div>',
   ]);
   expect(scanResults.every((result) => result.blocked)).toBe(true);
   expect(scanResults[0].reasons).toContain("event-handler");
   expect(scanResults[1].reasons.length).toBeGreaterThan(0);
   expect(scanResults[2].reasons).toContain("css-network-or-code");
   expect(scanResults[3].reasons).toContain("active-element");
+  expect(scanResults[4].reasons).toContain("css-network-or-code");
 
   const recommendations = await page.evaluate(() => {
     const recommend = (

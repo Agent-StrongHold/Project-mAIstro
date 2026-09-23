@@ -88,6 +88,13 @@ async def test_scan_layer1_single_pattern_match_is_blocked() -> None:
             r"<style>.x { background: u\72l(https://evil.example/leak) }</style>",
             "CSS network/code primitive",
         ),
+        (
+            # Leading-escape spelling: a CSS parser reads `\75rl(` as `url(`,
+            # so the detection view must decode it too (#817 repair: the
+            # terminator class used to eat the `r` and decode `ul(` instead).
+            r"<style>.x { background: \75rl(https://evil.example/leak) }</style>",
+            "CSS network/code primitive",
+        ),
     ],
 )
 async def test_scan_layer1_blocks_active_markup(payload: str, flag: str) -> None:
@@ -102,6 +109,43 @@ async def test_scan_layer1_blocks_script_injection_from_shared_vocabulary() -> N
     assert verdict.clean is False
     assert verdict.blocked is True
     assert any("script pattern" in flag for flag in verdict.flags)
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("unit")
+@pytest.mark.parametrize(
+    ("payload", "decoded"),
+    [
+        # Leading-escape function name: `\75rl(` is `url(` to a CSS parser.
+        (
+            r"background:\75rl(https://evil.example/leak)",
+            "background:url(https://evil.example/leak)",
+        ),
+        # Mid-token spelling stays decoded, and the `l` after `\72` survives.
+        (
+            r"background:u\72l(https://evil.example/leak)",
+            "background:url(https://evil.example/leak)",
+        ),
+        # A real whitespace terminator is consumed exactly once.
+        (
+            r"background:\75 rl(https://evil.example/leak)",
+            "background:url(https://evil.example/leak)",
+        ),
+        # Hex escape at end of string decodes without a terminator.
+        (r"background:\75", "background:u"),
+    ],
+)
+def test_detection_view_decodes_css_hex_escapes_like_a_css_parser(
+    payload: str, decoded: str
+) -> None:
+    """The detection view must read the token a CSS parser reads (#817).
+
+    A regression here reopens the `\75rl(` -> `ul(` bypass where the escaped
+    `url(` slipped past every scanner while the browser fetched anyway.
+    """
+    from maistro.security.normalize import normalize_for_detection
+
+    assert normalize_for_detection(payload) == decoded
 
 
 async def test_scan_layer2_heuristic_density_flag_when_layer1_clean() -> None:

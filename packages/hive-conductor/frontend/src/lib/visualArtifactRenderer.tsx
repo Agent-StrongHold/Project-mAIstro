@@ -378,6 +378,7 @@ type SanitizedVisualArtifactProps = Omit<
  */
 export const SanitizedVisualArtifact = forwardRef<HTMLDivElement, SanitizedVisualArtifactProps>(
   function SanitizedVisualArtifact({ markup, ...props }, ref) {
+    // nosemgrep: typescript.react.security.audit.react-dangerouslysetinnerhtml.react-dangerouslysetinnerhtml -- the single reviewed React sink (#768): the exact expression passes markup through sanitizeVisualArtifactMarkup (two-pass sanitizer + shared block-reason vocabulary), and callers must not render raw model/persisted strings themselves
     return <div {...props} ref={ref} dangerouslySetInnerHTML={{ __html: sanitizeVisualArtifactMarkup(markup) }} />;
   },
 );
