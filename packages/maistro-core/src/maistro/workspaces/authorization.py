@@ -67,11 +67,5 @@ class WorkspaceAuthorizer:
             return membership
         raise WorkspaceAuthorizationDenied(membership)
 
-    async def visible_workspace_ids(self, principal_id: str) -> frozenset[str]:
-        if _is_blank(principal_id):
-            return frozenset()
-        workspaces = await self._store.list_for_user(principal_id)
-        return frozenset(workspace.workspace_id for workspace in workspaces)
-
 
 __all__ = ["WorkspaceAction", "WorkspaceAuthorizationDenied", "WorkspaceAuthorizer"]

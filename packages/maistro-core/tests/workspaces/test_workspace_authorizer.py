@@ -113,7 +113,6 @@ async def test_blank_principal_is_denied(world: _World, principal: str) -> None:
     for action in WorkspaceAction:
         with pytest.raises(WorkspaceAuthorizationDenied):
             await world.authorizer.require(principal, world.alice_ws, action)
-    assert await world.authorizer.visible_workspace_ids(principal) == frozenset()
 
 
 async def test_administer_requires_owner(world: _World) -> None:
@@ -137,20 +136,6 @@ async def test_removed_membership_is_revoked_on_next_call(world: _World) -> None
 
     with pytest.raises(WorkspaceAuthorizationDenied):
         await world.authorizer.require(world.bob, world.alice_ws, WorkspaceAction.VIEW)
-    assert world.alice_ws not in await world.authorizer.visible_workspace_ids(world.bob)
-
-
-async def test_visible_workspace_ids_match_list_for_user(world: _World) -> None:
-    await world.store.set_membership(world.bob_ws, user_id=world.alice, role=WorkspaceRole.MEMBER)
-
-    for principal in (world.alice, world.bob):
-        expected = {ws.workspace_id for ws in await world.store.list_for_user(principal)}
-        assert await world.authorizer.visible_workspace_ids(principal) == frozenset(expected)
-    assert await world.authorizer.visible_workspace_ids(world.alice) == {
-        world.alice_ws,
-        world.bob_ws,
-    }
-    assert await world.authorizer.visible_workspace_ids(world.bob) == {world.bob_ws}
 
 
 class _NoMembershipStore(InMemoryWorkspaceStore):
@@ -191,7 +176,6 @@ async def test_non_string_principal_is_denied() -> None:
 
     with pytest.raises(WorkspaceAuthorizationDenied):
         await authorizer.require(None, workspace.workspace_id, WorkspaceAction.VIEW)  # type: ignore[arg-type]
-    assert await authorizer.visible_workspace_ids(None) == frozenset()  # type: ignore[arg-type]
 
 
 async def test_denial_does_not_chain_the_lookup_that_revealed_absence(world: _World) -> None:
