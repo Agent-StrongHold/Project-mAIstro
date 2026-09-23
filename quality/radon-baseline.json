@@ -485,12 +485,12 @@
     {
       "key": "packages/maistro-core/src/maistro/persistence/sqlite_audit.py::SqliteAuditLog.get_entries",
       "path": "packages/maistro-core/src/maistro/persistence/sqlite_audit.py",
-      "line": 69,
+      "line": 108,
       "name": "get_entries",
       "classname": "SqliteAuditLog",
       "rank": "C",
-      "complexity": 15,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
+      "complexity": 13,
+      "rationale": "#1155 keeps the scoped audit read below the reviewed complexity floor after extracting exact predicate construction; tracked under SPEC-264 for further remediation."
     },
     {
       "key": "packages/maistro-core/src/maistro/persistence/sqlite_outcomes.py::SqliteOutcomeStore.get_task_completion_rate",
@@ -551,16 +551,6 @@
       "rank": "C",
       "complexity": 15,
       "rationale": "AttemptResult evidence comparison introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/scheduling/admission.py::ScheduleRunAdmitter.admit_due",
-      "path": "packages/maistro-core/src/maistro/scheduling/admission.py",
-      "line": 189,
-      "name": "admit_due",
-      "classname": "ScheduleRunAdmitter",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "#1311 moved manual schedule fire onto this canonical scoped admission path (fail-closed when the container lacks collaborators), concentrating the due-scan/claim/settle branching here. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
     },
     {
       "key": "packages/maistro-core/src/maistro/security/auth_jwt.py::JWTAuthProvider._get_jwks_client",
