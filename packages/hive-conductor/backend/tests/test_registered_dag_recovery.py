@@ -126,6 +126,7 @@ _DAGS = {
     "rdr-poll": _descriptor("rdr-poll", _PollNode.kind),
     "rdr-ask": _descriptor("rdr-ask", _AskNode.kind),
     "rdr-single": _descriptor("rdr-single", _StepNode.kind, nodes=1),
+    "rdr-poll-single": _descriptor("rdr-poll-single", _PollNode.kind, nodes=1),
 }
 
 _SCHEDULE = {"admission_source": "schedule", "schedule_id": "sched-1"}
@@ -239,6 +240,27 @@ async def test_an_elapsed_timer_wait_wakes_and_a_human_pause_does_not(
 
     assert await _status(container, waiting.run_id) is RunStatus.COMPLETED
     assert await _status(container, asking.run_id) is RunStatus.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_a_single_node_timer_wait_is_woken_here_not_left_to_the_consumer(
+    container: Any,
+) -> None:
+    """The consumer owns only QUEUED single-node Runs, and its resume tick
+    matches YIELDED Attempts, never Graph pauses -- so the wake half is the only
+    thing that can wake a single-node registered DAG parked on a timer."""
+    from services.registered_dag_recovery import wake_due_registered_dag_runs
+
+    _graph, waiting = await run_registered_dag(
+        "rdr-poll-single",
+        workspace_id="ws-rdr",
+        project_id=container.project_id,
+        provenance=_SCHEDULE,
+    )
+    assert await _status(container, waiting.run_id) is RunStatus.WAITING
+
+    assert await wake_due_registered_dag_runs() == 1
+    assert await _status(container, waiting.run_id) is RunStatus.COMPLETED
 
 
 @pytest.mark.asyncio
