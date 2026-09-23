@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +18
+  packages/maistro-core/tests: +31
   packages/hive-conductor/backend/tests: +12
 ---
 
@@ -92,3 +92,42 @@ way it survives any later migration: exactly one head, with the audit scope
 migration on that head's chain. No collected-test counts changed this pass
 (96 migration tests, 1322 core runs+scheduling on PG legs, 2577 Hive backend
 — the deltas over the prior pass are develop's own new suites).
+## Sixth pass: the crash window holds, it does not spend (2026-09-23)
+
+The finding this pass repairs: `reserve_fire` durably counted the run and
+disabled on exhaustion *before* any Run existed, so a process that died
+between the reservation and the Run insert left the durable row claiming a
+firing that never happened — reproduced on a fresh SQLite store (restart
+preserved `runs_so_far=1`, `enabled=False`, `last_run_id=None`): a
+`max_runs=1` schedule was bricked, no Run, no retry possible. The claim is
+now a durable `PendingFire` marker naming the fire's token: it holds the
+slot (every exhaustion check counts held markers, so the #1119 last-run race
+stays closed) but spends nothing — `runs_so_far`, `enabled`, and the cursors
+move only in `settle_pending_fire`, the one write that also removes the
+marker and links the Run. A holder that dies mid-window leaves the marker
+for recovery (`_reconcile_pending_fires`, lease-gated by
+`_PENDING_FIRE_LEASE` so a live fire is never touched): a Run for its token
+confirms the spend, no Run releases the slot. The in-memory
+`FireReservation` type is gone; `reserve_fire`/`settle_pending_fire` are the
+two store methods, both implementations (in-memory, PostgreSQL) share
+`_reserve`/`_settle_pending` so they cannot drift.
+
+Coverage (+13 `packages/maistro-core/tests`): `test_store.py` rewrites the
+reservation cases to the hold/settle contract — a hold does not spend, the
+held slot counts until settled, a release leaves no trace, a confirmation
+spends and disables on exhaustion, settling without a marker answers None,
+the marker survives the payload round trip (+9 across the three store
+backends), plus an executed fresh-SQLite crash-window reproduction: kill
+between reserve and Run, restart, nothing spent (+1). `test_admission.py`
+gains the crash window end to end — a crashed fire leaves no firing and its
+retry fires, the recurring tick releases a stale marker before firing what
+is owed, and a fresh (in-lease) marker is untouchable by tick and rival fire
+alike (+3); the failure-after-Run case is rewritten to assert the row stays
+unspent until recovery confirms it from the Run itself. Hive-side behavior
+is unchanged by this pass (its suite still collects 2578): the admitter's
+contract shift is invisible to the route and service, which keep reading
+`ScheduleAdmission`.
+
+Also in this pass: `scheduler.py`'s committed text had picked up CRLF line
+terminators (the merge at `d60bc7fd6`) and the handoff note a trailing
+space — normalized back to LF; no content change.

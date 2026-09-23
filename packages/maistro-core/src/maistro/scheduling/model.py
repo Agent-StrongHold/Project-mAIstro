@@ -26,6 +26,7 @@ from maistro.scheduling.cron import CronExpression, minimum_gap, parse_cron
 __all__ = [
     "DEFAULT_CATCHUP_WINDOW_SECONDS",
     "OverlapPolicy",
+    "PendingFire",
     "Schedule",
 ]
 
@@ -55,6 +56,59 @@ class OverlapPolicy(StrEnum):
     BUFFER_ONE = "buffer_one"
     """Fire at most one queued occurrence after the current Run, dropping any
     others that came due in the meantime."""
+
+
+class PendingFire(BaseModel):
+    """A manual fire's held slot, durably, between reserve and settle (#1120).
+
+    `ScheduleRunAdmitter._admit_manual` claims a schedule's run *before* the
+    canonical Run exists, so two callers racing on the last `max_runs` unit
+    cannot both take it. The claim used to advance `runs_so_far` (and disable
+    on exhaustion) in that same write, which meant a process that died between
+    the claim and the Run insert left the durable row showing a firing that
+    never existed — on a `max_runs=1` schedule, one that bricked it: no Run,
+    no retry possible, `enabled=False` forever (#1120: "failure before
+    canonical Run creation does not advance/claim a firing that never
+    existed").
+
+    The marker is the reconciliation of that with the race safety: it holds
+    the slot — every exhaustion check counts it — without spending it. The
+    count, the disable, and `last_run_id` land in the one `settle_pending_fire`
+    write that also removes the marker, so the durable row can only ever say
+    "a run was spent" once a Run exists to spend it on. A holder that dies
+    mid-window leaves the marker behind, and the next admission reconciles
+    it against the Run store: a Run for its `fire_id` confirms the spend, no
+    Run releases the slot. Freshness (`stamped_at`, wall-clock) is what lets
+    recovery tell a dead holder from a live one still inside the window —
+    see `admission._PENDING_FIRE_LEASE`.
+
+    `updated_at_before` is for the trace-free release: a release nobody
+    else has written over restores it, so a failed fire leaves the row
+    byte-identical to what it was.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    fire_id: str
+    """The manual fire's occurrence token — the identity the Run will claim."""
+
+    fires: int = 1
+    """Slots this marker holds; one per manual fire."""
+
+    stamped_at: datetime
+    """Wall-clock instant the marker was written; drives lease staleness."""
+
+    updated_at_before: datetime
+    """The row's `updated_at` before the marker, restored on a clean release."""
+
+    @model_validator(mode="after")
+    def _normalise_timestamps(self) -> PendingFire:
+        """Read naive wall-clock strings as UTC, exactly as `Schedule` does."""
+        for field in ("stamped_at", "updated_at_before"):
+            value = getattr(self, field)
+            if value.tzinfo is None:
+                object.__setattr__(self, field, value.replace(tzinfo=UTC))
+        return self
 
 
 def _now() -> datetime:
@@ -100,6 +154,15 @@ class Schedule(BaseModel):
     the claim still credits it, whichever order the two writes land in.
     Bounded by `store._MAX_RECOVERED_OCCURRENCES` so a schedule that crashes
     over and over does not grow this set without limit.
+    """
+
+    pending_fires: tuple[PendingFire, ...] = ()
+    """Manual-fire slots held but not yet spent (#1120) — see `PendingFire`.
+
+    State, not definition: `ScheduleStore.put` keeps the stored value on a
+    definition refresh, exactly as it keeps the cursors. Empty on an idle
+    schedule; each entry exists only for the moments between a manual fire
+    reserving its slot and the settle write that confirms or releases it.
     """
 
     persona_id: str | None = None
@@ -148,15 +211,29 @@ class Schedule(BaseModel):
 
     @property
     def exhausted(self) -> bool:
-        """True when max_runs has been reached and the schedule is spent."""
-        return self.max_runs is not None and self.runs_so_far >= self.max_runs
+        """True when max_runs has been reached and the schedule is spent.
+
+        Pending manual-fire markers count: a slot held between reserve and
+        settle is not available, whether or not its Run has landed yet
+        (#1120). The durable count alone would let the recurring evaluation
+        spend a slot a live manual fire is mid-way through claiming.
+        """
+        if self.max_runs is None:
+            return False
+        held = sum(marker.fires for marker in self.pending_fires)
+        return self.runs_so_far + held >= self.max_runs
 
     @property
     def runs_remaining(self) -> int | None:
-        """Fires left before exhaustion, or None when unbounded."""
+        """Fires left before exhaustion, or None when unbounded.
+
+        Counts held-but-unspent manual-fire markers (#1120) for the same
+        reason `exhausted` does: a held slot is not a remaining one.
+        """
         if self.max_runs is None:
             return None
-        return max(0, self.max_runs - self.runs_so_far)
+        held = sum(marker.fires for marker in self.pending_fires)
+        return max(0, self.max_runs - self.runs_so_far - held)
 
     def minimum_gap(self) -> timedelta:
         """Shortest interval this recurrence can produce.

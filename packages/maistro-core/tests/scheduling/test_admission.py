@@ -1878,31 +1878,68 @@ class TestManualFire:
     async def test_a_run_that_exists_is_counted_even_if_recording_it_fails(
         self, harness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The slot is claimed before the Run, so a failure after creation
-        cannot leave a Run the count does not admit to: the next request is
-        refused instead of duplicating the work."""
+        """The slot is held before the Run, so a failure after creation cannot
+        leave a Run no held slot admits to: the next request is refused
+        instead of duplicating the work — and once the holder is provably
+        gone, the next admission confirms the spend from the Run itself
+        (#1120: failure after admission remains recoverable from canonical
+        durable state)."""
+        from maistro.scheduling.admission import _PENDING_FIRE_LEASE
+
         admitter, runs, _templates, schedules, project_id = harness
         schedule = await _schedule(schedules, project_id, max_runs=1)
-        real_settle = schedules.settle_fire
+        real_settle = schedules.settle_pending_fire
 
-        async def _settle_fails(schedule_id: str, reservation: object, *, run_id: str | None):
+        async def _settle_fails(schedule_id: str, fire_id: str, *, run_id: str | None):
             if run_id is not None:
                 raise RuntimeError("synthetic store outage after the Run exists")
-            return await real_settle(schedule_id, reservation, run_id=run_id)
+            return await real_settle(schedule_id, fire_id, run_id=run_id)
 
-        monkeypatch.setattr(schedules, "settle_fire", _settle_fails)
+        monkeypatch.setattr(schedules, "settle_pending_fire", _settle_fails)
         with pytest.raises(RuntimeError, match="after the Run exists"):
-            await admitter.admit_due(schedule, now=NOON, manual=True)
+            await admitter.admit_due(schedule, now=NOON, manual=True, fire_id="outage-1")
 
         assert len(runs._runs) == 1  # type: ignore[attr-defined]
         recorded = await schedules.get(schedule.schedule_id)
         assert recorded is not None
-        assert recorded.runs_so_far == 1
-        assert recorded.last_run_id is None, "the pointer is what the outage lost"
-        monkeypatch.setattr(schedules, "settle_fire", real_settle)
+        # The spend did NOT land — only the marker holds the slot. The count
+        # and the disable arrive with the settle that links the Run, which is
+        # exactly the write the outage lost.
+        assert recorded.runs_so_far == 0
+        assert recorded.enabled is True
+        assert recorded.last_run_id is None
+        assert [marker.fire_id for marker in recorded.pending_fires] == ["outage-1"]
+
+        # While the marker is held, a different fire cannot take the slot —
+        # the marker is what the last-run race (#1119) closes on, spent or
+        # not. Refused, and still exactly one Run.
         with pytest.raises(ManualFireRefused):
             await admitter.admit_due(recorded, now=NOON + timedelta(minutes=1), manual=True)
         assert len(runs._runs) == 1  # type: ignore[attr-defined]
+        monkeypatch.setattr(schedules, "settle_pending_fire", real_settle)
+
+        # Once the holder is provably gone (its marker is past the lease),
+        # the next admission reconciles: the Run exists, so the spend is
+        # earned — confirmed, counted, linked, disabled on exhaustion.
+        stale = recorded.pending_fires[0].model_copy(
+            update={"stamped_at": datetime.now(UTC) - _PENDING_FIRE_LEASE - timedelta(seconds=1)}
+        )
+        schedules._schedules[schedule.schedule_id] = recorded.model_copy(  # type: ignore[attr-defined]
+            update={"pending_fires": (stale,)}
+        )
+        after_recovery = await schedules.get(schedule.schedule_id)
+        assert after_recovery is not None
+        with pytest.raises(ManualFireRefused):
+            await admitter.admit_due(
+                after_recovery, now=NOON + timedelta(minutes=2), manual=True, fire_id="fresh-1"
+            )
+        recovered = await schedules.get(schedule.schedule_id)
+        assert recovered is not None
+        assert recovered.runs_so_far == 1
+        assert recovered.pending_fires == ()
+        run_id = next(iter(runs._runs))  # type: ignore[attr-defined]
+        assert recovered.last_run_id == run_id
+        assert recovered.enabled is False
 
     async def test_a_manual_fire_counts_against_max_runs_and_disables(self, harness) -> None:
         """A manual fire is a fire: it spends the bound and disables.
@@ -2025,6 +2062,109 @@ class TestManualFire:
 
         after = await schedules.get(schedule.schedule_id)
         assert after == before
+
+    async def test_a_crashed_fire_leaves_no_firing_and_a_retry_fires(self, harness) -> None:
+        """The #1120 crash window, end to end.
+
+        A process that died between holding its slot and creating the Run
+        leaves only a marker — no spent quota, no disable. Its retry is not
+        answered "could not be fired" about a Run that never existed: the
+        stale marker is released, the fire proceeds, and the schedule ends
+        with exactly the one Run the retry created.
+        """
+        from maistro.scheduling.admission import _PENDING_FIRE_LEASE
+        from maistro.scheduling.model import PendingFire
+
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=1)
+
+        # What a dead holder leaves behind: a marker past its lease, and no
+        # Run for its token anywhere.
+        stale = PendingFire(
+            fire_id="crash-1",
+            fires=1,
+            stamped_at=datetime.now(UTC) - _PENDING_FIRE_LEASE - timedelta(seconds=1),
+            updated_at_before=datetime.now(UTC) - timedelta(hours=1),
+        )
+        schedules._schedules[schedule.schedule_id] = schedule.model_copy(  # type: ignore[attr-defined]
+            update={"pending_fires": (stale,)}
+        )
+
+        retried = await admitter.admit_due(schedule, now=NOON, manual=True, fire_id="crash-1")
+
+        assert len(retried.run_ids) == 1
+        assert retried.disabled is True, "the retry's own fire spent the bound"
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.pending_fires == ()
+        assert recorded.runs_so_far == 1
+        assert recorded.last_run_id == retried.run_ids[0]
+        assert recorded.enabled is False
+        assert len(runs._runs) == 1  # type: ignore[attr-defined]
+
+    async def test_the_tick_releases_a_stale_marker_before_firing_what_is_owed(
+        self, harness
+    ) -> None:
+        """Recovery does not wait for a human: the recurring tick reconciles
+        a crashed manual fire's marker, then admits the occurrence the cron
+        still owes — counted on its own, never mixed up with the dead fire.
+        """
+        from maistro.scheduling.admission import _PENDING_FIRE_LEASE
+        from maistro.scheduling.model import PendingFire
+
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            max_runs=2,
+            last_fired_at=NOON - timedelta(hours=1),
+            next_due_at=NOON,
+        )
+        stale = PendingFire(
+            fire_id="crash-1",
+            fires=1,
+            stamped_at=datetime.now(UTC) - _PENDING_FIRE_LEASE - timedelta(seconds=1),
+            updated_at_before=datetime.now(UTC) - timedelta(hours=1),
+        )
+        held = schedule.model_copy(update={"pending_fires": (stale,)})
+        schedules._schedules[schedule.schedule_id] = held  # type: ignore[attr-defined]
+
+        ticked = await admitter.admit_due(held, now=NOON + timedelta(minutes=1))
+
+        assert len(ticked.run_ids) == 1, "the owed occurrence fired"
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.pending_fires == (), "the crashed fire's marker was released"
+        assert recorded.runs_so_far == 1, "only the cron occurrence was counted"
+        owed = await runs.get_run(ticked.run_ids[0])
+        assert owed is not None
+        assert owed.provenance[SCHEDULED_FOR_KEY] == NOON.isoformat()
+        assert owed.provenance[SCHEDULE_TRIGGER_KEY] == "recurring"
+
+    async def test_a_fresh_marker_is_untouchable_and_holds_its_slot(self, harness) -> None:
+        """The lease is the race safety (#1119): a marker whose holder may
+        still be mid-fire is not released — not by the tick, not by another
+        manual fire — so two callers on the last run still cannot both take
+        it, exactly as before the marker made the hold recoverable.
+        """
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=1)
+
+        # A live holder: reserved now, Run not yet created.
+        reserved = await schedules.reserve_fire(schedule.schedule_id, fire_id="live-1")
+        assert reserved is not None
+
+        # Another caller, inside the lease: refused.
+        with pytest.raises(ManualFireRefused):
+            await admitter.admit_due(reserved, now=NOON, manual=True, fire_id="other-1")
+        assert len(runs._runs) == 0  # type: ignore[attr-defined]
+
+        # And the tick leaves the fresh marker alone while counting its slot.
+        ticked = await admitter.admit_due(reserved, now=NOON + timedelta(minutes=1))
+        assert ticked.run_ids == (), "the held slot kept the occurrence from firing"
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert [marker.fire_id for marker in recorded.pending_fires] == ["live-1"]
 
     async def test_a_claimed_occurrence_is_reported_not_recreated(self, harness) -> None:
         """Two fires racing on the same identity produce one Run (#220, #1120).
