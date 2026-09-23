@@ -385,6 +385,21 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Evolve canonical Runs now record their durable execution owner at
+  admission (#51).** `run_canonical_evolution_cycle()` admitted its Run via
+  `RunStore.create_run()` without the standard `executor: "durable_graph"`
+  provenance marker every other canonical adapter (`canonical_dag_runner.py`,
+  `dag_agents.py`) stamps at admission, then passed the same un-marked
+  `provenance` dict to `run_durable_graph()` expecting it to backfill the
+  marker — but that function only applies its `provenance` argument when it
+  creates a brand-new Run itself (`run_store=None`); against a canonical
+  `run_store` it adopts the already-admitted Run as-is and silently ignores
+  the argument. Every Evolve Run therefore permanently lacked the marker,
+  making its executor unidentifiable to audit/history consumers inspecting
+  Run provenance. Fixed by setting `"executor": "durable_graph"` directly in
+  the provenance dict built before admission, matching the existing
+  convention.
+
 - **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
   predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
   keyword argument, with a default, when `Schedule.recovered_occurrences`
