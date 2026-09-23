@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import stores
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -112,17 +113,23 @@ async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
         return
 
     dag_data = stores.dags[dag_id]
-    try:
-        from services.graph_runner import execute_dag_streaming
+    from services.graph_runner import execute_dag_streaming, public_failure
 
-        async for event in execute_dag_streaming(dag_data, scope=scope):
+    from routes.dags import _record_run_projection
+
+    async def project(result: dict[str, Any]) -> None:
+        await _record_run_projection(dag_id=dag_id, user_id=scope.user_id, result=result)
+
+    try:
+        async for event in execute_dag_streaming(dag_data, scope=scope, on_result=project):
             await websocket.send_json(event)
             if event.get("status") in ("completed", "failed"):
                 break
     except WebSocketDisconnect:
         pass
     except Exception as exc:
-        await websocket.send_json({"status": "failed", "error": str(exc)})
+        logger.warning("dag_stream_failed dag_id=%s", dag_id, exc_info=exc)
+        await websocket.send_json({"status": "failed", "error": public_failure(exc)})
     finally:
         try:
             await websocket.close()
