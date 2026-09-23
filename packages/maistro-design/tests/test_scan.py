@@ -217,3 +217,130 @@ class TestScanDesignOutput:
         report = scan_design_output(output)
         assert not report.passed
         assert any(f.startswith("page.app.js:") for f in report.blocking_flags)
+
+
+class TestScanVisualArtifactMarkupVocabulary:
+    """The parser-based pre-scan speaks the renderer's vocabulary (#768/#817).
+
+    `scan_visual_artifact_markup` mirrors the frontend
+    visualArtifactRenderer allowlists (tags, attributes per namespace, CSS
+    properties) so the trust pre-scan classifies content with the same
+    reasons the browser boundary blocks in — and is a conservative superset:
+    values inside stripped attributes still yield `dangerous-url`, and any
+    construct the renderer removes is never recommended for upgrade.
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            pytest.param(
+                # Fixed-page poster template: typography, layout CSS, vector
+                # shape. Must survive the pre-scan unchanged (upgradeable).
+                '<article style="display:flex;min-height:360px;padding:32px;'
+                'background:linear-gradient(135deg,#14213d,#1f6f8b);color:#fff">'
+                "<h1>Make it memorable.</h1>"
+                '<svg width="180" height="180" viewBox="0 0 180 180" role="img" '
+                'aria-label="ring"><circle cx="90" cy="90" r="66" fill="none" '
+                'stroke="#b15b3e" stroke-width="20" stroke-dasharray="280 415" '
+                'transform="rotate(-90 90 90)"></circle><text x="90" y="98" '
+                'text-anchor="middle" font-size="28">68%</text></svg></article>',
+                id="poster-template",
+            ),
+            pytest.param(
+                '<div style="display:flex;gap:24px"><span style="font-size:12px;">'
+                "At a glance</span></div>",
+                id="layout-css",
+            ),
+            pytest.param(
+                # Escaped script TEXT renders as literal text in the browser;
+                # the renderer's DOM pass treats it as text, so must the
+                # pre-scan. (Raw `<script` is caught by scan_blocking_patterns.)
+                "&lt;script&gt;alert(1)&lt;/script&gt;",
+                id="escaped-script-text",
+            ),
+            pytest.param(
+                # Bare attributes exist in the DOM as empty strings (the
+                # browser drops an empty style declaration silently).
+                "<article title>safe</article>",
+                id="bare-attribute",
+            ),
+        ],
+    )
+    def test_safe_presentation_markup_has_no_reasons(self, markup: str):
+        from maistro_design.scan import scan_visual_artifact_markup
+
+        assert scan_visual_artifact_markup(markup) == ()
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        ("markup", "expected"),
+        [
+            # Full-document wrappers are active markup the renderer removes.
+            ("<html><body><p>x</p></body></html>", "active-element"),
+            ("<style>p{color:red}</style>", "active-element"),
+            # Namespaced attributes: SVG-only attribute on an HTML element.
+            ('<div fill="#fff">x</div>', "unsupported-attribute"),
+            # An attribute neither allowlist knows (src is never allowlisted).
+            ('<circle src="x"/>', "unsupported-attribute"),
+            # XML-namespace attributes (xlink:href) are never allowlisted.
+            (
+                '<svg><a xlink:href="javascript:alert(1)"><text>x</text></a></svg>',
+                "unsupported-attribute",
+            ),
+            # A dangerous scheme inside an attribute the renderer strips is
+            # still corpus evidence: it blocks the trust upgrade.
+            (
+                '<img src="data:text/html,<script>pwn()</script>">',
+                "dangerous-url",
+            ),
+            # Entity-encoded scheme in a dropped attribute.
+            ('<a href="jav&#x61;script:alert(1)">bad</a>', "dangerous-url"),
+            # CSS property outside the presentation allowlist.
+            ('<div style="behavior:url(#default#userdata)">x</div>', "unsupported-css-property"),
+            ('<p style="column-rule:1px solid">x</p>', "unsupported-css-property"),
+        ],
+    )
+    def test_hostile_constructs_carry_the_renderer_reason(self, markup: str, expected: str):
+        from maistro_design.scan import VISUAL_ARTIFACT_BLOCK_REASONS, scan_visual_artifact_markup
+
+        reasons = scan_visual_artifact_markup(markup)
+        assert expected in reasons
+        assert set(reasons) <= set(VISUAL_ARTIFACT_BLOCK_REASONS)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_reasons_are_reported_in_the_shared_vocabulary_order(self):
+        from maistro_design.scan import VISUAL_ARTIFACT_BLOCK_REASONS, scan_visual_artifact_markup
+
+        hostile = '<img src="data:text/html,x" onerror="pwn()"><div style="behavior:url(x)">x</div>'
+        reasons = scan_visual_artifact_markup(hostile)
+        order = {reason: index for index, reason in enumerate(VISUAL_ARTIFACT_BLOCK_REASONS)}
+        assert reasons == tuple(sorted(reasons, key=order.__getitem__))
+        assert "event-handler" in reasons
+        assert "dangerous-url" in reasons
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_trust_prescan_uses_the_same_vocabulary_as_the_renderer(self):
+        """#817: flagged renderer-hostile content is SKULL/banish, never upgrade."""
+        from maistro_design.trust import InMemoryTrustReviewQueue, scan_and_record
+
+        queue = InMemoryTrustReviewQueue()
+        tier = scan_and_record(
+            '<svg><foreignObject><img src="data:text/html,<script>pwn()</script>">'
+            '</foreignObject></svg><div style="background-image:url(//attacker.invalid)">x</div>',
+            source="visual_artifact",
+            source_key="cover",
+            record_id="visual-768",
+            review_queue=queue,
+        )
+
+        record = queue.all_records()[0]
+        assert tier.value == "skull"
+        assert record.warden_recommendation == "banish"
+        assert {"active-element", "dangerous-url", "css-network-or-code"} <= set(
+            record.warden_flags
+        )
