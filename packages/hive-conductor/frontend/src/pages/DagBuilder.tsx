@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import { useWorkspaces } from "../context/WorkspaceContext";
 import {
@@ -96,6 +97,13 @@ const btn = {
   border: "1.3px solid",
 };
 
+// Canonical Run statuses the run socket can end on that are not success.
+const RUN_FAILURE_LABELS: Record<string, string> = {
+  failed: "Failed",
+  cancelled: "Cancelled",
+  timed_out: "Timed out",
+};
+
 function nodePos(node: DAGNode): { x: number; y: number } {
   const cfg = node.config as Record<string, unknown>;
   const pos = cfg._pos as { x: number; y: number } | undefined;
@@ -148,7 +156,7 @@ export default function DagBuilder() {
   const [editPrompt, setEditPrompt] = useState("");
   const [editAgentId, setEditAgentId] = useState<string>("");
   const [addEdgeTarget, setAddEdgeTarget] = useState<string | null>(null);
-  const [execState, setExecState] = useState<{ running: boolean; nodeId: string | null; log: string[] }>({ running: false, nodeId: null, log: [] });
+  const [execState, setExecState] = useState<{ running: boolean; nodeId: string | null; runId: string | null; log: string[] }>({ running: false, nodeId: null, runId: null, log: [] });
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{ nodeId: string; offX: number; offY: number } | null>(null);
 
@@ -322,37 +330,57 @@ export default function DagBuilder() {
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProto}//${location.host}/v1/ws/dags/${dag.id}/run?workspace_id=${encodeURIComponent(activeWorkspaceId)}`;
     const ws = new WebSocket(wsUrl);
-    setExecState({ running: true, nodeId: null, log: ["Connecting..."] });
+    // Set once the socket reports a terminal or parked Run (or an error), so
+    // the close that follows is expected rather than a dropped connection.
+    let settled = false;
+    setExecState({ running: true, nodeId: null, runId: null, log: ["Connecting..."] });
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data.error) {
+        if (data.error && !data.status) {
+          settled = true;
           setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, `Error: ${data.error}`] }));
           return;
         }
-        if (data.status === "started") {
+        if (typeof data.run_id === "string" && data.run_id) {
+          const runId: string = data.run_id;
+          setExecState((prev) => (prev.runId === runId ? prev : { ...prev, runId, log: [...prev.log, `Run ${runId}`] }));
+        }
+        const status: string = data.status;
+        if (status === "started") {
           setExecState((prev) => ({ ...prev, log: [...prev.log, `Started (${data.node_count} nodes)`] }));
-        } else if (data.status === "node_complete") {
+        } else if (status === "node_complete") {
           setExecState((prev) => ({
             ...prev,
             nodeId: data.node_id,
             log: [...prev.log, `${data.role} (${data.node_id.slice(0, 8)}): ${data.success ? "OK" : "FAIL"}`],
           }));
-        } else if (data.status === "completed") {
+        } else if (status === "completed") {
+          settled = true;
           setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Completed in ${data.cycles} cycles`] }));
           toast("DAG execution completed");
-        } else if (data.status === "failed") {
-          setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, `Failed: ${data.error}`] }));
-          toast("DAG execution failed", "error");
+        } else if (status in RUN_FAILURE_LABELS) {
+          settled = true;
+          const label = RUN_FAILURE_LABELS[status];
+          setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, data.error ? `${label}: ${data.error}` : label] }));
+          toast(`DAG run ${label.toLowerCase()}`, "error");
+        } else if (status === "waiting" || status === "paused") {
+          settled = true;
+          setExecState((prev) => ({ ...prev, running: false, nodeId: null, log: [...prev.log, `Parked (${status}): the Run has not finished`] }));
+          toast(`DAG run ${status}`, "warn");
         }
       } catch { /* ignore parse errors */ }
     };
     ws.onerror = () => {
+      if (settled) return;
+      settled = true;
       setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, "Connection error"] }));
       toast("WebSocket error", "error");
     };
     ws.onclose = () => {
-      setExecState((prev) => prev.running ? { ...prev, running: false, log: [...prev.log, "Connection closed"] } : prev);
+      if (settled) return;
+      settled = true;
+      setExecState((prev) => ({ ...prev, running: false, log: [...prev.log, "Connection closed before the Run reported a final state"] }));
     };
   }, [activeWorkspaceId, dag, toast, workspacesReady]);
 
@@ -623,10 +651,13 @@ export default function DagBuilder() {
                     {execState.running ? "\u23F3 Running..." : "\u25B6 Run DAG"}
                   </button>
                   {execState.log.length > 0 && (
-                    <div style={{ position: "absolute", top: 38, right: 0, width: 320, maxHeight: 200, overflow: "auto", background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 4, padding: 6, zIndex: 10, fontFamily: "var(--mono)", fontSize: 12 }}>
+                    <div role="log" aria-label="DAG execution log" style={{ position: "absolute", top: 38, right: 0, width: 320, maxHeight: 200, overflow: "auto", background: "var(--paper)", border: "1px solid var(--rule)", borderRadius: 4, padding: 6, zIndex: 10, fontFamily: "var(--mono)", fontSize: 12 }}>
                       {execState.log.map((line, i) => (
-                        <div key={i} style={{ color: line.startsWith("Error") || line.startsWith("Failed") ? "var(--danger, #c4452a)" : "var(--ink)" }}>{line}</div>
+                        <div key={i} style={{ color: /^(Error|Failed|Cancelled|Timed out|Connection)/.test(line) ? "var(--danger, #c4452a)" : "var(--ink)" }}>{line}</div>
                       ))}
+                      {execState.runId && (
+                        <Link to={`/dag-runs?run=${encodeURIComponent(execState.runId)}`}>View in DAG Runs</Link>
+                      )}
                     </div>
                   )}
                   {dag.status !== "active" && (

@@ -385,6 +385,16 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The DAG Builder's Run button reports the canonical Run truthfully
+  (#53).**
+  The execution log now shows the canonical `run_id` the run socket already
+  sends, with a link to DAG Runs. A `waiting`/`paused` Run shows as parked
+  rather than "Connection closed"; `cancelled` and `timed_out` show as
+  non-success terminal states; a canonical `failed` frame reads "Failed"
+  instead of a bare "Error". "Connection closed" now appears only when the
+  socket closes before any terminal or parked frame. Presentation only: no
+  backend or lifecycle change.
+
 - **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
   predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
   keyword argument, with a default, when `Schedule.recovered_occurrences`
