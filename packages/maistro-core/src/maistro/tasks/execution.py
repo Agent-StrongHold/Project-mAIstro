@@ -36,16 +36,19 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from maistro.observability.correlation import bind_execution_context
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     AcceptedNodeOutcome,
     AttemptResult,
     NodeRun,
+    Run,
     RunStatus,
 )
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
+from maistro.tasks.admission import REQUEST_ID_KEY
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.agents.types import ConductorOutput
@@ -150,7 +153,7 @@ class TaskAttemptExecutor:
         evidence is accepted explicitly so the canonical Run derives from the
         NodeRun while keeping the task's product result shape.
         """
-        node_id = await self._node_id(run_id)
+        run, node_id = await self._run_and_node_id(run_id)
         existing = await self._node_run_for(run_id, node_id)
         captured: list[ConductorOutput] = []
 
@@ -162,32 +165,41 @@ class TaskAttemptExecutor:
             return attempt_result(output)
 
         context = {"run_id": run_id, "node_id": node_id}
-        if existing is None:
-            node_run, attempt = await self._service.execute_node(
-                run_id,
-                node_id,
-                request,
-                context,
-                executor=_run,
-                executor_id=TASK_EXECUTOR_ID,
-                timeout_s=self._timeout_s,
-                reconcile_logical=False,
-            )
-        else:
-            # A second execution of the same task is a second Attempt under the
-            # same logical NodeRun, not a second NodeRun. Creating another
-            # NodeRun would say the Run grew a node, which is false: the Graph
-            # has one, and it was tried twice.
-            attempt = await self._service.retry_node(
-                existing.node_run_id,
-                request,
-                context,
-                executor=_run,
-                executor_id=TASK_EXECUTOR_ID,
-                timeout_s=self._timeout_s,
-                reconcile_logical=False,
-            )
-            node_run = existing
+        # The worker runs this after the admitting request has ended, in its
+        # own context; the Run's persisted provenance is the only thing that
+        # carries that request's id across the boundary, so it is bound back
+        # here along with the Run's scope (#1063).
+        with bind_execution_context(
+            request_id=str(run.provenance.get(REQUEST_ID_KEY, "")),
+            workspace_id=run.workspace_id,
+            project_id=run.project_id,
+        ):
+            if existing is None:
+                node_run, attempt = await self._service.execute_node(
+                    run_id,
+                    node_id,
+                    request,
+                    context,
+                    executor=_run,
+                    executor_id=TASK_EXECUTOR_ID,
+                    timeout_s=self._timeout_s,
+                    reconcile_logical=False,
+                )
+            else:
+                # A second execution of the same task is a second Attempt under
+                # the same logical NodeRun, not a second NodeRun. Creating
+                # another NodeRun would say the Run grew a node, which is
+                # false: the Graph has one, and it was tried twice.
+                attempt = await self._service.retry_node(
+                    existing.node_run_id,
+                    request,
+                    context,
+                    executor=_run,
+                    executor_id=TASK_EXECUTOR_ID,
+                    timeout_s=self._timeout_s,
+                    reconcile_logical=False,
+                )
+                node_run = existing
         if not captured:  # pragma: no cover - unreachable: _run always fills it
             raise RunIntegrityError("task Attempt completed without capturing its output")
         output = captured[0]
@@ -210,7 +222,7 @@ class TaskAttemptExecutor:
         is what `TaskQueue.cancel` and the runner's refusal already do. This is
         the other half, for work that is already running somewhere.
         """
-        node_id = await self._node_id(run_id)
+        _, node_id = await self._run_and_node_id(run_id)
         node_run = await self._node_run_for(run_id, node_id)
         if node_run is None:
             return False
@@ -224,7 +236,7 @@ class TaskAttemptExecutor:
         await self._service.cancel_run(run_id)
         return True
 
-    async def _node_id(self, run_id: str) -> str:
+    async def _run_and_node_id(self, run_id: str) -> tuple[Run, str]:
         run = await self._runs.get_run(run_id)
         if run is None:
             raise RunIntegrityError(f"Run {run_id!r} does not exist")
@@ -233,7 +245,7 @@ class TaskAttemptExecutor:
             raise RunIntegrityError(
                 f"task Run {run_id!r} has {len(nodes)} Graph nodes; direct work admits exactly one"
             )
-        return nodes[0].node_id
+        return run, nodes[0].node_id
 
     async def _node_run_for(self, run_id: str, node_id: str) -> NodeRun | None:
         node_runs = [nr for nr in await self._runs.list_node_runs(run_id) if nr.node_id == node_id]
