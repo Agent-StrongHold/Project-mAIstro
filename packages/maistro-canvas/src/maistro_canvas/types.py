@@ -373,6 +373,19 @@ class JobAlreadyTerminalError(CanvasError):
     code = "JOB_ALREADY_TERMINAL"
 
 
+class JobLeaseLostError(CanvasError):
+    """A worker-owned completion write lost the race to lease reclamation.
+
+    Raised by ``CanvasStore.update_job`` when called with ``expected_leased_by``
+    and the row's current ``leased_by`` no longer matches: another worker
+    reclaimed the job (the original lease expired and was reaped) before this
+    worker's own completion write landed. The caller's result is stale and
+    must be discarded rather than persisted over the new holder's state.
+    """
+
+    code = "JOB_LEASE_LOST"
+
+
 class TextLayerNoGenError(CanvasError):
     code = "TEXT_LAYER_NO_GEN"
 
