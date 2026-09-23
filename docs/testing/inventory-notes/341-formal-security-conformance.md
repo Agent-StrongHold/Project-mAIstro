@@ -121,3 +121,39 @@ no closure keywords in PR body or branch commits. Residual: live GitHub CI
 status for PR 1452 remains UNVERIFIED (push prohibited); org rulesets still
 require 0 approvals — the in-repo mechanical control is the required
 formal-conformance job rejecting the co-change diff itself.
+
+Final independent pass at head `0a17390ce` (worktree clean at the exact lane
+SHA; driver check logs again covered only uv-sync/ruff/format, so every
+number below was executed in this pass): targeted
+`pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0` →
+**256 passed**; full required-CI equivalent `pytest formal/models/ -q
+--timeout=300 --hypothesis-seed=0` → **664 passed** against pgvector:pg18 on
+127.0.0.1:5432 after `alembic upgrade head`, with `maistro-evolve` installed
+as the workflow does (driver `uv sync` had removed it; CI-equivalent install
+restored). Mutation battery, all in a `/tmp` PYTHONPATH-shadowed copy of
+`maistro-core/src` (precedence proven via `patterns.__file__`/`microvm.__file__`;
+worktree untouched): 21-of-22 deletion retaining only `sudo\s+` → **193
+failed** on the exact required-CI command; rm-weakening `[/~]`→`/` → **6
+failed**; safe-prefix shadow short-circuit in `is_dangerous_command` → **128
+failed**; deny check removed from `MicroVMSandbox.exec` → **41 failed**. Gate
+(real script, scratch clone at this head): bootstrap vs base `8bb344e` →
+exit 0 (oracle absent at base); post-landing oracle-only change → exit 0;
+oracle+implementation co-change → **exit 1**; unresolvable base → **exit 2**
+(fails closed). `tests/test_check_formal_oracle_independence.py` → 3 passed;
+`uv run ruff check .` / `uv run ruff format --check .` clean.
+`formal/extractors`/`formal/generated` absent with zero references;
+ADR-072/ADR-073/SPEC-190 all exist in-tree; no closure keywords in the PR
+body or branch commits (sole regex hit is prose "closes the prior finding").
+Verifier commits 4696527..0a17390c touch only this notes file.
+
+Residuals (documented, not repaired — read-only review): (1) live GitHub CI
+status for PR 1452 remains UNVERIFIED (push prohibited). (2) Org rulesets
+require 0 approvals / no code-owner review / no last-push approval — outside
+repo control; the in-repo mechanical control is the required
+formal-conformance job, which rejects the co-change diff itself. (3) The gate
+executes the candidate checkout's copy of
+`scripts/check-formal-oracle-independence.py`; a candidate that rewrites the
+script's logic in the same PR as oracle+implementation changes could neuter
+it (visible in the diff, and script+oracle co-change alone is still exit 1),
+but CODEOWNERS does not name `/scripts/check-formal-oracle-independence.py`.
+Follow-up candidate for the CI-architecture epic (#160).
