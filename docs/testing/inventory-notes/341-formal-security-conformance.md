@@ -21,3 +21,14 @@ Mutation evidence (all fail `pytest formal/models/test_dangerous_tools.py`):
 weakening (6 failed), `sudo\s+` → `sudo\s+apt\s+install` narrowing (7 failed),
 removing the deny check from `MicroVMSandbox.exec` (41 failed), and a
 safe-prefix shadowing short-circuit in `is_dangerous_command` (54 failed).
+
+Independent re-verification (head `3f4be1b`, sandboxed mutations outside the
+worktree): suite 256/256 green; full required-CI equivalent
+`pytest formal/models/ -q --hypothesis-seed=0` → **664 passed** with
+pgvector:pg18 + `alembic upgrade head` + `maistro-evolve` installed. Mutations
+re-executed and all fail: rm-weakening → 6 failed, `sudo` narrowing → 7 failed,
+21-of-22 deletion → 189 failed, `MicroVMSandbox.exec` deny-check removal →
+41 failed, safe-prefix shadow → 110 failed (broader prefix set than the
+documented 54-case variant). `scripts/check-formal-oracle-independence.py`:
+bootstrap OK against the develop base (oracle absent there), exit 1 on a
+simulated later oracle+implementation co-change. `uv run ruff check .` clean.
