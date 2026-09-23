@@ -17,6 +17,7 @@ from models.persona_feedback import PersonaFeedback, Thumb
 from models.workspace import AgentToolBinding, Workspace, WorkspaceRole
 from pydantic import BaseModel, ConfigDict, Field
 from services.agent_materialization import delete_workspace_agents, materialize_workspace_agents
+from services.default_workspace import resolve_default_workspace
 from services.persona_authoring import (
     PersonaTemplateIdConflict,
     all_persona_templates,
@@ -24,6 +25,7 @@ from services.persona_authoring import (
 )
 from services.persona_feedback import PersonaFeedbackSummary, summarize
 from services.themes import THEME_CATALOG, ThemeOption, is_valid_theme_id
+from services.workspace_agent import persona_template_id, resolve_workspace_agent
 from services.workspace_authority import create_workspace as create_canonical_workspace
 from services.workspace_authority import delete_workspace as delete_canonical_workspace
 from services.workspace_authority import (
@@ -206,6 +208,24 @@ async def get_workspace(workspace_id: str, request: Request) -> Workspace:
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")
     return workspace
+
+
+class DefaultWorkspaceResponse(BaseModel):
+    workspace: Workspace
+    workspace_agent_id: str
+    persona_template_id: str
+
+
+@router.post("/default", response_model=DefaultWorkspaceResponse)
+async def ensure_default_workspace(request: Request) -> DefaultWorkspaceResponse:
+    """The caller's default Workspace and its Workspace Agent, created on first need (#1037)."""
+    workspace = await resolve_default_workspace(_user_id(request))
+    agent = await resolve_workspace_agent(workspace.id)
+    return DefaultWorkspaceResponse(
+        workspace=workspace,
+        workspace_agent_id=agent.id,
+        persona_template_id=persona_template_id(agent),
+    )
 
 
 class CreateWorkspaceBody(BaseModel):

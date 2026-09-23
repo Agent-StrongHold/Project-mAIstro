@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import stores
 from models.workspace import WorkspacePresentation
-from services import default_workspace, workspace_authority
+from services import default_workspace, workspace_agent, workspace_authority
 
 from maistro.workspaces.store import InMemoryWorkspaceStore
 
@@ -27,9 +27,12 @@ def canonical(monkeypatch: pytest.MonkeyPatch) -> InMemoryWorkspaceStore:
     monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: store)
     default_workspace.reset_for_tests()
     _drop_recovery_evidence()
+    agents_before = set(stores.agents.keys())
     yield store
     default_workspace.reset_for_tests()
     _drop_recovery_evidence()
+    for key in set(stores.agents.keys()) - agents_before:
+        stores.agents.pop(key, None)
 
 
 def _drop_recovery_evidence() -> None:
@@ -104,6 +107,32 @@ async def test_a_revoked_default_is_not_handed_back(canonical: InMemoryWorkspace
     assert await workspace_authority.member_role("alice", replacement.id) == "owner"
     assert not await workspace_authority.is_member("alice", first.id)
     assert await canonical.get(first.id) is not None
+
+
+def test_the_default_route_returns_one_owned_workspace_with_its_agent(admin_client) -> None:
+    first = admin_client.post("/v1/workspaces/default")
+    second = admin_client.post("/v1/workspaces/default")
+
+    assert first.status_code == second.status_code == 200
+    body = first.json()
+    workspace_id = body["workspace"]["id"]
+    assert second.json() == body
+    assert body["workspace_agent_id"] == workspace_agent.workspace_agent_id(workspace_id)
+    assert body["persona_template_id"] == "program_manager"
+    agent = stores.agents[body["workspace_agent_id"]]
+    assert agent.workspace_id == workspace_id
+    owners = [m for m in body["workspace"]["members"] if m["role"] == "owner"]
+    assert len(owners) == 1
+    assert admin_client.get(f"/v1/workspaces/{workspace_id}").status_code == 200
+
+
+def test_the_default_route_keeps_the_workspaces_write_gate(authed_client) -> None:
+    before = set(stores.agents.keys())
+
+    response = authed_client.post("/v1/workspaces/default")
+
+    assert response.status_code == 403
+    assert set(stores.agents.keys()) == before
 
 
 @pytest.mark.asyncio

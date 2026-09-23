@@ -80,6 +80,9 @@ exactly one wins. Each loser deletes the Workspace it created and adopts the
 winner's. If the caller's default has been deleted, or the caller is no
 longer a member of it, it is never revived or handed back. The next
 generation is claimed for a fresh Workspace. (`services/default_workspace.py`)
+`POST /v1/workspaces/default` returns the caller's default Workspace together
+with its Workspace Agent id and persona. It keeps the `workspaces.write` gate
+that every other `/v1/workspaces` mutation except plain creation carries.
 
 The following options were considered and not chosen: reusing an existing
 persona spawn as the Workspace Agent's identity, and refusing Workspace-less
@@ -97,7 +100,9 @@ turns.
   caller. Later and concurrent calls return the same Workspace. Another user
   gets their own. A lost durable claim converges on the winner and leaves no
   second Workspace. A deleted or revoked default is replaced, never
-  resurrected.
+  resurrected. `POST /v1/workspaces/default` returns the same Workspace and
+  Workspace Agent on repeat calls, and refuses a caller without
+  `workspaces.write` without writing anything.
 - AC-5: The roster gains only the Workspace Agents. It gains no demo rows and
   no duplicates.
 
