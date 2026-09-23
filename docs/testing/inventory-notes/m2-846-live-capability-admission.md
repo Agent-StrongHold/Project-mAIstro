@@ -76,3 +76,18 @@ review head — capabilities slice 161 passed, hive-conductor route/wiring slice
 `AllowAllGate` symbol exists under `packages/*/src`; route `_get_manager` never
 constructs a policy-less manager (`_configured_harness_policy` bounded deny).
 PR #1439 body carries no closure keywords (draft, "Refs #846" only).
+
+Independent verification pass 2 (auto-846, head 06128f06b): re-executed after
+the c52070363 evidence was rejected (worktree changed by that pass's own
+inventory commit). All checks re-run at the assigned head with a clean
+worktree: capabilities slice 161 passed, hive-conductor route/wiring slice 103
+passed, `ruff check .` clean, both `check-suite-inventory.py` gates OK
+(conductor 2662, core 10747), and `check_direct_effects.py` OK (45 sites, 2
+CANONICAL_INVOCATION — the governed harness start/send paths). Re-derived
+acceptance from the issue text: explicit route policy with no policy-less
+manager construction, fail-closed unconfigured/outage policy (audited
+`invocation.fail-closed`), sessions store only `provider_name`, repair actor
+holds only an Invocation-backed invoker, revoke/disable effective on live
+route+repair actors with zero provider calls asserted, no `AllowAllGate`
+symbol under `packages/*/src`. No closure keywords in PR #1439 body or commit
+messages. Only this note changed after the checks ran.
