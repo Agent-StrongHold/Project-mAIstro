@@ -38,15 +38,18 @@ should not be able to hold more of the conversation than the logical one.
 **A recording failure after the dispatch is not a licence to dispatch again
 (#1108).** Half the spine writes happen *after* the model has answered — the
 Attempt's COMPLETED transition, the NodeRun and Run reconciliation behind it —
-and a `RunIntegrityError` from any of them used to look, to the caller, exactly
-like one raised before the turn ever reached the model. The caller's fallback
+and a failure from any of them used to look, to the caller, exactly like one
+raised before the turn ever reached the model. The caller's fallback
 was a fresh dispatch, so a store hiccup while persisting an answer cost a second
 model call, a second set of agent side effects, and a second assistant message
 while the first answer's evidence sat on disk. `execute` now says which side of
 the dispatch the spine failed on: `ChatDispatchUnrecorded` carries the answer
 that already exists, so the caller can hand it back without asking again, and
 the durable Attempt is left exactly where the lease sweep and the reconciler
-read it.
+read it. That holds for *any* spine failure, not only `RunIntegrityError`: the
+PostgreSQL and SQLite stores wrap integrity violations and nothing else, so a
+dropped connection or a locked database arrives as the driver's own exception,
+and it is no less after the dispatch for being unwrapped.
 
 What it deliberately does not do is rewrite the Run's `agent_selection`
 provenance. That marker means "no agent was resolvable at *admission* time",
@@ -104,8 +107,8 @@ DEFAULT_CHAT_LEASE_TTL = timedelta(seconds=30)
 class ChatDispatchUnrecorded(RunIntegrityError):
     """The turn was answered, and the spine could not record that it was (#1108).
 
-    Raised in place of the underlying `RunIntegrityError` whenever that error
-    surfaced *after* the dispatch was awaited: the Attempt's COMPLETED write,
+    Raised in place of any spine failure — a `RunIntegrityError` or a raw
+    driver error alike — that surfaced *after* the dispatch was awaited: the Attempt's COMPLETED write,
     or the NodeRun/Run reconciliation that follows it. It carries the answer
     so the caller can return it without a second dispatch — the model already
     did the work, and the durable record is a recovery matter, not a reason
@@ -224,13 +227,15 @@ class ChatAttemptExecutor:
         re-raises it when recording the failure failed as well, because the
         dispatch's own exception is the one the endpoint maps to a status code.
 
-        A `RunIntegrityError` from the spine is re-raised as
-        `ChatDispatchUnrecorded` when it surfaced after the dispatch was
-        awaited (#1108), so a caller can tell a turn that never reached the
+        Any spine failure is re-raised as `ChatDispatchUnrecorded` when it
+        surfaced after the dispatch was awaited (#1108), so a caller can tell a turn that never reached the
         model from one whose answer exists and merely went unrecorded — and
         never asks the model again for the latter. Before the dispatch it is
         re-raised as it is: nothing physical happened, and the caller's own
-        rule for that case still applies.
+        rule for that case still applies. The same is true of the dispatch's
+        own exception when the spine recorded it: it is already the failure
+        the caller maps. `CancelledError` is a `BaseException` and passes
+        through untouched — cancellation is the Run fence's to reconcile.
         """
         node_id = await self._node_id(run_id)
         existing = await self._node_run_for(run_id, node_id)
@@ -266,15 +271,19 @@ class ChatAttemptExecutor:
                     executor_id=CHAT_EXECUTOR_ID,
                     timeout_s=self._timeout_s,
                 )
-        except RunIntegrityError as exc:
-            if not turn.started:
+        except Exception as exc:
+            if not turn.started or exc is turn.error:
                 raise
-            if turn.error is not None:
+            if isinstance(turn.error, Exception):
                 # The dispatch failed and then the spine could not record that
                 # it did. The failure the caller can act on is the dispatch's;
                 # the store's is chained behind it.
                 raise turn.error from exc
-            if turn.response is None:  # pragma: no cover - a dispatch returns or raises
+            if turn.response is None:
+                # The dispatch was cut off rather than failing on its own — a
+                # deadline cancelled it — so the runtime's exception is the
+                # outcome, and substituting the `CancelledError` the dispatch
+                # saw would disguise a timeout as a client disconnect.
                 raise
             raise ChatDispatchUnrecorded(run_id, response=turn.response) from exc
         if turn.response is None:  # pragma: no cover - unreachable: run always fills it
