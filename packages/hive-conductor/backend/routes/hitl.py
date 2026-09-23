@@ -113,7 +113,10 @@ def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthor
     principal comes from the verified session (`_request_user_id` reads the
     auth middleware's stamp), the membership check is the workspace
     authority's own, and the mutation lock is the same one membership
-    revocation takes. The store revalidates all of it inside its write.
+    revocation takes. The store revalidates all of it inside its write, and
+    the pending listing revalidates it per disclosed record — the snapshot of
+    Workspace ids this authorization carries is a candidate page, never the
+    disclosure decision.
     """
     return HitlAuthorization(
         effective_principal=_request_user_id(request),
@@ -232,6 +235,13 @@ async def list_pending_human_work(
     # prefix from hiding real human work within it (#1109). Both bounds are
     # load-bearing: the outer one is a security boundary, the inner one a
     # fairness one, and neither subsumes the other.
+    # The resolved Workspace-id set is a candidate page, not the disclosure
+    # decision: a membership revoked after `list_workspace_ids_for_user` but
+    # before a record's payload is read must not receive that payload, so each
+    # item-carrying record is revalidated against live canonical membership —
+    # the same discovery-mode predicate `list_hitl_due` applies for the expiry
+    # path, not a second, weaker check written here.
+    authorization = _hitl_authorization(request, allowed_workspace_ids)
     for workspace_id in sorted(allowed_workspace_ids):
         cursor: tuple[str, str] | None = None
         inspected = 0
@@ -253,7 +263,13 @@ async def list_pending_human_work(
                 break
             inspected += len(records)
             for record in records:
-                items.extend(_pending_items(record))
+                record_items = _pending_items(record)
+                # Recheck only records about to disclose a payload: a
+                # machine-only pause carries nothing a revocation could
+                # withhold, and the recheck costs one live membership read.
+                if record_items and not await authorization.permits(record.run.workspace_id):
+                    continue
+                items.extend(record_items)
             # Must be the store's own cursor spelling, not a bare isoformat:
             # `list_by_status` compares the cursor against a UTC-normalized key,
             # so a `created_at` printed at any other offset would order one way

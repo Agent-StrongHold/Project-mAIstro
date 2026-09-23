@@ -388,6 +388,38 @@ async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, m
         monkeypatch.undo()
 
 
+async def test_pending_rechecks_membership_before_disclosing_payload(seeded, monkeypatch) -> None:
+    """The pending queue's Workspace-id snapshot is not the disclosure decision.
+
+    A membership revoked after the route resolved the caller's Workspaces but
+    before a paused record's payload is read must not receive that payload:
+    each item-carrying record is revalidated against live canonical membership
+    immediately before disclosure, the same discovery-mode predicate
+    `list_hitl_due` applies for the expiry path. Removing that recheck fails
+    this test — the revoked payload would be disclosed and no recheck would
+    ever run.
+    """
+    client, store, seed = seeded
+    await seed("hitl-revoked-mid-list")
+
+    import routes.hitl as hitl_routes
+
+    rechecks: list[str] = []
+
+    async def revoked(_user_id: str, workspace_id: str) -> bool:
+        rechecks.append(workspace_id)
+        return False
+
+    monkeypatch.setattr(hitl_routes, "is_member", revoked)
+
+    body = client.get("/v1/hitl/pending").json()
+
+    assert [item for item in body if item["run_id"] == "hitl-revoked-mid-list"] == []
+    assert rechecks, "the per-record live membership recheck never ran"
+    record = await store.get("hitl-revoked-mid-list")
+    assert record is not None and record.run.status is RunStatus.PAUSED
+
+
 @pytest.fixture
 def blocked_answer_clients():
     """Two independently authenticated requesters for attribution coverage."""
