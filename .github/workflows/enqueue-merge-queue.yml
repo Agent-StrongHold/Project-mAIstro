@@ -9,19 +9,77 @@ on:
     workflows: ["Gates Ran"]
     types: [completed]
   workflow_dispatch:
+  # Starvation recovery: admission scans are event-driven today, so a quiet
+  # Gates Ran pipeline leaves admissible candidates unqueued indefinitely
+  # (observed 2026-09-13/14: 8h queue gap with 32 green heads). A periodic
+  # scan only re-runs the same fail-closed per-PR admission checks; it adds
+  # cadence, never eligibility.
+  schedule:
+    - cron: "*/30 * * * *"
 
 permissions:
+  # actions: read lists recent merge-group runs so a head that already failed
+  # inside the queue is quarantined instead of re-queued every scan.
+  actions: read
   checks: read
   contents: read
   pull-requests: read
   statuses: read
 
-concurrency:
-  group: enqueue-merge-queue
-  cancel-in-progress: false
-
 jobs:
+  published-gate:
+    # A PR or merge-group completion is relevant only if Gates Ran itself
+    # completed normally. The exact published status decides admission below.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       (github.event.workflow_run.event == 'pull_request' ||
+        github.event.workflow_run.event == 'merge_group'))
+    name: verify published gates-ran
+    runs-on: ubuntu-latest
+    outputs:
+      should_enqueue: ${{ steps.status.outputs.should_enqueue }}
+    steps:
+      - id: status
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            if (context.eventName === 'workflow_dispatch' ||
+                context.eventName === 'schedule') {
+              core.setOutput('should_enqueue', 'true');
+              return;
+            }
+
+            const sha = context.payload.workflow_run?.head_sha || '';
+            if (!/^[0-9a-f]{40}$/.test(sha)) {
+              core.warning(`Ignoring Gates Ran event with invalid head SHA: ${sha || '<empty>'}`);
+              core.setOutput('should_enqueue', 'false');
+              return;
+            }
+
+            const response = await github.rest.repos.listCommitStatusesForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: sha,
+              per_page: 100,
+            });
+            const statuses = response.data
+              .filter(status => status.context === 'gates-ran')
+              .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
+            const latest = statuses.at(-1);
+            const shouldEnqueue = latest?.state === 'success';
+            core.info(`gates-ran for ${sha}: ${latest?.state || 'missing'}`);
+            core.setOutput('should_enqueue', shouldEnqueue ? 'true' : 'false');
+
   enqueue:
+    needs: published-gate
+    if: needs.published-gate.outputs.should_enqueue == 'true'
+    # Only real admission scans contend. Ignored/pending events cannot cancel
+    # a scan that is already processing the certified candidate set.
+    concurrency:
+      group: enqueue-merge-queue
+      cancel-in-progress: true
     name: enqueue-merge-queue
     runs-on: ubuntu-latest
     timeout-minutes: 10

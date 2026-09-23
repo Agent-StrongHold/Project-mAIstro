@@ -87,7 +87,7 @@ CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
 # identity in the same form as check-reachability.py's tooling graph means the
 # dynamic load below is visible as a real edge instead of making live CI tooling
 # look unreachable merely because Python loads it from a filename.
-TRUSTED_ADAPTERS: dict[tuple[str, str], str] = {
+DELEGATED_ADAPTERS: dict[tuple[str, str], str] = {
     ("check-citation-status.py", "quality/citation-baseline.json"): (
         "check-citation-status-provenance"
     ),
@@ -349,8 +349,8 @@ def violations(
     seen = consumers(root)
     live_keys = {(c.script, c.ledger) for c in seen}
     candidate_authored = CANDIDATE_AUTHORED if candidate_authored is None else candidate_authored
-    candidate_adapters = TRUSTED_ADAPTERS if candidate_adapters is None else candidate_adapters
-    trusted_adapters = TRUSTED_ADAPTERS if trusted_adapters is None else trusted_adapters
+    candidate_adapters = DELEGATED_ADAPTERS if candidate_adapters is None else candidate_adapters
+    trusted_adapters = DELEGATED_ADAPTERS if trusted_adapters is None else trusted_adapters
     trusted_exceptions = CANDIDATE_AUTHORED if trusted_exceptions is None else trusted_exceptions
     checked_adapters: set[str] = set()
 
@@ -408,7 +408,7 @@ def run_delegated(
     live_keys = {(c.script, c.ledger) for c in consumers(root)}
     failures: list[str] = []
     seen_adapters: set[str] = set()
-    trusted_adapters = TRUSTED_ADAPTERS if trusted_adapters is None else trusted_adapters
+    trusted_adapters = DELEGATED_ADAPTERS if trusted_adapters is None else trusted_adapters
     if "ratchet_provenance" not in sys.modules:
         _load_module(SCRIPTS / "ratchet_provenance.py", "ratchet_provenance")
     for index, (key, adapter_name) in enumerate(sorted(trusted_adapters.items())):
@@ -440,6 +440,18 @@ def _source_mapping(source: str, name: str) -> object:
                 break
             return ast.literal_eval(statement.value)
     raise RatchetPolicyError(f"trusted inventory source has no literal {name} map")
+
+
+def _source_mapping_any(source: str, names: tuple[str, ...]) -> object:
+    """Read the first literal map found under any historical constant name."""
+    for name in names:
+        try:
+            return _source_mapping(source, name)
+        except RatchetPolicyError:
+            continue
+    raise RatchetPolicyError(
+        f"trusted inventory source has no literal map for any of: {', '.join(names)}"
+    )
 
 
 def _policy_mapping(value: object, *, label: str) -> dict[tuple[str, str], str]:
@@ -484,7 +496,9 @@ def _trusted_policy(
         if trusted_source_ref.text is None:
             raise RatchetPolicyError("trusted inventory source is absent")
         trusted_authored = _source_mapping(trusted_source_ref.text, "CANDIDATE_AUTHORED")
-        trusted_adapter_map = _source_mapping(trusted_source_ref.text, "TRUSTED_ADAPTERS")
+        trusted_adapter_map = _source_mapping_any(
+            trusted_source_ref.text, ("DELEGATED_ADAPTERS", "TRUSTED_ADAPTERS")
+        )
     else:
         if not isinstance(trusted_loaded, dict):
             raise RatchetPolicyError("trusted ratchet-provenance.json must be a JSON object")
