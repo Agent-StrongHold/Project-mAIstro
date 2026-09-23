@@ -256,7 +256,7 @@ export default function DesignStudio() {
                 }}
               >
                 <div style={{ fontFamily: "var(--hand)", fontSize: 14, fontWeight: 600 }}>{artifact.name}</div>
-                <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 4 }}>
+                <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                   {artifact.description}
                 </div>
               </button>
@@ -268,7 +268,7 @@ export default function DesignStudio() {
       <div className="card" style={{ marginBottom: 16, borderColor: catalogBorder }} aria-live="polite">
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
           <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>Design resources</div>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 9, textTransform: "uppercase" }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 12, textTransform: "uppercase" }}>
             {catalog.status}
           </div>
         </div>
@@ -278,7 +278,7 @@ export default function DesignStudio() {
         {catalog.skills.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }} aria-label="Available design skills">
             {catalog.skills.map((skill) => (
-              <span key={skill.slug} className="btn" style={{ fontSize: 9, padding: "2px 7px", cursor: "default" }}>
+              <span key={skill.slug} className="btn" style={{ fontSize: 12, padding: "2px 7px", cursor: "default" }}>
                 {skill.name}
               </span>
             ))}
@@ -294,7 +294,7 @@ export default function DesignStudio() {
           {mode.description}
         </div>
         {mode.note && (
-          <div role="status" style={{ fontFamily: "var(--mono)", fontSize: 9, marginBottom: 10 }}>
+          <div role="status" style={{ fontFamily: "var(--mono)", fontSize: 12, marginBottom: 10 }}>
             {mode.note}
           </div>
         )}
@@ -338,7 +338,7 @@ export default function DesignStudio() {
           >
             {selectedMode === "deck" ? "Open Deck editor" : "Generate visual"}
           </button>
-          <span id="design-execution-state" style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)" }}>
+          <span id="design-execution-state" style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>
             Visual generation is not available yet. Nothing is submitted or simulated while this control is disabled.
           </span>
         </div>
@@ -378,11 +378,11 @@ export default function DesignStudio() {
             <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, textTransform: "uppercase", color: "var(--accent)" }}>
                   {step.state}
                 </span>
               </div>
-              <div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>
+              <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 3 }}>
                 {step.detail}
               </div>
             </div>

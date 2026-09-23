@@ -56,7 +56,6 @@
         "docs/adr/ADR-082926-d0dc-save-as-template-records-its-source-object.md [behavioral]",
         "docs/adr/ADR-090726-9a4e-crypto-bound-approvals-hybrid-webauthn-biscuit-hash-chain.md [behavioral]",
         "docs/adr/ADR-097-lifecycle-status-machine.md [boundary]",
-        "docs/adr/ADR-099-builders-pipeline-graph.md [behavioral]",
         "docs/specs/SPEC-062126-5d56-memory-dynamics-decay-consolidation.md [behavioral]",
         "docs/specs/SPEC-062126-6a31-memory-exposure-mode-enforcement.md [behavioral]",
         "docs/specs/SPEC-062126-6a31-memory-exposure-mode-enforcement.md [boundary]",

@@ -50,7 +50,7 @@ owners:
 
 # SPEC-081226-9944: Canonical Product Hierarchy and Ownership
 
-- **Status:** Active
+- **Status:** AC Defined
 - **Date:** 2026-08-14 revision
 - **ADR:** `ADR-081226-9944`
 

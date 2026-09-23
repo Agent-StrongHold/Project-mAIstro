@@ -13,6 +13,7 @@ from maistro.runs import (
     AttemptStatus,
     InMemoryRunStore,
     RunExecutionService,
+    RunIntegrityError,
     RunStatus,
 )
 from maistro.runs.execution import ExecutionYielded
@@ -586,6 +587,56 @@ async def test_cancelling_the_claiming_task_stops_the_runtime_task() -> None:
 @pytest.mark.asyncio
 async def test_cancel_registered_reports_no_owner_for_an_unknown_attempt() -> None:
     assert await AttemptExecutionService.cancel_registered("attempt-unknown") is False
+
+
+@pytest.mark.asyncio
+async def test_a_launch_refused_by_the_store_settles_the_attempt_as_cancelled() -> None:
+    """A store that refuses the RUNNING write leaves an Attempt that never ran.
+
+    The generic failure path used to ask for FAILED, which the lifecycle forbids
+    from CREATED, so `InvalidLifecycleTransition` masked the refusal the caller
+    needed to see. Nothing ran, so the truthful terminal state is CANCELLED with
+    the refusal as its error; the refusal itself still propagates, and the
+    NodeRun parks for a retry decision exactly as a FAILED Attempt would.
+    """
+    store, run_id, node_run_id = await _node_run()
+    executed = False
+
+    class _RefusesLaunch:
+        def __init__(self, inner: InMemoryRunStore) -> None:
+            self._inner = inner
+            self._refused = False
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def transition_attempt(self, attempt_id: str, target: Any, **kwargs: Any) -> Any:
+            if target is AttemptStatus.RUNNING and not self._refused:
+                self._refused = True
+                raise RunIntegrityError("launch refused")
+            return await self._inner.transition_attempt(attempt_id, target, **kwargs)
+
+    service = AttemptExecutionService(
+        store=_RefusesLaunch(store),  # type: ignore[arg-type]
+        runtime=PythonExecutionRuntime(),
+    )
+
+    async def executor(_work: Any, _context: Any) -> None:
+        nonlocal executed
+        executed = True
+
+    with pytest.raises(RunIntegrityError, match="launch refused"):
+        await service.execute(node_run_id, None, None, executor=executor)
+
+    assert executed is False
+    attempts = await store.list_attempts(node_run_id)
+    assert attempts[-1].status is AttemptStatus.CANCELLED
+    assert attempts[-1].error == "launch refused"
+
+    node_run = await store.get_node_run(node_run_id)
+    run = await store.get_run(run_id)
+    assert node_run is not None and node_run.status is RunStatus.WAITING
+    assert run is not None and run.status is RunStatus.WAITING
 
 
 @pytest.mark.asyncio
