@@ -364,11 +364,13 @@ or placeholder-only section.
 ### Changed
 
 - **A declared correlation field must have a production producer (#63).** A
-  fitness test scans `packages/*/src` and `hive-conductor/backend` for
-  `bind_execution_context(...)` keywords and fails when a `FIELD_NAMES` entry
-  is bound nowhere, so a field that is declared but never emitted cannot come
-  back. `invocation_id` and `session_id` have no producer yet and sit on a
-  reviewed allowlist that names the owning #63 slice. The test also fails once
+  fitness test scans production code (`packages/*/src` and the hive, turing
+  and canvas backends) for `bind_execution_context(...)` keywords. It fails
+  when no production call binds a `FIELD_NAMES` entry into the execution
+  context that log lines, spans and events read, so a newly declared field
+  cannot ship without a producer. Nothing binds `invocation_id` or
+  `session_id` into that context yet. Both sit on a reviewed allowlist that
+  names the owning #63 slice. The test also fails once
   an allowlisted field gains a producer, which keeps the allowlist from going
   stale.
 

@@ -35,14 +35,25 @@ def _repo_root() -> Path:
     raise AssertionError("could not locate the repository root from the test file")
 
 
+#: Production trees outside the `packages/*/src` layout.
+_EXTRA_ROOTS = (
+    "hive-conductor/backend",
+    "maistro-turing/backend",
+    "maistro-canvas/frontend/server",
+)
+
+#: Path parts that mark test support rather than a production path.
+_NOT_PRODUCTION = frozenset({"tests", "testing"})
+
+
 def _production_files() -> list[Path]:
     packages = _repo_root() / "packages"
-    roots = [*sorted(packages.glob("*/src")), packages / "hive-conductor" / "backend"]
+    roots = [*sorted(packages.glob("*/src")), *(packages / extra for extra in _EXTRA_ROOTS)]
     return sorted(
         path
         for root in roots
         for path in root.rglob("*.py")
-        if "tests" not in path.relative_to(root).parts
+        if _NOT_PRODUCTION.isdisjoint(path.relative_to(root).parts)
     )
 
 
@@ -82,6 +93,15 @@ def _unproduced(declared: Iterable[str], produced: set[str]) -> list[str]:
     ]
 
 
+def _assert_every_declared_field_is_produced(produced: set[str]) -> None:
+    missing = _unproduced(correlation.FIELD_NAMES, produced)
+    assert missing == [], (
+        f"declared correlation fields no production code binds: {missing}. "
+        f"Bind them via {_BINDER}(...) on the real path, or add a reviewed "
+        "allowlist entry naming the owning slice/issue."
+    )
+
+
 @pytest.fixture(scope="module")
 def produced() -> set[str]:
     return _produced_fields(_production_files())
@@ -89,12 +109,7 @@ def produced() -> set[str]:
 
 class TestEveryDeclaredFieldHasAProducer:
     def test_every_declared_field_is_bound_in_production(self, produced: set[str]) -> None:
-        missing = _unproduced(correlation.FIELD_NAMES, produced)
-        assert missing == [], (
-            f"declared correlation fields no production code binds: {missing}. "
-            f"Bind them via {_BINDER}(...) on the real path, or add a reviewed "
-            "allowlist entry naming the owning slice/issue."
-        )
+        _assert_every_declared_field_is_produced(produced)
 
     def test_the_allowlist_names_only_fields_still_without_a_producer(
         self, produced: set[str]
@@ -114,7 +129,8 @@ class TestEveryDeclaredFieldHasAProducer:
         self, produced: set[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(correlation, "FIELD_NAMES", (*correlation.FIELD_NAMES, "planted_id"))
-        assert _unproduced(correlation.FIELD_NAMES, produced) == ["planted_id"]
+        with pytest.raises(AssertionError, match=r"\['planted_id'\]"):
+            _assert_every_declared_field_is_produced(produced)
 
 
 class TestTheScan:
@@ -126,8 +142,9 @@ class TestTheScan:
             "packages/maistro-core/src/maistro/observability/middleware.py",
             "packages/maistro-core/src/maistro/runs/execution.py",
             "packages/hive-conductor/backend/services/scheduler.py",
+            "packages/maistro-turing/backend/main.py",
         } <= scanned
-        assert not any("/tests/" in path for path in scanned)
+        assert not any("/tests/" in path or "/testing/" in path for path in scanned)
 
     def test_a_qualified_and_a_bare_call_are_both_read(self) -> None:
         source = (
