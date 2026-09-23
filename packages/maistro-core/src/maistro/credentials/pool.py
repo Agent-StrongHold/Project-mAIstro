@@ -87,6 +87,31 @@ class CredentialPool:
         self._entries = [e for e in self._entries if e.key_id != key_id]
         return len(self._entries) < before
 
+    def upsert(self, record: CredentialRecord) -> None:
+        """Register ``record``, or refresh it in place if its key id is known.
+
+        A first registration behaves exactly like :meth:`add`. Re-registering
+        an already-known ``key_id`` updates only its identity/secret fields
+        (``api_key``, ``provider``, ``priority``) and leaves every
+        outcome-driven health field -- ``blocked``, ``cooldown_until``,
+        ``error_count``, ``last_status``, ``last_error_code``, ``use_count``,
+        ``last_used_at`` -- untouched. Re-registration is how an operator
+        refreshes a rotated secret or replays unchanged configuration on
+        restart; it must not also discard the cooldown/blocking state
+        :meth:`record_failure` just set for that same credential, or a
+        benign re-register immediately retries a credential the pool just
+        decided to back off from.
+        """
+
+        existing = self._find(record.key_id)
+        if existing is None:
+            self.add(record)
+            return
+        existing.api_key = record.api_key
+        existing.provider = record.provider
+        existing.priority = record.priority
+        self._entries.sort(key=lambda e: e.priority)
+
     def _available(self, allowed_key_ids: frozenset[str] | None = None) -> list[CredentialRecord]:
         """Available entries, optionally restricted to an authorized subset.
 

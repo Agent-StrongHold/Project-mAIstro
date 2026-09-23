@@ -11,10 +11,12 @@ from __future__ import annotations
 import contextlib
 import logging
 import queue
+import random
 import shutil
 import sqlite3
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,12 +74,44 @@ class State:
         self._writer_thread: threading.Thread | None = None
         self._shutdown = threading.Event()
 
+    @staticmethod
+    def _retry_on_locked(fn: Callable[[], object], *, attempts: int = 5) -> None:
+        """Retry `fn` a bounded number of times on a transient sqlite3
+        "database is locked" error, with a short jittered backoff.
+
+        `busy_timeout` covers ordinary write-lock contention, but SQLite's
+        first-time WAL-file creation handshake between two processes opening
+        the same brand-new database together is not reliably covered by it.
+        Anything other than "locked" is a real failure and is not retried.
+        """
+        for attempt in range(attempts):
+            try:
+                fn()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt == attempts - 1:
+                    raise
+                time.sleep(0.05 * (attempt + 1) + random.uniform(0, 0.05))  # nosec B311
+
     def open_writer(self) -> sqlite3.Connection:
         with self._lifecycle_lock:
             if self._writer_open:
                 raise RuntimeError("open_writer may be called exactly once")
             conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
+            # Before anything else: cross-process writers (e.g. two Hive
+            # processes starting for the first time against a freshly-upgraded
+            # DB, #1528) otherwise get an immediate "database is locked" the
+            # instant one of them holds the write lock, instead of a bounded
+            # wait for it to be released.
+            conn.execute("PRAGMA busy_timeout = 5000")
+            # The journal-mode switch itself is the one statement observed to
+            # still raise "database is locked" immediately, even with
+            # busy_timeout set, when two processes open the same brand-new
+            # file for the first time together: SQLite's own WAL-file-creation
+            # handshake is not always covered by the ordinary busy handler.
+            # Retry it a bounded number of times rather than let a first-boot
+            # coincidence fail the whole process (#1528).
+            self._retry_on_locked(lambda: conn.execute("PRAGMA journal_mode=WAL"))
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT)"
             )
@@ -221,6 +255,21 @@ class State:
         # though MigrationFailedError states the database is unchanged. The
         # existence check is inside the lock as well, so two callers racing the
         # same migration cannot both pass it.
+        #
+        # `_writer_lock` is process-local, though (a plain `threading.Lock`),
+        # so it only serializes callers inside this process. Two independent
+        # processes can both pass the existence check above before either has
+        # committed — each has its own `State`/connection — and then race the
+        # same DDL (#1528). Whichever loses fails either on SQLite's own
+        # cross-process write lock (if it arrives while the winner still holds
+        # it — `busy_timeout` above bounds that wait instead of raising
+        # immediately) or on the `schema_migrations.name` PRIMARY KEY once the
+        # winner has committed. Every statement in a migration's `up` is
+        # required to be idempotent (`IF NOT EXISTS` / `OR IGNORE`) precisely
+        # so that losing this race is harmless: after rolling back our own
+        # attempt, re-check whether the name is now present. If it is, the
+        # winner's identical DDL already applied, so this loss is a no-op —
+        # proceed instead of failing this process's startup.
         with self._writer_lock:
             existing = self._writer.execute(
                 "SELECT 1 FROM schema_migrations WHERE name = ?", (name,)
@@ -243,6 +292,17 @@ class State:
             except Exception as e:
                 self._writer.execute("ROLLBACK TO migration")
                 self._writer.execute("RELEASE migration")
+                winner = self._writer.execute(
+                    "SELECT 1 FROM schema_migrations WHERE name = ?", (name,)
+                ).fetchone()
+                if winner:
+                    logger.info(
+                        "migration %r lost a cross-process race but is already "
+                        "applied by the winner; proceeding (%s)",
+                        name,
+                        e,
+                    )
+                    return
                 raise MigrationFailedError(f"MIGRATION_FAILED: {name}: {e}") from None
 
     def close(self, timeout: float = 5.0) -> None:
@@ -338,6 +398,42 @@ _KV_MIGRATION = (
     "updated_at TEXT NOT NULL, PRIMARY KEY (store_name, key))"
 )
 
+# A durable uniqueness boundary for model fields. The KV row remains the
+# canonical record; this table only makes a uniqueness claim transactional.
+_UNIQUE_FIELDS_MIGRATION = (
+    "CREATE TABLE IF NOT EXISTS unique_fields "
+    "(store_name TEXT NOT NULL, field_name TEXT NOT NULL, "
+    "normalized_value TEXT NOT NULL, record_key TEXT NOT NULL, "
+    "PRIMARY KEY (store_name, field_name, normalized_value));"
+    "CREATE UNIQUE INDEX IF NOT EXISTS unique_fields_record "
+    "ON unique_fields (store_name, field_name, record_key);"
+    "INSERT OR IGNORE INTO unique_fields "
+    "(store_name, field_name, normalized_value, record_key) "
+    "SELECT 'users', 'username', lower(json_extract(value, '$.username')), key "
+    "FROM kv_store WHERE store_name = 'users' "
+    "AND json_extract(value, '$.username') IS NOT NULL"
+)
+
+# A genuine SQL-level uniqueness boundary on the row every writer actually
+# inserts into, old code path or new (#1528 Codex review finding 4).
+# `unique_fields` above only stops a writer that knows to consult it; during
+# a rolling upgrade, a still-running pre-#1248 process registers users
+# through the generic `PersistedStore.put()` path, which writes straight to
+# `kv_store` and has never heard of `unique_fields`. A new-version process
+# checking only `unique_fields` for availability cannot see that write and
+# can claim + insert a second row for the same username. This index lives on
+# `kv_store` itself, so it applies to that write too, regardless of which
+# code version made it.
+#
+# `lower(...)` matches the case-insensitive comparison `unique_fields` and
+# `ModelStore` already use. The partial WHERE keeps every other store's rows,
+# and `users` rows before a username exists, out of the index entirely.
+_KV_USERS_USERNAME_UNIQUE_MIGRATION = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS kv_store_users_username_unique "
+    "ON kv_store (lower(json_extract(value, '$.username'))) "
+    "WHERE store_name = 'users' AND json_extract(value, '$.username') IS NOT NULL"
+)
+
 
 class PersistedStore:
     """Dict-like persistence for Pydantic models over SQLite via State.
@@ -354,6 +450,79 @@ class PersistedStore:
         if not self._state._writer_open:
             self._state.open_writer()
         self._state.run_migration("kv_store_001", _KV_MIGRATION)
+        self._state.run_migration("kv_unique_fields_001", _UNIQUE_FIELDS_MIGRATION)
+        self._warn_about_unclaimed_duplicate_usernames()
+        self._enforce_username_uniqueness_at_db_boundary()
+
+    def _warn_about_unclaimed_duplicate_usernames(self) -> None:
+        """Surface pre-existing duplicate usernames the backfill couldn't claim.
+
+        `kv_unique_fields_001`'s `INSERT OR IGNORE` claims a `unique_fields`
+        row for only the first `users` record it sees per normalized
+        username; every other pre-existing record sharing that username (only
+        possible from before this PR, since `put_model_unique` prevents new
+        ones) is left active in `kv_store` with no claim of its own (#1528
+        Codex review finding 2). A later update or password rehash of one of
+        those records goes through `put_model_unique`, finds the claim owned
+        by a different key, and fails — and login may still resolve
+        nondeterministically to either duplicate identity until an operator
+        picks a winner (rename or remove the loser). This is read-only and
+        runs on every `initialize()`, not just when the migration first
+        applies, so the warning does not go away on its own — only resolving
+        the duplicates does.
+        """
+        reader = self._state.open_reader()
+        try:
+            rows = reader.execute(
+                "SELECT k.key, json_extract(k.value, '$.username') "
+                "FROM kv_store k "
+                "WHERE k.store_name = 'users' "
+                "AND json_extract(k.value, '$.username') IS NOT NULL "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM unique_fields u "
+                "  WHERE u.store_name = 'users' AND u.field_name = 'username' "
+                "  AND u.record_key = k.key"
+                ")"
+            ).fetchall()
+        finally:
+            reader.close()
+        if rows:
+            logger.warning(
+                "%d 'users' record(s) hold a duplicate username with no durable "
+                "uniqueness claim (pre-existing data from before this fix); "
+                "username uniqueness is not enforced for these records and login "
+                "may resolve to either one. Resolve manually (rename or remove "
+                "the duplicate) — affected record keys: %s",
+                len(rows),
+                [row[0] for row in rows],
+            )
+
+    def _enforce_username_uniqueness_at_db_boundary(self) -> None:
+        """Best-effort: apply the DB-level index that closes the
+        mixed-version-writer gap (#1528 Codex review finding 4).
+
+        SQLite refuses to create a UNIQUE index over data that already
+        violates it — exactly the case where legacy duplicate usernames are
+        still present (see `_warn_about_unclaimed_duplicate_usernames`
+        above). Best-effort rather than fatal: an operator who has not yet
+        resolved those duplicates should still be able to start the hive
+        with the weaker, application-level-only enforcement it already had,
+        not be locked out entirely by a stricter guarantee this PR adds. The
+        migration is retried on every `initialize()` and will succeed,
+        silently closing the gap, the moment the duplicates are gone.
+        """
+        try:
+            self._state.run_migration(
+                "kv_users_username_unique_001", _KV_USERS_USERNAME_UNIQUE_MIGRATION
+            )
+        except MigrationFailedError as exc:
+            logger.warning(
+                "could not create the database-level username-uniqueness index "
+                "(likely the legacy duplicate usernames reported above); "
+                "username uniqueness is enforced only at the application level "
+                "until those are resolved and the hive is restarted: %s",
+                exc,
+            )
 
     def put(self, store_name: str, key: str, model: BaseModel) -> None:
         """Upsert `model`, blocking until the writer commits it (#1238).
@@ -376,6 +545,126 @@ class PersistedStore:
 
         self._state.submit_sync(_upsert)
 
+    def put_model_unique(
+        self,
+        store_name: str,
+        key: str,
+        model: BaseModel,
+        unique_fields: tuple[str, ...],
+        *,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Upsert a model while preserving its durable uniqueness claims.
+
+        Existing records may be updated under the same key, but a claim held
+        by another record rejects the whole transaction. This keeps ordinary
+        user updates from losing the username claim created at registration.
+        """
+        data = model.model_dump_json()
+        now = datetime.now(UTC).isoformat()
+        completed = threading.Event()
+        inserted: list[bool] = []
+        errors: list[Exception] = []
+
+        def _upsert(conn: sqlite3.Connection) -> None:
+            try:
+                for field_name in unique_fields:
+                    value = str(getattr(model, field_name)).casefold()
+                    existing = conn.execute(
+                        "SELECT record_key FROM unique_fields "
+                        "WHERE store_name = ? AND field_name = ? AND normalized_value = ?",
+                        (store_name, field_name, value),
+                    ).fetchone()
+                    if existing is not None and existing[0] != key:
+                        inserted.append(False)
+                        return
+                conn.execute(
+                    "DELETE FROM unique_fields WHERE store_name = ? AND record_key = ?",
+                    (store_name, key),
+                )
+                for field_name in unique_fields:
+                    value = str(getattr(model, field_name)).casefold()
+                    conn.execute(
+                        "INSERT INTO unique_fields "
+                        "(store_name, field_name, normalized_value, record_key) "
+                        "VALUES (?, ?, ?, ?)",
+                        (store_name, field_name, value, key),
+                    )
+                conn.execute(
+                    "INSERT INTO kv_store (store_name, key, value, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(store_name, key) DO UPDATE "
+                    "SET value = excluded.value, updated_at = excluded.updated_at",
+                    (store_name, key, data, now),
+                )
+                conn.commit()
+                inserted.append(True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_upsert)
+        if not completed.wait(timeout=timeout):
+            raise TimeoutError("timed out waiting for unique model write")
+        if errors:
+            raise RuntimeError("unique model write failed") from errors[0]
+        return inserted == [True]
+
+    def put_model_if_unique(
+        self,
+        store_name: str,
+        key: str,
+        model: BaseModel,
+        field_name: str,
+        *,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Insert a model only if its field claim is still available.
+
+        The claim and model row commit together, so two independent process
+        writers cannot both publish UUID-keyed records for one field value.
+        """
+        data = model.model_dump_json()
+        now = datetime.now(UTC).isoformat()
+        value = str(getattr(model, field_name)).casefold()
+        completed = threading.Event()
+        inserted: list[bool] = []
+        errors: list[Exception] = []
+
+        def _insert_once(conn: sqlite3.Connection) -> None:
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO unique_fields "
+                    "(store_name, field_name, normalized_value, record_key) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                    (store_name, field_name, value, key),
+                )
+                if cursor.rowcount != 1:
+                    inserted.append(False)
+                    return
+                conn.execute(
+                    "INSERT INTO kv_store (store_name, key, value, updated_at) VALUES (?, ?, ?, ?)",
+                    (store_name, key, data, now),
+                )
+                conn.commit()
+                inserted.append(True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_insert_once)
+        if not completed.wait(timeout=timeout):
+            raise TimeoutError("timed out waiting for unique model insert")
+        if errors:
+            raise RuntimeError("unique model insert failed") from errors[0]
+        return inserted == [True]
+
     def get(self, store_name: str, key: str, model_class: type[T]) -> T | None:
         reader = self._state.open_reader()
         try:
@@ -397,6 +686,10 @@ class PersistedStore:
         """
 
         def _delete(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "DELETE FROM unique_fields WHERE store_name = ? AND record_key = ?",
+                (store_name, key),
+            )
             conn.execute(
                 "DELETE FROM kv_store WHERE store_name = ? AND key = ?",
                 (store_name, key),

@@ -1,10 +1,14 @@
-"""Durable persistence adapters for canonical capability Invocations.
+"""Durable persistence adapter for canonical capability Invocations (SQLite).
 
 This is the SQLite durable adapter for the canonical capability Invocation
 lifecycle. It is distinct from ``maistro.events.invocations.SqliteInvocationStore``,
 which stores handler invocations for the event subsystem. The container selects
 this store for SQLite-backed capability effects; PostgreSQL uses
-``maistro.capabilities.pg_invocation_store.PgInvocationStore``.
+``maistro.capabilities.pg_invocation_store.PgInvocationStore`` -- the only
+``PgInvocationStore`` for this table. An earlier duplicate lived here too, but
+its columns (``payload_json``, a ``datetime`` timestamp) never matched Alembic
+revision 035's actual DDL (``payload`` JSONB, ``created_at`` a float) and
+nothing in production wired it -- removed rather than fixed (#1079 Finding 3).
 
 The schema is also represented by Alembic revision 034. ``ensure_schema`` keeps
 fresh SQLite databases and existing local databases compatible while the
