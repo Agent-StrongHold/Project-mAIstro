@@ -95,6 +95,10 @@ class Schedule(BaseModel):
 
     id: str
     user_id: str = ""
+    # The canonical scope the create route authorized (#1201). Empty on rows
+    # that predate it, which no principal can see or fire.
+    workspace_id: str = ""
+    project_id: str = ""
     name: str
     description: str
     cron_expression: str

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -23,6 +24,18 @@ if TYPE_CHECKING:
     from fastapi import APIRouter
 
     from maistro_canvas.protocols import CompositorService
+
+logger = logging.getLogger("maistro.canvas.composition")
+
+_DEFAULT_SHUTDOWN_GRACE_SECONDS = 10.0
+"""How long ``stop_runner`` waits for an in-flight ``tick_once`` to finish on
+its own before cancelling it outright. ``CanvasJobRunner.stop()`` only flips
+the poll-loop flag; it cannot interrupt a `tick_once` blocked inside a
+provider call, so an unbounded ``await`` here would let a stalled provider
+block FastAPI shutdown indefinitely. Bounded well under typical graceful
+shutdown windows (Uvicorn/K8s default to ~30s) so the process still exits in
+time even when the bound is hit.
+"""
 
 
 class CanvasModelRegistry(Protocol):
@@ -151,13 +164,25 @@ def build_canvas_router(
     return make_canvas_router(runtime=runtime, compositor=compositor)
 
 
-def bind_canvas_runner_lifecycle(*, router: APIRouter, runtime: CanvasRuntime) -> None:
+def bind_canvas_runner_lifecycle(
+    *,
+    router: APIRouter,
+    runtime: CanvasRuntime,
+    shutdown_timeout: float = _DEFAULT_SHUTDOWN_GRACE_SECONDS,
+) -> None:
     """Tie one Canvas worker to the FastAPI application's lifecycle.
 
     ``APIRouter`` copies startup/shutdown handlers when mounted, keeping the
     worker on the same production boundary as canonical Run admission. This
     binds lifecycle ownership only; queue claims and execution authority stay
     with ``CanvasJobRunner`` and the canonical Run adapter.
+
+    ``stop_runner`` gives the poll loop ``shutdown_timeout`` seconds to notice
+    ``stop()`` and return on its own — enough for an idle loop's next
+    ``poll_interval`` sleep to elapse — before cancelling the task outright.
+    ``stop()`` alone cannot interrupt a `tick_once` blocked inside a
+    provider call, so without this bound a stalled provider would block
+    application shutdown indefinitely.
     """
 
     task: asyncio.Task[None] | None = None
@@ -173,8 +198,18 @@ def bind_canvas_runner_lifecycle(*, router: APIRouter, runtime: CanvasRuntime) -
         runtime.runner.stop()
         if task is None:
             return
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        try:
+            await asyncio.wait_for(task, timeout=shutdown_timeout)
+        except TimeoutError:
+            # wait_for already cancelled the task and awaited its
+            # cancellation before raising; this just clears the
+            # CancelledError it leaves behind on the task itself.
+            logger.warning(
+                "canvas_runner_shutdown_timeout timeout=%s; cancelled stuck tick",
+                shutdown_timeout,
+            )
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         task = None
 
     router.add_event_handler("startup", start_runner)

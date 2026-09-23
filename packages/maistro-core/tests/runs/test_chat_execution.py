@@ -12,12 +12,16 @@ proves nothing about whether a turn reaches the spine.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import sqlite3
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
+from maistro.agents.types import LLMProviderError
 from maistro.container import Container, create_container
 from maistro.graph import Graph, Node
 from maistro.runs.chat_execution import (
@@ -35,7 +39,9 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError
+from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
@@ -300,10 +306,18 @@ class _RecordingVeto:
     an answer it cannot record.
     """
 
-    def __init__(self, inner: Any, *, method: str, target: Any) -> None:
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        method: str,
+        target: Any,
+        error: type[Exception] = RunIntegrityError,
+    ) -> None:
         self._inner = inner
         self._method = method
         self._target: Any = target
+        self._error = error
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -319,7 +333,26 @@ class _RecordingVeto:
     def _refuse(self, method: str, target: Any) -> None:
         if method == self._method and target is self._target:
             self._target = None
-            raise RunIntegrityError("store hiccup after dispatch")
+            raise self._error("store hiccup after dispatch")
+
+
+class _FlakyFenceRead:
+    """A store whose next `get_run` fails once after it is armed — the read
+    `_settle_provider_success` makes of the Run's cancellation fence."""
+
+    def __init__(self, inner: Any, *, persistent: bool = False) -> None:
+        self._inner = inner
+        self.armed = False
+        self._persistent = persistent
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def get_run(self, run_id: str) -> Any:
+        if self.armed:
+            self.armed = self._persistent
+            raise OSError("fence read lost its connection")
+        return await self._inner.get_run(run_id)
 
 
 class TestAPostDispatchRecordingFailureIsNeverRedispatched:
@@ -333,10 +366,18 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
     first answer's evidence sat on disk. Restoring the blanket
     `except RunIntegrityError: return await dispatch()` makes every test here
     count two dispatches.
+
+    The failure is not always a `RunIntegrityError`. The PostgreSQL and SQLite
+    stores only wrap integrity violations; a dropped connection or a locked
+    database arrives as the driver's own exception. Each test therefore runs
+    with both, and narrowing the executor back to `except RunIntegrityError`
+    fails every raw-driver case: the answer is lost and the Run is closed
+    FAILED over an Attempt still RUNNING.
     """
 
+    @pytest.mark.parametrize("error", [RunIntegrityError, sqlite3.OperationalError])
     async def test_a_failed_attempt_completion_write_returns_the_answer_once(
-        self, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture, error: type[Exception]
     ) -> None:
         """The answer exists; it goes back to the caller as it is. What is
         left behind is a RUNNING Attempt whose lease nothing renews, under a
@@ -345,7 +386,10 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         container = await _container()
         container.conduit = conduit = _Conduit(content="42")
         container.run_store = _RecordingVeto(  # type: ignore[assignment]
-            container.run_store, method="transition_attempt", target=AttemptStatus.COMPLETED
+            container.run_store,
+            method="transition_attempt",
+            target=AttemptStatus.COMPLETED,
+            error=error,
         )
 
         with caplog.at_level(logging.WARNING, logger="maistro.container"):
@@ -371,8 +415,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         assert node_run.status is RunStatus.WAITING
         assert conduit.calls == 1
 
+    @pytest.mark.parametrize("error", [RunIntegrityError, ConnectionError])
     async def test_a_failed_reconciliation_after_a_completed_attempt_is_repaired_not_redispatched(
-        self,
+        self, error: type[Exception]
     ) -> None:
         """The Attempt's evidence is durable and complete; only the logical
         record behind it is short. The reconciler — the same authority the
@@ -380,7 +425,10 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         container = await _container()
         container.conduit = conduit = _Conduit(content="42")
         container.run_store = _RecordingVeto(  # type: ignore[assignment]
-            container.run_store, method="transition_node_run", target=RunStatus.COMPLETED
+            container.run_store,
+            method="transition_node_run",
+            target=RunStatus.COMPLETED,
+            error=error,
         )
 
         result = await container.route_request(MESSAGES)
@@ -405,22 +453,26 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         assert run is not None and run.status is RunStatus.COMPLETED
         assert conduit.calls == 1
 
+    @pytest.mark.parametrize("error", [RunIntegrityError, OSError])
     async def test_a_dispatch_failure_whose_record_also_fails_arrives_as_the_dispatch_failure(
-        self,
+        self, error: type[Exception]
     ) -> None:
         """Two failures, one answer: the caller gets the turn's own exception —
         the one the endpoint maps to a status code — not the store's, and the
         model is not asked again in between."""
         container = await _container()
-        container.conduit = conduit = _Conduit(raises=RuntimeError("upstream exploded"))
+        container.conduit = conduit = _Conduit(raises=LLMProviderError("upstream exploded"))
         container.run_store = _RecordingVeto(  # type: ignore[assignment]
-            container.run_store, method="transition_attempt", target=AttemptStatus.FAILED
+            container.run_store,
+            method="transition_attempt",
+            target=AttemptStatus.FAILED,
+            error=error,
         )
 
-        with pytest.raises(RuntimeError, match="upstream exploded") as failed:
+        with pytest.raises(LLMProviderError, match="upstream exploded") as failed:
             await container.route_request(MESSAGES)
 
-        assert isinstance(failed.value.__cause__, RunIntegrityError)
+        assert type(failed.value.__cause__) is error
         assert conduit.calls == 1
 
     async def test_the_executor_says_which_side_of_the_dispatch_the_spine_failed_on(
@@ -465,6 +517,186 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
 
         assert result["choices"][0]["message"]["content"] == "42"
         assert conduit.calls == 1
+
+    async def test_a_deadline_that_cuts_the_dispatch_off_still_arrives_as_a_deadline(
+        self,
+    ) -> None:
+        """The dispatch sees a `CancelledError` when the runtime's deadline
+        cancels it. That is not the dispatch's own failure, so it must not be
+        substituted for the `RuntimeDeadlineExceeded` the spine raises."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+
+        async def _slow() -> dict[str, Any]:
+            await asyncio.sleep(5)
+            return {}
+
+        with pytest.raises(RuntimeDeadlineExceeded):
+            await ChatAttemptExecutor(container.run_store, timeout_s=0.01).execute(
+                run.run_id, MESSAGES, _slow
+            )
+
+        _, attempts = await _spine(container, run.run_id)
+        assert attempts[0].status in TERMINAL_ATTEMPT_STATUSES
+
+    async def test_a_cancelled_turn_whose_cancel_record_fails_is_not_redispatched(
+        self,
+    ) -> None:
+        """The Run is cancelled while the model call is in flight and the
+        CANCELLED Attempt write fails. The store error must not escape bare:
+        the container reads a bare `RunIntegrityError` as pre-dispatch and
+        would answer a cancelled Run with a second, unrecorded model call."""
+        container = await _container()
+        real = container.run_store
+        started = asyncio.Event()
+        calls = 0
+
+        async def _slow(_messages: list[dict[str, Any]], **_kw: Any) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await asyncio.sleep(5)
+            return {}
+
+        container.conduit.route_request = _slow  # type: ignore[method-assign]
+        container.run_store = _RecordingVeto(  # type: ignore[assignment]
+            real, method="transition_attempt", target=AttemptStatus.CANCELLED
+        )
+        run = await container.chat_admitter.admit(MESSAGES)
+        await real.transition_run(run.run_id, RunStatus.QUEUED)
+        run = await real.transition_run(run.run_id, RunStatus.RUNNING)
+
+        turn = asyncio.create_task(container.route_request(MESSAGES, run=run))
+        await started.wait()
+        await RunExecutionService(store=real, runtime=PythonExecutionRuntime()).cancel_run(
+            run.run_id
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        assert calls == 1
+
+    async def test_a_deadline_whose_record_fails_does_not_escape_as_pre_dispatch(
+        self,
+    ) -> None:
+        """Same rule under a deadline: the TIMED_OUT write fails after the
+        dispatch was cut off, and what reaches the caller is not a bare
+        `RunIntegrityError` its pre-dispatch fallback would answer again."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _RecordingVeto(
+            container.run_store, method="transition_attempt", target=AttemptStatus.TIMED_OUT
+        )
+
+        async def _slow() -> dict[str, Any]:
+            await asyncio.sleep(5)
+            return {}
+
+        with pytest.raises(BaseException) as failed:
+            await ChatAttemptExecutor(store, timeout_s=0.01).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _slow
+            )
+
+        assert not isinstance(failed.value, RunIntegrityError)
+        assert isinstance(failed.value.__cause__, RunIntegrityError)
+
+    async def test_a_dispatch_that_outlives_its_deadline_is_not_an_unrecorded_answer(
+        self,
+    ) -> None:
+        """A dispatch may catch the deadline's `CancelledError` and return
+        anyway. The runtime refuses to call that success, and the late answer
+        must not be handed back as one that merely went unrecorded."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+
+        async def _stubborn() -> dict[str, Any]:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(5)
+            return {"choices": [{"message": {"content": "late"}, "finish_reason": "stop"}]}
+
+        with pytest.raises(RuntimeDeadlineExceeded):
+            await ChatAttemptExecutor(container.run_store, timeout_s=0.01).execute(
+                run.run_id, MESSAGES, _stubborn
+            )
+
+    async def test_an_answer_behind_the_cancellation_fence_is_not_handed_back(
+        self,
+    ) -> None:
+        """The Run is fenced CANCELLED while the model answers, and the read
+        of that fence fails once. The answer exists, but the durable Run says
+        nobody may publish it: the turn ends cancelled, not as an unrecorded
+        success."""
+        container = await _container()
+        real = container.run_store
+        run = await container.chat_admitter.admit(MESSAGES)
+        await real.transition_run(run.run_id, RunStatus.QUEUED)
+        await real.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _FlakyFenceRead(real)
+
+        async def _answered_after_cancel() -> dict[str, Any]:
+            await real.transition_run(run.run_id, RunStatus.CANCELLED)
+            store.armed = True
+            return {"choices": [{"message": {"content": "42"}, "finish_reason": "stop"}]}
+
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await ChatAttemptExecutor(store).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _answered_after_cancel
+            )
+
+        assert isinstance(cancelled.value.__cause__, OSError)
+
+    async def test_an_unreadable_fence_still_hands_the_answer_back_once(self) -> None:
+        """The store stays down after the model answered, so the fence cannot
+        be read at all. That is not proof of cancellation: the answer goes back
+        as unrecorded, per #1108's owner decision, and is never asked for
+        again."""
+        container = await _container()
+        real = container.run_store
+        run = await container.chat_admitter.admit(MESSAGES)
+        await real.transition_run(run.run_id, RunStatus.QUEUED)
+        await real.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _FlakyFenceRead(real, persistent=True)
+        conduit = _Conduit(content="42")
+
+        async def _answered() -> dict[str, Any]:
+            response = await conduit.route_request(MESSAGES)
+            store.armed = True
+            return response
+
+        with pytest.raises(ChatDispatchUnrecorded) as unrecorded:
+            await ChatAttemptExecutor(store).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _answered
+            )
+
+        assert unrecorded.value.response["choices"][0]["message"]["content"] == "42"
+        assert isinstance(unrecorded.value.__cause__, OSError)
+        assert conduit.calls == 1
+
+    async def test_a_raw_store_failure_before_the_dispatch_never_reaches_the_model(
+        self,
+    ) -> None:
+        """A driver error before the dispatch is not dressed as one after it
+        either: nothing physical happened, so there is no answer to hand back
+        and the store's own exception travels to the caller unchanged."""
+        container = await _container()
+        container.conduit = conduit = _Conduit(content="42")
+
+        async def _unreachable(_run_id: str) -> None:
+            raise OSError("store unreachable")
+
+        container.run_store.get_run = _unreachable  # type: ignore[method-assign]
+
+        with pytest.raises(OSError, match="store unreachable") as refused:
+            await container.route_request(MESSAGES)
+
+        assert not isinstance(refused.value, ChatDispatchUnrecorded)
+        assert conduit.calls == 0
 
     async def test_a_failure_before_the_dispatch_is_not_dressed_as_one_after_it(self) -> None:
         """The other half of the same signal. Nothing physical happened, so
@@ -711,6 +943,34 @@ class TestChatAttemptStoreConformance:
         attempt = (await store.list_attempts(node_run.node_run_id))[0]
         assert attempt.status is AttemptStatus.COMPLETED
         assert attempt.result["finish_reason"] == "content_filter"
+
+    async def test_a_raw_driver_failure_after_the_answer_keeps_it_in_every_store(
+        self, spine: Any
+    ) -> None:
+        """#1108 on the durable backends: the COMPLETED write raises the
+        driver's own exception, not a wrapped `RunIntegrityError`, and the
+        answer still reaches the caller once, with the Attempt left RUNNING
+        for the recovery sweep."""
+        store, run = await self._running_run(spine)
+        vetoed = _RecordingVeto(
+            store,
+            method="transition_attempt",
+            target=AttemptStatus.COMPLETED,
+            error=sqlite3.OperationalError,
+        )
+        conduit = _Conduit(content="durable answer")
+
+        with pytest.raises(ChatDispatchUnrecorded) as unrecorded:
+            await ChatAttemptExecutor(vetoed).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, lambda: conduit.route_request(MESSAGES)
+            )
+
+        assert unrecorded.value.response["choices"][0]["message"]["content"] == "durable answer"
+        assert isinstance(unrecorded.value.__cause__, sqlite3.OperationalError)
+        assert conduit.calls == 1
+        node_run = (await store.list_node_runs(run.run_id))[0]
+        attempt = (await store.list_attempts(node_run.node_run_id))[0]
+        assert attempt.status is AttemptStatus.RUNNING
 
     async def test_a_raised_failure_fails_the_attempt_in_every_store(self, spine: Any) -> None:
         store, run = await self._running_run(spine)

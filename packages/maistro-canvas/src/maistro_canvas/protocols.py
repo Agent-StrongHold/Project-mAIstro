@@ -88,7 +88,13 @@ class CanvasStore(Protocol):
 
     async def get_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord | None: ...
 
-    async def update_job(self, job: GenerationJobRecord, *, org_id: str) -> GenerationJobRecord: ...
+    async def update_job(
+        self,
+        job: GenerationJobRecord,
+        *,
+        org_id: str,
+        expected_leased_by: str | None = None,
+    ) -> GenerationJobRecord: ...
 
     async def active_job_for_layer(
         self, layer_id: str, *, org_id: str
@@ -103,6 +109,8 @@ class CanvasStore(Protocol):
     ) -> GenerationJobRecord | None: ...
 
     async def reap_expired_leases(self) -> list[GenerationJobRecord]: ...
+
+    async def renew_lease(self, job_id: str, worker_id: str, lease_seconds: int) -> bool: ...
 
     async def save_composite(self, result: CompositeResult, *, org_id: str) -> CompositeResult: ...
 

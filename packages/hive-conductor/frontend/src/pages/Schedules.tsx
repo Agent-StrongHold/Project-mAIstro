@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
+import { useWorkspaces } from "../context/WorkspaceContext";
 
 type Schedule = {
   id: string; name: string; description: string; cron_expression: string;
@@ -20,6 +21,7 @@ const CRON_PRESETS = [
 
 export default function Schedules() {
   const toast = useToast();
+  const { activeWorkspaceId, ready: workspacesReady } = useWorkspaces();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [tab, setTab] = useState<"schedules" | "history">("schedules");
   const [creating, setCreating] = useState(false);
@@ -33,8 +35,12 @@ export default function Schedules() {
 
   async function createSchedule() {
     if (!form.name.trim()) return;
+    if (!workspacesReady || !activeWorkspaceId) {
+      toast("Select a Workspace before creating a schedule", "error");
+      return;
+    }
     try {
-      const created = await apiPost<Schedule>("/v1/schedules", { name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true });
+      const created = await apiPost<Schedule>("/v1/schedules", { workspace_id: activeWorkspaceId, name: form.name.trim(), description: form.description.trim(), cron_expression: form.cron_expression, mission_template_id: form.mission_template_id || null, enabled: true });
       setSchedules((prev) => [...prev, created]);
       setCreating(false);
       setForm({ name: "", description: "", cron_expression: "0 * * * *", mission_template_id: "" });

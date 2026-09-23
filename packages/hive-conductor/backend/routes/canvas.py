@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from services.canvas_dag import CANVAS_DAG, CanvasHillClimber, visual_quality_eval
+from services.dag_run_inspection import authorized_workspace_ids
 
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.invocation import CapabilityUnavailable
 from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/canvas", tags=["canvas"])
 
@@ -66,19 +70,30 @@ def _trusted_canvas_context(request: Request) -> dict[str, str]:
 
 
 async def _canonical_canvas_run(request: Request, run_id: str) -> Any:
-    """Load and authenticate the existing canonical Run, never create one."""
+    """Load an existing canonical Run the caller's Workspace membership authorizes.
+
+    Visibility is the caller's canonical Workspace universe, the same one
+    DAG-run inspection uses (#1152, #1174): the initiating principal is
+    provenance, not a gate, and no role bypasses it. A foreign, actor-less,
+    or missing Run gets one answer so the response never confirms that a Run
+    id exists.
+    """
     user = getattr(request.state, "user", None) or {}
     principal = str(user.get("id") or user.get("username") or "").strip()
     if not principal:
         raise HTTPException(status_code=401, detail="Authentication required")
 
+    # The caller's Workspace universe is resolved before, and independently
+    # of, the Run lookup: a missing id and a foreign id then do the same
+    # membership work, so neither status, body nor latency confirms existence.
+    try:
+        allowed = await authorized_workspace_ids(principal)
+    except Exception:
+        logger.exception("Canvas Run membership lookup failed; refusing")
+        allowed = set()
     run = await _canvas_model_egress(request).run_store.get_run(run_id)
-    if run is None:
+    if run is None or not run.actor_principal_id or run.workspace_id not in allowed:
         raise BindingResolutionError("Canvas visual evaluation requires an existing canonical Run")
-    if run.actor_principal_id != principal and user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Canvas Run is not owned by this principal")
-    if not run.actor_principal_id:
-        raise BindingResolutionError("Canvas Run has no authenticated execution principal")
     return run
 
 
