@@ -61,12 +61,13 @@ own history disagree with itself.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from maistro.runs.chat_admission import chat_turn_outcome
-from maistro.runs.model import NodeRun
+from maistro.runs.model import NodeRun, RunStatus
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime, RuntimeDeadlineExceeded
@@ -272,29 +273,53 @@ class ChatAttemptExecutor:
                     timeout_s=self._timeout_s,
                 )
         except Exception as exc:
-            if not turn.started or exc is turn.error:
-                raise
-            if turn.error is not None:
-                if isinstance(exc, RuntimeDeadlineExceeded) and not isinstance(
-                    turn.error, Exception
-                ):
-                    # The deadline cut the dispatch off and was recorded: the
-                    # runtime's exception is the outcome, and substituting the
-                    # `CancelledError` the dispatch saw would disguise a
-                    # timeout as a client disconnect.
-                    raise
-                # The dispatch failed, or was cancelled, and then the spine
-                # could not record that it did. The failure the caller can act
-                # on is the dispatch's; the store's is chained behind it. A bare
-                # store error must never escape here, because the caller would
-                # read it as pre-dispatch and ask the model again.
-                raise turn.error from exc
-            if turn.response is None:  # pragma: no cover - a dispatch returns or raises
-                raise
-            raise ChatDispatchUnrecorded(run_id, response=turn.response) from exc
+            await self._raise_spine_failure(run_id, turn, exc)
         if turn.response is None:  # pragma: no cover - unreachable: run always fills it
             raise RunIntegrityError("chat Attempt completed without capturing its response")
         return turn.response
+
+    async def _raise_spine_failure(
+        self, run_id: str, turn: _TurnDispatch, exc: Exception
+    ) -> NoReturn:
+        """Raise what a spine failure means for the caller, by which side of the dispatch it hit."""
+        if not turn.started or exc is turn.error:
+            raise exc
+        if isinstance(exc, RuntimeDeadlineExceeded) and not isinstance(turn.error, Exception):
+            # The deadline is the outcome, recorded — whether the dispatch
+            # was cut off or caught the cancellation and answered late. A late
+            # answer is not an unrecorded one, and substituting the
+            # `CancelledError` the dispatch saw would disguise a timeout as a
+            # client disconnect.
+            raise exc
+        if turn.error is not None:
+            # The dispatch failed, or was cancelled, and then the spine could
+            # not record that it did. The failure the caller can act on is the
+            # dispatch's; the store's is chained behind it. A bare store error
+            # must never escape here, because the caller would read it as
+            # pre-dispatch and ask the model again.
+            raise turn.error from exc
+        if turn.response is None:
+            raise exc
+        if await self._run_is_cancelled(run_id):
+            # The durable Run is the stale-completion fence: an answer that
+            # arrived after it closed is not published, however the spine
+            # failed on the way to saying so.
+            raise asyncio.CancelledError from exc
+        raise ChatDispatchUnrecorded(run_id, response=turn.response) from exc
+
+    async def _run_is_cancelled(self, run_id: str) -> bool:
+        """Whether the Run's fence reads CANCELLED, or False when it cannot be read.
+
+        Unreadable is not proof of cancellation. The owner decision on #1108
+        is that a post-dispatch spine failure hands back the answer and leaves
+        the Run open for recovery, never a second dispatch — and a store that
+        cannot be read is the same failure, not a new reason to discard it.
+        """
+        try:
+            run = await self._runs.get_run(run_id)
+        except Exception:
+            return False
+        return run is not None and run.status is RunStatus.CANCELLED
 
     async def _node_id(self, run_id: str) -> str:
         run = await self._runs.get_run(run_id)

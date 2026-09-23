@@ -153,6 +153,7 @@ async def container(monkeypatch: pytest.MonkeyPatch) -> Any:
     run_store = InMemoryRunStore(project_store=projects)
     providers = InMemoryProviderRegistry()
     built = SimpleNamespace(
+        projects=projects,
         run_store=run_store,
         graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
         event_bus=None,
@@ -219,6 +220,60 @@ async def test_a_scheduled_multi_node_run_lost_before_checkpoint_one_completes(
 
     assert await _status(container, run_id) is RunStatus.COMPLETED
     assert await recover_stranded_registered_dag_runs() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_multi_node_run_admitted_by_the_production_schedule_path_completes(
+    container: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured Hive fires schedules through `ScheduleRunAdmitter`, not
+    `run_registered_dag`: its Run is QUEUED with no executor marker and nothing
+    has traversed it. The consumer leaves it alone (multi-node), so only this
+    half can ever carry it."""
+    import stores
+    from services.registered_dag_recovery import recover_stranded_registered_dag_runs
+    from services.scheduler import fire_now
+
+    from maistro.graph.templates import InMemoryGraphTemplateStore
+    from maistro.scheduling.admission import ScheduleRunAdmitter
+    from maistro.scheduling.store import InMemoryScheduleStore
+
+    templates = InMemoryGraphTemplateStore()
+    schedules = InMemoryScheduleStore()
+    container.template_store = templates
+    container.schedule_store = schedules
+    container.schedule_admitter = ScheduleRunAdmitter(container.run_store, templates, schedules)
+    container.project_scope_store = container.projects
+    created = datetime(2026, 8, 1, tzinfo=UTC)
+    row = SimpleNamespace(
+        id="sched-prod",
+        user_id="user-1",
+        workspace_id="ws-rdr",
+        project_id=container.project_id,
+        name="production schedule",
+        description="",
+        cron_expression="0 * * * *",
+        mission_template_id="rdr-steps",
+        enabled=True,
+        timezone="UTC",
+        max_runs=None,
+        last_run=None,
+        last_run_id=None,
+        next_run=None,
+        created_at=created,
+        updated_at=created,
+    )
+    row.model_copy = lambda *, update: SimpleNamespace(**{**vars(row), **update})
+    monkeypatch.setitem(stores.schedules._data, row.id, row)
+
+    run_id = await fire_now(row.id)
+    run = await container.run_store.get_run(run_id)
+    assert run is not None
+    assert run.status is RunStatus.QUEUED
+    assert "executor" not in run.provenance
+
+    assert await recover_stranded_registered_dag_runs() == 1
+    assert await _status(container, run_id) is RunStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -298,19 +353,27 @@ async def test_other_owners_runs_are_never_touched(
         container, monkeypatch, "rdr-steps", provenance={"admission_source": "evolution"}
     )
     single = await _admit_then_die(container, monkeypatch, "rdr-single")
-    not_durable = (
+    two_steps = Graph(
+        workspace_id="ws-rdr",
+        project_id=container.project_id,
+        name="schedule, owned elsewhere",
+        nodes=[
+            Node(node_id="a", node_type=_StepNode.kind),
+            Node(node_id="b", node_type=_StepNode.kind),
+        ],
+    )
+    foreign_executor = (
         await container.run_store.create_run(
-            Graph(
-                workspace_id="ws-rdr",
-                project_id=container.project_id,
-                name="schedule, not durable_graph",
-                nodes=[
-                    Node(node_id="a", node_type=_StepNode.kind),
-                    Node(node_id="b", node_type=_StepNode.kind),
-                ],
-            ),
+            two_steps,
             initial_status=RunStatus.QUEUED,
-            provenance=dict(_SCHEDULE),
+            provenance={**_SCHEDULE, "executor": "someone_else"},
+        )
+    ).run_id
+    with_inputs = (
+        await container.run_store.create_run(
+            two_steps,
+            initial_status=RunStatus.QUEUED,
+            provenance={**_SCHEDULE, "schedule_inputs": {"marker": "configured"}},
         )
     ).run_id
     _graph, legacy_waiting = await run_registered_dag(
@@ -323,7 +386,7 @@ async def test_other_owners_runs_are_never_touched(
     assert await recover_stranded_registered_dag_runs() == 0
     assert await wake_due_registered_dag_runs() == 0
 
-    for run_id in (legacy, evolve, single, not_durable):
+    for run_id in (legacy, evolve, single, foreign_executor, with_inputs):
         assert await _status(container, run_id) is RunStatus.QUEUED
     assert await _status(container, legacy_waiting.run_id) is RunStatus.WAITING
 
