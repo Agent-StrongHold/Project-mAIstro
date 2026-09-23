@@ -32,6 +32,20 @@ def test_composition_builds_the_canonical_warden_and_audit_sink() -> None:
     assert isinstance(dependencies.audit_log, AuditLog)
 
 
+def test_composition_refuses_a_warden_without_a_policy_version(monkeypatch) -> None:
+    """A Warden that cannot name its policy version cannot be composed (#1139).
+
+    Every boundary audit record downstream derives its ``policy_version`` from
+    the canonical detector. A versionless Warden would make that evidence
+    unattributable, so the composition root fails closed instead of handing
+    application roots dependencies that read as healthy.
+    """
+
+    monkeypatch.setattr(Warden, "policy_version", "")
+    with pytest.raises(RuntimeError, match="policy version"):
+        build_canonical_security_dependencies()
+
+
 def test_composed_audit_sink_records_correlation_without_content() -> None:
     dependencies = build_canonical_security_dependencies()
 
