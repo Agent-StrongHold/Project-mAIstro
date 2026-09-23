@@ -15,12 +15,14 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY, CHAT_EXECUTOR_ID
+from maistro.runs.model import Attempt
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunStore
 from maistro.runtime import PythonExecutionRuntime
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
-from maistro_server.api.schemas import NodeRunSummary, RunSummary
+from maistro_server.api.schemas import AttemptSummary, NodeRunSummary, RunSummary
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -136,6 +138,30 @@ async def list_node_runs(
             status=node_run.status.value,
             created_at=node_run.created_at,
             finished_at=node_run.finished_at,
+            attempts=[
+                _attempt_summary(attempt)
+                for attempt in await store.list_attempts(node_run.node_run_id)
+            ],
         )
         for node_run in await store.list_node_runs(run_id)
     ]
+
+
+def _attempt_summary(attempt: Attempt) -> AttemptSummary:
+    # Only a chat Attempt's result is dispatch evidence; elsewhere it is a node's
+    # own output, whose "agent" key would say nothing about who ran it.
+    agent = (
+        attempt.result.get(ATTEMPT_AGENT_KEY)
+        if attempt.executor_id == CHAT_EXECUTOR_ID and isinstance(attempt.result, dict)
+        else None
+    )
+    return AttemptSummary(
+        attempt_id=attempt.attempt_id,
+        ordinal=attempt.ordinal,
+        status=attempt.status.value,
+        executor_id=attempt.executor_id,
+        created_at=attempt.created_at,
+        started_at=attempt.started_at,
+        finished_at=attempt.finished_at,
+        agent=agent if isinstance(agent, str) and agent else None,
+    )

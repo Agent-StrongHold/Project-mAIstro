@@ -248,6 +248,7 @@ async def run_durable_graph(
     provenance: Mapping[str, Any] | None = None,
     blackboard_metadata: Mapping[str, Any] | None = None,
     run_store: RunStore | None = None,
+    max_steps: int = 256,
 ) -> DurableRunRecord:
     """Compatibility entry point delegating physical work to canonical Attempts.
 
@@ -269,6 +270,7 @@ async def run_durable_graph(
         provenance=provenance,
         blackboard_metadata=blackboard_metadata,
         run_store=run_store,
+        max_steps=max_steps,
     )
 
 
@@ -278,6 +280,7 @@ async def resume_durable_graph(
     store: DurableRunStore,
     node_resolver: NodeResolver,
     run_store: RunStore | None = None,
+    max_steps: int = 256,
 ) -> DurableRunRecord:
     """Resume through canonical Attempt recovery, never a second physical walker."""
     from .attempt_executor import resume_durable_graph as resume
@@ -287,6 +290,7 @@ async def resume_durable_graph(
         store=store,
         node_resolver=node_resolver,
         run_store=run_store,
+        max_steps=max_steps,
     )
 
 
