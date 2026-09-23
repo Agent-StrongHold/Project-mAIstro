@@ -193,3 +193,51 @@ fresh rather than trusting the repair-phase record:
   Chromium.
 - PR #1451 body and branch commit messages checked for closure keywords: none
   ("Refs #155" only; PR is a draft).
+
+## L155 repair-round writer re-derivation at af89fb2a9 (2026-09-23)
+
+Fresh execution at the lane head
+`af89fb2a91d1c0f2c428daa66d8dc971741a1634` (develop base
+`8bb344e32b8693574fc0be7a93f86d941616b62c`), independent of the two verifier
+passes above:
+
+- `ruff check .` and `ruff format --check .` → both rc=0 (2528 files).
+- Browser seam: `uv run pytest packages/maistro-core/tests/tools/browser -q`
+  → **131 passed**, including all four real-Chromium transport proofs
+  (`test_real_chromium_rechecks_a_redirect_before_the_private_connection`,
+  `..._follows_an_allowed_redirect_inside_the_guard`,
+  `..._denies_model_directed_loopback_before_connect`,
+  `..._can_read_only_the_configured_origin` — the guard is exercised at the
+  actual Playwright route boundary with a real Chromium, not a mock).
+- Conductor: `test_browser_network_policy.py` + `test_engine_service.py` →
+  **38 passed**. Ordinary-HTTP seam: `test_outbound_policy.py` +
+  `test_transport.py` + `test_ssrf.py` → **173 passed**.
+- Gates: `check-security-inventory.py`, `check-model-egress.py`,
+  `check_direct_effects.py`, and `check-suite-inventory.py` for both suites →
+  all rc=0.
+- Inherited non-green, re-reproduced with exact evidence:
+  `check-vulture-baseline.py` rc=1 at head **and** at a fresh
+  `git archive` of the base; the base→head drift diff is exactly the one
+  *fixed* identity (`run_hill_climb.py::COMPONENT_PATH`, 1430 → 1429
+  findings) plus the header lines naming the revisions — zero new debt, no
+  branch file in the drift.
+- **New this round — ac-state base measurement executed**, not just claimed:
+  a detached base worktree at `8bb344e3` measured with the script's own
+  method (`AC_STATE_BASE_MEASUREMENT=1 uv run --project <base> --locked
+  --all-extras python scripts/check-ac-state.py --run-tests`) reports
+  `design_coverage: 33.0281%` over 155 taken decisions — byte-equal to the
+  head measurement (33.0281%). The branch moves design coverage by exactly
+  0.0000; the recorded floor (33.9095, folded from 72 notes "at 8bb344e3")
+  is not reproducible on the base revision itself in this environment, so the
+  floor undercut is inherited repository/environment state, not a regression
+  of this branch. The per-change mandate at head stays green (22 criteria
+  claimed, 0 unproven) and the chain mandate reports zero absent links.
+  Banking the fall would be a ledger edit, which is out of scope for an
+  ordinary repair PR.
+- Transport census re-swept at this head: still exactly five production
+  Playwright entry points, each guard-attaching (sync or async) before its
+  first page; the only three non-core `httpx.Client`/`AsyncClient`
+  constructions (`maistro-bootstrap` model_selector, `maistro-design`
+  open_design, `maistro-evolve` openai_compatible) predate the branch
+  (untouched by base→head diff; last governed by merged #1308) and are
+  outside the maistro-core seam census SECURITY.md's recomputed claim covers.
