@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Canvas visual evaluation no longer reveals whether a Run id exists (#1152,
+  partial).** `POST /v1/canvas/eval` now authorizes the selected canonical Run by
+  canonical Workspace membership, the same check HITL and DAG-run inspection
+  use. Any member of the Run's Workspace may evaluate it, including a Run another
+  member started. A Run in a Workspace the caller does not belong to, a Run with
+  no execution principal and a missing Run all get the same 503
+  `visual quality evaluation is unavailable`. Previously a foreign Run returned
+  403 `Canvas Run is not owned by this principal`. The admin bypass is removed:
+  an admin who is not a member of the Run's Workspace is refused like anyone
+  else. Hive still has no Project-level check on this route.
+
 - **Workspace access decisions now live in one core seam (#1150, partial).**
   `maistro.workspaces.WorkspaceAuthorizer` answers "may this principal VIEW or
   ADMINISTER this Workspace?" from the Workspace store, with one
@@ -391,6 +402,17 @@ or placeholder-only section.
   `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
+
+- **A declared correlation field must have a production producer (#63).** A
+  fitness test scans production code (`packages/*/src` and the hive, turing
+  and canvas backends) for `bind_execution_context(...)` keywords. It fails
+  when no production call binds a `FIELD_NAMES` entry into the execution
+  context that log lines, spans and events read, so a newly declared field
+  cannot ship without a producer. Nothing binds `invocation_id` or
+  `session_id` into that context yet. Both sit on a reviewed allowlist that
+  names the owning #63 slice. The test also fails once
+  an allowlisted field gains a producer, which keeps the allowlist from going
+  stale.
 
 - **The Conductor frontend renders on the Workspace design system (#1046,
   #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`
