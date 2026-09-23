@@ -13,6 +13,7 @@ from services.model_store import JsonStore, ModelStore
 from services.username_registry import (
     UsernameRegistry,
     UsernameTakenError,
+    normalize_username,
 )
 
 
@@ -152,6 +153,66 @@ def test_registration_route_uses_atomic_allocator_not_scan_then_write() -> None:
 
     assert "username_registry.create_users([user])" in register
     assert "stores.users[user_id] = user" not in register
+
+
+def test_scan_then_write_mutation_loses_the_race() -> None:
+    """Executed mutation: replace the atomic claim with scan-then-write.
+
+    The issue's mutation criterion is that the suite fails if the atomic
+    claim were replaced by the historical read-then-write shape. The
+    mutated allocator below is exactly that shape — a claim scan followed
+    by a random-id write with no storage-level constraint — driven through
+    the same concurrent harness as
+    `test_many_case_variants_have_one_winner_on_shared_persistence`. The
+    barrier lands inside the check-to-write window, so the interleaving
+    that concurrency hits in production is forced deterministically: every
+    variant passes the scan before any of them writes. If the real
+    allocator ever regressed to this shape, that test's `sum(outcomes)
+    == 1` assertion would fail exactly the way this demonstration shows.
+    """
+
+    users = ModelStore("users", HiveUser)
+    claims = JsonStore("username_claims")
+    barrier = threading.Barrier(8)
+
+    def mutated_scan_then_write(user: HiveUser) -> None:
+        key = f"username:{user.username.strip().casefold()}"
+        if key in claims:
+            raise UsernameTakenError("username is already taken")
+        # The window: every racer observes the name as free before any of
+        # them persists, which is what the absent atomic claim permits.
+        barrier.wait(timeout=10)
+        claims[key] = {"status": "active", "user_id": user.id}
+        users[user.id] = user
+
+    outcomes: list[bool] = []
+    outcomes_lock = threading.Lock()
+
+    def race(index: int) -> None:
+        try:
+            mutated_scan_then_write(_user(f"mutant-{index}", "Alice" if index % 2 else "ALICE"))
+        except UsernameTakenError:
+            won = False
+        else:
+            won = True
+        with outcomes_lock:
+            outcomes.append(won)
+
+    threads = [threading.Thread(target=race, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert all(not thread.is_alive() for thread in threads)
+
+    # The mutation duplicated the identity: all eight case variants won,
+    # eight distinct user rows share one canonical login name, and the
+    # surviving claim points at whichever writer landed last — the exact
+    # defect #1061 removes and the race harness above exists to detect.
+    assert sum(outcomes) == 8
+    assert len(users) == 8
+    assert len({normalize_username(user.username) for user in users.values()}) == 1
+    assert claims["username:alice"]["user_id"].startswith("mutant-")
 
 
 def test_historical_duplicate_is_quarantined_not_winner_selected() -> None:
