@@ -85,11 +85,13 @@ def test_audit_scope_migration_is_the_single_head() -> None:
 
     revision = directory.get_revision("036_audit_log_org_scope")
     # 036 already existed on the historical 035 branch when the consumer and
-    # task migrations landed. It therefore follows their current head (039, the
-    # tip of 035 -> 035_outcome_scope_thumb_index -> 036_consumer_cursors -> 037
-    # -> 038 -> 039) so every deployment's ordinary ``upgrade head`` applies the
-    # audit scope migration rather than leaving it on a competing branch.
-    assert revision.down_revision == "039"
+    # task migrations landed, and develop's chain kept growing while this
+    # branch was open (039 for #1531, then 040 for #1079, each taking the
+    # parent this revision had claimed). It therefore follows the current
+    # develop chain tip (040, the tip of 035 -> ... -> 038 -> 039 -> 040) so
+    # every deployment's ordinary ``upgrade head`` applies the audit scope
+    # migration rather than leaving it on a competing branch.
+    assert revision.down_revision == "040"
     assert directory.get_heads() == ["036_audit_log_org_scope"]
     walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
     assert revision.revision in walked
