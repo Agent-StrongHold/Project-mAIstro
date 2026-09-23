@@ -35,8 +35,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from maistro.persistence.sqlite_schema import begin_schema_upgrade
 from maistro.quota.usage_log import InMemoryUsageLog
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -77,21 +77,21 @@ class SqliteUsageLog:
 
     async def ensure_schema(self) -> None:
         """Create or upgrade usage_events without losing existing events."""
-        await begin_schema_upgrade(self._conn)
-        await self._conn.execute(_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(usage_events)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        if "event_id" not in columns:
-            await self._conn.execute("ALTER TABLE usage_events ADD COLUMN event_id TEXT")
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(usage_events)")
+            columns = {row[1] for row in await cursor.fetchall()}
+            if "event_id" not in columns:
+                await self._conn.execute("ALTER TABLE usage_events ADD COLUMN event_id TEXT")
+                await self._conn.execute(
+                    "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
+                )
+            await self._conn.execute(_INDEX)
             await self._conn.execute(
-                "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_usage_events_event_id ON usage_events (event_id)"
             )
-        await self._conn.execute(_INDEX)
-        await self._conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_usage_events_event_id ON usage_events (event_id)"
-        )
-        await self._conn.execute("PRAGMA busy_timeout = 5000")
-        await self._conn.commit()
+            await self._conn.execute("PRAGMA busy_timeout = 5000")
+            await self._conn.commit()
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:
         """Persist events recorded since the last `snapshot` call.

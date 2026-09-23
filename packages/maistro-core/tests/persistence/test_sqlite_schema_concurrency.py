@@ -1,4 +1,9 @@
-"""SQLite startup upgrades serialize across supported processes."""
+"""SQLite startup upgrades serialize across tasks sharing one process.
+
+Cross-process serialization is proven separately by
+``test_sqlite_schema_upgrade.py`` (fork-based workers); this file covers the
+in-process dimension: two connections to the same file upgrading at once.
+"""
 
 from __future__ import annotations
 

@@ -223,6 +223,36 @@ def test_persistence_diagnostics_identify_ephemeral_and_durable_stores() -> None
     assert diagnostics["strikes"] == {"backend": "none", "durable": False}
 
 
+def test_persistence_diagnostics_report_memory_backed_sqlite_as_ephemeral() -> None:
+    """A pathless `sqlite://` wires the durable-twin classes over :memory:.
+
+    Reported durable just because the class name starts with "Sqlite", health
+    would contradict the container's own restart-ephemeral warning (#72).
+    """
+    from maistro.persistence.sqlite_learnings import SqliteLearningStore
+
+    container = type(
+        "Container",
+        (),
+        {
+            "audit_log": None,
+            "elevation_store": None,
+            "session_store": None,
+            "strike_tracker": None,
+            "quota_tracker": None,
+            "learning_store": SqliteLearningStore.__new__(SqliteLearningStore),
+            "usage_log": None,
+            "usage_log_persistence": None,
+            "stores_memory_backed": True,
+        },
+    )()
+
+    diagnostics = _persistence_diagnostics(container)
+    assert diagnostics["learnings"]["backend"] == "SqliteLearningStore"
+    assert diagnostics["learnings"]["durable"] is False
+    assert "restart-ephemeral" in str(diagnostics["learnings"]["note"])
+
+
 class TestReadinessEndpoint:
     """Evidence: /health/ready aggregates docker/postgres/llm-circuit checks."""
 

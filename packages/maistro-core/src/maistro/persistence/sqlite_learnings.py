@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import observed_provenance
-from maistro.persistence.sqlite_schema import begin_schema_upgrade
+from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import Learning, MemoryScope
 
 if TYPE_CHECKING:
@@ -57,27 +57,26 @@ class SqliteLearningStore:
         `ALTER TABLE ... ADD COLUMN` with a constant default is a metadata-only
         operation, so this is cheap even on a large table.
         """
-        await begin_schema_upgrade(self._conn)
-        await self._conn.execute(_SCHEMA)
-        cursor = await self._conn.execute("PRAGMA table_info(learnings)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        if "org_id" not in columns:
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            cursor = await self._conn.execute("PRAGMA table_info(learnings)")
+            columns = {row[1] for row in await cursor.fetchall()}
+            if "org_id" not in columns:
+                await self._conn.execute(
+                    "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
+                )
+            # The same in-place upgrade for the producer columns. A file created
+            # before #709 holds real learnings; recreating the table would be the
+            # only alternative, and it would lose them (#709).
+            for column in _PROVENANCE_COLUMNS:
+                if column not in columns:
+                    await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
             await self._conn.execute(
-                "ALTER TABLE learnings ADD COLUMN org_id TEXT NOT NULL DEFAULT ''"
+                "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
             )
-        # The same in-place upgrade for the producer columns. A file created
-        # before #709 holds real learnings; recreating the table would be the
-        # only alternative, and it would lose them (#709).
-        for column in _PROVENANCE_COLUMNS:
-            if column not in columns:
-                await self._conn.execute(f"ALTER TABLE learnings ADD COLUMN {column} TEXT")
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
-        )
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
-        )
-        await self._conn.commit()
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
+            )
 
     async def store(self, learning: Learning) -> int:
         """Store a learning, naming the execution that produced it.

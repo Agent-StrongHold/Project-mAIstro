@@ -1,12 +1,18 @@
-"""Persist short-lived elevation grants in the canonical database."""
+"""Persist short-lived elevation grants in the canonical database.
+
+Rebased onto the trunk chain (#72 merge): the revision ids up to 038 were
+already taken by the canonical migrations, so the elevation-grant table
+attaches at the end rather than branching off 035 (which would leave two
+heads and an undefined upgrade order).
+"""
 
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "036"
-down_revision = "035"
+revision = "039"
+down_revision = "038"
 branch_labels = None
 depends_on = None
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from maistro.persistence.sqlite_schema import begin_schema_upgrade
 from maistro.security.sentinel.elevation import ElevationGrant, ElevationStore
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -33,13 +33,12 @@ class SqliteElevationStore(ElevationStore):
         self._conn = conn
 
     async def ensure_schema(self) -> None:
-        await begin_schema_upgrade(self._conn)
-        await self._conn.execute(_SQLITE_SCHEMA)
-        await self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_elevation_grants_lookup "
-            "ON elevation_grants (principal_id, action_class, granted_at)"
-        )
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SQLITE_SCHEMA)
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_elevation_grants_lookup "
+                "ON elevation_grants (principal_id, action_class, granted_at)"
+            )
 
     async def store(self, grant: ElevationGrant) -> None:
         await self._conn.execute(
