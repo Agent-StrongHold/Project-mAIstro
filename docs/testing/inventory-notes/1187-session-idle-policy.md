@@ -37,3 +37,15 @@ ordering. Two cases added: `test_revocation_mid_handshake_denies_without_
 refreshing_idle_expiry` (denial leaves the idle window and the session
 untouched) and `test_accepted_websocket_handshake_is_eligible_activity` (the
 positive control: an accepted handshake does refresh).
+
+Third round (independent verification at bdcbe7f2c): the WS ordering fix holds —
+a denied handshake, including the mid-handshake `dags.write` revocation, leaves
+`last_activity_at` untouched while the accepted-handshake control refreshes.
+Every `stores.sessions` mutation path (`_resolve_session`, `_issue_session`,
+`revoke_task_elevation`, `logout`, `elevate`, `purge_all_sessions`) takes
+`_SESSION_LOCK`, matching the ADR-077 single-writer contract. Re-executed
+locally at this head: the focused suite passed 12/12, the full backend suite
+passed 2666, `ruff check .` was clean, and the suite-inventory gate matched.
+Live rollup on this head reported formal-conformance, exact-debt-ledger, and
+the Quality gate SUCCESS; integration-scope, the CI test job, docker-build, the
+coverage gate, and gates-ran were still pending at verification time.
