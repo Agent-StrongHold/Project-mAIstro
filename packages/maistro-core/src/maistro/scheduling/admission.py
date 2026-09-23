@@ -1019,30 +1019,76 @@ class ScheduleRunAdmitter:
         # store read on a path a human clicked — never the tick's hot path.
         schedule = await self._reconcile_pending_fires(schedule.schedule_id) or schedule
         token = fire_id if fire_id else uuid.uuid4().hex
-        if fire_id is not None:
-            winner = await self._runs.find_occurrence_run(
-                {
-                    SCHEDULE_ID_KEY: schedule.schedule_id,
-                    SCHEDULE_FIRE_ID_KEY: token,
-                }
-            )
-            if winner is not None:
-                logger.info(
-                    "schedule %s manual fire %s was already admitted as %s",
-                    schedule.schedule_id,
-                    token,
-                    winner.run_id,
-                )
-                return ScheduleAdmission(
-                    already_fired=(now,),
-                    reconciled_run_id=winner.run_id,
-                )
+        reconciled = await self._already_admitted(schedule, now, fire_id)
+        if reconciled is not None:
+            return reconciled
         if schedule.exhausted:
             raise ManualFireRefused(
                 f"schedule {schedule.schedule_id} has used all {schedule.max_runs} of its runs"
             )
+        template = await self._resolve_manual_template(schedule)
         try:
-            template = await require_template(
+            reserved = await self._schedules.reserve_fire(schedule.schedule_id, fire_id=token)
+        except ScheduleExhausted as exc:
+            raise ManualFireRefused(str(exc)) from exc
+        if reserved is None:
+            raise ManualFireRefused(f"schedule {schedule.schedule_id} no longer exists")
+
+        fire = FireDecision(scheduled_for=now, catchup=False)
+        try:
+            run_id = await self._admit_one(reserved, template, fire, fire_id=token)
+        except DuplicateOccurrence:
+            return await self._duplicate_manual_receipt(schedule, now, token)
+        except BaseException:
+            await self._schedules.settle_pending_fire(schedule.schedule_id, token, run_id=None)
+            raise
+        return await self._manual_fire_receipt(reserved, token, run_id)
+
+    async def _already_admitted(
+        self,
+        schedule: Schedule,
+        now: datetime,
+        fire_id: str | None,
+    ) -> ScheduleAdmission | None:
+        """The receipt of a caller-stable fire whose Run already exists (#1120).
+
+        Only a caller-supplied `fire_id` can collide: a minted token is fresh
+        by construction, so probing it could only ever cost a read. A retried
+        or concurrent double submit of the same logical request therefore
+        reconciles to the winner's Run instead of minting a fresh identity
+        per request. `None` means nothing was admitted yet and the fire
+        should proceed.
+        """
+        if fire_id is None:
+            return None
+        winner = await self._runs.find_occurrence_run(
+            {
+                SCHEDULE_ID_KEY: schedule.schedule_id,
+                SCHEDULE_FIRE_ID_KEY: fire_id,
+            }
+        )
+        if winner is None:
+            return None
+        logger.info(
+            "schedule %s manual fire %s was already admitted as %s",
+            schedule.schedule_id,
+            fire_id,
+            winner.run_id,
+        )
+        return ScheduleAdmission(
+            already_fired=(now,),
+            reconciled_run_id=winner.run_id,
+        )
+
+    async def _resolve_manual_template(self, schedule: Schedule) -> GraphTemplate:
+        """Resolve the manual fire's target from the canonical template store.
+
+        The store's own error propagates — an unresolvable target is a
+        caller-visible misconfiguration, raised after a warning rather than
+        folded into a scheduler failure.
+        """
+        try:
+            return await require_template(
                 self._templates,
                 schedule.graph_template_id,
                 version=schedule.template_version,
@@ -1056,44 +1102,46 @@ class ScheduleRunAdmitter:
             )
             raise
 
-        try:
-            reserved = await self._schedules.reserve_fire(schedule.schedule_id, fire_id=token)
-        except ScheduleExhausted as exc:
-            raise ManualFireRefused(str(exc)) from exc
-        if reserved is None:
-            raise ManualFireRefused(f"schedule {schedule.schedule_id} no longer exists")
+    async def _duplicate_manual_receipt(
+        self,
+        schedule: Schedule,
+        now: datetime,
+        token: str,
+    ) -> ScheduleAdmission:
+        """Hand the loser of a claimed fire the winner's receipt (#1120).
 
-        fire = FireDecision(scheduled_for=now, catchup=False)
-        try:
-            run_id = await self._admit_one(reserved, template, fire, fire_id=token)
-        except DuplicateOccurrence:
-            logger.info(
-                "schedule %s manual fire %s was already admitted elsewhere",
-                schedule.schedule_id,
-                token,
-            )
-            # The firing happened — some other admitter claimed this exact
-            # logical request — so there is nothing to create; the marker is
-            # released unspent and the loser is handed the winner's receipt,
-            # which is the documented reconciliation for a retried or
-            # concurrent double submit (#1120).
-            await self._schedules.settle_pending_fire(schedule.schedule_id, token, run_id=None)
-            winner = await self._runs.find_occurrence_run(
-                {
-                    SCHEDULE_ID_KEY: schedule.schedule_id,
-                    SCHEDULE_FIRE_ID_KEY: token,
-                }
-            )
-            return ScheduleAdmission(
-                already_fired=(now,),
-                reconciled_run_id=winner.run_id if winner is not None else None,
-            )
-        except BaseException:
-            await self._schedules.settle_pending_fire(schedule.schedule_id, token, run_id=None)
-            raise
+        The firing happened — some other admitter claimed this exact logical
+        request — so there is nothing to create; the marker is released
+        unspent (the winner already counted it) and the reconciled Run is the
+        documented reconciliation for a retried or concurrent double submit
+        (#1120).
+        """
+        logger.info(
+            "schedule %s manual fire %s was already admitted elsewhere",
+            schedule.schedule_id,
+            token,
+        )
+        await self._schedules.settle_pending_fire(schedule.schedule_id, token, run_id=None)
+        winner = await self._runs.find_occurrence_run(
+            {
+                SCHEDULE_ID_KEY: schedule.schedule_id,
+                SCHEDULE_FIRE_ID_KEY: token,
+            }
+        )
+        return ScheduleAdmission(
+            already_fired=(now,),
+            reconciled_run_id=winner.run_id if winner is not None else None,
+        )
 
+    async def _manual_fire_receipt(
+        self,
+        reserved: Schedule,
+        token: str,
+        run_id: str,
+    ) -> ScheduleAdmission:
+        """Close the fire's marker on its Run and report what the row now says."""
         settled = await self._schedules.settle_pending_fire(
-            schedule.schedule_id, token, run_id=run_id
+            reserved.schedule_id, token, run_id=run_id
         )
         recorded = settled if settled is not None else reserved
         return ScheduleAdmission(

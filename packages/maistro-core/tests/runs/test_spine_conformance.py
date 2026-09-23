@@ -1345,6 +1345,19 @@ async def test_an_unclaimed_manual_fire_has_no_run_to_reconcile(spine: Any) -> N
     assert await store.find_occurrence_run(_manual_fire()) is None
 
 
+async def test_provenance_without_an_occurrence_names_no_run(spine: Any) -> None:
+    """`find_occurrence_run` is also asked for provenance that carries no
+    occurrence claim at all — a caller resolving whatever it was handed, not
+    a fire. The read answers "nothing to reconcile" rather than searching
+    the scope, on every backend.
+    """
+    store, workspace, project_id = spine
+    await store.create_run(_graph(workspace, project_id), provenance=_manual_fire())
+
+    assert await store.find_occurrence_run({}) is None
+    assert await store.find_occurrence_run(None) is None
+
+
 async def test_occurrence_lookup_matches_the_nominal_token_too(spine: Any) -> None:
     """The same read half must resolve nominal claims — a retried *recurring*
     admission that lost the race resolves its receipt the same way."""

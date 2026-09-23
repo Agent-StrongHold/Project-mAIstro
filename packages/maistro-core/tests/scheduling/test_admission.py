@@ -35,6 +35,7 @@ from maistro.runs.sources import (
     SCHEDULE_TRIGGER_KEY,
     SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
+    occurrence_key,
 )
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.scheduling.admission import (
@@ -143,6 +144,80 @@ class _FailingOccurrenceLookup:
         if (schedule_id, scheduled_for) == self._failing:
             raise RuntimeError("synthetic store outage resolving the occurrence")
         return await self._inner.get_run_for_occurrence(schedule_id, scheduled_for)
+
+
+class _BlindManualLookup:
+    """A run store whose occurrence index cannot see one manual claim.
+
+    The manual fire reconciles through `find_occurrence_run`, so a consistent
+    single-process store can never produce the sequence "the probe missed, but
+    the insert was still refused": the winner's claim lands between the
+    loser's probe and its own insert only across a real race. Blinding the
+    read for one token — once, to reach the duplicate-claim reconciliation
+    with the winner resolvable; persistently, to reach the branch that
+    reports a reconciliation with no Run to name — lets a test drive both
+    deterministically. Everything else delegates, so the `DuplicateOccurrence`
+    is still raised by a genuine insert against a genuine claim.
+    """
+
+    def __init__(self, inner: InMemoryRunStore, blind: tuple[str, str], *, once: bool) -> None:
+        self._inner = inner
+        self._blind = blind
+        self._once = once
+        self._missed = 0
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def find_occurrence_run(self, provenance: Any) -> Run | None:
+        key = occurrence_key(dict(provenance or {}))
+        if key == self._blind and (not self._once or self._missed == 0):
+            self._missed += 1
+            return None
+        return await self._inner.find_occurrence_run(provenance)
+
+
+class _FailingOccurrenceProbe:
+    """A run store whose occurrence read fails outright.
+
+    Recovery's probe is a store read like any other, and a store read can
+    fail — a connection drop, a command timeout. Reconciliation exists to
+    give an admission an extra chance to clean up, so it must degrade to a
+    warning and let the admission proceed, never fail the fire for a cleanup
+    that can happen on the next one.
+    """
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def find_occurrence_run(self, provenance: Any) -> Run | None:
+        raise RuntimeError("synthetic store outage probing the occurrence")
+
+
+class _RefusingSettle:
+    """A schedule store that fails one marker's settle write.
+
+    The probe answered, the store refused the write: the same transient
+    outage, one step later. The marker must survive for the next admission to
+    retry, and the fire that triggered recovery must still go out.
+    """
+
+    def __init__(self, inner: InMemoryScheduleStore, refusing: str) -> None:
+        self._inner = inner
+        self._refusing = refusing
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def settle_pending_fire(
+        self, schedule_id: str, fire_id: str, *, run_id: str | None
+    ) -> Schedule | None:
+        if fire_id == self._refusing:
+            raise RuntimeError("synthetic settle outage")
+        return await self._inner.settle_pending_fire(schedule_id, fire_id, run_id=run_id)
 
 
 class _CountingRunStore:
@@ -2189,3 +2264,134 @@ class TestManualFire:
         recorded = await schedules.get(schedule.schedule_id)
         assert recorded is not None
         assert recorded.runs_so_far == 1, "a fire that already happened counts once"
+
+    async def test_a_loser_that_missed_the_probe_reconciles_to_the_winner(self, harness) -> None:
+        """The race the probe cannot close, closed anyway (#1120).
+
+        The winner's claim can land between the loser's probe and its own
+        insert — the probe read a moment ago, the claim refuses now. The
+        refusal is the answer, not a failure: the firing happened once, the
+        loser's marker is released unspent, and the loser hands its caller
+        the winner's Run as the reconciliation receipt.
+        """
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        first = await admitter.admit_due(schedule, now=NOON, manual=True, fire_id="retry-1")
+        assert len(first.run_ids) == 1
+
+        # The loser probes a store that cannot see the claim — yet.
+        blind = _BlindManualLookup(runs, (schedule.schedule_id, "manual:retry-1"), once=True)
+        loser = ScheduleRunAdmitter(blind, templates, schedules)
+        moment = NOON + timedelta(minutes=1)
+        result = await loser.admit_due(schedule, now=moment, manual=True, fire_id="retry-1")
+
+        assert result.run_ids == ()
+        assert result.already_fired == (moment,)
+        assert result.reconciled_run_id == first.run_ids[0]
+        assert len(runs._runs) == 1, "the refusal created no second Run"
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.pending_fires == (), "the loser's marker was released unspent"
+        assert recorded.runs_so_far == 1, "the winner's fire is the one that counts"
+
+    async def test_a_duplicate_claim_with_no_resolvable_winner_still_reconciles(
+        self, harness
+    ) -> None:
+        """A refusal whose winner cannot be named is still `already_fired`.
+
+        The claim's insert and the index that would resolve it can come apart
+        (a partially restored replica, a migration that rebuilt the index).
+        The caller asked to fire and the store says the firing exists; telling
+        it the fire could not be created would invite the second Run the
+        identity exists to prevent. The receipt goes out with no Run to name,
+        and the loser's marker still releases unspent.
+        """
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        first = await admitter.admit_due(schedule, now=NOON, manual=True, fire_id="retry-1")
+        assert len(first.run_ids) == 1
+
+        blind = _BlindManualLookup(runs, (schedule.schedule_id, "manual:retry-1"), once=False)
+        loser = ScheduleRunAdmitter(blind, templates, schedules)
+        moment = NOON + timedelta(minutes=1)
+        result = await loser.admit_due(schedule, now=moment, manual=True, fire_id="retry-1")
+
+        assert result.run_ids == ()
+        assert result.already_fired == (moment,)
+        assert result.reconciled_run_id is None
+        assert len(runs._runs) == 1
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert recorded.pending_fires == ()
+        assert recorded.runs_so_far == 1
+
+    async def test_recovery_survives_a_probe_that_cannot_answer(self, harness) -> None:
+        """Recovery is an extra chance to clean up, never a reason to refuse
+        a fire (#1120).
+
+        A crashed fire's stale marker sits on the schedule, and the run store
+        cannot answer the probe that would settle it. The reconciliation
+        degrades to a warning and the marker waits for the next admission;
+        the fire the caller asked for still goes out, and its own marker
+        still settles.
+        """
+        from maistro.scheduling.admission import _PENDING_FIRE_LEASE
+        from maistro.scheduling.model import PendingFire
+
+        _admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        stale = PendingFire(
+            fire_id="crash-1",
+            fires=1,
+            stamped_at=datetime.now(UTC) - _PENDING_FIRE_LEASE - timedelta(seconds=1),
+            updated_at_before=datetime.now(UTC) - timedelta(hours=1),
+        )
+        schedules._schedules[schedule.schedule_id] = schedule.model_copy(  # type: ignore[attr-defined]
+            update={"pending_fires": (stale,)}
+        )
+        probing = ScheduleRunAdmitter(_FailingOccurrenceProbe(runs), templates, schedules)
+
+        result = await probing.admit_due(schedule, now=NOON, manual=True)
+
+        assert len(result.run_ids) == 1, "the fire was not refused for a failed cleanup"
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert [marker.fire_id for marker in recorded.pending_fires] == ["crash-1"], (
+            "the stale marker survives for the next admission to reconcile"
+        )
+        assert recorded.runs_so_far == 1, "only the new fire was counted"
+        assert recorded.last_run_id == result.run_ids[0]
+
+    async def test_recovery_survives_a_settle_that_cannot_write(self, harness) -> None:
+        """A refused settle write does not fail the admission, either.
+
+        The probe answered — the crashed fire's Run never existed, its slot
+        should come back — but the store refuses the write. The marker stays
+        for the next admission to retry, and the caller's fire proceeds as if
+        recovery had never run, because functionally it did not.
+        """
+        from maistro.scheduling.admission import _PENDING_FIRE_LEASE
+        from maistro.scheduling.model import PendingFire
+
+        _admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+        stale = PendingFire(
+            fire_id="ghost-1",
+            fires=1,
+            stamped_at=datetime.now(UTC) - _PENDING_FIRE_LEASE - timedelta(seconds=1),
+            updated_at_before=datetime.now(UTC) - timedelta(hours=1),
+        )
+        schedules._schedules[schedule.schedule_id] = schedule.model_copy(  # type: ignore[attr-defined]
+            update={"pending_fires": (stale,)}
+        )
+        refusing = _RefusingSettle(schedules, "ghost-1")
+        retrying = ScheduleRunAdmitter(runs, templates, refusing)
+
+        result = await retrying.admit_due(schedule, now=NOON, manual=True)
+
+        assert len(result.run_ids) == 1
+        recorded = await schedules.get(schedule.schedule_id)
+        assert recorded is not None
+        assert [marker.fire_id for marker in recorded.pending_fires] == ["ghost-1"]
+        assert recorded.runs_so_far == 1
+        assert recorded.last_run_id == result.run_ids[0]

@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from maistro.scheduling.cron import CronExpression, minimum_gap, parse_cron
 
@@ -56,6 +56,19 @@ class OverlapPolicy(StrEnum):
     BUFFER_ONE = "buffer_one"
     """Fire at most one queued occurrence after the current Run, dropping any
     others that came due in the meantime."""
+
+
+def _naive_as_utc(value: datetime) -> datetime:
+    """Read a naive wall-clock value as UTC — what a bare stamp means here.
+
+    Every timestamp in this module is UTC-aware: the engine and stores
+    compare them against an aware `now`, and a naive value used to validate
+    cleanly and then raise ``TypeError: can't compare offset-naive and
+    offset-aware datetimes`` deep inside the engine, taking the schedule out
+    of service for a reason nothing on the creation path reported.
+    """
+
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 class PendingFire(BaseModel):
@@ -95,20 +108,11 @@ class PendingFire(BaseModel):
     fires: int = 1
     """Slots this marker holds; one per manual fire."""
 
-    stamped_at: datetime
+    stamped_at: Annotated[datetime, AfterValidator(_naive_as_utc)]
     """Wall-clock instant the marker was written; drives lease staleness."""
 
-    updated_at_before: datetime
+    updated_at_before: Annotated[datetime, AfterValidator(_naive_as_utc)]
     """The row's `updated_at` before the marker, restored on a clean release."""
-
-    @model_validator(mode="after")
-    def _normalise_timestamps(self) -> PendingFire:
-        """Read naive wall-clock strings as UTC, exactly as `Schedule` does."""
-        for field in ("stamped_at", "updated_at_before"):
-            value = getattr(self, field)
-            if value.tzinfo is None:
-                object.__setattr__(self, field, value.replace(tzinfo=UTC))
-        return self
 
 
 def _now() -> datetime:
@@ -183,8 +187,8 @@ class Schedule(BaseModel):
         """
         for field in ("last_fired_at", "next_due_at", "created_at", "updated_at"):
             value = getattr(self, field)
-            if isinstance(value, datetime) and value.tzinfo is None:
-                object.__setattr__(self, field, value.replace(tzinfo=UTC))
+            if isinstance(value, datetime):
+                object.__setattr__(self, field, _naive_as_utc(value))
         return self
 
     @model_validator(mode="after")
