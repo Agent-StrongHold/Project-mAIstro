@@ -56,6 +56,17 @@ describe("resolveSecurityConfig", () => {
     }
   });
 
+  it("validates the /api rate limit rather than handing express-rate-limit NaN", () => {
+    // `Number(env.X || 600)` was the shape here, and express-rate-limit reads a
+    // NaN limit as "no limit" -- so a typo removed the cap on every /api route
+    // instead of setting one.
+    expect(resolveSecurityConfig({}).apiRateLimitPerMinute).toBe(600);
+    expect(resolveSecurityConfig({ API_RATE_LIMIT_PER_MINUTE: "120" }).apiRateLimitPerMinute).toBe(120);
+    for (const bad of ["unlimited", "0", "-1", "abc"]) {
+      expect(resolveSecurityConfig({ API_RATE_LIMIT_PER_MINUTE: bad }).apiRateLimitPerMinute).toBe(600);
+    }
+  });
+
   it("truncates a fractional cap instead of comparing against a float", () => {
     expect(resolveSecurityConfig({ CANVAS_MAX_CONCURRENT_EXPORTS: "2.9" }).maxConcurrentExports).toBe(2);
   });

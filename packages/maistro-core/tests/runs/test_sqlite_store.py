@@ -49,6 +49,60 @@ def _graph(project_id: str) -> Graph:
 
 
 @pytest.mark.asyncio
+async def test_delegation_transport_claim_is_durable_and_single_use(tmp_path: Path) -> None:
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "delegation.db"
+
+    first_conn = await aiosqlite.connect(db_path)
+    first_store = SqliteRunStore(first_conn, project_store=project_store)
+    await first_store.ensure_schema()
+    run = await first_store.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
+
+    assert await first_store.claim_delegation_transport_attempt(run.run_id) is True
+    assert await first_store.claim_delegation_transport_attempt(run.run_id) is False
+    await first_conn.close()
+
+    second_conn = await aiosqlite.connect(db_path)
+    second_store = SqliteRunStore(second_conn, project_store=project_store)
+    await second_store.ensure_schema()
+    assert await second_store.claim_delegation_transport_attempt(run.run_id) is False
+    recovered = await second_store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.provenance["transport_attempted"] is True
+    await second_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_delegation_transport_claim_is_one_winner_across_store_instances(
+    tmp_path: Path,
+) -> None:
+    """Separate replicas cannot both cross the transport boundary."""
+    import asyncio
+
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "delegation-race.db"
+    first_conn = await aiosqlite.connect(db_path)
+    second_conn = await aiosqlite.connect(db_path)
+    first_store = SqliteRunStore(first_conn, project_store=project_store)
+    second_store = SqliteRunStore(second_conn, project_store=project_store)
+    await first_store.ensure_schema()
+    await second_store.ensure_schema()
+    run = await first_store.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
+
+    claims = await asyncio.gather(
+        first_store.claim_delegation_transport_attempt(run.run_id),
+        second_store.claim_delegation_transport_attempt(run.run_id),
+    )
+
+    assert sorted(claims) == [False, True]
+    recovered = await second_store.get_run(run.run_id)
+    assert recovered is not None
+    assert recovered.provenance["transport_attempted"] is True
+    await first_conn.close()
+    await second_conn.close()
+
+
+@pytest.mark.asyncio
 async def test_run_node_run_and_attempt_reload_with_identical_relationships(
     tmp_path: Path,
 ) -> None:
@@ -544,6 +598,26 @@ async def test_delete_run_for_an_unknown_run_is_false(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_occurrence_claim_resolves_its_run_without_a_provenance_scan(tmp_path: Path) -> None:
+    store, project_id = await _durable_store(tmp_path)
+    scheduled_for = "2026-08-24T12:00:00+00:00"
+    run = await store.create_run(
+        _graph(project_id),
+        provenance={
+            ADMISSION_SOURCE: SCHEDULE_SOURCE,
+            SCHEDULE_ID_KEY: "sched-1",
+            SCHEDULED_FOR_KEY: scheduled_for,
+        },
+    )
+
+    resolved = await store.get_run_for_occurrence("sched-1", scheduled_for)
+
+    assert resolved is not None
+    assert resolved.run_id == run.run_id
+    assert await store.get_run_for_occurrence("sched-1", "other") is None
+
+
+@pytest.mark.asyncio
 async def test_an_integrity_error_on_another_constraint_is_re_raised(tmp_path: Path) -> None:
     """A duplicate firing is told apart from every other constraint by name.
 
@@ -596,3 +670,47 @@ async def test_a_run_claiming_no_occurrence_re_raises_the_claim_violation(
             await store.create_run(_graph(project_id), provenance={ADMISSION_SOURCE: "task_queue"})
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_raised_conflict_releases_the_loser_write_lock(tmp_path: Path) -> None:
+    """A delegation-key conflict re-raises into `_reserve_child`'s adopt-the-
+    winner recovery, which keeps using the same connection -- to find the
+    winner, adopt it, and continue the delegation. That continuation is a
+    write on this connection, so the failed INSERT's transaction must be
+    rolled back before raising: otherwise the recovery's next write inherits
+    the loser's open transaction and the database write lock is held until
+    someone else notices (review round, PR #1270)."""
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "delegation-conflict.db"
+    loser_conn = await aiosqlite.connect(db_path)
+    loser = SqliteRunStore(loser_conn, project_store=project_store)
+    await loser.ensure_schema()
+    winner_conn = await aiosqlite.connect(db_path)
+    winner = SqliteRunStore(winner_conn, project_store=project_store)
+    await winner.ensure_schema()
+    run = await winner.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await loser.create_run(_graph(project_id), provenance={"delegation_key": "key-1"})
+
+    # The loser's connection keeps working: recovery (adopt the winner, then
+    # keep writing) runs on this same connection.
+    adopted = await loser.find_delegation_run("key-1")
+    assert adopted is not None
+    assert adopted.run_id == run.run_id
+    recovery_write = await loser.create_run(
+        _graph(project_id), parent_run_id=run.run_id, provenance={"delegation_key": "key-2"}
+    )
+    assert recovery_write.parent_run_id == run.run_id
+
+    # And an unrelated third connection can take the write lock immediately:
+    # the loser's failed INSERT left no inherited transaction behind it.
+    third_conn = await aiosqlite.connect(db_path)
+    third = SqliteRunStore(third_conn, project_store=project_store)
+    await third.ensure_schema()
+    unrelated = await third.create_run(_graph(project_id))
+    assert unrelated.run_id != run.run_id
+    await loser_conn.close()
+    await winner_conn.close()
+    await third_conn.close()

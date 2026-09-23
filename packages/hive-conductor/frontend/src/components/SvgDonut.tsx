@@ -55,7 +55,7 @@ export function SvgDonut({ segments, size = 120 }: { segments: Segment[]; size?:
         </text>
       </svg>
       {hover !== null && (
-        <div style={{ position: "absolute", bottom: -4, left: "50%", transform: "translateX(-50%)", background: "var(--ink)", color: "var(--paper)", fontSize: "0.65rem", padding: "3px 8px", borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none" }}>
+        <div style={{ position: "absolute", bottom: -4, left: "50%", transform: "translateX(-50%)", background: "var(--ink)", color: "var(--paper)", fontSize: "var(--text-floor)", padding: "3px 8px", borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none" }}>
           {arcs[hover].label}: {arcs[hover].value} ({arcs[hover].pct}%)
         </div>
       )}

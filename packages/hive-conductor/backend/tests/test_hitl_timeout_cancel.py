@@ -33,10 +33,7 @@ def _paused_node_run(run_id: str) -> NodeRun:
 
 
 def _paused_record(
-    run_id: str,
-    *,
-    deadline: datetime,
-    workspace_id: str = "ws-hitl-settlement",
+    run_id: str, *, deadline: datetime, workspace_id: str = "ws-hitl-settlement"
 ) -> Any:
     from maistro.graph.durable_runs.types import DurableRunRecord
 
@@ -94,7 +91,7 @@ def seeded(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Seed
     async def _seed(run_id: str, *, deadline: datetime) -> None:
         workspace = await create_workspace(
             creator_user_id="admin",
-            name=f"HITL timeout {run_id}",
+            name=f"HITL timeout workspace-{run_id}",
             persona_template_id="default",
             checklist=[],
             theme_id="default",

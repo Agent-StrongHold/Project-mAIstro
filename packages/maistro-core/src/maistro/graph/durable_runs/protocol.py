@@ -29,10 +29,32 @@ class DurableRunStore(Protocol):
         limit: int = 100,
         project_id: str | None = None,
         workspace_id: str | None = None,
-    ) -> list[DurableRunRecord]: ...
+        after: tuple[str, str] | None = None,
+    ) -> list[DurableRunRecord]:
+        """Records in ``status``, oldest-created-first.
 
-    async def list_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        """Return persisted graph continuations whose timed resume is due."""
+        ``after`` is a ``(created_at_iso, run_id)`` keyset cursor. Bounded
+        fair scans (#1056, #1109) page through it instead of re-reading the
+        same fixed prefix every tick.
+        """
+        ...
+
+    async def list_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        after: tuple[str, str] | None = None,
+    ) -> list[DurableRunRecord]:
+        """Return persisted graph continuations whose timed resume is due.
+
+        ``after`` is a ``(resume_at_iso, run_id)`` keyset cursor over the same
+        deadline-then-run_id order the due index uses (#1098).
+        """
+        ...
+
+    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
+        """Return paused Runs whose indexed HITL deadline is due."""
         ...
 
     async def list_for_project(
@@ -47,7 +69,7 @@ class DurableRunStore(Protocol):
         *,
         at: datetime | None = None,
     ) -> DurableRunRecord:
-        """Attach an answer and queue the paused canonical Run for resume."""
+        """Persist an answer and queue only a valid paused Run for resume."""
         ...
 
     async def timeout_hitl(
@@ -71,4 +93,13 @@ class DurableRunStore(Protocol):
         ...
 
 
-__all__ = ["DurableRunStore"]
+class RecoveryInfrastructureError(RuntimeError):
+    """A persistence failure that makes continuing the recovery scan unsafe.
+
+    Candidate-local resolver and execution failures are handled by the durable
+    executor or by the recovery tick. Store adapters use this explicit type
+    when a database/session failure invalidates every candidate in the tick.
+    """
+
+
+__all__ = ["DurableRunStore", "RecoveryInfrastructureError"]
