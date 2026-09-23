@@ -176,6 +176,16 @@ services:
       - "${MAISTRO_BIND_HOST:-127.0.0.1}:${HIVE_PORT:-8101}:8101"
     environment:
       - PYTHONUNBUFFERED=1
+      # The engine's database, not a second one: the embedded runtime's
+      # canonical Workspace/Membership store is the same canonical_workspaces
+      # table maistro-server serves (ADR-092326-97c4, #37). Hive never runs
+      # alembic; it starts only once maistro-engine has migrated and is healthy.
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=maistro
+      - DB_USER=maistro
+      - DB_PASSWORD=${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      - DATABASE_URL=postgresql://maistro:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/maistro
       # OpenAI-compatible gateway (must end in /v1).
       - LITELLM_API_BASE=http://litellm:4000/v1
       - LITELLM_API_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
@@ -209,10 +219,14 @@ services:
     volumes:
       - conductor-data:/data
     depends_on:
+      postgres:
+        condition: service_healthy
       litellm:
         condition: service_started
+      # The engine's entrypoint migrates under an advisory lock before it
+      # serves, so healthy means migrated.
       maistro-engine:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8101/health/ready')"]

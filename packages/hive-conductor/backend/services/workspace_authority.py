@@ -5,6 +5,11 @@ Workspace identity, name, membership, and Root Project provisioning. Hive's
 historic ``stores.workspaces`` records are migration/recovery input only;
 routes and authorization never consult them as authority.
 
+In the shipped stack the canonical store is maistro-engine's PostgreSQL, shared
+with maistro-server (ADR-092326-97c4). There the mirror is imported once and
+never written again. Only the no-database dev path, whose canonical store is
+in-process, still keeps it as restart recovery evidence.
+
 Hive still owns persona/UI choices. Those are persisted separately as
 ``WorkspacePresentation`` records keyed by the canonical Workspace ID. The key
 is a reference, not another identity namespace.
@@ -26,6 +31,7 @@ from models.workspace import (
     WorkspaceRole,
 )
 
+from maistro.config.database import resolve_database_url
 from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole
 from maistro.workspaces.store import InMemoryWorkspaceStore, WorkspaceStore
 from services.model_store import JsonStore, ModelStore
@@ -52,10 +58,19 @@ _fallback_store: InMemoryWorkspaceStore | None = None
 _initialized_persistence: object | None = None
 _migration_lock = asyncio.Lock()
 _migrated_store_identity: int | None = None
+#: Journal modes recorded against a durable canonical store. A mirror row whose
+#: journal carries one of these was already imported (or born canonical), so the
+#: canonical store's current state wins even when it no longer has that
+#: Workspace or membership: it was deleted or revoked there.
+_DURABLE_JOURNAL_MODES: Final = frozenset({"legacy_import", "canonical_create"})
 
 
 class LegacyWorkspaceQuarantined(ValueError):
     """A legacy row is malformed and must not block other Workspace imports."""
+
+
+class CanonicalWorkspaceStoreUnavailable(RuntimeError):
+    """A database is configured but the Container that owns it never started."""
 
 
 def _now() -> datetime:
@@ -80,6 +95,14 @@ def _engine_workspace_store() -> WorkspaceStore:
     store = getattr(container, "workspace_store", None)
     if store is not None:
         return cast(WorkspaceStore, store)
+    if _database_is_configured():
+        # Falling back here would replay the mirror, which stopped receiving
+        # writes once the shared database became the owner, and bring back
+        # every membership revoked and Workspace deleted since.
+        raise CanonicalWorkspaceStoreUnavailable(
+            "a database is configured but the maistro-core Container holding the "
+            "canonical Workspace store is not running"
+        )
     if _fallback_store is None:
         _fallback_store = InMemoryWorkspaceStore()
     return _fallback_store
@@ -98,6 +121,11 @@ async def canonical_workspace_store() -> WorkspaceStore:
 def canonical_store_for_tests() -> WorkspaceStore:
     """Expose the canonical test seam without making legacy rows authoritative."""
     return _engine_workspace_store()
+
+
+def _database_is_configured() -> bool:
+    url = resolve_database_url()
+    return bool(url) and not url.startswith("memory://")
 
 
 def _is_durable_store(store: WorkspaceStore) -> bool:
@@ -179,6 +207,15 @@ def _journal_status(workspace_id: str) -> str:
     return str(raw.get("status", "")) if isinstance(raw, dict) else ""
 
 
+def _imported_into_durable_store(workspace_id: str) -> bool:
+    raw = _migration_journal.get(workspace_id, {})
+    return (
+        isinstance(raw, dict)
+        and raw.get("status") == "complete"
+        and raw.get("mode") in _DURABLE_JOURNAL_MODES
+    )
+
+
 def _write_journal(workspace_id: str, *, status: str, mode: str) -> None:
     _migration_journal[workspace_id] = {
         "status": status,
@@ -249,7 +286,7 @@ async def _migrate_one(
     source_key: str,
     legacy: Workspace,
     *,
-    retire_source: bool,
+    durable: bool,
 ) -> None:
     """Import one source without remapping identity or treating partial work as complete."""
     canonical = await store.get(legacy.id) if legacy.id.strip() else None
@@ -281,11 +318,10 @@ async def _migrate_one(
     if legacy.id not in _presentations:
         _presentations[legacy.id] = _presentation_from_legacy(legacy)
 
-    if retire_source:
+    if durable:
+        # The mirror row stays as it is: this journal entry, not the row's
+        # absence, is what stops the next start importing it again.
         _write_journal(legacy.id, status="complete", mode="legacy_import")
-        # Representation retirement is not logical Workspace deletion: using
-        # ModelStore.pop() here would invoke the agent-materialization cascade.
-        stores.workspaces.retire_record(source_key, None)
     else:
         # Keep the migration source synchronized as recovery evidence before
         # declaring the import complete. On restart a fresh fallback can replay
@@ -295,11 +331,11 @@ async def _migrate_one(
 
     _quarantine.pop(source_key, None)
     logger.info(
-        "workspace_convergence_import workspace_id=%s created=%s resumed=%s retired_legacy=%s",
+        "workspace_convergence_import workspace_id=%s created=%s resumed=%s durable=%s",
         legacy.id,
         created,
         managed_import and not created,
-        retire_source,
+        durable,
     )
 
 
@@ -314,14 +350,16 @@ async def _ensure_ready() -> WorkspaceStore:
     async with _migration_lock:
         if _migrated_store_identity == identity:
             return store
-        retire_source = _is_durable_store(store)
+        durable = _is_durable_store(store)
         for source_key, legacy in list(stores.workspaces.items()):
+            if durable and _imported_into_durable_store(legacy.id):
+                continue
             try:
                 await _migrate_one(
                     store,
                     source_key,
                     legacy,
-                    retire_source=retire_source,
+                    durable=durable,
                 )
             except LegacyWorkspaceQuarantined as exc:
                 _quarantine_source(source_key, legacy, exc)
@@ -418,7 +456,7 @@ async def create_workspace(
             mode="fallback_recovery" if not _is_durable_store(store) else "canonical_create",
         )
     except BaseException:
-        if canonical.workspace_id in stores.workspaces:
+        if not _is_durable_store(store) and canonical.workspace_id in stores.workspaces:
             stores.workspaces.retire_record(canonical.workspace_id, None)
         _presentations.pop(canonical.workspace_id, None)
         await store.delete(canonical.workspace_id)
@@ -476,6 +514,10 @@ async def delete_workspace(workspace_id: str) -> None:
     store = await _ensure_ready()
     await store.delete(workspace_id)
     _presentations.pop(workspace_id, None)
+    if _is_durable_store(store):
+        # The journal entry is what keeps a legacy mirror row for this id from
+        # being imported again; the mirror itself is not an authority to edit.
+        return
     _migration_journal.pop(workspace_id, None)
     if workspace_id in stores.workspaces:
         # This is a real logical deletion, so the normal pop lifecycle applies.

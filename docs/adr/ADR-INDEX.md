@@ -101,6 +101,7 @@ Turing / deferred-to-vN) and **`DECISION-BACKLOG.md`** (in-scope but not yet dec
 | ADR-091226-1341 | v1 | Accepted | 2026-09-12 | 2026-09-12 | 2026-09-12 12:11 CDT | Gates Ran evaluates path-scoped execution evidence from measured changed files; ambiguous scope fails closed. |
 | ADR-091626-ba4f | v1 | Accepted | 2026-09-16 | 2026-09-16 | 2026-09-16 | The Workspace design system is a first-party Tier-1 bundled Open Design system: shared token schema plus a fixed actor quartet, four state faces, honest undo outcomes and a 12px floor; personas rebind four values only. |
 | ADR-091726-7c2a | v1 | Accepted | 2026-09-17 | 2026-09-17 | 2026-09-17 | A requirements interview precedes every Goal and CreativeBrief commit: one plain question at a time, the record answers first, free text, defaults only where defensible, nothing written until the person confirms; the draft carries every field's source. |
+| ADR-092326-97c4 | v1 | Accepted | 2026-09-23 | 2026-09-23 | 2026-09-23 | Shared PostgreSQL is the single owner of canonical Workspace identity: Hive's embedded runtime uses maistro-engine's database and never migrates; on that durable path Hive's legacy Workspace mirror is imported once and never written or replayed. |
 
 *Turing-specific ADRs (autonoetic self-model) are tracked as a separate set — see `OUT-OF-SCOPE.md`
 §Turing and `DECISION-BACKLOG.md` §Turing. ADR-061 (maistro-design-package) and ADR-100 (its

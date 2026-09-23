@@ -316,6 +316,17 @@ or placeholder-only section.
 
 ### Changed
 
+- **Hive and maistro-server now share one durable Workspace owner (#37,
+  ADR-092326-97c4).** The shipped `docker-compose.yml` gives `hive-conductor`
+  the same `DATABASE_URL`/`DB_*` as `maistro-engine` and starts it only after
+  PostgreSQL and the (self-migrating) engine are healthy, so Hive's embedded
+  Container uses the `canonical_workspaces` tables maistro-server serves. On
+  that durable path Hive's `stores.workspaces` mirror is imported once
+  (journal-idempotent, never resurrecting a Workspace or membership deleted or
+  revoked canonically) and is no longer written or replayed; a configured
+  database whose Container failed to start now fails Workspace authorization
+  closed instead of reviving the mirror. The no-database dev path is unchanged.
+
 - **The Conductor frontend renders on the Workspace design system (#1046,
   #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`
   is a byte-for-byte copy of the bundled `workspace` tokens, held identical by
