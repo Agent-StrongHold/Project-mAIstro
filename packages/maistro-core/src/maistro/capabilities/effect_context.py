@@ -88,11 +88,21 @@ def new_effect_context(
     usage_log: InMemoryUsageLog | None = None,
     quota_tracker: Any | None = None,
 ) -> CapabilityEffectContext:
-    """Build an isolated canonical effect context for local/runtime composition.
+    """Compose one canonical effect authority from caller-selected stores.
 
     ``invocation_store`` selects the canonical effect ledger; ephemeral
     composition defaults to the in-memory store while durable containers pass
-    the SQLite/PostgreSQL capability Invocation stores.
+    the SQLite/PostgreSQL capability Invocation stores. Production uses this
+    constructor with stores selected by the Container's configured persistence
+    backend; tests/local ephemeral composition can use
+    :func:`new_in_memory_effect_context`. Keeping the service construction here
+    means durability changes storage lifetime only; it cannot create a second
+    policy or Invocation execution path.
+
+    ``binding_store``/``event_store`` remain in-memory even when
+    ``invocation_store`` is durable: #1133 durable-izes those separately, and
+    this constructor's job here is only the Invocation authority #1091 needed
+    for governed model egress.
 
     ``credentials`` supplies the scoped credential pool for Provider selection
     (#58); omitted, the router exists but holds no credentials, so routed
@@ -135,6 +145,8 @@ def default_effect_context() -> CapabilityEffectContext:
     The shared instance matters: a Node must resolve the same Binding authority
     an application populated, and retries must consult the same Invocation
     ledger. No default Binding is created here; absence remains a hard refusal.
+    Production Containers do not use this fallback: they inject their selected
+    backend-specific context explicitly.
     """
 
     return new_effect_context()

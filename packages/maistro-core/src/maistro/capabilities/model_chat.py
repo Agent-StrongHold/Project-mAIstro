@@ -27,12 +27,14 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict
 
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
+from maistro.capabilities.credential_routing import CredentialBackedProvider
 from maistro.capabilities.invocation import (
     Invocation,
     InvocationUsage,
     ProviderResolver,
 )
 from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     MODEL_CHAT_CAPABILITY,
     GatewayEndpoint,
     LlmGatewayProvider,
@@ -193,6 +195,12 @@ class GovernedLLMClient:
                 workspace_id=self._workspace_id,
                 project_id=self._project_id,
                 capability=MODEL_CHAT_CAPABILITY,
+                # Bind-scoped credential routing (#1091) refuses a Binding
+                # that names no credential: authorize the deployment's
+                # registered default gateway key. Acquire still fails closed
+                # unless that ref exists in exactly this Workspace/Project
+                # scope, so naming it widens nothing.
+                credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
             ),
             run_id=run_id,
             node_run_id=node_run_id,
@@ -270,9 +278,21 @@ class ModelChatEgress:
             return provider
 
         async def execute(provider: ResolvedCapabilityProvider, payload: Any) -> Any:
+            if not isinstance(provider, CredentialBackedProvider):
+                raise TypeError(
+                    "model-chat physical execution requires a Binding-scoped credential"
+                )
+            base = provider.base
+            if not isinstance(base, LlmGatewayProvider):
+                raise TypeError(f"credential routed a non-gateway provider: {base!r}")
             if setup is not None:
                 await setup()
-            return await execute_model_chat(provider, payload, endpoint=self._endpoint)
+            endpoint = self._endpoint.model_copy(update={"api_key": provider.credential.api_key})
+            return await execute_model_chat(base, payload, endpoint=endpoint)
+
+        routing = self._effects.credential_routing()
+        routed_resolver = routing.resolver(tracked_resolve)
+        routed_executor = routing.executor(execute)
 
         def usage_from(body: Any) -> InvocationUsage | None:
             if not selected:
@@ -286,8 +306,8 @@ class ModelChatEgress:
             attempt_id=attempt_id,
             effect_key=effect_key,
             request=request,
-            resolver=tracked_resolve,
-            executor=execute,
+            resolver=routed_resolver,
+            executor=routed_executor,
             usage_from=usage_from,
         )
         body = invocation.result if isinstance(invocation.result, dict) else {}

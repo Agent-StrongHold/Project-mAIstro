@@ -363,6 +363,39 @@ def _require_scope(invocation: Invocation, *, workspace_id: str, project_id: str
         raise ValueError("reconciliation scope does not match the Invocation")
 
 
+def _settlement_fields(
+    disposition: ReconciliationDisposition,
+    *,
+    result: Any | None,
+    reason: str,
+    usage: InvocationUsage | None,
+) -> dict[str, Any]:
+    """The terminal status fields one reconciliation disposition projects.
+
+    `APPLIED` completes the physical effect (adopting its result and, when the
+    provider reported one, its usage); `NOT_APPLIED` fails it with the
+    settlement reason; `INDETERMINATE` records the reason and leaves the
+    lifecycle where it is.
+    """
+    if disposition is ReconciliationDisposition.APPLIED:
+        fields: dict[str, Any] = {
+            "status": InvocationStatus.COMPLETED,
+            "result": result,
+            "error": None,
+            "finished_at": datetime.now(UTC),
+        }
+        if usage is not None:
+            fields["usage"] = usage
+        return fields
+    if disposition is ReconciliationDisposition.NOT_APPLIED:
+        return {
+            "status": InvocationStatus.FAILED,
+            "error": reason,
+            "finished_at": datetime.now(UTC),
+        }
+    return {"error": reason}
+
+
 @runtime_checkable
 class ProviderReconciliationAdapter(Protocol):
     """Provider-specific evidence seam; it cannot mutate Invocation state."""
@@ -755,23 +788,14 @@ class InvocationExecutionService:
             update["workspace_id"] = workspace_id
         if not invocation.project_id and project_id:
             update["project_id"] = project_id
-        if disposition is ReconciliationDisposition.APPLIED:
-            update.update(
-                status=InvocationStatus.COMPLETED,
+        update.update(
+            _settlement_fields(
+                disposition,
                 result=result,
-                error=None,
-                finished_at=datetime.now(UTC),
+                reason=reason,
+                usage=usage,
             )
-            if usage is not None:
-                update["usage"] = usage
-        elif disposition is ReconciliationDisposition.NOT_APPLIED:
-            update.update(
-                status=InvocationStatus.FAILED,
-                error=reason,
-                finished_at=datetime.now(UTC),
-            )
-        else:
-            update["error"] = reason
+        )
         try:
             settled = await self._store.save(invocation.model_copy(update=update))
         except StaleInvocationUpdate:

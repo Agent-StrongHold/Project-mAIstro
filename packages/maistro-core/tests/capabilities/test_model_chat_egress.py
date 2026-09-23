@@ -18,7 +18,11 @@ import httpx
 import pytest
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.credential_routing import CredentialBackedProvider, CredentialRouting
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    new_in_memory_effect_context,
+)
 from maistro.capabilities.invocation import (
     CapabilityUnavailable,
     InvocationStatus,
@@ -31,8 +35,15 @@ from maistro.capabilities.model_chat import (
     _gateway_usage,
     resolve_model_chat_provider,
 )
-from maistro.capabilities.providers.llm_gateway import GatewayEndpoint, LlmGatewayProvider
+from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+    MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    GatewayEndpoint,
+    LlmGatewayProvider,
+)
 from maistro.capabilities.types import Unavailable
+from maistro.credentials.router import CredentialRouter
+from maistro.credentials.types import CredentialRecord
 from maistro.providers.errors import NoEligibleModelError
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
@@ -73,7 +84,27 @@ def _binding(provider_name: str = "") -> Binding:
         project_id="p1",
         capability=MODEL_CHAT_CAPABILITY,
         provider_name=provider_name,
+        credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
     )
+
+
+def _effects() -> CapabilityEffectContext:
+    """An in-memory effect context with the gateway credential every
+    ``_binding()`` authorizes already registered (#1091, Binding-scoped
+    credential routing): without it every governed call in this file refuses
+    with ``CredentialScopeError`` before reaching the gateway."""
+
+    effects = new_in_memory_effect_context()
+    effects.credentials.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    return effects
 
 
 _OK_BODY: dict[str, Any] = {
@@ -107,7 +138,7 @@ def _patch_gateway(monkeypatch: pytest.MonkeyPatch, body: Any = None, status: in
 async def test_governed_call_creates_invocation_with_usage_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
@@ -155,7 +186,7 @@ async def test_unpinned_unaliased_request_uses_router_selection(
     registry.mark_unavailable("fast-model")
     router = CostAwareRouter(registry)
     _patch_gateway(monkeypatch, _OK_BODY)
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     egress = ModelChatEgress(
         effects, registry=registry, router=router, endpoint=GatewayEndpoint(base_url="http://gw")
     )
@@ -202,7 +233,7 @@ async def test_router_selection_matches_resolver_selection_exactly() -> None:
 async def test_binding_pin_outranks_router_preference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
@@ -240,7 +271,7 @@ async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
 ) -> None:
     """Gateway aliases absent from the registry keep today's passthrough."""
 
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
@@ -270,7 +301,7 @@ async def test_unregistered_alias_still_reaches_gateway_with_absent_cost(
 async def test_completed_effect_deduplicates_repeat_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
     calls: list[str] = []
 
@@ -318,7 +349,7 @@ async def test_completed_effect_deduplicates_repeat_invocation(
 async def test_unreachable_gateway_records_failed_retryable_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
 
     class _Client:
@@ -386,6 +417,18 @@ async def test_canonical_invocation_completion_records_quota_once(
     """The live Invocation hook records provider usage and deduplicates effects."""
     tracker = InMemoryQuotaTracker()
     effects = new_in_memory_effect_context(usage_log=InMemoryUsageLog(), quota_tracker=tracker)
+    # Binding-scoped credential routing (#1091): every governed call in this
+    # file crosses the credential seam, so the gateway credential the binding
+    # authorizes must exist in its Workspace/Project scope.
+    effects.credentials.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
     registry = _registry()
     _patch_gateway(monkeypatch, _OK_BODY)
     egress = ModelChatEgress(
@@ -429,6 +472,15 @@ async def test_canonical_invocation_missing_usage_is_explicitly_unreported(
 ) -> None:
     tracker = InMemoryQuotaTracker()
     effects = new_in_memory_effect_context(usage_log=InMemoryUsageLog(), quota_tracker=tracker)
+    effects.credentials.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
     _patch_gateway(monkeypatch, {"choices": [{"message": {"content": "ok"}}]})
     egress = ModelChatEgress(
         effects,
@@ -458,7 +510,7 @@ async def test_canonical_invocation_missing_usage_is_explicitly_unreported(
 async def test_unknown_outcome_blocks_repeat() -> None:
     """A 500 leaves the Invocation UNKNOWN; recovery must not repeat it."""
 
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
     resolve = resolve_model_chat_provider(registry, CostAwareRouter(registry))
 
@@ -532,7 +584,7 @@ async def test_unavailable_selection_refuses_before_any_gateway_call(
     ``CapabilityUnavailable`` before any HTTP is attempted.
     """
 
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
     registry.mark_unavailable("fast-model")
     calls: list[str] = []
@@ -604,8 +656,26 @@ async def test_usage_from_without_tracked_provider_returns_none() -> None:
                 usage=None,
             )
 
+    router = CredentialRouter()
+    router.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+
     class _StubEffects:
         invocations = _StubInvocations()
+
+        def credential_routing(self) -> CredentialRouting:
+            # `_StubInvocations.invoke()` never calls the routed
+            # resolver/executor it's handed (it returns a canned result
+            # directly), but the test below calls the captured resolver
+            # itself, which does route through this credential (#1091).
+            return CredentialRouting(router)
 
     registry = _registry()
     egress = ModelChatEgress(
@@ -628,8 +698,12 @@ async def test_usage_from_without_tracked_provider_returns_none() -> None:
 
     # Arc 161 True + arc 169 False: once the tracked resolver records a
     # gateway provider, the same usage_from maps the body via _gateway_usage.
+    # The captured resolver is the credential-routed wrapper (#1091), so the
+    # resolved value is the CredentialBackedProvider around the gateway
+    # provider `tracked_resolve` itself recorded into `selected`.
     provider = await captured["resolver"](_binding())
-    assert isinstance(provider, LlmGatewayProvider)
+    assert isinstance(provider, CredentialBackedProvider)
+    assert isinstance(provider.base, LlmGatewayProvider)
     usage = captured["usage_from"](_OK_BODY)
     assert usage is not None
     assert usage.input_units == 100
@@ -647,7 +721,7 @@ async def test_setup_hook_runs_after_authorization_before_model_http(
     """
 
     order: list[str] = []
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
 
     async def _setup() -> None:
@@ -735,6 +809,124 @@ async def test_denied_policy_refuses_before_setup_runs(
         )
 
     assert setup_ran is False
+
+
+# --- physical executor's own fail-closed checks (#1091) ---------------------
+#
+# On the real governed path the resolver is always credential-routed before
+# the executor ever runs (every test above goes through it), so these two
+# checks inside `execute()` are defense in depth against a resolver seam that
+# skipped credential routing -- never reachable by construction through
+# `ModelChatEgress.complete()` alone. They are exercised the same way
+# `test_usage_from_without_tracked_provider_returns_none` reaches the raw
+# resolver/executor: stub `effects.invocations.invoke` to capture the routed
+# executor `complete()` builds, then call it directly with a provider shape
+# each check exists to refuse.
+
+
+async def _capture_routed_executor(egress_kwargs: dict[str, Any]) -> Any:
+    """Run one `complete()` call through a stub `invocations.invoke` that
+    hands back the routed executor instead of actually invoking it."""
+
+    from types import SimpleNamespace
+
+    captured: dict[str, Any] = {}
+
+    class _StubInvocations:
+        async def invoke(self, *, executor: Any, **kwargs: Any) -> Any:
+            captured["executor"] = executor
+            return SimpleNamespace(
+                invocation_id="inv-stub",
+                binding=SimpleNamespace(provider_name="fast-model"),
+                result={},
+                usage=None,
+            )
+
+    router = CredentialRouter()
+
+    class _StubEffects:
+        invocations = _StubInvocations()
+
+        def credential_routing(self) -> CredentialRouting:
+            return CredentialRouting(router)
+
+    registry = _registry()
+    egress = ModelChatEgress(
+        _StubEffects(),  # type: ignore[arg-type]
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw"),
+    )
+    await egress.complete(**egress_kwargs)
+    return captured["executor"]
+
+
+async def test_execute_refuses_a_provider_without_a_routed_credential() -> None:
+    """Line 178-179: a provider that never crossed credential routing (not a
+    `CredentialBackedProvider`) must not reach the gateway HTTP call at all --
+    `CredentialRouting.executor`'s own wrapper passes such a provider straight
+    to `execute` unchanged (it only wraps `CredentialBackedProvider`
+    instances), so `execute` itself is the last fail-closed check."""
+
+    executor = await _capture_routed_executor(
+        {
+            "binding": _binding(),
+            "run_id": "r1",
+            "node_run_id": "nr1",
+            "attempt_id": "a1",
+            "effect_key": "test:no-credential",
+            "request": ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+        }
+    )
+
+    class _BareProvider:
+        name = "fast-model"
+        slot = MODEL_CHAT_CAPABILITY
+        trust_tier = "t1"
+
+    with pytest.raises(TypeError, match="Binding-scoped credential"):
+        await executor(_BareProvider(), {})
+
+
+async def test_execute_refuses_a_credential_backed_non_gateway_provider() -> None:
+    """Line 183-184: even once credential-routed, the wrapped base provider
+    must still be the one approved gateway Provider -- a `CredentialBackedProvider`
+    around anything else (a slot-specific resolver bug, or a future second
+    Provider that forgets this boundary) is refused rather than handed an
+    HTTP client it was never built for."""
+
+    from maistro.credentials.types import CredentialRecord
+
+    executor = await _capture_routed_executor(
+        {
+            "binding": _binding(),
+            "run_id": "r1",
+            "node_run_id": "nr1",
+            "attempt_id": "a1",
+            "effect_key": "test:non-gateway",
+            "request": ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
+        }
+    )
+
+    class _NonGatewayProvider:
+        name = "not-a-gateway"
+        slot = MODEL_CHAT_CAPABILITY
+        trust_tier = "t1"
+        credential_provider = MODEL_GATEWAY_CREDENTIAL_PROVIDER
+
+    wrapped = CredentialBackedProvider(
+        base=_NonGatewayProvider(),  # type: ignore[arg-type]
+        credential=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+        workspace_id="ws1",
+        project_id="p1",
+    )
+
+    with pytest.raises(TypeError, match="non-gateway provider"):
+        await executor(wrapped, {})
 
 
 # --- provider registration seam + structured-output payload (#1088) ---------
@@ -884,7 +1076,7 @@ async def test_chat_payload_carries_structured_output_shape(
             return _Resp()
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    effects = new_in_memory_effect_context()
+    effects = _effects()
     registry = _registry()
     egress = ModelChatEgress(
         effects,

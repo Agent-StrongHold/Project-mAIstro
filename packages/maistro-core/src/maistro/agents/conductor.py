@@ -27,7 +27,10 @@ from maistro.agents.prompts import CONDUCTOR_SYSTEM
 from maistro.agents.types import ConductorOutput, LLMProviderError, PlanOutput, SubTask
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.model_chat import ModelChatEgress, ModelChatRequest
-from maistro.capabilities.providers.llm_gateway import MODEL_CHAT_CAPABILITY
+from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+    MODEL_CHAT_CAPABILITY,
+)
 from maistro.config.model_resolver import resolve_model
 from maistro.config.models import DEFAULT_TIERS, Tier, TierConfig
 from maistro.config.settings import get_settings
@@ -96,6 +99,60 @@ def build_conductor(
     )
 
 
+async def _governed_completion(
+    call: ConductorCall,
+    user_prompt: str,
+    max_tokens: int,
+    governed_egress: ModelChatEgress,
+    invocation_identity: tuple[str, str, str] | None,
+    invocation_number: int,
+    workspace_id: str,
+    project_id: str,
+) -> str:
+    """Run one conductor completion across canonical Binding -> Invocation (#718).
+
+    The Binding names the deployment's registered default gateway key:
+    Binding-scoped credential routing (#1091) refuses a Binding that names no
+    credential, and acquire still fails closed unless that ref exists in
+    exactly this Workspace/Project scope, so naming it widens nothing.
+    """
+    run_id, node_run_id, attempt_id = invocation_identity or (
+        f"conductor-run-{id(call)}",
+        "conductor-node",
+        "conductor-attempt",
+    )
+    result = await governed_egress.complete(
+        binding=Binding(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            capability=MODEL_CHAT_CAPABILITY,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        ),
+        run_id=run_id,
+        node_run_id=node_run_id,
+        attempt_id=attempt_id,
+        effect_key=f"conductor-llm-{invocation_number}",
+        request=ModelChatRequest(
+            model=call.model,
+            messages=[
+                {"role": "system", "content": call.system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        ),
+    )
+    body = result.body
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise LLMProviderError("conductor: governed gateway returned no choices")
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise LLMProviderError("conductor: governed gateway returned no content")
+    return content
+
+
 async def _call_gateway(
     call: ConductorCall,
     user_prompt: str,
@@ -115,40 +172,16 @@ async def _call_gateway(
     legacy callers that have not migrated to that authority.
     """
     if governed_egress is not None:
-        run_id, node_run_id, attempt_id = invocation_identity or (
-            f"conductor-run-{id(call)}",
-            "conductor-node",
-            "conductor-attempt",
+        return await _governed_completion(
+            call,
+            user_prompt,
+            max_tokens,
+            governed_egress,
+            invocation_identity,
+            invocation_number,
+            workspace_id,
+            project_id,
         )
-        result = await governed_egress.complete(
-            binding=Binding(
-                workspace_id=workspace_id,
-                project_id=project_id,
-                capability=MODEL_CHAT_CAPABILITY,
-            ),
-            run_id=run_id,
-            node_run_id=node_run_id,
-            attempt_id=attempt_id,
-            effect_key=f"conductor-llm-{invocation_number}",
-            request=ModelChatRequest(
-                model=call.model,
-                messages=[
-                    {"role": "system", "content": call.system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=max_tokens,
-                response_format={"type": "json_object"},
-            ),
-        )
-        body = result.body
-        choices = body.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise LLMProviderError("conductor: governed gateway returned no choices")
-        message = choices[0].get("message") if isinstance(choices[0], dict) else None
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, str):
-            raise LLMProviderError("conductor: governed gateway returned no content")
-        return content
 
     if not call.base_url:
         raise LLMProviderError(
