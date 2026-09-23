@@ -133,20 +133,8 @@ def semantic_tool_poisoning_signals(text: str) -> tuple[bool, bool, bool]:
     )
 
 
-def semantic_tool_poisoning_scan(text: str) -> tuple[bool, list[str]]:
-    # NOTE: We deliberately do NOT short-circuit when code-syntax tokens
-    # (def/class/import/...) appear. Prefixing a poisoned payload with e.g.
-    # "import os" previously disabled this entire layer, letting tool-poisoning
-    # comments through. Benign code is protected from false positives by the
-    # flag logic below, which requires a *prescriptive instruction* combined
-    # with a dangerous action or sensitive object before flagging.
-    has_actions, has_objects, has_prescriptive = semantic_tool_poisoning_signals(text)
-    has_actions = has_actions or semantic_tool_poisoning_capture_ordered(text)
-    flags: list[str] = []
-
-    if has_prescriptive and has_actions:
-        flags.append("prescriptive_instruction+dangerous_action")
-    if has_prescriptive and has_objects:
-        flags.append("prescriptive_instruction+sensitive_object")
-
-    return bool(flags), flags
+# NOTE: There is deliberately no whole-text ``semantic_tool_poisoning_scan``
+# composition here. The flag composition lives in the product path,
+# ``detector._scan_semantic_windowed``, which aggregates the bounded signals
+# below across overlapping scan windows; a whole-text variant duplicated that
+# policy with pre-#74 capture-ordering semantics and no product caller.
