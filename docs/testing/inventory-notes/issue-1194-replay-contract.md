@@ -1,11 +1,12 @@
+---
 inventory-delta:
-  packages/maistro-core/tests: +15
+  packages/maistro-core/tests: +14
   packages/maistro-server/tests: +1
 ---
 # issue-1194-replay-contract
 
-Fifteen core tests and one server test add evidence for the executable Graph
-replay contract:
+The branch's net contribution to the suite ledger is +14 core and +1 server
+node IDs. They add evidence for the executable Graph replay contract:
 
 - the non-retryable contract overrides a larger graph retry budget;
 - an EFFECT_KEY node without a recorded key is not retried by the graph executor;
@@ -19,6 +20,15 @@ replay contract:
 
 The catalog assertion also verifies replay semantics (`idempotent` included) are
 emitted from the executable node contract, never a second hand-written table.
+
+## suite-ledger reconciliation (recorded for review)
+
+The note first shipped with a malformed front matter — the opening `---`
+delimiter was missing — so the gate read no delta from it at all, and the
+branch's two develop merges moved collection underneath it. The numbers above
+are the gate's own `--update` result for this branch's net contribution after
+that repair: they are whatever makes baseline + Σ(notes) match collection, per
+the ledger's convention for a change whose base moved.
 
 ## develop-merge reconciliation (recorded for review)
 
