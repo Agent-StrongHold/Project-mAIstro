@@ -78,6 +78,18 @@ class AuditEntry:
     trace_id: str = ""
     request_id: str = ""
     detail: str = ""
+    # Correlation and route metadata are identifiers only; boundary consumers
+    # must never put scanned content in an audit entry. (#1139: the Turing
+    # ingress composes these onto the canonical record.)
+    route: str = ""
+    action: str = ""
+    policy_version: str = ""
+    workspace_id: str = ""
+    project_id: str = ""
+    run_id: str = ""
+    invocation_id: str = ""
+    content_sha256: str = ""
+    content_length: int = 0
 
 
 @dataclass(frozen=True)
