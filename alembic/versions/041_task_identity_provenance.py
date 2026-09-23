@@ -1,7 +1,7 @@
 """Persist task actor and service delegation evidence (#1057).
 
-Revision ID: 039_task_identity_provenance
-Revises: 038
+Revision ID: 041_task_identity_provenance
+Revises: 039
 Create Date: 2026-09-08
 """
 
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "039_task_identity_provenance"
-down_revision = "038"
+revision = "041_task_identity_provenance"
+down_revision = "039"
 branch_labels = None
 depends_on = None
 

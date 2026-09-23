@@ -1,7 +1,7 @@
 """Persist dispatch inputs needed to restore queued task receipts (#1057).
 
-Revision ID: 040_task_receipt_dispatch_inputs
-Revises: 039_task_identity_provenance
+Revision ID: 042_task_receipt_dispatch_inputs
+Revises: 041_task_identity_provenance
 Create Date: 2026-09-08
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "040_task_receipt_dispatch_inputs"
-down_revision = "039_task_identity_provenance"
+revision = "042_task_receipt_dispatch_inputs"
+down_revision = "041_task_identity_provenance"
 branch_labels = None
 depends_on = None
 
