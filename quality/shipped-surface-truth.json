@@ -1478,10 +1478,10 @@
       "method": "WEBSOCKET",
       "route": "/dags/{dag_id}/run",
       "handler": "stream_dag_run",
-      "disposition": "unresolved",
+      "disposition": "canonical",
       "production_enabled": true,
-      "owner_issue": 766,
-      "reason": "executes the DAG through services.graph_runner.execute_dag_streaming, the pre-durable legacy executor distinct from the canonical execute_dag the HTTP twin POST /{dag_id}/run already uses; gated on dags.write and workspace-selection authorization, but the execution path itself is the #44/#766 convergence gap this entry discloses rather than hides"
+      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming is a frame facade over canonical_dag_runner.execute_dag, so the button's run is one interactive durable Run/NodeRun/Attempt in the authorized Workspace/Project, audited as dag_run, and the same dag_run_store projection POST /{dag_id}/run records is written under the canonical run_id as soon as the Run settles; an unexpected (non-Run) failure frame carries only the exception kind, while a failed Run reports its canonical error exactly as the HTTP route does (#766)",
+      "effect_owner": "services.dag_execution_scope.authorize_hive_dag_scope -> services.graph_runner.execute_dag_streaming -> services.canonical_dag_runner.execute_dag (durable Run/NodeRun/Attempt) + services.dag_run_store projection"
     },
     {
       "source": "packages/maistro-canvas/frontend/server/lulu/service.py",

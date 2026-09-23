@@ -25,10 +25,32 @@ or placeholder-only section.
 
 ### Security
 
+- **Hive schedules are bound to their owner's Workspace (#1201, partial).**
+  `POST /v1/schedules` now requires a `workspace_id` selection (optional
+  `project_id`), admits it through the same canonical Workspace/Project
+  authorization as `POST /v1/dags/{id}/run` (403 when absent or not a
+  membership), and stamps `user_id`, `workspace_id` and `project_id` from the
+  authenticated session; a client-sent `user_id` is ignored and `PUT` cannot
+  change owner or scope. List returns only schedules in the caller's
+  Workspaces, and get/update/delete/manual run answer the same 404 for a
+  missing, foreign, or ownerless (pre-existing) schedule. Only a Workspace
+  owner or editor may create, change, delete or manually run a schedule
+  (viewers read); an archived Workspace refuses edits and manual runs.
+  Removing a member removes their API access; it does not yet stop automatic
+  fires of schedules that member owns (tracked in #1201).
+  With a configured Container, fires of a bound schedule create their Run in
+  the bound Workspace/Project instead of the configured default. Operators:
+  schedules created before this change (including the seeded `sch-1`) have no
+  Workspace, are no longer visible over the API, and still fire automatically
+  in the default Workspace until the automatic-fire half of #1201 lands;
+  remove them from the schedule store directly before recreating them from a
+  Workspace, or both copies will fire.
+
 - **Canvas visual evaluation no longer reveals whether a Run id exists (#1152,
-  partial).** `POST /v1/canvas/eval` now authorizes the selected canonical Run by
-  canonical Workspace membership, the same check HITL and DAG-run inspection
-  use. Any member of the Run's Workspace may evaluate it, including a Run another
+  partial).** `POST /v1/canvas/eval` now authorizes the selected canonical Run
+  against the caller's canonical Workspace universe, the same one DAG-run
+  inspection uses, resolved before the Run lookup so a missing and a foreign
+  id do the same work. Any member of the Run's Workspace may evaluate it, including a Run another
   member started. A Run in a Workspace the caller does not belong to, a Run with
   no execution principal and a missing Run all get the same 503
   `visual quality evaluation is unavailable`. Previously a foreign Run returned
@@ -258,6 +280,19 @@ or placeholder-only section.
   so they are ledgered against #1192. HITL deadline expiry is not counted as
   a waker, because only a manual `POST /v1/hitl/expire` triggers it.
 
+- **Every durable table declares its retention, and CI checks it against the
+  schema (#325).** `quality/durable-table-retention.json` lists all 63 tables
+  in the schema built by Alembic and `.sql` migrations (later drops applied),
+  runtime `CREATE TABLE` or ORM `__tablename__`, with backend, owner, data
+  class, retention and deletion path. Six tables
+  whose DDL lives outside this repository are listed separately.
+  `scripts/check-durable-table-inventory.py` fails CI when a table has no
+  entry, an entry names a table nothing creates, a deletion path does not
+  import, or `security_violations` or `usage_events` is dropped. A table with
+  no production-driven purge is recorded as `undecided` against #325. This
+  includes `security_violations`, `usage_events`, `task_idempotency`,
+  `security_rate_limits` and PostgreSQL `sessions`. Nothing is written down
+  as retained forever unless someone decided it.
 - **Stable Workspace Agent identity and per-user default Workspace
   ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
   ADR-092326-7ed7).** Hive's `services/workspace_agent.py`
@@ -487,6 +522,18 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
+  (#766).**
+  A run started over `/v1/ws/dags/{id}/run` now records the same Recent Runs
+  (`DagRunStore`) projection as the HTTP route, keyed by the canonical `run_id`.
+  The projection is written as soon as the Run settles, so it is recorded even
+  if the client disconnects mid-stream. Like HTTP, the socket runs in
+  `interactive` mode and writes a `dag_run` audit entry. A failure that is not
+  a Run outcome now shows only `<ExcType>: execution failed; see server logs`,
+  never the raw exception message, and the traceback goes to the server log.
+  The shipped-surface ledger now lists the socket as `canonical` instead of
+  `unresolved`.
 
 - **Hive now ticks the Container's canonical recovery seams (#62).**
   `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
