@@ -34,7 +34,26 @@ replays the turn outside the Run/NodeRun/Attempt spine
 Docstring-only change; no test inventory delta.
 
 Known unrelated failure carried from develop:
-`scripts/check-shipped-surface-truth.py --require-clean` still reports seven
+`scripts/check-shipped-surface-truth.py --require-clean` still reports
 pre-existing Hive-Conductor production-enabled unresolved surfaces (Gate D);
 this branch never touched `packages/hive-conductor/` and the failures are
-identical on the develop side.
+identical on the develop side. After merging develop `ba2f1f077` the count is
+six surfaces (develop resolved one of the seven); still develop-side, still
+out of scope for #54.
+
+## Merge-forward record (2026-09-23)
+
+A repair run found the worktree mid-merge of develop `ba2f1f077` into this
+branch with one conflict in `backend/execution.py`: this branch had added
+`invocation_for_run`/`_invoke_chat` (canonical Invocation convergence) while
+develop's #1175 re-scoped `_track_admission` to take a per-Workspace
+`workspace_id` and sweep with `WorkspaceRetentionScope`. Resolved by keeping
+both: our Invocation machinery plus develop's scoped retention signature, and
+the auto-merged caller passes `workspace_id=`. The same merge auto-merged a
+duplicate `external` key into root `pyproject.toml` `[tool.ruff.lint]` (both
+sides had added one); resolved as the union of the Vulture authorization codes
+(`V102`, `V105`, `V106`, `V107`). Post-merge validation: 42 turing backend
+tests pass, ruff check/format pass, mypy 710 files pass,
+`check-m1-convergence-freeze.py --base ba2f1f077` and
+`check-convergence-matrix.py` pass. No test inventory delta beyond what each
+side already carried.
