@@ -28,6 +28,7 @@ from maistro.container import create_container
 from maistro.runs.model import RunStatus
 from maistro.types.config import AgentConfig
 from maistro_server.api import chat_completions as chat_api
+from maistro_server.api import runs as runs_api
 from maistro_server.api.chat_completions import (
     ChatCompletionRequest,
     ChatMessage,
@@ -54,10 +55,12 @@ async def _routed() -> Iterator[None]:
     container = await create_container(AgentConfig(router_api_key="test-key"))
     container.agents = {CONDUCTOR_AGENT_NAME: ConductorAgent()}  # type: ignore[dict-item]
     chat_api.configure_container(container)
+    runs_api.configure_run_store(container.run_store)
     try:
         yield
     finally:
         chat_api.configure_container(None)
+        runs_api.configure_run_store(None)
 
 
 @pytest.fixture
@@ -177,6 +180,28 @@ class TestNonStreamingChatCompletions:
                 },
             )
         assert response.json()["model"] == "maistro-tier-3"
+
+    def test_completed_turn_is_visible_through_the_run_node_endpoint(
+        self, client: TestClient
+    ) -> None:
+        """The public chat seam must leave evidence the public Run API can read."""
+        with patch(
+            RUN_TASK,
+            AsyncMock(return_value=_output("recorded")),
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "record this"}]},
+            )
+
+        assert response.status_code == 200
+        run_id = response.json()["run_id"]
+        node_runs = client.get(f"/v1/runs/{run_id}/node-runs")
+
+        assert node_runs.status_code == 200
+        body = node_runs.json()
+        assert len(body) == 1
+        assert body[0]["status"] == "completed"
 
 
 class TestAdmissionCompensation:

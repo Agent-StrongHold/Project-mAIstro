@@ -136,6 +136,25 @@ def test_list_hides_runs_outside_the_callers_workspace(
     assert all(row["workspace_id"] in allowed for row in rows)
 
 
+def test_list_applies_the_limit_after_scope_filtering(
+    authed_client: Any, admin_client: Any
+) -> None:
+    """A foreign recent run cannot consume the caller's only list slot.
+
+    Scope filtering must happen before pagination: otherwise the globally
+    newest out-of-scope row can hide an in-scope row from a small page.
+    """
+    mine = _workspace(authed_client, "Mine")
+    theirs = _workspace(admin_client, "Admin Only")
+    _seed_run("r-mine-before-foreign", workspace_id=mine)
+    _seed_run("r-theirs-newest", workspace_id=theirs)
+
+    response = authed_client.get("/v1/dag-runs?limit=1")
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == ["r-mine-before-foreign"]
+
+
 # ─── detail ──────────────────────────────────────────────────────────────────
 
 
@@ -198,6 +217,134 @@ async def test_sse_streams_and_replays_inside_the_callers_workspace(
     await response.body_iterator.aclose()
     assert ": connected" in preamble
     assert "pm_node_started" in event_frame
+
+
+async def test_live_sse_stops_after_workspace_membership_is_revoked(
+    authed_client: Any, admin_client: Any
+) -> None:
+    """A stream admitted before revocation must not deliver later events.
+
+    This drives the generator directly because the stream is intentionally
+    long-lived. The event is appended after the canonical membership grant is
+    removed; the route must re-check that grant before yielding it.
+    """
+    ws = _workspace(admin_client, "Revocable live stream")
+    added = admin_client.post(
+        f"/v1/workspaces/{ws}/members",
+        json={"user_id": _AUTHED_USER_ID, "role": "viewer"},
+    )
+    assert added.status_code == 200, added.text
+    await _seed_run_async("r-live-revoked", workspace_id=ws)
+
+    from routes.dag_runs import stream_run_events
+    from services.dag_run_store import get_dag_run_store
+
+    response = await stream_run_events("r-live-revoked", _ScopedRequest(_AUTHED_USER_ID))
+    iterator = response.body_iterator
+    assert ": connected" in await anext(iterator)
+    assert "pm_node_started" in await anext(iterator)
+
+    # Let the generator pass its pre-wait authorization check and block on the
+    # queue. Revocation while that wait is pending must suppress the queued
+    # event at the second check immediately before yield.
+    pending_frame = asyncio.create_task(anext(iterator))
+    await asyncio.sleep(0)
+    revoked = admin_client.delete(f"/v1/workspaces/{ws}/members/{_AUTHED_USER_ID}")
+    assert revoked.status_code == 200, revoked.text
+    await get_dag_run_store().append_event(
+        "r-live-revoked",
+        event_type="pm_node_completed",
+        role="intake",
+        capability="create_initiative",
+        payload={"source": "after-revocation"},
+    )
+
+    with pytest.raises(StopAsyncIteration):
+        await pending_frame
+    await iterator.aclose()
+
+
+async def test_sse_emits_keepalive_then_honors_disconnect(
+    authed_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Idle streams keep the connection alive and close after disconnect."""
+    ws = _workspace(authed_client, "Keepalive")
+    await _seed_run_async("r-keepalive", workspace_id=ws)
+
+    from routes import dag_runs
+    from routes.dag_runs import stream_run_events
+
+    class _DisconnectAfterKeepalive(_ScopedRequest):
+        calls = 0
+
+        async def is_disconnected(self) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    async def _timeout(awaitable: Any, **_kwargs: Any) -> None:
+        # Close Queue.get() because this deterministic seam does not await it.
+        awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(dag_runs.asyncio, "wait_for", _timeout)
+    response = await stream_run_events("r-keepalive", _DisconnectAfterKeepalive(_AUTHED_USER_ID))
+    iterator = response.body_iterator
+    assert ": connected" in await anext(iterator)
+    assert ": keepalive" in await anext(iterator)
+    with pytest.raises(StopAsyncIteration):
+        await anext(iterator)
+    await iterator.aclose()
+
+
+async def test_sse_stops_when_membership_is_revoked_during_idle_poll(
+    authed_client: Any, admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Revocation detected by an idle poll closes the stream without a frame."""
+    ws = _workspace(admin_client, "Revoked during keepalive")
+    added = admin_client.post(
+        f"/v1/workspaces/{ws}/members",
+        json={"user_id": _AUTHED_USER_ID, "role": "viewer"},
+    )
+    assert added.status_code == 200, added.text
+    await _seed_run_async("r-revoked-during-poll", workspace_id=ws)
+
+    from routes import dag_runs
+    from routes.dag_runs import stream_run_events
+
+    async def _timeout_after_revoke(awaitable: Any, **_kwargs: Any) -> None:
+        awaitable.close()
+        revoked = admin_client.delete(f"/v1/workspaces/{ws}/members/{_AUTHED_USER_ID}")
+        assert revoked.status_code == 200, revoked.text
+        raise TimeoutError
+
+    monkeypatch.setattr(dag_runs.asyncio, "wait_for", _timeout_after_revoke)
+    response = await stream_run_events("r-revoked-during-poll", _ScopedRequest(_AUTHED_USER_ID))
+    iterator = response.body_iterator
+    assert ": connected" in await anext(iterator)
+    with pytest.raises(StopAsyncIteration):
+        await anext(iterator)
+    await iterator.aclose()
+
+
+async def test_sse_rechecks_scope_before_first_frame(authed_client: Any, admin_client: Any) -> None:
+    """Revocation before generator startup cannot expose even the preamble."""
+    ws = _workspace(admin_client, "Revoked before stream startup")
+    added = admin_client.post(
+        f"/v1/workspaces/{ws}/members",
+        json={"user_id": _AUTHED_USER_ID, "role": "viewer"},
+    )
+    assert added.status_code == 200, added.text
+    await _seed_run_async("r-revoked-before-start", workspace_id=ws)
+
+    from routes.dag_runs import stream_run_events
+
+    response = await stream_run_events("r-revoked-before-start", _ScopedRequest(_AUTHED_USER_ID))
+    revoked = admin_client.delete(f"/v1/workspaces/{ws}/members/{_AUTHED_USER_ID}")
+    assert revoked.status_code == 200, revoked.text
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(response.body_iterator)
+    await response.body_iterator.aclose()
 
 
 # ─── authentication vs authorization ─────────────────────────────────────────
@@ -458,13 +605,16 @@ def test_chat_workflow_tool_opens_the_projection_with_resolved_scope(
     monkeypatch.setattr(graph_runner, "execute_dag", _fake_execute_dag)
     monkeypatch.setattr(eval_judge_service, "score_run", _fake_score_run)
 
-    out = asyncio.run(_tool_run_workflow({"dag_id": dag_id}, _AUTHED_USER_ID, None))
+    out = asyncio.run(
+        _tool_run_workflow({"dag_id": dag_id, "workspace_id": ws}, _AUTHED_USER_ID, None)
+    )
     assert out.get("run_id"), out  # surfaces the tool's error text on failure
 
     row = get_dag_run_store().get_run(str(out["run_id"]))
     assert row is not None
     assert row["workspace_id"] == ws
-    assert row["project_id"] == "proj-chat"
+    assert row["project_id"]
+    assert row["project_id"] != "proj-chat"
 
 
 # ── authorization tracks the canonical grant ──────────────────────────
@@ -500,3 +650,63 @@ def test_revoking_workspace_membership_revokes_run_visibility(
     sse = authed_client.get("/v1/dag-runs/r-shared/events")
     assert sse.status_code == 404
     assert sse.json() == {"detail": "run not found"}
+
+
+# ── canonical lifecycle overlay (the read path) ────────────────────────
+
+
+async def test_a_record_without_any_run_identity_is_returned_verbatim() -> None:
+    """A row with no canonical_run_id and no id has nothing to overlay."""
+    from services.dag_run_inspection import _canonical_projection
+
+    record = {"status": "running", "name": "Local only"}
+    assert await _canonical_projection(dict(record)) == record
+
+
+async def test_projection_reads_stay_local_when_the_spine_has_no_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=None))
+    record = {"id": "r-standalone", "status": "running"}
+
+    assert await _canonical_projection(dict(record)) == record
+
+
+async def test_projection_never_invents_a_run_the_spine_never_saw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    empty = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=empty))
+    record = {"id": "r-ghost", "canonical_run_id": "canonical-never-was", "status": "running"}
+
+    assert await _canonical_projection(dict(record)) == record
+
+
+async def test_projection_reads_stay_local_when_the_spine_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine that cannot even be consulted is standalone mode, not 500.
+
+    `_canonical_projection` must degrade to the projection row's own truth
+    when the spine raises — reads stay available and canonical status is
+    never invented.
+    """
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    def _engine_down() -> object:
+        raise RuntimeError("spine unavailable")
+
+    monkeypatch.setattr(engine_mod, "get_engine", _engine_down)
+    record = {"id": "r-spine-down", "status": "running"}
+
+    assert await _canonical_projection(dict(record)) == record
