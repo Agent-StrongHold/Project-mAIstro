@@ -75,6 +75,15 @@ class _InjectedCrash(BaseException):
     """Not an `Exception`, so no executor boundary can absorb the crash."""
 
 
+def _settling_now(
+    run_store: RunStore, continuations: GraphContinuationStore
+) -> CanonicalDurableRunStore:
+    """A store whose quiet period has already elapsed for every crash below."""
+    return CanonicalDurableRunStore(
+        run_store, continuations, terminal_settle_quiet_period=timedelta(0)
+    )
+
+
 @dataclass
 class _Spine:
     run_store: RunStore
@@ -103,7 +112,7 @@ async def spine(
             yield _Spine(
                 sqlite_runs,
                 sqlite_continuations,
-                CanonicalDurableRunStore(sqlite_runs, sqlite_continuations),
+                _settling_now(sqlite_runs, sqlite_continuations),
                 project.project_id,
             )
         return
@@ -120,7 +129,7 @@ async def spine(
     yield _Spine(
         run_store,
         continuations,
-        CanonicalDurableRunStore(run_store, continuations),
+        _settling_now(run_store, continuations),
         project.project_id,
     )
 
@@ -382,3 +391,75 @@ async def test_a_stranded_run_behind_many_running_runs_is_reached_within_bounded
         if settled.status is RunStatus.COMPLETED:
             break
     assert settled.status is RunStatus.COMPLETED
+
+
+async def test_a_terminal_write_still_being_mirrored_is_left_to_its_walker(
+    spine: _Spine,
+) -> None:
+    """Fresh spine activity means the walker may be between its two writes.
+
+    Settling then would stamp "original error not persisted" over the error the
+    walker is about to mirror and cancel the NodeRun it is about to fail.
+    """
+    run_id = await _crash_at_terminal_write(spine, _Fails())
+    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
+
+    assert await patient.reconcile_persistence() == 0
+
+    untouched = await spine.run_store.get_run(run_id)
+    assert untouched is not None and untouched.status is RunStatus.RUNNING
+    [node_run] = await spine.run_store.list_node_runs(run_id)
+    assert node_run.status is RunStatus.RUNNING
+
+
+async def test_a_refused_repair_does_not_stop_the_rest_of_the_tick(
+    spine: _Spine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A COMPLETED continuation over a mirrored FAILED node cannot be earned.
+
+    The spine refuses that completion. The refusal is that Run's alone: it is
+    logged and the stranded Run beside it is still settled in the same call,
+    because this sweep heads every due and queued tick.
+    """
+
+    async def completed_over_failure(record: DurableRunRecord) -> DurableRunRecord:
+        running = await spine.run_store.get_run(record.run_id)
+        assert running is not None
+        return record.model_copy(update={"run": transition_run(running, RunStatus.COMPLETED)})
+
+    refused = await _crash_at_terminal_write(
+        spine, _Fails(), rewrite=completed_over_failure, mirror_node_runs=True
+    )
+    stranded = await _crash_at_terminal_write(spine, _Step())
+
+    with caplog.at_level("WARNING", logger="maistro.graph.durable_runs.canonical_store"):
+        assert await spine.store.reconcile_persistence() == 1
+
+    settled = await spine.run_store.get_run(stranded)
+    assert settled is not None and settled.status is RunStatus.COMPLETED
+    still = await spine.run_store.get_run(refused)
+    assert still is not None and still.status is RunStatus.RUNNING
+    assert any(refused in record.getMessage() for record in caplog.records)
+
+
+async def test_a_waiting_run_under_a_completed_continuation_does_not_abort_the_tick(
+    spine: _Spine,
+) -> None:
+    """No lifecycle edge leads from WAITING straight to COMPLETED; skip, do not raise."""
+    graph = _graph(spine, _Step(), name="waiting")
+    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    await spine.run_store.transition_run(admitted.run_id, RunStatus.RUNNING)
+    waiting = await spine.run_store.transition_run(admitted.run_id, RunStatus.WAITING)
+    await spine.continuations.create(
+        GraphContinuation(
+            run_id=admitted.run_id,
+            graph_state=GraphExecutionState(run_id=admitted.run_id),
+            status=RunStatus.COMPLETED,
+            project_id=spine.project_id,
+            created_at=waiting.created_at,
+        )
+    )
+
+    assert await spine.store.reconcile_persistence() == 0
+    unchanged = await spine.run_store.get_run(admitted.run_id)
+    assert unchanged is not None and unchanged.status is RunStatus.WAITING

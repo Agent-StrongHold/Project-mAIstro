@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from maistro.runs.aggregation import terminal_run_payload
@@ -42,6 +42,10 @@ from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
 _GRAPH_TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
+#: How long a Run's spine must have been quiet before a terminal continuation
+#: over it is treated as crash residue rather than a walker mid-mirror. The
+#: same span as a Graph recovery claim: past it, no live walker is assumed.
+TERMINAL_SETTLE_QUIET_PERIOD = timedelta(seconds=60)
 #: How many times `list_hitl_due` widens its candidate page when the indexed
 #: prefix is occupied by projections the canonical Run disqualifies. Six
 #: doublings read at most 64x the requested work before giving up on a tick.
@@ -145,9 +149,12 @@ class CanonicalDurableRunStore:
         self,
         run_store: RunStore,
         continuations: GraphContinuationStore,
+        *,
+        terminal_settle_quiet_period: timedelta = TERMINAL_SETTLE_QUIET_PERIOD,
     ) -> None:
         self._run_store = run_store
         self._continuations = continuations
+        self._terminal_quiet_period = terminal_settle_quiet_period
         self._lock = asyncio.Lock()
         self._running_scan: ScanContinuation[RunCursor] = ScanContinuation()
 
@@ -209,7 +216,7 @@ class CanonicalDurableRunStore:
             if run.run_id in seen:
                 continue
             seen.add(run.run_id)
-            if await self._reconcile_run(run.run_id):
+            if await self._reconcile_isolated(run.run_id):
                 changed += 1
         for status in RunStatus:
             remaining = limit - (len(seen) - swept)
@@ -223,7 +230,7 @@ class CanonicalDurableRunStore:
                 if run_id in seen:
                     continue
                 seen.add(run_id)
-                if await self._reconcile_run(run_id):
+                if await self._reconcile_isolated(run_id):
                     changed += 1
         return changed
 
@@ -254,9 +261,22 @@ class CanonicalDurableRunStore:
         changed = 0
         for run in runs:
             seen.add(run.run_id)
-            if await self._reconcile_run(run.run_id):
+            if await self._reconcile_isolated(run.run_id):
                 changed += 1
         return changed
+
+    async def _reconcile_isolated(self, run_id: str) -> bool:
+        """Reconcile one Run without letting its lifecycle refusal stop the sweep.
+
+        The sweep runs at the head of every due and queued tick, so a refusal
+        raised by one Run's repair would otherwise abort recovery for all of
+        them on every tick. Store failures still propagate (#1143).
+        """
+        try:
+            return await self._reconcile_run(run_id)
+        except InvalidLifecycleTransition as exc:
+            logger.warning("cannot reconcile Graph Run %s: %s", run_id, exc)
+            return False
 
     async def _reconcile_run(self, run_id: str) -> bool:
         """Repair one run's cross-store residue; report whether state changed."""
@@ -356,23 +376,37 @@ class CanonicalDurableRunStore:
         NodeRuns are settled by the spine's own terminal cascade.
         """
         target = continuation.status
-        if target not in _GRAPH_TERMINAL_STATUSES or canonical.status in TERMINAL_RUN_STATUSES:
+        if target not in _GRAPH_TERMINAL_STATUSES or canonical.status is not RunStatus.RUNNING:
             return False
         if target is RunStatus.CANCELLED and _matching_hitl_settlement(continuation, target):
             return False
-        node_runs = tuple(await self._run_store.list_node_runs(canonical.run_id))
-        result, error = terminal_run_payload(node_runs, target)
+        record = await self.get(canonical.run_id)
+        if record is None or not self._spine_is_quiet(record):
+            return False
+        result, error = terminal_run_payload(record.node_runs, target)
         if target is not RunStatus.COMPLETED and error is None:
             error = (
                 f"Graph continuation settled {target.value} before canonical settlement; "
                 "original error not persisted"
             )
-        record = await self.get(canonical.run_id)
-        if record is None:
-            return False
         desired_run = transition_run(record.run, target, result=result, error=error)
         desired = record.model_copy(update={"run": desired_run})
         return await self._mirror_terminal_hitl(desired, canonical.run_id, target)
+
+    def _spine_is_quiet(self, record: DurableRunRecord) -> bool:
+        """Whether nothing on the Run's spine moved within the quiet period.
+
+        A walker writes its terminal continuation and mirrors it moments
+        later; settling in between would overwrite the error it is about to
+        mirror and cascade the NodeRun it is about to fail.
+        """
+        moments = [record.run.updated_at]
+        moments.extend(node_run.updated_at for node_run in record.node_runs)
+        moments.extend(
+            attempt.finished_at or attempt.started_at or attempt.created_at
+            for attempt in record.attempts
+        )
+        return datetime.now(UTC) - max(moments) >= self._terminal_quiet_period
 
     async def _reconcile_unstarted_claim(
         self,
