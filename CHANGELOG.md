@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Canvas visual evaluation no longer reveals whether a Run id exists (#1152,
+  partial).** `POST /v1/canvas/eval` now authorizes the selected canonical Run by
+  canonical Workspace membership, the same check HITL and DAG-run inspection
+  use. Any member of the Run's Workspace may evaluate it, including a Run another
+  member started. A Run in a Workspace the caller does not belong to, a Run with
+  no execution principal and a missing Run all get the same 503
+  `visual quality evaluation is unavailable`. Previously a foreign Run returned
+  403 `Canvas Run is not owned by this principal`. The admin bypass is removed:
+  an admin who is not a member of the Run's Workspace is refused like anyone
+  else. Hive still has no Project-level check on this route.
+
 - **Workspace access decisions now live in one core seam (#1150, partial).**
   `maistro.workspaces.WorkspaceAuthorizer` answers "may this principal VIEW or
   ADMINISTER this Workspace?" from the Workspace store, with one
@@ -228,6 +239,21 @@ or placeholder-only section.
 
 ### Added
 
+- **Stable Workspace Agent identity and per-user default Workspace
+  ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
+  ADR-092326-7ed7).** Hive's `services/workspace_agent.py`
+  `resolve_workspace_agent()` returns a Workspace's single canonical Agent
+  (`workspace-agent:{workspace_id}`). It is materialized once, insert-if-absent,
+  through the one roster writer (#840), so concurrent first calls converge even
+  across processes, and a Workspace deleted mid-materialization leaves no Agent. Its persona
+  template (default `program_manager`) can be swapped without changing the id.
+  `services/default_workspace.py` `resolve_default_workspace()` gives each
+  caller one owned default Workspace. The default is chosen by a durable
+  insert-once claim, so racing first requests yield one Workspace. A deleted,
+  revoked or demoted default is replaced and never handed back.
+  `POST /v1/workspaces/default` (gated by `workspaces.write`) returns the
+  caller's default Workspace with its Workspace Agent id. Chat turns do not
+  consume either resolver yet; that is the next #1037 slice.
 - **Every maistro-core node kind is proven to get the Container's own
   authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
   resolves each registered core kind that declares an authority through a real
@@ -363,6 +389,17 @@ or placeholder-only section.
 
 ### Changed
 
+- **A declared correlation field must have a production producer (#63).** A
+  fitness test scans production code (`packages/*/src` and the hive, turing
+  and canvas backends) for `bind_execution_context(...)` keywords. It fails
+  when no production call binds a `FIELD_NAMES` entry into the execution
+  context that log lines, spans and events read, so a newly declared field
+  cannot ship without a producer. Nothing binds `invocation_id` or
+  `session_id` into that context yet. Both sit on a reviewed allowlist that
+  names the owning #63 slice. The test also fails once
+  an allowlisted field gains a producer, which keeps the allowlist from going
+  stale.
+
 - **The Conductor frontend renders on the Workspace design system (#1046,
   #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`
   is a byte-for-byte copy of the bundled `workspace` tokens, held identical by
@@ -444,17 +481,30 @@ or placeholder-only section.
   The shipped-surface ledger now lists the socket as `canonical` instead of
   `unresolved`.
 
+- **Hive now ticks the Container's canonical recovery seams (#62).**
+  `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
+  `resume_parked_runs` are operator-scheduled (ADR-019) and had no production
+  caller, so an Attempt whose worker died stayed RUNNING forever, a chat Run
+  stranded before its first NodeRun was never compensated, and an elapsed
+  `RESUME_ON_ELAPSED` pause never woke. A new `services/canonical_recovery.py`
+  cadence (ticks at least 10s apart), started and stopped with the engine
+  beside the legacy DAG recovery cadence, ticks all three; one failing half is
+  logged without silencing the others, and shutdown drains the half in flight
+  rather than cancelling a resume mid-node. A reclaimed Attempt parks its Run
+  WAITING for a retry decision; nothing retries it automatically yet.
+
 - **Scheduled multi-node registered DAGs are recovered and woken by Hive's
   recovery cadence (#837).**
-  `run_registered_dag` admits schedule Runs as `executor=durable_graph`, but
-  the cadence only owned `hive_legacy_dag` and Evolve Runs and the schedule
-  consumer leaves multi-node QUEUED Runs to the durable Graph traversal, so
-  such a Run lost before checkpoint 1, parked on an elapsed timer, or answered
-  after a HITL pause was never picked up again. New
+  A configured Hive admits schedule fires through `ScheduleRunAdmitter`, and
+  the schedule consumer executes only single-node Runs, leaving multi-node
+  ones to the durable Graph traversal -- which nothing performed, so a
+  scheduled multi-node DAG stayed QUEUED; one parked on an elapsed timer or
+  answered after a HITL pause was never picked up again either. New
   `services/registered_dag_recovery.py` hands exactly those Runs (schedule
-  source, durable-graph executor; multi-node for the QUEUED half) to the
-  canonical `recover_queued_graph_runs` / `resume_due_graph_runs` seams with
-  the admitting path's node resolver, each half on its own held scan
+  source; no executor or `durable_graph`; multi-node and without configured
+  `schedule_inputs` for the QUEUED half) to the canonical
+  `recover_queued_graph_runs` / `resume_due_graph_runs` seams with the
+  admitting path's node resolver, each half on its own held scan
   continuation, and `dag_recovery` runs both with per-half isolation.
 
 - **The DAG Builder's Run button reports the canonical Run truthfully
@@ -869,8 +919,11 @@ or placeholder-only section.
   A runtime deadline that cancelled the dispatch still arrives as
   `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
   fails arrives as the cancellation, never as a bare store error the
-  pre-dispatch fallback would answer again; and a failure before the dispatch
-  still propagates unchanged without reaching the model.
+  pre-dispatch fallback would answer again; a dispatch that caught the
+  deadline and answered late still arrives as `RuntimeDeadlineExceeded`; an
+  answer behind a Run already fenced CANCELLED ends the turn cancelled rather
+  than being handed back; and a failure before the dispatch still propagates
+  unchanged without reaching the model.
 - **A launch the store refuses no longer masks itself as a lifecycle error
   (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
   the executor's failure path asked the lifecycle for `FAILED` from `CREATED`

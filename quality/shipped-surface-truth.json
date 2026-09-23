@@ -1416,6 +1416,16 @@
     {
       "source": "packages/hive-conductor/backend/routes/workspaces.py",
       "method": "POST",
+      "route": "/default",
+      "handler": "ensure_default_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "returns the caller's default workspace and its Workspace Agent, creating them once (#1037)",
+      "effect_owner": "canonical WorkspaceStore + stores.agents via agent_materialization"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "POST",
       "route": "/persona-templates",
       "handler": "create_persona_template_route",
       "disposition": "domain-state",

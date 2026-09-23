@@ -1,13 +1,14 @@
 """Recovery and timed wakeup for schedule-admitted registered-DAG Runs (#837).
 
-``run_registered_dag`` admits a canonical Run QUEUED with
-``executor=durable_graph`` and, when a schedule fires it, stamps
-``admission_source=schedule``. The schedule consumer executes only
-single-node QUEUED Runs and leaves multi-node ones to the durable Graph
-traversal; its resume tick matches only YIELDED Attempts, never Graph pauses.
-These two halves are that traversal's recovery owner: they hand the Runs to
-the canonical recovery seams, which remain the sole authority (continuation
-version, Attempt lease and fence) for whether physical work may start.
+A configured Hive admits schedule fires through ``ScheduleRunAdmitter``,
+which stamps ``admission_source=schedule`` and no executor; the standalone
+fallback ``run_registered_dag`` stamps ``executor=durable_graph``. The
+schedule consumer executes only single-node QUEUED Runs and leaves multi-node
+ones to the durable Graph traversal; its resume tick matches only YIELDED
+Attempts, never Graph pauses. These two halves are that traversal's recovery
+owner: they hand the Runs to the canonical recovery seams, which remain the
+sole authority (continuation version, Attempt lease and fence) for whether
+physical work may start.
 """
 
 from __future__ import annotations
@@ -18,24 +19,33 @@ from maistro.graph.durable_runs import (
     resume_due_graph_runs,
 )
 from maistro.runs.model import Run
+from maistro.runs.sources import SCHEDULE_INPUTS_KEY
 from services.dag_agents import _container, _resolve_nodes_with
 from services.scan_continuations import scan_continuation
 
 _SOURCES = frozenset({"schedule"})
-_EXECUTOR = "durable_graph"
+# None is `ScheduleRunAdmitter`'s Run, the production one: it names no executor.
+_EXECUTORS = frozenset({None, "durable_graph"})
 
 
 def _owned(run: Run) -> bool:
     return (
         run.provenance.get("admission_source") in _SOURCES
-        and run.provenance.get("executor") == _EXECUTOR
+        and run.provenance.get("executor") in _EXECUTORS
     )
 
 
 def _owned_traversal(run: Run) -> bool:
     # A single-node QUEUED schedule Run is the consumer's
     # (`executable_by_consumer`); claiming it here would race that tick.
-    return _owned(run) and len(run.graph.materialize().nodes) > 1
+    # Configured schedule inputs live outside the durable launch snapshot, so
+    # checkpoint 1 would rebuild the Run without them; leave it QUEUED rather
+    # than execute work other than what was admitted.
+    return (
+        _owned(run)
+        and not run.provenance.get(SCHEDULE_INPUTS_KEY)
+        and len(run.graph.materialize().nodes) > 1
+    )
 
 
 def _resolver(run: Run) -> NodeResolver:
