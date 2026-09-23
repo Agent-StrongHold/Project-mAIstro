@@ -76,3 +76,20 @@ exactly `test_hitl_routes_are_scoped_to_the_callers_workspaces` and
 restore returns 27/27 with a clean tree. The `inventory-delta` count was
 re-verified against the develop base: exactly +2 test functions
 (20→21 door, 5→6 timeout/cancel).
+
+## Independent verifier re-validation (head `b3b4ccfd8`)
+
+This pass re-proved every acceptance criterion from reachable behavior,
+trusting neither the prior result artifact nor the entries above (the driver
+again produced no check-*.log files): `ruff check` + `ruff format --check`
+clean; 27/27 door+timeout tests; 430 passed / 21 skipped in
+durable_runs; the `check_enumerations`, `check-enumerations-provenance`,
+`check-public-routes`, `check-suite-inventory`, `check-security-inventory`,
+`check-owned-store-access`, and `check-agent-store-writes` gates green; mypy
+clean over the 17 `durable_runs` sources. The mutation check was executed
+live once more at this head with the same result: a no-op `authorize_project`
+(authentication untouched) fails exactly the two isolation tests; the exact
+edit reverted, `git status`/`git diff` clean, 27/27 restored. The
+`inventory-delta` count was recomputed from `git show` of the develop base:
+still exactly +2 test functions (20→21 door, 5→6 timeout/cancel).
+
