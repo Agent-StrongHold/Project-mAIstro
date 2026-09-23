@@ -97,12 +97,20 @@ async def stop_canonical_recovery() -> None:
     global _task, _stopping
     task, stopping = _task, _stopping
     _task = _stopping = None
-    if task is None:
+    if task is None or task.done():
+        return
+    if task.get_loop() is not asyncio.get_running_loop():
+        # Started on a loop that is no longer running (an engine restarted on a
+        # fresh loop); there is nothing left on it to drain or join.
+        task.cancel()
         return
     if stopping is not None:
         stopping.set()
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=_STOP_GRACE_S)
+    except asyncio.CancelledError:
+        if not task.cancelled():
+            raise
     except TimeoutError:
         logger.warning(
             "canonical_recovery tick still running after %.0fs; cancelling it", _STOP_GRACE_S

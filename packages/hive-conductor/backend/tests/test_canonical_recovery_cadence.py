@@ -321,6 +321,57 @@ async def test_stop_cancels_a_tick_that_outlives_the_grace(
     assert any("cancelling it" in r.message for r in caplog.records)
 
 
+async def test_stop_returns_when_the_tick_is_cancelled_elsewhere(
+    booted: Callable[[Any], None],
+) -> None:
+    import services.canonical_recovery as cadence
+
+    entered = asyncio.Event()
+
+    async def _hang(**_kwargs: Any) -> int:
+        entered.set()
+        await asyncio.sleep(3600)
+        return 0
+
+    booted(SimpleNamespace(recover_abandoned_attempts=_hang))
+    cadence.start_canonical_recovery()
+    first = cadence._task
+    assert first is not None
+
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    stopping = asyncio.create_task(cadence.stop_canonical_recovery())
+    await asyncio.sleep(0)
+    first.cancel()
+    await asyncio.wait_for(stopping, timeout=1.0)
+
+    assert first.cancelled()
+    assert cadence._task is None
+
+
+def test_stop_abandons_a_cadence_left_on_a_loop_no_longer_running() -> None:
+    """An engine restarted on a fresh loop cannot join a task bound to the old
+    one; stop cancels it rather than raising from a foreign-loop await."""
+    import services.canonical_recovery as cadence
+
+    old_loop = asyncio.new_event_loop()
+    try:
+
+        async def _start() -> None:
+            cadence.start_canonical_recovery()
+
+        old_loop.run_until_complete(_start())
+        stale = cadence._task
+        assert stale is not None and not stale.done()
+
+        asyncio.run(cadence.stop_canonical_recovery())
+
+        assert cadence._task is None
+        old_loop.run_until_complete(asyncio.gather(stale, return_exceptions=True))
+        assert stale.cancelled()
+    finally:
+        old_loop.close()
+
+
 async def test_cadence_compensates_a_stranded_chat_admission(
     container: Container,
     booted: Callable[[Any], None],
