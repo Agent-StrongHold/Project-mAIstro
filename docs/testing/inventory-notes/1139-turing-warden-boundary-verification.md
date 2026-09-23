@@ -42,3 +42,56 @@ Observation (not a defect): the pre-admission blocked-chat audit record hashes
 the placeholder `<request blocked>` rather than the hostile payload; correlation
 fields (principal/route/action/policy_version) are present and the criterion
 does not require a payload digest.
+
+---
+
+## Independent verifier pass — head `0e7b50cb1`
+
+---
+verified-by: maistro-verifier
+head: 0e7b50cb1ab5eb0ad752841acce16a50fea17f6a
+base: 8bb344e32b8693574fc0be7a93f86d941616b62c
+---
+
+Re-derived acceptance from the issue text; not trusted from any prior claim.
+Executed at head `0e7b50cb1` (clean worktree):
+
+- Closure-keyword review: PR body says "Refs #1139" only; `git log` over the
+  branch range has no `fixes/closes/resolves #<n>` pattern.
+- Route census (`grep '@router.' backend/routes/`) cross-checked against
+  `docs/security/turing-warden-boundary.md`: 4 protected POST/PATCH routes in
+  `_PROTECTED_REQUESTS`, login/GET routes classified N/A — table complete.
+- `uv run pytest` over the PR suites (core security composition, turing backend
+  auth/chat/feed/security/state, turing bridge/runtime): 130 passed.
+- Mutation guard re-run individually, verbose:
+  `test_removing_composed_http_warden_call_is_killed_by_a_literal_mutation`
+  PASSED (literal production-source mutation, driven through real
+  `create_app()`; kill observed via refused-request assertion).
+- `uv run ruff check .`: All checks passed. `ruff format --check .`: clean
+  (driver log, 2531 files).
+- `scripts/check-suite-inventory.py` (turing backend suite) re-run: ok.
+  Core and turing src suites: ok (driver logs).
+- `scripts/check-deployment-claims.py`: OK. Branch diff touches only
+  `docs/` and `packages/` — no compose/CI/config/activation file, so Turing
+  stays gated per ADR-081426-fb9f.
+- Diff-coverage gate reproduced end-to-end with the CI-shaped producers from
+  `quality.yml` (branch coverage over `maistro-core/src/maistro`,
+  `maistro-turing/src/maistro_turing`, `maistro-turing/backend`; then
+  `coverage xml`): `check-diff-coverage.py <xml> --base 8bb344e3` — scope
+  11 changed non-test files, 9 test files exempt, exit 0. This is the gate
+  that failed in CI at `2a0161b8`; it now passes at the review head.
+- Full core suite under coverage: 10087 passed, 1 failed
+  (`test_container_postgres.py::test_an_unreachable_server_is_an_error_not_a_fallback`).
+  Verified environment-only: the test file and `maistro.container` are
+  untouched by the branch diff, and the test passes standalone (61s;
+  unreachable-server timeout test).
+- Code review of reachable behavior: middleware scans parsed bodies
+  (mapping keys + nested values, no serialization) before route consumption on
+  all four protected routes; `TuringExecutionPlane.run_chat` scans the direct
+  service seam before Graph copy; `TuringChatSession` scans user input and the
+  provider reply before history/memory; `TuringActor` recursively scans memory
+  metadata; every Warden/audit failure path returns blocked or refuses —
+  no implicit allow found. Audit records carry canonical principal,
+  Workspace/Project, Run where applicable, route/action, and
+  `policy_version` from the canonical detector; content is recorded only as
+  SHA-256/length.
