@@ -10,6 +10,7 @@ from services.evolution_graph import (
     _BattleInput,
     _evaluate_one,
     _finalize_cycle,
+    _FinalizeOutput,
     _TournamentWork,
     run_canonical_evolution_cycle,
 )
@@ -539,3 +540,120 @@ async def test_recovered_evaluation_node_run_reuses_published_score_without_reev
     assert persisted.harness_params["total_cost_usd"] == 0.01
     assert persisted.harness_params["evaluation_runs"] == genome.harness_params["evaluation_runs"]
     assert output.evaluation_attempt_id == "attempt-before-crash"
+
+
+@pytest.mark.asyncio
+async def test_interrupted_finalization_restores_snapshot_and_commits_once(
+    tmp_path: Any,
+) -> None:
+    """A crash mid-finalization rolls back partial mutations before replay.
+
+    The persisted ``started`` marker carries the pre-mutation population
+    snapshot. Recovery must restore it, drop artifacts bred by the dead
+    attempt, re-run finalization exactly once over the restored state, and
+    leave a ``committed`` marker so replay of the same logical NodeRun is a
+    no-op instead of a second cull/breed/migrate pass.
+    """
+    from datetime import UTC, datetime
+
+    from maistro_evolve.population import PopulationStore
+    from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineGenome
+
+    def _pipeline_genome(
+        genome_id: str,
+        *,
+        eval_scores: dict[str, float] | None = None,
+        parent_a_id: str | None = None,
+        parent_b_id: str | None = None,
+    ) -> PipelineGenome:
+        now = datetime.now(UTC).isoformat()
+        return PipelineGenome(
+            id=genome_id,
+            name=genome_id,
+            topology=DAGTopology(
+                nodes=[
+                    NodeGenome(
+                        id=f"{genome_id}-q1",
+                        role="queen",
+                        strategy="react",
+                        model="model",
+                        temperature=0.3,
+                        max_tokens=4096,
+                        system_prompt="test",
+                        max_tool_rounds=5,
+                    )
+                ],
+                edges=[],
+                entry_node=f"{genome_id}-q1",
+                max_cycles=3,
+                beam_width=1,
+                use_scout=False,
+            ),
+            eval_weights=EvalWeights(),
+            eval_scores=eval_scores or {},
+            parent_a_id=parent_a_id,
+            parent_b_id=parent_b_id,
+            created_at=now,
+            updated_at=now,
+        )
+
+    class _DurableCycle(_Cycle):
+        def _compute_all_fitness(self, population: PopulationStore) -> list[Any]:
+            # Mirror the real cycle: fitness is written back through the
+            # store so the durable population reflects it.
+            for item in population.list_all():
+                item.fitness_score = sum(item.eval_scores.values())
+                population.add(item)
+            return population.list_all()
+
+        def _breed_island(
+            self,
+            island_pop: Any,
+            island_id: Any,
+            population: PopulationStore,
+            config: Any,
+            cap: int,
+        ) -> None:
+            if not self._child_added:
+                population.add(_pipeline_genome("child", parent_a_id="g1", parent_b_id="g2"))
+                self._child_added = True
+
+    population = PopulationStore(tmp_path / "evolution.db")
+    population.add(_pipeline_genome("g1", eval_scores={"proxy": 0.9}))
+    population.add(_pipeline_genome("g2", eval_scores={"proxy": 0.5}))
+    tournament = _Tournament()
+    cycle = _DurableCycle(harness=_Harness(), tournament=tournament)
+    config = _config(population_size=2, eval_batch_size=0)
+
+    # Crash mid-finalization: the durable marker kept the pre-mutation
+    # snapshot, but the dead attempt already bred a partial artifact and
+    # died before its NodeRun could be terminalized.
+    population.record_operation(
+        "finalize:nr-crash",
+        {
+            "status": "started",
+            "population": [genome.model_dump(mode="json") for genome in population.list_all()],
+        },
+    )
+    population.add(_pipeline_genome("partial-child", parent_a_id="g1"))
+
+    output = await _finalize_cycle(cycle, population, config, None, "nr-crash")
+
+    # Partial work from the dead attempt is rolled back; finalization then
+    # ran exactly once over the restored snapshot (cull + breed applied once).
+    assert population.get("partial-child") is None
+    assert population.get("child") is not None
+    assert population.get("g2") is None  # culled exactly once by the replayed pass
+    assert cycle._cycle_count == 1
+    committed = population.get_operation("finalize:nr-crash")
+    assert committed is not None
+    assert committed["status"] == "committed"
+    assert output == _FinalizeOutput.model_validate(committed["output"])
+
+    # Replaying the same logical NodeRun returns the committed output without
+    # re-running domain mutations.
+    replay = await _finalize_cycle(cycle, population, config, None, "nr-crash")
+    assert replay == output
+    assert cycle._cycle_count == 1
+    assert population.get("child") is not None
+    assert committed == population.get_operation("finalize:nr-crash")
