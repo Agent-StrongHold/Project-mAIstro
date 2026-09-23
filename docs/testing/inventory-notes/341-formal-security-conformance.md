@@ -32,3 +32,22 @@ re-executed and all fail: rm-weakening → 6 failed, `sudo` narrowing → 7 fail
 documented 54-case variant). `scripts/check-formal-oracle-independence.py`:
 bootstrap OK against the develop base (oracle absent there), exit 1 on a
 simulated later oracle+implementation co-change. `uv run ruff check .` clean.
+
+Re-verification at head `4696527` (worktree unmodified throughout; mutations
+executed in a PYTHONPATH-shadowed copy under `/tmp`, whose unmutated baseline
+also reproduces 256/256): `uv run ruff check .` and
+`uv run ruff format --check .` clean; targeted suite 256/256; **full
+required-CI equivalent `pytest formal/models/ -q --hypothesis-seed=0` → 664
+passed** against live pgvector:pg18 after `alembic upgrade head`
+(closes the earlier "complete required-CI formal run UNVERIFIED — no local
+PostgreSQL" finding). Mutations re-executed, all fail the required suite:
+rm-weakening `rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/` → 6 failed; 21-of-22 deletion
+(one detector retained) → 189 failed; `MicroVMSandbox.exec` deny-check removal
+→ 41 failed; safe-prefix shadow short-circuit in `is_dangerous_command` →
+89 failed; `sudo\s+`→`sudo\s+apt\s+install` narrowing → 7 failed.
+`tests/test_check_formal_oracle_independence.py` → 3 passed; the real script
+end-to-end in a scratch git repo: bootstrap base (oracle absent) exit 0,
+later oracle+implementation co-change exit 1, oracle-only change exit 0.
+`formal-conformance` remains a required status check
+(`.github/branch-protection.json`); the develop base `8bb344e` carries no
+oracle, so this PR legitimately takes the checker's bootstrap path.
