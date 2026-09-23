@@ -246,8 +246,51 @@ async def test_one_failing_half_does_not_silence_the_others_or_the_cadence(
     assert cadence._task is not None and not cadence._task.done()
 
 
-async def test_start_is_idempotent_and_stop_cancels_a_tick_in_flight(
+async def test_stop_drains_the_half_in_flight_instead_of_cancelling_it(
     booted: Callable[[Any], None],
+) -> None:
+    """A cancelled Attempt is a *requested* cancellation in core, which ends its
+    NodeRun for good, so shutdown must let a resume finish, not cancel it."""
+    import services.canonical_recovery as cadence
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = {"abandoned": 0, "chat": 0}
+
+    async def _slow(**_kwargs: Any) -> int:
+        calls["abandoned"] += 1
+        entered.set()
+        await release.wait()
+        return 0
+
+    async def _chat(**_kwargs: Any) -> int:
+        calls["chat"] += 1
+        return 0
+
+    booted(
+        SimpleNamespace(recover_abandoned_attempts=_slow, recover_stranded_chat_admissions=_chat)
+    )
+    cadence.start_canonical_recovery()
+    first = cadence._task
+    cadence.start_canonical_recovery()
+    assert cadence._task is first
+
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    stopping = asyncio.create_task(cadence.stop_canonical_recovery())
+    await asyncio.sleep(0.05)
+    assert not stopping.done(), "stop must wait for the half in flight"
+    release.set()
+    await asyncio.wait_for(stopping, timeout=1.0)
+
+    assert first is not None and first.done() and not first.cancelled()
+    assert calls == {"abandoned": 1, "chat": 0}, "no half may start once stopping"
+    assert cadence._task is None
+
+
+async def test_stop_cancels_a_tick_that_outlives_the_grace(
+    booted: Callable[[Any], None],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     import services.canonical_recovery as cadence
 
@@ -263,18 +306,43 @@ async def test_start_is_idempotent_and_stop_cancels_a_tick_in_flight(
             raise
         return 0
 
+    monkeypatch.setattr(cadence, "_STOP_GRACE_S", 0.05)
     booted(SimpleNamespace(recover_abandoned_attempts=_hang))
     cadence.start_canonical_recovery()
     first = cadence._task
-    cadence.start_canonical_recovery()
-    assert cadence._task is first
 
     await asyncio.wait_for(entered.wait(), timeout=1.0)
-    await cadence.stop_canonical_recovery()
+    with caplog.at_level(logging.WARNING, logger="hive.canonical_recovery"):
+        await cadence.stop_canonical_recovery()
 
     assert cancelled.is_set()
     assert first is not None and first.cancelled()
     assert cadence._task is None
+    assert any("cancelling it" in r.message for r in caplog.records)
+
+
+async def test_cadence_compensates_a_stranded_chat_admission(
+    container: Container,
+    booted: Callable[[Any], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chat Run left RUNNING with no NodeRun (a crash between admission and
+    the first Attempt) is cancelled by the cadence, not left RUNNING forever."""
+    import services.canonical_recovery as cadence
+
+    import maistro.container as container_mod
+
+    booted(container)
+    run = await container.chat_admitter.admit(MESSAGES)
+    await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+    await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+    monkeypatch.setattr(container_mod, "DEFAULT_STRANDED_ADMISSION_AGE", timedelta(0))
+
+    await cadence.tick_canonical_recovery()
+
+    stranded = await container.run_store.get_run(run.run_id)
+    assert stranded is not None and stranded.status is RunStatus.CANCELLED
+    assert await container.run_store.list_node_runs(run.run_id) == []
 
 
 async def test_without_a_container_the_cadence_is_a_noop(

@@ -5,7 +5,8 @@ operator-scheduled ticks and never starts them itself (ADR-019). Hive is the
 operator: this cadence ticks the three that had no production caller, so
 expired Attempt leases (task and #1170 chat) are reclaimed, chat admissions
 stranded before their first NodeRun are compensated, and ``RESUME_ON_ELAPSED``
-pauses get a timer waker. It owns no lifecycle; the Container's Run, Attempt
+pauses get a timer waker. Ticks are at least ``_INTERVAL_S`` apart: a slow
+resume delays the next one rather than overlapping it. It owns no lifecycle; the Container's Run, Attempt
 lease and fence decide what each tick may do. ``execute_admitted_runs`` stays
 with the schedule runner, and legacy DAG recovery with ``dag_recovery``.
 """
@@ -23,7 +24,13 @@ from services.dag_agents import _container
 logger = logging.getLogger("hive.canonical_recovery")
 _INTERVAL_S = 10.0
 _LIMIT = 100
+#: How long shutdown waits for an in-flight tick before cancelling it. Core
+#: records a cancelled Attempt as a *requested* cancellation, which terminalizes
+#: its NodeRun, so cancelling a resume mid-node would turn a graceful restart
+#: into a permanent CANCELLED where a crash would only have parked the Run.
+_STOP_GRACE_S = 30.0
 _task: asyncio.Task[None] | None = None
+_stopping: asyncio.Event | None = None
 
 
 def _halves(container: Any) -> tuple[tuple[str, Callable[[], Awaitable[int]]], ...]:
@@ -40,12 +47,18 @@ def _halves(container: Any) -> tuple[tuple[str, Callable[[], Awaitable[int]]], .
     )
 
 
-async def tick_canonical_recovery() -> None:
-    """Run each recovery half once against the booted Container, if any."""
+async def tick_canonical_recovery(stopping: asyncio.Event | None = None) -> None:
+    """Run each recovery half once against the booted Container, if any.
+
+    Once ``stopping`` is set no further half starts, so shutdown only ever
+    waits for the half already running.
+    """
     container = _container()
     if container is None:
         return
     for name, half in _halves(container):
+        if stopping is not None and stopping.is_set():
+            return
         try:
             settled = await half()
             if settled:
@@ -59,30 +72,44 @@ async def tick_canonical_recovery() -> None:
             logger.exception("canonical_recovery_%s_tick_failed", name)
 
 
-async def _run() -> None:
-    while True:
-        await tick_canonical_recovery()
-        await asyncio.sleep(_INTERVAL_S)
+async def _run(stopping: asyncio.Event) -> None:
+    while not stopping.is_set():
+        await tick_canonical_recovery(stopping)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stopping.wait(), timeout=_INTERVAL_S)
 
 
 def start_canonical_recovery() -> None:
     """Start one process-local recovery cadence. Idempotent."""
-    global _task
+    global _task, _stopping
     if _task is not None and not _task.done():
         return
-    _task = asyncio.create_task(_run(), name="hive-canonical-recovery")
+    _stopping = asyncio.Event()
+    _task = asyncio.create_task(_run(_stopping), name="hive-canonical-recovery")
 
 
 async def stop_canonical_recovery() -> None:
-    """Cancel and join the recovery cadence during Engine shutdown."""
-    global _task
-    task = _task
-    _task = None
+    """Drain, then join, the recovery cadence during Engine shutdown.
+
+    The in-flight half is allowed to finish within ``_STOP_GRACE_S``; only a
+    tick still running past that is cancelled.
+    """
+    global _task, _stopping
+    task, stopping = _task, _stopping
+    _task = _stopping = None
     if task is None:
         return
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    if stopping is not None:
+        stopping.set()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=_STOP_GRACE_S)
+    except TimeoutError:
+        logger.warning(
+            "canonical_recovery tick still running after %.0fs; cancelling it", _STOP_GRACE_S
+        )
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 __all__ = ["start_canonical_recovery", "stop_canonical_recovery", "tick_canonical_recovery"]
