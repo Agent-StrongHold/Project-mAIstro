@@ -34,6 +34,8 @@ from maistro.workspaces.store import InMemoryWorkspaceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
+pytestmark = [pytest.mark.contract("behavioral")]
+
 
 def _database_url(backend: str, tmp_path: Path) -> str:
     if backend == "sqlite":
@@ -279,6 +281,7 @@ async def test_without_a_database_the_ephemeral_fallback_still_serves(
     assert isinstance(store, InMemoryWorkspaceStore)
 
 
+@pytest.mark.contract("boundary")
 def test_compose_hive_shares_the_engine_database_and_waits_for_its_migration() -> None:
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
