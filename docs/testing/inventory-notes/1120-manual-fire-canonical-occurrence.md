@@ -131,3 +131,35 @@ contract shift is invisible to the route and service, which keep reading
 Also in this pass: `scheduler.py`'s committed text had picked up CRLF line
 terminators (the merge at `d60bc7fd6`) and the handoff note a trailing
 space — normalized back to LF; no content change.
+
+## Independent verification pass at 5e75e7e9 (2026-09-23)
+
+Re-executed at the exact head. Driver checks all pass (uv sync, ruff
+check/format, core 421 passed/147 skipped, Hive 100 passed, both suite
+inventories). Independently re-run: radon gate EXIT=0 (70/70 blocks — the
+prior un-baselined `_admit_manual` C-block is gone via decomposition);
+convergence-matrix checker EXIT=0; ruff check clean. The vulture gate still
+exits 1 (1430 findings vs 1415 reviewed), reproduced on a git-archive scratch
+tree of base 8bb344e32 with a byte-identical findings multiset after
+line-number normalization (1430=1430, no added/removed identities) — the
+failure is the upstream ledger's staleness, not branch debt. PG legs re-run
+on a fresh disposable pg18 container (`MAISTRO_TEST_PG_DSN`) after
+`alembic upgrade head` through the full chain ending at single head 042:
+544 core runs/scheduling tests and 29 migration tests pass; migration tests
+and core suites also pass without a DSN (PG params skip). Adjacent Hive
+route-consumer suites (scheduler-canonical-admission, scope-coverage,
+registered-dag-recovery, evolution-service, platform) 127 passed. Acceptance
+re-derived from the issue: configured `fire_now` admits through
+`ScheduleRunAdmitter.admit_due(manual=True, fire_id=...)` (canonical
+Workspace/Project via `_canonical_scope`, fail-closed
+`ScheduleAdmissionUnavailable` instead of the compatibility path, which now
+requires no Container at all); occurrence identity is
+`(schedule_id, 'manual:' + fire_id)` with the `manual:` prefix keeping
+identity spaces disjoint; route double submit on one `Idempotency-Key`
+reconciles to one Run (E2E asserts canonical scope, `schedule_trigger` manual
+vs recurring provenance, durable template, prompt consumption to a completed
+NodeRun+Attempt, one count against `max_runs`); pending-fire markers hold
+without spending so a pre-Run crash claims nothing and a post-admission crash
+recovers via `_reconcile_pending_fires`. No premature closure keywords in the
+PR body or commit messages (references only). No issues remain open on this
+verifier's list.
