@@ -185,3 +185,35 @@ production consumers live (`docker.py:65`, `microvm.py:135`,
 `server.py:77,112`); `formal/extractors`/`formal/generated` absent, zero
 references outside this notes file. No code change required; residual
 org-ruleset/CI-rollup caveats unchanged (above).
+
+Independent verifier pass at the final lane head `d85f39b16` (clean worktree at
+the exact SHA; driver check logs covered only uv-sync/ruff/format, so every
+number below was re-executed in this pass; all mutations sandboxed under
+`/tmp`, worktree untouched): `uv run ruff check .` clean;
+`tests/test_check_formal_oracle_independence.py` → **3 passed**; targeted
+`pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0` →
+**256 passed**; full required-CI equivalent `pytest formal/models/ -q
+--timeout=300 --hypothesis-seed=0` → **664 passed** against a dedicated
+pgvector:pg18 container on 127.0.0.1:55499 after `alembic upgrade head`, with
+`maistro-evolve` installed editable as the required workflow does (the
+driver's `uv sync` had removed it — see check-0.log). Mutation battery, all
+failing the unmutated conformance suite: rm-weakening
+`rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/` → **6 failed** (incl. `remove-home`
+production-enforcement case — the originally-reported finding is refuted at
+this head); 21-of-22 deletion retaining only `sudo\s+` → **193 failed** on the
+exact required-CI command; safe-prefix shadow short-circuit in
+`is_dangerous_command` (echo/cd/`#` prefixes, patched before microvm import so
+enforcement is shadowed too) → **128 failed**; deny check removed from
+`MicroVMSandbox.exec` in a PYTHONPATH-shadowed copy (resolution proven via
+`microvm.__file__`) → **41 failed**. Oracle-independence gate end-to-end (real
+script): worktree vs base `8bb344e` → bootstrap exit 0; scratch clone at this
+head: no-change exit 0, oracle-only exit 0, oracle+implementation co-change →
+**exit 1**, unresolvable base → **exit 2**. `formal-conformance` confirmed a
+required status check for develop and main in `.github/branch-protection.json`;
+`formal/extractors`/`formal/generated` absent with zero references outside
+this notes file; production consumers live (`docker.py:65`, `microvm.py:135`,
+`server.py:77,112`). No closure keywords in the PR body ("Refs #341" only) or
+branch commits (sole regex hit is prose "closes the prior finding"). Residuals
+unchanged: live GitHub CI rollup for PR 1452 UNVERIFIED (push prohibited); org
+rulesets require 0 approvals; gate-script self-neutering co-change remains
+visible-in-diff (follow-up #160).
