@@ -1,7 +1,8 @@
 """Security subsystem type definitions.
 
-Ported from Stronghold types/security.py and types/auth.py.
-org_id stripped for single-tenant maistro-engine.
+Ported from Stronghold types/security.py and types/auth.py. ``AuditEntry`` is
+imported from the canonical persisted security types module so Sentinel and
+both durable audit stores exchange the same record shape.
 """
 
 from __future__ import annotations
@@ -10,7 +11,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from maistro.security.redact import redact
+from maistro.types.security import AuditEntry as AuditEntry
+from maistro.types.security import Violation as Violation
 
 
 class IdentityKind(StrEnum):
@@ -96,43 +98,11 @@ class WardenVerdict:
 
 
 @dataclass
-class Violation:
-    boundary: str
-    rule: str
-    severity: str
-    detail: str = ""
-    repair_action: str | None = None
-
-    def __post_init__(self) -> None:
-        # #1159: `detail` interpolates rejected tool-call material (e.g. the
-        # invalid-enum message carries the rejected value verbatim), so it is
-        # scrubbed AT CONSTRUCTION — before any AuditLog implementation,
-        # durable or in-memory, can persist the violations list. The stop
-        # condition is explicit: keeping raw values out of evidence must not
-        # depend on a particular store omitting the field. The same redactor
-        # runs on every log pipeline, so this matches the system-wide
-        # secret policy (labels + entropy fallback).
-        self.detail = redact(self.detail)
-
-
-@dataclass
 class SentinelVerdict:
     allowed: bool = True
     repaired: bool = False
     repaired_data: dict[str, Any] | None = None
     violations: tuple[Violation, ...] = ()
-
-
-@dataclass
-class AuditEntry:
-    boundary: str
-    user_id: str
-    team_id: str = ""
-    tool_name: str = ""
-    verdict: str = ""
-    violations: tuple[Violation, ...] = ()
-    detail: str = ""
-    agent_id: str = ""
 
 
 @dataclass

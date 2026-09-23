@@ -26,23 +26,28 @@ expression is identical under the new index. Like 015, this can only fail on a
 database that already holds two Runs for one manual firing — which is the
 defect being closed, and is worth failing loudly rather than silently keeping.
 
-Revision ID: 039
-Revises: 038
+Revision ID: 042
+Revises: 036_audit_log_org_scope
 Create Date: 2026-09-12
 
-Renumbered from 034 after develop took that id: #1056 landed
-`034_hitl_deadline_index` while this branch was open, and both declared
-`down_revision = "033"`, so the chain had two heads (the same collision
-#1341 resolved before by renumbering its migration). Only the identifiers
-change; the DDL this applies is untouched.
+Renumbered three times after develop took each parent id while this branch
+was open: from 034 (#1056 landed `034_hitl_deadline_index`; both declared
+`down_revision = "033"`, two heads — the same collision #1341 resolved before
+by renumbering), then from 039 (#1531 landed `039_canvas_job_admission_key`;
+both declared `down_revision = "038"`, two heads at 038 — the same collision
+revision 040's own docstring records), then from 041 onto `036_audit_log_org_scope`
+(develop's #1395 re-parented that migration onto `040`, so following `040`
+here would fork the chain into the "multiple head revisions" failure every
+deployment hits). The id keeps the develop chain linear with this as the
+single head. Only the identifiers change; the DDL this applies is untouched.
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "039"
-down_revision = "038"
+revision = "042"
+down_revision = "036_audit_log_org_scope"
 branch_labels = None
 depends_on = None
 

@@ -38,7 +38,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -61,6 +61,8 @@ from maistro.runs.store import (
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import aiosqlite
 
 _TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
@@ -248,6 +250,20 @@ CREATE UNIQUE INDEX idx_canonical_runs_occurrence
 CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_delegation_key
     ON canonical_runs(json_extract(payload, '$.provenance.delegation_key'))
     WHERE json_extract(payload, '$.provenance.delegation_key') IS NOT NULL;
+
+-- One Run per Canvas job admission (#1055 review, migration 039). Canvas
+-- computes a deterministic `canvas_job_id` for an idempotency-key retry
+-- before admitting, so the same shape as the two indexes above: the unique
+-- index is the claim, and two workers racing the same key meet one insert.
+--
+-- Scoped to `admission_source = 'canvas_generation'` too, not the field
+-- alone: `canvas_job_id` is not an exclusively Canvas-owned name at this
+-- layer, and an unrelated Run that happens to carry the same string in its
+-- own provenance must not be able to block a real Canvas admission.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_canvas_job
+    ON canonical_runs(json_extract(payload, '$.provenance.canvas_job_id'))
+    WHERE json_extract(payload, '$.provenance.canvas_job_id') IS NOT NULL
+      AND json_extract(payload, '$.provenance.admission_source') = 'canvas_generation';
 
 CREATE TABLE IF NOT EXISTS canonical_node_runs (
     node_run_id TEXT PRIMARY KEY,
@@ -458,6 +474,32 @@ class SqliteRunStore:
             (schedule_id, scheduled_for),
         )
         return model_of_json(Run, row[0]) if row is not None else None
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """The batched twin of `get_run_for_occurrence`, one query for many.
+
+        `scheduled_fors` travels as a single JSON-array parameter, matched
+        through `json_each` — the pattern the bulk deletes above already use
+        — rather than one placeholder per occurrence, which would need
+        chunking once the list grows past SQLite's parameter limit.
+        """
+        if not scheduled_fors:
+            return {}
+        cursor = await self._conn.execute(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.schedule_id') = ?
+                 AND json_extract(payload, '$.provenance.scheduled_for')
+                     IN (SELECT value FROM json_each(?))""",
+            (schedule_id, json.dumps(list(scheduled_fors))),
+        )
+        rows = await cursor.fetchall()
+        found: dict[str, Run] = {}
+        for row in rows:
+            run = model_of_json(Run, row[0])
+            found[run.provenance[SCHEDULED_FOR_KEY]] = run
+        return found
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None:
         row = await self._fetchone(

@@ -67,7 +67,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
@@ -91,7 +91,13 @@ from maistro.runs.sources import (
     SCHEDULED_FOR_KEY,
 )
 from maistro.runs.store import DuplicateOccurrence, RunIntegrityError
-from maistro.scheduling.engine import FireDecision, SkipReason, enumeration_start, evaluate
+from maistro.scheduling.engine import (
+    FireDecision,
+    SkippedFire,
+    SkipReason,
+    enumeration_start,
+    evaluate,
+)
 from maistro.scheduling.store import ScheduleExhausted
 
 if TYPE_CHECKING:
@@ -99,7 +105,7 @@ if TYPE_CHECKING:
     from maistro.graph.templates import GraphTemplateStore
     from maistro.runs.model import Run
     from maistro.runs.store import RunStore
-    from maistro.scheduling.engine import ScheduleEvaluation, SkippedFire
+    from maistro.scheduling.engine import ScheduleEvaluation
     from maistro.scheduling.model import Schedule
     from maistro.scheduling.store import ScheduleStore
 
@@ -141,16 +147,55 @@ def _owes(decision: ScheduleEvaluation) -> bool:
 
 
 #: Skips whose occurrences the policy never acts on, so their claims are not
-#: looked up: the window already dropped them, or the enumeration cap did.
-_UNCLAIMABLE: Final = frozenset({SkipReason.OUTSIDE_CATCHUP, SkipReason.TRUNCATED})
+#: looked up: the catch-up window already dropped them.
+#:
+#: TRUNCATED is deliberately *not* here (Codex review, #1059): the enumeration
+#: cap drops the oldest occurrences of an over-large batch from `evaluate()`'s
+#: own output, but they are still real, in-window occurrences a live winner
+#: can sit on — a high-frequency schedule stuck long enough to enumerate past
+#: `_MAX_ENUMERATED_FIRES` is exactly the case recovery exists for. Probed
+#: through `get_runs_for_occurrences` (#1533), one batched query rather than
+#: one per truncated occurrence — see `_MAX_TRUNCATED_CLAIM_PROBES`.
+_UNCLAIMABLE: Final = frozenset({SkipReason.OUTSIDE_CATCHUP})
+
+#: How far the pre-horizon walk (`_claims_before`) will probe for a crashed
+#: winner's claim, matching `evaluate()`'s own `_MAX_ENUMERATED_FIRES` order
+#: of magnitude. A schedule stuck longer than this, at this cadence, is a
+#: known, documented limit rather than an unbounded per-tick scan.
+_MAX_RECOVERY_PROBES: Final = 512
+
+#: How many `SkipReason.TRUNCATED` occurrences one evaluation's recovery walk
+#: will probe for a claim, and the same order of magnitude as
+#: `_MAX_RECOVERY_PROBES` for the same reason: `_enumerate_due` can truncate
+#: tens of thousands of occurrences on a schedule stuck far longer than its
+#: cadence allows, and probing every one of them — even in a single batched
+#: query — is not a bound a per-tick recovery walk should be without (Codex
+#: review, #1533). The newest of the dropped tail are probed first: they sit
+#: closest to what `evaluate()` actually kept, so they are the likeliest to
+#: share a winner with a rival ticker evaluating the same overloaded window.
+_MAX_TRUNCATED_CLAIM_PROBES: Final = 512
 
 
 def _enumerated(decision: ScheduleEvaluation) -> list[datetime]:
-    """The occurrences this evaluation acts on: its fires, and the skips the
-    policy decided rather than the window or the cap."""
+    """The occurrences probed one at a time: fires, and the skips the policy
+    decided rather than the window or the cap.
+
+    `TRUNCATED` is excluded here specifically (unlike `_UNCLAIMABLE`, which
+    the catch-up window already dropped): it is still claimable, but
+    `_existing_claims` probes it separately, batched and bounded, rather than
+    joining this one-probe-per-occurrence loop — see
+    `_MAX_TRUNCATED_CLAIM_PROBES` (#1533).
+    """
     return [fire.scheduled_for for fire in decision.fires] + [
-        skip.scheduled_for for skip in decision.skipped if skip.reason not in _UNCLAIMABLE
+        skip.scheduled_for
+        for skip in decision.skipped
+        if skip.reason not in _UNCLAIMABLE and skip.reason is not SkipReason.TRUNCATED
     ]
+
+
+def _truncated(decision: ScheduleEvaluation) -> list[datetime]:
+    """This evaluation's dropped tail, oldest first — `evaluate()`'s own order."""
+    return [skip.scheduled_for for skip in decision.skipped if skip.reason is SkipReason.TRUNCATED]
 
 
 def _live_claim(claims: dict[datetime, Run]) -> Run | None:
@@ -190,16 +235,64 @@ def _dropped_moments(decision: ScheduleEvaluation) -> list[datetime]:
     return [skip.scheduled_for for skip in decision.skipped if skip.reason not in _UNCONSUMED_SKIPS]
 
 
-def _recovered_fires(claimed: list[datetime], recovered: frozenset[datetime]) -> int:
-    """How many of `claimed` count as firings this tick must record.
+def _without_claimed_skips(
+    decision: ScheduleEvaluation, claims: dict[datetime, Run]
+) -> ScheduleEvaluation:
+    """Drop a skip whose occurrence a claim lookup already found a Run for.
 
-    Recovered claims — the pre-horizon walk's, provably unrecorded — are the
-    dead ticker's earned count, recovered exactly once (#1059). Claims on
-    enumerated occurrences are not counted here: the ticker that won them
-    counts those itself (#1269), so counting them again would fire a
-    `max_runs` schedule short.
+    `evaluate()` decides `skipped` (OVERLAP, EXHAUSTED, ...) with no idea the
+    occurrence already fired elsewhere (#1059 review, Codex). Once the claim
+    lookup answers that question, reporting the same occurrence in `skipped`
+    *and* in `already_fired` is self-contradictory — one says it never ran,
+    the other says it did. The claim is the truth; the skip is stale.
     """
-    return sum(1 for moment in claimed if moment in recovered)
+    if not claims:
+        return decision
+    kept = tuple(skip for skip in decision.skipped if skip.scheduled_for not in claims)
+    if len(kept) == len(decision.skipped):
+        return decision
+    return replace(decision, skipped=kept)
+
+
+def _reserve_recovery_budget(
+    schedule: Schedule, decision: ScheduleEvaluation, recovered: frozenset[datetime]
+) -> ScheduleEvaluation:
+    """Refuse new fires that recovered claims have already spent the quota on.
+
+    `evaluate()` decided `decision.fires` against `schedule.runs_remaining`
+    before recovery was known, because the recovered claims only surface
+    afterwards, from the Run store (#1059 review, Codex). A recovered claim is
+    the dead ticker's earned count — real, `max_runs`-spending firings — and
+    this tick records them *beside* whatever it admits, in the same
+    `record_fire` call. Left unreserved, a bounded schedule can end up with
+    more live Runs than `max_runs` ever allowed: `evaluate()` sees the old,
+    not-yet-spent `runs_so_far` and lets a new occurrence through, and only
+    *after* that Run exists does the batch's total (admitted + recovered)
+    turn out to have been one too many.
+
+    Refused fires keep the same ordering `_apply_max_runs` already uses —
+    the oldest admitted, the newest refused — so a partial batch still makes
+    forward progress rather than starving on its earliest occurrence.
+    """
+    if schedule.max_runs is None or not recovered or not decision.fires:
+        return decision
+    remaining = max(0, schedule.max_runs - schedule.runs_so_far - len(recovered))
+    if len(decision.fires) <= remaining:
+        return decision
+    allowed, refused = decision.fires[:remaining], decision.fires[remaining:]
+    refused_skips = tuple(
+        SkippedFire(scheduled_for=fire.scheduled_for, reason=SkipReason.EXHAUSTED)
+        for fire in refused
+    )
+    return replace(
+        decision,
+        fires=allowed,
+        skipped=decision.skipped + refused_skips,
+        # Nothing new will fire to take over from the active Run when the
+        # quota recovery already spent refuses the only candidate.
+        cancel_active_run=decision.cancel_active_run and bool(allowed),
+        exhausted=True,
+    )
 
 
 def _due_cursor_changed(schedule: Schedule, next_due_at: datetime | None) -> bool:
@@ -287,6 +380,57 @@ class ScheduleRunAdmitter:
         self._templates = template_store
         self._schedules = schedule_store
 
+    async def _record_fire(
+        self,
+        schedule_id: str,
+        *,
+        fired_at: datetime | None,
+        run_id: str | None,
+        next_due_at: datetime | None,
+        fires: int | None,
+        recovered: frozenset[datetime],
+    ) -> Schedule | None:
+        """`ScheduleStore.record_fire`, naming `recovered=` only when there
+        is something to credit.
+
+        `record_fire` grew `recovered` with a default value (`frozenset()`,
+        #1059), which is exactly what protects a downstream `ScheduleStore`
+        implementation that predates the parameter — *as long as nothing
+        calls it by name*. This admitter used to name it on every call
+        regardless, so an external implementation using the previously valid
+        signature — `record_fire(self, schedule_id, *, fired_at, run_id,
+        next_due_at, fires=None, disable=False)`, no `recovered` parameter
+        at all — raised `TypeError: unexpected keyword argument 'recovered'`
+        on every ordinary recurring fire after upgrading, not merely a
+        recovering one (Codex review, #1533).
+
+        Two literal calls rather than one built from `**kwargs`: a
+        conditionally-assembled kwargs dict cannot be checked against
+        `record_fire`'s mixed-type keyword signature under `mypy --strict`,
+        and this reads exactly as directly. The common, no-recovery case
+        stays compatible with an old implementation; a genuinely recovered
+        claim still names the keyword, and still fails loudly against a
+        store that cannot accept it — the correct outcome, since silently
+        omitting it there would silently drop the credit, reintroducing the
+        exact under-counting bug `recovered` exists to close (#1059, #1533).
+        """
+        if recovered:
+            return await self._schedules.record_fire(
+                schedule_id,
+                fired_at=fired_at,
+                run_id=run_id,
+                next_due_at=next_due_at,
+                fires=fires,
+                recovered=recovered,
+            )
+        return await self._schedules.record_fire(
+            schedule_id,
+            fired_at=fired_at,
+            run_id=run_id,
+            next_due_at=next_due_at,
+            fires=fires,
+        )
+
     async def admit_due(
         self,
         schedule: Schedule,
@@ -317,6 +461,9 @@ class ScheduleRunAdmitter:
         decision, claims, active_run_id, recovered_moments = await self._reconcile_claims(
             schedule, decision, now=now, active_run=active_run
         )
+        # Recovered claims spend `max_runs` too, and `evaluate()` decided
+        # `decision.fires` before it knew about them.
+        decision = _reserve_recovery_budget(schedule, decision, recovered_moments)
         if not decision.fires:
             return await self._consume_without_firing(
                 schedule,
@@ -353,27 +500,117 @@ class ScheduleRunAdmitter:
                 failures=(exc,),
             )
 
-        run_ids: list[str] = []
         # The cursor's last_run_id follows the newest consumed occurrence, not
         # merely the newest Run created by this admitter. A duplicate claim may
         # be the winning Run from another ticker (or before this process
         # crashed), and losing that identity is what makes overlap recovery
-        # unsafe.
-        consumed_run_ids: list[str] = []
-        admitted: list[FireDecision] = []
-        already_fired: list[datetime] = []
-        consumed: list[datetime] = []
+        # unsafe. Kept as (occurrence, run_id) pairs, not two parallel lists
+        # (Codex review, #1269): a seeded claim and a batch fire are not
+        # necessarily chronological relative to each other — BUFFER_ONE's own
+        # skip can sit *after* its fire — so sorting one list and not the
+        # other can pair a timestamp with a different occurrence's Run.
+        consumed_links: list[tuple[datetime, str]] = []
         failures: list[Exception] = []
         already_fired, seeded_run_ids, seeded = self._seed_off_fire_claims(claims, decision)
-        consumed_run_ids.extend(seeded_run_ids)
-        consumed.extend(seeded)
-        # Recovered claims — the pre-horizon walk's, provably unrecorded —
-        # are firings nobody recorded, so this tick records the count the
-        # dead ticker earned, once. Claims on enumerated occurrences are NOT
-        # counted: the winner's ticker counts those, whichever direction the
-        # race resolved (#1269).
-        recovered = len(recovered_moments)
-        for fire in decision.fires:
+        consumed_links.extend(zip(seeded, seeded_run_ids, strict=True))
+        # `batch_completed` (see `_admit_batch`) is what `complete` below is
+        # computed from, rather than comparing lengths against
+        # `consumed_links`: a seeded recovered claim (off this batch
+        # entirely) can pad `consumed_links` to the same length as
+        # `decision.fires` even when a later fire in the batch failed and was
+        # never reached (Codex review, #1059) — the length coincidence says
+        # nothing about whether *this* batch actually finished.
+        run_ids, admitted_count, batch_completed = await self._admit_batch(
+            schedule,
+            template,
+            decision.fires,
+            already_fired=already_fired,
+            consumed_links=consumed_links,
+            failures=failures,
+        )
+
+        consumed_links.sort(key=lambda link: link[0])
+
+        if not consumed_links:
+            return ScheduleAdmission(
+                skipped=decision.skipped,
+                next_due_at=decision.next_due_at,
+                cancel_active_run=decision.cancel_active_run,
+                active_run_id=active_run_id,
+                failures=tuple(failures),
+            )
+
+        # `next_due_at` is recomputed only when the whole batch landed and
+        # nothing was held back. A partial batch leaves occurrences owed, and
+        # `evaluate()`'s answer assumed all of them fired; a buffered
+        # occurrence is owed the same way (#1199).
+        complete = batch_completed and not _owes(decision)
+        recorded = await self._record_fire(
+            schedule.schedule_id,
+            # The newest occurrence *admitted*, not `now`. This value becomes
+            # the lower bound of the next enumeration, so `now` would carry the
+            # cursor past occurrences this batch stopped short of and lose them
+            # permanently — the exact failure the ordering above prevents.
+            fired_at=consumed_links[-1][0],
+            # The newest Run, matching the cursor being the newest fire.
+            # `Schedule.last_run_id` is a pointer to the latest occurrence, not
+            # a history of them; the history is on the Runs, each naming this
+            # schedule.
+            # The newest consumed occurrence may have been claimed by another
+            # admitter. Its resolved winner is the truthful linkage; leaving an
+            # older id in place makes `_canonical_active_run()` lie about live
+            # work after a crash between Run creation and this write.
+            run_id=consumed_links[-1][1],
+            next_due_at=decision.next_due_at if complete else schedule.next_due_at,
+            # Certain: each of this batch's admitted Runs is this call's own,
+            # protected by the RunStore's own occurrence uniqueness. Recovered
+            # claims are credited separately, deduplicated by the store itself
+            # against a rival ticker crediting the same claim (#1059 review).
+            fires=admitted_count,
+            recovered=recovered_moments,
+        )
+        disabled = recorded is not None and not recorded.enabled
+        return ScheduleAdmission(
+            run_ids=tuple(run_ids),
+            skipped=decision.skipped,
+            next_due_at=decision.next_due_at,
+            disabled=disabled,
+            cancel_active_run=decision.cancel_active_run,
+            active_run_id=active_run_id,
+            already_fired=tuple(sorted(already_fired)),
+            failures=tuple(failures),
+        )
+
+    async def _admit_batch(
+        self,
+        schedule: Schedule,
+        template: GraphTemplate,
+        fires: tuple[FireDecision, ...],
+        *,
+        already_fired: list[datetime],
+        consumed_links: list[tuple[datetime, str]],
+        failures: list[Exception],
+    ) -> tuple[list[str], int, bool]:
+        """Admit each due occurrence in order, stopping at the first real failure.
+
+        `already_fired`, `consumed_links`, and `failures` arrive already
+        seeded from `_seed_off_fire_claims` and are extended in place, the
+        same lists `admit_due` goes on to use. Returns this batch's own Run
+        ids, how many of `fires` were actually admitted (as opposed to merely
+        resolved as a duplicate), and whether the batch ran to completion.
+        """
+        run_ids: list[str] = []
+        admitted_count = 0
+        # Whether every one of `fires` was resolved, admitted or found
+        # already-fired, rather than cut short by a real failure. `admit_due`
+        # uses this instead of comparing lengths against `consumed_links`: a
+        # seeded recovered claim (off this batch entirely) can pad
+        # `consumed_links` to the same length as `fires` even when a later
+        # fire in the batch failed and was never reached (Codex review,
+        # #1059) — the length coincidence says nothing about whether *this*
+        # batch actually finished.
+        batch_completed = True
+        for fire in fires:
             try:
                 # A clean slate, not just a fresh id: this loop runs on the
                 # background tick loop, sharing an event loop with whatever
@@ -385,9 +622,8 @@ class ScheduleRunAdmitter:
                 ):
                     run_id = await self._admit_one(schedule, template, fire)
                 run_ids.append(run_id)
-                consumed_run_ids.append(run_id)
-                admitted.append(fire)
-                consumed.append(fire.scheduled_for)
+                consumed_links.append((fire.scheduled_for, run_id))
+                admitted_count += 1
             except DuplicateOccurrence as exc:
                 # The unique claim proves that a canonical Run exists, but the
                 # exception alone does not identify it. Resolve through the
@@ -396,6 +632,7 @@ class ScheduleRunAdmitter:
                 # duplicate the store's execution authority.
                 winner = await self._resolve_duplicate_winner(exc, schedule, failures)
                 if winner is None:
+                    batch_completed = False
                     break
                 # **Continue**, unlike every other failure below. The claim
                 # refusing this insert says the occurrence already has its Run
@@ -414,8 +651,7 @@ class ScheduleRunAdmitter:
                     winner.run_id,
                 )
                 already_fired.append(fire.scheduled_for)
-                consumed_run_ids.append(winner.run_id)
-                consumed.append(fire.scheduled_for)
+                consumed_links.append((fire.scheduled_for, winner.run_id))
             except Exception as exc:
                 # **Stop**, rather than continue. `record_fire` moves the cursor
                 # past everything it covers, so admitting a later occurrence
@@ -430,60 +666,9 @@ class ScheduleRunAdmitter:
                     exc,
                 )
                 failures.append(exc)
+                batch_completed = False
                 break
-
-        consumed.sort()
-
-        if not consumed:
-            return ScheduleAdmission(
-                skipped=decision.skipped,
-                next_due_at=decision.next_due_at,
-                cancel_active_run=decision.cancel_active_run,
-                active_run_id=active_run_id,
-                failures=tuple(failures),
-            )
-
-        # Recovered claims count toward `max_runs`; claims on this batch's own
-        # fires do not — the winner's ticker counts those.
-        fires_recorded = len(admitted) + recovered
-        disable = self._exhausted_after(schedule, fires=fires_recorded)
-        # `next_due_at` is recomputed only when the whole batch landed and
-        # nothing was held back. A partial batch leaves occurrences owed, and
-        # `evaluate()`'s answer assumed all of them fired; a buffered
-        # occurrence is owed the same way (#1199). Recovered claims are
-        # consumed *beside* the batch, so `consumed` can exceed the fires
-        # without any fire being left behind.
-        complete = len(consumed) >= len(decision.fires) and not _owes(decision)
-        await self._schedules.record_fire(
-            schedule.schedule_id,
-            # The newest occurrence *admitted*, not `now`. This value becomes
-            # the lower bound of the next enumeration, so `now` would carry the
-            # cursor past occurrences this batch stopped short of and lose them
-            # permanently — the exact failure the ordering above prevents.
-            fired_at=consumed[-1],
-            # The newest Run, matching the cursor being the newest fire.
-            # `Schedule.last_run_id` is a pointer to the latest occurrence, not
-            # a history of them; the history is on the Runs, each naming this
-            # schedule.
-            # The newest consumed occurrence may have been claimed by another
-            # admitter. Its resolved winner is the truthful linkage; leaving an
-            # older id in place makes `_canonical_active_run()` lie about live
-            # work after a crash between Run creation and this write.
-            run_id=consumed_run_ids[-1],
-            next_due_at=decision.next_due_at if complete else schedule.next_due_at,
-            fires=fires_recorded,
-            disable=disable,
-        )
-        return ScheduleAdmission(
-            run_ids=tuple(run_ids),
-            skipped=decision.skipped,
-            next_due_at=decision.next_due_at,
-            disabled=disable,
-            cancel_active_run=decision.cancel_active_run,
-            active_run_id=active_run_id,
-            already_fired=tuple(sorted(already_fired)),
-            failures=tuple(failures),
-        )
+        return run_ids, admitted_count, batch_completed
 
     @staticmethod
     def _seed_off_fire_claims(
@@ -543,6 +728,11 @@ class ScheduleRunAdmitter:
         live = _live_claim(claims)
         if live is not None and not active_run:
             decision = evaluate(schedule, now=now, active_run=True)
+        # A claim resolves what `evaluate()` could not have known: an
+        # occurrence it skipped (OVERLAP, EXHAUSTED, ...) may already have a
+        # Run. Reporting both a skip and `already_fired` for the same
+        # occurrence contradicts itself (Codex, #1059 review).
+        decision = _without_claimed_skips(decision, claims)
         return decision, claims, live.run_id if live is not None else None, frozenset(recovered)
 
     async def _existing_claims(
@@ -562,32 +752,88 @@ class ScheduleRunAdmitter:
         that exists.
 
         One index probe per enumerated occurrence, which is zero on an idle
-        tick. Occurrences the window already dropped or the enumeration cap
-        truncated are not looked up: the policy does not act on them.
+        tick. Occurrences the catch-up window already dropped are not looked
+        up: the policy does not act on them.
+
+        `TRUNCATED` occurrences are probed separately, in one batched query
+        bounded by `_MAX_TRUNCATED_CLAIM_PROBES` (Codex review, #1533):
+        `_enumerate_due` can truncate tens of thousands of occurrences on a
+        schedule stuck far longer than its cadence allows, and joining that
+        many into the per-occurrence loop above would turn one recovery tick
+        into that many serial, awaited Run-store queries even though the
+        truncation itself cost nothing but memory.
 
         The enumeration starts after the catch-up horizon, so a winner that
         crashed before it — the ticker died mid-fire and stayed down longer
         than the window — is never enumerated at all. Those claims are walked
-        instead, from the cursor forward (`_claims_before`): a batch admits
-        occurrences in order and dies at one, so its Runs sit contiguously
-        after the cursor and the walk stops at the first occurrence without a
-        Run. Bounded by one batch's worth of lookups, and one lookup on the
-        common path. A claim that is not contiguous from the cursor is not
-        found; nothing this admitter does can leave one.
+        instead, from the cursor forward (`_claims_before`).
+
+        The walk does *not* stop at the first occurrence without a Run (Codex
+        review, #1059): a batch's own Runs sit contiguously, but a crashed
+        batch's *cursor* does not move, so a later tick's walk starts at the
+        same place a policy like `CANCEL_OTHER` or `BUFFER_ONE` left
+        legitimately Run-less occurrences the *first* time — the ones it chose
+        not to admit, beside the one it did. Stopping there would read "never
+        admitted" off an occurrence that was simply never meant to have a Run,
+        and miss the live winner sitting just past it. The walk is bounded
+        instead by `_MAX_RECOVERY_PROBES`, the same order of magnitude as
+        `evaluate()`'s own enumeration cap, so a schedule stuck far longer
+        than that remains a known, documented limit rather than an unbounded
+        scan — one lookup on the idle common path, at most that many on the
+        crashed-and-lagging one.
         """
         claims: dict[datetime, Run] = {}
         for moment in _enumerated(decision):
             run = await self._lookup_claim(schedule, moment)
             if run is not None:
                 claims[moment] = run
+        claims.update(await self._lookup_truncated_claims(schedule, decision))
         walk: list[datetime] = []
         for moment in self._claims_before(schedule, enumeration_start(schedule, now=now)):
             run = await self._lookup_claim(schedule, moment)
-            if run is None:
-                break
-            claims[moment] = run
-            walk.append(moment)
+            if run is not None:
+                claims[moment] = run
+                walk.append(moment)
         return claims, walk
+
+    async def _lookup_truncated_claims(
+        self, schedule: Schedule, decision: ScheduleEvaluation
+    ) -> dict[datetime, Run]:
+        """The dropped tail's claims, one batched query bounded by
+        `_MAX_TRUNCATED_CLAIM_PROBES` rather than one query per occurrence.
+
+        The newest `_MAX_TRUNCATED_CLAIM_PROBES` of the tail are probed —
+        `evaluate()` returns `truncated` oldest first (#1533), so this is the
+        slice nearest the horizon it actually enumerated, the likeliest to
+        share a winner with a rival ticker evaluating the same overloaded
+        window. A batch read failing transiently degrades to "no claims seen"
+        for this call, the same as a single `_lookup_claim` miss: it is an
+        extra chance to see a winner, not the only one, and the occurrences
+        this evaluation still enumerates are protected by the reactive
+        duplicate path regardless.
+        """
+        truncated = _truncated(decision)
+        if not truncated:
+            return {}
+        probe = truncated[-_MAX_TRUNCATED_CLAIM_PROBES:]
+        try:
+            found = await self._runs.get_runs_for_occurrences(
+                schedule.schedule_id, [moment.isoformat() for moment in probe]
+            )
+        except Exception as exc:
+            logger.warning(
+                "schedule %s could not batch-probe %d truncated claim(s): %s",
+                schedule.schedule_id,
+                len(probe),
+                exc,
+            )
+            return {}
+        by_moment = {moment.isoformat(): moment for moment in probe}
+        return {
+            by_moment[scheduled_for]: run
+            for scheduled_for, run in found.items()
+            if scheduled_for in by_moment
+        }
 
     async def _lookup_claim(self, schedule: Schedule, moment: datetime) -> Run | None:
         """One occurrence-claim probe, or None when the store cannot answer.
@@ -613,14 +859,17 @@ class ScheduleRunAdmitter:
     def _claims_before(self, schedule: Schedule, since: datetime) -> Iterator[datetime]:
         """Candidate occurrences from the cursor up to and including `since`.
 
-        A batch admits occurrences in order and dies at one, so its Runs sit
-        contiguously after the cursor; the caller stops at the first probe
-        that comes back empty, which is what bounds this to one batch's worth
-        of moments and makes an idle tick pay nothing.
+        An idle schedule pays nothing: `since` is at or before the cursor, so
+        the loop below never starts. A crashed-and-lagging one is bounded by
+        `_MAX_RECOVERY_PROBES`, not by how far it has to walk — see
+        `_existing_claims` for why the walk no longer stops at the first empty
+        probe.
         """
         moment = schedule.next_fire_after(schedule.last_fired_at or schedule.created_at)
-        while moment <= since:
+        probes = 0
+        while moment <= since and probes < _MAX_RECOVERY_PROBES:
             yield moment
+            probes += 1
             moment = schedule.next_fire_after(moment)
 
     async def _resolve_duplicate_winner(
@@ -849,8 +1098,7 @@ class ScheduleRunAdmitter:
         # the one it still has to run.
         next_due_at = schedule.next_due_at if _owes(decision) else decision.next_due_at
         if consumed:
-            fires = _recovered_fires(claimed, recovered)
-            recorded = await self._schedules.record_fire(
+            recorded = await self._record_fire(
                 schedule.schedule_id,
                 fired_at=consumed[-1],
                 # The Run behind the newest occurrence that *has* one — a skip
@@ -860,8 +1108,11 @@ class ScheduleRunAdmitter:
                 # schedule produced" survive an occurrence that produced none.
                 run_id=_pointer({moment: claims[moment].run_id for moment in claimed}, claimed),
                 next_due_at=next_due_at,
-                fires=fires,
-                disable=self._exhausted_after(schedule, fires=fires),
+                # Nothing was admitted on this path by definition (`decision`
+                # had no fires) — `recovered` is the only source of new
+                # counted firings, and the store dedupes it itself.
+                fires=0,
+                recovered=recovered,
             )
             return ScheduleAdmission(
                 skipped=decision.skipped,
@@ -892,19 +1143,6 @@ class ScheduleRunAdmitter:
             cancel_active_run=decision.cancel_active_run,
             active_run_id=active_run_id,
         )
-
-    @staticmethod
-    def _exhausted_after(schedule: Schedule, *, fires: int) -> bool:
-        """Whether `max_runs` is spent once `fires` occurrences are recorded.
-
-        `ScheduleEvaluation.exhausted` already answered this — for the fires it
-        *proposed*. Recomputed against the ones that were actually admitted,
-        because a partial failure means fewer were recorded, and disabling a
-        schedule for a limit it has not reached loses every future occurrence.
-        """
-        if schedule.max_runs is None:
-            return False
-        return schedule.runs_so_far + fires >= schedule.max_runs
 
     async def _admit_one(
         self,

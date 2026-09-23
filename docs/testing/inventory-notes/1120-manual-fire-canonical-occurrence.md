@@ -17,8 +17,9 @@ race resolves the winner's Run via the new `find_occurrence_run` read half of
 the claim; an unclaimed fire has no Run to reconcile; and nominal claims
 resolve through the same lookup. Supporting changes: `occurrence_key`
 understands manual fires, the SQLite/PostgreSQL claim indexes become
-`COALESCE('manual:' || fire_id, scheduled_for)` (migration 039 — renumbered
-from 034 after develop's #1056 took that id), and recurring admissions now
+`COALESCE('manual:' || fire_id, scheduled_for)` (migration 042 — renumbered
+after each develop collision: 034→039→042, finally re-parented onto
+develop's `036_audit_log_org_scope` tip), and recurring admissions now
 stamp `schedule_trigger: "recurring"` (asserted in `test_admission.py`, no
 new collected cases).
 
@@ -78,3 +79,16 @@ retry-after-exhaustion and retry-after-template-deletion reconciliations
 (+2); the Hive suite gains the service-level retry-after-exhaustion receipt
 and the route-level idempotency-key contract test (stripped keys reconcile
 to one Run; an over-long key is a 422 before any durable write) (+2).
+
+## Third repair pass: merge with develop 84d937add (2026-09-23)
+
+Develop's #1531/#1079/#1395 took the alembic ids this branch had claimed
+(`039`, then the `040` parent, then the `036_audit_log_org_scope` tip), so the
+manual-fire occurrence migration renumbered 039→041→042 and re-parented onto
+develop's chain tip `036_audit_log_org_scope` — the same reconciliation that
+revision's own docstring records. `tests/migrations/test_audit_scope_migration.py::test_audit_scope_migration_is_the_single_head`
+pinned the audit migration AS the tip; it now asserts the same contract the
+way it survives any later migration: exactly one head, with the audit scope
+migration on that head's chain. No collected-test counts changed this pass
+(96 migration tests, 1322 core runs+scheduling on PG legs, 2577 Hive backend
+— the deltas over the prior pass are develop's own new suites).
