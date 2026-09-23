@@ -82,3 +82,36 @@ No code change was needed in this phase; the prior findings (unguarded
 `hill-climb-ui.sh` contexts, its Hyperlight dispatch, and the SECURITY.md
 enumeration gap) were already fixed on this branch and are pinned by
 `test_hyperlight_hill_climb_guards_each_sync_browser_context`.
+
+Post-repair verifier re-execution (L155, head 6aa0360c1, 2026-09-23)
+--------------------------------------------------------------------
+
+Independent re-run at this exact head; nothing carried forward:
+
+- `uv run pytest packages/maistro-core/tests/tools/browser/ -q` → 127 passed
+  (4 real-Chromium tests skip until playwright is present).
+- playwright 1.63.0 installed into the (gitignored) venv; `.venv/bin/python
+  -m pytest .../test_playwright_transport.py -q` → 4 passed with the cached
+  real Chromium, including
+  `test_real_chromium_rechecks_a_redirect_before_the_private_connection` and
+  `test_real_chromium_denies_model_directed_loopback_before_connect`.
+- `test_ssrf.py` + `test_outbound_policy.py` + `test_transport.py` → 173
+  passed. Conductor `test_browser_network_policy.py` +
+  `test_engine_service.py` → 38 passed.
+- `ruff check .` and `ruff format --check .` clean;
+  `check-security-inventory.py`, `check-model-egress.py` (with the
+  direct-effects census), `verify-monorepo-layout.sh`,
+  `check-suite-inventory.py` (both suites, driver logs): pass.
+- Mandate: `check-ac-state.py --run-tests --mandate 3e9f7525…` → 22 criteria
+  claimed, 0 unproven, chain mandate OK, rc=0.
+- Transport census re-derived: still exactly five production Playwright entry
+  points, all guard-attaching; `browser_use` imported only by
+  `tools/browser/client.py`; no aiohttp/urllib.request/requests/raw outbound
+  socket; `tool_executor.py` reaches Chromium only via the guarded
+  `BrowserClient`. No closure keyword in any commit message or the PR body.
+- The three known non-green items reproduce identically on a `git archive` of
+  base 8bb344e32: `check-vulture-baseline.py` rc=1 (same categories, no
+  branch file in the output, ledger diff empty), `check-ac-state.py
+  --run-tests --ratchet` rc=1 (design_coverage 33.0281 < 33.9095 on both),
+  and `test_log_redaction.py::test_install_is_idempotent` (fails on both
+  heads). All inherited, none introduced by this branch.
