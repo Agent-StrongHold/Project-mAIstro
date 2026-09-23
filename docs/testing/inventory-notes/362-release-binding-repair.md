@@ -126,3 +126,45 @@ Conclusion: all three prior findings describe intended fail-closed behavior or
 the transport-only test substitution, not defects. Live GitHub artifact
 resolution and a first production Actions run remain UNVERIFIED and require a
 reviewed push/tag by a maintainer (GitHub mutations are prohibited here).
+
+## Independent acceptance re-validation at HEAD 6cc0f7493 (job f929a7d6c3264da8b8eca7aff9ad8de4)
+
+No check-*.log files existed in this job directory (prior run died before
+checks); all evidence below was executed fresh at HEAD 6cc0f7493, not accepted
+from prior claims. No tree edits were needed; this note is the only change.
+
+- `uv run python scripts/check-compliance.py`: exit 0.
+- Release mode at HEAD (`--require-release-evidence --release-digest 6cc0f7493...`):
+  exit 1, fail-closed missing/incomplete evidence errors, last line
+  `registry.release_digest does not match --release-digest`.
+- Release mode with `--resolve-release-evidence --resolved-output <tmp>`:
+  exit 1, 52 problems explicitly naming EU-AI-ACT-ART-15 and -17 as unverified;
+  resolved output file was NOT written (no green fabricated).
+- Live AC2 probe (out-of-tree script driving `validate_registry`): forged
+  implemented claims blocked for disabled workflow, manual-only, never-run,
+  failing result, 6-year-stale observation, wrong evidence digest, cross-control
+  evidence, and zero evidence; a locator whose run lookup 404s also fails
+  closed (unreachable evidence is not evidence).
+- `uv run pytest tests/test_check_compliance.py tests/test_release_guard.py -q`:
+  120 passed in 8.04s; re-read `test_real_tag_can_resolve_post_commit_evidence_without_source_edit`
+  (real `git init`/annotated tag, real pytest subprocess asserting "1 passed",
+  real zip archive + SHA-256; only GitHub HTTP transport substituted; asserts
+  source registry byte-identical after resolution) and its parametrized
+  provenance/execution negatives assert no output file on failure.
+- `uv run pytest tests/test_branch_policy.py -q`: 12 passed; `Compliance
+  registry` present in required status checks for develop and main in
+  `.github/branch-protection.json`; REQUIRED-CHECKS.md row matches.
+- `uv run ruff check .`: passed. `uv run ruff format --check .`: passed.
+- `uv run python scripts/check-ratchet-provenance.py`: passed (0 violations).
+- `uv run python scripts/check-suite-inventory.py --suite tests/`: ok.
+
+Acceptance mapping: AC1 (implemented ⇒ executable refs + immutable digest-bound
+evidence; registry currently has zero green claims, enforced), AC2 (probe above),
+AC3 (document/table/schema/date validation, live at-rest pass + drift tests),
+AC4 (six statuses; Articles 15/17 corrected to `unverified`), AC5 (release guard
+runs the gate and every publish job needs guard; live exit 1 on missing
+evidence), AC6 (human/legal ownership stated in doc, docstring, scopes).
+DoD: document is validated from the registry (drift rejected); disabled
+workflows cannot back implemented status (derived YAML state + mismatch
+rejection, tested live). Residual UNVERIFIED: live GitHub Actions resolution in
+production and first real tag release — require maintainer GitHub mutations.
