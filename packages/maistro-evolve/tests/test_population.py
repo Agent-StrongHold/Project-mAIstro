@@ -54,18 +54,6 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> PopulationStore:
     return PopulationStore(tmp_path / "pop.db")
 
 
-def test_domain_operation_markers_survive_reopen(tmp_path: Path) -> None:
-    db_path = tmp_path / "population.db"
-    first = PopulationStore(db_path=db_path)
-    first.record_operation("finalize:node-1", {"population_size": 3})
-
-    reopened = PopulationStore(db_path=db_path)
-
-    assert reopened.get_operation("finalize:node-1") == {"population_size": 3}
-    reopened.record_operation("finalize:node-1", {"population_size": 99})
-    assert reopened.get_operation("finalize:node-1") == {"population_size": 3}
-
-
 def test_add_and_get_roundtrip(store: PopulationStore) -> None:
     genome = _genome("g1", fitness_score=0.5)
     store.add(genome)
@@ -370,3 +358,31 @@ class TestIslandCulling:
         cycle._breed_island(ip, 0, store, EvolutionConfig(population_size=2, island_count=2), cap=1)
 
         assert len(ip.get_members(0)) == 1
+
+
+class TestCycleMarkers:
+    """#1064: PopulationStore's idempotency ledger for effectful cycle ops
+    (currently only Evolve's canonical finalize node)."""
+
+    def test_unknown_marker_is_none(self) -> None:
+        store = PopulationStore()
+        assert store.get_cycle_marker("finalize:node-1") is None
+
+    def test_record_and_read_marker(self) -> None:
+        store = PopulationStore()
+        store.record_cycle_marker("finalize:node-1", {"status": "committed", "output": {"a": 1}})
+        assert store.get_cycle_marker("finalize:node-1") == {
+            "status": "committed",
+            "output": {"a": 1},
+        }
+
+    def test_marker_can_be_overwritten(self) -> None:
+        store = PopulationStore()
+        store.record_cycle_marker("finalize:node-1", {"status": "in_progress"})
+        store.record_cycle_marker("finalize:node-1", {"status": "committed", "output": {}})
+        assert store.get_cycle_marker("finalize:node-1") == {"status": "committed", "output": {}}
+
+    def test_markers_are_independent_per_id(self) -> None:
+        store = PopulationStore()
+        store.record_cycle_marker("finalize:node-1", {"status": "committed"})
+        assert store.get_cycle_marker("finalize:node-2") is None

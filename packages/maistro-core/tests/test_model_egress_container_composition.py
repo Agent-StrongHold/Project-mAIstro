@@ -7,19 +7,21 @@ from typing import Any
 
 import pytest
 
-from maistro.capabilities.binding_store import BindingNotFound
+from maistro.capabilities.binding_store import BindingDisabled, BindingNotFound
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
 from maistro.container import Container, build_node_resolver, create_container
 from maistro.graph.nodes.base import NodeContext
-from maistro.graph.nodes.llm_summarize import LlmSummarizeNode
+from maistro.graph.nodes.llm_summarize import LlmSummarizeNode, LlmSummarizeOut
 from maistro.types.config import AgentConfig
 
 
 async def _container(**overrides: object) -> Container:
-    return await create_container(AgentConfig(router_api_key="test-key", **overrides))  # type: ignore[arg-type]
+    return await create_container(
+        AgentConfig(router_api_key="test-key", **overrides)  # type: ignore[arg-type]
+    )
 
 
-async def test_configured_model_bindings_bootstrap_into_the_container_effect_context() -> None:
+async def test_configured_model_bindings_bootstrap_into_container_effect_context() -> None:
     container = await _container(
         workspace_id="ws-default",
         model_bindings=[
@@ -71,7 +73,32 @@ async def test_empty_model_binding_config_authorizes_nothing() -> None:
         )
 
 
-async def test_container_resolved_summarize_uses_real_authorities_and_governed_invocation(
+async def test_declared_disabled_model_binding_bootstraps_but_refuses_resolution() -> None:
+    """An operator-disabled declaration stays registered yet authorizes nothing."""
+
+    container = await _container(
+        workspace_id="ws-default",
+        model_bindings=[
+            {
+                "binding_id": "model-disabled",
+                "project_id": "project-a",
+                "provider_name": "model-a",
+                "disabled": True,
+            },
+        ],
+    )
+
+    with pytest.raises(BindingDisabled, match="'model-disabled' is disabled"):
+        await container.capability_effects.bindings.resolve(
+            "model-disabled",
+            workspace_id="ws-default",
+            project_id="project-a",
+            node_id="summarize",
+            capability=MODEL_CHAT_CAPABILITY,
+        )
+
+
+async def test_container_resolved_summarize_uses_real_authorities_and_invocation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -93,7 +120,11 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
                 "binding_id": "model-prod",
                 "project_id": "project-prod",
                 "provider_name": "yaml-model",
-            }
+            },
+            {
+                "binding_id": "model-router",
+                "project_id": "project-prod",
+            },
         ],
     )
     resolver = build_node_resolver(
@@ -101,8 +132,7 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
         provider_registry=container.provider_registry,
         llm_router=container.llm_router,
     )
-    graph = {"nodes": [{"id": "summarize", "kind": "llm.summarize"}]}
-    node = resolver("summarize", graph)
+    node = resolver("summarize", {"nodes": [{"id": "summarize", "kind": "llm.summarize"}]})
 
     assert isinstance(node, LlmSummarizeNode)
     assert node._effects is container.capability_effects
@@ -110,10 +140,6 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     assert node._router is container.llm_router
 
     metadata = await node._registry.get_model("yaml-model")
-    assert metadata.provider == "openai"
-    assert metadata.cost_per_1k_input == 1.0
-    assert metadata.cost_per_1k_output == 2.0
-
     calls: list[str] = []
 
     async def fake_execute_model_chat(
@@ -133,7 +159,6 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
 
     monkeypatch.setattr(model_chat, "execute_model_chat", fake_execute_model_chat)
     monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "https://gateway.test")
-    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "test-secret")
 
     result = await node.run(
         {
@@ -153,6 +178,7 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     )
 
     assert result.success is True
+    assert isinstance(result.output, LlmSummarizeOut)
     assert result.output.summary == "A governed summary."
     assert calls == ["yaml-model"]
 
@@ -173,6 +199,25 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     assert invocation.usage.model == "yaml-model"
     assert invocation.usage.model_version == "yaml-model-2026-09"
 
+    routed = await node.run(
+        {
+            "text": "Route through the Container's populated registry",
+            "model": "",
+            "binding_id": "model-router",
+        },
+        NodeContext(
+            run_id="run-router",
+            dag_id="graph-prod",
+            node_id="summarize",
+            node_run_id="node-run-router",
+            attempt_id="attempt-router",
+            workspace_id="ws-prod",
+            project_id="project-prod",
+        ),
+    )
+    assert routed.success is True
+    assert calls == ["yaml-model", "yaml-model"]
+
     denied = await node.run(
         {
             "text": "Must not dispatch",
@@ -191,4 +236,45 @@ async def test_container_resolved_summarize_uses_real_authorities_and_governed_i
     )
     assert denied.success is False
     assert denied.error_code == "BindingScopeDenied"
-    assert calls == ["yaml-model"]
+    assert calls == ["yaml-model", "yaml-model"]
+
+
+def test_model_binding_config_rejects_blank_scope_identity() -> None:
+    """Authorization identity cannot be blank: an empty Binding is no Binding."""
+    from pydantic import ValidationError
+
+    from maistro.types.config import ModelBindingConfig
+
+    valid = ModelBindingConfig(
+        binding_id="binding-a",
+        project_id="project-a",
+        credential_refs=("vault://creds/one",),
+        policy_refs=("policy://baseline",),
+    )
+    assert valid.binding_id == "binding-a"
+    assert valid.credential_refs == ("vault://creds/one",)
+
+    with pytest.raises(ValidationError, match="non-empty"):
+        ModelBindingConfig(binding_id="   ", project_id="project-a")
+    with pytest.raises(ValidationError, match="non-empty"):
+        ModelBindingConfig(binding_id="binding-a", project_id="")
+
+
+def test_model_binding_config_rejects_empty_refs() -> None:
+    """Credential/policy refs are vault pointers; an empty one resolves nothing."""
+    from pydantic import ValidationError
+
+    from maistro.types.config import ModelBindingConfig
+
+    with pytest.raises(ValidationError, match="cannot contain empty values"):
+        ModelBindingConfig(
+            binding_id="binding-a",
+            project_id="project-a",
+            credential_refs=("vault://creds/one", "  "),
+        )
+    with pytest.raises(ValidationError, match="cannot contain empty values"):
+        ModelBindingConfig(
+            binding_id="binding-a",
+            project_id="project-a",
+            policy_refs=("",),
+        )

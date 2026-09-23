@@ -15,6 +15,7 @@ outranks it.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -83,6 +84,14 @@ _STYLE_PROMPTS = {
 @register_node
 class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     kind: ClassVar[str] = "llm.summarize"
+    # The shipped model path crosses the governed model egress (#56): the
+    # Container's effect context is what makes Bindings resolve; the bare
+    # default authorizes nothing, which is a refusal rather than a no-op.
+    optional_authorities: ClassVar[Mapping[str, str]] = {
+        "effect_context": "effect_context",
+        "registry": "provider_registry",
+        "router": "llm_router",
+    }
     kind_category: ClassVar = "sync.llm"
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut
@@ -107,10 +116,8 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
         # pattern). Bare registry construction keeps the process default, which
         # registers no Bindings and therefore authorizes nothing.
         self._effects = effect_context or default_effect_context()
-        self._registry: LLMProviderRegistry = (
-            registry if registry is not None else InMemoryProviderRegistry()
-        )
-        self._router: LLMRouter = router if router is not None else CostAwareRouter(self._registry)
+        self._registry = registry if registry is not None else InMemoryProviderRegistry()
+        self._router = router if router is not None else CostAwareRouter(self._registry)
 
     async def _execute(self, inputs: LlmSummarizeIn, ctx: NodeContext) -> LlmSummarizeOut:
         # LLM gateway endpoint + key — pulled from env (maistro config layer

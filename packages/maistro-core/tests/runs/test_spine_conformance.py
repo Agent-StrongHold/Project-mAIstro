@@ -644,6 +644,30 @@ async def test_status_listing_decodes_the_same_evidence_as_get_run(spine: Any) -
     assert listed[0].result["nested"][0] == float("-inf")
 
 
+async def test_status_listing_can_filter_by_durable_admission_source(spine: Any) -> None:
+    """A consumer must spend its bounded page on owned Runs on every backend."""
+    store, workspace, project_id = spine
+    foreign = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "foreign-consumer"},
+        initial_status=RunStatus.QUEUED,
+    )
+    owned = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "owned-consumer"},
+        initial_status=RunStatus.QUEUED,
+    )
+
+    listed = await store.list_by_status(
+        RunStatus.QUEUED,
+        limit=1,
+        admission_source="owned-consumer",
+    )
+
+    assert [run.run_id for run in listed] == [owned.run_id]
+    assert foreign.run_id not in {run.run_id for run in listed}
+
+
 async def test_non_finite_evidence_survives_inside_a_container(spine: Any) -> None:
     """Results are `Any`: the non-finite value is as likely to be nested in the
     dict an executor returned as to be the whole result."""
@@ -1088,13 +1112,89 @@ def _occurrence(schedule_id: str = "sched-1", when: str = "2026-08-24T12:00:00+0
 
 async def test_a_second_run_for_one_occurrence_is_refused(spine: Any) -> None:
     store, workspace, project_id = spine
-    await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+    first = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     with pytest.raises(DuplicateOccurrence) as caught:
         await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
 
     assert caught.value.schedule_id == "sched-1"
     assert caught.value.scheduled_for == "2026-08-24T12:00:00+00:00"
+    resolved = await store.get_run_for_occurrence(
+        caught.value.schedule_id, caught.value.scheduled_for
+    )
+    assert resolved is not None
+    assert resolved.run_id == first.run_id
+
+
+async def test_get_runs_for_occurrences_is_the_batched_twin_of_the_single_lookup(
+    spine: Any,
+) -> None:
+    """One query resolves many occurrences, keyed by `scheduled_for` (#1533).
+
+    Schedule recovery used to resolve each occurrence with its own round trip;
+    this is the batched replacement, checked against the same claims
+    `get_run_for_occurrence` would resolve one at a time — plus a
+    `scheduled_for` that was never claimed, to prove a miss is simply absent
+    from the result rather than raising, and an empty request, which must
+    short-circuit to `{}` rather than query at all.
+    """
+    store, workspace, project_id = spine
+    first = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T12:00:00+00:00")
+    )
+    second = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T13:00:00+00:00")
+    )
+    third = await store.create_run(
+        _graph(workspace, project_id), provenance=_occurrence(when="2026-08-24T14:00:00+00:00")
+    )
+
+    resolved = await store.get_runs_for_occurrences(
+        "sched-1",
+        [
+            "2026-08-24T12:00:00+00:00",
+            "2026-08-24T13:00:00+00:00",
+            "2026-08-24T14:00:00+00:00",
+            "2026-08-24T15:00:00+00:00",  # never claimed
+        ],
+    )
+
+    assert set(resolved) == {
+        "2026-08-24T12:00:00+00:00",
+        "2026-08-24T13:00:00+00:00",
+        "2026-08-24T14:00:00+00:00",
+    }
+    assert resolved["2026-08-24T12:00:00+00:00"].run_id == first.run_id
+    assert resolved["2026-08-24T13:00:00+00:00"].run_id == second.run_id
+    assert resolved["2026-08-24T14:00:00+00:00"].run_id == third.run_id
+
+    assert await store.get_runs_for_occurrences("sched-1", []) == {}
+
+
+async def test_concurrent_occurrence_claims_converge_on_one_run(spine: Any) -> None:
+    """A replica race has one winner, and every loser can resolve that winner."""
+    store, workspace, project_id = spine
+    results = await asyncio.gather(
+        *(
+            store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    duplicates = [result for result in results if isinstance(result, DuplicateOccurrence)]
+    unexpected = [
+        result
+        for result in results
+        if isinstance(result, BaseException) and not isinstance(result, DuplicateOccurrence)
+    ]
+    assert unexpected == []
+    assert len(winners) == 1
+    assert len(duplicates) == 7
+    resolved = await store.get_run_for_occurrence("sched-1", "2026-08-24T12:00:00+00:00")
+    assert resolved is not None
+    assert resolved.run_id == winners[0].run_id
 
 
 async def test_a_catch_up_fire_collides_with_the_on_time_one(spine: Any) -> None:
@@ -1226,6 +1326,114 @@ async def test_deleting_a_run_releases_its_occurrence(spine: Any) -> None:
     await store.delete_run(run.run_id, force=True)
 
     readmitted = await store.create_run(_graph(workspace, project_id), provenance=_occurrence())
+
+    assert readmitted.run_id != run.run_id
+
+
+# ── one Run per Canvas job admission (#1055 review, migration 039) ──
+#
+# `CanvasCanonicalExecution.admit` computes a deterministic `canvas_job_id`
+# from `(org_id, operation_id)` before it ever reaches `create_run`, so two
+# workers racing the same Canvas `Idempotency-Key` submit that *same* id.
+# Same shape as the occurrence claim above, and the delegation_key claim
+# (migration 037): the unique index is the claim, not an application
+# check-then-insert, and the loser resolves the winner by reading rather than
+# retrying. Unlike the occurrence claim, a conflict here is not wrapped in a
+# named exception (mirroring delegation_key, not occurrence) -- callers
+# resolve it with a broad `except Exception` and a re-read, which is exactly
+# what `CanvasCanonicalExecution.admit` does.
+
+
+def _canvas_job(job_id: str, *, operation_id: str | None = None) -> dict[str, Any]:
+    provenance: dict[str, Any] = {
+        ADMISSION_SOURCE: "canvas_generation",
+        "canvas_job_id": job_id,
+    }
+    if operation_id is not None:
+        provenance["canvas_operation_id"] = operation_id
+    return provenance
+
+
+async def test_a_second_run_for_one_canvas_job_is_refused(spine: Any) -> None:
+    store, workspace, project_id = spine
+    first = await store.create_run(
+        _graph(workspace, project_id), provenance=_canvas_job("job-1", operation_id="op-1")
+    )
+
+    with pytest.raises(Exception):  # noqa: B017 - backend-specific (see module note)
+        await store.create_run(
+            _graph(workspace, project_id), provenance=_canvas_job("job-1", operation_id="op-1")
+        )
+
+    survivor = await store.get_run(first.run_id)
+    assert survivor is not None
+
+
+async def test_concurrent_canvas_job_claims_converge_on_one_run(spine: Any) -> None:
+    """Eight admitters race the same Canvas idempotency key. Seven must lose.
+
+    The core proof behind PR #1531 review finding 2: under PostgreSQL these
+    run genuinely at once, and "exactly one run_id per Canvas job" must not
+    depend on how many workers happen to be deployed.
+    """
+    store, workspace, project_id = spine
+
+    results = await asyncio.gather(
+        *(
+            store.create_run(
+                _graph(workspace, project_id),
+                provenance=_canvas_job("job-race", operation_id="op-race"),
+            )
+            for _ in range(8)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    losers = [result for result in results if isinstance(result, BaseException)]
+    assert len(winners) == 1
+    assert len(losers) == 7
+
+
+async def test_a_different_canvas_job_id_is_admitted(spine: Any) -> None:
+    store, workspace, project_id = spine
+    first = await store.create_run(_graph(workspace, project_id), provenance=_canvas_job("job-a"))
+    second = await store.create_run(_graph(workspace, project_id), provenance=_canvas_job("job-b"))
+
+    assert first.run_id != second.run_id
+
+
+async def test_a_non_canvas_run_sharing_the_same_job_id_string_does_not_collide(
+    spine: Any,
+) -> None:
+    """`canvas_job_id` is not an exclusively Canvas-owned field name at this
+    layer. A Run from an unrelated source that happens to carry the same
+    string in its own provenance -- accidentally, or as an impersonation
+    attempt -- must not be able to block a real Canvas admission from
+    claiming it."""
+    store, workspace, project_id = spine
+    impostor = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={ADMISSION_SOURCE: "task_queue", "canvas_job_id": "job-shared"},
+    )
+
+    canvas_run = await store.create_run(
+        _graph(workspace, project_id), provenance=_canvas_job("job-shared")
+    )
+
+    assert canvas_run.run_id != impostor.run_id
+
+
+async def test_deleting_a_run_releases_its_canvas_job_claim(spine: Any) -> None:
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id), provenance=_canvas_job("job-released")
+    )
+    await store.delete_run(run.run_id, force=True)
+
+    readmitted = await store.create_run(
+        _graph(workspace, project_id), provenance=_canvas_job("job-released")
+    )
 
     assert readmitted.run_id != run.run_id
 
@@ -1925,3 +2133,68 @@ async def test_status_listing_honors_the_workspace_boundary(spine: Any) -> None:
     mine = await store.list_by_status(RunStatus.FAILED, workspace_id=workspace)
     assert [item.run_id for item in mine] == [run.run_id]
     assert await store.list_by_status(RunStatus.FAILED, workspace_id="workspace-nobody") == []
+
+
+# ── delegation reservation and receipt (#1090 review round) ──────────
+
+
+async def test_a_delegation_reservation_and_receipt_round_trip(spine: Any) -> None:
+    """The receipt-side identity the remote node leans on, on every backend.
+
+    `find_delegation_run` is how a retry adopts a concurrent replica's
+    reservation instead of minting a second child; `attach_delegation_receipt`
+    is how the transport's answer becomes durable evidence. Both must behave
+    identically where the run actually lives — memory in tests, SQLite or
+    PostgreSQL in production — including the refusal to overwrite an existing
+    receipt with a different task: two receipts for one logical hand-off is
+    the same "second lifecycle" the delegation node exists to prevent.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-round-trip"},
+    )
+
+    found = await store.find_delegation_run("key-round-trip")
+    assert found is not None
+    assert found.run_id == run.run_id
+    assert await store.find_delegation_run("key-unknown") is None
+
+    attached = await store.attach_delegation_receipt(
+        run.run_id, "task-1", target_agent="researcher"
+    )
+    assert attached.provenance["a2a_task_id"] == "task-1"
+    assert attached.provenance["target_agent"] == "researcher"
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["a2a_task_id"] == "task-1"
+
+    # Re-attaching the same task is idempotent; a different task is a conflict.
+    again = await store.attach_delegation_receipt(run.run_id, "task-1")
+    assert again.provenance["a2a_task_id"] == "task-1"
+    with pytest.raises(RunIntegrityError):
+        await store.attach_delegation_receipt(run.run_id, "task-2")
+
+
+async def test_the_transport_boundary_claim_is_one_winner(spine: Any) -> None:
+    """The CAS that keeps a lost receipt from becoming a second dispatch.
+
+    A replica adopts the reservation, then claims the one allowed transport
+    attempt before calling the peer. The claim must be a winner-take-all
+    transition that survives a reload — on every backend, because "the
+    boundary was already crossed" is exactly what a retry on another replica
+    (or another process against SQLite) must be able to observe.
+    """
+    store, workspace, project_id = spine
+    run = await store.create_run(
+        _graph(workspace, project_id),
+        provenance={"delegation_key": "key-claim"},
+    )
+
+    assert await store.claim_delegation_transport_attempt(run.run_id) is True
+    assert await store.claim_delegation_transport_attempt(run.run_id) is False
+
+    reloaded = await store.get_run(run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance["transport_attempted"] is True

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -24,7 +25,7 @@ from maistro.graph.definitions import GraphTemplate, Node
 from maistro.graph.templates import GraphTemplateNotFound, InMemoryGraphTemplateStore
 from maistro.observability.correlation import bind_execution_context
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs.model import RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
     SCHEDULE_CATCHUP_KEY,
@@ -33,14 +34,14 @@ from maistro.runs.sources import (
     SCHEDULE_SOURCE,
     SCHEDULED_FOR_KEY,
 )
-from maistro.runs.store import InMemoryRunStore
+from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.scheduling.admission import (
     REQUEST_ID_KEY,
     ManualFireRefused,
     ScheduleAdmission,
     ScheduleRunAdmitter,
 )
-from maistro.scheduling.engine import SkipReason
+from maistro.scheduling.engine import FireDecision, SkipReason
 from maistro.scheduling.model import OverlapPolicy, Schedule
 from maistro.scheduling.store import InMemoryScheduleStore
 
@@ -91,6 +92,115 @@ async def _schedule(schedules, project_id: str, **overrides: object) -> Schedule
         "last_fired_at": NOON - timedelta(hours=1),
     }
     return await schedules.put(Schedule(**{**defaults, **overrides}))  # type: ignore[arg-type]
+
+
+class _UnresolvableOccurrenceWinner:
+    """A run store whose occurrence index cannot answer one claim.
+
+    In a consistent store the `DuplicateOccurrence` raise site and the
+    occurrence index are the same map, so no real sequence can refuse an
+    insert and then fail to resolve the winner — the branch the admitter
+    carries for this exists because a backend's claim check and its index can
+    come apart (a partially restored replica, a migration that rebuilt the
+    index). Only the one lookup is intercepted; everything else delegates to
+    the real store, so the `DuplicateOccurrence` itself is still raised by a
+    genuine insert against a genuine claim.
+    """
+
+    def __init__(self, inner: InMemoryRunStore, blind: tuple[str, str]) -> None:
+        self._inner = inner
+        self._blind = blind
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        if (schedule_id, scheduled_for) == self._blind:
+            return None
+        return await self._inner.get_run_for_occurrence(schedule_id, scheduled_for)
+
+
+class _FailingOccurrenceLookup:
+    """A run store whose occurrence index fails the store read, transiently.
+
+    The resolution inside the duplicate-claim path is a store read like any
+    other, and a store read can fail without lying: a connection drop, a
+    command timeout. Only that lookup is intercepted; everything else
+    delegates, so the `DuplicateOccurrence` is still raised by a genuine
+    insert against a genuine claim.
+    """
+
+    def __init__(self, inner: InMemoryRunStore, failing: tuple[str, str]) -> None:
+        self._inner = inner
+        self._failing = failing
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        if (schedule_id, scheduled_for) == self._failing:
+            raise RuntimeError("synthetic store outage resolving the occurrence")
+        return await self._inner.get_run_for_occurrence(schedule_id, scheduled_for)
+
+
+class _CountingRunStore:
+    """A run store that records every occurrence-claim lookup it receives,
+    singular and batched, so a test can tell which path a caller took without
+    reaching into the admitter's internals (#1533)."""
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self.single_calls: list[tuple[str, str]] = []
+        self.batch_calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        self.single_calls.append((schedule_id, scheduled_for))
+        return await self._inner.get_run_for_occurrence(schedule_id, scheduled_for)
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Any
+    ) -> dict[str, Run]:
+        batch = tuple(scheduled_fors)
+        self.batch_calls.append((schedule_id, batch))
+        return await self._inner.get_runs_for_occurrences(schedule_id, batch)
+
+
+class _LegacyScheduleStore:
+    """A `ScheduleStore` predating `recovered` (#1533): its `record_fire`
+    declares no such parameter at all, matching what an external
+    implementer's method signature looked like before #1059 added it. Any
+    call naming `recovered=` explicitly — whatever value it carries — raises
+    `TypeError` here, the same as it would against a real implementation
+    frozen at the old contract.
+    """
+
+    def __init__(self, inner: InMemoryScheduleStore) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def record_fire(
+        self,
+        schedule_id: str,
+        *,
+        fired_at: datetime | None,
+        run_id: str | None,
+        next_due_at: datetime | None,
+        fires: int | None = None,
+        disable: bool = False,
+    ) -> Schedule | None:
+        return await self._inner.record_fire(
+            schedule_id,
+            fired_at=fired_at,
+            run_id=run_id,
+            next_due_at=next_due_at,
+            fires=fires,
+            disable=disable,
+        )
 
 
 class TestProvenance:
@@ -244,6 +354,163 @@ class TestTheCursor:
         assert stored is not None
         assert stored.last_run_id == result.run_ids[-1]
         assert await runs.get_run(stored.last_run_id) is not None
+
+    async def test_duplicate_claim_reconciles_the_winning_run_id(self, harness) -> None:
+        """A crash after admission must not leave overlap checks blind.
+
+        Resetting the schedule projection to its pre-fire snapshot models the
+        process dying before `record_fire`; the Run claim remains canonical.
+        """
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        first = await admitter.admit_due(schedule, now=NOON)
+        winning_run_id = first.run_ids[0]
+        # Reset the stored row to its pre-fire snapshot through the store API.
+        # A `put` of the stale definition would not do it: `_merged` keeps an
+        # existing row's cursors (#1199), so the reset was a no-op and the
+        # assertion below could not fail. Deleting and re-filing the
+        # definition is what models the process dying between the Run's
+        # creation and `record_fire`: the claim remains, the linkage is gone.
+        assert await schedules.delete(schedule.schedule_id) is True
+        await schedules.put(schedule)
+
+        recovered = await admitter.admit_due(schedule, now=NOON)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert recovered.run_ids == ()
+        assert recovered.already_fired == (NOON,)
+        assert stored is not None
+        assert stored.last_run_id == winning_run_id
+        winner = await runs.get_run_for_occurrence(schedule.schedule_id, NOON.isoformat())
+        assert winner is not None and winner.run_id == winning_run_id
+
+    async def test_terminal_duplicate_winner_stays_linked_but_does_not_block_next_fire(
+        self, harness
+    ) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        first = await admitter.admit_due(schedule, now=NOON)
+        winning_run_id = first.run_ids[0]
+        await runs.transition_run(winning_run_id, RunStatus.CANCELLED)
+        # The same real reset as above: `put` alone would have kept the stored
+        # cursors, and `last_run_id == winning_run_id` would then pass without
+        # the recovered write ever being exercised.
+        assert await schedules.delete(schedule.schedule_id) is True
+        await schedules.put(schedule)
+
+        recovered = await admitter.admit_due(schedule, now=NOON)
+        stored = await schedules.get(schedule.schedule_id)
+        assert recovered.run_ids == ()
+        assert stored is not None and stored.last_run_id == winning_run_id
+
+        later = await admitter.admit_due(stored, now=NOON + timedelta(hours=1))
+
+        assert len(later.run_ids) == 1
+        assert later.run_ids[0] != winning_run_id
+
+    async def test_duplicate_claim_with_an_unresolvable_winner_stops_the_batch(
+        self, harness
+    ) -> None:
+        """A claim the occurrence index cannot resolve is torn state, not overlap.
+
+        The admitter may carry a duplicate occurrence's winner into the cursor
+        only when it can name the Run that won. A winner that resolves to
+        nothing means the claim index and the Runs have come apart; recording
+        it would point `last_run_id` at nothing and leave every later overlap
+        check consulting a linkage nobody can answer. So the batch stops with
+        the failure recorded and the cursor exactly where it was.
+        """
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id)
+
+        first = await admitter.admit_due(schedule, now=NOON)
+        assert first.run_ids
+        # `put` keeps an existing row's fire cursors, so the store still holds
+        # the first process's linkage. That is exactly the state the failed
+        # batch must leave untouched.
+        before = await schedules.get(schedule.schedule_id)
+        assert before is not None
+        assert before.last_run_id == first.run_ids[0]
+
+        reconciling = ScheduleRunAdmitter(
+            # Delegation satisfies the protocol at runtime; the checker only
+            # sees the one intercepted method.
+            _UnresolvableOccurrenceWinner(  # type: ignore[arg-type]
+                runs, blind=(schedule.schedule_id, NOON.isoformat())
+            ),
+            templates,
+            schedules,
+        )
+
+        recovered = await reconciling.admit_due(schedule, now=NOON)
+
+        assert recovered.run_ids == ()
+        assert recovered.already_fired == ()
+        assert len(recovered.failures) == 1
+        assert isinstance(recovered.failures[0], RunIntegrityError)
+        assert "no resolvable canonical Run" in str(recovered.failures[0])
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == before.last_run_id
+        assert stored.last_fired_at == before.last_fired_at
+        assert stored.runs_so_far == before.runs_so_far
+
+    async def test_a_transient_lookup_failure_stops_the_batch_but_still_records(
+        self, harness
+    ) -> None:
+        """Resolving a duplicate's winner is a store read, so it can fail
+        transiently — and that failure must not escape `admit_due`.
+
+        Escaping would skip `record_fire` for occurrences this batch already
+        admitted: their Runs exist, their claims are held, and the cursor
+        write that tells the next tick so would never land. The failure is
+        recorded and the batch stops like any other per-occurrence error,
+        while the advance that the admitted occurrences have earned still
+        happens.
+        """
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            last_fired_at=NOON - timedelta(hours=2),
+            catchup_window_seconds=6 * 3600.0,
+            overlap_policy=OverlapPolicy.ALLOW,
+        )
+        # A rival ticker claimed the 11:00 occurrence (the only one due at
+        # NOON-1h) and advanced the stored cursor over it. This batch's caller
+        # still holds a replica snapshot from before that advance, so it
+        # re-enumerates the unclaimed 10:00, the claimed 11:00, and 12:00 —
+        # the sequence a replica that missed the rival's write really sees.
+        rival = await admitter.admit_due(schedule, now=NOON - timedelta(hours=1))
+        assert len(rival.run_ids) == 1
+        replica = schedule.model_copy(update={"last_fired_at": NOON - timedelta(hours=3)})
+
+        reconciling = ScheduleRunAdmitter(
+            _FailingOccurrenceLookup(  # type: ignore[arg-type]
+                runs, failing=(schedule.schedule_id, (NOON - timedelta(hours=1)).isoformat())
+            ),
+            templates,
+            schedules,
+        )
+
+        result = await reconciling.admit_due(replica, now=NOON)
+
+        # The failure is reported, not raised.
+        assert len(result.failures) == 1
+        assert isinstance(result.failures[0], RuntimeError)
+        # The occurrence admitted before the failure reached `record_fire`.
+        assert len(result.run_ids) == 1
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        # The 10:00 fire really landed — and the linkage stays with the
+        # newest consumed occurrence (the rival's 11:00): `_advance` moves
+        # the counters for the stale occurrence while its older cursors
+        # cannot regress what the newer one recorded.
+        assert stored.runs_so_far == 2
+        assert stored.last_fired_at == NOON - timedelta(hours=1)
+        assert stored.last_run_id == rival.run_ids[0]
 
     async def test_the_cursor_does_not_move_when_no_run_was_created(self, harness) -> None:
         """The ordering the issue names: advancing first would skip an
@@ -815,6 +1082,664 @@ class TestOneRunPerFiring:
         assert after is not None and before is not None
         assert after.last_fired_at == before.last_fired_at
         assert after.runs_so_far == before.runs_so_far
+
+
+async def _crashed_before_record_fire(harness, schedule: Schedule, when: datetime) -> str:
+    """Ticker A's half of the #1059 sequence: the Run for `when` exists and
+    the cursor was never stamped, which is exactly what dying between
+    `create_run` and `record_fire` leaves behind."""
+    admitter, _runs, templates, _schedules, _project_id = harness
+    template = await templates.get(TEMPLATE_ID)
+    assert template is not None
+    return await admitter._admit_one(schedule, template, FireDecision(scheduled_for=when))
+
+
+class TestRecoverySeesTheRunStoreBeforeThePolicy:
+    """The #1059 review's findings on the linkage change.
+
+    A crashed winner is a Run with no pointer to it. The overlap policy used
+    to be applied from the caller's stale `active_run`, so under CANCEL_OTHER
+    the crashed occurrence fell into `skipped` — never reaching the duplicate
+    handler — while the newer occurrence was admitted beside its live Run with
+    no cancellation asked for.
+
+    Counting note (supersession of #1282's store contract): the branch made
+    the store dedupe fires per occurrence, so a recovered winner could be
+    counted exactly once by whoever consumed it. Develop kept `fires: int` as
+    a delta, so the reactive rule stands — the winner's ticker counts, a
+    claimant that finds the Run never does. These tests assert develop's
+    reachable behaviour: linkage and policy judgement are exact; recovered
+    counts are only exact for the pre-horizon walk (the horizon class below).
+    """
+
+    async def test_cancel_other_finds_the_crashed_winner_and_asks_for_its_cancellation(
+        self, harness
+    ) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.CANCEL_OTHER,
+            # Wide enough that the crashed occurrence is still enumerated an
+            # hour later, beside the next one.
+            catchup_window_seconds=4 * 3600.0,
+        )
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+        assert (await schedules.get(schedule.schedule_id)).last_run_id is None
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=1), active_run=False)
+
+        assert len(later.run_ids) == 1
+        assert later.already_fired == (NOON,)
+        assert later.cancel_active_run is True, "the live crashed winner is the in-flight Run"
+        assert later.active_run_id == winner
+        assert all(skip.reason is SkipReason.OVERLAP for skip in later.skipped)
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == later.run_ids[0], "the pointer follows the newest occurrence"
+        assert stored.last_fired_at == NOON + timedelta(hours=1)
+        assert stored.runs_so_far == 1, "the new fire counts; the winner's ticker counted NOON"
+        assert await runs.get_run(winner) is not None
+
+    async def test_skip_defers_to_the_crashed_winner_the_pointer_never_named(self, harness) -> None:
+        """`active_run=False` from a stale pointer must not let SKIP run the
+        next occurrence beside the crashed one."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.SKIP,
+            catchup_window_seconds=4 * 3600.0,
+        )
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=1), active_run=False)
+
+        assert later.run_ids == ()
+        assert later.already_fired == (NOON,)
+        assert later.cancel_active_run is False
+        assert {skip.reason for skip in later.skipped} == {SkipReason.OVERLAP}
+        assert later.active_run_id == winner
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == winner
+        assert stored.last_fired_at == NOON + timedelta(hours=1), "the overlap skip is consumed"
+        # The winner's firing stays uncounted here: NOON sat inside the
+        # enumerated window, so the reactive rule owns it and the delta
+        # contract never saw a count from the dead ticker. Exact recovery
+        # counting is the pre-horizon walk's (the horizon class below).
+        assert stored.runs_so_far == 0
+
+    async def test_two_tickers_consuming_one_occurrence_count_it_once(self, harness) -> None:
+        """The refused ticker consumes the winner's occurrence without
+        counting it, so the firing lands in `runs_so_far` exactly once —
+        written by whichever ticker won the claim."""
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, max_runs=2)
+        rival = ScheduleRunAdmitter(runs, templates, schedules)
+
+        await asyncio.gather(
+            admitter.admit_due(schedule, now=NOON), rival.admit_due(schedule, now=NOON)
+        )
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 1
+        assert stored.enabled is True
+
+
+class TestRecoveryBeyondTheCatchUpHorizon:
+    """A winner that crashed before the catch-up horizon is still recovered.
+
+    `evaluate()` enumerates from the horizon forward, so a ticker that died
+    mid-fire and stayed down longer than the window leaves a Run at an
+    occurrence no later evaluation looks at: never linked, never counted, and
+    invisible to the overlap policy. The admitter walks the claims forward
+    from the cursor instead — one lookup per contiguous crashed Run, one on
+    the common path — up to where the enumeration begins (#1059 review).
+
+    These claims are the provably-unrecorded ones: recording an occurrence
+    moves the cursor onto it, and these sit behind the cursor — so, unlike
+    claims on enumerated occurrences, the walk's findings count toward
+    `fires` here, once, under develop's delta contract.
+    """
+
+    async def test_a_winner_one_cadence_back_is_recovered_with_the_default_window(
+        self, harness
+    ) -> None:
+        """Hourly schedule, one-hour window, next tick a full hour later: the
+        crashed occurrence is exactly at the horizon and would not be
+        enumerated."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=1), active_run=False)
+
+        assert later.run_ids == ()
+        assert later.already_fired == (NOON,)
+        assert later.active_run_id == winner
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == winner
+        assert stored.runs_so_far == 1
+
+    async def test_skip_defers_to_a_winner_that_crashed_before_the_horizon(self, harness) -> None:
+        """Down for three hours: the NOON winner is two occurrences behind the
+        horizon and still live, so SKIP must not fire 15:00 beside it."""
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=3), active_run=False)
+
+        assert later.run_ids == ()
+        assert later.already_fired == (NOON,)
+        assert later.active_run_id == winner
+        assert SkipReason.OVERLAP in {skip.reason for skip in later.skipped}
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == winner
+        assert stored.last_fired_at == NOON + timedelta(hours=3)
+        assert stored.runs_so_far == 1, "the crashed firing is counted once"
+
+    async def test_cancel_other_cancels_a_winner_that_crashed_before_the_horizon(
+        self, harness
+    ) -> None:
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.CANCEL_OTHER)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=3), active_run=False)
+
+        assert len(later.run_ids) == 1
+        assert later.cancel_active_run is True
+        assert later.active_run_id == winner
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_run_id == later.run_ids[0]
+        assert stored.runs_so_far == 2
+
+    async def test_a_batch_of_crashed_winners_is_recovered_contiguously(self, harness) -> None:
+        """A ticker that admitted 12:00 and 13:00 in one batch and died before
+        recording leaves two Runs after the cursor; both are found."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.ALLOW)
+        first = await _crashed_before_record_fire(harness, schedule, NOON)
+        second = await _crashed_before_record_fire(harness, schedule, NOON + timedelta(hours=1))
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=4))
+
+        assert later.already_fired == (NOON, NOON + timedelta(hours=1))
+        assert len(later.run_ids) == 1
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 3
+        assert stored.last_run_id == later.run_ids[0]
+        for run_id in (first, second):
+            assert await runs.get_run(run_id) is not None, "recovered, not replaced"
+
+    async def test_the_walk_does_not_stop_at_the_first_occurrence_without_a_run(
+        self, harness
+    ) -> None:
+        """Bounded by the catch-up horizon, not by the first empty probe.
+
+        A batch's own Runs sit contiguously, but a policy like `CANCEL_OTHER`
+        or `BUFFER_ONE` can leave a *live* winner sitting past occurrences it
+        legitimately never admitted (Codex review, #1059 — see
+        `TestRecoveryPastAGapTheOverlapPolicyLeft`). Stopping at the first
+        empty probe would read that gap as "nothing crashed here" and miss a
+        winner beyond it, so the walk keeps going to the horizon: every
+        occurrence from the cursor up to (and including) where the crash
+        occurrence sits gets probed, plus the one occurrence the window still
+        enumerates.
+        """
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.ALLOW)
+        await _crashed_before_record_fire(harness, schedule, NOON)
+        looked_up: list[str] = []
+        real_lookup = runs.get_run_for_occurrence
+
+        async def _counted(schedule_id: str, scheduled_for: str):
+            looked_up.append(scheduled_for)
+            return await real_lookup(schedule_id, scheduled_for)
+
+        runs.get_run_for_occurrence = _counted  # type: ignore[method-assign]
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=5))
+
+        assert later.already_fired == (NOON,)
+        assert sorted(looked_up) == sorted(
+            [
+                (NOON + timedelta(hours=5)).isoformat(),
+                NOON.isoformat(),
+                (NOON + timedelta(hours=1)).isoformat(),
+                (NOON + timedelta(hours=2)).isoformat(),
+                (NOON + timedelta(hours=3)).isoformat(),
+                (NOON + timedelta(hours=4)).isoformat(),
+            ]
+        )
+
+    async def test_an_idle_tick_costs_one_lookup_at_most(self, harness) -> None:
+        """The common path: nothing crashed, nothing due. The walk probes the
+        first occurrence after the cursor, finds no Run, and stops."""
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules, project_id, last_fired_at=NOON, next_due_at=NOON + timedelta(hours=1)
+        )
+        looked_up: list[str] = []
+        real_lookup = runs.get_run_for_occurrence
+
+        async def _counted(schedule_id: str, scheduled_for: str):
+            looked_up.append(scheduled_for)
+            return await real_lookup(schedule_id, scheduled_for)
+
+        runs.get_run_for_occurrence = _counted  # type: ignore[method-assign]
+
+        await admitter.admit_due(schedule, now=NOON + timedelta(minutes=1))
+
+        assert looked_up == []
+
+
+class TestRecoveredClaimsReserveTheirMaxRunsSlot:
+    """Codex review on #1059: a recovered pre-horizon claim spends `max_runs`
+    the moment this tick records it beside whatever it admits, but
+    `evaluate()` decides `decision.fires` before it knows about the claim at
+    all. Left unreserved, this tick can create a Run *past* `max_runs`
+    before the same write disables the schedule."""
+
+    async def test_a_recovered_claim_reserves_its_slot_before_a_new_fire_admits(
+        self, harness
+    ) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules, project_id, overlap_policy=OverlapPolicy.ALLOW, max_runs=1
+        )
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=1), active_run=False)
+
+        assert later.run_ids == (), "the recovered claim already spent the one run max_runs allows"
+        assert later.already_fired == (NOON,)
+        assert later.disabled is True
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 1
+        assert stored.enabled is False
+        assert stored.last_run_id == winner
+        assert await runs.get_run(winner) is not None
+
+
+class TestRecoveredClaimsAreCountedOnce:
+    """Codex review on #1059: two tickers racing on the same stale snapshot
+    both discover the same crashed winner as "unrecorded". The row lock
+    `record_fire` writes under serializes their two writes, but does not by
+    itself deduplicate what each one believes it earned."""
+
+    async def test_two_tickers_recovering_the_same_claim_count_it_once(self, harness) -> None:
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.SKIP)
+        rival = ScheduleRunAdmitter(runs, templates, schedules)
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        now = NOON + timedelta(hours=3)
+        await asyncio.gather(
+            admitter.admit_due(schedule, now=now, active_run=False),
+            rival.admit_due(schedule, now=now, active_run=False),
+        )
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 1, "one live Run, credited exactly once"
+        assert stored.last_run_id == winner
+
+
+class TestPartialBatchCompletionIgnoresRecoveredPadding:
+    """Codex review on #1059: a seeded recovered claim (off this batch
+    entirely) can pad `consumed` to the same length as `decision.fires` even
+    though a *later* fire in this same batch failed and was never reached —
+    the length coincidence must not read as "the batch finished"."""
+
+    async def test_a_recovered_claim_does_not_mask_a_failed_fire_in_the_batch(
+        self, harness
+    ) -> None:
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.ALLOW,
+            catchup_window_seconds=2 * 3600.0,
+        )
+        await _crashed_before_record_fire(harness, schedule, NOON)
+
+        calls = {"n": 0}
+        original = admitter._admit_one
+
+        async def _fail_on_the_second(schedule_, template_, fire_):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("run store refused")
+            return await original(schedule_, template_, fire_)
+
+        admitter._admit_one = _fail_on_the_second  # type: ignore[method-assign]
+
+        result = await admitter.admit_due(schedule, now=NOON + timedelta(hours=3), active_run=False)
+
+        assert result.failures
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        # The 15:00 fire failed and is still owed: `due()` must re-evaluate
+        # promptly, not wait out the batch's own (now-stale) next_due_at.
+        assert stored.next_due_at == schedule.next_due_at
+
+
+class TestRecoveryPastAGapTheOverlapPolicyLeft:
+    """Codex review on #1059: `CANCEL_OTHER` admits only the newest occurrence
+    of a batch, leaving its older siblings legitimately Run-less *in the same
+    batch*. If the ticker crashes right after creating the winner's Run, the
+    next tick's walk starts at the same frozen cursor and hits those
+    legitimate gaps before it ever reaches the live winner sitting past them."""
+
+    async def test_cancel_other_finds_a_winner_behind_occurrences_it_legitimately_skipped(
+        self, harness
+    ) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.CANCEL_OTHER)
+        crashed_at = NOON + timedelta(hours=2)
+        winner = await _crashed_before_record_fire(harness, schedule, crashed_at)
+
+        # Far enough later that the winner is well pre-horizon, and NOON,
+        # NOON+1h — never admitted, exactly as CANCEL_OTHER would leave a
+        # batch's older occurrences — sit between the frozen cursor and it.
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=5), active_run=False)
+
+        assert later.active_run_id == winner, "the orphaned winner must not go unnoticed"
+        assert crashed_at in later.already_fired
+        assert later.cancel_active_run is True
+        live = await runs.get_run(winner)
+        assert live is not None and live.status not in TERMINAL_RUN_STATUSES
+
+
+class TestClaimedSkipsAreNotDoubleReported:
+    """Codex review on #1059: a claim resolves what `evaluate()` could not
+    have known when it decided `skipped` (OVERLAP, EXHAUSTED, ...).
+    Reporting the same occurrence in `skipped` *and* `already_fired` says two
+    contradictory things about it at once."""
+
+    async def test_a_claimed_overlap_skip_is_not_also_reported_as_skipped(self, harness) -> None:
+        admitter, _runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.SKIP,
+            catchup_window_seconds=4 * 3600.0,
+        )
+        await _crashed_before_record_fire(harness, schedule, NOON)
+
+        later = await admitter.admit_due(schedule, now=NOON + timedelta(hours=1), active_run=False)
+
+        assert later.already_fired == (NOON,)
+        assert NOON not in {skip.scheduled_for for skip in later.skipped}
+
+
+class TestTruncatedOccurrencesAreStillProbedForClaims:
+    """Codex review on #1059: the 512-occurrence enumeration cap drops the
+    oldest occurrences of an over-large batch from `evaluate()`'s own output
+    — but they are still real, in-window occurrences a live winner can be
+    sitting on."""
+
+    async def test_a_winner_beyond_the_enumeration_cap_is_still_found(self, harness) -> None:
+        admitter, runs, _templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            cron="* * * * *",
+            overlap_policy=OverlapPolicy.ALLOW,
+            last_fired_at=NOON - timedelta(minutes=1),
+            catchup_window_seconds=600 * 60.0,
+        )
+        # 600 occurrences are due; the cap keeps only the newest 512, so this
+        # sits in the oldest, truncated slice.
+        crashed_at = NOON + timedelta(minutes=10)
+        winner = await _crashed_before_record_fire(harness, schedule, crashed_at)
+
+        later = await admitter.admit_due(
+            schedule, now=NOON + timedelta(minutes=600), active_run=False
+        )
+
+        assert any(skip.reason is SkipReason.TRUNCATED for skip in later.skipped)
+        assert crashed_at in later.already_fired
+        live = await runs.get_run(winner)
+        assert live is not None and live.status not in TERMINAL_RUN_STATUSES
+
+
+class TestTruncatedClaimsAreProbedInOneBatch:
+    """Codex review on #1533: probing every truncated occurrence one at a
+    time — the fix above put them back in the claim lookup — turns a single
+    recovery tick into one awaited Run-store query per truncated occurrence,
+    serially. `_enumerate_due` can truncate tens of thousands of them on a
+    schedule stuck far longer than its cadence allows, so that fix needed its
+    own fix: the dropped tail is now probed through one batched call, bounded
+    by `_MAX_TRUNCATED_CLAIM_PROBES`."""
+
+    async def test_the_truncated_tail_costs_one_batched_call_not_one_per_occurrence(
+        self, harness
+    ) -> None:
+        _admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            cron="* * * * *",
+            overlap_policy=OverlapPolicy.ALLOW,
+            last_fired_at=NOON - timedelta(minutes=1),
+            catchup_window_seconds=600 * 60.0,
+        )
+        # Same 600-due / 88-truncated shape as the fix above's own test.
+        crashed_at = NOON + timedelta(minutes=10)
+        await _crashed_before_record_fire(harness, schedule, crashed_at)
+
+        counting = _CountingRunStore(runs)  # type: ignore[arg-type]
+        spying = ScheduleRunAdmitter(counting, templates, schedules)  # type: ignore[arg-type]
+
+        later = await spying.admit_due(
+            schedule, now=NOON + timedelta(minutes=600), active_run=False
+        )
+
+        assert crashed_at in later.already_fired, "the missing-winner fix still holds"
+        assert crashed_at.isoformat() not in {call[1] for call in counting.single_calls}, (
+            "the truncated occurrence must not reach the one-at-a-time path"
+        )
+        assert len(counting.batch_calls) == 1, "one batched query for the whole tail"
+        assert len(counting.batch_calls[0][1]) == 88, "all 88 truncated occurrences, in one call"
+        assert crashed_at.isoformat() in counting.batch_calls[0][1]
+
+    async def test_a_very_large_truncated_tail_is_bounded_and_batched(self, harness) -> None:
+        """Bounded to `_MAX_TRUNCATED_CLAIM_PROBES`, not the whole tail — the
+        newest of the dropped occurrences, closest to what `evaluate()` kept,
+        are probed first."""
+        _admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            cron="* * * * *",
+            overlap_policy=OverlapPolicy.ALLOW,
+            last_fired_at=NOON - timedelta(minutes=1),
+            # 1600 due, 512 kept -> 1088 truncated, well past the 512-probe
+            # bound.
+            catchup_window_seconds=1600 * 60.0,
+        )
+        # The newest truncated occurrence: inside the bounded, batched probe.
+        found_winner = NOON + timedelta(minutes=1088)
+        await _crashed_before_record_fire(harness, schedule, found_winner)
+        # The oldest truncated occurrence: past the bound, never probed.
+        unreachable_winner = NOON + timedelta(minutes=1)
+        await _crashed_before_record_fire(harness, schedule, unreachable_winner)
+
+        counting = _CountingRunStore(runs)  # type: ignore[arg-type]
+        spying = ScheduleRunAdmitter(counting, templates, schedules)  # type: ignore[arg-type]
+
+        later = await spying.admit_due(
+            schedule, now=NOON + timedelta(minutes=1600), active_run=False
+        )
+
+        assert len(counting.batch_calls) == 1
+        assert len(counting.batch_calls[0][1]) == 512, "bounded to _MAX_TRUNCATED_CLAIM_PROBES"
+        assert found_winner in later.already_fired
+        assert unreachable_winner not in later.already_fired, (
+            "beyond the bound is the documented, known limit -- not a silent scan"
+        )
+        # Both Runs still exist; only the *reporting* of the older one missed
+        # it, not the firing itself.
+        assert (
+            await runs.get_run_for_occurrence(schedule.schedule_id, unreachable_winner.isoformat())
+            is not None
+        )
+
+
+class TestConsumedOccurrencesKeepTheirOwnRunId:
+    """Codex review on #1269: `consumed` and its Run ids must stay paired
+    even when a seeded (off-batch) claim sits chronologically *after* one of
+    this batch's own fires — an `EXHAUSTED`-refused occurrence is always
+    newer than what `max_runs` still allowed through, so a claim planted
+    there is exactly this case. Sorting one list and not the other must not
+    pair a timestamp with a different occurrence's Run."""
+
+    async def test_a_later_seeded_claim_keeps_its_own_run_id(self, harness) -> None:
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(
+            schedules,
+            project_id,
+            overlap_policy=OverlapPolicy.ALLOW,
+            catchup_window_seconds=5 * 3600.0,
+            max_runs=5,
+            runs_so_far=3,
+        )
+        template = await templates.get(TEMPLATE_ID)
+        assert template is not None
+        # Plants a claim on NOON+2h, the occurrence `max_runs` (2 remaining of
+        # 3 eligible) will refuse as EXHAUSTED — the newest of the batch.
+        planted = await admitter._admit_one(
+            schedule, template, FireDecision(scheduled_for=NOON + timedelta(hours=2))
+        )
+
+        await admitter.admit_due(schedule, now=NOON + timedelta(hours=2), active_run=False)
+
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_fired_at == NOON + timedelta(hours=2)
+        assert stored.last_run_id == planted, "the newest consumed occurrence's own Run"
+        linked = await runs.get_run(stored.last_run_id)
+        assert linked is not None
+        assert linked.provenance[SCHEDULED_FOR_KEY] == stored.last_fired_at.isoformat()
+
+
+class TestRecoveryCreditSurvivesAMissedClaim:
+    """Codex review on #1533: a rival ticker's claim lookup can transiently
+    fail on exactly the pre-horizon occurrence another ticker later
+    discovers. The cursor-position dedup this store used to rely on treated
+    "the cursor already moved past it" as proof the occurrence was credited
+    — true only when the writer that moved the cursor also saw the claim.
+    Here it does not: that writer's own, unrelated due fire is what carries
+    `last_fired_at` past the crashed winner, with no idea the winner exists.
+    """
+
+    async def test_a_missed_claim_is_still_credited_once_a_rival_finds_it(self, harness) -> None:
+        admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.ALLOW)
+        # A winner crashed before recording NOON, well behind the default
+        # one-hour catchup window three hours later — a pre-horizon claim
+        # only the recovery walk, not ordinary enumeration, will see.
+        winner = await _crashed_before_record_fire(harness, schedule, NOON)
+
+        blind = ScheduleRunAdmitter(
+            _FailingOccurrenceLookup(  # type: ignore[arg-type]
+                runs, failing=(schedule.schedule_id, NOON.isoformat())
+            ),
+            templates,
+            schedules,
+        )
+        now = NOON + timedelta(hours=3)
+
+        # Ticker A: its probe of NOON's claim fails transiently, but it still
+        # has the NOON+3h occurrence due, so its own `record_fire` carries
+        # `last_fired_at` straight past NOON without ever learning the
+        # crashed winner exists.
+        first = await blind.admit_due(schedule, now=now, active_run=False)
+        assert len(first.run_ids) == 1
+        assert first.already_fired == (), "NOON's claim was never seen by this ticker"
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.last_fired_at == now, "the cursor jumped straight past NOON"
+        assert stored.runs_so_far == 1, "NOON's crashed winner is not credited yet"
+
+        # Ticker B: the *same* stale snapshot `schedule` (last_fired_at still
+        # NOON-1h in this Python object), a working occurrence lookup. Its
+        # own recovery walk finds NOON's claim and wants to credit it, even
+        # though the store's cursor has already moved past it.
+        second = await admitter.admit_due(schedule, now=now, active_run=False)
+
+        assert NOON in second.already_fired
+        final = await schedules.get(schedule.schedule_id)
+        assert final is not None
+        assert final.runs_so_far == 2, "NOON's crashed winner is credited exactly once, not lost"
+        assert NOON in final.recovered_occurrences
+        assert await runs.get_run(winner) is not None, "the crashed winner's Run is untouched"
+
+
+class TestRecordFireStaysCompatibleWithAnOlderScheduleStore:
+    """Codex review on #1533: `ScheduleRunAdmitter` named `record_fire`'s
+    `recovered=` keyword on every call, recovering or not. An external
+    `ScheduleStore` implementation using the previously valid signature —
+    with no `recovered` parameter at all — raised `TypeError` on every
+    ordinary recurring fire after upgrading, not merely a recovering one.
+    """
+
+    async def test_an_ordinary_fire_needs_no_recovered_parameter(self, harness) -> None:
+        _admitter, runs, templates, schedules, project_id = harness
+        legacy = _LegacyScheduleStore(schedules)  # type: ignore[arg-type]
+        legacy_admitter = ScheduleRunAdmitter(runs, templates, legacy)  # type: ignore[arg-type]
+        schedule = await _schedule(schedules, project_id)
+
+        result = await legacy_admitter.admit_due(schedule, now=NOON)
+
+        assert len(result.run_ids) == 1
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.runs_so_far == 1
+
+    async def test_the_due_cursor_only_path_already_needed_no_recovered_parameter(
+        self, harness
+    ) -> None:
+        """`_consume_without_firing`'s due-cursor-only write never named
+        `recovered` even before this fix — asserted so a future change to it
+        cannot regress this call site silently."""
+        _admitter, runs, templates, schedules, project_id = harness
+        legacy = _LegacyScheduleStore(schedules)  # type: ignore[arg-type]
+        legacy_admitter = ScheduleRunAdmitter(runs, templates, legacy)  # type: ignore[arg-type]
+        # Nothing due yet: only the due cursor moves.
+        schedule = await _schedule(schedules, project_id, last_fired_at=NOON, next_due_at=None)
+
+        result = await legacy_admitter.admit_due(schedule, now=NOON + timedelta(minutes=1))
+
+        assert result.run_ids == ()
+        stored = await schedules.get(schedule.schedule_id)
+        assert stored is not None
+        assert stored.next_due_at == NOON + timedelta(hours=1)
+
+    async def test_a_genuinely_recovered_claim_still_fails_loudly_against_it(self, harness) -> None:
+        """The honest outcome: a store that cannot accept a recovered credit
+        must not silently lose it. This is a real gap in that store, not a
+        bug this admitter should paper over."""
+        _admitter, runs, templates, schedules, project_id = harness
+        schedule = await _schedule(schedules, project_id, overlap_policy=OverlapPolicy.ALLOW)
+        await _crashed_before_record_fire(harness, schedule, NOON)
+        legacy = _LegacyScheduleStore(schedules)  # type: ignore[arg-type]
+        legacy_admitter = ScheduleRunAdmitter(runs, templates, legacy)  # type: ignore[arg-type]
+
+        with pytest.raises(TypeError, match="recovered"):
+            await legacy_admitter.admit_due(
+                schedule, now=NOON + timedelta(hours=3), active_run=False
+            )
 
 
 class TestAdmissionState:

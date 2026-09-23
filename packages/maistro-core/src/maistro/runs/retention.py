@@ -124,7 +124,6 @@ class RunRetentionSweeper:
         self._lock = asyncio.Lock()
         self._last_sweep: float | None = None
         self.last_error: BaseException | None = None
-        self._last_outcome: PurgeOutcome | None = None
 
     @property
     def policy(self) -> RetentionPolicy:
@@ -134,16 +133,6 @@ class RunRetentionSweeper:
     def scope(self) -> RetentionScope | None:
         """The scope every sweep carries unless the call names another."""
         return self._scope
-
-    @property
-    def last_outcome(self) -> PurgeOutcome | None:
-        """What the last completed sweep deleted, by class of evidence.
-
-        None after a failed sweep, however good the one before it was: a
-        metric that outlives its sweep describes a purge that did not
-        happen, which is exactly what a retention metric must never do.
-        """
-        return self._last_outcome
 
     def _resolve_scope(self, override: RetentionScope | None) -> RetentionScope:
         scope = override if override is not None else self._scope
@@ -186,15 +175,12 @@ class RunRetentionSweeper:
                 # surfaces: recorded, visible, and deleting nothing — the one
                 # failure mode the pre-#1175 signature could not have.
                 self.last_error = exc
-                self._last_outcome = None
-                # The standing backlog observation is withdrawn with the
-                # outcome it came from: a failed sweep commits nothing, so it
-                # neither drained a backlog nor may keep claiming one from a
-                # purge that no longer stands as completed.
+                # The standing backlog observation is withdrawn: a failed sweep
+                # commits nothing, so it neither drained a backlog nor may keep
+                # claiming one from a purge that no longer stands as completed.
                 retention_backlog_remaining.set(0.0, mode=self._failure_mode())
                 return 0
             self.last_error = None
-            self._last_outcome = outcome
             self._report_backlog(outcome)
             if outcome.runs:
                 retention_purged_total.inc(outcome.runs, mode=outcome.mode)
@@ -215,7 +201,6 @@ class RunRetentionSweeper:
                 self._resolve_scope(scope), now=now, limit=self._policy.batch_limit
             )
             self.last_error = None
-            self._last_outcome = outcome
             self._report_backlog(outcome)
             if outcome.runs:
                 retention_purged_total.inc(outcome.runs, mode=outcome.mode)

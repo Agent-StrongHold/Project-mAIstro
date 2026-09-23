@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import math
-import sqlite3
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 _DEFAULT_ELO = 1200.0
@@ -45,6 +43,12 @@ class GenomeBattle:
         score_a: Score achieved by the first genome.
         score_b: Score achieved by the second genome.
         timestamp: Time when the battle was recorded.
+        node_run_id: The logical canonical NodeRun this battle was published
+            under, or "" for a caller that does not carry canonical identity
+            (e.g. a direct/library call). This is the idempotency key
+            ``record_battle`` checks before mutating ratings again (#1064) —
+            not merely provenance.
+        attempt_id: The canonical Attempt that committed this battle, or "".
     """
 
     id: int = 0
@@ -55,151 +59,43 @@ class GenomeBattle:
     score_a: float = 0.0
     score_b: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    node_run_id: str = ""
+    attempt_id: str = ""
 
 
 class EloTournament:
-    def __init__(self, k_factor: float = _K_FACTOR, db_path: str | Path | None = None) -> None:
+    def __init__(self, k_factor: float = _K_FACTOR) -> None:
         self._ratings: dict[tuple[str, str], GenomeRating] = {}
         self._battles: list[GenomeBattle] = []
-        self._completed_operations: set[str] = set()
-        self._operation_battles: dict[str, int] = {}
+        # Index of every battle published under a canonical (node_run_id,
+        # benchmark) identity, maintained alongside ``_battles`` (#1064).
+        # ``record_battle`` calls ``find_published_battle`` for every
+        # canonical battle it records, so a linear scan of ``_battles`` here
+        # made a long-running tournament's per-battle idempotency check cost
+        # O(n) -- 1 + 2 + ... + N history comparisons as the battle list
+        # grows, degrading quadratically even when no replay ever occurs.
+        self._published_battles: dict[tuple[str, str], GenomeBattle] = {}
         self._next_id: int = 1
         self._k_factor = k_factor
-        self._db_path = str(db_path) if db_path is not None else None
-        if self._db_path is not None:
-            self._init_db()
-
-    def _init_db(self) -> None:
-        conn = sqlite3.connect(self._db_path)
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS evolve_tournament_ratings (
-                genome_id TEXT NOT NULL,
-                benchmark TEXT NOT NULL,
-                elo REAL NOT NULL,
-                wins INTEGER NOT NULL,
-                losses INTEGER NOT NULL,
-                draws INTEGER NOT NULL,
-                PRIMARY KEY (genome_id, benchmark)
-            );
-            CREATE TABLE IF NOT EXISTS evolve_tournament_battles (
-                id INTEGER PRIMARY KEY,
-                benchmark TEXT NOT NULL,
-                genome_a_id TEXT NOT NULL,
-                genome_b_id TEXT NOT NULL,
-                winner_id TEXT NOT NULL,
-                score_a REAL NOT NULL,
-                score_b REAL NOT NULL,
-                timestamp REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS evolve_tournament_operations (
-                operation_key TEXT PRIMARY KEY,
-                battle_id INTEGER NOT NULL
-            );
-            """
-        )
-        for row in conn.execute(
-            "SELECT genome_id, benchmark, elo, wins, losses, draws FROM evolve_tournament_ratings"
-        ):
-            rating = GenomeRating(
-                genome_id=row[0],
-                benchmark=row[1],
-                elo=row[2],
-                wins=row[3],
-                losses=row[4],
-                draws=row[5],
-            )
-            self._ratings[(rating.genome_id, rating.benchmark)] = rating
-        for row in conn.execute(
-            "SELECT id, benchmark, genome_a_id, genome_b_id, winner_id, score_a, score_b, timestamp "
-            "FROM evolve_tournament_battles ORDER BY id"
-        ):
-            self._battles.append(GenomeBattle(*row))
-        self._operation_battles = {
-            row[0]: int(row[1])
-            for row in conn.execute(
-                "SELECT operation_key, battle_id FROM evolve_tournament_operations"
-            )
-        }
-        self._completed_operations = set(self._operation_battles)
-        if self._battles:
-            self._next_id = self._battles[-1].id + 1
-        conn.close()
-
-    def _persist_battle(self, battle: GenomeBattle, *, operation_key: str | None = None) -> None:
-        if self._db_path is None:
-            return
-        conn = sqlite3.connect(self._db_path)
-        conn.execute(
-            "INSERT OR REPLACE INTO evolve_tournament_battles "
-            "(id, benchmark, genome_a_id, genome_b_id, winner_id, score_a, score_b, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                battle.id,
-                battle.benchmark,
-                battle.genome_a_id,
-                battle.genome_b_id,
-                battle.winner_id,
-                battle.score_a,
-                battle.score_b,
-                battle.timestamp,
-            ),
-        )
-        if operation_key is not None:
-            conn.execute(
-                "INSERT OR IGNORE INTO evolve_tournament_operations (operation_key, battle_id) "
-                "VALUES (?, ?)",
-                (operation_key, battle.id),
-            )
-        for rating in self._ratings.values():
-            conn.execute(
-                "INSERT OR REPLACE INTO evolve_tournament_ratings "
-                "(genome_id, benchmark, elo, wins, losses, draws) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    rating.genome_id,
-                    rating.benchmark,
-                    rating.elo,
-                    rating.wins,
-                    rating.losses,
-                    rating.draws,
-                ),
-            )
-        conn.commit()
-        conn.close()
-
-    def record_battle_once(
-        self,
-        operation_key: str,
-        benchmark: str,
-        genome_a_id: str,
-        genome_b_id: str,
-        score_a: float,
-        score_b: float,
-    ) -> GenomeBattle:
-        """Record one logical battle at most once across process recovery."""
-        if operation_key in self._completed_operations:
-            battle_id = self._operation_battles[operation_key]
-            for battle in reversed(self._battles):
-                if battle.id == battle_id:
-                    return battle
-            raise RuntimeError(f"missing persisted battle for operation {operation_key!r}")
-        battle = self.record_battle(
-            benchmark,
-            genome_a_id,
-            genome_b_id,
-            score_a,
-            score_b,
-            operation_key=operation_key,
-        )
-        self._completed_operations.add(operation_key)
-        self._operation_battles[operation_key] = battle.id
-        return battle
 
     def _get_rating(self, genome_id: str, benchmark: str) -> GenomeRating:
         key = (genome_id, benchmark)
         if key not in self._ratings:
             self._ratings[key] = GenomeRating(genome_id=genome_id, benchmark=benchmark)
         return self._ratings[key]
+
+    def find_published_battle(self, node_run_id: str, benchmark: str) -> GenomeBattle | None:
+        """Return the battle already published under this logical NodeRun, if any.
+
+        Mirrors the evaluation node's recovery pattern (#1064): a canonical
+        NodeRun/Attempt identity is the idempotency key, not the pair or the
+        benchmark alone, so a genuine later rematch of the same pair on the
+        same benchmark (a different logical NodeRun) is never suppressed.
+        O(1) via ``_published_battles`` rather than scanning ``_battles``.
+        """
+        if not node_run_id:
+            return None
+        return self._published_battles.get((node_run_id, benchmark))
 
     def record_battle(
         self,
@@ -209,8 +105,21 @@ class EloTournament:
         score_a: float,
         score_b: float,
         *,
-        operation_key: str | None = None,
+        node_run_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> GenomeBattle:
+        # Process-loss recovery creates a fresh Attempt beneath the same
+        # NodeRun. If the prior process committed this benchmark's battle but
+        # died before its Attempt could be terminalized, the persisted battle
+        # is the idempotency evidence: return it unchanged instead of
+        # re-applying wins/losses/Elo a second time (#1064). A caller that
+        # passes no node_run_id (library/direct use) always records fresh,
+        # exactly as before this fix.
+        if node_run_id:
+            published = self.find_published_battle(node_run_id, benchmark)
+            if published is not None:
+                return published
+
         if score_a > score_b:
             winner_id = genome_a_id
         elif score_b > score_a:
@@ -226,9 +135,13 @@ class EloTournament:
             winner_id=winner_id,
             score_a=score_a,
             score_b=score_b,
+            node_run_id=node_run_id or "",
+            attempt_id=attempt_id or "",
         )
         self._next_id += 1
         self._battles.append(battle)
+        if node_run_id:
+            self._published_battles[(node_run_id, benchmark)] = battle
 
         ra = self._get_rating(genome_a_id, benchmark)
         rb = self._get_rating(genome_b_id, benchmark)
@@ -251,7 +164,6 @@ class EloTournament:
 
         ra.elo += self._k_factor * (actual_a - expected_a)
         rb.elo += self._k_factor * (actual_b - expected_b)
-        self._persist_battle(battle, operation_key=operation_key)
 
         return battle
 
@@ -355,6 +267,12 @@ class EloTournament:
                 "score_a": b.score_a,
                 "score_b": b.score_b,
                 "timestamp": b.timestamp,
+                # Canonical publication evidence (#1064): the NodeRun/Attempt
+                # this battle was recorded under, so the public API can
+                # actually confirm provenance instead of only carrying it
+                # internally on ``GenomeBattle``.
+                "node_run_id": b.node_run_id,
+                "attempt_id": b.attempt_id,
             }
             for b in filtered[-limit:]
         ]

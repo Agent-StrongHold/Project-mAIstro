@@ -42,9 +42,11 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 
+from maistro.runs.store import RunIntegrityError
+from maistro.tasks.idempotency import InvalidIdempotencyKey, normalize_idempotency_key
 from maistro_canvas.auth import CurrentUser, get_current_user
 from maistro_canvas.types import (
     _MAX_GENERATE_COUNT,
@@ -75,6 +77,7 @@ from maistro_canvas.types import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from maistro_canvas.canvas.composition import CanvasRuntime
     from maistro_canvas.canvas.executor import CanvasExecutor
     from maistro_canvas.protocols import CanvasStore, CompositorService
     from maistro_canvas.types import CanvasRecord, GenerationJobRecord, LayerRecord
@@ -312,23 +315,45 @@ _ASPECT_RATIO_BASES: dict[str, tuple[int, int]] = {
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Factory — injects deps so tests can override cleanly
+# Factory — production receives the complete canonical runtime. The private
+# registration helper remains available to package tests without making an
+# alternate executor injection part of the shipped boundary.
 # ─────────────────────────────────────────────────────────────────────
 
 
-def make_canvas_router(
+def _make_canvas_router(
     *,
     store: CanvasStore,
     executor: CanvasExecutor,
     compositor: CompositorService,
 ) -> APIRouter:
-    """Return a router with the given dependencies closed over."""
+    """Register handlers against already-selected dependencies."""
     router = APIRouter()
     _register_canvas_routes(router, store, executor, compositor)
     _register_layer_routes(router, store, executor, compositor)
     _register_job_routes(router, store, executor, compositor)
     _register_composite_routes(router, store, executor, compositor)
     _register_export_routes(router, store, executor, compositor)
+    return router
+
+
+def make_canvas_router(*, runtime: CanvasRuntime, compositor: CompositorService) -> APIRouter:
+    """Return the production router bound to canonical Canvas execution.
+
+    A route cannot be mounted with a separately injected executor. The runtime
+    owns the scope-bound ``CanvasCanonicalExecution`` and its worker together,
+    so every generation admission through this boundary is canonical.
+    """
+    router = _make_canvas_router(
+        store=runtime.store,
+        executor=runtime.executor,
+        compositor=compositor,
+    )
+    # The router is the production ownership boundary: mounting it also
+    # mounts the worker lifecycle, so admitted jobs have a reachable consumer.
+    from maistro_canvas.canvas.composition import bind_canvas_runner_lifecycle
+
+    bind_canvas_runner_lifecycle(router=router, runtime=runtime)
     return router
 
 
@@ -531,6 +556,7 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
         layer_id: str,
         body: dict[str, Any],
         auth: CurrentUser = Depends(get_current_user),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ) -> JSONResponse:
         await _require_canvas(store, canvas_id, auth.org_id)
         await _require_layer(store, canvas_id, layer_id, auth.org_id)
@@ -541,6 +567,22 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
                 status_code=422,
                 detail=f"count must be between 1 and {_MAX_GENERATE_COUNT}",
             )
+
+        # `body.get("idempotency_key", idempotency_key)` looks like a fallback
+        # to the header, but `dict.get`'s default only applies when the key is
+        # *absent* -- a generated client's `"idempotency_key": null` supplies
+        # the key with value `None`, which silently suppressed the header and
+        # admitted the request with no operation identity at all.
+        # `normalize_idempotency_key` treats every `None` candidate as absent
+        # and only refuses when the header and body both carry different
+        # non-null values -- a genuine conflict, not this case.
+        body_key = body.get("idempotency_key")
+        try:
+            resolved_idempotency_key = normalize_idempotency_key(
+                idempotency_key, str(body_key) if body_key is not None else None
+            )
+        except InvalidIdempotencyKey as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         try:
             job = await executor.start_job(
@@ -555,6 +597,8 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
                 negative_prompt=str(body.get("negative_prompt", "")),
                 region=str(body.get("region", "full")),
                 strength=float(body.get("strength", 0.6)),
+                actor_principal_id=auth.user_id,
+                idempotency_key=resolved_idempotency_key,
             )
         except (
             TextLayerNoGenError,
@@ -564,6 +608,18 @@ def _register_job_routes(  # noqa: C901  route-registration closure: independent
             RefineNoSourceError,
         ) as exc:
             return _error(exc)
+        except RunIntegrityError as exc:
+            # A same idempotency key retried with different inputs, once the
+            # earlier operation is no longer active to answer the in-flight
+            # check above. A deterministic 409, not the generic 500 this
+            # would otherwise fall through to the global exception handler
+            # as -- `RunIntegrityError` is a core canonical-execution error,
+            # not one of the Canvas domain errors `_error()`/
+            # `_ERROR_STATUS_MAP` above know how to translate.
+            return JSONResponse(
+                status_code=409,
+                content={"code": "IDEMPOTENCY_KEY_CONFLICT", "detail": str(exc)},
+            )
 
         return JSONResponse(
             status_code=202,

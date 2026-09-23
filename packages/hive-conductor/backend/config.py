@@ -197,6 +197,14 @@ class Settings(BaseSettings):
     allow_stub_llm: bool = False
 
     maistro_router_api_key: str | None = None
+    # Provider metadata and explicit model authorizations are operator config,
+    # not inferred from the gateway URL. The bridge passes both into the
+    # canonical Container so Canvas and graph nodes share one authority.
+    provider_config_path: str = ""
+    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
+    # Optional explicit binding selector for the server-side Canvas quality
+    # route. If omitted, exactly one matching model binding is required.
+    canvas_model_binding_id: str = ""
     # The Workspace a submission that names none lands in (#158). Passed
     # explicitly into `AgentConfig.workspace_id` rather than left to core's own
     # default, so "which Workspace did this Run go to" has one answer this
@@ -205,9 +213,6 @@ class Settings(BaseSettings):
     maistro_agents_dir: str = "agents"
     maistro_llm_api_key: SecretStr | None = None
     maistro_model: str = "mistral-large"
-    # Canonical model.chat authorization declarations consumed by the embedded
-    # core Container. Empty remains fail-closed for model effects.
-    model_bindings: list[ModelBindingConfig] = Field(default_factory=list)
     # The embedded Container's Sentinel permission table (ADR-072726-0d6b,
     # #1165). Fail-closed: the shipped empty table denies every tool, so a
     # Conductor that wants its agents to hold tool authority states it here --

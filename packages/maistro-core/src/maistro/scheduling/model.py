@@ -88,6 +88,19 @@ class Schedule(BaseModel):
     last_fired_at: datetime | None = None
     last_run_id: str | None = None
     next_due_at: datetime | None = None
+    recovered_occurrences: frozenset[datetime] = Field(default_factory=frozenset)
+    """Pre-horizon occurrences (#1059) already credited toward `runs_so_far`.
+
+    A durable per-occurrence signal, not a cursor: `last_fired_at` advances to
+    the newest occurrence *this* evaluation consumed, whatever that batch is,
+    so it can jump past a pre-horizon claim a lookup failed to see on the same
+    tick — the cursor moving is then no proof the claim was ever counted
+    (Codex review, #1533). Comparing a recovered claim against this set rather
+    than against `last_fired_at` survives that: a rival ticker who *did* see
+    the claim still credits it, whichever order the two writes land in.
+    Bounded by `store._MAX_RECOVERED_OCCURRENCES` so a schedule that crashes
+    over and over does not grow this set without limit.
+    """
 
     persona_id: str | None = None
     actor_principal_id: str | None = None

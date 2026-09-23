@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import copy
 import json
+import multiprocessing
 import pathlib
 import sys
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fastapi import HTTPException
@@ -92,6 +94,58 @@ def _register_body(username: str, invitation: str | None = None) -> dict:
 def _login(client: TestClient, username: str, password: str) -> None:
     r = client.post("/v1/auth/login", json={"username": username, "password": password})
     assert r.status_code == 200, r.text
+
+
+def _durable_registration_worker(db_path: str, barrier: Any, outcomes: Any, worker_id: int) -> None:
+    """Run the real register route from an independent state writer."""
+    import stores
+    from fastapi import Request, Response
+    from fastapi.exceptions import HTTPException
+    from routes import auth as auth_routes
+    from services import registration_policy
+    from services.model_store import ModelStore
+
+    from maistro.state import PersistedStore, State
+
+    state = State(db_path)
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    stores.users = ModelStore(
+        "users", stores.users._model_class, persisted=persisted, unique_fields=("username",)
+    )
+    stores.users.initialize()
+    registration_policy.reset()
+    registration_policy.set_mode("open", actor="test")
+    auth_routes._REGISTER_THROTTLE = auth_routes.AuthThrottle(auth_routes._STRICTER.register)
+    barrier.wait(timeout=10)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/auth/register",
+            "headers": [],
+            "client": ("127.0.0.1", 8080 + worker_id),
+            "scheme": "http",
+            "server": ("127.0.0.1", 8000),
+            "query_string": b"",
+        }
+    )
+    response = Response()
+    try:
+        auth_routes.register(
+            auth_routes.RegisterBody(
+                username="cross-process-name",
+                password="securepass1",
+                confirm_password="securepass1",
+            ),
+            request,
+            response,
+        )
+    except HTTPException as exc:
+        outcomes.put(exc.status_code)
+    else:
+        outcomes.put(200)
+    state.close()
 
 
 class TestPostSetupRegistrationIsClosed:
@@ -446,6 +500,165 @@ class TestInvitations:
         assert outcomes.count(403) == 7
         assert len(stores.users) == before + 1
 
+    def test_concurrent_open_registration_claims_username_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The UUID-keyed user store cannot be the uniqueness boundary (#1248).
+
+        Slow the post-check password step so every pre-fix request observes the
+        username as available before any UUID row is written. The route's
+        critical section must turn that check-then-write into one winner and
+        seven 409 responses, rather than seven identities with one username.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        rp.set_mode("open", actor="admin:test")
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+
+        def slow_hash(_password: str) -> str:
+            # Release the GIL while the old route's check-to-write window is
+            # open, without spending Argon2 work on eight test accounts.
+            time.sleep(0.1)
+            return "test-registration-hash"
+
+        monkeypatch.setattr(auth_routes, "hash_password", slow_hash)
+        before = len(stores.users)
+        barrier = threading.Barrier(8)
+
+        def attempt(_index: int) -> int:
+            barrier.wait(timeout=10)
+            response = TestClient(app).post(
+                "/v1/auth/register", json=_register_body("same-username")
+            )
+            return response.status_code
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outcomes = list(pool.map(attempt, range(8)))
+
+        assert outcomes.count(200) == 1
+        assert outcomes.count(409) == 7
+        assert len(stores.users) == before + 1
+        assert [u.username for u in stores.users.values()].count("same-username") == 1
+
+    def test_durable_claim_loses_after_the_in_memory_check_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`put_if_unique` is authoritative even when `_username_taken` said yes (#1248).
+
+        `_username_taken` reads the in-memory dict; `put_if_unique` makes the
+        durable claim. A process that lost the durable race after its own
+        in-memory check passed (e.g. it was serving a stale snapshot, or
+        another writer's row landed between the two calls) must still be
+        refused — the route falls through to the `put_if_unique` branch's own
+        409, not the earlier `_username_taken` one, and the throttle still
+        charges the failure.
+        """
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        rp.set_mode("open", actor="admin:test")
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+        real_put_if_unique = stores.users.put_if_unique
+        calls: list[tuple[str, str]] = []
+
+        def losing_put_if_unique(key: str, value: Any, field_name: str) -> bool:
+            # `_username_taken` has already returned False for this name (it's
+            # not in the dict yet) by the time this runs — this simulates the
+            # durable backend discovering the claim is not actually free.
+            calls.append((key, field_name))
+            return False
+
+        monkeypatch.setattr(stores.users, "put_if_unique", losing_put_if_unique)
+        before = len(stores.users)
+        before_failures = {
+            key: len(times)
+            for key, times in auth_routes._REGISTER_THROTTLE._store._failures.items()
+        }
+
+        client = TestClient(app)
+        response = client.post("/v1/auth/register", json=_register_body("durable-race-loser"))
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Username is already taken."
+        assert calls, "put_if_unique must have been reached"
+        assert len(stores.users) == before
+        assert "durable-race-loser" not in [u.username for u in stores.users.values()]
+        after_failures = {
+            key: len(times)
+            for key, times in auth_routes._REGISTER_THROTTLE._store._failures.items()
+        }
+        assert after_failures != before_failures
+
+        monkeypatch.setattr(stores.users, "put_if_unique", real_put_if_unique)
+
+    def test_independent_process_writers_publish_one_username(self, tmp_path: pathlib.Path) -> None:
+        """The SQLite uniqueness claim survives separate application processes (#1248)."""
+        from models.schemas import HiveUser
+
+        from maistro.state import PersistedStore, State
+
+        db_path = tmp_path / "registration-race.db"
+        bootstrap = State(db_path)
+        persisted = PersistedStore(bootstrap)
+        persisted.initialize()
+        from services.model_store import ModelStore
+
+        users = ModelStore("users", HiveUser, persisted=persisted, unique_fields=("username",))
+        assert users.put_if_unique(
+            "existing-user",
+            HiveUser(
+                id="existing-user",
+                username="existing-user",
+                password_hash="test-hash",
+                role="user",
+                created_at=datetime.now(UTC),
+            ),
+            "username",
+        )
+        bootstrap.close()
+
+        ctx = multiprocessing.get_context("spawn")
+        barrier = ctx.Barrier(2)
+        outcomes = ctx.Queue()
+        workers = [
+            ctx.Process(
+                target=_durable_registration_worker,
+                args=(str(db_path), barrier, outcomes, worker_id),
+            )
+            for worker_id in range(2)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=20)
+            assert worker.exitcode == 0
+
+        assert sorted(outcomes.get(timeout=5) for _ in workers) == [200, 409]
+
+        state = State(db_path)
+        persisted = PersistedStore(state)
+        persisted.initialize()
+        users = persisted.list_all("users", HiveUser)
+        state.close()
+        usernames = [user.username for user in users]
+        assert usernames.count("existing-user") == 1
+        assert usernames.count("cross-process-name") == 1
+
     def test_invitation_that_loses_the_redemption_race_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -590,7 +803,7 @@ class TestAdminSurfaceFailClosedOnLostWrites:
 
 
 class TestFirstSetupIsOneShot:
-    """Bootstrap: first owner via setup only, exactly once, retryably."""
+    """Bootstrap: first owner via setup only, exactly once, fail-closed."""
 
     @staticmethod
     def _fresh_instance(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -796,6 +1009,38 @@ class TestSetupGuardEdges:
         assert "Setup already complete" in exc_info.value.detail
         assert len(stores.users) == 0
 
+    def test_setup_completed_between_check_and_lock_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Guard flipped mid-request: the deterministic shape of a failed
+        provisioner whose account writes landed after this request passed
+        the fast path. The in-lock re-check must refuse before the claim
+        insert — the whole reason the check is repeated under the same lock
+        as the claim is that passing it once, outside, proves nothing about
+        the state by the time the insert would run."""
+        import stores
+        from models.schemas import HiveUser
+        from routes import setup as setup_routes
+        from routes.setup import complete_setup
+        from services.model_store import ModelStore
+
+        guard_results = iter([False, True])
+        monkeypatch.setattr(
+            setup_routes,
+            "_is_setup_complete",
+            lambda: next(guard_results, True),
+        )
+        monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 409
+        assert "Setup already complete" in exc_info.value.detail
+        # Refused before the claim insert, and before any account exists.
+        assert "__hive_setup_claim__" not in stores.sessions
+        assert len(stores.users) == 0
+
     def test_policy_closeout_that_cannot_persist_fails_setup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -817,7 +1062,8 @@ class TestSetupGuardEdges:
 
         assert exc_info.value.status_code == 503
         assert "registration policy was not persisted" in str(exc_info.value.detail)
-        # The rollback released the claim: a failed first run stays retryable.
+        # This test uses an ephemeral store, so the failed run remains
+        # retryable; a persisted run retains the claim (covered below).
         assert "__hive_setup_claim__" not in stores.sessions
 
 
@@ -863,6 +1109,17 @@ class TestPersistedSetupIsOneShot:
             # created: the record is present, so the answer is one-shot.
             assert setup_routes._is_setup_complete() is True
 
+            # A second State reader observes the marker before the original
+            # writer is closed. This catches a setup route that only enqueues
+            # the marker and reports success before it is durable.
+            reader_state = State(db_path=tmp_path / "one-shot.db")
+            reader_persisted = PersistedStore(reader_state)
+            reader_persisted.initialize()
+            reader_sessions = JsonStore("sessions", persisted=reader_persisted)
+            reader_sessions.initialize()
+            assert "__hive_setup__" in reader_sessions
+            reader_state.close()
+
             with pytest.raises(HTTPException) as exc_info:
                 setup_routes.complete_setup({**body, "admin_username": "second-run"})
             assert exc_info.value.status_code == 409
@@ -873,6 +1130,192 @@ class TestPersistedSetupIsOneShot:
             stores.sessions = original_sessions
             state.flush()
             state.close()
+
+
+class TestLostSetupMarkerCannotReopenBootstrap:
+    def test_lost_marker_and_restart_cannot_take_over_persisted_accounts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """A marker fault after account writes must fail closed across restart."""
+        import stores
+        from models.schemas import HiveUser
+        from routes import setup as setup_routes
+        from services.model_store import JsonStore, ModelStore
+
+        from maistro.state import PersistedStore, State
+
+        original_users = stores.users
+        original_sessions = stores.sessions
+        state: State | None = None
+        restarted_state: State | None = None
+        try:
+            db = tmp_path / "lost-setup-marker.db"
+            state = State(db_path=db)
+            persisted = PersistedStore(state)
+            persisted.initialize()
+            first_users = ModelStore("users", HiveUser, persisted=persisted)
+            first_users.initialize()
+            first_sessions = JsonStore("sessions", persisted=persisted)
+            first_sessions.initialize()
+            stores.users = first_users
+            stores.sessions = first_sessions
+
+            real_put_raw = persisted.put_raw
+
+            def drop_setup_marker(store_name: str, key: str, document: str) -> None:
+                if store_name == "sessions" and key == "__hive_setup__":
+                    return
+                real_put_raw(store_name, key, document)
+
+            # Simulate the real failure shape: account writes are accepted and
+            # flushed, but the one-shot completion marker is silently lost.
+            monkeypatch.setattr(persisted, "put_raw", drop_setup_marker)
+            with pytest.raises(RuntimeError, match="not acknowledged"):
+                setup_routes.complete_setup(
+                    {
+                        "hardware_preset": "auto",
+                        "admin_username": "firstadmin",
+                        "admin_password": "s3cret-admin",
+                        "user_username": "firstuser",
+                        "user_password": "s3cret-user",
+                    }
+                )
+
+            state.close()
+            state = None
+
+            # Rehydrate the same stores as a fresh process would. The marker is
+            # absent, while both accounts and the retained claim are durable.
+            restarted_state = State(db_path=db)
+            restarted = PersistedStore(restarted_state)
+            restarted.initialize()
+            restarted_users = ModelStore("users", HiveUser, persisted=restarted)
+            restarted_users.initialize()
+            restarted_sessions = JsonStore("sessions", persisted=restarted)
+            restarted_sessions.initialize()
+            stores.users = restarted_users
+            stores.sessions = restarted_sessions
+
+            assert len(restarted_users) == 2
+            assert "__hive_setup__" not in restarted_sessions
+            assert "__hive_setup_claim__" in restarted_sessions
+
+            with pytest.raises(HTTPException) as exc_info:
+                setup_routes.complete_setup(
+                    {
+                        "hardware_preset": "auto",
+                        "admin_username": "attacker-admin",
+                        "admin_password": "s3cret-admin",
+                        "user_username": "attacker-user",
+                        "user_password": "s3cret-user",
+                    }
+                )
+            assert exc_info.value.status_code == 409
+            assert restarted_users["admin"].username == "firstadmin"
+        finally:
+            stores.users = original_users
+            stores.sessions = original_sessions
+            if state is not None:
+                state.close()
+            if restarted_state is not None:
+                restarted_state.close()
+
+
+class TestPersistedSetupMarkerBoundary:
+    def test_marker_flush_helper_uses_the_persisted_state_boundary(self) -> None:
+        """A persisted bootstrap marker must have an explicit drain boundary."""
+        import stores
+        from routes import setup as setup_routes
+
+        class _State:
+            def __init__(self) -> None:
+                self.timeouts: list[float] = []
+
+            def flush(self, *, timeout: float) -> None:
+                self.timeouts.append(timeout)
+
+        state = _State()
+
+        config = {"completed_at": "now", "admin_username": "admin"}
+
+        class _Persisted:
+            _state = state
+
+            @staticmethod
+            def get_raw(store_name: str, key: str) -> str:
+                assert (store_name, key) == ("sessions", "__hive_setup__")
+                return json.dumps(config, default=str)
+
+        class _Sessions:
+            _persisted = _Persisted()
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = _Sessions()._persisted
+        try:
+            setup_routes._flush_setup_marker(config)
+        finally:
+            stores.sessions._persisted = original_persisted
+
+        assert state.timeouts == [10.0]
+
+    def test_marker_flush_rejects_a_lost_write(self) -> None:
+        """A flush that leaves no marker must not acknowledge setup."""
+        import stores
+        from routes import setup as setup_routes
+
+        class _State:
+            def flush(self, *, timeout: float) -> None:
+                return None
+
+        class _Persisted:
+            _state = _State()
+
+            @staticmethod
+            def get_raw(store_name: str, key: str) -> None:
+                return None
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = _Persisted()
+        try:
+            with pytest.raises(RuntimeError, match="not acknowledged"):
+                setup_routes._flush_setup_marker({"admin_username": "admin"})
+        finally:
+            stores.sessions._persisted = original_persisted
+
+    def test_marker_flush_is_a_no_op_without_a_persisted_backend(self) -> None:
+        """No durable backend bound: the marker is memory-only and there is
+        nothing to acknowledge, so the helper must return without touching
+        an acknowledgement boundary that does not exist."""
+        import stores
+        from routes import setup as setup_routes
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = None
+        try:
+            setup_routes._flush_setup_marker({"admin_username": "admin"})
+        finally:
+            stores.sessions._persisted = original_persisted
+
+    def test_marker_flush_rejects_a_backend_without_a_boundary(self) -> None:
+        """A persisted backend that cannot drain-and-read-back must fail
+        loudly rather than be silently trusted to have landed the marker:
+        an acknowledgement boundary is the entire point of the helper."""
+        import stores
+        from routes import setup as setup_routes
+
+        class _State:
+            """PersistedState-shaped, but with no flush to call."""
+
+        class _Persisted:
+            _state = _State()  # no callable flush, no get_raw
+
+        original_persisted = stores.sessions._persisted
+        stores.sessions._persisted = _Persisted()
+        try:
+            with pytest.raises(RuntimeError, match="no acknowledgement boundary"):
+                setup_routes._flush_setup_marker({"admin_username": "admin"})
+        finally:
+            stores.sessions._persisted = original_persisted
 
 
 class TestCorruptedStateFailsClosed:

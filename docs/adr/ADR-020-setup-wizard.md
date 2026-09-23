@@ -33,7 +33,7 @@ history:
 
 # ADR-020: Setup Wizard — Browser-first install ceremony
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-05-07
 **Depends on:** ADR-021 (Conductor Seed), ADR-026 (Internal Trust Root), ADR-028 (Privilege Separation), ADR-029 (Networking Substrate)
 

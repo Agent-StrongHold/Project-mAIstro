@@ -25,6 +25,53 @@ or placeholder-only section.
 
 ### Security
 
+- **Concurrent registrations can no longer publish two identities under the
+  same username (#1248).** The register route's availability check and the
+  UUID-keyed write were separate steps, so the store's key (a fresh UUID, not
+  the username) never enforced uniqueness — two requests racing the same
+  username could both pass the check and both write, leaving two identities
+  answering to one username. The check, invitation spend, and write are now
+  one critical section (an in-process lock) backed by a durable claim:
+  `ModelStore.put_if_unique` and `PersistedStore.put_model_if_unique` make the
+  username claim and the row's insert one SQLite transaction, so the
+  uniqueness boundary survives across independent application processes, not
+  just within one. `test_concurrent_open_registration_claims_username_once`
+  drives eight threads at the same username through the real route (one 200,
+  seven 409, one stored identity); `test_independent_process_writers_publish_one_username`
+  proves the same claim holds across two separate `multiprocessing` writers
+  sharing one SQLite file.
+
+- **pydantic-ai-slim removed from the API and research images, clearing
+  CVE-2026-25580 (HIGH) (#1515).** ADR-094 already cut pydantic-ai from the codebase
+  (zero `pydantic_ai` imports remain), but both Dockerfiles still installed
+  `"pydantic-ai-slim[openai]>=0.1"`, whose unbounded floor resolved to the
+  CVE'd 1.30.1 (dragging anyio 4.13.0 into the image with it). The fix line
+  (`>=1.56.0`) requires `openai>=2` and cannot co-install with the images'
+  `openai<2` pin, so the vestigial install lines are removed outright rather
+  than bumped; anyio then resolves to 4.15.1 via starlette/httpx (caught by the
+  required Supply chain (pip-audit) check; same reactive class as the anyio
+  entry below).
+
+- **anyio bumped 4.13.0 → 4.14.2 (and the 4.15.1 leg some members resolve
+  separately), clearing CVE-2026-63374 and CVE-2026-64847 that fail every
+  fresh `pip-audit` run (no linked issue: caught by the required Supply
+  chain (pip-audit) check on #1502, the same class of reactive advisory fix
+  as the gitpython bump above).** Lockfile-only change; no API or behavior
+  delta.
+- **Due-recovery failures never persist or log credential text (#1143).** A
+  node-resolver factory that fails while a due Run is being resumed now
+  terminalizes the Run with a stable `NodeResolverUnavailable` message (Run id
+  and exception type only) instead of the factory's raw error, and the
+  recovery log sanitizer also redacts quoted keys (`{'api_key': ...}`),
+  `Authorization`/`Bearer` headers, and provider-style key literals
+  (`sk-…`, `ghp_…`, `xox…`, `AKIA…`).
+- **gitpython bumped 3.1.59 → 3.1.62, clearing five untriaged advisories that
+  fail every fresh `pip-audit` run (#1493).** The lockfile carried
+  `gitpython 3.1.59` (transitive via `cosmic-ray`), which `pip-audit --strict`
+  now flags with PYSEC-2026-3982/-3983/-3984 and two companions, fix 3.1.60.
+  `Supply chain (pip-audit)` is a required check on every PR, so every
+  candidate entering the merge queue failed group validation within ~90
+  seconds of enqueueing. Lockfile-only change; no API or behavior delta.
 - **Canonical Event payloads are scrubbed of credential material before any
   backend can persist them (#1164).** `EventEnvelope` now redacts `payload`
   and `provenance` in its constructor — the one seam the memory, SQLite,
@@ -158,7 +205,68 @@ or placeholder-only section.
   through the canonical object store by reference, and scrubbing secrets from
   payloads before persistence (#1159), remain open follow-up work this issue
   explicitly does not claim.
+
 ### Added
+
+- **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
+  execution (#735).** `maistro_canvas`'s durable generation runner is wired to
+  the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
+  generation-job progress through real `Run`/`NodeRun`/`Attempt` records
+  instead of a Canvas-local job shape, and `protocols.py` gains the store
+  surface the canonical path needs. `test_canonical_executor_integration.py`
+  and `test_store_scope_conformance.py` cover the wiring; the maistro-core
+  side lands alongside durable-runs executor and HITL-settlement hardening
+  from the same convergence work (resume-lease and HITL-deadline handling,
+  `human_approve_draft`/`human_delegate_to_role`/`human_review_and_edit`
+  declaring their authorities, and an accepted-outcome-required check on
+  parked Run resume).
+
+- **Hive DAG execution (WebSocket run + optimizer) requires and carries a
+  canonical Workspace/Project scope (#766).** `services/dag_execution_scope.py`
+  resolves a client-selected `workspace_id` through the canonical
+  `WorkspaceStore`/`ProjectScopeStore` — membership and active-presentation
+  state, not just existence — and returns a `DagExecutionScope`
+  (`workspace_id`, `project_id`, `user_id`) rather than a bare Workspace.
+  `GET /v1/ws/dags/{dag_id}/run` now requires an explicit, authorized
+  selection end-to-end (the prior transitional omitted-workspace path is
+  gone) and passes the resolved scope into `execute_dag`/`execute_dag_streaming`
+  so canonical execution carries real Workspace/Project identity instead of
+  none. `test_dag_execution_scope.py` covers unknown, non-member, and
+  archived-Workspace refusal (one shared close code, `1008`, so the boundary
+  stays a non-oracle) and the accepting path reaching the normal
+  DAG-not-found response.
+
+- **The Workspace Agent interviews before it commits a Goal or CreativeBrief
+  (#774, #804, #53; SPEC-091726-7c2a).** `maistro.agents.brief_interview` is a
+  deterministic requirements conversation: one required question at a time in
+  plain words, free-text answers matched to options or carried verbatim, answers
+  the opening turn or the workspace record already holds never asked, "you
+  decide" taking a marked default only where one is defensible, "change *field*"
+  re-answering anything, and "never mind" dropping with nothing written.
+  `commit_brief` is the gate: it returns the draft a Goal revision and a
+  CreativeBrief version are written from, with the source of every field and
+  the list of assumed ones, and refuses while any required field is missing.
+  The first script is a video brief for creator workspaces. Hive hosts the
+  interview beside the onboarding one, at `/v1/program/brief` (`start`,
+  `answer`, `draft`, and delete), persisted per (user, workspace), and as
+  ordinary chat turns: `POST /v1/chat/stream` and `/complete` take a
+  `workspace_id`, and a turn there that asks for work is answered by the
+  interview instead of the model, with a `brief` event the Chat page renders
+  as the "brief so far" panel. The Warden input boundary still runs first.
+- **The Workspace has a first-party design system (#1046, #1048, #65;
+  ADR-091626-ba4f).** `maistro-design` now bundles `workspace` as a seventh Tier-1 system —
+  the first authored in this repo rather than vendored from open-design. It
+  shares the Open Design token schema and adds the Workspace grammar as tokens:
+  frosted glass over a persona bloom, a fixed four-colour actor quartet (you /
+  agent / gate / system), four honest state faces, three undo outcomes and a
+  12px type floor. Three persona templates ship (greenhouse — the default —
+  slate, studio) in light and dark; a user-authored theme supplies four values
+  and is contrast-gated. `components.html` and `preview/home.html` render the
+  kit and Workspace Home without scripts. The as-is Conductor stylesheet is
+  measured in `docs/product/CONDUCTOR-DESIGN-SYSTEM-AUDIT.md` (8px labels, four
+  accents, 56 `!important`, three hand-maintained theme files) as the baseline
+  this replaces. Binding the Conductor's `data-theme` to these tokens is a
+  separate Workspace-cutover change.
 
 - **Browser sessions are governed at the Playwright boundary (#855).** Every
   network request a `BrowserClient` browser makes — main-frame navigations,
@@ -188,6 +296,36 @@ or placeholder-only section.
   assert scope or authorization.
 
 ### Changed
+
+- **The Conductor frontend renders on the Workspace design system (#1046,
+  #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`
+  is a byte-for-byte copy of the bundled `workspace` tokens, held identical by
+  a backend test; a bridge file binds the old Conductor variable names
+  (`--paper`, `--ink`, `--pencil`, `--rule`, `--honey`, `--purple`, the shadow
+  scale…) to them so every page keeps rendering while it moves over, with one
+  accent, no gradient and no hover glow. Light/dark is now `data-scheme` on
+  `<html>` (the user's choice or the OS preference) and a workspace's persona
+  template is `data-theme`, so a theme never forces a scheme; the hand-written
+  `dark` and `fantasia` stylesheets are gone. The theme catalog
+  (`GET /v1/workspaces/themes`) offers the design system's templates,
+  greenhouse (default), slate and studio; workspaces stored with `default`,
+  `dark` or `fantasia` stay valid and render as greenhouse, greenhouse and
+  slate. Bricolage Grotesque ships from the app's origin beside JetBrains
+  Mono, and every font size below the 12px floor (23 in the stylesheet, 524
+  inline) is raised to it.
+- **The merge-queue bot quarantines a head that already failed inside the
+  queue (#1438 review follow-up).** `scripts/check-enqueue-merge-queue.py`
+  re-requested any policy-green PR head on every scan, including one the
+  queue had just ejected, so with batched groups a bad head dragged each new
+  group through a rebuild every 30 minutes. The controller now reads the
+  recent merge-group run history (the workflow gains `actions: read`),
+  attributes each failed entry to its own tree or to a failed entry ahead of
+  it via the `gh-readonly-queue/develop/pr-N-<sha>` chain, and holds any head
+  whose own entry failed after that head's `gates-ran` first went green. A
+  new push or a human enqueue lifts the hold; an unreadable history refuses
+  every admission. `scripts/check-required-checks.py` additionally pins
+  `grouping_strategy=ALLGREEN`, and `measure-merge-latency.py` reports how
+  many dequeued candidates were rebuilt behind another PR's failure.
 
 - **HALF_OPEN circuit-breaker success is now caller-bound (#828).** `record_success()`
   closes a HALF_OPEN circuit only when called by the thread or asyncio task
@@ -227,6 +365,318 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
+  predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
+  keyword argument, with a default, when `Schedule.recovered_occurrences`
+  recovery landed (#1059) -- but the admitter named it on every call
+  regardless of whether there was anything to credit, so an external
+  `ScheduleStore` implementation using the previously valid
+  `record_fire(self, schedule_id, *, fired_at, run_id, next_due_at,
+  fires=None, disable=False)` signature raised `TypeError: unexpected
+  keyword argument 'recovered'` on every ordinary recurring fire after
+  upgrading, not merely a recovering one. `recovered=` is now passed only
+  when the set is non-empty, which keeps the common, no-recovery case
+  working unchanged against an older store; a genuinely recovered claim
+  still names it, and a store that cannot accept it still fails loudly
+  rather than silently losing the credit. `maistro-core`'s own
+  implementations (the protocol, `InMemoryScheduleStore`,
+  `SqliteScheduleStore`, `PgScheduleStore`) already accept the keyword and
+  are unaffected.
+- **Builders' canonical pipeline executor no longer disagrees with legacy
+  gate/revision, step-budget, and failure-reporting semantics (#1067).** A
+  post-merge audit of #734/#744 found 4 parity defects in
+  `CanonicalGraphPipelineExecutor`, two of which could silently mark a Run
+  `COMPLETED` while a gate was still failing or dropping a same-wave
+  sibling's stale output into a revised stage's input: (1) a same-wave gate
+  revision now invalidates its stale descendants only after the whole ready
+  frontier settles, instead of racing a slower sibling's own commit inside
+  the failing node's coroutine; (2) a gated stage with no `revise_target`
+  already re-offered itself correctly (fixed on `develop` before this audit
+  landed); (3) the durable walk's step bound is now derived from Builders'
+  own admitted pipeline size and iteration budget instead of inheriting an
+  unrelated generic 256-step ceiling that could fail a large valid pipeline;
+  (4) two stages failing in the same concurrent wave now project one
+  consistent authoritative failed stage and error, derived from canonical's
+  own selected failure, instead of a reversed `NodeRun` scan paired with a
+  separately racing shared error variable. A follow-up review found three
+  correctness gaps in that same fix before merge: the revision ledger's
+  `flush()` was applied once per *stage dispatch* rather than once per
+  *frontier*, so a fast/immediate dispatcher could still fail a genuine
+  wave-mate out of its own admitted wave (the flush now runs from the
+  canonical node resolver, which only ever fires once per frontier, strictly
+  after the previous frontier's whole dispatch batch has returned); the
+  transient "stale guard" skip marker was not cleared before a stage's real
+  redispatch, so a stage that failed for real after an earlier stale defer
+  was misreported `SKIPPED` instead of `FAILED` (now cleared as soon as the
+  stale guard is passed, before any real work is attempted); and the derived
+  step bound assumed a skip-only frontier happens at most once per graph
+  node for the whole run, undercounting a revision that repeatedly replays
+  an already-skipped node's frontier (now scales the free-frontier
+  allowance by graph size per real dispatch, not by a flat one-per-node
+  total).
+
+- **Every ADR body status line now agrees with its front matter, and the
+  body-status ratchet is empty (no linked issue: completes the `#387` cleanup
+  begun in the entry below).** The 28 legacy contradictions `#387` banked are
+  corrected rather than carried: 25 ADRs whose body said `Proposed` while
+  front matter said `Accepted`, 2 saying `Proposed` against `Deferred`, and
+  `ADR-001` saying `Accepted` against `Superseded` on a document whose own
+  banner already pointed at `ADR-095`. Readers of those 28 were being told a
+  weaker status than the lifecycle machine, the AC ladder and the citation
+  gate all act on. `quality/adr-status-language-baseline.json` is now `[]`, so
+  the gate has nothing left to tolerate and any contradiction it reports is
+  new by construction; refilling it is an expansion needing a landed grant
+  (`#534`). Two tests that sourced their fixture from the ledger being
+  non-empty now introduce and bank their own contradiction, so a clean corpus
+  no longer fails the suite that guards it.
+
+- **The body/front-matter status gate no longer exempts documents by the shape
+  of their status line (no linked issue: found while fixing the order-dependent
+  tests in `tests/test_check_adr_status_language.py`).** `#387`'s category-1
+  check matched only a bare `**Status:** X` line, so the 3 ADRs and 20 specs
+  that write the same declaration as a Markdown list item (`- **Status:** X`)
+  were outside the check entirely -- the form of the line, not its content,
+  decided whether a contradiction was visible. It also read only the first word
+  of the value, which reported `AC` against a front matter saying `AC Defined`.
+  Both forms are now read and the whole value is compared, which surfaced 19
+  specs whose body said `Active` while their canonical front matter said
+  `AC Defined`; those bodies are corrected to the front-matter value rather
+  than banked, so the baseline stays at the 28 legacy entries `#387` recorded.
+
+- **The stranded chat-admission sweep survives a vanished Run (#338).** Two
+  defects in the recovery tick #1280 shipped, both found by review after it
+  was already queued for merge. `list_node_runs()` raises
+  `RunNotFound` on all three stores, and `RunNotFound` is a `KeyError` that
+  neither `except` arm caught -- so a Run terminalized by another worker and
+  deleted by the chat retention sweeper before this tick's own lookup aborted
+  the whole sweep, leaving every later stranded Run uncompensated until the
+  next tick hit the same Run. It is now skipped as the settled race it is. The
+  scan also asked only for `RunStatus.RUNNING` and rejected foreign Runs
+  per-candidate, so an operator whose RUNNING set is mostly scheduled work paid
+  for hydrating all of them every tick; it now passes `admission_source` into
+  the query, which both SQL backends push down. The per-candidate source check
+  stays as defense in depth.
+
+- **Ratchet bases resolve for rebased topic pushes (no linked issue: CI infra).**
+  Restores the #727/#534 base rule in three workflows that had drifted off it.
+  `quality.yml`'s coverage gate, `ci.yml`'s root suite and
+  `vulture-ratchet.yml` named
+  `RATCHET_BASE_REV` themselves and fell through to `github.event.before` for
+  *every* push. That is right only for a protected branch, which really does
+  replace that revision; on a topic branch `before` is the branch's own
+  previous tip, and any rebase orphans it — unreachable from every ref, so
+  `fetch-depth: 0` (which fetches refs, not orphans) cannot supply it. The
+  ratchet then refused with "base revision could not be resolved" and the
+  candidate went red on base provenance while its pull-request run passed on
+  byte-identical content; a re-run could not clear it, because `before` is
+  fixed in the stored event payload. All three now use the integration base
+  for topic pushes, matching the two sibling declarations that were already
+  correct and what `ratchet_provenance._push_event_base` computes when no base
+  is named. A new test pins the shape of every declaration so the two
+  behaviours cannot drift apart again.
+
+- **The Simple/Power toggle is removed rather than left silently inert
+  (#1409, #1411, #1410).** It promised "Power Mode (DAGs, prompts, topology)" but
+  changed nothing observable: `AppShell.tsx`'s navigation never branched on
+  it, only `localStorage` did. `ModeToggle`, `ModeProvider` and the
+  `hive_ui_mode` key are gone; a browser that stored the key before this
+  shipped still gets it swept on sign-out. Persona-driven surface
+  configuration — the feature the control was standing in for — is deferred,
+  not withdrawn: ADR-081226-e626 gains an amendment recording the removal
+  and why, and disambiguating "mode" from the two senses that remain
+  (light/dark appearance, `workspace_mode.py`'s authorization sense).
+  `tests/e2e/workspace-toolbar.spec.ts` covers it; against the unfixed
+  build the drawer still shows the retired control.
+- **The shell paints its chrome before the auth chain resolves, and the
+  setup-status and whoami probes fire together instead of one after the
+  other (#1408).** The Conductor used to await `/v1/setup/status`, then
+  `/v1/auth/whoami`, showing a plain "loading hive..." sentence for both
+  round trips; whoami's answer never depended on setup's, so the second
+  wait bought nothing. Both requests now fire together, and the
+  placeholder is the real shell's sidebar-plus-content grid rather than a
+  sentence. A fresh, unconfigured instance no longer waits on whoami at
+  all before showing the setup wizard — only setup-status's own response
+  gates it, so a whoami that is slow or never settles can't strand a new
+  operator on the skeleton (caught in review before merge). `tests/e2e/app-shell-loading.spec.ts`
+  holds `setup/status` open to prove whoami is requested while it is
+  still pending, that the skeleton renders meanwhile, and that a hung
+  whoami doesn't block the setup wizard on a fresh instance; each
+  assertion fails against the unfixed build.
+
+- **The Jira draft modal's fields answer to their visible labels, and a
+  required clarifying question announces as required (#1406).** Every
+  clarifying-question and edit-step field rendered its `<label>` as a
+  sibling of its `<input>`/`<textarea>`, with no `htmlFor`/`id` pairing, so
+  the computed accessible name was empty and a screen reader announced an
+  unlabelled textbox. A required clarifying question's `*` was a plain
+  visual character with no `aria-required`. The label now wraps its
+  control — the same implicit-association pattern `PersonaWizard.tsx`
+  already used — and a required clarifying question carries
+  `aria-required="true"`. `tests/e2e/work-item-draft-labels.spec.ts`
+  covers both steps by accessible role and name; against the unfixed
+  build the first assertion fails.
+
+- **The Dashboard's template picker shows a real loading skeleton, not an
+  invisible div (#1421).** `TemplatePicker.tsx` rendered
+  `<div className="skeleton skeleton-card" />` while its
+  `/v1/dashboard/demos` fetch was in flight, but neither `.skeleton` nor
+  `.skeleton-card` had a matching CSS rule anywhere in the stylesheet — the
+  element existed with no size and no background. Both classes now resolve
+  to real rules, reusing the pulse animation the app-shell skeleton
+  (`#1408`) already defined. `tests/e2e/template-picker-skeleton.spec.ts`
+  slows the fetch and asserts the skeleton has a non-zero bounding box;
+  against the unfixed build it times out as hidden.
+
+- **Infinite pulse/spin/bounce animations respect
+  `prefers-reduced-motion`, and the shared switch control announces a name
+  (#1415, #1414).** Only the skeleton pulse (`#1408`) was guarded; the
+  dashboard status dot's `status-pulse` (2.2s), the chat typing
+  indicator's `bounce` (1.4s), and a running tool step's `loading-spin`
+  (1s) all looped forever regardless of the OS motion setting. All three
+  now sit in the same guarded block as the skeleton pulse.
+  `tests/e2e/dashboard-reduced-motion.spec.ts` asserts the status dot's
+  computed `animation-name` is `none` under a reduced-motion preference
+  and `status-pulse` without one; against the unfixed build the first
+  assertion fails. Also: `shared.tsx`'s `Toggle`'s `role="switch"` button
+  had no accessible name — its label text was a sibling, not associated —
+  so it now also carries `aria-label`; `Toggle` has no current consumer in
+  the frontend (confirmed via full git history search), so this is a
+  source-only fix with no reachable regression test, the same shape as
+  `#1413`.
+
+- **Routed pages are code-split instead of riding along in one bundle
+  (#1435).** The 24 pages behind `AppShell`'s routes were all statically
+  imported into `App.tsx`, so the production build warned on a ~600kB
+  chunk and every page paid for every other page's JS regardless of which
+  one it rendered. Each is now `React.lazy`-loaded behind a `Suspense`
+  boundary reusing the app-shell skeleton (`#1408`) as its fallback; the
+  main chunk drops to ~300kB and the build no longer warns. `Setup` and
+  `Login` stay eager — one of them is on the critical path for every
+  session's first paint. `tests/e2e/route-code-splitting.spec.ts` asserts
+  a cold load of `/dashboard` fetches only the Dashboard route's chunk,
+  not an unvisited route's; against the unfixed build the first assertion
+  fails, since no per-route chunk exists at all.
+
+- **API failures surface as human copy with a recovery hint, not raw
+  transport strings (#1436).** The shared request helper
+  (`lib/api.ts`) threw `` `${path}: ${detail}` ``, falling back to the
+  bare status code (e.g. `500`) when the backend gave no `detail` —
+  shown verbatim in toasts and inline errors across the app (an observed
+  case: `/v1/workspaces/…/members: Permission 'workspaces.write'
+  required...`). The thrown message is now the backend's `detail` alone
+  when present (already human copy in this API), or one of a small set
+  of status-family sentences with a recovery hint otherwise; the raw
+  path/status still travel on the new `ApiError`'s `.path`/`.status` for
+  developer diagnostics, not in the primary message. Three call sites
+  that bypass the shared helper with their own `fetch()` (`Setup.tsx`,
+  `Chat.tsx`'s stream, `LlmProviders.tsx`) reuse the same fallback
+  sentences; two others (`KnowledgeBase.tsx`, `Dashboard.tsx`'s
+  assistant) already discarded the raw error before display and needed
+  no change. `tests/e2e/api-error-copy.spec.ts` mocks a 500 with no
+  `detail` and asserts the toast contains neither the route nor a bare
+  status number; against the unfixed build it fails on exactly that
+  assertion.
+
+- **The shared API client times out and recovers, instead of leaving a
+  hung request's spinner up forever (#1423).** `lib/api.ts`'s `request()`
+  wrapped `fetch` with no timeout or `AbortController`; only Chat's own
+  streaming fetch and the dashboard assistant widget guarded against a
+  hung request, so the other ~28 pages that go through the shared client
+  did not. It now aborts after 30s, and — same class of bug as #1436 —
+  any transport-level failure (the abort, a dropped connection, offline,
+  CORS) is wrapped in the same human, retryable `ApiError` a bad HTTP
+  status gets, rather than surfacing as a raw `TypeError: Failed to
+  fetch` or `AbortError`. `tests/e2e/api-timeout.spec.ts` drives the
+  same try/catch/wrapping code the timeout path shares via
+  `route.abort()` (fast and deterministic — the real 30s budget isn't
+  practical to wait out inside this suite's own CI time limit) and
+  asserts the shown message has no raw error name; against the unfixed
+  build it fails on exactly that assertion.
+
+- **Toggling a schedule or editing a memory entry no longer costs two
+  round trips (#1422).** `Schedules.tsx` and `Memory.tsx` followed every
+  create/update/toggle/delete with a GET of the entire collection, the
+  same pattern `WorkspaceContext.tsx`'s archive/delete already fixed for
+  workspaces. Both pages now patch the changed record into local state
+  from the mutation's own response instead. `tests/e2e/optimistic-mutations.spec.ts`
+  asserts no collection GET follows a toggle, create, or delete; against
+  the unfixed build both specs fail on exactly that assertion.
+
+- **The workspace toolbar explains a first run, truncates long names, shows
+  personas by name and tagline, and forgets an account on sign-out (#1426,
+  #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a
+  one-line explanation of what a workspace is and a "Create workspace"
+  action instead of a bare "+". The tab strip holds only tabs and scrolls
+  sideways in one row; a long name truncates with an ellipsis and keeps its
+  full text in the tooltip, so the toolbar no longer stacks into a column at
+  phone width. The create form is a panel below the "+" whose persona picker
+  is a radio group showing each persona's name and tagline. The four
+  per-account localStorage keys (active workspace, appearance, UI mode,
+  onboarding) are stamped with the signed-in user, cleared when a different
+  account signs in, cleared on sign-out, and listed with their values on the
+  Profile page beside a "Clear browser state" button.
+  `tests/e2e/workspace-toolbar.spec.ts` covers each in a real browser.
+- **A Workspace and its Root Project are created and deleted in one
+  transaction (#1121).** The durable Workspace stores wrote the Workspace row
+  and its owner membership, committed, and only then asked the Project store
+  for the Root Project on a second connection, with an in-process compensator
+  covering an exception between the two and nothing covering a crash there;
+  `delete` was the same in reverse. A process that died between the halves
+  left a Workspace with no Root Project -- which `root_for_workspace()` treats
+  as impossible, so every Run filed to it failed -- or a Project tree with no
+  Workspace to reach it by. The PostgreSQL and SQLite Project scope stores now
+  expose `TransactionalProjectScopeStore` (`transaction()`, `create_root_in`,
+  `purge_workspace_in`), and the Workspace store on the same pool or
+  connection issues all of its rows and the Root Project inside that one
+  transaction, so either all of it commits or none of it does. On SQLite the
+  Workspace store also takes the scope store's write lock rather than one of
+  its own, since two locks over one connection is how "cannot start a
+  transaction within a transaction" arises. No root is invented lazily on
+  read: `root_for_workspace()` stays a true invariant because creation is
+  atomic. The conformance suite injects a failure at each seam and reads a
+  fresh store back on all three backends.
+- **Workspace mutations confirm, ask before they destroy, and cost one
+  request (#1407, #1429, #1428, #1430, #1434).** Creating, archiving,
+  deleting a workspace, inviting or removing a member and saving tool
+  bindings each raise a success toast. Archive takes the same two steps as
+  Delete instead of one unconfirmed click. Archived workspaces are listed
+  behind an "Archived (n)" disclosure at the end of the tab strip with a
+  Restore for each, since the backend has always accepted `PATCH {active:
+  true}`. The Tools panel tracks unsaved edits (a badge on the toggle and in
+  the panel, Save disabled when clean) and asks before a close would discard
+  them. The workspace provider patches the changed record into local state
+  after an archive or delete rather than refetching the whole list.
+  `tests/e2e/workspace-lifecycle.spec.ts` walks each as the admin account
+  and counts the requests.
+- **Workspace status messages announce, and wizard fields are named by their
+  visible labels (#1405, #1416).** The Conductor's toast container is now a
+  polite live region and the error regions of the workspace tab bar, Share
+  panel, Tools panel and persona wizard are alerts, so a refused invite or a
+  failed save is announced to a screen reader instead of appearing silently
+  (WCAG 4.1.3). The draft modal's loading text is a status message. The
+  persona wizard's "Persona id" and "Workspace nav sections" fields dropped
+  the shorter `aria-label` that overrode their visible labels, so a
+  voice-control user can target them by the words on screen (WCAG 2.5.3).
+  `tests/e2e/workspace-a11y.spec.ts` asks the accessibility tree for each.
+- **Workspace-scoped pages wait for the workspace to resolve (#1427).** On a
+  first-ever session the Conductor's Jira drafts, Agents and Missions pages
+  fired their workspace-scoped requests before `GET /v1/workspaces` had
+  returned, so `/v1/work-items?workspace_id=` went out with an empty id, was
+  refused, flashed an error, and was sent again a moment later. The pages now
+  wait for the workspace provider's `ready` flag and a resolved id; with no
+  workspace at all the drafts page says so instead of erroring, the draft
+  modal refuses to suggest, and the guidance thread asks for a workspace
+  first. `tests/e2e/workspace-scope.spec.ts` records every request the three
+  pages make and fails on one that names a workspace and leaves it blank.
+- **Merge-queue builds retain both required PostgreSQL checks (no linked issue:
+  observed queue timeout).** The PostgreSQL 17/18 matrix now runs after the
+  workflow scope check regardless of path scope. GitHub evaluates a job-level
+  condition before expanding its matrix, so skipping it produced one literal
+  matrix-name check instead of `postgres (pg17)` and `postgres (pg18)`; the queue
+  waited for those missing contexts even though reported checks were green.
+  Both real database suites, required check names, and merge rules are unchanged.
+  Queue builds for unrelated paths now also run the two PostgreSQL jobs.
 
 - **`/v1/hitl/pending` pages by instant, not by printed offset (#1109).** The
   keyset cursor this scan walks was normalized to UTC in every store, so
@@ -391,6 +841,29 @@ or placeholder-only section.
   (recognised by the sweep's own error text via `is_reclaimed_attempt`);
   FAILED, TIMED_OUT, and requested-CANCELLED rows still park the Run for
   whoever owns retries.
+- **`agent.synth_dag` can no longer report success for a sub-graph nothing
+  ran, and node dependencies are declared on the class (#1193).** The
+  production node resolver fell through to generic registry construction for
+  `agent.synth_dag`, handing it `run_store=None`, and the node then completed
+  with `success=True` and "execution skipped" — the third node found built
+  without an authority it required (after `llm.summarize`, #1079, and
+  `agent.delegate_remote`, #147). A node now declares the Container-owned
+  authorities it needs (`BaseNode.required_authorities`) or uses
+  (`optional_authorities`); `register_node` refuses a declaration the
+  resolver could not honour, and `compose_node` refuses to construct a kind
+  whose required authority is missing (`NodeCompositionError`) instead of
+  filling it in from the constructor's permissive default. `build_node_resolver`
+  builds every kind from those declarations rather than a hand-maintained
+  branch list, takes the durable `graph_run_store`, and hands itself on so a
+  synthesized child graph is built with the same wiring; the Container
+  exposes the one production resolver as `Container.node_resolver()`, and
+  Hive's registered-DAG path passes the graph store through. On the
+  Container's canonical graph store the node now admits its child Run on the
+  spine (parent Run and NodeRun, launch metadata) before the first checkpoint,
+  the way `agent.delegate_remote` files its child. A node constructed
+  directly without a store fails its NodeResult with `NodeCompositionError`
+  naming the missing authority rather than completing.
+
 - **Project membership is one canonical row per `(project, principal)`, and
   is now explicitly revocable (#1148).** `ProjectScopeStore.set_membership`
   used to mint a fresh `membership_id` on every call, so a re-grant, role
@@ -434,6 +907,16 @@ or placeholder-only section.
   Attempts. Legacy completed records remain readable and may receive matching
   evidence without changing their result or lifecycle timestamps.
 
+- **A chat turn that crashes after admission but before its first physical
+  Attempt no longer strands its Run RUNNING forever (#338).** Chat admission
+  persists RUNNING durably before dispatch creates the turn's NodeRun; a
+  process crash in that gap left a canonical Run claiming work was in flight
+  that no sweep could see — `recover_abandoned_attempts` reclaims Attempts by
+  expired lease, and there was no Attempt here to carry one. A new operator
+  tick, `Container.recover_stranded_chat_admissions()`, compensates a RUNNING
+  chat Run with no NodeRun after a bounded grace period, recording
+  `execution_never_started` — a new, distinct category from the existing
+  `admission_incomplete` (which covers the earlier CREATED/QUEUED gap).
 - **Naive Workspace timestamps no longer decode to a different instant
   depending on the reading host (#1149).** `Workspace.created_at`/`updated_at`
   and `WorkspaceMembership.added_at` now normalize a naive datetime to UTC

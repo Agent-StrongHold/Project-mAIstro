@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.model import AttemptStatus, RunStatus
-from maistro.runs.store import InMemoryRunStore
+from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro_canvas.canvas.canonical_execution import (
     CanvasCanonicalExecution,
     canonical_run_id,
     correlate_run,
 )
+from maistro_canvas.canvas.composition import build_canvas_router, build_canvas_runtime
 from maistro_canvas.canvas.executor import CanvasExecutor
 from maistro_canvas.canvas.runner import CanvasJobRunner
 from maistro_canvas.protocols import ImageData
@@ -108,6 +112,17 @@ class _ImageClient:
         return ImageData(width=64, height=64, url="image://refined")
 
 
+class _FailThenSucceedImageClient(_ImageClient):
+    def __init__(self) -> None:
+        self.generate_calls = 0
+
+    async def generate(self, **kwargs: object) -> list[ImageData]:
+        self.generate_calls += 1
+        if self.generate_calls == 1:
+            raise RuntimeError("503 provider body contains credential=secret")
+        return await super().generate(**kwargs)
+
+
 class _Registry:
     def is_registered(self, model_id: str) -> bool:
         return model_id == "draft-model"
@@ -161,23 +176,83 @@ class _FailingRunnerExecutor:
         return "Generation failed: provider service temporarily unavailable."
 
 
-async def test_generation_request_and_runner_are_visible_on_canonical_spine() -> None:
+async def test_production_router_factory_admits_and_runs_canonical_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mounted production factory cannot bypass the canonical adapter."""
+    monkeypatch.setenv("CANVAS_API_TOKEN", "canvas-test-token")
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("workspace-1")
     runs = InMemoryRunStore(project_store=projects)
-    canonical = CanvasCanonicalExecution(
-        runs,
-        workspace_id="workspace-1",
-        project_id=root.project_id,
-    )
     store = _CanvasStore()
-    executor = CanvasExecutor(
+    store.ORG = "default"
+    store.canvas.org_id = store.ORG
+    router = build_canvas_router(
         store=store,  # type: ignore[arg-type]
         image_client=_ImageClient(),  # type: ignore[arg-type]
         model_registry=_Registry(),
         warden=_Warden(),
-        canonical_execution=canonical,
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+        compositor=object(),  # type: ignore[arg-type]
+        poll_interval=0.001,
     )
+    app = FastAPI()
+    app.include_router(router, prefix="/api/canvas")
+
+    with TestClient(
+        app,
+        raise_server_exceptions=True,
+        headers={"Authorization": "Bearer canvas-test-token"},
+    ) as client:
+        response = client.post(
+            "/api/canvas/canvas-1/layers/layer-1/generate",
+            json={"prompt": "a safe landscape"},
+        )
+        assert response.status_code == 202, response.text
+        job_id = response.json()["job_id"]
+        for _ in range(500):
+            job = await store.get_job(job_id, org_id=_CanvasStore.ORG)
+            if job is not None and job.status == JobStatus.DONE:
+                break
+            await asyncio.sleep(0.001)
+        assert job is not None
+        assert job.status == JobStatus.DONE
+
+    job = await store.get_job(job_id, org_id=_CanvasStore.ORG)
+    assert job is not None
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    admitted = await runs.get_run(run_id)
+    assert admitted is not None
+    assert admitted.actor_principal_id == "default"
+
+    assert job is not None
+    assert job.status == JobStatus.DONE
+    assert job.result_paths == ["image://generated"]
+    node_runs = await runs.list_node_runs(run_id)
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
+
+
+async def test_generation_request_and_runner_are_visible_on_canonical_spine() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    store = _CanvasStore()
+    runtime = build_canvas_runtime(
+        store=store,
+        image_client=_ImageClient(),
+        model_registry=_Registry(),
+        warden=_Warden(),
+        run_store=runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    executor = runtime.executor
 
     job = await executor.start_job(
         org_id=_CanvasStore.ORG,
@@ -194,7 +269,7 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     assert admitted.status is RunStatus.QUEUED
     assert admitted.actor_principal_id == "user-1"
 
-    runner = CanvasJobRunner(store=store, executor=executor)
+    runner = runtime.runner
     assert await runner.tick_once() is True
 
     receipt = await store.get_job(job.id, org_id=_CanvasStore.ORG)
@@ -214,7 +289,54 @@ async def test_generation_request_and_runner_are_visible_on_canonical_spine() ->
     assert completed.status is RunStatus.COMPLETED
 
 
-async def test_receipt_persistence_failure_compensates_admitted_run() -> None:
+async def test_provider_retry_keeps_both_sanitised_attempts_inspectable() -> None:
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    canonical = CanvasCanonicalExecution(
+        runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_FailThenSucceedImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        canonical_execution=canonical,
+    )
+
+    job = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+    )
+    job.max_attempts = 2
+
+    runner = CanvasJobRunner(store=store, executor=executor)
+    assert await runner.tick_once() is True
+    assert job.status == JobStatus.PENDING
+
+    assert await runner.tick_once() is True
+    assert job.status == JobStatus.DONE
+    assert job.result_paths == ["image://generated"]
+
+    run_id = canonical_run_id(job.params)
+    assert run_id is not None
+    node_runs = await runs.list_node_runs(run_id)
+    assert len(node_runs) == 1
+    attempts = await runs.list_attempts(node_runs[0].node_run_id)
+    assert [attempt.status for attempt in attempts] == [
+        AttemptStatus.FAILED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert attempts[0].error == "Generation failed: provider service temporarily unavailable."
+    assert "credential=secret" not in (attempts[0].error or "")
+
+
+async def test_receipt_persistence_failure_leaves_run_for_durable_reconciliation() -> None:
     store = _CanvasStore()
     store.fail_create = True
     canonical = _CanonicalStub()
@@ -235,7 +357,72 @@ async def test_receipt_persistence_failure_compensates_admitted_run() -> None:
             prompt="safe",
         )
 
-    assert canonical.cancelled == ["run-stub"]
+    # Receipt persistence failure is indistinguishable from process death to
+    # the admission protocol; cancelling here would strand the canonical fact.
+    assert canonical.cancelled == []
+
+
+async def test_restart_reconciles_admission_gap_and_idempotent_retry_reuses_run() -> None:
+    """A death between the two stores is repaired without a second Run."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("workspace-1")
+    runs = InMemoryRunStore(project_store=projects)
+    canonical = CanvasCanonicalExecution(
+        runs,
+        workspace_id="workspace-1",
+        project_id=root.project_id,
+    )
+    store = _CanvasStore()
+    store.fail_create = True
+    executor = CanvasExecutor(
+        store=store,
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        canonical_execution=canonical,
+    )
+
+    with pytest.raises(RuntimeError, match="receipt store unavailable"):
+        await executor.start_job(
+            org_id=_CanvasStore.ORG,
+            canvas_id="canvas-1",
+            layer_id="layer-1",
+            action=JobAction.GENERATE,
+            prompt="safe",
+            idempotency_key="generation-1",
+        )
+    queued = await runs.list_by_status(RunStatus.QUEUED, limit=10)
+    assert len(queued) == 1
+    run_id = queued[0].run_id
+
+    # A restarted process has no in-memory admission map. The runner scans the
+    # durable canonical source and recreates the receipt before claiming it.
+    store.fail_create = False
+    runner = CanvasJobRunner(store=store, executor=executor)
+    assert await runner.tick_once() is True
+    repaired = list(store.jobs.values())
+    assert len(repaired) == 1
+    assert canonical_run_id(repaired[0].params) == run_id
+    assert repaired[0].status == JobStatus.DONE
+
+    # Retrying the same logical operation returns its durable receipt and does
+    # not admit a second canonical identity.
+    retried = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-1",
+    )
+    assert retried.id == repaired[0].id
+    all_runs = [
+        run
+        for status in RunStatus
+        for run in await runs.list_by_status(status, limit=10)
+        if run.provenance.get("admission_source") == "canvas_generation"
+    ]
+    assert [run.run_id for run in all_runs] == [run_id]
 
 
 async def test_claimed_job_rejects_missing_or_unbound_canonical_correlation() -> None:
@@ -365,6 +552,185 @@ async def test_runner_idle_and_reap_terminal_failure_paths() -> None:
     assert await runner.reap_once() == [failed]
     assert failed.error_message == "Generation failed: provider service temporarily unavailable."
     assert executor.failures == ["canvas worker lease expired"]
+
+
+async def test_whitespace_idempotency_key_starts_a_new_operation_each_time() -> None:
+    """A blank idempotency key is no operation identity, not the empty one."""
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    first = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="   ",
+    )
+    assert "canvas_operation_id" not in first.params
+
+    # Retire the first receipt so the layer accepts a second request; a blank
+    # key must not have made the two admissions the same operation.
+    first.status = JobStatus.DONE
+    second = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="   ",
+    )
+
+    assert second.id != first.id
+    assert "canvas_operation_id" not in second.params
+
+
+async def test_retry_of_active_operation_returns_the_active_receipt() -> None:
+    """An in-flight operation's retry rejoins its durable receipt."""
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    first = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-1",
+    )
+    retried = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-1",
+    )
+
+    assert retried.id == first.id
+    assert len(store.jobs) == 1
+
+
+async def test_retry_of_active_operation_with_changed_inputs_is_rejected() -> None:
+    """A same-key retry of a still-active operation rejects changed inputs.
+
+    A terminal retry with a changed payload is already rejected via the
+    receipt-fingerprint comparison; this is the same check applied before
+    the early return for a still-pending/running operation, so whether a
+    mismatch is caught does not depend on how fast the first attempt
+    finishes.
+    """
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-mismatch",
+    )
+
+    with pytest.raises(RunIntegrityError, match="retried with different inputs"):
+        await executor.start_job(
+            org_id=_CanvasStore.ORG,
+            canvas_id="canvas-1",
+            layer_id="layer-1",
+            action=JobAction.GENERATE,
+            prompt="a completely different prompt",
+            idempotency_key="generation-mismatch",
+        )
+
+
+class _AdmitOnceCanonicalStub:
+    """Raises if `admit` is called a second time.
+
+    Proves a durable receipt is resolved *before* a replacement Run would be
+    admitted, rather than admission being retried and only then checked.
+    """
+
+    def __init__(self) -> None:
+        self.admit_calls = 0
+
+    async def admit(self, **_kwargs: object) -> str:
+        self.admit_calls += 1
+        if self.admit_calls > 1:
+            raise AssertionError("admit() must not be called again once the receipt exists")
+        return "run-once"
+
+
+async def test_terminal_retry_with_a_durable_receipt_skips_a_replacement_admission() -> None:
+    """A durable receipt is checked before a replacement Run is admitted.
+
+    If the original Run were missed by a bounded or evicted lookup, calling
+    `admit()` again on a retry would create a brand-new Run correlated to
+    nothing while the returned receipt still names the original -- an
+    orphan. Resolving the deterministic receipt first means `admit()` is
+    never called a second time at all once it exists.
+    """
+    store = _CanvasStore()
+    canonical = _AdmitOnceCanonicalStub()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+        canonical_execution=canonical,  # type: ignore[arg-type]
+    )
+
+    first = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-durable",
+    )
+    assert canonical.admit_calls == 1
+    # Terminal, as a completed generation's receipt would be -- and no longer
+    # "active", so the retry reaches admission instead of the in-flight check.
+    first.status = JobStatus.DONE
+
+    retried = await executor.start_job(
+        org_id=_CanvasStore.ORG,
+        canvas_id="canvas-1",
+        layer_id="layer-1",
+        action=JobAction.GENERATE,
+        prompt="safe",
+        idempotency_key="generation-durable",
+    )
+
+    assert retried.id == first.id
+    assert canonical.admit_calls == 1
+    assert len(store.jobs) == 1
+
+
+async def test_reconcile_admissions_without_canonical_binding_is_empty() -> None:
+    store = _CanvasStore()
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=_ImageClient(),  # type: ignore[arg-type]
+        model_registry=_Registry(),
+        warden=_Warden(),
+    )
+
+    assert await executor.reconcile_admissions() == []
 
 
 async def _async_value(value: list[str]) -> list[str]:

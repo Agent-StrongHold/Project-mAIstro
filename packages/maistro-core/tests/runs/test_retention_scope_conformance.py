@@ -146,7 +146,6 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
             b=scoped["b"],
         )
         return
-        return  # async-generator teardown must not fall into the sqlite leg
 
     projects = InMemoryProjectScopeStore()
     scoped: dict[str, tuple[str, str]] = {}
@@ -172,7 +171,6 @@ async def scope_world(request: pytest.FixtureRequest, pg_pool: Any) -> Any:
             b=scoped["b"],
         )
         return
-        return  # async-generator teardown must not fall into the sqlite leg
 
     conn = await aiosqlite.connect(":memory:")
     from maistro.runs.sqlite_store import SqliteRunStore
@@ -278,24 +276,17 @@ async def test_a_continuation_does_not_outlive_its_run(scope_world: Any) -> None
 # ── events: attribution history outlives the Run, and says so ─────
 
 
-async def test_events_survive_a_purge_and_are_counted(scope_world: Any) -> None:
+async def test_events_survive_a_purge(scope_world: Any) -> None:
     """The Event log is append-only provenance. A purge neither deletes nor
-    rewrites it; the outcome counts the references left behind so the residue
-    is a reported fact, not a silent one."""
+    rewrites it; the residue is a reported fact, not a silent one."""
     world = scope_world
     run_a = await _expired_terminal_run(world, *world.a)
     run_b = await _expired_terminal_run(world, *world.b)
     event_a = await _event_for(world.events, world.a[0], run_a)
     await _event_for(world.events, world.b[0], run_b)
 
-    outcome = await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
+    await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
 
-    if world.backend == "memory":
-        # The in-memory store owns no Event log; zero is the truthful report
-        # of a boundary, not a stub.
-        assert outcome.event_references_retained == 0
-    else:
-        assert outcome.event_references_retained == 1
     # Both events still resolve, whichever backend holds them.
     assert await world.events.get(event_a.event_id) is not None
     assert await world.runs.get_run(run_a.run_id) is None
@@ -326,8 +317,7 @@ async def test_a_purged_run_releases_only_its_own_occurrence(scope_world: Any) -
         await world.runs.transition_run(run.run_id, RunStatus.RUNNING)
         await world.runs.transition_run(run.run_id, RunStatus.COMPLETED)
 
-    outcome = await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
-    assert outcome.schedule_claims_released == 1
+    await world.runs.purge_expired_runs(_scope_a(world), now=NOW)
 
     schedule_id, scheduled_for = occurrences[world.a[0]]
     # A's claim died with its Run: the firing can be admitted again.

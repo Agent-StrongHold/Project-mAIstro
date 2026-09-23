@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from .audit import GenomeAuditTrail
 from .types import PipelineGenome
@@ -24,13 +25,31 @@ def _fitness_key(genome: PipelineGenome) -> float:
 class PopulationStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._store: dict[str, PipelineGenome] = {}
-        self._operations: dict[str, dict[str, object]] = {}
         self._db_path: str | None
         if db_path is not None:
             self._db_path = str(db_path)
             self._init_db()
         else:
             self._db_path = None
+        # Idempotency ledger for effectful cycle-level operations (currently
+        # only Evolve's canonical finalize node, #1064) keyed by a caller's
+        # own logical identity (e.g. ``f"finalize:{node_run_id}"``). This is
+        # deliberately process-local only, even when ``db_path`` is set: it
+        # is retry evidence for an in-process Attempt retry against a NodeRun
+        # that already published its mutation, not a durable cross-process
+        # store. A genuine process restart has no durable population/
+        # tournament state to resume against regardless (see
+        # ``services.evolution_graph`` recovery resolver), so this ledger's
+        # process-local scope is consistent with the rest of this store's
+        # in-memory identity, not a gap this alone would need to close.
+        self._cycle_markers: dict[str, dict[str, Any]] = {}
+
+    def record_cycle_marker(self, marker_id: str, payload: dict[str, Any]) -> None:
+        """Record (or overwrite) one idempotency ledger entry."""
+        self._cycle_markers[marker_id] = payload
+
+    def get_cycle_marker(self, marker_id: str) -> dict[str, Any] | None:
+        return self._cycle_markers.get(marker_id)
 
     def _init_db(self) -> None:
         assert self._db_path is not None
@@ -39,14 +58,6 @@ class PopulationStore:
             """
             CREATE TABLE IF NOT EXISTS genomes (
                 id TEXT PRIMARY KEY,
-                data TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS evolution_operations (
-                operation_key TEXT PRIMARY KEY,
                 data TEXT NOT NULL
             )
             """
@@ -70,76 +81,6 @@ class PopulationStore:
             return
         conn = sqlite3.connect(self._db_path)
         conn.execute("DELETE FROM genomes WHERE id = ?", (genome_id,))
-        conn.commit()
-        conn.close()
-
-    def get_operation(self, operation_key: str) -> dict[str, object] | None:
-        """Read a durable Evolve domain-operation marker.
-
-        Markers are domain evidence, not an execution lifecycle. Keeping them
-        beside genomes lets recovery distinguish a committed mutation from a
-        replay without making Evolve a second Run store.
-        """
-        if operation_key in self._operations:
-            return dict(self._operations[operation_key])
-        if self._db_path is None:
-            return None
-        conn = sqlite3.connect(self._db_path)
-        row = conn.execute(
-            "SELECT data FROM evolution_operations WHERE operation_key = ?", (operation_key,)
-        ).fetchone()
-        conn.close()
-        if row is None:
-            return None
-        import json
-
-        marker = dict(json.loads(row[0]))
-        self._operations[operation_key] = marker
-        return marker
-
-    def record_operation(self, operation_key: str, data: dict[str, object]) -> None:
-        """Record a domain mutation marker idempotently."""
-        if self.get_operation(operation_key) is not None:
-            return
-        marker = dict(data)
-        self._operations[operation_key] = marker
-        if self._db_path is None:
-            return
-        import json
-
-        conn = sqlite3.connect(self._db_path)
-        conn.execute(
-            "INSERT OR IGNORE INTO evolution_operations (operation_key, data) VALUES (?, ?)",
-            (operation_key, json.dumps(marker, separators=(",", ":"))),
-        )
-        conn.commit()
-        conn.close()
-
-    def complete_operation(self, operation_key: str, data: dict[str, object]) -> None:
-        """Commit a previously started domain operation marker."""
-        if self.get_operation(operation_key) is None:
-            self.record_operation(operation_key, data)
-            return
-        marker = dict(data)
-        self._operations[operation_key] = marker
-        if self._db_path is None:
-            return
-        import json
-
-        conn = sqlite3.connect(self._db_path)
-        conn.execute(
-            "UPDATE evolution_operations SET data = ? WHERE operation_key = ?",
-            (json.dumps(marker, separators=(",", ":")), operation_key),
-        )
-        conn.commit()
-        conn.close()
-
-    def delete_operation(self, operation_key: str) -> None:
-        self._operations.pop(operation_key, None)
-        if self._db_path is None:
-            return
-        conn = sqlite3.connect(self._db_path)
-        conn.execute("DELETE FROM evolution_operations WHERE operation_key = ?", (operation_key,))
         conn.commit()
         conn.close()
 

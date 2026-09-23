@@ -152,6 +152,8 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # default Workspace and a core that did not would then disagree
         # about where unscoped Runs live, silently.
         workspace_id=settings.hive_default_workspace_id,
+        model_bindings=settings.model_bindings,
+        provider_config_path=settings.provider_config_path,
         # Without this the container took the ephemeral branch and built
         # in-memory stores, however the deployment was configured -- the
         # bridge constructs `AgentConfig` directly, so it never passed
@@ -164,7 +166,6 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
         # reads both `DATABASE_URL` and the `DB_*` set the shipped compose
         # file passes.
         database_url=resolve_database_url(),
-        model_bindings=settings.model_bindings,
         # The Sentinel permission table is fail-closed (#1165): an empty table
         # denies every tool, so the grants this deployment states must reach
         # the config the Container is built from.

@@ -37,7 +37,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
 from maistro.runs.store import (
     DEFAULT_PURGE_BATCH,
     DEFAULT_RECLAIM_BATCH,
@@ -57,8 +57,11 @@ from maistro.runs.store import (
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import aiosqlite
 
 _TERMINAL_STATUS_VALUES = sorted(status.value for status in TERMINAL_RUN_STATUSES)
@@ -191,12 +194,6 @@ _PURGE_DEPENDENT_SQL = {
     ),
 }
 
-_RETAINED_REFERENCE_SQL = {
-    "canonical_event_log": (
-        "SELECT COUNT(*) FROM canonical_event_log WHERE run_id IN (SELECT value FROM json_each(?))"
-    ),
-}
-
 _SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -236,6 +233,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_occurrence
     )
     WHERE json_extract(payload, '$.provenance.schedule_id') IS NOT NULL
       AND json_extract(payload, '$.provenance.scheduled_for') IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_delegation_key
+    ON canonical_runs(json_extract(payload, '$.provenance.delegation_key'))
+    WHERE json_extract(payload, '$.provenance.delegation_key') IS NOT NULL;
+
+-- One Run per Canvas job admission (#1055 review, migration 039). Canvas
+-- computes a deterministic `canvas_job_id` for an idempotency-key retry
+-- before admitting, so the same shape as the two indexes above: the unique
+-- index is the claim, and two workers racing the same key meet one insert.
+--
+-- Scoped to `admission_source = 'canvas_generation'` too, not the field
+-- alone: `canvas_job_id` is not an exclusively Canvas-owned name at this
+-- layer, and an unrelated Run that happens to carry the same string in its
+-- own provenance must not be able to block a real Canvas admission.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_canvas_job
+    ON canonical_runs(json_extract(payload, '$.provenance.canvas_job_id'))
+    WHERE json_extract(payload, '$.provenance.canvas_job_id') IS NOT NULL
+      AND json_extract(payload, '$.provenance.admission_source') = 'canvas_generation';
 
 CREATE TABLE IF NOT EXISTS canonical_node_runs (
     node_run_id TEXT PRIMARY KEY,
@@ -321,8 +336,13 @@ class SqliteRunStore:
         self._pending: list[tuple[tuple[str, str], str, str, str]] = []
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        # Match the projects/workspaces stores: enable foreign keys before the
+        # serialized upgrade opens its transaction. SQLite ignores changes to
+        # the foreign_keys pragma inside an open transaction, so the copy in
+        # _SCHEMA would otherwise be a silent no-op on a fresh connection.
+        await self._conn.execute("PRAGMA foreign_keys = ON")
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
 
     async def create_run(
         self,
@@ -387,13 +407,18 @@ class SqliteRunStore:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
+                # Rolled back before raising, whatever the conflict: the failed
+                # INSERT opened a transaction, and leaving it for the next
+                # caller to inherit would make an unrelated write commit inside
+                # this one. A delegation-key conflict re-raises into
+                # `_reserve_child`'s adopt-the-winner recovery, which must not
+                # inherit the loser's open write transaction either -- the
+                # recovery's next write (or its uncertain-transport pause)
+                # would otherwise hold the database write lock indefinitely.
+                await self._conn.rollback()
                 occurrence = occurrence_key(run.provenance)
                 if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
                     raise
-                # Rolled back before raising: the failed INSERT opened a
-                # transaction, and leaving it for the next caller to inherit
-                # would make an unrelated write commit inside this one.
-                await self._conn.rollback()
                 raise DuplicateOccurrence(*occurrence) from exc
             await self._conn.commit()
             return run
@@ -405,6 +430,94 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the unique occurrence claim without scanning Run payloads."""
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.schedule_id') = ?
+                 AND json_extract(payload, '$.provenance.scheduled_for') = ?
+               LIMIT 1""",
+            (schedule_id, scheduled_for),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """The batched twin of `get_run_for_occurrence`, one query for many.
+
+        `scheduled_fors` travels as a single JSON-array parameter, matched
+        through `json_each` — the pattern the bulk deletes above already use
+        — rather than one placeholder per occurrence, which would need
+        chunking once the list grows past SQLite's parameter limit.
+        """
+        if not scheduled_fors:
+            return {}
+        cursor = await self._conn.execute(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.schedule_id') = ?
+                 AND json_extract(payload, '$.provenance.scheduled_for')
+                     IN (SELECT value FROM json_each(?))""",
+            (schedule_id, json.dumps(list(scheduled_fors))),
+        )
+        rows = await cursor.fetchall()
+        found: dict[str, Run] = {}
+        for row in rows:
+            run = model_of_json(Run, row[0])
+            found[run.provenance[SCHEDULED_FOR_KEY]] = run
+        return found
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+               WHERE json_extract(payload, '$.provenance.delegation_key') = ?""",
+            (delegation_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        async with self._write_lock:
+            run = await self._require_run(run_id)
+            existing = str(run.provenance.get("a2a_task_id") or "")
+            if existing and existing != task_id:
+                raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+            provenance = dict(run.provenance)
+            provenance["a2a_task_id"] = task_id
+            if target_agent:
+                provenance["target_agent"] = target_agent
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._update_payload(
+                "canonical_runs", "run_id", run_id, updated.status.value, json_of(updated)
+            )
+            return updated
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Persist the transport boundary claim before making the call.
+
+        The claim is a compare-and-set, not a read followed by an update. The
+        per-connection write lock protects callers sharing this store instance,
+        while the conditional UPDATE is the inter-replica fence: two SQLite
+        connections can otherwise both read the unclaimed payload before either
+        commits.
+        """
+        async with self._write_lock:
+            await self._require_run(run_id)
+            cursor = await self._conn.execute(
+                """UPDATE canonical_runs
+                   SET payload = json_set(
+                       payload, '$.provenance.transport_attempted', json('true')
+                   )
+                   WHERE run_id = ?
+                     AND COALESCE(
+                         json_extract(payload, '$.provenance.transport_attempted'), 0
+                     ) <> 1""",
+                (run_id,),
+            )
+            await self._conn.commit()
+            return cursor.rowcount == 1
+
     async def list_by_status(
         self,
         status: RunStatus,
@@ -413,6 +526,7 @@ class SqliteRunStore:
         offset: int = 0,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
@@ -438,6 +552,9 @@ class SqliteRunStore:
         if workspace_id is not None:
             sql += " AND workspace_id = ?"
             params.append(workspace_id)
+        if admission_source is not None:
+            sql += " AND json_extract(payload, '$.provenance.admission_source') = ?"
+            params.append(admission_source)
         if after is not None:
             sql += " AND (json_extract(payload, '$.created_at'), run_id) > (?, ?)"
             params.extend(after)
@@ -556,6 +673,45 @@ class SqliteRunStore:
         )
         return await cursor.fetchone() is not None
 
+    async def _collect_purge_doomed(
+        self, scope: RetentionScope, cutoff: datetime, limit: int
+    ) -> list[tuple[str, Run]]:
+        """In-order candidates whose newest expiry is at or before ``cutoff``.
+
+        One more candidate than the batch, so the caller's outcome can say
+        whether the scope drained or the batch ran out.
+        """
+        doomed: list[tuple[str, Run]] = []
+        for run_id, run in await self._purge_candidates(scope, limit + 1):
+            if not is_purgeable(run, cutoff):
+                break
+            doomed.append((run_id, run))
+        return doomed
+
+    async def _count_purge_spine(self, run_id_param: str) -> tuple[int, int]:
+        """NodeRuns that die with the selected Runs, and their Attempts."""
+        node_run_rows = await self._conn.execute(
+            _PURGE_NODE_RUN_IDS_SQL,
+            (run_id_param,),
+        )
+        node_run_ids = [row[0] for row in await node_run_rows.fetchall()]
+        attempt_row = await self._conn.execute(
+            _PURGE_COUNT_ATTEMPTS_SQL,
+            (json.dumps(node_run_ids),),
+        )
+        attempt_count = (await attempt_row.fetchone() or [0])[0]
+        return len(node_run_ids), int(attempt_count)
+
+    async def _purge_dependent_tables(self, run_id_param: str) -> int:
+        """Delete dependent evidence in the same transaction; count what went."""
+        continuations = 0
+        for table, sql in _PURGE_DEPENDENT_SQL.items():
+            if not await self._dependent_table_exists(table):
+                continue
+            cursor = await self._conn.execute(sql, (run_id_param,))
+            continuations += max(cursor.rowcount, 0)
+        return continuations
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -570,53 +726,25 @@ class SqliteRunStore:
         concurrent transition cannot land on a Run this sweep is removing,
         and two sweeps divide the candidates instead of double-counting.
         The dependent table with no foreign key — the Graph continuation —
-        is deleted in the same transaction, and the retained Event
-        references are counted into the outcome rather than silently left
-        behind (#1175).
+        is deleted in the same transaction. The append-only Event log and the
+        schedule provenance are left untouched: nothing reads a count of them,
+        so the outcome stopped carrying one.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
         async with self._write_lock:
-            doomed: list[tuple[str, Run]] = []
-            # One more candidate than the batch, so the outcome can say
-            # whether the scope drained or the batch ran out.
-            for run_id, run in await self._purge_candidates(scope, limit + 1):
-                if not is_purgeable(run, cutoff):
-                    break
-                doomed.append((run_id, run))
+            doomed = await self._collect_purge_doomed(scope, cutoff, limit)
             if not doomed:
                 return PurgeOutcome(scope=scope)
             purged = doomed[:limit]
-            if not purged:
-                return PurgeOutcome(scope=scope)
             # One json array parameter per statement: the id lists never
             # travel as interpolated SQL (see the statement constants above).
             run_id_param = json.dumps([run_id for run_id, _run in purged])
-            node_run_rows = await self._conn.execute(
-                _PURGE_NODE_RUN_IDS_SQL,
-                (run_id_param,),
-            )
-            node_run_ids = [row[0] for row in await node_run_rows.fetchall()]
-            attempt_row = await self._conn.execute(
-                _PURGE_COUNT_ATTEMPTS_SQL,
-                (json.dumps(node_run_ids),),
-            )
-            attempt_count = (await attempt_row.fetchone() or [0])[0]
+            node_runs, attempts = await self._count_purge_spine(run_id_param)
             # Dependent evidence beyond the spine, in the same transaction:
             # owned resumable state deleted, retained provenance counted.
-            continuations = 0
-            for table, sql in _PURGE_DEPENDENT_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                cursor = await self._conn.execute(sql, (run_id_param,))
-                continuations += max(cursor.rowcount, 0)
-            retained = 0
-            for table, sql in _RETAINED_REFERENCE_SQL.items():
-                if not await self._dependent_table_exists(table):
-                    continue
-                row = await (await self._conn.execute(sql, (run_id_param,))).fetchone()
-                retained += int(row[0]) if row is not None else 0
+            continuations = await self._purge_dependent_tables(run_id_param)
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))
@@ -624,13 +752,9 @@ class SqliteRunStore:
             return PurgeOutcome(
                 scope=scope,
                 runs=len(purged),
-                node_runs=len(node_run_ids),
-                attempts=int(attempt_count),
+                node_runs=node_runs,
+                attempts=attempts,
                 continuations=continuations,
-                event_references_retained=retained,
-                schedule_claims_released=sum(
-                    1 for _run_id, run in purged if occurrence_key(run.provenance) is not None
-                ),
                 backlog_remaining=len(doomed) > limit,
             )
 

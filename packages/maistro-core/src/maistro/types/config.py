@@ -5,11 +5,9 @@ Pydantic-validated config loaded from YAML.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator
-
-NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+from pydantic import BaseModel, Field, field_validator
 
 
 class RoutingConfig(BaseModel):
@@ -140,19 +138,45 @@ class ModelBindingConfig(BaseModel):
 
     This is authorization/configuration, not a credential container. A blank
     ``workspace_id`` inherits the deployment's canonical ``AgentConfig.workspace_id``;
-    ``project_id`` and ``binding_id`` are always explicit so a saved Graph cannot
-    authorize itself merely by choosing a model name. ``provider_name`` is the
-    canonical Binding pin used by model routing and may be blank to allow normal
-    router selection.
+    ``project_id`` and ``binding_id`` remain explicit so a Graph cannot authorize
+    itself merely by choosing a model name.
     """
 
-    binding_id: NonBlankStr
-    project_id: NonBlankStr
+    binding_id: str
+    project_id: str
     workspace_id: str = ""
     node_id: str = ""
     provider_name: str = ""
-    credential_refs: tuple[NonBlankStr, ...] = ()
-    policy_refs: tuple[NonBlankStr, ...] = ()
+    # Operator kill-switch carried onto the registered Binding: a declared
+    # Binding can be disabled without deleting it, and resolution then refuses
+    # instead of authorizing (#56).
+    disabled: bool = False
+    credential_refs: tuple[str, ...] = ()
+    policy_refs: tuple[str, ...] = ()
+
+    @field_validator("binding_id", "project_id")
+    @classmethod
+    def _require_scope_identity(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("model Binding identity/scope fields must be non-empty")
+        return value
+
+    @field_validator("credential_refs", "policy_refs")
+    @classmethod
+    def _reject_empty_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not ref.strip() for ref in value):
+            raise ValueError("model Binding refs cannot contain empty values")
+        return value
+
+
+if TYPE_CHECKING:
+
+    def _vulture_pydantic_contract_usage() -> None:
+        """Keep reflection-owned Pydantic surface visible to production-only Vulture scans."""
+        _ = ModelBindingConfig._require_scope_identity
+        _ = ModelBindingConfig._reject_empty_refs
+
+    _ = _vulture_pydantic_contract_usage
 
 
 class AgentConfig(BaseModel):

@@ -19,10 +19,9 @@ async def bootstrap_model_bindings(
 ) -> tuple[Binding, ...]:
     """Load configured ``model.chat`` Bindings into ``effects``.
 
-    The returned immutable snapshots are informational. Authorization lives in
-    ``effects.bindings`` and remains fail-closed when ``config.model_bindings``
-    is empty. A declaration with no ``workspace_id`` inherits the deployment's
-    canonical Workspace; Project scope is always explicit.
+    Authorization lives in ``effects.bindings`` and remains fail-closed when
+    ``config.model_bindings`` is empty. A declaration with no ``workspace_id``
+    inherits the deployment's canonical Workspace; Project scope is explicit.
     """
 
     loaded: list[Binding] = []
@@ -34,6 +33,7 @@ async def bootstrap_model_bindings(
             node_id=declared.node_id,
             capability=MODEL_CHAT_CAPABILITY,
             provider_name=declared.provider_name,
+            disabled=declared.disabled,
             credential_refs=declared.credential_refs,
             policy_refs=declared.policy_refs,
         )

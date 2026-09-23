@@ -21,18 +21,8 @@ _INTERVAL_S = 10.0
 _task: asyncio.Task[None] | None = None
 
 
-async def _run() -> None:  # noqa: C901
+async def _run() -> None:
     while True:
-        try:
-            from services.evolution import recover_evolution_runs
-
-            recovered = await recover_evolution_runs()
-            if recovered:
-                logger.info("evolve_recovery recovered=%d", recovered)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("evolve_recovery_tick_failed")
         try:
             recovered = await recover_stranded_dag_runs()
             if recovered:
