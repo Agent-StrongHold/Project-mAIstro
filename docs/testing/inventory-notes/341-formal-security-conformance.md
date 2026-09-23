@@ -78,3 +78,21 @@ in-repo mechanical control is the required `formal-conformance` check running
 `scripts/check-formal-oracle-independence.py`, which rejects the co-change
 diff itself. Live GitHub CI green for this PR head remains UNVERIFIED (no push
 permitted from verification).
+
+Repair-phase validation at head `cc4b2ca` (worktree unmodified during
+validation; mutations in a PYTHONPATH-shadowed symlink copy under `/tmp`,
+shadow verified via `patterns.__file__`; unmutated shadow baseline 256
+passed): `uv run ruff check .` and `uv run ruff format --check .` clean;
+targeted `pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0`
+→ **256 passed**; full required-CI equivalent `pytest formal/models/ -q
+--timeout=300 --hypothesis-seed=0` → **664 passed** against a dedicated
+pgvector:pg18 container after `alembic upgrade head`, with `maistro_evolve`
+importable as the workflow's explicit install provides. Mutations re-executed,
+both fail: `rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/` weakening → **6 failed**
+(`remove-home` incl. the production enforcement case); 21-of-22 deletion
+retaining only `sudo\s+` → **193 failed**. Oracle-independence gate:
+real script at this head with `--base 8bb344e` → bootstrap exit 0; scratch
+clone oracle-only change → exit 0; scratch clone oracle+implementation
+co-change → **exit 1**; `tests/test_check_formal_oracle_independence.py` →
+3 passed. `formal/extractors` and `formal/generated` remain absent with zero
+references. No repair was required; no acceptance criterion regressed.
