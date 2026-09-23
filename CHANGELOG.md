@@ -217,6 +217,15 @@ or placeholder-only section.
 
 ### Added
 
+- **`GET /v1/runs/{run_id}/node-runs` now lists each NodeRun's Attempts,
+  including the agent a chat turn dispatched to (#223).** Every NodeRun carries
+  an additive `attempts` array of `attempt_id`, `ordinal`, `status`,
+  `executor_id`, `created_at`, `started_at`, `finished_at` and `agent`
+  (null where none was recorded, as for tasks). This is the public reader for
+  ADR-082526-7f02's "the Attempt answers which agent ran". `Attempt.result`
+  and `Attempt.error` are deliberately not exposed, since they can carry raw
+  provider or exception text.
+
 - **Governed model egress is wired into production Container composition
   (#1079).** `AgentConfig.model_bindings` declares authorized Workspace/Project
   `model.chat` Bindings; `create_container()` bootstraps them into the exact
