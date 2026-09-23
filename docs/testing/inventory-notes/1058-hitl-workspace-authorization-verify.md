@@ -45,3 +45,18 @@ Documentation-only verifier note. No production or test code changed.
   the PR body; only `Refs #1058`.
 - CI status for PR 1392 was not observed; the local suite above is the only
   green claim made here.
+
+## Re-validation at 3723f188 (verify lane, mutation probe re-executed)
+
+- Lane suites re-run: 48 backend HITL/authority/recovery tests passed; 166
+  core durable-runs tests passed; `ruff check .` clean; both suite
+  inventory gates ok; prior TypeError finding passes in isolation.
+- Literal membership-predicate mutation re-executed without tree edits via a
+  pytest plugin patching `HitlAuthorization.permits -> True`:
+  `test_hitl_mutation_rechecks_membership_at_the_store_boundary`,
+  `test_sqlite_rejects_revoked_membership_inside_settlement`,
+  `test_settlement_waits_for_membership_revocation_then_refuses`, and
+  `test_two_workspace_late_race_cannot_settle_foreign_pause` all FAILED as
+  required (4 failed / 1 passed). The surviving pin is the route-level
+  `is_member` denial test, which is killed by removing the route predicate
+  instead — both authorization layers are pinned. Worktree left clean.
