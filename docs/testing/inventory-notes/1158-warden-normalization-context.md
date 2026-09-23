@@ -40,3 +40,31 @@ control; split tool results blocked at the governed executor before the next
 model call; and the finite tool-result window (a fragment pushed out by more
 than the retained number of intervening results is no longer joined, pinning
 the bound against unbounded growth).
+
+## Independent re-verification (repair pass 2, 2026-09-23)
+
+Re-validated every acceptance criterion from scratch against head `3c6dca4a1`
+without trusting the prior run's claims:
+
+- Live adversarial probe against production `Warden`: plain, spaced-letter,
+  leetspeak, spaced-leetspeak, dot-separated, zero-width+Cyrillic-homoglyph
+  overrides all `blocked=True`; cross-turn payload whose three fragments scan
+  individually clean is blocked at the completing turn; benign prose controls
+  ("I go to a local art gallery…", "run all previous steps in order",
+  "Please ignore my previous message, it was a typo") stay clean; trusted
+  context containing an override does not contaminate a benign scan; a
+  200×10KB context collapses to 2 items / exactly 16384 bytes.
+- 215 tests pass across warden/test_detector.py, test_gate.py, test_base.py,
+  artificer/test_strategy.py, strategies/test_react.py,
+  capabilities/test_harness_runner.py, test_conduit.py (34 of them the
+  adversarial/context selection).
+- `ruff check` + `ruff format --check` clean on all touched sources;
+  `mypy packages/maistro-core/src/maistro/{security,agents}` clean (105 files);
+  `scripts/check-security-inventory.py` and `scripts/check-suite-inventory.py`
+  both OK.
+- `normalize_for_detection` remains consumed only by
+  `security/warden/detector.py` — no ingress path reimplements a normalizer.
+  #1137/#1138/#1139 still do not resolve to any in-repo artifact; all
+  reachable ingress (gate.py, agents/base.py, harness_safety.py, react.py,
+  artificer/strategy.py, conduit.py) was verified to consume the hardened
+  `Warden.scan` directly.
