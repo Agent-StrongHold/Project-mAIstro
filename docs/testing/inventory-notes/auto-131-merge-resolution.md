@@ -1,12 +1,11 @@
 ---
-inventory-delta:
-  added: []
-  removed: []
-  notes: no test inventory change this round; the develop merge unioned tests
-    that already carried notes (issue-131-repair.md, auto-131-0f5f.md)
 ---
 
 # auto-131 repair round: develop merge resolution (2cf218fd)
+
+No test inventory change this round, so no `inventory-delta:` block: the
+develop merge unioned tests that already carried notes
+(issue-131-repair.md, auto-131-0f5f.md).
 
 The lane's worktree was found mid-merge with develop (ba2f1f07) and conflicts
 in the two files this issue owns. Resolution, recorded so the reconciliation
