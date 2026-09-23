@@ -55,7 +55,10 @@ DEFAULT_MAX_TRACKED_SCOPES = 4096
 # Scopes whose last *completed* sweep ran out of batch before the scope
 # drained. Process-wide, because every sweeper in the process (chat, Turing)
 # publishes into the one gauge: a per-sweeper or last-writer-wins value would
-# let Workspace B draining erase Workspace A's standing backlog.
+# let Workspace B draining erase Workspace A's standing backlog. An entry
+# leaves only when a sweep of that same scope drains it, so a Workspace nobody
+# sweeps again stays counted: its expired Runs are, in fact, still there. The
+# set is bounded by the scopes currently backlogged, not by scopes ever seen.
 _BACKLOGGED_SCOPES: set[RetentionScope] = set()
 _BACKLOG_LOCK = threading.Lock()
 
