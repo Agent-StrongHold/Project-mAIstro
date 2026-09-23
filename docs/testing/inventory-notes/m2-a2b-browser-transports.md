@@ -154,3 +154,42 @@ identical to 6aa0360c1 and every claim above was re-derived, not carried:
   outbound socket in production paths; `tool_executor.py` reaches Chromium
   only via the guarded `BrowserClient`; `task_backend.py` uses the guarded
   `sync_client` seam with its base origin allowlisted.
+
+## L155 independent verifier pass at 080b4e0e5 (2026-09-23)
+
+Re-derived acceptance at the lane head `080b4e0e5f5b542bcac52c15fd4fb7a3ae836bb2`
+(develop base `8bb344e32b8693574fc0be7a93f86d941616b62c`), executing every check
+fresh rather than trusting the repair-phase record:
+
+- Browser seam: full `packages/maistro-core/tests/tools/browser/` →
+  **131 passed** with the `browser` extra installed (`uv sync --locked --extra
+  dev --extra browser`), including all 4 `test_playwright_transport.py`
+  real-Chromium proofs — notably
+  `test_real_chromium_rechecks_a_redirect_before_the_private_connection`
+  (public→private redirect; the private server received zero requests).
+  Conductor `test_browser_network_policy.py` + `test_engine_service.py` →
+  **38 passed**. Ordinary-HTTP seam `test_outbound_policy.py` +
+  `test_transport.py` + `test_ssrf.py` +
+  `test_outbound_gateway_policy.py` → **183 passed**.
+- Gates re-run at this head: `ruff check .` rc=0;
+  `check-security-inventory.py` rc=0; `check-model-egress.py` rc=0;
+  `check_direct_effects.py` rc=0.
+- Inherited non-green re-reproduced: `check-vulture-baseline.py` rc=1 at this
+  head and at a fresh `git archive` of the develop base. **Correction to the
+  repair-phase note:** the two drift logs are *not* byte-identical — the diff
+  is exactly one finding, `run_hill_climb.py::COMPONENT_PATH` (1430 findings at
+  base → 1429 at head): this branch *fixed* that identity and added no new
+  debt; no branch file appears anywhere in the drift. The floor failure in
+  `check-ac-state.py --run-tests --ratchet` reproduces identically on both
+  heads (design_coverage 33.0281 < 33.9095) with the per-change mandate green
+  (22 criteria claimed, 0 unproven) — develop-base debt either way.
+- Acceptance sweep re-executed: five production Playwright entry points, each
+  guard-attaching before its first page; `browser_use` reachable only via the
+  guarded `BrowserClient`; `tool_executor.py` Chromium fallback goes through
+  `BrowserClient`; no aiohttp/urllib.request/requests/raw outbound sockets in
+  production code; `task_backend.py` raw `httpx.Client` replaced by the
+  guarded `sync_client` (test-enforced). SECURITY.md rows 167–168 separate the
+  HTTP and Chromium transports without implying shared-client coverage reaches
+  Chromium.
+- PR #1451 body and branch commit messages checked for closure keywords: none
+  ("Refs #155" only; PR is a draft).
