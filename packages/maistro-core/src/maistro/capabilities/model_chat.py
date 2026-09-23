@@ -19,8 +19,9 @@ registry metadata, then attached to the persisted canonical Invocation.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextvars import ContextVar
+
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -249,7 +250,17 @@ class ModelChatEgress:
         attempt_id: str,
         effect_key: str,
         request: ModelChatRequest,
+        setup: Callable[[], Awaitable[None]] | None = None,
     ) -> ModelCallResult:
+        """Run one governed model call, optionally performing provider setup.
+
+        ``setup`` runs inside the Invocation executor — after Binding scope
+        resolution and policy authorization, immediately before the physical
+        completion (#1088). Provider-internal mechanics that carry credentials
+        (e.g. a gateway's model registration) must be passed here rather than
+        performed by the caller beforehand: a denied policy then causes zero
+        HTTP, not a credential-bearing side request ahead of authorization.
+        """
         resolver = resolve_model_chat_provider(self._registry, self._router, alias=request.model)
         selected: list[LlmGatewayProvider] = []
 
@@ -260,6 +271,8 @@ class ModelChatEgress:
             return provider
 
         async def execute(provider: ResolvedCapabilityProvider, payload: Any) -> Any:
+            if setup is not None:
+                await setup()
             return await execute_model_chat(provider, payload, endpoint=self._endpoint)
 
         def usage_from(body: Any) -> InvocationUsage | None:

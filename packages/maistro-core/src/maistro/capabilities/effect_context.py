@@ -80,8 +80,9 @@ class CapabilityEffectContext:
         return CredentialRouting(self.credentials)
 
 
-def new_in_memory_effect_context(
+def new_effect_context(
     *,
+    invocation_store: InvocationStore | None = None,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
     usage_log: InMemoryUsageLog | None = None,
@@ -89,18 +90,27 @@ def new_in_memory_effect_context(
 ) -> CapabilityEffectContext:
     """Build an isolated canonical effect context for local/runtime composition.
 
+    ``invocation_store`` selects the canonical effect ledger; ephemeral
+    composition defaults to the in-memory store while durable containers pass
+    the SQLite/PostgreSQL capability Invocation stores.
+
     ``credentials`` supplies the scoped credential pool for Provider selection
     (#58); omitted, the router exists but holds no credentials, so routed
     acquisitions fail closed until one is registered in the requesting scope.
+
+    ``usage_log``/``quota_tracker`` install the canonical quota recorder (#718)
+    as the Invocation service's single ``on_completed`` hook, so every governed
+    provider effect — and every reconciliation settled ``APPLIED`` — records
+    evidence on the quota ledger exactly once.
     """
 
     binding_store = InMemoryBindingStore()
-    invocation_store = InMemoryInvocationStore()
+    store = invocation_store or InMemoryInvocationStore()
     event_store = InMemoryEventStore()
     usage_log = usage_log or get_default_usage_log()
     usage_recorder = CanonicalInvocationUsageRecorder(usage_log, quota_tracker)
     invocation_service = InvocationExecutionService(
-        store=invocation_store,
+        store=store,
         on_completed=usage_recorder.record,
     )
     governed = GovernedInvocationExecutionService(
@@ -111,7 +121,7 @@ def new_in_memory_effect_context(
     return CapabilityEffectContext(
         bindings=binding_store,
         invocations=governed,
-        invocation_store=invocation_store,
+        invocation_store=store,
         event_store=event_store,
         usage_log=usage_log,
         credentials=credentials or CredentialRouter(),
@@ -127,11 +137,15 @@ def default_effect_context() -> CapabilityEffectContext:
     ledger. No default Binding is created here; absence remains a hard refusal.
     """
 
-    return new_in_memory_effect_context()
+    return new_effect_context()
+
+
+new_in_memory_effect_context = new_effect_context
 
 
 __all__ = [
     "CapabilityEffectContext",
     "default_effect_context",
+    "new_effect_context",
     "new_in_memory_effect_context",
 ]

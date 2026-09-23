@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from maistro.persistence.pg_quota import cycle_key
+from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -42,17 +43,17 @@ class SqliteQuotaTracker:
 
     async def ensure_schema(self) -> None:
         """Create quota aggregates and canonical Invocation evidence tables."""
-        await self._conn.execute(_SCHEMA)
-        # Existing SQLite deployments predate the evidence projection; make
-        # the additive column safe for those databases before recording.
-        cursor = await self._conn.execute("PRAGMA table_info(quota_usage)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        if "unreported_count" not in columns:
-            await self._conn.execute(
-                "ALTER TABLE quota_usage ADD COLUMN unreported_count INTEGER NOT NULL DEFAULT 0"
-            )
-        await self._conn.execute(_EVIDENCE_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await self._conn.execute(_SCHEMA)
+            # Existing SQLite deployments predate the evidence projection; make
+            # the additive column safe for those databases before recording.
+            cursor = await self._conn.execute("PRAGMA table_info(quota_usage)")
+            columns = {row[1] for row in await cursor.fetchall()}
+            if "unreported_count" not in columns:
+                await self._conn.execute(
+                    "ALTER TABLE quota_usage ADD COLUMN unreported_count INTEGER NOT NULL DEFAULT 0"
+                )
+            await self._conn.execute(_EVIDENCE_SCHEMA)
 
     async def record_usage(
         self,
