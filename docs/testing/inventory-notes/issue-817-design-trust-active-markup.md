@@ -93,3 +93,58 @@ Re-executed at head `06fd71077312e2de59652ddffc75200b7fda4efa` (delta vs
   and `deck-sanitization.spec.ts` uses plain `url(`. Because
   `normalize_for_detection` is the shared Warden/Sentinel detection fold, the
   defect is in the shared substrate, not Design-only.
+
+## Independent verification round 3 (auto-817 @ fce0272, repair confirmed)
+
+Re-executed at merge head `fce027262b9d1c5d74b98a2c6329e2da88476767`
+(`96e6c4d8e2d5f9b99a7dc51620ae6413d5c916ca` + develop merge `750edd84d`;
+`git diff 96e6c4d8..fce02726` touches only CHANGELOG.md and the #1192
+pause-reason-waker content — zero security-surface drift), read-only lane:
+
+- 392 lane tests pass: `uv run pytest packages/maistro-design/tests
+  packages/maistro-core/tests/security/warden -q` → 385 passed;
+  `packages/hive-conductor/backend/tests/test_design_renderers.py` → 7
+  passed. `ruff check .` / `ruff format --check .` → pass. Suite inventory →
+  maistro-design 309, maistro-core 10786, hive-conductor backend 2655, all
+  matching.
+- **Round-2 finding 1 (CSS hex-escape bypass) closed:** probes execute the
+  leading-escape spellings at both boundaries —
+  `scan_design_text('<div style="background:\\75rl(http://evil.example/x)">y</div>')`
+  and the `\000075rl(` form both return `passed=False` with
+  `css-network-or-code`; the trust pre-scan records SKULL/`banish` with
+  shared output-boundary flags for both.
+- **Round-2 finding 2 (SAST gate red) closed:** the CI-exact semgrep command
+  (`--config tools/semgrep/maistro-rules.yaml --config p/security-audit
+  --config p/owasp-top-ten --config p/secrets --exclude eval --exclude cage
+  --error packages/ tests/`) exits 0 with 0 findings across 1888 files; the
+  reviewed sink at `visualArtifactRenderer.tsx` carries the repo-standard
+  `// nosemgrep: typescript.react.security.audit.react-dangerouslysetinnerhtml
+  -- justification` annotation.
+- Probe corpora: 10-case pre-scan corpus through `scan_and_record` (script,
+  MathML, `onerror=`, SVG `onload`, `data:text/html` href, CSS `url()`,
+  leading-escape CSS, prompt injection, foreignObject script, clean brief) →
+  9× SKULL/`banish` with explicit flags, clean brief stays T3/`upgrade` with
+  `()` flags; 20-case output corpus (handlers incl. `onpointerenter`,
+  `<body onload>`, script SVG, `use`/`image` data URLs, `animate` href
+  javascript:, `data:text/html` iframe/link, `@import`, `behavior:`,
+  `-moz-binding:`, `expression(`, both leading-escape CSS forms, prompt
+  injection) → all blocked; 3 inert presentation cases pass.
+- Browser corpus executed in the `auto817-playwright` Playwright image with
+  the four worktree diff-surface frontend files bind-mounted over the baked
+  copies: `deck-sanitization.spec.ts` 5/5 passed, including the `\75rl(`
+  fail-closed sanitize + `css-network-or-code` scan-reason assertions and the
+  `recommendVisualArtifactTrust` parity block (MathML → `review`).
+- Gates outside the lane's diff remain red but are pre-existing at develop
+  base `750edd84d`, proven by scan-diff, not assumed: vulture rc=1 — the
+  ledger is byte-identical between base and head and no NEW-debt file other
+  than `design_render.py` is touched by this branch; that file's three
+  identities (`_render_cache`, `render_to_pptx`, `slide_width`) already exist
+  at base (base lines 28/98/115), while the branch's own additions
+  (`_enforce_output_boundary`) are called at all four renderer entry points.
+  mypy → 11 errors, none introduced: `design_render.py`'s 4 (weasyprint/docx
+  import stubs, `Returning Any`) reproduce identically at base shifted by the
+  branch's +13 lines; the other 7 sit in files this branch never touched
+  (`cli/_builders_tui.py`, `cli/_install.py`, `engine.py`).
+- Closure-keyword review: no `fixes/closes/resolves #N` trailer in any commit
+  subject/body between `750edd84d` and `fce027262`; PR #1389 body says only
+  "Refs #817" and remains draft.
