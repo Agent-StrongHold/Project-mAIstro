@@ -21,7 +21,12 @@ from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.capabilities.invocation import InvocationStatus
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
-from maistro.capabilities.providers.llm_gateway import GatewayEndpoint
+from maistro.capabilities.providers.llm_gateway import (
+    DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+    MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+    GatewayEndpoint,
+)
+from maistro.credentials.types import CredentialRecord
 from maistro.graph.definitions import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.providers.registry import InMemoryProviderRegistry
@@ -129,8 +134,22 @@ def canvas_egress(
             workspace_id="ws-canvas",
             project_id=project.project_id,
             capability=MODEL_CHAT_CAPABILITY,
+            # The governed model-chat egress routes every physical call
+            # through a Binding-scoped credential (#1079); an authorized
+            # Binding with no matching pool entry refuses with
+            # CredentialScopeError before any (fake) transport call is made.
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
         )
         await effects.bindings.put(binding)
+        effects.credentials.add(
+            workspace_id="ws-canvas",
+            project_id=project.project_id,
+            record=CredentialRecord(
+                key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+                provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+                api_key="test-canvas-gateway-key",
+            ),
+        )
         run_store = InMemoryRunStore(project_store=project_store)
         run = await run_store.create_run(
             Graph(
@@ -189,7 +208,7 @@ def canvas_egress(
             litellm_api_base="http://gateway.test/v1",
             litellm_api_key=None,
             canvas_model_binding_id="canvas-quality-binding",
-            model_bindings=[],
+            maistro_model_bindings=[],
             hive_default_workspace_id="ws-canvas",
         ),
     )
@@ -361,7 +380,7 @@ def test_canvas_route_refuses_missing_binding(
             litellm_api_base="http://gateway.test/v1",
             litellm_api_key=None,
             canvas_model_binding_id="not-authorized",
-            model_bindings=[],
+            maistro_model_bindings=[],
             hive_default_workspace_id="ws-canvas",
         ),
     )
@@ -451,7 +470,7 @@ def test_canvas_route_refuses_disabled_binding(
             litellm_api_base="http://gateway.test/v1",
             litellm_api_key=None,
             canvas_model_binding_id="canvas-quality-disabled",
-            model_bindings=[],
+            maistro_model_bindings=[],
             hive_default_workspace_id="ws-canvas",
         ),
     )
@@ -885,7 +904,7 @@ def test_quality_binding_id_prefers_one_deployment_scoped_binding() -> None:
     settings = SimpleNamespace(
         canvas_model_binding_id="",
         hive_default_workspace_id="ws-canvas",
-        model_bindings=[
+        maistro_model_bindings=[
             SimpleNamespace(
                 binding_id="binding-other-project",
                 workspace_id="",
@@ -917,7 +936,7 @@ def test_quality_binding_id_returns_stable_unconfigured_reference() -> None:
     settings = SimpleNamespace(
         canvas_model_binding_id="",
         hive_default_workspace_id="ws-canvas",
-        model_bindings=[],
+        maistro_model_bindings=[],
     )
     run = SimpleNamespace(workspace_id="ws-canvas", project_id="project-a")
 
@@ -927,7 +946,7 @@ def test_quality_binding_id_returns_stable_unconfigured_reference() -> None:
     ambiguous_settings = SimpleNamespace(
         canvas_model_binding_id="",
         hive_default_workspace_id="ws-canvas",
-        model_bindings=[
+        maistro_model_bindings=[
             SimpleNamespace(
                 binding_id="binding-one",
                 workspace_id="ws-canvas",
