@@ -125,3 +125,29 @@ objects. `maistro_evolve.providers.openai_compatible` remains imported only
 by its own package re-export and executable_terminal_runner (no production
 importers). Branch commit messages and PR #1313 body contain no closure
 keywords (Refs only); PR is a draft claim-stake.
+
+Verification note (independent repair-phase review, job fca90e27, clean
+tree at head 90b62ae = 9f2a0ccd + the two review-note commits only, no
+production delta): re-executed the full Evolve battery at this head --
+test_evolution_service.py + test_evolution_canonical_graph.py +
+test_evolution_recovery.py + test_evolution_recovery_cadence.py +
+test_evolution_persisted_pair_plan.py + test_evolution_canonical_edge_cases.py
+-> 95 passed; packages/maistro-evolve/tests -> 645 passed, 6 skipped;
+packages/maistro-core/tests/capabilities -k invocation -> 73 passed;
+test_model_egress_container_composition.py -> 6 passed; `ruff check .`
+clean; `ruff format --check .` clean. Gates: check-model-egress.py OK
+(baseline 23 -> candidate 22 direct callers), check-reachability.py OK
+(1115 modules, 189 baselined unreachable), check-reachability-dispositions.py
+OK, check-wiring-reads.py OK, check-suite-inventory.py OK. New evidence
+beyond the 126fb891 review: (a) empirically proved the architecture-fitness
+regression mode without touching the tree -- `performs_egress` detects a
+direct `/v1/chat/completions` POST and `audit(found={"services.evolution"},
+recorded=[])` yields the exact failing diagnostic, and `main()` returns 1 on
+any audit failure, so `services.evolution` regaining direct model HTTP fails
+CI; (b) confirmed `quality/model-egress.json` and
+`quality/direct-effect-call-sites.json` hold no `services.evolution` entry;
+(c) confirmed the diff vs the lane base 750edd84 deletes
+`test_pause_reason_wakers.py`/CHANGELOG rows only because that content was
+already absent on the merged develop line (8bb344e32), i.e. develop's own
+history, not this branch's action. All nine issue acceptance criteria and
+the three prior findings re-verified green at this head.
