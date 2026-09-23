@@ -111,3 +111,31 @@ Re-executed at the exact head, not taken from the implementing run:
   concurrent load) and pass when the container is quiet.
 - No premature GitHub closure keywords (`fixes/closes/resolves`) in any
   commit message on 551c38b5..10a49a14.
+
+## Independent verification at merge head 21d6e73c84988908f57cbf0c03ca1d79d3820c5f
+
+Re-executed after the aud6 branch absorbed the develop base
+(8bb344e32b8693574fc0be7a93f86d941616b62c via ffd6fdb16). Not taken from any
+prior run's claims:
+
+- `uv run pytest packages/maistro-core/tests/tasks/test_requested_cancellation.py
+  -q` → 10 passed; `packages/maistro-core/tests/tasks -q` → 319 passed.
+- Bite check in a throwaway worktree at this head with the execution-stop
+  block deleted from `TaskQueue.cancel` (receipt-only terminalization, the
+  audited defect): 4 failed / 6 passed — `test_cancel_stops_the_running_work`,
+  `test_cancel_does_not_report_success_before_work_settles`,
+  `test_cancelled_work_cannot_attach_a_late_failure`,
+  `test_a_cancelled_receipt_keeps_no_result_after_the_work_stopped`. The
+  regression holds the fix.
+- Full `packages/maistro-core/tests packages/maistro-server/tests` against a
+  live PostgreSQL 17.10 (`MAISTRO_TEST_PG_DSN`): **10820 passed, 116 skipped,
+  1 xfailed, 0 failed** — no environmental residue at this head, and the
+  persistence suite (614) includes `test_pg_sessions_concurrency.py`, green
+  again 3× in isolation after the 23b4de340 DB-clock retention fix.
+- Gates: `uv run ruff check .` and `uv run ruff format --check .` clean;
+  six-package `uv run mypy` Success (711 files); `scripts/check-suite-inventory.py`
+  ok (13 suites); `scripts/check-doc-links.py` 0 broken.
+- No gate weakening: `git diff ffd6fdb16..21d6e73c8 -- .github/ scripts/
+  pyproject.toml uv.lock .pre-commit-config.yaml` is empty — every
+  workflow/gate delta on this branch came in from the develop side of the
+  merge, not from the #1242 repair commits.
