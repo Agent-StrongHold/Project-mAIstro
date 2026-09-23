@@ -40,3 +40,41 @@ of 8bb344e32); this branch's delta is banked in the candidate ledger with owner 
 issue attribution (`parallel_generations`, #1154) and the residual requires the
 grants-first PR per the ratchet's two-merge rule. Stop condition respected: no
 executor gained persistence; `GraphRun` is retired outright.
+
+## Repair pass (f9daace05 + this commit)
+
+Vulture attribution was re-derived exactly (gate logic run in-process against both
+this tree and an isolated clone of the develop base, full scans, not the truncated
+human output). Findings and repair:
+
+- The branch still added 4 unauthorized keys vs the trusted base
+  (`graph/types.py`: `lint_errors`, `type_errors`, `tool_evaluation`,
+  `pass_rate`) — the retired pre-durable `node.py` reviewer prompt
+  (develop `node.py:164-169`) was their last reader, so deleting the executor
+  orphaned the legacy `ToolEvaluation` telemetry model. Removed the dead model,
+  the `GraphBlackboard.tool_evaluation` field and the `maistro.graph` re-exports;
+  no production or test consumer existed (repo-wide grep).
+- The same deletion class orphaned `TaskResult.tests_failed`
+  (`tasks/models.py`): its last scanned usage was the deleted legacy
+  `test_node.py` fixture; no producer or consumer remains in any language.
+  Removed the always-null field.
+- Pruned 19 candidate-ledger entries that the final scan no longer produces
+  (18 stale bankings from the mid-repair `--update` — durable-path readers
+  reappeared for `run_scout`/`compute_backoff`/`should_retry`/ensemble methods/
+  token fields — plus `ToolEvaluation.evaluation_score`, dead with its model).
+- Post-repair attribution: zero branch-only failure keys and zero branch-only
+  bookkeeping keys vs the develop base; branch staleness strictly below develop's
+  (897 vs 908). The gate's remaining ~806 unauthorized keys are byte-identical to
+  the develop base's own failure set (gate exits 1 there too, reproduced in the
+  isolated clone) and still require the grants-first PR outside this lane.
+
+Re-validated after the repair: `ruff check .` clean; `ruff format --check .` clean
+(2522 files); `mypy` clean on the canonical six-package set (709 files);
+`tests/graph` + `tests/testing` + `tests/orchestrator/waves` + `tests/builders` +
+`tests/integration/test_chat_to_graph_e2e.py`: 1372 passed / 79 skipped / 1 xfailed;
+hive `test_graph_runner.py` 21 passed; `check-suite-inventory.py` ok for
+maistro-core and hive-conductor; `check-retired-guidance.py`,
+`check-execution-lifecycles.py`, `check-convergence-matrix.py`,
+`check-merge-markers.py` all exit 0. No test files changed: suite inventories
+unchanged. `LegacyGraphRunArchive` verified read-only (`mode=ro` URI;
+`ArchivedGraphRun.resume()` raises `LegacyRunNotResumable`).

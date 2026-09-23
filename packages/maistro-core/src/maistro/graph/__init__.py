@@ -50,7 +50,6 @@ from maistro.graph.types import (
     ScoutContext,
     ScoutOutput,
     SubTask,
-    ToolEvaluation,
 )
 
 __all__ = [
@@ -91,7 +90,6 @@ __all__ = [
     "ScoutOutput",
     "SubTask",
     "TemplateProvenance",
-    "ToolEvaluation",
     "TraversalCheckpoint",
     "TraversalCommit",
     "accepted_outcome_id",

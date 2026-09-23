@@ -94,29 +94,11 @@ class ScoutContext(BaseModel):
     raw_findings: str = ""
 
 
-class ToolEvaluation(BaseModel):
-    tests_passed: int = 0
-    tests_failed: int = 0
-    test_output: str = ""
-    lint_errors: list[str] = Field(default_factory=list)
-    type_errors: list[str] = Field(default_factory=list)
-    evaluation_score: float = Field(default=0.0, ge=0, le=10)
-
-    @property
-    def total_tests(self) -> int:
-        return self.tests_passed + self.tests_failed
-
-    @property
-    def pass_rate(self) -> float:
-        return self.tests_passed / self.total_tests if self.total_tests else 0.0
-
-
 class GraphBlackboard(BaseModel):
     task_objective: str
     workspace: str
     iteration: int = 0
     scout_context: ScoutContext | None = None
-    tool_evaluation: ToolEvaluation | None = None
     node_annotations: dict[str, str] = Field(default_factory=dict)
     optimization_history: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
