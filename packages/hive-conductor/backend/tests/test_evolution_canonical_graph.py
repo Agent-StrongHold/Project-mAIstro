@@ -1250,6 +1250,64 @@ async def test_finalize_fault_after_partial_mutation_blocks_automatic_retry() ->
 
 
 @pytest.mark.asyncio
+async def test_finalize_swallowed_model_failure_records_faulted_not_committed() -> None:
+    """#1087: a governed model effect that fails during finalization cannot
+    let the cycle commit even when the domain code swallows the provider
+    error. The finalize marker must record ``faulted`` -- so replay fails
+    closed -- rather than ``committed`` over failed physical work."""
+
+    class _ContextualCall:
+        """Bound call double mirroring _GovernedModelCall.for_context(): a
+        provider timeout sets first_failure and raises; domain code that
+        catches the exception still leaves the failure recorded."""
+
+        first_failure: BaseException | None = None
+
+        @property
+        def governed_model_call(self) -> Any:
+            return self
+
+        async def __call__(self, _messages: Any, **_kwargs: Any) -> str:
+            self.first_failure = TimeoutError("provider timed out")
+            raise self.first_failure
+
+    class _SwallowingSelfImproveCycle(_Cycle):
+        async def _self_improve_top(
+            self, population: _Population, config: Any, llm_call: Any
+        ) -> None:
+            try:
+                await llm_call([{"role": "user", "content": "improve"}])
+            except TimeoutError:
+                # The benchmark loop treats a provider error as a zero score
+                # and keeps going -- exactly the swallow #1087 must survive.
+                return
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    for genome in population.list_all():
+        genome.eval_scores["proxy"] = 0.5
+    cycle = _SwallowingSelfImproveCycle(harness=_Harness(), tournament=_Tournament())
+    config = _config(population_size=2, eval_batch_size=2)
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="evolve-finalize",
+        node_run_id="finalize-node-1",
+        attempt_id="attempt-1",
+    )
+
+    with pytest.raises(RuntimeError, match="Evolve model effect failed"):
+        await _finalize_cycle(cycle, population, config, _ContextualCall(), ctx)
+
+    marker = population.get_cycle_marker("finalize:finalize-node-1")
+    assert marker is not None
+    assert marker["status"] == "faulted"
+
+    recovered_ctx = ctx.model_copy(update={"attempt_id": "attempt-after-recovery"})
+    with pytest.raises(FinalizeReconciliationRequired):
+        await _finalize_cycle(cycle, population, config, _ContextualCall(), recovered_ctx)
+
+
+@pytest.mark.asyncio
 async def test_finalize_cycle_without_node_context_skips_marker_bookkeeping() -> None:
     """#1064: ``_finalize_cycle`` is also called directly (no durable graph
     Attempt) by callers that never pass ``ctx`` -- its default. With no
