@@ -97,3 +97,31 @@ shipped-path integration test enters _EvolutionService._run_one_cycle with
 real create_container composition (only the httpx transport stubbed) and
 asserts Invocation correlation without hand-built Provider/Binding. PR #1313
 body and branch commit messages carry no closure keywords (Refs only).
+
+Verification note (independent review, job 126fb891, clean tree at head
+9f2a0ccd = 76ca31eaa + note provenance): re-executed pytest on
+test_evolution_service.py + test_evolution_canonical_graph.py +
+test_evolution_recovery.py + test_evolution_recovery_cadence.py -> 77
+passed; test_model_egress_container_composition.py +
+test_evolution_persisted_pair_plan.py + test_evolution_canonical_edge_cases.py
++ test_dag_agents.py -> 37 passed; `ruff check .` clean;
+check-model-egress.py OK (baseline 23 -> candidate 22, services.evolution
+pruned, no expansion), check-reachability.py OK (1115 modules),
+check-wiring-reads.py OK, check-suite-inventory.py OK (13 suites match).
+Confirmed the three earlier review findings are repaired at this head:
+(1) replay markers now ride the population-store surface (evaluation refs
+keyed by persisted NodeRun id; finalize committed/faulted markers) and any
+process that cannot prove it holds the exact frozen membership fails closed
+via `_recovery_resolver` -> `EvolveRecoveryBlocked` instead of resuming
+against fabricated in-memory state; (2) `services.evolution_recovery.py`
+ticks `recover_stranded_evolution_runs`/`wake_due_evolution_runs` through the
+shared canonical seam with `_admitted_by_evolve` eligibility, bracketed by
+start/stop_evolution and serialized on cycle_lock -- end-to-end tests prove a
+stranded QUEUED Run recovers to COMPLETED from durable facts and a
+mismatched-process Run stays QUEUED, never resumed against the wrong
+population; (3) recovery tests now admit a Run into a fresh store without
+running the walker (process-loss modeled) rather than replaying live
+objects. `maistro_evolve.providers.openai_compatible` remains imported only
+by its own package re-export and executable_terminal_runner (no production
+importers). Branch commit messages and PR #1313 body contain no closure
+keywords (Refs only); PR is a draft claim-stake.
