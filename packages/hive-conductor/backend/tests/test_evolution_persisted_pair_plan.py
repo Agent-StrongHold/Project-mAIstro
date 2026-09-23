@@ -44,6 +44,8 @@ class _Tournament:
         genome_b_id: str,
         score_a: float,
         score_b: float,
+        node_run_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> None:
         self.battles.append((genome_a_id, genome_b_id))
 

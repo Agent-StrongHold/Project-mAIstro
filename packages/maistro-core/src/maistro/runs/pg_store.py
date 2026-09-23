@@ -65,7 +65,7 @@ from maistro.runs.retention_scope import (
     RetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.sources import occurrence_key
+from maistro.runs.sources import SCHEDULED_FOR_KEY, occurrence_key
 from maistro.runs.store import (
     DEFAULT_ARCHIVE_AFTER,
     DEFAULT_PURGE_BATCH,
@@ -94,6 +94,8 @@ from maistro.runs.store import (
 OCCURRENCE_INDEX = "ix_canonical_runs_occurrence"
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Sequence
+
     import asyncpg
 
 #: Attempt statuses that count as occupying a NodeRun. Mirrors the partial
@@ -563,6 +565,33 @@ class PgRunStore:
             scheduled_for,
         )
         return Run.model_validate(payload) if payload is not None else None
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """The batched twin of `get_run_for_occurrence`, one query for many.
+
+        `= ANY($2::text[])`, the same list-parameter shape `list_by_status`
+        uses elsewhere in this store, in place of one round trip per
+        occurrence — the difference between a single query and tens of
+        thousands of serial ones on a schedule whose enumeration cap dropped
+        a large truncated tail (#1533).
+        """
+        if not scheduled_fors:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT run_id, payload, archive_key FROM canonical_runs
+                   WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
+                     AND (payload -> 'provenance' ->> 'scheduled_for') = ANY($2::text[])""",
+                schedule_id,
+                list(scheduled_fors),
+            )
+        found: dict[str, Run] = {}
+        for row in rows:
+            run = Run.model_validate(await self._hydrate(row))
+            found[run.provenance[SCHEDULED_FOR_KEY]] = run
+        return found
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None:
         async with self._pool.acquire() as conn:
