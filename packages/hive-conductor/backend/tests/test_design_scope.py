@@ -205,7 +205,12 @@ class TestTheRoutesPassItDown:
     async def test_rendering_a_project_carries_the_scope(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+<<<<<<< HEAD
         """Rendering must not disclose a project outside the caller's scope."""
+=======
+        """Rendering returns the project's content, so a render route that
+        never asked whose it was is the same leak as the fetch route."""
+>>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
         store = _Store(project=None)
         monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
         with pytest.raises(HTTPException) as raised:
@@ -213,6 +218,7 @@ class TestTheRoutesPassItDown:
         assert raised.value.status_code == 404
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
+<<<<<<< HEAD
     @pytest.mark.ac("SPEC-083026-6bc5/AC-6")
     async def test_rendering_an_in_scope_project_is_disabled_until_canvas_is_connected(
         self, ready: None, monkeypatch: pytest.MonkeyPatch
@@ -237,6 +243,53 @@ class TestTheRoutesPassItDown:
         assert "canonical Canvas rendering seam" in str(raised.value.detail)
         assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
 
+=======
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-7")
+    async def test_rendering_without_persistence_refuses_before_any_probe(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No configured store means 503, and no project-id probe can run."""
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: None)
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
+        assert raised.value.status_code == 503
+        assert "DATABASE_URL" in str(raised.value.detail)
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-7")
+    async def test_rendering_reports_unavailable_without_creating_a_pending_job(
+        self, ready: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shipped route must not mint a job without a worker or artifact URL."""
+        import services.design_preview as preview_module
+
+        class _Project:
+            pass
+
+        store = _Store(project=_Project())
+        preview_calls: list[bool] = []
+        monkeypatch.setattr(design_routes, "get_design_store", lambda: store)
+        monkeypatch.setattr(
+            preview_module,
+            "get_design_preview_service",
+            lambda: preview_calls.append(True),
+        )
+
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.create_render_job("p-1", _Request(org_id="org-7"))
+
+        assert raised.value.status_code == 501
+        assert "durable artifact store" in str(raised.value.detail)
+        assert preview_calls == []
+        assert store.calls == [{"project_id": "p-1", "org_id": "org-7"}]
+
+    @pytest.mark.ac("SPEC-083026-6bc5/AC-7")
+    async def test_polling_render_status_reports_unavailable(self) -> None:
+        """Polling cannot expose a made-up pending state or output URL."""
+        with pytest.raises(HTTPException) as raised:
+            await design_routes.get_render_job_status("p-1", "job-1")
+        assert raised.value.status_code == 501
+
+>>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
     @pytest.mark.ac("SPEC-083026-6bc5/AC-2")
     async def test_listing_projects_uses_the_resolved_scope(
         self, ready: None, monkeypatch: pytest.MonkeyPatch

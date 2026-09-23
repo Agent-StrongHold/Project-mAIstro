@@ -242,7 +242,6 @@ async def test_a_sweeper_with_no_scope_deletes_nothing() -> None:
     assert await sweeper.maybe_sweep(now=NOW) == 0
     assert store.calls == []
     assert isinstance(sweeper.last_error, RetentionScopeRequired)
-    assert sweeper.last_outcome is None
 
 
 async def test_a_sweeper_with_no_scope_refuses_an_explicit_sweep() -> None:
@@ -273,20 +272,6 @@ async def test_a_global_scope_reaches_the_store_intact() -> None:
 
     assert await sweeper.sweep_now(now=NOW) == 2
     assert store.calls[0][0] is GLOBAL
-    assert sweeper.last_outcome is not None
-    assert sweeper.last_outcome.mode == "global"
-    assert sweeper.last_outcome.is_global
-
-
-async def test_the_outcome_names_the_authorized_workspace() -> None:
-    store = SpyStore(purged=1)
-    sweeper = RunRetentionSweeper(store, RetentionPolicy(sweep_interval_seconds=0), scope=SCOPE)  # type: ignore[arg-type]
-
-    await sweeper.sweep_now(now=NOW)
-
-    assert sweeper.last_outcome is not None
-    assert sweeper.last_outcome.mode == "workspace"
-    assert sweeper.last_outcome.workspace_id == "workspace-1"
 
 
 def _mode_total(mode: str) -> float:
@@ -330,7 +315,6 @@ async def test_a_failed_sweep_counts_nothing() -> None:
     assert await sweeper.maybe_sweep(now=NOW) == 0
 
     assert _mode_total("workspace") == before
-    assert sweeper.last_outcome is None
 
 
 def _backlog(mode: str) -> float:
@@ -353,8 +337,6 @@ async def test_a_drained_scope_reports_no_backlog() -> None:
 
     await sweeper.sweep_now(now=NOW)
 
-    assert sweeper.last_outcome is not None
-    assert sweeper.last_outcome.backlog_remaining is False
     assert _backlog("workspace") == 0.0
 
 
@@ -367,16 +349,14 @@ async def test_a_batch_limited_scope_reports_its_backlog() -> None:
 
     await sweeper.sweep_now(now=NOW)
 
-    assert sweeper.last_outcome is not None
-    assert sweeper.last_outcome.backlog_remaining is True
     assert _backlog("workspace") == 1.0
     # The label is the mode, never the Workspace id (#818).
     assert _backlog("global") == 0.0
 
 
 async def test_a_failed_sweep_withdraws_the_standing_backlog_report() -> None:
-    """`last_outcome` goes to None when a sweep fails; the gauge that was set
-    from it must not keep describing a purge that no longer stands."""
+    """A failed sweep must not leave the gauge describing a purge that no
+    longer stands."""
     good = RunRetentionSweeper(
         SpyStore(purged=1, backlog=True),
         RetentionPolicy(sweep_interval_seconds=0),
@@ -394,4 +374,3 @@ async def test_a_failed_sweep_withdraws_the_standing_backlog_report() -> None:
     assert await failing.maybe_sweep(now=NOW) == 0
 
     assert _backlog("workspace") == 0.0
-    assert failing.last_outcome is None

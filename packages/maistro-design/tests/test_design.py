@@ -294,6 +294,7 @@ class TestDesignErrors:
     @pytest.mark.scope("unit")
     def test_all_error_codes_are_distinct(self):
         from maistro_design.types import (
+            CatalogImportPolicyError,
             DesignError,
             DesignOutputShapeError,
             DesignProjectNotFoundError,
@@ -308,6 +309,7 @@ class TestDesignErrors:
 
         errors = [
             DesignError,
+            CatalogImportPolicyError,
             SkillNotFoundError,
             DesignSystemNotFoundError,
             DiscoveryIncompleteError,
@@ -325,6 +327,7 @@ class TestDesignErrors:
     @pytest.mark.scope("unit")
     def test_all_errors_inherit_design_error(self):
         from maistro_design.types import (
+            CatalogImportPolicyError,
             DesignError,
             DesignOutputShapeError,
             DesignSystemNotFoundError,
@@ -336,6 +339,7 @@ class TestDesignErrors:
         )
 
         for cls in [
+            CatalogImportPolicyError,
             SkillNotFoundError,
             DesignSystemNotFoundError,
             DiscoveryIncompleteError,

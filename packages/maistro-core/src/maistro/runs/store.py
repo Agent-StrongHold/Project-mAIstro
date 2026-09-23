@@ -195,12 +195,14 @@ def _run_matches_status_scope(
     status: RunStatus,
     project_id: str | None,
     workspace_id: str | None,
+    admission_source: str | None = None,
 ) -> bool:
-    """Whether one Run belongs in a status/scope listing."""
+    """Whether one Run belongs in a status/scope/consumer listing."""
     return (
         run.status is status
         and (project_id is None or run.project_id == project_id)
         and (workspace_id is None or run.workspace_id == workspace_id)
+        and (admission_source is None or run.provenance.get(ADMISSION_SOURCE) == admission_source)
     )
 
 
@@ -277,18 +279,9 @@ class PurgeOutcome:
       durable-graph-run tables), deleted. The reference is logical — no foreign
       key — so nothing would notice it dangling, and a recovery scan would pick
       the orphan up and try to resume a Run whose identity no longer exists.
-    - ``event_references_retained`` — rows in the canonical Event log that name
-      a purged Run, kept. The Event log is append-only provenance: deleting it
-      would destroy the audit record of work whose deletion is itself an
-      auditable act, so retention's job here is to count what it leaves
-      behind, not to empty it. Other attribution history (task receipts,
-      session turns) is kept for the same reason; only what a store itself can
-      count gets a counter here.
-    - ``schedule_claims_released`` — `(schedule_id, scheduled_for)` occurrence
-      claims that died with their Run rows. Released deliberately: nothing is
-      duplicated by re-admitting a firing whose only record was deliberately
-      destroyed, which is the same coupling the in-memory store's eviction
-      already has.
+      The append-only Event log and the producer-provenance tables are kept
+      uncounted: nothing in retention reads those counts, so they stayed
+      write-only and were removed.
 
     ``backlog_remaining`` is the difference between "the scope is drained"
     and "the batch ran out" — the one bit a bare count could never carry, and
@@ -300,8 +293,6 @@ class PurgeOutcome:
     node_runs: int = 0
     attempts: int = 0
     continuations: int = 0
-    event_references_retained: int = 0
-    schedule_claims_released: int = 0
     backlog_remaining: bool = False
 
     @property
@@ -370,12 +361,23 @@ def is_archivable(run: Run, cutoff: datetime, *, archive_after: timedelta) -> bo
       `finished_at`, which a terminal Run always has (`_validate_finished_at`).
       A Run that somehow lacks one is not archived rather than being treated as
       infinitely old, because "no timestamp" is not evidence of coldness.
+    - **not carrying an occurrence claim** — `(schedule_id, scheduled_for)`
+      lives only in the payload (migration 015 made it an expression index
+      over `payload -> 'provenance'`, deliberately no columns), so nulling the
+      payload releases the claim: the row drops out of the unique index, a
+      stale ticker could re-admit the firing, and `get_run_for_occurrence`
+      could no longer name the winner. Archiving that row would trade storage
+      for exactly the duplicate-firing the claim exists to make impossible, so
+      a claiming Run stays where the claim can see it. The tier still moves
+      every task and chat Run — the population that has the bytes.
     """
     if run.retention_expires_at is not None:
         return False
     if run.status not in TERMINAL_RUN_STATUSES:
         return False
     if run.finished_at is None:
+        return False
+    if occurrence_key(run.provenance) is not None:
         return False
     return run.finished_at <= cutoff - archive_after
 
@@ -439,12 +441,25 @@ class RunStore(Protocol):
         offset: int = 0,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: RunCursor | None = None,
     ) -> list[Run]: ...
 
     async def non_terminal_run_stats(self) -> tuple[int, datetime | None]: ...
 
     async def get_run(self, run_id: str) -> Run | None: ...
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the canonical Run claiming one scheduled occurrence."""
+        ...
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run: ...
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
 
     async def transition_run(
         self,
@@ -519,7 +534,7 @@ class RunStore(Protocol):
 
     async def repair_attempt_result(self, attempt_id: str, *, result: object) -> Attempt: ...
 
-    async def delete_run(self, run_id: str) -> bool: ...
+    async def delete_run(self, run_id: str, *, force: bool = False) -> bool: ...
 
 
 #: Retention bound for the in-memory store. Not a tuning knob so much as an
@@ -733,6 +748,39 @@ class InMemoryRunStore:
             if node_run.run_id == run_id
         )
 
+    def _purge_doomed(self, scope: RetentionScope, cutoff: datetime) -> list[Run]:
+        """Expired terminal Runs inside ``scope`` that no other Run descends from."""
+        parent_runs, parent_node_runs = self._referenced_by_children()
+        return [
+            run
+            for run in self._runs.values()
+            if run_in_purge_scope(run, scope)
+            and is_purgeable(run, cutoff)
+            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
+        ]
+
+    def _spine_counts(self, selected_ids: set[str]) -> tuple[int, int]:
+        """NodeRuns and Attempts that die with the selected Runs."""
+        node_run_ids = {
+            node_run_id
+            for node_run_id, node_run in self._node_runs.items()
+            if node_run.run_id in selected_ids
+        }
+        attempts = sum(
+            1 for attempt in self._attempts.values() if attempt.node_run_id in node_run_ids
+        )
+        return len(node_run_ids), attempts
+
+    async def _delete_continuations(self, selected_ids: set[str]) -> int:
+        """Delete Graph continuations for the purged Runs; count what went."""
+        if self._continuation_store is None:
+            return 0
+        continuations = 0
+        for run_id in selected_ids:
+            if await self._continuation_store.delete(run_id):
+                continuations += 1
+        return continuations
+
     async def purge_expired_runs(
         self,
         scope: RetentionScope,
@@ -753,11 +801,6 @@ class InMemoryRunStore:
         predicate, because a parameter nobody can forget is the one thing that
         makes the default honest.
 
-        Orphan-safe: a Run some other Run descends from is skipped, however
-        expired. The durable backend enforces that with `ON DELETE RESTRICT`
-        and this one must agree, or the same retention policy would produce a
-        dangling parent pointer here and an integrity error there.
-
         The spine forgets run without an await between them, so the sweep is
         atomic with respect to this event loop: two concurrent sweeps divide
         a backlog, and neither can double-count a Run the other deleted.
@@ -770,44 +813,19 @@ class InMemoryRunStore:
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
-        parent_runs, parent_node_runs = self._referenced_by_children()
-        doomed = [
-            run
-            for run in self._runs.values()
-            if run_in_purge_scope(run, scope)
-            and is_purgeable(run, cutoff)
-            and not self._has_child(run.run_id, parent_runs, parent_node_runs)
-        ]
+        doomed = self._purge_doomed(scope, cutoff)
         selected = doomed[:limit]
         selected_ids = {run.run_id for run in selected}
-        node_runs_of_selected = {
-            node_run_id
-            for node_run_id, node_run in self._node_runs.items()
-            if node_run.run_id in selected_ids
-        }
-        attempts = sum(
-            1 for attempt in self._attempts.values() if attempt.node_run_id in node_runs_of_selected
-        )
+        node_runs, attempts = self._spine_counts(selected_ids)
         for run in selected:
             self._forget_run(run.run_id)
-        continuations = 0
-        if self._continuation_store is not None:
-            for run_id in selected_ids:
-                if await self._continuation_store.delete(run_id):
-                    continuations += 1
+        continuations = await self._delete_continuations(selected_ids)
         return PurgeOutcome(
             scope=scope,
             runs=len(selected),
-            node_runs=len(node_runs_of_selected),
+            node_runs=node_runs,
             attempts=attempts,
             continuations=continuations,
-            # This store owns no Event log — canonical Events live in their own
-            # store — so there is nothing here to count, and zero is the
-            # truthful report rather than a stub.
-            event_references_retained=0,
-            schedule_claims_released=sum(
-                1 for run in selected if occurrence_key(run.provenance) is not None
-            ),
             backlog_remaining=len(doomed) > limit,
         )
 
@@ -909,6 +927,7 @@ class InMemoryRunStore:
         offset: int = 0,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: RunCursor | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first.
@@ -936,6 +955,7 @@ class InMemoryRunStore:
                     status=status,
                     project_id=project_id,
                     workspace_id=workspace_id,
+                    admission_source=admission_source,
                 )
             ),
             key=run_cursor_key,
@@ -947,6 +967,42 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve an occurrence through its claim index, never by scanning Runs."""
+        run_id = self._occurrences.get((schedule_id, scheduled_for))
+        return await self.get_run(run_id) if run_id is not None else None
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        for run in self._runs.values():
+            if run.provenance.get("delegation_key") == delegation_key:
+                return run.model_copy(deep=True)
+        return None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        run = self._require_run(run_id)
+        existing = str(run.provenance.get("a2a_task_id") or "")
+        if existing and existing != task_id:
+            raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+        provenance = dict(run.provenance)
+        provenance["a2a_task_id"] = task_id
+        if target_agent:
+            provenance["target_agent"] = target_agent
+        updated = run.model_copy(update={"provenance": provenance})
+        self._runs[run_id] = updated
+        return updated.model_copy(deep=True)
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Claim the only allowed attempt to cross the transport boundary."""
+        run = self._require_run(run_id)
+        if run.provenance.get("transport_attempted"):
+            return False
+        provenance = dict(run.provenance)
+        provenance["transport_attempted"] = True
+        self._runs[run_id] = run.model_copy(update={"provenance": provenance})
+        return True
 
     async def transition_run(
         self,

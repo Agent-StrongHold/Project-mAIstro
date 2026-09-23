@@ -111,6 +111,10 @@ EXPECTED_TABLES = frozenset(
         # live on the message table (#327).
         "session_turns",
         "sessions",
+        # Admission claims for task submission (037). Durable and replica-shareable
+        # so a retried submit resolves to the original receipt rather than minting
+        # a second Run (#1176).
+        "task_idempotency",
         "tasks",
         "trigger_definitions",
     }

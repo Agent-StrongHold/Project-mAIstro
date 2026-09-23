@@ -121,14 +121,12 @@ _TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_S
 
 
 #: Retention candidate selection — the two scope variants' whole difference is
-#: one Workspace predicate line (#1175). The schedule id is projected so the
-#: outcome can count the occurrence claims that die with the selected rows.
+#: one Workspace predicate line (#1175).
 #: One more row than the batch is requested (the LIMIT parameter is sent as
 #: ``limit + 1``) so the outcome can say whether the scope drained or the
 #: batch ran out; the surplus row's lock lives only as long as the
 #: transaction.
-_PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id,
-       (payload -> 'provenance' ->> 'schedule_id') AS schedule_id
+_PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
@@ -145,8 +143,7 @@ _PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id,
     LIMIT $3
     FOR UPDATE SKIP LOCKED"""
 
-_PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id,
-       (payload -> 'provenance' ->> 'schedule_id') AS schedule_id
+_PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id
     FROM canonical_runs r
     WHERE r.retention_expires_at IS NOT NULL
       AND r.retention_expires_at <= $1
@@ -346,22 +343,12 @@ class PgRunStore:
                     run_ids,
                 )
                 continuations = len(deleted_continuations)
-            events_retained = 0
-            if await conn.fetchval("SELECT to_regclass('public.canonical_event_log') IS NOT NULL"):
-                events_retained = int(
-                    await conn.fetchval(
-                        "SELECT COUNT(*) FROM canonical_event_log WHERE run_id = ANY($1::text[])",
-                        run_ids,
-                    )
-                )
         return PurgeOutcome(
             scope=scope,
             runs=len(deleted_runs),
             node_runs=len(deleted_node_runs),
             attempts=len(deleted_attempts),
             continuations=continuations,
-            event_references_retained=events_retained,
-            schedule_claims_released=sum(1 for row in selected if row["schedule_id"] is not None),
             backlog_remaining=backlog_remaining,
         )
 
@@ -408,6 +395,7 @@ class PgRunStore:
                       AND finished_at IS NOT NULL
                       AND finished_at <= $1
                       AND status = ANY($2::text[])
+                      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
                     ORDER BY finished_at
                     LIMIT $3
                     FOR UPDATE SKIP LOCKED""",
@@ -564,6 +552,55 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the unique occurrence claim through its expression index."""
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
+                 AND (payload -> 'provenance' ->> 'scheduled_for') = $2
+               LIMIT 1""",
+            schedule_id,
+            scheduled_for,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        async with self._pool.acquire() as conn:
+            payload = await conn.fetchval(
+                """SELECT payload FROM canonical_runs
+                   WHERE payload->'provenance'->>'delegation_key' = $1""",
+                delegation_key,
+            )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            existing = str(run.provenance.get("a2a_task_id") or "")
+            if existing and existing != task_id:
+                raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+            provenance = dict(run.provenance)
+            provenance["a2a_task_id"] = task_id
+            if target_agent:
+                provenance["target_agent"] = target_agent
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        return updated
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Lock the child and record an irreversible transport boundary claim."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            if run.provenance.get("transport_attempted"):
+                return False
+            provenance = dict(run.provenance)
+            provenance["transport_attempted"] = True
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        return True
+
     async def list_by_status(
         self,
         status: RunStatus,
@@ -572,6 +609,7 @@ class PgRunStore:
         offset: int = 0,
         project_id: str | None = None,
         workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
@@ -598,6 +636,9 @@ class PgRunStore:
         if workspace_id is not None:
             sql += f" AND workspace_id = ${len(params) + 1}"
             params.append(workspace_id)
+        if admission_source is not None:
+            sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
+            params.append(admission_source)
         if after is not None:
             cursor_param = len(params) + 1
             sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"

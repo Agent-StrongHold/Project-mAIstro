@@ -73,7 +73,7 @@ function SortableHeader({ label, field, sortKey, sortDir, onSort }: {
 }) {
   const arrow = sortKey === field ? (sortDir === "asc" ? " \u25B2" : " \u25BC") : "";
   return (
-    <th style={{ textAlign: "left", padding: "8px 10px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", borderBottom: "1.3px solid var(--rule)" }} onClick={() => onSort(field)}>
+    <th style={{ textAlign: "left", padding: "8px 10px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", borderBottom: "1.3px solid var(--rule)" }} onClick={() => onSort(field)}>
       {label}{arrow}
     </th>
   );
@@ -153,18 +153,18 @@ export default function Quotas() {
                         <span style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 700 }}>{p.provider}</span>
                         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                           <span style={{ width: 6, height: 6, borderRadius: "50%", background: p.status === "active" ? "#5a9a4a" : "#c4452a" }} />
-                          <span style={{ fontFamily: "var(--mono)", fontSize: 8, padding: "2px 6px", borderRadius: 3, background: "rgba(91,143,179,0.12)", color: "#3a6a9a" }}>{p.cycle_key}</span>
+                          <span style={{ fontFamily: "var(--mono)", fontSize: 12, padding: "2px 6px", borderRadius: 3, background: "rgba(91,143,179,0.12)", color: "#3a6a9a" }}>{p.cycle_key}</span>
                         </div>
                       </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2, fontFamily: "var(--mono)", fontSize: 9 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2, fontFamily: "var(--mono)", fontSize: 12 }}>
                         <span style={{ fontWeight: 600, color: "var(--ink)" }}>{fmt(p.used_tokens)} {p.unit}</span>
                         <span style={{ color: tracked ? usageColor(pct) : "var(--pencil)" }}>{tracked ? `${fmt(p.limit!)} limit` : "unlimited"}</span>
                       </div>
                       <div style={{ height: 6, borderRadius: 3, background: "var(--rule)", overflow: "hidden" }}>
                         <div style={{ height: "100%", borderRadius: 3, background: color, width: `${Math.min(pct || (tracked ? 0 : 5), 100)}%`, transition: "width 0.3s" }} />
                       </div>
-                      {tracked && <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: usageColor(pct), marginTop: 2 }}>{pct.toFixed(1)}% used · {fmt(p.remaining_tokens)} remaining</div>}
-                      <div style={{ fontFamily: "var(--mono)", fontSize: 8, color: "var(--pencil)", marginTop: 4 }}>
+                      {tracked && <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: usageColor(pct), marginTop: 2 }}>{pct.toFixed(1)}% used · {fmt(p.remaining_tokens)} remaining</div>}
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                         {p.billing_cycle} · {p.request_count} requests
                       </div>
                     </Card>
@@ -183,11 +183,11 @@ export default function Quotas() {
                     <option value="all">All providers</option>
                     {providerNames.map((p) => <option key={p} value={p}>{p}</option>)}
                   </select>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)" }}>{sorted.length} of {models.length}</span>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)" }}>{sorted.length} of {models.length}</span>
                 </div>
                 <Card>
                   <div style={{ overflow: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--mono)", fontSize: 10 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--mono)", fontSize: 12 }}>
                       <thead>
                         <tr>
                           <SortableHeader label="Model" field="model" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -195,8 +195,8 @@ export default function Quotas() {
                           <SortableHeader label="Tier" field="tier" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                           <SortableHeader label="Quality" field="quality" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                           <SortableHeader label="Speed" field="speed" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                          <th style={{ textAlign: "left", padding: "8px 10px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", borderBottom: "1.3px solid var(--rule)" }}>Modality</th>
-                          <th style={{ textAlign: "left", padding: "8px 10px", color: "var(--pencil)", fontWeight: 600, fontSize: 9, textTransform: "uppercase", borderBottom: "1.3px solid var(--rule)" }}>Strengths</th>
+                          <th style={{ textAlign: "left", padding: "8px 10px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", borderBottom: "1.3px solid var(--rule)" }}>Modality</th>
+                          <th style={{ textAlign: "left", padding: "8px 10px", color: "var(--pencil)", fontWeight: 600, fontSize: 12, textTransform: "uppercase", borderBottom: "1.3px solid var(--rule)" }}>Strengths</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -205,18 +205,18 @@ export default function Quotas() {
                             <td style={{ padding: "6px 10px", fontWeight: 600, whiteSpace: "nowrap" }}>{m.model}</td>
                             <td style={{ padding: "6px 10px", color: "var(--pencil)" }}>{m.provider}</td>
                             <td style={{ padding: "6px 10px" }}>
-                              <span style={{ fontFamily: "var(--mono)", fontSize: 8, padding: "2px 6px", borderRadius: 3, border: `1px solid ${tierColor[m.tier] || "var(--rule)"}`, color: tierColor[m.tier] || "var(--pencil)" }}>{m.tier}</span>
+                              <span style={{ fontFamily: "var(--mono)", fontSize: 12, padding: "2px 6px", borderRadius: 3, border: `1px solid ${tierColor[m.tier] || "var(--rule)"}`, color: tierColor[m.tier] || "var(--pencil)" }}>{m.tier}</span>
                             </td>
                             <td style={{ padding: "6px 10px" }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                                 <div style={{ width: 50, height: 5, borderRadius: 3, background: "var(--rule)", overflow: "hidden" }}>
                                   <div style={{ height: "100%", borderRadius: 3, background: "var(--accent)", width: `${m.quality * 100}%` }} />
                                 </div>
-                                <span style={{ fontSize: 9 }}>{(m.quality * 100).toFixed(0)}%</span>
+                                <span style={{ fontSize: 12 }}>{(m.quality * 100).toFixed(0)}%</span>
                               </div>
                             </td>
                             <td style={{ padding: "6px 10px", color: "var(--pencil)" }}>{m.speed > 0 ? `${m.speed} t/s` : "-"}</td>
-                            <td style={{ padding: "6px 10px", color: "var(--pencil)", fontSize: 9 }}>{m.modality || "-"}</td>
+                            <td style={{ padding: "6px 10px", color: "var(--pencil)", fontSize: 12 }}>{m.modality || "-"}</td>
                             <td style={{ padding: "6px 10px" }}>
                               <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
                                 {(m.strengths || []).slice(0, 4).map((s) => (
@@ -244,24 +244,24 @@ export default function Quotas() {
                   <StatCard label="Success Rate" value={`${(outcomes.rate * 100).toFixed(1)}%`} />
                 </div>
                 <Card>
-                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, fontWeight: 600, marginBottom: 10, color: "var(--pencil)", textTransform: "uppercase" }}>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 12, fontWeight: 600, marginBottom: 10, color: "var(--pencil)", textTransform: "uppercase" }}>
                     Per-Model Breakdown (last {outcomes.days} days)
                   </div>
                   {modelEntries.length === 0 ? (
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--pencil)", textAlign: "center", padding: 20 }}>No recent activity</div>
+                    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center", padding: 20 }}>No recent activity</div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {modelEntries.map(([model, info]) => {
                         const pct = (info.total / maxModelTasks) * 100;
                         return (
                           <div key={model} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                            <span style={{ fontFamily: "var(--mono)", fontSize: 10, width: 220, textAlign: "right", color: "var(--ink)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model}</span>
+                            <span style={{ fontFamily: "var(--mono)", fontSize: 12, width: 220, textAlign: "right", color: "var(--ink)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model}</span>
                             <div style={{ flex: 1, height: 16, borderRadius: 3, background: "var(--rule)", overflow: "hidden" }}>
-                              <div style={{ height: "100%", borderRadius: 3, background: info.rate >= 1.0 ? "var(--accent)" : "#c4452a", width: `${pct}%`, transition: "width 0.3s", display: "flex", alignItems: "center", paddingLeft: 6, fontFamily: "var(--mono)", fontSize: 8, color: "var(--paper)", fontWeight: 600 }}>
+                              <div style={{ height: "100%", borderRadius: 3, background: info.rate >= 1.0 ? "var(--accent)" : "#c4452a", width: `${pct}%`, transition: "width 0.3s", display: "flex", alignItems: "center", paddingLeft: 6, fontFamily: "var(--mono)", fontSize: 12, color: "var(--paper)", fontWeight: 600 }}>
                                 {pct > 12 ? `${info.succeeded}/${info.total}` : ""}
                               </div>
                             </div>
-                            <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", width: 60 }}>{(info.rate * 100).toFixed(0)}% ok</span>
+                            <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", width: 60 }}>{(info.rate * 100).toFixed(0)}% ok</span>
                           </div>
                         );
                       })}

@@ -92,6 +92,13 @@ TIMEOUT_FAILURE = "timeout"
 #: for the log, not for anyone holding the run_id.
 ADMISSION_INCOMPLETE = "admission_incomplete"
 
+#: What a compensated Run records when admission reached RUNNING durably but
+#: nothing ever executed under it (#338). Distinct from `ADMISSION_INCOMPLETE`:
+#: admission itself finished here -- what never started is the physical
+#: Attempt, because the process died between `_admit_chat_turn` returning and
+#: `ChatAttemptExecutor.execute()` persisting the turn's first NodeRun.
+EXECUTION_NEVER_STARTED = "execution_never_started"
+
 
 def failure_category(exc: BaseException) -> str:
     """The failure a chat Run may record, with no provider detail in it.
@@ -237,8 +244,10 @@ class ChatRunAdmitter:
         contradicting what happened, which is worse than one that says the
         agent was not yet chosen.
 
-        Binding the *actually dispatched* agent onto the Run needs the Conduit
-        to report its selection, which is #142's convergence.
+        The Run deliberately keeps this admission-time fact as `deferred`. The
+        Conduit reports the agent it actually dispatches, and #223 records that
+        execution-time identity on the Attempt rather than rewriting this
+        provenance after admission (ADR-082526-7f02).
         """
         description = last_user_message(messages) or DEFAULT_TURN_NAME
         hint = intent_hint.strip()
@@ -335,6 +344,7 @@ __all__ = [
     "CHAT_SOURCE",
     "DEFAULT_TURN_NAME",
     "DEFERRED_AGENT_SELECTION",
+    "EXECUTION_NEVER_STARTED",
     "MAX_RECORDED_ANSWER_CHARS",
     "MAX_RETAINED_CHAT_RUNS",
     "REQUEST_ID_KEY",
