@@ -477,9 +477,10 @@ class TestATerminalWriteFailureIsNotSwallowed:
 
         The turn answers; the Attempt completes and is accepted; then the store
         fails both Run writes that would have said so. The caller gets the
-        store error — never a success that did not happen — and what remains on
-        disk is the canonical evidence itself: a COMPLETED, accepted Attempt
-        under a RUNNING Run. The canonical reconciliation authority (the same
+        answer the model already produced, once (#1108) — the store error is
+        not a reason to discard it or to ask again — and what remains on disk
+        is the canonical evidence itself: a COMPLETED, accepted Attempt under a
+        RUNNING Run that claims no outcome. The canonical reconciliation authority (the same
         `AttemptLifecycleReconciler` the recovery sweep drives) re-derives the
         Run from those facts alone, from a freshly constructed instance —
         a restarted process reading nothing but durable state. No chat-private
@@ -489,13 +490,13 @@ class TestATerminalWriteFailureIsNotSwallowed:
         container.run_store = _MultiVetoStore(  # type: ignore[assignment]
             container.run_store, (RunStatus.COMPLETED, RunStatus.FAILED)
         )
-        container.conduit = _Conduit(content="the answer")
+        container.conduit = conduit = _Conduit(content="the answer")
 
-        with pytest.raises(RuntimeError, match="store hiccup"):
-            await container.route_request(MESSAGES)
+        result = await container.route_request(MESSAGES)
 
-        runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
-        run_id = runs[0].run_id
+        assert result["choices"][0]["message"]["content"] == "the answer"
+        assert conduit.calls == 1
+        run_id = result["run_id"]
         node_run, attempts = await _spine(container, run_id)
 
         # Physical work is durable and authoritative: the Attempt completed with
