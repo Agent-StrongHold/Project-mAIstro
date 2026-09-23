@@ -239,6 +239,19 @@ or placeholder-only section.
 
 ### Added
 
+- **Every durable table declares its retention, and CI checks it against the
+  schema (#325).** `quality/durable-table-retention.json` lists all 63 tables
+  in the schema built by Alembic and `.sql` migrations (later drops applied),
+  runtime `CREATE TABLE` or ORM `__tablename__`, with backend, owner, data
+  class, retention and deletion path. Six tables
+  whose DDL lives outside this repository are listed separately.
+  `scripts/check-durable-table-inventory.py` fails CI when a table has no
+  entry, an entry names a table nothing creates, a deletion path does not
+  import, or `security_violations` or `usage_events` is dropped. A table with
+  no production-driven purge is recorded as `undecided` against #325. This
+  includes `security_violations`, `usage_events`, `task_idempotency`,
+  `security_rate_limits` and PostgreSQL `sessions`. Nothing is written down
+  as retained forever unless someone decided it.
 - **Stable Workspace Agent identity and per-user default Workspace
   ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
   ADR-092326-7ed7).** Hive's `services/workspace_agent.py`
