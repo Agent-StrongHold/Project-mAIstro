@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +0-2
-  packages/maistro-core/tests: +0
+  packages/hive-conductor/backend/tests: 2
+  packages/maistro-core/tests: 0
 ---
 # auto-53 — #53 convergence merge repair (develop ba2f1f07 into auto-53)
 
@@ -82,3 +82,35 @@ Net test count is unchanged at the file level for the adapted suites; no
 assertions were weakened — the two retired mock-seam tests are replaced by
 real-path equivalents, and one expectation moved from "model answers a
 non-member" to "route refuses a non-member" to keep the authorization boundary.
+The ledger delta is +2 collected nodes for `packages/hive-conductor/backend/tests`
+from the additions elsewhere in the merge (chat seam and interview restoration);
+verified against `pytest --collect-only`.
+
+## Follow-up repair (this branch, L53 validation)
+
+The develop merge had also left the registered-DAG route and develop's #766
+transport-parity suite semantically diverged; this repair reconciles them:
+
+- `routes/dags.py::run_dag` accepts the Workspace/Project selection from the
+  JSON body (`DagRunRequest`, develop's #766 contract) or the query string
+  (HEAD's contract), authorizes any explicit selection through the canonical
+  Workspace authority (foreign 403 before admission), and reports a
+  non-completed settled Run with the same sanitized top-level `error` the
+  socket's terminal frame carries.
+- `_registered_run_result` derives the terminal error exactly like
+  `canonical_dag_runner._project` (Run error, else first unsuccessful node),
+  so the transports cannot disagree about one failure.
+- `_route_node_resolver` resolves legacy nodes from the instantiated Graph's
+  node metadata: `GraphTemplate.instantiate` assigns fresh node identities,
+  so the editable-id keying constructed `LegacyConductorNode` bare (missing
+  required kwargs) and every legacy node failed before executing. The model
+  boundary is read through the `graph_runner` facade at request time, the
+  same seam `execute_dag` hands the canonical runner.
+- `canonical_dag_runner._scope`'s standalone arm (no Container) resolves the
+  Root Project through the canonical Workspace authority instead of pinning
+  every Workspace onto the single process-wide compatibility Project, which
+  made the second Workspace's admission fail scope validation.
+- `test_dags_routes._canonical_container` models the real Container contract
+  (`capability_effects`, `provider_registry`, `llm_router`), matching
+  `test_dag_agents.py`'s stub and `build_node_resolver`'s #1079 wiring.
+No test count moved in this follow-up (ledger stays at +2).

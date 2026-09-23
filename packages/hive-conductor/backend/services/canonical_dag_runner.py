@@ -343,9 +343,31 @@ async def _scope(
         # authorized scope (fail closed below).
         container = _container()
         if container is None:
+            resolved_workspace = workspace_id or str(dag_data.get("workspace_id") or _COMPAT_SCOPE)
+            if project_id:
+                return resolved_workspace, project_id, None
+            # Standalone (no Container): prefer the Root Project the canonical
+            # Workspace authority already created for this Workspace. The
+            # compatibility scope below is a single process-wide row; pinning
+            # every Workspace onto it made the second concurrent Workspace's
+            # admission fail scope validation because the shared Project
+            # belonged to whichever Workspace ran first.
+            if resolved_workspace != _COMPAT_SCOPE:
+                try:
+                    from services import workspace_authority
+
+                    store = await workspace_authority.canonical_workspace_store()
+                    root = await store.project_store.root_for_workspace(resolved_workspace)
+                    return resolved_workspace, root.project_id, None
+                except Exception:
+                    logger.warning(
+                        "standalone_scope_root_project_unavailable workspace_id=%s",
+                        resolved_workspace,
+                        exc_info=True,
+                    )
             return (
-                workspace_id or str(dag_data.get("workspace_id") or _COMPAT_SCOPE),
-                project_id or str(dag_data.get("project_id") or _COMPAT_SCOPE),
+                resolved_workspace,
+                str(dag_data.get("project_id") or _COMPAT_SCOPE),
                 None,
             )
         resolved_workspace = (

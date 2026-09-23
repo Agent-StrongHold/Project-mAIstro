@@ -149,13 +149,17 @@ def test_activate_dag_missing_404(admin_client: Any) -> None:
 
 
 def _canonical_container(monkeypatch: pytest.MonkeyPatch, workspace_id: str) -> Any:
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
     from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
     from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
     from maistro.runs import InMemoryRunStore
 
     projects = InMemoryProjectScopeStore()
     asyncio.run(projects.create_root(workspace_id))
     run_store = InMemoryRunStore(project_store=projects)
+    providers = InMemoryProviderRegistry()
     container = SimpleNamespace(
         config=SimpleNamespace(workspace_id=workspace_id),
         project_scope_store=projects,
@@ -163,6 +167,14 @@ def _canonical_container(monkeypatch: pytest.MonkeyPatch, workspace_id: str) -> 
         graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
         a2a_delegator=None,
         guest_peers=None,
+        # The real Container dataclass always defines these collaborators
+        # (#1079 governed-model egress) and the Hive bridge forwards them
+        # into build_node_resolver as plain attribute reads. The stub models
+        # that contract with the same in-memory authorities the other
+        # container fakes use, rather than making production DI optional.
+        capability_effects=new_in_memory_effect_context(),
+        provider_registry=providers,
+        llm_router=CostAwareRouter(providers),
     )
     import services.engine as engine
 
