@@ -421,6 +421,122 @@ class TestInterruptedChildAdmission:
         assert len(await store.list_node_runs(child.run_id)) == 1
 
 
+class TestTheReceiptIsAttemptOwnedIdentity:
+    """ADR-082526-7f02 applied to the delegation child: the Attempt is where a
+    reader learns which transport carried the work.
+
+    The verification defect this pins: the reservation-time yielded Attempt
+    used to record ``task_id: ""` -- a placeholder for a fact that did not
+    exist yet -- and stayed that way forever, while the real receipt lived only
+    in the Run's post-admission provenance. An absent fact stays absent
+    (AC-3); the receipt is recorded on the Attempt that settles the work
+    (AC-1's pattern), beside the Run-provenance receipt #147's acceptance
+    names.
+    """
+
+    async def test_the_reservation_attempt_records_no_receipt_placeholder(self) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused", result.error_message
+        child_id = result.metadata["run_id"]
+        child_node_runs = await store.list_node_runs(child_id)
+        attempts = await store.list_attempts(child_node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded"]
+        # Nothing has been accepted yet, so the evidence names the mode and no
+        # receipt -- not an empty-string receipt that can never become true.
+        assert attempts[0].result == {"mode": "in_process"}
+
+    async def test_the_settling_attempt_names_the_transport_receipt(self) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        first = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+        child_run_id = first.metadata["run_id"]
+
+        await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id).model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                "task_id": first.metadata["task_id"],
+                                "result": "ok",
+                                "_pause": {"run_id": child_run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        child = await store.get_run(child_run_id)
+        assert child is not None
+        child_node_runs = await store.list_node_runs(child_run_id)
+        attempts = await store.list_attempts(child_node_runs[0].node_run_id)
+        settled = [attempt for attempt in attempts if attempt.status.value == "completed"]
+        assert len(settled) == 1
+        # The Attempt answers "which transport carried this", spelling the
+        # receipt under the same key the Run's provenance and the answer use.
+        assert settled[0].result is not None
+        assert settled[0].result["task_id"] == child.provenance["a2a_task_id"]
+
+    async def test_an_answer_without_a_receipt_records_no_placeholder(self) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        first = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+        child_run_id = first.metadata["run_id"]
+
+        await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id).model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                # An older caller that names no receipt.
+                                "result": "ok",
+                                "_pause": {"run_id": child_run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        child_node_runs = await store.list_node_runs(child_run_id)
+        attempts = await store.list_attempts(child_node_runs[0].node_run_id)
+        settled = [attempt for attempt in attempts if attempt.status.value == "completed"]
+        assert len(settled) == 1
+        assert settled[0].result is not None
+        assert "task_id" not in settled[0].result
+
+
 class TestAnUnknownParentIsRefused:
     async def test_delegating_under_a_run_the_store_does_not_know(self) -> None:
         """A delegation cannot be filed as a child of a Run that does not
@@ -679,7 +795,9 @@ class TestCrossInstanceDelegationFilesAChildRun:
         child = await store.get_run(result.metadata["child_run_id"])
         assert child is not None
         assert child.parent_run_id == parent.run_id
-        assert child.provenance["a2a_task_id"] == ""
+        # No receipt has been reconciled, so the child names no receipt at all --
+        # an absent fact stays absent (ADR-082526-7f02 AC-3), never a placeholder.
+        assert "a2a_task_id" not in child.provenance
 
     async def test_durable_parent_resumes_from_the_answer_and_settles_child(self) -> None:
         """The production checkpoint can accept the remote answer.

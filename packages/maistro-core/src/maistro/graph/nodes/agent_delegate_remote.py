@@ -273,7 +273,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         """Reserve once; a concurrent replica adopts the unique-key winner."""
         try:
             return await self._create_child_run(
-                inputs, ctx, parent=parent, task_id="", mode=mode, target=target
+                inputs, ctx, parent=parent, mode=mode, target=target
             )
         except Exception:
             existing = await self._existing_child(self._delegation_key(inputs, ctx))
@@ -442,10 +442,16 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         # The peer's response is a completed transport Attempt. The logical
         # projection distinguishes a successful result from a remote
         # failure while preserving the four-value DelegateRemoteOut contract.
+        # The receipt rides on this Attempt's evidence when the answer carries
+        # one (ADR-082526-7f02: dispatch identity belongs to the Attempt); an
+        # answer without a receipt records its absence instead of a placeholder.
+        evidence: dict[str, Any] = {"status": out.status, "result": out.result}
+        if out.task_id:
+            evidence["task_id"] = out.task_id
         attempt = await self._run_store.transition_attempt(
             attempt.attempt_id,
             AttemptStatus.COMPLETED,
-            result={"status": out.status, "task_id": out.task_id, "result": out.result},
+            result=evidence,
             error=out.error,
             fencing_token=token,
         )
@@ -820,7 +826,6 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         ctx: NodeContext,
         *,
         parent: Run | None,
-        task_id: str,
         mode: str,
         target: str,
     ) -> str:
@@ -831,6 +836,15 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         id is attached afterwards as a receipt. `ctx` carries the parent
         `run_id` and `node_run_id`, so recovery can find this exact child
         without inventing a second delegation lifecycle.
+
+        The reservation carries no receipt key at all rather than an empty one:
+        at this moment no transport has accepted anything, and a placeholder
+        `a2a_task_id: ""` would be exactly the lie-shaped record
+        ADR-082526-7f02's AC-3 refuses ("an absent fact stays absent"). The
+        receipt lands once, after acceptance, via `attach_delegation_receipt` --
+        on the Run's provenance because #147's acceptance names it there, and on
+        the settling Attempt's evidence, which is where the same ADR puts
+        dispatch identity.
 
         The child is filed in the parent's Workspace and Project unless the
         delegation explicitly names another, which is what makes
@@ -861,9 +875,11 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             actor_principal_id=parent.actor_principal_id,
             provenance={
                 "admission_source": "a2a_delegation",
-                # The A2A task id stays a receipt of the transport rather than
-                # the work's identity, the way TaskResponse does for the queue.
-                "a2a_task_id": task_id,
+                # The A2A task id is *not* written here: no transport has run
+                # yet, so there is no receipt to record. It is attached once,
+                # after acceptance, by `_attach_receipt` -- a receipt of the
+                # transport rather than the work's identity, the way
+                # TaskResponse does for the queue.
                 "delegation_key": self._delegation_key(inputs, ctx),
                 "delegation_mode": mode,
                 "delegating_agent": inputs.from_agent,
@@ -883,19 +899,20 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             # one on the next visit through this node.
             initial_status=RunStatus.CREATED,
         )
-        await self._write_child_evidence(child.run_id, graph.nodes, task_id=task_id, mode=mode)
+        await self._write_child_evidence(child.run_id, graph.nodes, mode=mode)
         return child.run_id
 
-    async def _write_child_evidence(
-        self, run_id: str, nodes: Sequence[Node], *, task_id: str, mode: str
-    ) -> None:
+    async def _write_child_evidence(self, run_id: str, nodes: Sequence[Node], *, mode: str) -> None:
         """Give the child its NodeRuns and their yielded transport Attempts.
 
         The external transport is already the physical worker. Persisting its
         admission as a yielded Attempt is what keeps the universal
         Run -> NodeRun -> Attempt hierarchy intact without inventing a second
         scheduler for the child; until this returns, the child is a reserved
-        projection, not yet evidence-bearing work.
+        projection, not yet evidence-bearing work. The yielded evidence names
+        the mode and nothing else -- the transport receipt does not exist yet,
+        and when it does it is recorded where ADR-082526-7f02 puts dispatch
+        identity: on the Attempt that settles the work.
         """
         assert self._run_store is not None
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
@@ -905,9 +922,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             child_node_run = await self._run_store.create_node_run(
                 run_id, node_id=child_node.node_id
             )
-            await self._yield_transport_attempt(
-                child_node_run.node_run_id, lifecycle, task_id=task_id, mode=mode
-            )
+            await self._yield_transport_attempt(child_node_run.node_run_id, lifecycle, mode=mode)
 
     async def _ensure_child_evidence(self, run_id: str) -> None:
         """Complete an interrupted reservation, idempotently.
@@ -931,7 +946,6 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         child = await self._run_store.get_run(run_id)
         if child is None or child.status in TERMINAL_RUN_STATUSES:
             return
-        task_id = str(child.provenance.get("a2a_task_id") or "")
         mode = str(child.provenance.get("delegation_mode") or "in_process")
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
@@ -940,16 +954,12 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         for node_run in await self._run_store.list_node_runs(run_id):
             observed.add(node_run.node_id)
             if not await self._has_terminal_attempt(node_run.node_run_id):
-                await self._yield_transport_attempt(
-                    node_run.node_run_id, lifecycle, task_id=task_id, mode=mode
-                )
+                await self._yield_transport_attempt(node_run.node_run_id, lifecycle, mode=mode)
         for child_node in child.graph.materialize().nodes:
             if child_node.node_id in observed:
                 continue
             node_run = await self._run_store.create_node_run(run_id, node_id=child_node.node_id)
-            await self._yield_transport_attempt(
-                node_run.node_run_id, lifecycle, task_id=task_id, mode=mode
-            )
+            await self._yield_transport_attempt(node_run.node_run_id, lifecycle, mode=mode)
 
     async def _has_terminal_attempt(self, node_run_id: str) -> bool:
         assert self._run_store is not None
@@ -961,10 +971,18 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         node_run_id: str,
         lifecycle: AttemptLifecycleReconciler,
         *,
-        task_id: str,
         mode: str,
     ) -> None:
-        """Record the transport's one yielded physical Attempt under a NodeRun."""
+        """Record the transport's one yielded physical Attempt under a NodeRun.
+
+        The evidence names the delegation mode and nothing else. At reservation
+        time no transport has accepted anything, so there is no receipt to
+        record -- and a placeholder `task_id: ""` is exactly the lie-shaped
+        record ADR-082526-7f02's AC-3 refuses ("an absent fact stays absent").
+        When the receipt arrives it is recorded on the Run's provenance and on
+        the settling Attempt's evidence, where the same ADR puts dispatch
+        identity; yielded Attempts are terminal evidence and are never amended.
+        """
         assert self._run_store is not None
         await lifecycle.prepare_execution(node_run_id)
         attempt = await self._run_store.create_attempt(
@@ -979,7 +997,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         attempt = await self._run_store.transition_attempt(
             attempt.attempt_id,
             AttemptStatus.YIELDED,
-            result={"task_id": task_id, "mode": mode},
+            result={"mode": mode},
             fencing_token=token,
         )
         await lifecycle.reconcile(attempt)
