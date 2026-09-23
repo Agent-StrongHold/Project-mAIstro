@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
-    HitlAuthenticatedSession,
     HitlAuthorization,
     HitlAuthorizationRequired,
     HitlDelegationEvidence,
@@ -25,11 +24,13 @@ from maistro.graph.durable_runs import (
 from maistro.graph.durable_runs.hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
+    HitlEvidenceConsumer,
+    HitlEvidenceValidator,
     HitlSettlementError,
-    _authenticated_session_from_verified_boundary,
     earliest_hitl_deadline,
     expire_hitl_pauses,
     hitl_deadline,
+    require_hitl_authorization,
     settlement_time,
 )
 from maistro.graph.durable_runs.stores import (
@@ -58,16 +59,19 @@ async def _allow_test_membership(_principal: str, _workspace_id: str) -> bool:
 
 
 def _test_authorization() -> HitlAuthorization:
-    return HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary("test-hitl-operator", _allow_test_membership),
-        {
-            "test-workspace",
-            "ws-hitl-reconcile",
-            "ws-hitl-settlement",
-            "ws-1097",
-            "owned-workspace",
-            "foreign-workspace",
-        },
+    return HitlAuthorization(
+        effective_principal="test-hitl-operator",
+        workspace_ids=frozenset(
+            {
+                "test-workspace",
+                "ws-hitl-reconcile",
+                "ws-hitl-settlement",
+                "ws-1097",
+                "owned-workspace",
+                "foreign-workspace",
+            }
+        ),
+        membership_check=_allow_test_membership,
     )
 
 
@@ -557,9 +561,10 @@ async def test_two_workspace_late_race_cannot_settle_foreign_pause() -> None:
     store = InMemoryDurableRunStore()
     await store.create(_paused_record("owned-race", workspace_id="owned-workspace"))
     await store.create(_paused_record("foreign-race", workspace_id="foreign-workspace"))
-    authorization = HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary("member-user", _allow_test_membership),
-        ["owned-workspace"],
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
     )
 
     results = await asyncio.gather(
@@ -645,9 +650,10 @@ async def test_canonical_mutations_refuse_a_foreign_workspace_authorization() ->
     Run. Removing the `permits` predicate there must fail this test.
     """
     store, _run_store, member, foreign = await _canonical_two_workspace_fixture()
-    authorization = HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary("member-user", _allow_test_membership),
-        ["ws-1058-member"],
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"ws-1058-member"}),
+        membership_check=_allow_test_membership,
     )
 
     mutations = [
@@ -690,9 +696,10 @@ async def test_inmemory_mutations_refuse_a_foreign_workspace_authorization() -> 
     """
     store = InMemoryDurableRunStore()
     await store.create(_paused_record("foreign-direct", workspace_id="foreign-workspace"))
-    authorization = HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary("member-user", _allow_test_membership),
-        ["owned-workspace"],
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
     )
 
     mutations = [
@@ -751,9 +758,10 @@ async def test_sqlite_rejects_revoked_membership_inside_settlement(tmp_path: Pat
         checks.append((principal, workspace_id))
         return False
 
-    authorization = HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary("member-user", membership),
-        ["test-workspace"],
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"test-workspace"}),
+        membership_check=membership,
     )
     with pytest.raises(KeyError, match="outside the authorized Workspace"):
         await store.cancel_hitl(
@@ -785,9 +793,10 @@ async def test_sqlite_holds_settlement_transaction_while_authorizing(tmp_path: P
         competing_writer_was_blocked = True
         return True
 
-    authorization = HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary("member-user", membership),
-        ["test-workspace"],
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"test-workspace"}),
+        membership_check=membership,
     )
     settled = await store.cancel_hitl(
         "sqlite-authorization-transaction",
@@ -811,13 +820,11 @@ async def test_settlement_waits_for_membership_revocation_then_refuses() -> None
     async def membership(_principal: str, _workspace_id: str) -> bool:
         return not revoked
 
-    authorization = HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary(
-            "member-user",
-            membership,
-            membership_mutation_lock=membership_lock,
-        ),
-        ["test-workspace"],
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"test-workspace"}),
+        membership_check=membership,
+        membership_mutation_lock=membership_lock,
     )
     settlement = asyncio.create_task(
         store.cancel_hitl(
@@ -1211,9 +1218,10 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
             authorization=_test_authorization(),
         )
 
-    authorization = HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary("member-user", _allow_test_membership),
-        ["owned-workspace"],
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
     )
     expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
 
@@ -1226,9 +1234,10 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
     ("factory", "expected"),
     [
         (
-            lambda: HitlAuthorization.for_verified_session(
-                _authenticated_session_from_verified_boundary("", _allow_test_membership),
-                frozenset(),
+            lambda: HitlAuthorization(
+                effective_principal=" ",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
             ),
             "effective principal",
         ),
@@ -1239,35 +1248,460 @@ def test_scoped_hitl_expiry_rejects_missing_principal(factory, expected):
         factory()
 
 
-def test_authenticated_hitl_requires_typed_session_evidence() -> None:
-    assert not hasattr(HitlAuthenticatedSession, "from_authenticated_boundary")
-    with pytest.raises(TypeError):
-        HitlAuthorization.for_verified_session(  # type: ignore[arg-type]
-            "service",
-            ["owned-workspace"],
-        )
-    with pytest.raises(TypeError, match="authenticated boundary"):
-        HitlAuthenticatedSession("service", _allow_test_membership)
-    with pytest.raises(TypeError, match="evidence factory"):
-        HitlAuthorization("service", frozenset({"owned-workspace"}), _allow_test_membership)
+@pytest.mark.parametrize(
+    ("factory", "expected"),
+    [
+        # A blank member in the candidate page cannot stand in for scope.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="member-user",
+                workspace_ids=frozenset({"owned-workspace", " "}),
+                membership_check=_allow_test_membership,
+            ),
+            "blank Workspace id",
+        ),
+        (
+            lambda: HitlAuthorization(
+                effective_principal="member-user",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+                action=" ",
+            ),
+            "requires an action",
+        ),
+        # Evidence callbacks without evidence are an authority claim with no
+        # authority behind it.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="member-user",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+                evidence_consumer=_consume_nothing,
+            ),
+            "callbacks require delegation evidence",
+        ),
+        # Delegation evidence must name the principal it authorizes.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="other-service",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+                delegation_evidence=HitlDelegationEvidence(
+                    issuer="did:key:issuer",
+                    subject="service",
+                    workspace_ids=frozenset({"owned-workspace"}),
+                    actions=frozenset({"hitl.settle"}),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                    token_id="token-1",
+                ),
+                evidence_validator=_accept_evidence,
+                evidence_consumer=_consume_nothing,
+            ),
+            "subject must match the effective principal",
+        ),
+        # And it cannot be widened past its own Workspace claims.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="service",
+                workspace_ids=frozenset({"owned-workspace", "foreign-workspace"}),
+                membership_check=_allow_test_membership,
+                delegation_evidence=HitlDelegationEvidence(
+                    issuer="did:key:issuer",
+                    subject="service",
+                    workspace_ids=frozenset({"owned-workspace"}),
+                    actions=frozenset({"hitl.settle"}),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                    token_id="token-1",
+                ),
+                evidence_validator=_accept_evidence,
+                evidence_consumer=_consume_nothing,
+            ),
+            "does not cover the requested Workspaces",
+        ),
+        # A delegation must be bound to live validation and consumption, not
+        # just to its static claims.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="service",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+                delegation_evidence=HitlDelegationEvidence(
+                    issuer="did:key:issuer",
+                    subject="service",
+                    workspace_ids=frozenset({"owned-workspace"}),
+                    actions=frozenset({"hitl.settle"}),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                    token_id="token-1",
+                ),
+                evidence_consumer=_consume_nothing,
+            ),
+            "requires validation and consumption",
+        ),
+    ],
+)
+def test_hitl_authorization_construction_fails_closed(factory, expected):
+    """Every construction path runs the same evidence validation."""
+    with pytest.raises(ValueError, match=expected):
+        factory()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"issuer": " "}, "requires an issuer"),
+        ({"subject": " "}, "requires a subject"),
+        ({"workspace_ids": frozenset()}, "requires Workspace scope"),
+        ({"workspace_ids": frozenset({" "})}, "requires Workspace scope"),
+        ({"actions": frozenset()}, "requires an action scope"),
+        ({"actions": frozenset({" "})}, "requires an action scope"),
+        ({"token_id": " "}, "requires a token id"),
+        ({"expires_at": datetime.now(UTC).replace(tzinfo=None)}, "must include a timezone"),
+    ],
+)
+def test_delegation_evidence_requires_complete_claims(overrides, expected):
+    """An opaque or partial token shape is not delegation authority."""
+    claims = {
+        "issuer": "did:key:issuer",
+        "subject": "service",
+        "workspace_ids": frozenset({"owned-workspace"}),
+        "actions": frozenset({"hitl.settle"}),
+        "expires_at": datetime.now(UTC) + timedelta(minutes=5),
+        "token_id": "token-1",
+    }
+    claims.update(overrides)
+    with pytest.raises(ValueError, match=expected):
+        HitlDelegationEvidence(**claims)
 
 
 def test_delegated_hitl_requires_typed_evidence() -> None:
     with pytest.raises(TypeError, match="typed evidence"):
-        HitlAuthorization.for_delegated_service(
-            "service",
-            ["owned-workspace"],
-            delegation_evidence="opaque text",  # type: ignore[arg-type]
-            evidence_validator=lambda _evidence: _allow_test_membership(
-                "service", "owned-workspace"
-            ),
-            evidence_consumer=_consume_nothing,
+        HitlAuthorization(
+            effective_principal="service",
+            workspace_ids=frozenset({"owned-workspace"}),
             membership_check=_allow_test_membership,
+            delegation_evidence="opaque text",  # type: ignore[arg-type]
+            evidence_validator=_accept_evidence,
+            evidence_consumer=_consume_nothing,
         )
+
+
+def test_require_hitl_authorization_rejects_an_absent_caller() -> None:
+    """No durable backend may treat the authorization argument as optional."""
+    with pytest.raises(HitlAuthorizationRequired):
+        require_hitl_authorization(None)
+
+
+async def _accept_evidence(_evidence: HitlDelegationEvidence) -> bool:
+    return True
 
 
 async def _consume_nothing(_evidence: HitlDelegationEvidence) -> None:
     return None
+
+
+def _delegated_authorization(
+    *,
+    evidence: HitlDelegationEvidence,
+    validator: HitlEvidenceValidator,
+    consumer: HitlEvidenceConsumer,
+) -> HitlAuthorization:
+    return HitlAuthorization(
+        effective_principal="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+        delegation_evidence=evidence,
+        evidence_validator=validator,
+        evidence_consumer=consumer,
+    )
+
+
+@pytest.mark.parametrize(
+    ("build", "expected_validator_calls"),
+    [
+        pytest.param(
+            lambda evidence: HitlDelegationEvidence(
+                issuer=evidence.issuer,
+                subject=evidence.subject,
+                workspace_ids=evidence.workspace_ids,
+                actions=evidence.actions,
+                expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                token_id=evidence.token_id,
+            ),
+            # An expired delegation is refused by its own claims; the issuer
+            # registry is not even consulted.
+            [],
+            id="expired-evidence",
+        ),
+        pytest.param(lambda evidence: evidence, ["token-deny"], id="validator-denial"),
+    ],
+)
+async def test_permits_denies_stale_or_unvalidated_delegation(
+    build, expected_validator_calls
+) -> None:
+    """A delegation that is expired, or denied by its issuer, settles nothing."""
+    evidence = HitlDelegationEvidence(
+        issuer="did:key:issuer",
+        subject="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        actions=frozenset({"hitl.settle"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        token_id="token-deny",
+    )
+    calls: list[str] = []
+
+    async def validate(token: HitlDelegationEvidence) -> bool:
+        calls.append(token.token_id)
+        return False
+
+    async def consume(token: HitlDelegationEvidence) -> None:
+        calls.append(f"consumed:{token.token_id}")
+
+    authorization = _delegated_authorization(
+        evidence=build(evidence), validator=validate, consumer=consume
+    )
+
+    assert not await authorization.permits("owned-workspace", consume_evidence=True)
+    assert calls == expected_validator_calls
+
+
+async def test_permits_denies_when_validation_raises() -> None:
+    """An unavailable delegation registry is a denial, never a bypass."""
+
+    async def unavailable(token: HitlDelegationEvidence) -> bool:
+        raise RuntimeError("delegation registry unreachable")
+
+    evidence = HitlDelegationEvidence(
+        issuer="did:key:issuer",
+        subject="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        actions=frozenset({"hitl.settle"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        token_id="token-unavailable",
+    )
+    authorization = _delegated_authorization(
+        evidence=evidence, validator=unavailable, consumer=_consume_nothing
+    )
+
+    assert not await authorization.permits("owned-workspace", consume_evidence=True)
+
+
+async def test_permits_denies_workspaces_outside_the_candidate_page() -> None:
+    """The candidate page is scope, not a blanket grant."""
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+
+    assert not await authorization.permits("foreign-workspace")
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite", "canonical"])
+async def test_list_hitl_due_requires_authorization_and_a_positive_limit(
+    backend: str, tmp_path: Path
+) -> None:
+    """Every backend fails closed without evidence and does no work at limit 0."""
+    store: Any
+    if backend == "memory":
+        store = InMemoryDurableRunStore()
+    elif backend == "sqlite":
+        store = SqliteDurableRunStore(tmp_path / "hitl-due-guard.db")
+    else:
+        store, _run_store, _member, _foreign = await _canonical_two_workspace_fixture()
+    authorization = _test_authorization()
+
+    with pytest.raises(HitlAuthorizationRequired):
+        await store.list_hitl_due(
+            authorization=None,  # type: ignore[arg-type]
+            now=_AFTER,
+        )
+    assert await store.list_hitl_due(authorization=authorization, now=_AFTER, limit=0) == []
+
+
+async def test_expiry_tick_without_workspace_scope_settles_nothing() -> None:
+    """An authorization with no Workspace page cannot enumerate candidates."""
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("unscoped-expiry"))
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset(),
+        membership_check=_allow_test_membership,
+    )
+
+    assert await expire_hitl_pauses(store, now=_AFTER, authorization=authorization) == []
+    persisted = await store.get("unscoped-expiry")
+    assert persisted is not None and persisted.status is RunStatus.PAUSED
+
+
+async def test_answering_a_machine_wait_pause_is_refused() -> None:
+    """An explicit non-HITL pause is not answerable through the human seam.
+
+    A machine wait shares the pause metadata shape, so kind — not shape — is
+    what the durable answer rule checks before stamping any verdict.
+    """
+    store = InMemoryDurableRunStore()
+    machine_wait = _with_pause_entry(
+        _paused_record("machine-wait-answer"),
+        {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
+    )
+    await store.create(machine_wait)
+
+    with pytest.raises(ValueError, match="not awaiting human input"):
+        await store.submit_hitl_answer(
+            "machine-wait-answer",
+            "ask",
+            {"answer": "go"},
+            at=_BEFORE,
+            authorization=_test_authorization(),
+        )
+
+    persisted = await store.get("machine-wait-answer")
+    assert persisted is not None and persisted.run.status is RunStatus.PAUSED
+
+
+async def test_canonical_due_listing_skips_workspaces_membership_denies() -> None:
+    """Due discovery revalidates membership even for a listed Workspace."""
+    store, _run_store, member, foreign = await _canonical_two_workspace_fixture()
+
+    async def deny_membership(_principal: str, _workspace_id: str) -> bool:
+        return False
+
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"ws-1058-member", "ws-1058-foreign"}),
+        membership_check=deny_membership,
+    )
+    deadline = hitl_deadline(member, "ask")
+    assert deadline is not None
+
+    assert (
+        await store.list_hitl_due(authorization=authorization, now=deadline + timedelta(seconds=1))
+        == []
+    )
+    for record in (member, foreign):
+        persisted = await store.get(record.run_id)
+        assert persisted is not None and persisted.status is RunStatus.PAUSED
+
+
+async def test_canonical_mutations_refuse_an_explicitly_foreign_workspace() -> None:
+    """The Workspace a caller names must be the one the Run lives in."""
+    store, _run_store, member, _foreign = await _canonical_two_workspace_fixture()
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"ws-1058-member", "ws-1058-foreign"}),
+        membership_check=_allow_test_membership,
+    )
+
+    with pytest.raises(KeyError, match="outside the requested Workspace"):
+        await store.cancel_hitl(
+            member.run_id,
+            "ask",
+            at=_BEFORE,
+            workspace_id="ws-1058-foreign",
+            authorization=authorization,
+        )
+
+    persisted = await store.get(member.run_id)
+    assert persisted is not None and persisted.status is RunStatus.PAUSED
+
+
+async def test_sqlite_due_listing_pages_past_denied_candidates(tmp_path: Path) -> None:
+    """The due index widens past rows the authorization filter removes.
+
+    Two foreign due Runs sit ahead of the owned one in deadline order; each
+    full page that yields no visible row forces a wider re-read, which must
+    skip already-seen run ids rather than duplicating them.
+    """
+    store = SqliteDurableRunStore(tmp_path / "hitl-due-paging.db")
+    base = datetime(2026, 8, 30, 19, 0, tzinfo=UTC)
+
+    def _created_at(record: DurableRunRecord, moment: datetime) -> DurableRunRecord:
+        return record.model_copy(
+            update={"run": record.run.model_copy(update={"created_at": moment})}
+        )
+
+    for index, run_id in enumerate(("foreign-due-1", "foreign-due-2", "owned-due")):
+        workspace_id = "foreign-workspace" if run_id.startswith("foreign") else "owned-workspace"
+        await store.create(
+            _created_at(
+                _with_pause_entry(
+                    _paused_record(run_id, workspace_id=workspace_id),
+                    {
+                        "kind": "hitl",
+                        "metadata": {},
+                        "resume_at": (base + timedelta(seconds=index + 1)).isoformat(),
+                    },
+                ),
+                base + timedelta(seconds=index),
+            )
+        )
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+
+    due = await store.list_hitl_due(
+        authorization=authorization, now=base + timedelta(seconds=10), limit=1
+    )
+
+    assert [record.run_id for record in due] == ["owned-due"]
+
+
+class _PagingDueStore:
+    """Minimal due-listing double that ignores Workspace scope on purpose.
+
+    ``expire_hitl_pauses`` must not trust the backend's page to be scoped: it
+    re-filters every page by its own Workspace page and keeps widening while
+    full pages yield only out-of-scope rows.
+    """
+
+    def __init__(self, pages: list[list[DurableRunRecord]]) -> None:
+        self._pages = pages
+        self._records = {record.run_id: record for page in pages for record in page}
+        self.requests: list[int] = []
+
+    async def list_hitl_due(
+        self,
+        *,
+        authorization: HitlAuthorization,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
+        require_hitl_authorization(authorization)
+        self.requests.append(limit)
+        index = min(len(self.requests) - 1, len(self._pages) - 1)
+        return self._pages[index]
+
+    async def timeout_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+    ) -> DurableRunRecord:
+        require_hitl_authorization(authorization)
+        return self._records[run_id]
+
+
+async def test_expiry_rejects_foreign_candidates_from_an_unscoped_backend_page() -> None:
+    """Candidate pages are re-filtered by the authorization, not trusted."""
+    foreign = _paused_record("page-foreign", workspace_id="foreign-workspace")
+    owned = _paused_record("page-owned", workspace_id="owned-workspace")
+    store = _PagingDueStore([[foreign], [foreign, owned]])
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+
+    expired = await expire_hitl_pauses(store, limit=1, now=_AFTER, authorization=authorization)
+
+    assert [record.run_id for record in expired] == ["page-owned"]
+    # The first full page held only foreign work, so the walk widened once.
+    assert store.requests == [1, 2]
 
 
 async def test_delegated_hitl_validates_and_consumes_bound_evidence() -> None:
@@ -1291,13 +1725,13 @@ async def test_delegated_hitl_validates_and_consumes_bound_evidence() -> None:
     async def consume(token: HitlDelegationEvidence) -> None:
         consumed.append(token.token_id)
 
-    authorization = HitlAuthorization.for_delegated_service(
-        "service",
-        ["owned-workspace"],
+    authorization = HitlAuthorization(
+        effective_principal="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
         delegation_evidence=evidence,
         evidence_validator=validate,
         evidence_consumer=consume,
-        membership_check=_allow_test_membership,
     )
     settled = await store.cancel_hitl(
         "delegated-evidence",
@@ -1333,13 +1767,13 @@ async def test_delegated_expiry_does_not_consume_evidence_during_discovery() -> 
     async def consume(token: HitlDelegationEvidence) -> None:
         consumed.append(token.token_id)
 
-    authorization = HitlAuthorization.for_delegated_service(
-        "service",
-        ["owned-workspace"],
+    authorization = HitlAuthorization(
+        effective_principal="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
         delegation_evidence=evidence,
         evidence_validator=validate,
         evidence_consumer=consume,
-        membership_check=_allow_test_membership,
     )
 
     expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)

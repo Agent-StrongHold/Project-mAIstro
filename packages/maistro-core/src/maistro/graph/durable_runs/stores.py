@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, ValuesView
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -20,12 +20,12 @@ from maistro.sqlite_schema import (
 from .fair_scan import cursor_time
 from .hitl import (
     HitlAuthorization,
-    HitlAuthorizationRequired,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     earliest_hitl_deadline,
     hitl_deadline,
     hitl_pause,
+    require_hitl_authorization,
     settlement_time,
 )
 from .types import DurableRunRecord
@@ -61,6 +61,28 @@ def _created_cursor(record: DurableRunRecord) -> tuple[str, str]:
 
 def _clone(record: DurableRunRecord) -> DurableRunRecord:
     return DurableRunRecord.model_validate_json(record.model_dump_json())
+
+
+def _sorted_due_records(
+    records: ValuesView[DurableRunRecord],
+    now: datetime,
+) -> list[DurableRunRecord]:
+    """PAUSED records whose durable HITL deadline elapsed, earliest first."""
+    due = [
+        record
+        for record in records
+        if record.run.status is RunStatus.PAUSED
+        and (deadline := earliest_hitl_deadline(record)) is not None
+        and deadline <= now
+    ]
+    due.sort(
+        key=lambda record: (
+            earliest_hitl_deadline(record),
+            record.run.created_at,
+            record.run_id,
+        )
+    )
+    return due
 
 
 def _is_malformed_verdict_answer(
@@ -133,13 +155,18 @@ def _pause_metadata_after_answer(
     return metadata
 
 
-def answer_record(
+def _answerable_moment(
     record: DurableRunRecord,
     node_id: str,
-    answer: dict[str, Any],
-    *,
-    at: datetime | None = None,
-) -> DurableRunRecord:
+    at: datetime | None,
+) -> datetime:
+    """Validate that the record accepts a human answer, and stamp its clock.
+
+    Every refusal here is the durable rule itself, shared by every store
+    backend: not paused, off the active frontier, an explicit non-HITL pause,
+    or an already-elapsed deadline. Returning the normalized moment keeps the
+    answer stamping and the deadline comparison on one clock.
+    """
     if record.run.status is not RunStatus.PAUSED:
         raise ValueError(f"run {record.run_id!r} not paused on HITL (status={record.run.status})")
     if node_id not in record.graph_state.active_node_ids:
@@ -147,8 +174,6 @@ def answer_record(
             f"run {record.run_id!r} waiting on frontier "
             f"{record.graph_state.active_node_ids!r}, not {node_id!r}"
         )
-
-    paused_index = _paused_node_run_index(record, node_id)
     pauses_raw = record.graph_state.metadata.get("pauses", {})
     pause = pauses_raw.get(node_id) if isinstance(pauses_raw, Mapping) else None
     # Legacy records may lack a pause projection, but an explicit non-HITL
@@ -162,6 +187,18 @@ def answer_record(
             f"run {record.run_id!r} HITL deadline elapsed for node {node_id!r} "
             f"at {deadline.isoformat()}"
         )
+    return moment
+
+
+def answer_record(
+    record: DurableRunRecord,
+    node_id: str,
+    answer: dict[str, Any],
+    *,
+    at: datetime | None = None,
+) -> DurableRunRecord:
+    moment = _answerable_moment(record, node_id, at)
+    paused_index = _paused_node_run_index(record, node_id)
     # The pause payload the *node* wrote is the only server-side fact in a
     # resume, and `_pause_metadata_after_answer` is about to delete it. Stamp it
     # onto the answer first, after the caller's keys so a submitted `_pause`
@@ -361,26 +398,11 @@ class InMemoryDurableRunStore:
         now: datetime,
         limit: int = 100,
     ) -> list[DurableRunRecord]:
-        if authorization is None:
-            raise HitlAuthorizationRequired("HITL authorization is required")
+        require_hitl_authorization(authorization)
         if limit <= 0:
             return []
-        rows = [
-            record
-            for record in self._rows.values()
-            if record.run.status is RunStatus.PAUSED
-            and (deadline := earliest_hitl_deadline(record)) is not None
-            and deadline <= now
-        ]
-        rows.sort(
-            key=lambda record: (
-                earliest_hitl_deadline(record),
-                record.run.created_at,
-                record.run_id,
-            )
-        )
         visible: list[DurableRunRecord] = []
-        for record in rows:
+        for record in _sorted_due_records(self._rows.values(), now):
             if (
                 record.run.workspace_id in authorization.workspace_ids
                 and await authorization.permits(
@@ -408,22 +430,12 @@ class InMemoryDurableRunStore:
         at: datetime | None = None,
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        if authorization is None:
-            raise HitlAuthorizationRequired("HITL authorization is required")
-        async with authorization.hold_membership_mutation(), self._lock:
-            record = self._rows.get(run_id)
-            if record is None:
-                raise KeyError(f"no such run: {run_id!r}")
-            if workspace_id is not None and record.run.workspace_id != workspace_id:
-                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if not await authorization.permits(
-                record.run.workspace_id,
-                consume_evidence=True,
-            ):
-                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
-            updated = answer_record(record, node_id, answer, at=at)
-            self._rows[run_id] = updated
-            return _clone(updated)
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: answer_record(current, node_id, answer, at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
 
     async def timeout_hitl(
         self,
@@ -434,22 +446,12 @@ class InMemoryDurableRunStore:
         at: datetime | None = None,
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        if authorization is None:
-            raise HitlAuthorizationRequired("HITL authorization is required")
-        async with authorization.hold_membership_mutation(), self._lock:
-            record = self._rows.get(run_id)
-            if record is None:
-                raise KeyError(f"no such run: {run_id!r}")
-            if workspace_id is not None and record.run.workspace_id != workspace_id:
-                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
-            if not await authorization.permits(
-                record.run.workspace_id,
-                consume_evidence=True,
-            ):
-                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
-            updated = settle_hitl_record(record, node_id, "timed_out", at=at)
-            self._rows[run_id] = updated
-            return _clone(updated)
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
 
     async def cancel_hitl(
         self,
@@ -460,8 +462,28 @@ class InMemoryDurableRunStore:
         at: datetime | None = None,
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        if authorization is None:
-            raise HitlAuthorizationRequired("HITL authorization is required")
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def _mutate_authorized_hitl(
+        self,
+        run_id: str,
+        mutate: Callable[[DurableRunRecord], DurableRunRecord],
+        *,
+        authorization: HitlAuthorization,
+        workspace_id: str | None,
+    ) -> DurableRunRecord:
+        """Authorize one HITL decision, then apply it under the store lock.
+
+        The object decision and the durable write share one critical section
+        with the caller's membership-revocation lock, so a Workspace revoked
+        between the live check and the write cannot settle a pause.
+        """
+        require_hitl_authorization(authorization)
         async with authorization.hold_membership_mutation(), self._lock:
             record = self._rows.get(run_id)
             if record is None:
@@ -473,7 +495,7 @@ class InMemoryDurableRunStore:
                 consume_evidence=True,
             ):
                 raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
-            updated = settle_hitl_record(record, node_id, "cancelled", at=at)
+            updated = mutate(record)
             self._rows[run_id] = updated
             return _clone(updated)
 
@@ -631,8 +653,7 @@ class SqliteDurableRunStore:
         now: datetime,
         limit: int = 100,
     ) -> list[DurableRunRecord]:
-        if authorization is None:
-            raise HitlAuthorizationRequired("HITL authorization is required")
+        require_hitl_authorization(authorization)
         if limit <= 0:
             return []
         requested = limit
@@ -723,8 +744,7 @@ class SqliteDurableRunStore:
         authorization: HitlAuthorization,
         workspace_id: str | None,
     ) -> DurableRunRecord:
-        if authorization is None:
-            raise HitlAuthorizationRequired("HITL authorization is required")
+        require_hitl_authorization(authorization)
         # The authorization decision runs inside the SQLite write transaction,
         # after its canonical Run read and before its versioned write. A
         # pre-read check leaves a revocation-to-write interval in which a

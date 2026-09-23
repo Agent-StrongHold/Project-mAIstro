@@ -30,7 +30,6 @@ from .continuation import (
 from .execution_store import DurableRunExecutionStore
 from .fair_scan import ScanContinuation, cursor_time
 from .hitl import (
-    HitlAuthenticatedSession,
     HitlAuthorization,
     HitlAuthorizationRequired,
     HitlDeadlineElapsed,
@@ -59,7 +58,6 @@ __all__ = [
     "DurableRunStore",
     "GraphContinuation",
     "GraphContinuationStore",
-    "HitlAuthenticatedSession",
     "HitlAuthorization",
     "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",

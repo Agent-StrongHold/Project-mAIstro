@@ -730,3 +730,37 @@ def test_an_unscoped_principal_cannot_list_pending_work(authed_client) -> None:
     the same scope rather than being readable by anyone authenticated.
     """
     assert authed_client.get("/v1/hitl/pending").status_code == 403
+
+
+async def test_a_stale_pause_entry_for_a_resumed_node_is_not_offered(seeded) -> None:
+    """Pause metadata can outlive the NodeRun it described.
+
+    A continuation that resumed (or crashed past) one node leaves its entry
+    behind in ``pauses``; the queue and the inspect door both re-check the
+    canonical NodeRun status, so the stale entry neither becomes pending work
+    nor an inspectable node. The refusal shares the missing-run answer so it
+    cannot serve as an existence oracle either.
+    """
+    client, store, seed = seeded
+    await seed("hitl-stale-pause")
+    record = store._rows["hitl-stale-pause"]
+    pauses = dict(record.graph_state.metadata["pauses"])
+    pauses["review"] = {"kind": "hitl", "metadata": {"question": "late edit?"}}
+    metadata = dict(record.graph_state.metadata)
+    metadata["pauses"] = pauses
+    store._rows["hitl-stale-pause"] = record.model_copy(
+        update={
+            "graph_state": record.graph_state.model_copy(update={"metadata": metadata}),
+        }
+    )
+
+    body = client.get("/v1/hitl/pending").json()
+
+    mine = [item for item in body if item["run_id"] == "hitl-stale-pause"]
+    assert [item["node_id"] for item in mine] == ["ask"]
+    # The live pause is inspectable once the caller is Workspace-authorized...
+    response = client.get("/v1/hitl/hitl-stale-pause/ask")
+    assert response.status_code == 200
+    assert response.json()["node_id"] == "ask"
+    # ...while the stale entry is refused with the same detail as a missing Run.
+    assert client.get("/v1/hitl/hitl-stale-pause/review").status_code == 404

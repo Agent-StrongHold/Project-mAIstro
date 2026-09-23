@@ -36,7 +36,6 @@ from services.workspace_authority import (
 )
 
 from maistro.graph.durable_runs import HitlAuthorization, cursor_time, expire_hitl_pauses
-from maistro.graph.durable_runs.hitl import _authenticated_session_from_verified_boundary
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
@@ -108,14 +107,19 @@ async def _authorized_record(request: Request, run_id: str) -> Any:
 
 
 def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthorization:
-    """Carry live canonical membership into the durable mutation boundary."""
-    return HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary(
-            _request_user_id(request),
-            is_member,
-            membership_mutation_lock=hitl_membership_mutation_lock(),
-        ),
-        workspace_ids,
+    """Carry live canonical membership into the durable mutation boundary.
+
+    This is the one place request-derived evidence is manufactured: the
+    principal comes from the verified session (`_request_user_id` reads the
+    auth middleware's stamp), the membership check is the workspace
+    authority's own, and the mutation lock is the same one membership
+    revocation takes. The store revalidates all of it inside its write.
+    """
+    return HitlAuthorization(
+        effective_principal=_request_user_id(request),
+        workspace_ids=frozenset(workspace_ids),
+        membership_check=is_member,
+        membership_mutation_lock=hitl_membership_mutation_lock(),
     )
 
 

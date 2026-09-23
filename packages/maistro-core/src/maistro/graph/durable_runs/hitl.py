@@ -34,62 +34,23 @@ WorkspaceMembershipCheck = Callable[[str, str], Awaitable[bool]]
 HitlEvidenceValidator = Callable[["HitlDelegationEvidence"], Awaitable[bool]]
 HitlEvidenceConsumer = Callable[["HitlDelegationEvidence"], Awaitable[None]]
 
-# These sentinels keep the evidence-bearing constructors behind their explicit
-# boundary factories. A service must present either an authenticated session
-# from its auth adapter or typed delegation evidence; it cannot instantiate a
-# bare authorization object with an arbitrary allow-all callback.
-_SESSION_FACTORY_TOKEN = object()
-_AUTHORIZATION_FACTORY_TOKEN = object()
+
+def _require_claim_text(value: str, message: str) -> None:
+    """Reject blank effective-principal evidence text."""
+    if not value.strip():
+        raise ValueError(message)
 
 
-def _require_factory_token(token: object, expected: object, message: str) -> None:
-    if token is not expected:
-        raise TypeError(message)
+def _require_claim_scope(values: Collection[str], message: str) -> None:
+    """Reject an empty Workspace/action scope or any blank member of it."""
+    if not values or any(not value.strip() for value in values):
+        raise ValueError(message)
 
 
-@dataclass(frozen=True)
-class HitlAuthenticatedSession:
-    """Verified session evidence supplied by an HTTP/authentication boundary.
-
-    Core cannot authenticate a cookie or bearer token itself. The boundary must
-    first resolve the session and then pass this typed effective-principal
-    evidence; service callers instead use :class:`HitlDelegationEvidence`.
-    """
-
-    effective_principal: str
-    membership_check: WorkspaceMembershipCheck
-    membership_mutation_lock: asyncio.Lock | None = field(default=None, repr=False, compare=False)
-    _factory_token: object = field(default=None, kw_only=True, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        _require_factory_token(
-            self._factory_token,
-            _SESSION_FACTORY_TOKEN,
-            "HITL sessions must come from the authenticated boundary",
-        )
-        if not self.effective_principal.strip():
-            raise ValueError("HITL session evidence requires an effective principal")
-
-
-def _authenticated_session_from_verified_boundary(
-    effective_principal: str,
-    membership_check: WorkspaceMembershipCheck,
-    *,
-    membership_mutation_lock: asyncio.Lock | None = None,
-) -> HitlAuthenticatedSession:
-    """Create session evidence at the trusted HTTP/authentication seam only.
-
-    This deliberately is not a public ``HitlAuthenticatedSession`` constructor:
-    a reusable core-facing factory accepting an arbitrary membership callback
-    would let any service manufacture allow-all session evidence. Product auth
-    adapters own this private seam after verifying the request principal.
-    """
-    return HitlAuthenticatedSession(
-        effective_principal,
-        membership_check,
-        membership_mutation_lock,
-        _factory_token=_SESSION_FACTORY_TOKEN,
-    )
+def _require_claim_page(values: Collection[str], message: str) -> None:
+    """Reject blank members of a candidate page; an empty page stays valid."""
+    if any(not value.strip() for value in values):
+        raise ValueError(message)
 
 
 @dataclass(frozen=True)
@@ -110,14 +71,13 @@ class HitlDelegationEvidence:
     token_id: str
 
     def __post_init__(self) -> None:
-        if not self.issuer.strip() or not self.subject.strip():
-            raise ValueError("HITL delegation evidence requires issuer and subject")
-        if not self.workspace_ids or any(not value.strip() for value in self.workspace_ids):
-            raise ValueError("HITL delegation evidence requires Workspace scope")
-        if not self.actions or any(not value.strip() for value in self.actions):
-            raise ValueError("HITL delegation evidence requires an action scope")
-        if not self.token_id.strip():
-            raise ValueError("HITL delegation evidence requires a token id")
+        _require_claim_text(self.issuer, "HITL delegation evidence requires an issuer")
+        _require_claim_text(self.subject, "HITL delegation evidence requires a subject")
+        _require_claim_scope(
+            self.workspace_ids, "HITL delegation evidence requires Workspace scope"
+        )
+        _require_claim_scope(self.actions, "HITL delegation evidence requires an action scope")
+        _require_claim_text(self.token_id, "HITL delegation evidence requires a token id")
         if self.expires_at.tzinfo is None:
             raise ValueError("HITL delegation evidence expiry must include a timezone")
 
@@ -139,6 +99,14 @@ class HitlAuthorization:
     membership check is repeated by the canonical mutation immediately before
     it settles a record, so a revoked membership cannot use a stale page or a
     route pre-read to win a later answer, cancellation, or timeout.
+
+    Construction is the evidence boundary itself: every path through
+    ``__init__`` runs the same validation, so a service cannot present an
+    opaque string as delegation authority or scope it beyond the evidence's
+    own Workspace/action claims. The verified session comes from the
+    authentication boundary (the product auth adapter resolves the principal
+    and supplies the live membership check); a delegated service must present
+    typed :class:`HitlDelegationEvidence` bound to its effective principal.
     """
 
     effective_principal: str
@@ -149,77 +117,34 @@ class HitlAuthorization:
     evidence_validator: HitlEvidenceValidator | None = None
     evidence_consumer: HitlEvidenceConsumer | None = None
     action: str = "hitl.settle"
-    _factory_token: object = field(default=None, kw_only=True, repr=False, compare=False)
     _evidence_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock, init=False, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
-        _require_factory_token(
-            self._factory_token,
-            _AUTHORIZATION_FACTORY_TOKEN,
-            "HITL authorization must come from an evidence factory",
+        _require_claim_text(
+            self.effective_principal, "HITL authorization requires an effective principal"
         )
-        if not self.effective_principal.strip():
-            raise ValueError("HITL authorization requires an effective principal")
-        if any(not workspace_id.strip() for workspace_id in self.workspace_ids):
-            raise ValueError("HITL authorization cannot contain a blank Workspace id")
-        if not self.action.strip():
-            raise ValueError("HITL authorization requires an action")
+        _require_claim_page(
+            self.workspace_ids, "HITL authorization cannot contain a blank Workspace id"
+        )
+        _require_claim_text(self.action, "HITL authorization requires an action")
         if self.delegation_evidence is None:
             if self.evidence_validator is not None or self.evidence_consumer is not None:
                 raise ValueError("HITL evidence callbacks require delegation evidence")
             return
-        if not isinstance(self.delegation_evidence, HitlDelegationEvidence):
+        self._bind_delegation_evidence(self.delegation_evidence)
+
+    def _bind_delegation_evidence(self, evidence: HitlDelegationEvidence) -> None:
+        """Fail closed unless typed evidence covers this exact operation."""
+        if not isinstance(evidence, HitlDelegationEvidence):
             raise TypeError("delegated HITL authorization requires typed evidence")
-        if self.delegation_evidence.subject != self.effective_principal:
+        if evidence.subject != self.effective_principal:
             raise ValueError("delegation evidence subject must match the effective principal")
-        if not self.workspace_ids.issubset(self.delegation_evidence.workspace_ids):
+        if not self.workspace_ids.issubset(evidence.workspace_ids):
             raise ValueError("delegation evidence does not cover the requested Workspaces")
         if self.evidence_validator is None or self.evidence_consumer is None:
             raise ValueError("delegated HITL authorization requires validation and consumption")
-
-    @classmethod
-    def for_verified_session(
-        cls,
-        session: HitlAuthenticatedSession,
-        workspace_ids: Collection[str],
-    ) -> HitlAuthorization:
-        """Bind canonical Workspace scope to evidence from an auth boundary."""
-        if not isinstance(session, HitlAuthenticatedSession):
-            raise TypeError("HITL authorization requires typed session evidence")
-        return cls(
-            session.effective_principal,
-            frozenset(workspace_ids),
-            session.membership_check,
-            session.membership_mutation_lock,
-            _factory_token=_AUTHORIZATION_FACTORY_TOKEN,
-        )
-
-    @classmethod
-    def for_delegated_service(
-        cls,
-        effective_principal: str,
-        workspace_ids: Collection[str],
-        *,
-        delegation_evidence: HitlDelegationEvidence,
-        evidence_validator: HitlEvidenceValidator,
-        evidence_consumer: HitlEvidenceConsumer,
-        membership_check: WorkspaceMembershipCheck,
-        action: str = "hitl.settle",
-    ) -> HitlAuthorization:
-        """Bind a service to typed, validated, and consumable delegation evidence."""
-        return cls(
-            effective_principal,
-            frozenset(workspace_ids),
-            membership_check,
-            None,
-            delegation_evidence,
-            evidence_validator,
-            evidence_consumer,
-            action,
-            _factory_token=_AUTHORIZATION_FACTORY_TOKEN,
-        )
 
     @asynccontextmanager
     async def hold_membership_mutation(self) -> AsyncIterator[None]:
@@ -519,7 +444,6 @@ async def expire_hitl_pauses(
 
 
 __all__ = [
-    "HitlAuthenticatedSession",
     "HitlAuthorization",
     "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",

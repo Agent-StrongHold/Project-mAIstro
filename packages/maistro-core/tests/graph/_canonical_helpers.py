@@ -12,7 +12,6 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
-from maistro.graph.durable_runs.hitl import _authenticated_session_from_verified_boundary
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
@@ -38,17 +37,18 @@ async def _allow_test_hitl_membership(_principal: str, _workspace_id: str) -> bo
 
 def hitl_authorization() -> HitlAuthorization:
     """Explicit test principal covering the canonical fixture Workspaces."""
-    return HitlAuthorization.for_verified_session(
-        _authenticated_session_from_verified_boundary(
-            "test-hitl-operator", _allow_test_hitl_membership
+    return HitlAuthorization(
+        effective_principal="test-hitl-operator",
+        workspace_ids=frozenset(
+            {
+                "test-workspace",
+                "ws-canonical-store",
+                "ws-canonical",
+                "ws-hitl-deadline",
+                "ws-hitl-canonical-deadline",
+            }
         ),
-        {
-            "test-workspace",
-            "ws-canonical-store",
-            "ws-canonical",
-            "ws-hitl-deadline",
-            "ws-hitl-canonical-deadline",
-        },
+        membership_check=_allow_test_hitl_membership,
     )
 
 
