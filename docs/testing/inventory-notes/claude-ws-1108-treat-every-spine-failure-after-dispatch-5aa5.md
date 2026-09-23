@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +13
+  packages/maistro-core/tests: +14
 ---
 # claude-ws-1108-treat-every-spine-failure-after-dispatch-5aa5
 
 #1108: a chat turn's post-dispatch spine failure is classified whatever its
 exception type, not only when it is a `RunIntegrityError`.
 
-All thirteen are additions in `packages/maistro-core/tests/runs/test_chat_execution.py`;
+All fourteen are additions in `packages/maistro-core/tests/runs/test_chat_execution.py`;
 nothing was removed or renamed.
 
 - +3: the three existing post-dispatch tests (failed COMPLETED write, failed
@@ -27,3 +27,8 @@ nothing was removed or renamed.
   answers late still ends as `RuntimeDeadlineExceeded`; an answer behind a
   Run fenced CANCELLED ends the turn cancelled when the fence read fails
   once; and a fence that stays unreadable still hands the answer back once.
+- +1 (second Codex review): a late answer whose TIMED_OUT write fails still
+  ends as `RuntimeDeadlineExceeded`, found behind the store error in the
+  exception chain. The cut-off-and-record-fails deadline test now expects the
+  deadline, with the store error as its context, rather than the dispatch's
+  `CancelledError`.

@@ -582,8 +582,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         self,
     ) -> None:
         """Same rule under a deadline: the TIMED_OUT write fails after the
-        dispatch was cut off, and what reaches the caller is not a bare
-        `RunIntegrityError` its pre-dispatch fallback would answer again."""
+        dispatch was cut off, and what reaches the caller is the deadline, not
+        a bare `RunIntegrityError` its pre-dispatch fallback would answer
+        again. The store's failure stays visible behind it."""
         container = await _container()
         run = await container.chat_admitter.admit(MESSAGES)
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
@@ -601,8 +602,8 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
                 run.run_id, MESSAGES, _slow
             )
 
-        assert not isinstance(failed.value, RunIntegrityError)
-        assert isinstance(failed.value.__cause__, RunIntegrityError)
+        assert isinstance(failed.value, RuntimeDeadlineExceeded)
+        assert isinstance(failed.value.__context__, RunIntegrityError)
 
     async def test_a_dispatch_that_outlives_its_deadline_is_not_an_unrecorded_answer(
         self,
@@ -624,6 +625,36 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
             await ChatAttemptExecutor(container.run_store, timeout_s=0.01).execute(
                 run.run_id, MESSAGES, _stubborn
             )
+
+    async def test_a_late_answer_whose_deadline_record_fails_is_still_a_deadline(
+        self,
+    ) -> None:
+        """The dispatch catches the deadline and answers late, and then the
+        TIMED_OUT write fails. The store error reaches the executor with the
+        deadline only in its context; the late answer must still not be
+        handed back as one that merely went unrecorded."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _RecordingVeto(
+            container.run_store,
+            method="transition_attempt",
+            target=AttemptStatus.TIMED_OUT,
+            error=OSError,
+        )
+
+        async def _stubborn() -> dict[str, Any]:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(5)
+            return {"choices": [{"message": {"content": "late"}, "finish_reason": "stop"}]}
+
+        with pytest.raises(RuntimeDeadlineExceeded) as late:
+            await ChatAttemptExecutor(store, timeout_s=0.01).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _stubborn
+            )
+
+        assert isinstance(late.value.__context__, OSError)
 
     async def test_an_answer_behind_the_cancellation_fence_is_not_handed_back(
         self,

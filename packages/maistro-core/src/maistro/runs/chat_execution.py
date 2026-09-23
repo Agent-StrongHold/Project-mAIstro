@@ -150,6 +150,18 @@ class _TurnDispatch:
         return attempt_result(response)
 
 
+def _deadline_behind(exc: BaseException) -> RuntimeDeadlineExceeded | None:
+    """The runtime deadline `exc` is, or was raised while handling, if any."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, RuntimeDeadlineExceeded):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def attempt_result(response: dict[str, Any]) -> dict[str, Any]:
     """The JSON-safe evidence one chat turn leaves on its Attempt.
 
@@ -284,13 +296,15 @@ class ChatAttemptExecutor:
         """Raise what a spine failure means for the caller, by which side of the dispatch it hit."""
         if not turn.started or exc is turn.error:
             raise exc
-        if isinstance(exc, RuntimeDeadlineExceeded) and not isinstance(turn.error, Exception):
-            # The deadline is the outcome, recorded — whether the dispatch
-            # was cut off or caught the cancellation and answered late. A late
-            # answer is not an unrecorded one, and substituting the
-            # `CancelledError` the dispatch saw would disguise a timeout as a
-            # client disconnect.
-            raise exc
+        deadline = _deadline_behind(exc)
+        if deadline is not None and not isinstance(turn.error, Exception):
+            # The deadline is the outcome — whether the dispatch was cut off
+            # or caught the cancellation and answered late, and whether or not
+            # its TIMED_OUT record then landed (a failed write surfaces as the
+            # store's error, with the deadline behind it). A late answer is not
+            # an unrecorded one, and substituting the `CancelledError` the
+            # dispatch saw would disguise a timeout as a client disconnect.
+            raise deadline
         if turn.error is not None:
             # The dispatch failed, or was cancelled, and then the spine could
             # not record that it did. The failure the caller can act on is the
