@@ -293,3 +293,47 @@ rounds above:
   (`containers.py`, no IP destination) are untouched by the base→head diff.
 - Closure keywords: none in the PR #1451 body ("Refs #155" only, draft) nor
   in any of the 19 branch commit messages.
+
+Repair-phase re-verification record (L155, head 57b9d4a4c, 2026-09-23)
+----------------------------------------------------------------------
+
+The previous verifier pass was mechanically rejected only because its own
+inventory commit changed the worktree mid-run ("verification worktree
+changed; evidence rejected"). This pass re-executed the battery at the
+stable head 57b9d4a4c and confirmed the two inherited gate failures
+against the base tree directly, not from the earlier record:
+
+- `uv run pytest packages/maistro-core/tests/tools/browser -q` → 131
+  passed, 0 skipped; `test_playwright_transport.py` re-run verbosely → all
+  4 real-Chromium proofs PASSED, including
+  `test_real_chromium_rechecks_a_redirect_before_the_private_connection`.
+- `uv run pytest packages/hive-conductor/backend/tests/test_browser_network_policy.py
+  packages/hive-conductor/backend/tests/test_engine_service.py -q` → 38 passed.
+- `uv run pytest packages/maistro-core/tests/security -q` → 1255 passed,
+  1 failed (`test_log_redaction.py::test_install_is_idempotent`); that
+  failure reproduces identically in a detached base-8bb344e3 worktree
+  running its own `--locked --all-extras` env, and the base→head diff
+  touches no redaction file — pre-existing, unrelated to egress.
+- Gates: `ruff check .`, `ruff format --check .`,
+  `check-suite-inventory.py` (both suites), `check_direct_effects.py`,
+  `check-security-inventory.py` (63 paths / 23 rows),
+  `check-model-egress.py` (23 direct callers, no expansion) — all pass.
+- `check-vulture-baseline.py` rc=1 re-derived as inherited: head scan
+  finds 1429 findings vs 1430 in a fresh base-8bb344e3 scan (the single
+  delta is this branch's removal of `run_hill_climb.py::COMPONENT_PATH`),
+  and `quality/vulture-baseline.json` is byte-identical base→head.
+- `check-ac-state.py` floor gap re-derived as inherited: a measurement
+  run (`--run-tests --out`, no `--ratchet`) at detached base-8bb344e3
+  reports design_coverage 33.0281% over 155 decisions — the per-decision
+  dict is byte-equal to head's committed `quality/ac-state.json`. The
+  branch moves coverage by exactly 0.0000; the 33.9095 floor undercut is
+  develop-base debt. (Operator note: `--compact` is a short-circuit that
+  only compacts note ledgers and measures nothing — it rewrites
+  `quality/ac-state-notes/` as a side effect. The ledger churn it caused
+  here was restored byte-for-byte from HEAD before committing; use plain
+  `--run-tests --out <path>` for measurement.)
+- Transport census re-swept: production Playwright entry points are
+  exactly `tools/browser/client.py`, `ui_auto_climb.py`, `widgets.py`,
+  `run_hill_climb.py`, `hill-climb-ui.sh`; `browser_use` only in
+  `tools/browser/`; no closure reference (`fixes/closes/resolves #N`) in
+  any of the 19 branch commit messages.
