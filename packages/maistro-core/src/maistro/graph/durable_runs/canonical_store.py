@@ -584,7 +584,7 @@ class CanonicalDurableRunStore:
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
         require_hitl_authorization(authorization)
-        async with self._lock:
+        async with authorization.hold_membership_mutation(), self._lock:
             current = await self.get(run_id)
             if current is None:
                 raise KeyError(f"no such run: {run_id!r}")

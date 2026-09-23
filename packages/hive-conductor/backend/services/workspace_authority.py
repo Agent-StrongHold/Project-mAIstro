@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Final, cast
 
@@ -51,6 +53,11 @@ _quarantine = JsonStore("workspace_convergence_quarantine")
 _fallback_store: InMemoryWorkspaceStore | None = None
 _initialized_persistence: object | None = None
 _migration_lock = asyncio.Lock()
+# HITL settlement keeps this lock from live membership verification through its
+# durable write; membership revocation takes the same lock. This closes the
+# in-process revoke-to-settlement interval without making the HITL route a
+# second Workspace authority.
+_hitl_membership_mutation_lock = asyncio.Lock()
 _migrated_store_identity: int | None = None
 
 
@@ -330,6 +337,18 @@ async def _ensure_ready() -> WorkspaceStore:
     return store
 
 
+def hitl_membership_mutation_lock() -> asyncio.Lock:
+    """The authority-local lock shared by HITL settlement and revocation."""
+    return _hitl_membership_mutation_lock
+
+
+@asynccontextmanager
+async def hold_hitl_membership_mutation() -> AsyncIterator[None]:
+    """Serialize a HITL decision with membership removal in this authority."""
+    async with _hitl_membership_mutation_lock:
+        yield
+
+
 async def is_member(user_id: str, workspace_id: str | None) -> bool:
     if not workspace_id:
         return False
@@ -441,23 +460,25 @@ async def create_workspace(
 
 
 async def set_member(workspace_id: str, *, user_id: str, role: WorkspaceRole) -> Workspace:
-    store = await _ensure_ready()
-    await store.set_membership(workspace_id, user_id=user_id, role=_canonical_role(role))
-    await _sync_fallback_recovery_evidence(store, workspace_id)
-    view = await get_view(workspace_id)
-    if view is None:
-        raise KeyError(workspace_id)
-    return view
+    async with hold_hitl_membership_mutation():
+        store = await _ensure_ready()
+        await store.set_membership(workspace_id, user_id=user_id, role=_canonical_role(role))
+        await _sync_fallback_recovery_evidence(store, workspace_id)
+        view = await get_view(workspace_id)
+        if view is None:
+            raise KeyError(workspace_id)
+        return view
 
 
 async def remove_member(workspace_id: str, *, user_id: str) -> Workspace:
-    store = await _ensure_ready()
-    await store.remove_membership(workspace_id, user_id=user_id)
-    await _sync_fallback_recovery_evidence(store, workspace_id)
-    view = await get_view(workspace_id)
-    if view is None:
-        raise KeyError(workspace_id)
-    return view
+    async with hold_hitl_membership_mutation():
+        store = await _ensure_ready()
+        await store.remove_membership(workspace_id, user_id=user_id)
+        await _sync_fallback_recovery_evidence(store, workspace_id)
+        view = await get_view(workspace_id)
+        if view is None:
+            raise KeyError(workspace_id)
+        return view
 
 
 async def update_presentation(
@@ -484,13 +505,14 @@ async def update_presentation(
 
 
 async def delete_workspace(workspace_id: str) -> None:
-    store = await _ensure_ready()
-    await store.delete(workspace_id)
-    _presentations.pop(workspace_id, None)
-    _migration_journal.pop(workspace_id, None)
-    if workspace_id in stores.workspaces:
-        # This is a real logical deletion, so the normal pop lifecycle applies.
-        stores.workspaces.pop(workspace_id, None)
+    async with hold_hitl_membership_mutation():
+        store = await _ensure_ready()
+        await store.delete(workspace_id)
+        _presentations.pop(workspace_id, None)
+        _migration_journal.pop(workspace_id, None)
+        if workspace_id in stores.workspaces:
+            # This is a real logical deletion, so the normal pop lifecycle applies.
+            stores.workspaces.pop(workspace_id, None)
 
 
 def reset_for_tests() -> None:

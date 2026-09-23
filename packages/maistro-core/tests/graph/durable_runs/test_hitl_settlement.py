@@ -26,6 +26,7 @@ from maistro.graph.durable_runs.hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     HitlSettlementError,
+    _authenticated_session_from_verified_boundary,
     earliest_hitl_deadline,
     expire_hitl_pauses,
     hitl_deadline,
@@ -58,9 +59,7 @@ async def _allow_test_membership(_principal: str, _workspace_id: str) -> bool:
 
 def _test_authorization() -> HitlAuthorization:
     return HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession.from_authenticated_boundary(
-            "test-hitl-operator", _allow_test_membership
-        ),
+        _authenticated_session_from_verified_boundary("test-hitl-operator", _allow_test_membership),
         {
             "test-workspace",
             "ws-hitl-reconcile",
@@ -559,7 +558,7 @@ async def test_two_workspace_late_race_cannot_settle_foreign_pause() -> None:
     await store.create(_paused_record("owned-race", workspace_id="owned-workspace"))
     await store.create(_paused_record("foreign-race", workspace_id="foreign-workspace"))
     authorization = HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession.from_authenticated_boundary("member-user", _allow_test_membership),
+        _authenticated_session_from_verified_boundary("member-user", _allow_test_membership),
         ["owned-workspace"],
     )
 
@@ -647,7 +646,7 @@ async def test_canonical_mutations_refuse_a_foreign_workspace_authorization() ->
     """
     store, _run_store, member, foreign = await _canonical_two_workspace_fixture()
     authorization = HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession.from_authenticated_boundary("member-user", _allow_test_membership),
+        _authenticated_session_from_verified_boundary("member-user", _allow_test_membership),
         ["ws-1058-member"],
     )
 
@@ -692,7 +691,7 @@ async def test_inmemory_mutations_refuse_a_foreign_workspace_authorization() -> 
     store = InMemoryDurableRunStore()
     await store.create(_paused_record("foreign-direct", workspace_id="foreign-workspace"))
     authorization = HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession.from_authenticated_boundary("member-user", _allow_test_membership),
+        _authenticated_session_from_verified_boundary("member-user", _allow_test_membership),
         ["owned-workspace"],
     )
 
@@ -742,18 +741,18 @@ async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> 
     assert persisted.status in {RunStatus.QUEUED, RunStatus.CANCELLED}
 
 
-async def test_sqlite_rechecks_membership_before_serialized_settlement(tmp_path: Path) -> None:
-    """A revocation after target discovery must prevent the SQLite write."""
+async def test_sqlite_rejects_revoked_membership_inside_settlement(tmp_path: Path) -> None:
+    """A rejected live membership leaves the target pause unchanged."""
     store = SqliteDurableRunStore(tmp_path / "hitl-membership-race.db")
     await store.create(_paused_record("sqlite-membership-race"))
     checks: list[tuple[str, str]] = []
 
     async def membership(principal: str, workspace_id: str) -> bool:
         checks.append((principal, workspace_id))
-        return len(checks) == 1
+        return False
 
     authorization = HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession.from_authenticated_boundary("member-user", membership),
+        _authenticated_session_from_verified_boundary("member-user", membership),
         ["test-workspace"],
     )
     with pytest.raises(KeyError, match="outside the authorized Workspace"):
@@ -765,7 +764,78 @@ async def test_sqlite_rechecks_membership_before_serialized_settlement(tmp_path:
         )
 
     persisted = await store.get("sqlite-membership-race")
-    assert len(checks) == 2
+    assert len(checks) == 1
+    assert persisted is not None and persisted.status is RunStatus.PAUSED
+
+
+async def test_sqlite_holds_settlement_transaction_while_authorizing(tmp_path: Path) -> None:
+    """There is no revocation-to-write gap after canonical target resolution."""
+    db = tmp_path / "hitl-authorization-transaction.db"
+    store = SqliteDurableRunStore(db)
+    await store.create(_paused_record("sqlite-authorization-transaction"))
+    competing_writer_was_blocked = False
+
+    async def membership(_principal: str, _workspace_id: str) -> bool:
+        nonlocal competing_writer_was_blocked
+        with (
+            sqlite3.connect(db, timeout=0) as competing_connection,
+            pytest.raises(sqlite3.OperationalError, match="locked"),
+        ):
+            competing_connection.execute("BEGIN IMMEDIATE")
+        competing_writer_was_blocked = True
+        return True
+
+    authorization = HitlAuthorization.for_verified_session(
+        _authenticated_session_from_verified_boundary("member-user", membership),
+        ["test-workspace"],
+    )
+    settled = await store.cancel_hitl(
+        "sqlite-authorization-transaction",
+        "ask",
+        at=_BEFORE,
+        authorization=authorization,
+    )
+
+    assert competing_writer_was_blocked
+    assert settled.status is RunStatus.CANCELLED
+
+
+async def test_settlement_waits_for_membership_revocation_then_refuses() -> None:
+    """A shared authority lock makes a racing revocation win before settlement."""
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("membership-revocation-race"))
+    membership_lock = asyncio.Lock()
+    await membership_lock.acquire()
+    revoked = False
+
+    async def membership(_principal: str, _workspace_id: str) -> bool:
+        return not revoked
+
+    authorization = HitlAuthorization.for_verified_session(
+        _authenticated_session_from_verified_boundary(
+            "member-user",
+            membership,
+            membership_mutation_lock=membership_lock,
+        ),
+        ["test-workspace"],
+    )
+    settlement = asyncio.create_task(
+        store.cancel_hitl(
+            "membership-revocation-race",
+            "ask",
+            at=_BEFORE,
+            authorization=authorization,
+        )
+    )
+    await asyncio.sleep(0)
+    assert not settlement.done()
+
+    revoked = True
+    membership_lock.release()
+    with pytest.raises(KeyError, match="outside the authorized Workspace"):
+        await settlement
+
+    persisted = await store.get("membership-revocation-race")
     assert persisted is not None and persisted.status is RunStatus.PAUSED
 
 
@@ -1142,7 +1212,7 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
         )
 
     authorization = HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession.from_authenticated_boundary("member-user", _allow_test_membership),
+        _authenticated_session_from_verified_boundary("member-user", _allow_test_membership),
         ["owned-workspace"],
     )
     expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
@@ -1157,7 +1227,7 @@ async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_
     [
         (
             lambda: HitlAuthorization.for_verified_session(
-                HitlAuthenticatedSession.from_authenticated_boundary("", _allow_test_membership),
+                _authenticated_session_from_verified_boundary("", _allow_test_membership),
                 frozenset(),
             ),
             "effective principal",
@@ -1170,6 +1240,7 @@ def test_scoped_hitl_expiry_rejects_missing_principal(factory, expected):
 
 
 def test_authenticated_hitl_requires_typed_session_evidence() -> None:
+    assert not hasattr(HitlAuthenticatedSession, "from_authenticated_boundary")
     with pytest.raises(TypeError):
         HitlAuthorization.for_verified_session(  # type: ignore[arg-type]
             "service",

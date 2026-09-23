@@ -410,7 +410,7 @@ class InMemoryDurableRunStore:
     ) -> DurableRunRecord:
         if authorization is None:
             raise HitlAuthorizationRequired("HITL authorization is required")
-        async with self._lock:
+        async with authorization.hold_membership_mutation(), self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
@@ -436,7 +436,7 @@ class InMemoryDurableRunStore:
     ) -> DurableRunRecord:
         if authorization is None:
             raise HitlAuthorizationRequired("HITL authorization is required")
-        async with self._lock:
+        async with authorization.hold_membership_mutation(), self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
@@ -462,7 +462,7 @@ class InMemoryDurableRunStore:
     ) -> DurableRunRecord:
         if authorization is None:
             raise HitlAuthorizationRequired("HITL authorization is required")
-        async with self._lock:
+        async with authorization.hold_membership_mutation(), self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
@@ -676,15 +676,12 @@ class SqliteDurableRunStore:
         at: datetime | None = None,
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
-            await self._check_hitl_authorization(run_id, authorization)
-            return await asyncio.to_thread(
-                _mutate_hitl_sync,
-                self,
-                run_id,
-                lambda current: answer_record(current, node_id, answer, at=at),
-                workspace_id,
-            )
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: answer_record(current, node_id, answer, at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
 
     async def timeout_hitl(
         self,
@@ -695,15 +692,12 @@ class SqliteDurableRunStore:
         at: datetime | None = None,
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
-            await self._check_hitl_authorization(run_id, authorization)
-            return await asyncio.to_thread(
-                _mutate_hitl_sync,
-                self,
-                run_id,
-                lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
-                workspace_id,
-            )
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
 
     async def cancel_hitl(
         self,
@@ -714,39 +708,38 @@ class SqliteDurableRunStore:
         at: datetime | None = None,
         workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
-            await self._check_hitl_authorization(run_id, authorization)
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def _mutate_authorized_hitl(
+        self,
+        run_id: str,
+        mutate: Callable[[DurableRunRecord], DurableRunRecord],
+        *,
+        authorization: HitlAuthorization,
+        workspace_id: str | None,
+    ) -> DurableRunRecord:
+        if authorization is None:
+            raise HitlAuthorizationRequired("HITL authorization is required")
+        # The authorization decision runs inside the SQLite write transaction,
+        # after its canonical Run read and before its versioned write. A
+        # pre-read check leaves a revocation-to-write interval in which a
+        # caller can settle a formerly visible pause.
+        loop = asyncio.get_running_loop()
+        async with authorization.hold_membership_mutation(), self._lock:
             return await asyncio.to_thread(
                 _mutate_hitl_sync,
                 self,
                 run_id,
-                lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+                mutate,
                 workspace_id,
+                authorization,
+                loop,
             )
-
-    async def _check_hitl_authorization(
-        self,
-        run_id: str,
-        authorization: HitlAuthorization,
-    ) -> None:
-        if authorization is None:
-            raise HitlAuthorizationRequired("HITL authorization is required")
-        record = await self.get(run_id)
-        if record is None:
-            raise KeyError(f"no such run: {run_id!r}")
-        # The first check resolves the target; the second is the final live
-        # membership/evidence predicate immediately before the serialized
-        # SQLite mutation. Discovery must never be the only authorization.
-        if not await authorization.permits(
-            record.run.workspace_id,
-            consume_evidence=False,
-        ):
-            raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
-        if not await authorization.permits(
-            record.run.workspace_id,
-            consume_evidence=True,
-        ):
-            raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
 
 
 def _create_sync(
@@ -824,9 +817,18 @@ def _mutate_hitl_sync(
     store: SqliteDurableRunStore,
     run_id: str,
     mutate: Callable[[DurableRunRecord], DurableRunRecord],
-    workspace_id: str | None = None,
+    workspace_id: str | None,
+    authorization: HitlAuthorization,
+    loop: asyncio.AbstractEventLoop,
 ) -> DurableRunRecord:
-    """Serialize one HITL decision and its optimistic write in one transaction."""
+    """Authorize and serialize one HITL decision in one write transaction.
+
+    The membership authority is asynchronous, whereas SQLite work runs in a
+    worker thread. ``run_coroutine_threadsafe`` lets the worker retain its
+    ``BEGIN IMMEDIATE`` transaction while the request loop resolves live
+    membership/delegation evidence. The Run cannot be changed between that
+    object decision and the subsequent versioned write.
+    """
     with store._connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         persisted = conn.execute(
@@ -839,6 +841,12 @@ def _mutate_hitl_sync(
         current = store._from_row(persisted)
         if workspace_id is not None and current.run.workspace_id != workspace_id:
             raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+        permitted = asyncio.run_coroutine_threadsafe(
+            authorization.permits(current.run.workspace_id, consume_evidence=True),
+            loop,
+        ).result()
+        if not permitted:
+            raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
         updated = mutate(current)
         row = {**store._to_row(updated), "expected_version": current.version}
         cursor = conn.execute(

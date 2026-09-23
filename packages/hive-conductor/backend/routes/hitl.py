@@ -29,14 +29,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from middleware.auth import resolve_principal
 from pydantic import BaseModel, ConfigDict, Field
-from services.workspace_authority import is_member, list_workspace_ids_for_user
-
-from maistro.graph.durable_runs import (
-    HitlAuthenticatedSession,
-    HitlAuthorization,
-    cursor_time,
-    expire_hitl_pauses,
+from services.workspace_authority import (
+    hitl_membership_mutation_lock,
+    is_member,
+    list_workspace_ids_for_user,
 )
+
+from maistro.graph.durable_runs import HitlAuthorization, cursor_time, expire_hitl_pauses
+from maistro.graph.durable_runs.hitl import _authenticated_session_from_verified_boundary
 from maistro.runs.model import RunStatus
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
@@ -110,7 +110,11 @@ async def _authorized_record(request: Request, run_id: str) -> Any:
 def _hitl_authorization(request: Request, workspace_ids: set[str]) -> HitlAuthorization:
     """Carry live canonical membership into the durable mutation boundary."""
     return HitlAuthorization.for_verified_session(
-        HitlAuthenticatedSession.from_authenticated_boundary(_request_user_id(request), is_member),
+        _authenticated_session_from_verified_boundary(
+            _request_user_id(request),
+            is_member,
+            membership_mutation_lock=hitl_membership_mutation_lock(),
+        ),
         workspace_ids,
     )
 

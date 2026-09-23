@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -57,6 +58,7 @@ class HitlAuthenticatedSession:
 
     effective_principal: str
     membership_check: WorkspaceMembershipCheck
+    membership_mutation_lock: asyncio.Lock | None = field(default=None, repr=False, compare=False)
     _factory_token: object = field(default=None, kw_only=True, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -68,18 +70,26 @@ class HitlAuthenticatedSession:
         if not self.effective_principal.strip():
             raise ValueError("HITL session evidence requires an effective principal")
 
-    @classmethod
-    def from_authenticated_boundary(
-        cls,
-        effective_principal: str,
-        membership_check: WorkspaceMembershipCheck,
-    ) -> HitlAuthenticatedSession:
-        """Create evidence only after an auth adapter verified the session."""
-        return cls(
-            effective_principal,
-            membership_check,
-            _factory_token=_SESSION_FACTORY_TOKEN,
-        )
+
+def _authenticated_session_from_verified_boundary(
+    effective_principal: str,
+    membership_check: WorkspaceMembershipCheck,
+    *,
+    membership_mutation_lock: asyncio.Lock | None = None,
+) -> HitlAuthenticatedSession:
+    """Create session evidence at the trusted HTTP/authentication seam only.
+
+    This deliberately is not a public ``HitlAuthenticatedSession`` constructor:
+    a reusable core-facing factory accepting an arbitrary membership callback
+    would let any service manufacture allow-all session evidence. Product auth
+    adapters own this private seam after verifying the request principal.
+    """
+    return HitlAuthenticatedSession(
+        effective_principal,
+        membership_check,
+        membership_mutation_lock,
+        _factory_token=_SESSION_FACTORY_TOKEN,
+    )
 
 
 @dataclass(frozen=True)
@@ -134,6 +144,7 @@ class HitlAuthorization:
     effective_principal: str
     workspace_ids: frozenset[str]
     membership_check: WorkspaceMembershipCheck
+    membership_mutation_lock: asyncio.Lock | None = field(default=None, repr=False, compare=False)
     delegation_evidence: HitlDelegationEvidence | None = None
     evidence_validator: HitlEvidenceValidator | None = None
     evidence_consumer: HitlEvidenceConsumer | None = None
@@ -181,6 +192,7 @@ class HitlAuthorization:
             session.effective_principal,
             frozenset(workspace_ids),
             session.membership_check,
+            session.membership_mutation_lock,
             _factory_token=_AUTHORIZATION_FACTORY_TOKEN,
         )
 
@@ -201,12 +213,28 @@ class HitlAuthorization:
             effective_principal,
             frozenset(workspace_ids),
             membership_check,
+            None,
             delegation_evidence,
             evidence_validator,
             evidence_consumer,
             action,
             _factory_token=_AUTHORIZATION_FACTORY_TOKEN,
         )
+
+    @asynccontextmanager
+    async def hold_membership_mutation(self) -> AsyncIterator[None]:
+        """Hold the auth authority's revocation lock through one settlement.
+
+        Product adapters supply this lock and use it for membership removal, so
+        membership cannot be revoked after its live check but before the
+        durable write. Backends without a colocated authority retain the
+        explicit live predicate but do not claim this stronger serialization.
+        """
+        if self.membership_mutation_lock is None:
+            yield
+            return
+        async with self.membership_mutation_lock:
+            yield
 
     async def permits(self, workspace_id: str, *, consume_evidence: bool = False) -> bool:
         """Revalidate membership and delegated authority for one Workspace.
