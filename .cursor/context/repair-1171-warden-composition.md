@@ -115,3 +115,15 @@ suites + hitl door 100 passed; ruff clean; `check-suite-inventory` (both),
 (equivalence across chat/scan/harness/event re-entry, L3 wiring, labelled
 re-entry scan, blocked-preview refusal, missing-warden refusal) all pass.
 Details: docs/testing/inventory-notes/auto-1171-warden-composition.md.
+
+## Round 3 (job 1fa1f2d0, head 5efd26eee) — independent re-proof, no code change
+
+Verify job cafb5487 at this head had **all seven checks returncode 0** but the
+verifier agent crashed (`worker_error`), producing no findings. This round
+re-ran the full battery from scratch and re-proved every acceptance criterion
+on current code: ruff clean; core issue suites 393P/51S; conductor issue
+suites 80P (incl. the previously failing adapter test — fixed by fe7ba28c5);
+full backend 2663P/1S/0F; mypy 712 files clean; five CI gates exit 0.
+Equivalence test re-read: same Warden object across chat/scan/harness/event
+re-entry, exactly 4 scans (user_input×3 + tool_result), zero HTTP after a
+blocked preview. Inventory note round 3 section records the details.

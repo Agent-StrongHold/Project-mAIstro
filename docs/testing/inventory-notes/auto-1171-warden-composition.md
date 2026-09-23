@@ -101,3 +101,35 @@ suites + hitl door 100 passed; `ruff check`/`format` clean;
 
 No closure keywords (`fixes/closes/resolves #…`) in branch commit messages;
 PR #1447 body says "Refs #1171" only and remains draft.
+
+## Validation round 3 (job 1fa1f2d0, head 5efd26eee) — independent re-proof
+
+The verify job at this head (cafb5487) recorded **returncode 0 on all seven
+checks** but crashed afterwards (`worker_error`, agent_exit 1), leaving no
+findings. This round re-ran the battery from scratch at the same head; every
+number below was measured fresh, not carried forward:
+
+- `ruff check .` / `ruff format --check .`: clean (2527 files formatted).
+- Core issue suites (events, harness_runner, container security wiring):
+  **393 passed / 51 skipped**.
+- Conductor issue suites (agents, harness, adapter, chat-created):
+  **80 passed**, including `test_start_carries_the_model_bindings_onto_the
+  _container_config` — the one test check-4.log (job 0387d5b6, head d461035)
+  actually failed on; the `**kwargs` fake widening in fe7ba28c5 fixed it.
+- Full backend suite: **2663 passed / 1 skipped / 0 failed** (~2 min).
+- `mypy` (6 packages): success, 712 files.
+- Gates: `check-suite-inventory` (conductor 2664 / core 10744, no delta),
+  `check-wiring-reads`, `check-cross-package-imports`,
+  `check-contract-markers`, `check-reachability` — all exit 0.
+- `test_identical_malicious_content_uses_one_canonical_warden` re-read line by
+  line: asserts the *same* Warden object serves chat (blocked at gate, model
+  asserted unreachable), agent scan (flagged), harness send (400), and
+  Container-style bound EventBus re-entry (`EventPayloadBlocked` cause,
+  `event_client.calls == []`); exactly 4 malicious scans with boundaries
+  `user_input×3 + tool_result`.
+- #1158 inheritance re-proven structurally: `normalize_for_detection` is
+  invoked inside `Warden.scan` (`security/warden/detector.py:146`); grep
+  finds no route/event-local normalizer.
+
+No code change was warranted this round: the only prior real failure is
+demonstrably fixed at this head, and no acceptance criterion lacks evidence.
