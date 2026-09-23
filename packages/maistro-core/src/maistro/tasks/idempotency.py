@@ -538,34 +538,57 @@ class _ClaimFlow:
         if await self._insert(scope_key, fresh):
             return Claimed(fresh.claim_token)
         for _ in range(self._RACE_ROUNDS):
-            record = await self._read(scope_key)
-            if record is None:
-                # Released (or taken over) between our refused insert and this
-                # read. The slot is free again; try to win it.
-                if await self._insert(scope_key, fresh):
-                    return Claimed(fresh.claim_token)
-                continue
-            kind = _assess(record, fingerprint=fingerprint, now_us=now_us)
-            if kind == "mismatch":
-                raise IdempotencyKeyMismatch(
-                    "this idempotency key already admitted a different request payload; "
-                    "a replay must repeat the original payload or use a new key"
-                )
-            if kind == "replayed":
-                return Replayed(record)
-            if kind == "pending":
-                return Pending(record)
-            if kind == "ambiguous":
-                # The caller resolves this by discovery; handing back the claim
-                # is the store saying "beyond my sight", not an answer.
-                return Ambiguous(record)
-            if await self._take_over(scope_key, fresh, now_us):
-                return Claimed(fresh.claim_token)
+            outcome = await self._resolve_race_round(
+                scope_key, fresh, fingerprint=fingerprint, now_us=now_us
+            )
+            if outcome is not None:
+                return outcome
         # The guard kept refusing, which for a correct backend means the row
         # moved under us every round. Report what is there now; a pending
         # answer keeps the caller's own retry loop (and its takeover) armed.
         record = await self._read(scope_key)
         return Pending(record) if record is not None else Pending(fresh)
+
+    async def _resolve_race_round(
+        self,
+        scope_key: str,
+        fresh: AdmissionRecord,
+        *,
+        fingerprint: str,
+        now_us: int,
+    ) -> Claimed | Replayed | Pending | Ambiguous | None:
+        """Play one lost-insert race round: read, classify, and act.
+
+        Split from :meth:`claim` so the loop there reads as the bounded retry
+        it is. Returns the round's terminal answer, or ``None`` when the round
+        was merely lost — the slot moved under us again and the caller should
+        retry — which is exactly the two paths (fresh-slot re-insert refused,
+        takeover refused) that used to ``continue``/fall through inline.
+        """
+        record = await self._read(scope_key)
+        if record is None:
+            # Released (or taken over) between our refused insert and this
+            # read. The slot is free again; try to win it.
+            if await self._insert(scope_key, fresh):
+                return Claimed(fresh.claim_token)
+            return None
+        kind = _assess(record, fingerprint=fingerprint, now_us=now_us)
+        if kind == "mismatch":
+            raise IdempotencyKeyMismatch(
+                "this idempotency key already admitted a different request payload; "
+                "a replay must repeat the original payload or use a new key"
+            )
+        if kind == "replayed":
+            return Replayed(record)
+        if kind == "pending":
+            return Pending(record)
+        if kind == "ambiguous":
+            # The caller resolves this by discovery; handing back the claim
+            # is the store saying "beyond my sight", not an answer.
+            return Ambiguous(record)
+        if await self._take_over(scope_key, fresh, now_us):
+            return Claimed(fresh.claim_token)
+        return None
 
     async def _insert(self, scope_key: str, record: AdmissionRecord) -> bool:
         raise NotImplementedError
