@@ -559,11 +559,7 @@
       "handler": "create_render_job",
       "disposition": "disabled",
       "production_enabled": false,
-<<<<<<< HEAD
       "reason": "compatibility endpoint fails explicitly until the canonical Canvas rendering seam exists; it creates no process-local job or output",
-=======
-      "reason": "rendering is explicitly unavailable until a canonical worker, durable artifact store, and output-serving route exist (D-14 facade, #286)",
->>>>>>> ba2f1f077fd2790c704101ea5435cbb4c2ba78b0
       "owner_issue": 286
     },
     {
