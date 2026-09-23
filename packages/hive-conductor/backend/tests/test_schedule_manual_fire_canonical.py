@@ -119,9 +119,11 @@ def _configured_container(monkeypatch: pytest.MonkeyPatch) -> Any:
     service = engine_mod.get_engine()
     previous = service._agent_port
     service._agent_port = SimpleNamespace(container=container)
-    container.bound_scope = asyncio.run(_bind_scope(container))
-    yield container
-    service._agent_port = previous
+    try:
+        container.bound_scope = asyncio.run(_bind_scope(container))
+        yield container
+    finally:
+        service._agent_port = previous
 
 
 def test_manual_fire_over_http_creates_one_canonical_run(

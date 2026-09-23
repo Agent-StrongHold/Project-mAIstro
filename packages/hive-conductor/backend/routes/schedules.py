@@ -82,6 +82,35 @@ async def _visible_schedule(request: Request, schedule_id: str) -> Schedule:
     return current
 
 
+_WRITER_ROLES = frozenset({"owner", "editor"})
+_SCOPE_REFUSED = "Schedule Workspace scope is not authorized"
+
+
+async def _require_writer(actor: str, workspace_id: str) -> None:
+    """A viewer may read a Workspace's schedules, not arm or retarget them."""
+    if await workspace_authority.member_role(actor, workspace_id) not in _WRITER_ROLES:
+        raise HTTPException(status_code=403, detail=_SCOPE_REFUSED)
+
+
+async def _writable_schedule(
+    request: Request, schedule_id: str, *, require_active: bool = True
+) -> Schedule:
+    """A visible row the caller may change; an archived Workspace admits no
+    edit or Run, the same admission `POST /v1/dags/{id}/run` applies."""
+    schedule = await _visible_schedule(request, schedule_id)
+    actor = _actor(request)
+    await _require_writer(actor, schedule.workspace_id)
+    if require_active:
+        try:
+            await authorize_hive_dag_workspace(workspace_id=schedule.workspace_id, user_id=actor)
+        except DagWorkspaceSelectionError as exc:
+            raise HTTPException(status_code=403, detail=_SCOPE_REFUSED) from exc
+    current = stores.schedules.get(schedule_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return current
+
+
 @router.get("", response_model=list[Schedule])
 async def list_schedules(request: Request) -> list[Schedule]:
     allowed = await dag_run_inspection.authorized_workspace_ids(_actor(request))
@@ -127,9 +156,8 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
             workspace_id=body.workspace_id, user_id=actor, project_id=body.project_id
         )
     except DagWorkspaceSelectionError as exc:
-        raise HTTPException(
-            status_code=403, detail="Schedule Workspace scope is not authorized"
-        ) from exc
+        raise HTTPException(status_code=403, detail=_SCOPE_REFUSED) from exc
+    await _require_writer(actor, scope.workspace_id)
     sid = str(uuid4())
     t = _now()
     schedule = Schedule(
@@ -179,7 +207,7 @@ class UpdateScheduleBody(BaseModel):
 
 @router.put("/{schedule_id}", response_model=Schedule)
 async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: Request) -> Schedule:
-    schedule = await _visible_schedule(request, schedule_id)
+    schedule = await _writable_schedule(request, schedule_id)
     updates = body.model_dump(exclude_none=True)
     t = _now()
     updates["updated_at"] = t
@@ -190,7 +218,7 @@ async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: R
 
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
-    await _visible_schedule(request, schedule_id)
+    await _writable_schedule(request, schedule_id, require_active=False)
     stores.schedules.pop(schedule_id, None)
 
 
@@ -206,15 +234,7 @@ async def run_schedule(schedule_id: str, request: Request) -> Schedule:
     A fire that cannot happen is a 409 rather than a silent stamp: the caller
     asked for work to start, and it did not.
     """
-    schedule = await _visible_schedule(request, schedule_id)
-    try:
-        # Membership alone admits reads; a new Run also needs the Workspace
-        # to be active, the same admission `POST /v1/dags/{id}/run` applies.
-        await authorize_hive_dag_workspace(
-            workspace_id=schedule.workspace_id, user_id=_actor(request)
-        )
-    except DagWorkspaceSelectionError as exc:
-        raise HTTPException(status_code=404, detail="schedule not found") from exc
+    await _writable_schedule(request, schedule_id)
     from services.scheduler import ScheduleAdmissionUnavailable, ScheduleNotFireable, fire_now
 
     try:
@@ -228,4 +248,7 @@ async def run_schedule(schedule_id: str, request: Request) -> Schedule:
         # broken. 503 says the dependency is not there and the request may be
         # retried once it is.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return stores.schedules[schedule_id]
+    fired = stores.schedules.get(schedule_id)
+    if fired is None:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return fired

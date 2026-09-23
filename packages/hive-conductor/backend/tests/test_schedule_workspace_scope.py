@@ -180,6 +180,9 @@ def test_foreign_schedules_are_indistinguishable_from_missing(
 
 
 def test_ownerless_legacy_rows_are_visible_to_nobody(principals: dict[str, Any]) -> None:
+    import stores
+
+    assert "sch-1" in stores.schedules and not stores.schedules["sch-1"].workspace_id
     assert principals["alice"].get("/v1/schedules/sch-1").status_code == 404
     assert principals["alice"].post("/v1/schedules/sch-1/run").status_code == 404
 
@@ -232,20 +235,47 @@ def test_membership_removal_revokes_access(principals: dict[str, Any]) -> None:
     assert sid not in {row["id"] for row in principals["bob"].get("/v1/schedules").json()}
 
 
-def test_manual_run_in_an_archived_workspace_is_refused(principals: dict[str, Any]) -> None:
+def test_an_archived_workspace_admits_no_run_or_edit(principals: dict[str, Any]) -> None:
     """The same admission rule as `POST /v1/dags/{id}/run`: an inactive
-    Workspace admits no new Run, whichever door the request came through."""
+    Workspace admits no new Run, and a schedule in it cannot be re-armed."""
+    import stores
+    from services import workspace_authority
+
+    sid = _create(principals, "alice", enabled=False)["id"]
+    before = stores.schedules[sid].model_dump()
+    asyncio.run(workspace_authority.update_presentation(principals["alice_ws"].id, active=False))
+    alice = principals["alice"]
+
+    for response in (
+        alice.post(f"/v1/schedules/{sid}/run"),
+        alice.put(f"/v1/schedules/{sid}", json={"enabled": True}),
+    ):
+        assert response.status_code == 403, response.text
+    assert stores.schedules[sid].model_dump() == before
+    assert alice.get(f"/v1/schedules/{sid}").status_code == 200, "still readable"
+    assert alice.delete(f"/v1/schedules/{sid}").status_code == 204, "and removable"
+
+
+def test_a_viewer_can_read_but_not_change_or_fire(principals: dict[str, Any]) -> None:
     import stores
     from services import workspace_authority
 
     sid = _create(principals, "alice")["id"]
-    asyncio.run(workspace_authority.update_presentation(principals["alice_ws"].id, active=False))
+    before = stores.schedules[sid].model_dump()
+    asyncio.run(
+        workspace_authority.set_member(principals["alice_ws"].id, user_id="bob", role="viewer")
+    )
+    bob = principals["bob"]
 
-    response = principals["alice"].post(f"/v1/schedules/{sid}/run")
-
-    assert response.status_code == 404, response.text
-    assert response.json() == {"detail": "schedule not found"}
-    assert stores.schedules[sid].last_run_id is None
+    assert bob.get(f"/v1/schedules/{sid}").status_code == 200
+    for response in (
+        bob.put(f"/v1/schedules/{sid}", json={"mission_template_id": "other-dag"}),
+        bob.post(f"/v1/schedules/{sid}/run"),
+        bob.delete(f"/v1/schedules/{sid}"),
+        bob.post("/v1/schedules", json={**_BODY, "workspace_id": principals["alice_ws"].id}),
+    ):
+        assert response.status_code == 403, response.text
+    assert stores.schedules[sid].model_dump() == before
 
 
 def test_delete_of_an_already_deleted_row_is_a_404_not_a_500(

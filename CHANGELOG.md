@@ -33,8 +33,11 @@ or placeholder-only section.
   authenticated session; a client-sent `user_id` is ignored and `PUT` cannot
   change owner or scope. List returns only schedules in the caller's
   Workspaces, and get/update/delete/manual run answer the same 404 for a
-  missing, foreign, or ownerless (pre-existing) schedule. Removing a member
-  removes their access, and a manual run in an archived Workspace is refused.
+  missing, foreign, or ownerless (pre-existing) schedule. Only a Workspace
+  owner or editor may create, change, delete or manually run a schedule
+  (viewers read); an archived Workspace refuses edits and manual runs.
+  Removing a member removes their API access; it does not yet stop automatic
+  fires of schedules that member owns (tracked in #1201).
   With a configured Container, fires of a bound schedule create their Run in
   the bound Workspace/Project instead of the configured default. Operators:
   schedules created before this change (including the seeded `sch-1`) have no
