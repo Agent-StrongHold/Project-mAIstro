@@ -60,3 +60,24 @@ at this head: removing the runner injected-llm_call guard fails
 fails `test_hostile_resumed_patch_is_refused_before_apply` +
 `test_unavailable_warden_refuses_resumed_patch`; both mutations reverted with
 `git status --porcelain` empty and the files byte-identical to HEAD.
+
+Repair round at head `43822db55` (develop base `8bb344e32`): independently
+re-derived the seam inventory instead of trusting prior claims — every model
+invocation seam in `maistro-rsi` is boundary-guarded: `gateway.py` (scan before
+HTTP I/O), `runner.py` (injected `llm_call` wrapped with `guarded_async_call`),
+`local_loop.py` (builder system prompt + `WardenGuardedCallable` transcript
+scan, saved-patch resume admission, hyper-mutation prompt admission, regression
+judge diff admission), `autorun.py` (proposer hypothesis/insights admission),
+`__main__.py` (hyper-mutator goal/target/prompt admission), `scout.py` (both
+scout calls), `benchmarks/swebench_pro.py` (guarded model call + genome system
+prompt). `free_router.py` sends only a literal ping — not a harvest seam;
+`harvest.py` is promotion-side grouping (#302). Full battery re-executed at
+this head: 756 rsi + 645 evolve tests pass, ruff check/format clean,
+suite-inventory/security-inventory/reachability (+dispositions, provenance)
+gates pass. Mutation evidence re-executed by this round: replacing the runner
+guard body with a direct inner call fails
+`test_injected_llm_call_is_guarded_for_both_genome_evals`; gating the resume
+admission off fails `test_hostile_resumed_patch_is_refused_before_apply` +
+`test_unavailable_warden_refuses_resumed_patch`; both reverted, tree
+byte-identical to `43822db55` (`git status --porcelain` empty, all 26
+runner+resume tests green again).
