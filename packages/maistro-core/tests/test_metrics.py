@@ -305,9 +305,7 @@ def test_empty_registry_exposes_only_uptime(monkeypatch: pytest.MonkeyPatch) -> 
     # pytest teardown reporting) also consumes the fake. The 12.34 fallback
     # keeps those extra reads harmless while the two scripted values still
     # decide the asserted uptime.
-    monkeypatch.setattr(
-        metrics_module.time, "monotonic", lambda: next(monotonic_values, 12.34)
-    )
+    monkeypatch.setattr(metrics_module.time, "monotonic", lambda: next(monotonic_values, 12.34))
     reg = MetricsRegistry()
 
     assert reg.render_prometheus() == (
