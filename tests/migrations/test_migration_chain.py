@@ -99,6 +99,10 @@ EXPECTED_TABLES = frozenset(
         "prompt_labels",
         "prompts",
         "quota_usage",
+        # One immutable evidence row per canonical physical Invocation (039,
+        # #718): at-most-once quota accounting and explicit unreported usage
+        # evidence, projected into `quota_usage`.
+        "quota_invocation_evidence",
         # Schedule definitions and their fire cursors (016). Durable so that a
         # cursor survives a restart and two scheduler replicas share one rather
         # than each keeping a private copy (#231).

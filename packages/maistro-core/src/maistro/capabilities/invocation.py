@@ -418,6 +418,16 @@ class InvocationExecutionService:
         )
         return history[-1] if history else None
 
+    async def _notify_completion(self, completed: Invocation) -> None:
+        """Hand a terminal effect to the composition-root recorder, if any.
+
+        Branchless from the caller's side: `invoke` sits at the complexity
+        ceiling, and the recorder decision belongs to the hook owner.
+        """
+
+        if (on_completed := self._on_completed) is not None:
+            await on_completed(completed)
+
     async def invoke(
         self,
         *,
@@ -540,8 +550,7 @@ class InvocationExecutionService:
                 result=result,
                 usage=usage,
             )
-            if self._on_completed is not None:
-                await self._on_completed(completed)
+            await self._notify_completion(completed)
             return completed
         finally:
             self._active_dispatches.discard(invocation.invocation_id)
@@ -770,13 +779,13 @@ class InvocationExecutionService:
             if current is None:
                 raise
             return current
-        if disposition is ReconciliationDisposition.APPLIED and self._on_completed is not None:
+        if disposition is ReconciliationDisposition.APPLIED:
             # `APPLIED` settles a physical call whose outcome had been UNKNOWN:
             # its usage (or its explicit unreported marker) reaches the quota
             # ledger here. The recorder deduplicates on Invocation identity and
             # a COMPLETED row can never be reconciled again, so this stays
             # at-most-once even across retries of the settlement itself.
-            await self._on_completed(settled)
+            await self._notify_completion(settled)
         return settled
 
     async def _terminalize(
@@ -812,8 +821,8 @@ __all__ = [
     "EffectNotApplied",
     "InMemoryInvocationStore",
     "Invocation",
-    "InvocationExecutionService",
     "InvocationCompletionHook",
+    "InvocationExecutionService",
     "InvocationReconciliation",
     "InvocationReconciliationEvidence",
     "InvocationStatus",
