@@ -260,9 +260,9 @@ async def test_a_configured_database_without_a_container_refuses_the_mirror_fall
     monkeypatch.setenv("DATABASE_URL", "postgresql://maistro:pw@postgres:5432/maistro")
     stores.workspaces["stale"] = _legacy("stale", [WorkspaceMember(user_id="alice", role="owner")])
 
-    with pytest.raises(workspace_authority.CanonicalWorkspaceStoreUnavailable):
+    with pytest.raises(workspace_authority.EmbeddedRuntimeUnavailable):
         await workspace_authority.is_member("alice", "stale")
-    with pytest.raises(workspace_authority.CanonicalWorkspaceStoreUnavailable):
+    with pytest.raises(workspace_authority.EmbeddedRuntimeUnavailable):
         await workspace_authority.canonical_workspace_store()
 
 

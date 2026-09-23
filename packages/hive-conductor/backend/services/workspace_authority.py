@@ -69,7 +69,7 @@ class LegacyWorkspaceQuarantined(ValueError):
     """A legacy row is malformed and must not block other Workspace imports."""
 
 
-class CanonicalWorkspaceStoreUnavailable(RuntimeError):
+class EmbeddedRuntimeUnavailable(RuntimeError):
     """A database is configured but the Container that owns it never started."""
 
 
@@ -99,7 +99,7 @@ def _engine_workspace_store() -> WorkspaceStore:
         # Falling back here would replay the mirror, which stopped receiving
         # writes once the shared database became the owner, and bring back
         # every membership revoked and Workspace deleted since.
-        raise CanonicalWorkspaceStoreUnavailable(
+        raise EmbeddedRuntimeUnavailable(
             "a database is configured but the maistro-core Container holding the "
             "canonical Workspace store is not running"
         )
