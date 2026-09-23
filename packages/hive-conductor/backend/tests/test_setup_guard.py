@@ -283,6 +283,63 @@ def test_first_run_provisions_vault_and_persists_seed(
     assert stored == " ".join(out["mnemonic"])
 
 
+def test_identical_admin_and_user_usernames_are_rejected_before_any_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex review finding 1 (PR #1528): identical usernames must be refused
+    by validation, before the admin write can land and make the request
+    unretryable (the second, colliding user write would raise ValueError from
+    the store's uniqueness enforcement, and the exception handler retains the
+    durable setup claim once any account exists)."""
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+    from models.schemas import HiveUser
+    from services.model_store import ModelStore
+
+    fresh_users = ModelStore("users", HiveUser, unique_fields=("username",))
+    monkeypatch.setattr(stores, "users", fresh_users)
+    monkeypatch.setattr("routes.setup._get_kv", lambda: None)
+
+    response = TestClient(app).post(
+        "/v1/setup/complete",
+        json={
+            "hardware_preset": "auto",
+            "admin_username": "sameuser",
+            "admin_password": "s3cret-admin",
+            "user_username": "SameUser",
+            "user_password": "s3cret-user",
+        },
+    )
+
+    assert response.status_code == 422
+    assert any("must differ" in error["msg"] for error in response.json()["detail"])
+    # Nothing was written, and setup remains retryable.
+    assert len(fresh_users) == 0
+    assert "__hive_setup_claim__" not in stores.sessions
+
+
+def test_identical_usernames_rejected_on_direct_call_too() -> None:
+    """The direct-Python-call path (`_validate_direct_setup_body`) must reject
+    identical usernames the same way the HTTP boundary does."""
+    from fastapi import HTTPException
+    from routes.setup import complete_setup
+
+    with pytest.raises(HTTPException) as exc_info:
+        complete_setup(
+            {
+                "hardware_preset": "auto",
+                "admin_username": "dup",
+                "admin_password": "s3cret-admin",
+                "user_username": "dup",
+                "user_password": "s3cret-user",
+            }
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "must differ" in str(exc_info.value.detail)
+
+
 def test_empty_hardware_preset_is_rejected() -> None:
     from pydantic import ValidationError
     from routes.setup import SetupCompleteBody
