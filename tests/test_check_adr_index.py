@@ -176,8 +176,8 @@ def test_fix_leaves_the_reviewed_columns_alone(sandbox) -> None:
     }
     assert before == after
     # 83 base rows + ADR-102 (this branch) + ADR-091626-ba4f + ADR-091726-7c2a
-    # (develop merge).
-    assert len(after) == 86
+    # + ADR-092326-7ed7 (develop merge).
+    assert len(after) == 87
 
 
 def test_fix_is_idempotent(sandbox) -> None:
