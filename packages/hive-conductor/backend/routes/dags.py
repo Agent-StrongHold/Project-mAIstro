@@ -72,6 +72,17 @@ def _actor(request: Request) -> str:
     return str(user.get("id") or "system")
 
 
+def _public_failure(exc: BaseException) -> str:
+    """What a caller may learn about an unexpected failure: the kind, not the text.
+
+    Exception messages carry file paths, connection strings, and provider
+    replies; the full detail is in the server log with the traceback, and the
+    response names only the exception class so a client can still tell a
+    timeout from a type error.
+    """
+    return f"{type(exc).__name__}: execution failed; see server logs"
+
+
 async def _resolve_run_scope(
     dag_data: Mapping[str, Any], request: Request, workspace_id: str | None
 ) -> tuple[str, str]:
@@ -97,7 +108,7 @@ async def _resolve_run_scope(
         )
 
         try:
-            authorize_hive_dag_workspace(
+            await authorize_hive_dag_workspace(
                 workspace_id=selected_workspace,
                 user_id=_actor(request),
             )
@@ -541,8 +552,8 @@ async def run_dag(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.warning("Registered DAG execution failed: %s", exc)
-        return {"status": "failed", "error": str(exc)}
+        logger.warning("Registered DAG execution failed: %s", exc, exc_info=exc)
+        return {"status": "failed", "error": _public_failure(exc)}
 
     result = _registered_run_result(graph, record)
     await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
@@ -564,5 +575,5 @@ async def run_champion() -> dict:
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
     except Exception as exc:
-        logger.warning("Champion execution failed: %s", exc)
-        return {"status": "failed", "error": str(exc)}
+        logger.warning("Champion execution failed: %s", exc, exc_info=exc)
+        return {"status": "failed", "error": _public_failure(exc)}

@@ -41,6 +41,7 @@ from maistro.runs.admission import admit_direct_work
 from maistro.runs.archival import ArchivePolicy, RunArchiveSweeper
 from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
+from maistro.runs.retention_scope import WorkspaceRetentionScope
 from maistro.runs.sources import CHAT_SOURCE
 from maistro.runs.task_kinds import resolve_direct_work
 
@@ -92,6 +93,13 @@ TIMEOUT_FAILURE = "timeout"
 #: above, and for the same reason: the exception that interrupted admission is
 #: for the log, not for anyone holding the run_id.
 ADMISSION_INCOMPLETE = "admission_incomplete"
+
+#: What a compensated Run records when admission reached RUNNING durably but
+#: nothing ever executed under it (#338). Distinct from `ADMISSION_INCOMPLETE`:
+#: admission itself finished here -- what never started is the physical
+#: Attempt, because the process died between `_admit_chat_turn` returning and
+#: `ChatAttemptExecutor.execute()` persisting the turn's first NodeRun.
+EXECUTION_NEVER_STARTED = "execution_never_started"
 
 
 def failure_category(exc: BaseException) -> str:
@@ -184,7 +192,14 @@ class ChatRunAdmitter:
         # would ever sweep. Giving the Run a deadline at admission puts the
         # answer on the row, where a later process can act on it.
         self._retention = retention if retention is not None else RetentionPolicy()
-        self._sweeper = RunRetentionSweeper(run_store, self._retention)
+        # The admitter's own Workspace is the sweep's whole deletion authority
+        # (#1175): this sweeper can never purge another Workspace's expired
+        # Runs, however shared the store underneath is.
+        self._sweeper = RunRetentionSweeper(
+            run_store,
+            self._retention,
+            scope=WorkspaceRetentionScope(workspace_id=self._workspace_id),
+        )
         # The cold half of the same clock (#273). Deliberately a second
         # sweeper rather than a branch inside the first: archiving and
         # purging select disjoint populations (ADR-082226-f436 decision
@@ -232,8 +247,10 @@ class ChatRunAdmitter:
         contradicting what happened, which is worse than one that says the
         agent was not yet chosen.
 
-        Binding the *actually dispatched* agent onto the Run needs the Conduit
-        to report its selection, which is #142's convergence.
+        The Run deliberately keeps this admission-time fact as `deferred`. The
+        Conduit reports the agent it actually dispatches, and #223 records that
+        execution-time identity on the Attempt rather than rewriting this
+        provenance after admission (ADR-082526-7f02).
         """
         description = last_user_message(messages) or DEFAULT_TURN_NAME
         resolved_agent = (agent_id or "").strip()
@@ -338,6 +355,7 @@ __all__ = [
     "CHAT_SOURCE",
     "DEFAULT_TURN_NAME",
     "DEFERRED_AGENT_SELECTION",
+    "EXECUTION_NEVER_STARTED",
     "MAX_RECORDED_ANSWER_CHARS",
     "MAX_RETAINED_CHAT_RUNS",
     "REQUEST_ID_KEY",
