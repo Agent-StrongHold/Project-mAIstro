@@ -3,7 +3,7 @@
 `test_builder_pipeline.py` covers the dispatcher/DAG/skip/gate mechanics; this
 file closes the remaining gaps: `build_spec_summary`, the decompose/scaffold
 spec on_complete hooks, spec load-or-emit at execute() start, the
-verification-wrapping hook, and `_reconcile_stages`'s failed-stage branch.
+verification-wrapping hook and canonical failed-stage projection.
 """
 
 from __future__ import annotations
