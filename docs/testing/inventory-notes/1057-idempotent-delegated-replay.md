@@ -32,7 +32,15 @@ pre-provenance-receipts-become-system-work check.
 
 Follow-up merge-forward (develop minted `039_canvas_job_admission_key` after
 the first renumbering): the two #1057 revisions were renumbered again onto
-the tail of develop's chain — `041_task_identity_provenance` (Revises: 039)
-and `042_task_receipt_dispatch_inputs` (Revises: 041) — so the migration
-graph keeps a single head. `test_migration_chain.py` upgrades to
-`041_task_identity_provenance` for the legacy-receipt system-actor check.
+the tail of develop's chain — `041_task_identity_provenance` and
+`042_task_receipt_dispatch_inputs` — so the migration graph keeps a single
+head. `test_migration_chain.py` upgrades to `041_task_identity_provenance`
+for the legacy-receipt system-actor check.
+
+Third renumbering (develop minted `040_capability_binding_authority` in the
+`6f4604420` merge-forward): `041_task_identity_provenance` now Revises
+`040`, keeping `042_task_receipt_dispatch_inputs` the single head. The full
+live-PostgreSQL migration suite (12 tests, `pgvector/pgvector:pg18`) was
+re-executed on the re-chained graph, including the pre-provenance receipts
+→ explicit `('system', 'system')` actor check and the downgrade/upgrade
+cycle.
