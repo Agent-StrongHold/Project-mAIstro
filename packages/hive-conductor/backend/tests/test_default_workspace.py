@@ -1,9 +1,10 @@
 """#1037 owner decision 2: a Workspace-less turn runs in the caller's default Workspace.
 
 Driven against the real canonical Workspace store behind
-`services.workspace_authority`; one leg runs the canonical store and Hive's
-persisted claim on real SQLite files, and one simulates a second process that
-won the durable claim first.
+`services.workspace_authority`. The persisted legs keep Hive's claim store on
+real SQLite files (`maistro.state`, stdlib `sqlite3`, so no optional driver is
+needed in the Hive CI job): a restart, and a second process that won a claim
+or claimed a later generation first.
 """
 
 from __future__ import annotations
@@ -212,22 +213,12 @@ async def test_a_blank_principal_is_refused() -> None:
 @pytest.mark.ac("ADR-092326-7ed7/AC-4")
 @pytest.mark.contract("behavioral")
 async def test_losing_the_durable_claim_to_another_process_converges_on_the_winner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, canonical: InMemoryWorkspaceStore
 ) -> None:
-    import aiosqlite
-
-    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
     from maistro.state import PersistedStore, State
-    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
-    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
     state = State(db_path=str(tmp_path / "hive.db"))
     try:
-        scopes = SqliteProjectScopeStore(conn)
-        await scopes.ensure_schema()
-        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
-        await canonical.ensure_schema()
-        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
         persisted = PersistedStore(state)
         persisted.initialize()
         monkeypatch.setattr(stores, "_persisted", persisted)
@@ -252,7 +243,6 @@ async def test_losing_the_durable_claim_to_another_process_converges_on_the_winn
         owned = await canonical.list_for_user("alice")
     finally:
         state.close()
-        await conn.close()
 
     assert resolved.id == winner.workspace_id
     assert [w.workspace_id for w in owned] == [winner.workspace_id]
@@ -262,22 +252,12 @@ async def test_losing_the_durable_claim_to_another_process_converges_on_the_winn
 @pytest.mark.ac("ADR-092326-7ed7/AC-4")
 @pytest.mark.contract("behavioral")
 async def test_a_winner_this_process_cannot_compose_is_unavailable_not_duplicated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, canonical: InMemoryWorkspaceStore
 ) -> None:
-    import aiosqlite
-
-    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
     from maistro.state import PersistedStore, State
-    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
-    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
     state = State(db_path=str(tmp_path / "hive.db"))
     try:
-        scopes = SqliteProjectScopeStore(conn)
-        await scopes.ensure_schema()
-        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
-        await canonical.ensure_schema()
-        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
         persisted = PersistedStore(state)
         persisted.initialize()
         monkeypatch.setattr(stores, "_persisted", persisted)
@@ -297,51 +277,36 @@ async def test_a_winner_this_process_cannot_compose_is_unavailable_not_duplicate
         owned = await canonical.list_for_user("alice")
     finally:
         state.close()
-        await conn.close()
 
     assert [w.workspace_id for w in owned] == [winner.workspace_id]
 
 
 @pytest.mark.asyncio
 async def test_the_default_survives_a_sqlite_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, canonical: InMemoryWorkspaceStore
 ) -> None:
-    import aiosqlite
-
-    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
     from maistro.state import PersistedStore, State
-    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
-    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
+    first_state = State(db_path=str(tmp_path / "hive.db"))
+    first = PersistedStore(first_state)
+    first.initialize()
+    monkeypatch.setattr(stores, "_persisted", first)
+    created = await default_workspace.resolve_default_workspace("alice")
+    first_state.flush()
+    first_state.close()
+
+    second_state = State(db_path=str(tmp_path / "hive.db"))
+    second = PersistedStore(second_state)
+    second.initialize()
+    monkeypatch.setattr(stores, "_persisted", second)
+    default_workspace.reset_for_tests()
+    workspace_authority.reset_for_tests()
+    monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
     try:
-        scopes = SqliteProjectScopeStore(conn)
-        await scopes.ensure_schema()
-        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
-        await canonical.ensure_schema()
-        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
-
-        first_state = State(db_path=str(tmp_path / "hive.db"))
-        first = PersistedStore(first_state)
-        first.initialize()
-        monkeypatch.setattr(stores, "_persisted", first)
-        created = await default_workspace.resolve_default_workspace("alice")
-        first_state.flush()
-        first_state.close()
-
-        second_state = State(db_path=str(tmp_path / "hive.db"))
-        second = PersistedStore(second_state)
-        second.initialize()
-        monkeypatch.setattr(stores, "_persisted", second)
-        default_workspace.reset_for_tests()
-        workspace_authority.reset_for_tests()
-        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
-        try:
-            after_restart = await default_workspace.resolve_default_workspace("alice")
-        finally:
-            second_state.close()
-        owned = await canonical.list_for_user("alice")
+        after_restart = await default_workspace.resolve_default_workspace("alice")
     finally:
-        await conn.close()
+        second_state.close()
+    owned = await canonical.list_for_user("alice")
 
     assert after_restart.id == created.id
     assert [w.workspace_id for w in owned] == [created.id]
@@ -351,22 +316,12 @@ async def test_the_default_survives_a_sqlite_restart(
 @pytest.mark.ac("ADR-092326-7ed7/AC-4")
 @pytest.mark.contract("behavioral")
 async def test_a_later_generation_another_process_claimed_wins_over_the_cached_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, canonical: InMemoryWorkspaceStore
 ) -> None:
-    import aiosqlite
-
-    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
     from maistro.state import PersistedStore, State
-    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
-    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
     state = State(db_path=str(tmp_path / "hive.db"))
     try:
-        scopes = SqliteProjectScopeStore(conn)
-        await scopes.ensure_schema()
-        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
-        await canonical.ensure_schema()
-        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
         persisted = PersistedStore(state)
         persisted.initialize()
         monkeypatch.setattr(stores, "_persisted", persisted)
@@ -391,7 +346,6 @@ async def test_a_later_generation_another_process_claimed_wins_over_the_cached_o
         resolved = await default_workspace.resolve_default_workspace("alice")
     finally:
         state.close()
-        await conn.close()
 
     assert resolved.id == successor.workspace_id
 

@@ -2,8 +2,9 @@
 
 Driven against the real canonical stores: the canonical Workspace store behind
 `services.workspace_authority` and the one product roster (`stores.agents`,
-written only through `services.agent_materialization`). One leg runs both on
-real SQLite files.
+written only through `services.agent_materialization`). The persisted legs run
+the roster on Hive's real SQLite state (`maistro.state`, stdlib `sqlite3`), so
+they need no optional driver in the Hive CI job.
 """
 
 from __future__ import annotations
@@ -215,45 +216,31 @@ async def test_the_canonical_roster_gains_only_the_workspace_agents() -> None:
 async def test_identity_and_persona_survive_a_sqlite_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import aiosqlite
-
-    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
     from maistro.state import PersistedStore, State
-    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
 
-    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
+    state = State(db_path=str(tmp_path / "hive.db"))
+    persisted = PersistedStore(state)
+    persisted.initialize()
+    monkeypatch.setattr(stores, "_persisted", persisted)
+    monkeypatch.setattr(stores.agents, "_persisted", persisted)
     try:
-        scopes = SqliteProjectScopeStore(conn)
-        await scopes.ensure_schema()
-        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
-        await canonical.ensure_schema()
-        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
+        ws = await _workspace()
+        resolved = await asyncio.gather(
+            *(workspace_agent.resolve_workspace_agent(ws) for _ in range(10))
+        )
+        await workspace_agent.set_workspace_agent_persona(ws, "delivery")
+        state.flush()
 
-        state = State(db_path=str(tmp_path / "hive.db"))
-        persisted = PersistedStore(state)
-        persisted.initialize()
-        monkeypatch.setattr(stores, "_persisted", persisted)
-        monkeypatch.setattr(stores.agents, "_persisted", persisted)
-        try:
-            ws = await _workspace()
-            resolved = await asyncio.gather(
-                *(workspace_agent.resolve_workspace_agent(ws) for _ in range(10))
-            )
-            await workspace_agent.set_workspace_agent_persona(ws, "delivery")
-            state.flush()
-
-            reopened = PersistedStore(state)
-            reopened.initialize()
-            rows = {
-                row.id: row
-                for row in reopened.list_all("agents", type(resolved[0]))
-                if row.workspace_id == ws
-            }
-        finally:
-            monkeypatch.setattr(stores.agents, "_persisted", None)
-            state.close()
+        reopened = PersistedStore(state)
+        reopened.initialize()
+        rows = {
+            row.id: row
+            for row in reopened.list_all("agents", type(resolved[0]))
+            if row.workspace_id == ws
+        }
     finally:
-        await conn.close()
+        monkeypatch.setattr(stores.agents, "_persisted", None)
+        state.close()
 
     assert list(rows) == [resolved[0].id]
     assert workspace_agent.persona_template_id(rows[resolved[0].id]) == "delivery"
