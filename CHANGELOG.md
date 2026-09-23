@@ -446,15 +446,16 @@ or placeholder-only section.
 
 - **Scheduled multi-node registered DAGs are recovered and woken by Hive's
   recovery cadence (#837).**
-  `run_registered_dag` admits schedule Runs as `executor=durable_graph`, but
-  the cadence only owned `hive_legacy_dag` and Evolve Runs and the schedule
-  consumer leaves multi-node QUEUED Runs to the durable Graph traversal, so
-  such a Run lost before checkpoint 1, parked on an elapsed timer, or answered
-  after a HITL pause was never picked up again. New
+  A configured Hive admits schedule fires through `ScheduleRunAdmitter`, and
+  the schedule consumer executes only single-node Runs, leaving multi-node
+  ones to the durable Graph traversal -- which nothing performed, so a
+  scheduled multi-node DAG stayed QUEUED; one parked on an elapsed timer or
+  answered after a HITL pause was never picked up again either. New
   `services/registered_dag_recovery.py` hands exactly those Runs (schedule
-  source, durable-graph executor; multi-node for the QUEUED half) to the
-  canonical `recover_queued_graph_runs` / `resume_due_graph_runs` seams with
-  the admitting path's node resolver, each half on its own held scan
+  source; no executor or `durable_graph`; multi-node and without configured
+  `schedule_inputs` for the QUEUED half) to the canonical
+  `recover_queued_graph_runs` / `resume_due_graph_runs` seams with the
+  admitting path's node resolver, each half on its own held scan
   continuation, and `dag_recovery` runs both with per-half isolation.
 
 - **The DAG Builder's Run button reports the canonical Run truthfully
