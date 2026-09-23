@@ -64,6 +64,7 @@ class ReactStrategy:
         # stores one summed pair, so without the count a turn whose providers
         # reported nothing is stored as one that cost nothing (#717).
         reported_calls = 0
+        security_pipeline = bool(kwargs.get("security_pipeline", False))
 
         tool_choice = "required" if self.force_tool_first else "auto"
 
@@ -110,6 +111,7 @@ class ReactStrategy:
                     warden=warden,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
+                    security_pipeline=security_pipeline,
                 )
 
                 tool_history.append(
@@ -217,8 +219,11 @@ class ReactStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
+        security_pipeline: bool = False,
     ) -> str:
-        """Apply sentinel post-call (or warden scan + PII redaction) to a result."""
+        """Keep standalone strategy calls safe; Agent owns production policy."""
+        if security_pipeline:
+            return tool_result_str
         if sentinel is not None and auth is not None:
             sanitized: str = await sentinel.post_call(tool_name, tool_result_str, auth)
             return sanitized
@@ -251,6 +256,7 @@ class ReactStrategy:
         warden: Any,
         sentinel: Any,
         auth: Any,
+        security_pipeline: bool = False,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
         execute, truncate, sanitize. Returns ``(tool_args, tool_result_str)``."""
@@ -264,7 +270,7 @@ class ReactStrategy:
         tool_result: Any = error_result
         tool_blocked = False
 
-        if sentinel is not None and auth is not None:
+        if not security_pipeline and sentinel is not None and auth is not None:
             tool_schema = _find_tool_schema(tools, tool_name)
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
             if not sentinel_verdict.allowed:
@@ -289,5 +295,6 @@ class ReactStrategy:
             sentinel=sentinel,
             auth=auth,
             warden=warden,
+            security_pipeline=security_pipeline,
         )
         return tool_args, tool_result_str

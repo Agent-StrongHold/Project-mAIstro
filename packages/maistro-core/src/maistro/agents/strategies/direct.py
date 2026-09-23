@@ -20,6 +20,57 @@ if TYPE_CHECKING:
 logger = logging.getLogger("maistro.strategy.direct")
 
 
+async def _warden_blocked_response(
+    content: str,
+    warden: Any,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    reported_calls: int,
+) -> ReasoningResult | None:
+    """Return a blocked result when a standalone response fails Warden."""
+    if warden is None or not content:
+        return None
+    verdict = await warden.scan(content, "tool_result")
+    if verdict.clean:
+        return None
+    flags_str = ", ".join(verdict.flags)
+    logger.warning("Warden blocked DirectStrategy response: %s", flags_str)
+    return ReasoningResult(
+        response=(
+            f"[Response blocked by Warden: {flags_str}. "
+            "The response contained content that matched security "
+            "patterns. Please rephrase your request.]"
+        ),
+        done=True,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        usage_reported_calls=reported_calls,
+    )
+
+
+def _redact_response(content: str) -> str:
+    """Redact PII for standalone strategy use."""
+    if not content:
+        return content
+    try:
+        from maistro.security.sentinel.pii_filter import scan_and_redact
+
+        content, pii_matches = scan_and_redact(content)
+        if pii_matches:
+            logger.info(
+                "DirectStrategy PII redacted: %d pattern(s): %s",
+                len(pii_matches),
+                ", ".join(m.pii_type for m in pii_matches),
+            )
+    except ImportError:
+        # This is a security dependency, not an optional convenience. Never
+        # return an unsanitized provider response.
+        logger.error("PII filter unavailable; blocking model response")
+        return "[Response blocked: output sanitization unavailable]"
+    return content
+
+
 def _counted(reported: tuple[int, int] | None) -> tuple[int, int, int]:
     """`(input, output, reporting calls)` for one provider call.
 
@@ -82,40 +133,19 @@ class DirectStrategy:
         choices = response.get("choices", [])
         choice = choices[0] if choices else {}
         content = choice.get("message", {}).get("content", "")
+        security_pipeline = bool(kwargs.get("security_pipeline", False))
 
-        if warden is not None and content:
-            verdict = await warden.scan(content, "tool_result")
-            if not verdict.clean:
-                flags_str = ", ".join(verdict.flags)
-                logger.warning("Warden blocked DirectStrategy response: %s", flags_str)
-                return ReasoningResult(
-                    response=(
-                        f"[Response blocked by Warden: {flags_str}. "
-                        "The response contained content that matched security "
-                        "patterns. Please rephrase your request.]"
-                    ),
-                    done=True,
-                    input_tokens=total_input,
-                    output_tokens=total_output,
-                    usage_reported_calls=reported_calls,
-                )
-
-        if content:
-            try:
-                from maistro.security.sentinel.pii_filter import scan_and_redact
-
-                content, pii_matches = scan_and_redact(content)
-                if pii_matches:
-                    logger.info(
-                        "DirectStrategy PII redacted: %d pattern(s): %s",
-                        len(pii_matches),
-                        ", ".join(m.pii_type for m in pii_matches),
-                    )
-            except ImportError:
-                # This is a security dependency, not an optional convenience.
-                # Never return an unsanitized provider response.
-                logger.error("PII filter unavailable; blocking model response")
-                content = "[Response blocked: output sanitization unavailable]"
+        if not security_pipeline:
+            blocked = await _warden_blocked_response(
+                content,
+                warden,
+                input_tokens=total_input,
+                output_tokens=total_output,
+                reported_calls=reported_calls,
+            )
+            if blocked is not None:
+                return blocked
+            content = _redact_response(content)
 
         return ReasoningResult(
             response=content,
