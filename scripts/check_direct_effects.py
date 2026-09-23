@@ -35,6 +35,19 @@ DISPOSITIONS = frozenset(
 
 # Match model URLs at the HTTP call itself, never endpoint text elsewhere.
 _MODEL_ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
+# PM-polling URL boundaries (#1195): the Jira/Airtable effect classes are owned
+# by canonical capabilities, and the sanctioned physical calls in
+# capabilities/providers/pm_polling.py carry reviewed CANONICAL_INVOCATION
+# dispositions via ``_PATH_CALLS``. Any *other* direct HTTP call to these
+# endpoints (e.g. a graph node re-learning raw PAT polling) surfaces here as
+# an undispositioned PM_POLLING_EFFECT and fails the gate.
+_PM_ENDPOINTS = (
+    "airtable.com",
+    "atlassian.net",
+    "atlassian.com",
+    "/rest/api/2/",
+    "/rest/api/3/",
+)
 _HTTP_EFFECT_METHODS = frozenset({"get", "post", "stream", "send", "request"})
 
 # Semantic helpers whose call itself is a model effect.
@@ -372,6 +385,18 @@ def _is_model_http_call(
     )
 
 
+def _is_pm_http_call(
+    call: ast.Call,
+    bindings: dict[str, ast.expr],
+) -> bool:
+    url = _http_url(call)
+    if url is None:
+        return False
+    return any(
+        endpoint in part for part in _string_parts(url, bindings) for endpoint in _PM_ENDPOINTS
+    )
+
+
 def _callee_text(call: ast.Call) -> str:
     return _dotted(call.func) or ast.unparse(call.func)
 
@@ -440,6 +465,8 @@ class _Visitor(ast.NodeVisitor):
             return path_rule
         if _is_model_http_call(call, self.scope.strings):
             return "MODEL_EFFECT", "openai-compatible-http"
+        if _is_pm_http_call(call, self.scope.strings):
+            return "PM_POLLING_EFFECT", "pm-polling-http"
 
         symbol = _resolve_symbol(call.func, self.scope.aliases)
         if symbol in _MODEL_FUNCTIONS:

@@ -561,6 +561,116 @@
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
+    },
+    "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/routes/widgets.py",
+      "qualname": "widget_jira",
+      "line": 117,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/routes/widgets.py::widget_jira::PM_POLLING_EFFECT:pm-polling-http#2": {
+      "path": "packages/hive-conductor/backend/routes/widgets.py",
+      "qualname": "widget_jira",
+      "line": 134,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. Second occurrence is the pagination loop of the same widget poll."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_records_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_records_json.load",
+      "line": 59,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_base_tables_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_base_tables_json.load",
+      "line": 86,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/services/airtable_cache.py::get_airtable_bases_json.load::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/airtable_cache.py",
+      "qualname": "get_airtable_bases_json.load",
+      "line": 111,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface reads Airtable REST directly with the operator PAT in headers. The Airtable polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch."
+    },
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_poll_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_poll_jira",
+      "line": 787,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing jira.poll tool."
+    },
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_search_jira::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_search_jira",
+      "line": 832,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing jira search tool."
+    },
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_get_issue::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_get_issue",
+      "line": 873,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing single-issue fetch tool."
+    },
+    "packages/hive-conductor/backend/services/chat_completion.py::_tool_check_blockers::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/chat_completion.py",
+      "qualname": "_tool_check_blockers",
+      "line": 932,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Retained Workspace surface polls Jira REST directly with the operator PAT in headers. The Jira polling effect class is owned by canonical capabilities since #1195 (Binding -> Invocation); recorded as explicit migration debt for the Workspace cutover instead of remaining an invisible direct-effect escape hatch. This is the agent-facing blocker-check tool."
+    },
+    "packages/hive-conductor/backend/services/mcp_client.py::test_jira_rest::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/hive-conductor/backend/services/mcp_client.py",
+      "qualname": "test_jira_rest",
+      "line": 90,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Operator-triggered PAT connectivity verification calls Jira /rest/api/3/myself directly with the raw token. It is not a polling effect, but it is the same Jira REST class now owned by canonical capabilities; recorded as migration debt so the Workspace cutover routes verification through the governed door too."
     }
   }
 }
