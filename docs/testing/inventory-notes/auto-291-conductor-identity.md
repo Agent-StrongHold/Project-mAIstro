@@ -51,3 +51,26 @@ Independent verification addendum (head c932f42b, post-develop-merge):
   UNVERIFIED, and that job is scoped to PR-to-main/main pushes/nightly, so it
   will not fire on this develop PR — local replication above is the evidence
   of record.
+
+Re-verification pass at final head 3c5688acd (independent re-execution, not
+inherited from the addendum above):
+
+- Driver-equivalent gates re-run green: ruff check/format, engine identity 69,
+  full conductor backend suite 2663, prepull/wheel tests, image/cross-import/
+  deployment-claims/doc-links/build-context/suite-inventory/workflow-write-
+  safety/shell-execution/security-inventory/secret-field-labels/shipped-
+  surface-truth/retired-guidance/radon/vulture (vulture with the CI argv
+  `packages/*/src`; a bare invocation locally also sweeps node_modules and is
+  not the CI contract), and full-package mypy (712 files clean).
+- Both image profiles rebuilt from this exact tree (default and
+  INSTALL_OBSERVABILITY=1); the security.yml in-image verification commands
+  were re-executed verbatim against both and printed identity=operational
+  (python 3.13.15, bip-utils 2.12.1, coincurve 21.0.0, pynacl 1.6.2) and
+  observability=importable. `python:3.13.15-slim-bookworm` confirmed present
+  in the registry.
+- Live Playwright setup.spec.ts against the fresh default image: 8/8 passed,
+  including unavailable- and misconfigured-health gating with a real disabled
+  toggle. Live /health transitions recorded: fresh boot -> misconfigured/
+  setup_incomplete with identity_required=false; after five-step setup with
+  crypto_identity deselected -> disabled, readiness identity=true. The
+  documented support-matrix states were each observed on a running image.
