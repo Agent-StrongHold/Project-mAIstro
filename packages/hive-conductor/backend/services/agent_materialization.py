@@ -186,6 +186,25 @@ async def upsert_agent_definition(
     the provenance stamp either way, so a caller cannot forge one through
     `config`.
     """
+    stored = await _scanned_definition(agent, source=source, scan=scan)
+    stores.agents[stored.id] = stored
+    return stored
+
+
+async def insert_agent_definition_once(agent: Agent, *, source: str) -> Agent:
+    """Store a definition only while its id is free; return the row holding it.
+
+    The same scan-before-store gate as `upsert_agent_definition`, but a row
+    that already holds the id -- including one another process wrote after
+    this one loaded its roster -- is returned untouched rather than replaced.
+    """
+    stored = await _scanned_definition(agent, source=source, scan=None)
+    stores.agents.put_if_absent(stored.id, stored)
+    held: Agent = stores.agents[stored.id]
+    return held
+
+
+async def _scanned_definition(agent: Agent, *, source: str, scan: dict[str, Any] | None) -> Agent:
     t = datetime.now(UTC)
     if scan is None:
         try:
@@ -200,9 +219,7 @@ async def upsert_agent_definition(
     _reject_if_flagged(scan)
     config = dict(agent.config)
     config["provenance"] = _provenance(source, scan, t)
-    stored = agent.model_copy(update={"config": config})
-    stores.agents[stored.id] = stored
-    return stored
+    return agent.model_copy(update={"config": config})
 
 
 async def update_agent_definition(
@@ -237,6 +254,14 @@ def agent_id_for(workspace_id: str, spawn_agent: str) -> str:
     re-materialization: creating/updating the same workspace's agents again
     overwrites the same records rather than piling up duplicates."""
     return f"{workspace_id}.{spawn_agent}"
+
+
+def workspace_agent_id(workspace_id: str) -> str:
+    """The Workspace Agent's stable id; a pure function of the Workspace id.
+
+    Its own `workspace-agent:` namespace, so no other producer can mint it
+    (#1037)."""
+    return f"workspace-agent:{workspace_id}"
 
 
 def slugify_agent_name(text: str, *, limit: int = 32) -> str:
@@ -310,6 +335,9 @@ def delete_workspace_agents(workspace_id: str) -> None:
     """
     for agent in list(workspace_agents(workspace_id)):
         stores.agents.pop(agent.id, None)
+    # The Workspace Agent's id is known without a cache hit: another process
+    # may have materialized it after this one loaded its roster (#1037).
+    stores.agents.discard(workspace_agent_id(workspace_id))
 
 
 # ─── Canonical roster materialization (#840) ──────────────────────────────
