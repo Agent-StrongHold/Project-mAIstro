@@ -22,3 +22,21 @@ identities, and the Vulture ledger prunes the remaining deleted node/lifecycle f
 `parallel_generations` plus the pre-durable scout/strategy/backoff call surfaces that
 the reachability ledger already holds for #44/#63 wiring); those bankings still need
 the trusted-base grants per the ratchet's two-merge rule.
+
+## Independent verification (2ba0485048d6, develop base 8bb344e32)
+
+Re-derived from the issue and re-executed: `tests/graph/` 1091 passed / 79 skipped
+(includes `test_retired_executor.py`); `tests/testing/` + `tests/orchestrator/waves/`
++ `tests/integration/test_chat_to_graph_e2e.py` + `tests/builders/` 281 passed;
+`ruff check` clean; mypy clean on `maistro.graph` + `maistro.testing`;
+`check-retired-guidance.py`, `check-execution-lifecycles.py`,
+`check-convergence-matrix.py`, `check-suite-inventory.py` all exit 0;
+`git diff --check` clean (dag.py markers resolved). Physical Graph entries all cross
+`durable_runs`: master.py creates the Run then calls `run_durable_graph`;
+hive-conductor `graph_runner.execute_dag` delegates to `canonical_dag_runner`;
+maistro-server touches only `graph.concurrency`. `check-vulture-baseline.py` exit 1
+is pre-existing at the develop base (identical terminal state in an isolated clone
+of 8bb344e32); this branch's delta is banked in the candidate ledger with owner and
+issue attribution (`parallel_generations`, #1154) and the residual requires the
+grants-first PR per the ratchet's two-merge rule. Stop condition respected: no
+executor gained persistence; `GraphRun` is retired outright.
