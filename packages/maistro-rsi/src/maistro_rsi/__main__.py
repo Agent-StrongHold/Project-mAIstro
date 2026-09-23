@@ -424,7 +424,11 @@ def _evolve(args: argparse.Namespace) -> int:
         callable_ = ResponsesAPICallable(model=mutator_model, timeout=300.0)
         mutator_boundary = WardenHarvestBoundary(
             Warden(),
-            correlation=HarvestCorrelation(candidate_id=mutator_model, source_repository=str(repo)),
+            correlation=HarvestCorrelation(
+                campaign_id=f"evolve:{args.target}",
+                source_repository=str(repo),
+                candidate_id=mutator_model,
+            ),
             audit_sink=JsonlAuditSink(str(work_root / "rsi-warden-audit.jsonl")),
         )
 

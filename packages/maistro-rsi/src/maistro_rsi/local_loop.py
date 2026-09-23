@@ -1393,6 +1393,14 @@ class LocalRsiLoop:
                 spec_gaps=self._spec_gaps_text(),
                 max_items=3,
                 audit_sink=self._warden_audit_sink,
+                # Every scout admission must be attributable to this run's
+                # campaign/workspace and the repository it harvested from.
+                correlation=HarvestCorrelation(
+                    workspace_id=str(self._config.work_root),
+                    campaign_id=self._config.baseline_branch,
+                    source_repository=self._config.repo_path,
+                    candidate_id=model,
+                ),
             )
             if items:
                 scout_used = model
@@ -2120,6 +2128,8 @@ class LocalRsiLoop:
         hyper_boundary = WardenHarvestBoundary(
             Warden(),
             correlation=HarvestCorrelation(
+                workspace_id=str(self._config.work_root),
+                campaign_id=self._config.baseline_branch,
                 source_repository=self._config.repo_path,
                 candidate_id=self._config.scout_model or self._config.model,
             ),
@@ -2320,7 +2330,18 @@ class LocalRsiLoop:
 
             llm = ResponsesAPICallable(model=self._config.scout_model or self._config.model)
             verdict = judge_regression_verdict(
-                diff_text, target, llm, audit_sink=self._warden_audit_sink
+                diff_text,
+                target,
+                llm,
+                warden_boundary=WardenHarvestBoundary(
+                    Warden(),
+                    correlation=HarvestCorrelation(
+                        workspace_id=str(self._config.work_root),
+                        campaign_id=self._config.baseline_branch,
+                        source_repository=self._config.repo_path,
+                    ),
+                    audit_sink=self._warden_audit_sink,
+                ),
             )
         except Exception:
             verdict = JudgeVerdict(

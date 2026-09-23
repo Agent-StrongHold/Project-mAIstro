@@ -196,6 +196,7 @@ def make_llm_proposer(
     model: str | None = None,
     prior_learnings: Sequence[str] = (),
     audit_sink: Callable[[dict[str, object]], object] | None = None,
+    correlation: HarvestCorrelation | None = None,
 ) -> HypothesisProposer:
     """An LLM-backed proposer over the connected LiteLLM instance.
 
@@ -206,7 +207,9 @@ def make_llm_proposer(
     the run instead of funding it.
     """
     consecutive_fallbacks = 0
-    proposal_boundary = WardenHarvestBoundary(Warden(), audit_sink=audit_sink)
+    proposal_boundary = WardenHarvestBoundary(
+        Warden(), correlation=correlation, audit_sink=audit_sink
+    )
 
     def _propose(context: HtrContext) -> str:
         nonlocal consecutive_fallbacks
@@ -515,6 +518,7 @@ def build_executor(
     warden: Warden | None = None,
     audit: AuditLog | None = None,
     prior_learnings: Sequence[str] = (),
+    correlation: HarvestCorrelation | None = None,
 ) -> ExecutorFn:
     """Wire one `RsiCycle` per hypothesis into the coordinator's executor seam.
 
@@ -545,7 +549,10 @@ def build_executor(
     )
     prompt_boundary = WardenHarvestBoundary(
         active_warden,
-        correlation=HarvestCorrelation(source_repository=config.repo_url),
+        # Correlation is supplied by the run that owns this executor (its
+        # campaign identity); standalone callers keep the repository identity
+        # available at this seam.
+        correlation=correlation or HarvestCorrelation(source_repository=config.repo_url),
         audit_sink=audit_sink,
     )
 
@@ -706,6 +713,14 @@ async def run_autonomous(
     wiring is the default. The wall-clock budget is enforced between cycles.
     """
     run_id = uuid.uuid4().hex[:10]
+    # Every Warden admission decision this run records is attributable to it:
+    # the campaign id ties proposer/executor/ledger verdicts to one run, the
+    # repository identity to one source tree (credentials stripped by the
+    # boundary's audit redaction).
+    run_correlation = HarvestCorrelation(
+        campaign_id=run_id,
+        source_repository=config.repo_url,
+    )
     repo_slug = _repo_slug(config.repo_url)
     tree_path = Path(config.tree_path or Path(config.workspace_root) / f"htr-tree-{repo_slug}.json")
     active_ledger = ledger or LearningsLedger(
@@ -728,12 +743,7 @@ async def run_autonomous(
         else None
     )
     ledger_boundary = WardenHarvestBoundary(
-        Warden(),
-        correlation=HarvestCorrelation(
-            campaign_id=run_id,
-            source_repository=config.repo_url,
-        ),
-        audit_sink=audit_sink,
+        Warden(), correlation=run_correlation, audit_sink=audit_sink
     )
     prior_learnings: list[str] = []
     for insight in active_ledger.recall(config.recall_top_k, repo_url=config.repo_url):
@@ -748,12 +758,16 @@ async def run_autonomous(
             )
 
     active_executor = executor or build_executor(
-        config, audit=active_audit, prior_learnings=prior_learnings
+        config,
+        audit=active_audit,
+        prior_learnings=prior_learnings,
+        correlation=run_correlation,
     )
     active_proposer = proposer or make_llm_proposer(
         config.model,
         prior_learnings=prior_learnings,
         audit_sink=audit_sink,
+        correlation=run_correlation,
     )
 
     tree = _load_or_create_tree(config, tree_path)

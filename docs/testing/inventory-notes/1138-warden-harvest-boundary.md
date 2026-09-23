@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +29
+  packages/maistro-rsi/tests: +35
 ---
 # Issue #1138 Warden harvest boundary
 
@@ -20,3 +20,15 @@ execution-policy-gated seams; the HTTP run gate stays literally fail-closed
 static scans flag every import form (including dynamic `import_module` /
 `__import__`) and the activation flips, so a green run is evidence rather
 than a vacuous pass.
+
+The second repair pass adds 6 more node IDs closing the residual audit-
+correlation and adversarial-probe gaps: the real maistro-evolve swebench
+seam is pinned as guarded by the cycle-installed wrapper (plus a control
+proving the seam itself does not scan, so the wrapper is load-bearing);
+hostile builder system prompts, scout sources, judge diffs, and proposer
+hypotheses are each refused before their model callable with durable,
+campaign-correlated audit records; resume refusals now also assert the
+audit trail carries campaign/repository/base correlation. Mutation
+validation executed: disabling the runner guard, the scout scan, the
+builder system-prompt admission, or the resume admission each fails the
+adversarial tests (2/1/1/2 failures respectively).

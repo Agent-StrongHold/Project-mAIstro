@@ -12,6 +12,7 @@ current launch's own promotions (export_promotions ranges from
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -135,6 +136,21 @@ def test_hostile_resumed_patch_is_refused_before_apply(tmp_path: Path) -> None:
     assert (
         _git(loop._baseline, "rev-parse", config.baseline_branch).stdout.strip() == loop._start_ref
     )
+    # The refusal is durable, correlated evidence (#1138): the audit trail
+    # names the campaign, the source repository, and the exact base the
+    # refused patch would have applied on top of.
+    audit_path = Path(config.work_root) / "rsi-warden-audit.jsonl"
+    records = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert records, "hostile resume patch must leave an admission record"
+    assert all(record["outcome"] == "blocked" for record in records)
+    assert all(record["admitted"] is False for record in records)
+    assert {record["campaign_id"] for record in records} == {config.baseline_branch}
+    assert all(record["source_repository"] == str(repo) for record in records)
+    assert all(record["source_base"] == loop._start_ref for record in records)
 
 
 def test_unavailable_warden_refuses_resumed_patch(tmp_path: Path, monkeypatch) -> None:
