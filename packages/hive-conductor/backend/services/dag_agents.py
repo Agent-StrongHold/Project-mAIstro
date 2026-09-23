@@ -111,10 +111,18 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     container = _container()
     if container is None:  # pragma: no cover - guarded by the helper
         raise GraphExecutionUnavailableError()
+    # Read as attributes rather than through getattr(): the Container dataclass
+    # always defines these collaborators, and check-wiring-reads.py (#236)
+    # walks attribute loads, so a getattr("name") read is invisible to it and
+    # the fields would report as wired-but-unread. Naming them here is what
+    # makes the gate able to hold this wiring in place.
     return build_node_resolver(
         a2a_delegator=container.a2a_delegator,
         guest_peers=container.guest_peers,
         run_store=container.run_store,
+        effect_context=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
         # The durable graph store, which `agent.synth_dag` declares as
         # required (#1193): without it the resolver refuses that kind instead
         # of constructing one that reports success for a sub-graph nothing

@@ -537,6 +537,11 @@ def canonical_container() -> Any:
 
     projects = _Projects()
     run_store = InMemoryRunStore(project_store=projects)
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+
+    provider_registry = InMemoryProviderRegistry()
     return SimpleNamespace(
         config=SimpleNamespace(workspace_id="w1"),
         project_scope_store=projects,
@@ -544,6 +549,11 @@ def canonical_container() -> Any:
         guest_peers=object(),
         run_store=run_store,
         graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+        # #1079 production composition: the resolver forwards these exact
+        # Container-owned authorities; the stub models the real contract.
+        capability_effects=new_in_memory_effect_context(),
+        provider_registry=provider_registry,
+        llm_router=CostAwareRouter(provider_registry),
     )
 
 

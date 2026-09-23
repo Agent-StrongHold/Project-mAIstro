@@ -20,7 +20,10 @@ from services.dag_agents import (  # noqa: E402
     run_registered_dag,
 )
 
+from maistro.capabilities.effect_context import new_in_memory_effect_context  # noqa: E402
 from maistro.graph.durable_runs import RunStatus  # noqa: E402
+from maistro.providers.registry import InMemoryProviderRegistry  # noqa: E402
+from maistro.providers.router import CostAwareRouter  # noqa: E402
 
 
 def _canonical_test_container() -> Any:
@@ -39,6 +42,7 @@ def _canonical_test_container() -> Any:
 
     project_scope_store = _Projects()
     run_store = InMemoryRunStore(project_store=project_scope_store)
+    provider_registry = InMemoryProviderRegistry()
     return SimpleNamespace(
         config=SimpleNamespace(workspace_id="w1"),
         project_scope_store=project_scope_store,
@@ -46,6 +50,11 @@ def _canonical_test_container() -> Any:
         guest_peers=object(),
         run_store=run_store,
         graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+        # #1079 production composition: the resolver forwards these exact
+        # Container-owned authorities; the stub models the real contract.
+        capability_effects=new_in_memory_effect_context(),
+        provider_registry=provider_registry,
+        llm_router=CostAwareRouter(provider_registry),
     )
 
 
@@ -144,6 +153,13 @@ class _StubContainer:
         # `run_store` on purpose: the whole point of the test below is that the
         # two are one line apart and must not be swapped.
         self.graph_run_store = graph_runs if graph_runs is not None else object()
+        # #1079 production composition: the Hive bridge forwards these exact
+        # Container-owned authorities into build_node_resolver. The stub must
+        # model that real Container contract rather than making production DI
+        # optional just to satisfy older tests.
+        self.capability_effects = new_in_memory_effect_context()
+        self.provider_registry = InMemoryProviderRegistry()
+        self.llm_router = CostAwareRouter(self.provider_registry)
 
 
 def _with_container(monkeypatch, container) -> None:
