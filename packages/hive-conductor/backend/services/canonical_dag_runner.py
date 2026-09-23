@@ -30,6 +30,7 @@ from services.dag_agents import (
     _container,
     get_run_store,
 )
+from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
 from services.scan_continuations import scan_continuation
@@ -301,6 +302,7 @@ def graph_from_legacy_dag(
 async def resolve_execution_scope(
     dag_data: Mapping[str, Any],
     *,
+    scope: DagExecutionScope | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
 ) -> tuple[str, str]:
@@ -315,6 +317,7 @@ async def resolve_execution_scope(
     """
     resolved_workspace, resolved_project, _ = await _scope(
         dag_data,
+        scope=scope,
         workspace_id=workspace_id,
         project_id=project_id,
     )
@@ -324,24 +327,23 @@ async def resolve_execution_scope(
 async def _scope(
     dag_data: Mapping[str, Any],
     *,
+    scope: DagExecutionScope | None,
     workspace_id: str | None,
     project_id: str | None,
 ) -> tuple[str, str, Any]:
-    # Scope is executable only when both canonical stores are wired. Do not
-    # fabricate a compatibility scope for work that cannot be recovered.
+    del dag_data
+    if scope is None:
+        raise DagWorkspaceSelectionError("authorized DAG execution scope is required")
+    if workspace_id is not None and workspace_id != scope.workspace_id:
+        raise DagWorkspaceSelectionError("workspace_id does not match authorized scope")
+    if project_id is not None and project_id != scope.project_id:
+        raise DagWorkspaceSelectionError("project_id does not match authorized scope")
+    # Scope is executable only when both canonical stores are wired. The
+    # authorized scope names *where* the Run lives; it is never authority to
+    # run without the canonical spine (#1113) — no compatibility store, no
+    # success outside Run/NodeRun/Attempt.
     canonical_run_store, _graph_run_store = _canonical_execution_stores()
-    container = _container()
-
-    resolved_workspace = (
-        workspace_id
-        or str(dag_data.get("workspace_id") or "").strip()
-        or str(container.config.workspace_id)
-    )
-    resolved_project = project_id or str(dag_data.get("project_id") or "").strip() or None
-    if resolved_project is None:
-        root = await container.project_scope_store.root_for_workspace(resolved_workspace)
-        resolved_project = root.project_id
-    return resolved_workspace, resolved_project, canonical_run_store
+    return scope.workspace_id, scope.project_id, canonical_run_store
 
 
 def _node_env(
@@ -429,6 +431,7 @@ async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
         run_store=container.run_store,
         node_resolver_factory=_recovery_resolver,
         eligible=lambda run: run.provenance.get("admission_source") == "hive_legacy_dag",
+        admission_source="hive_legacy_dag",
         events=container.event_bus,
         limit=limit,
         # Held across ticks: the scan is bounded per call, and only a tick
@@ -516,11 +519,20 @@ async def execute_dag(
     workspace_id: str | None = None,
     project_id: str | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
+    scope: DagExecutionScope | None = None,
 ) -> dict[str, Any]:
     """Run a shipped Hive DAG as one canonical durable Graph Run."""
+    if scope is None:
+        # Keep the user parameter only as a consistency check for old callers;
+        # it is never an authorization source.
+        raise DagWorkspaceSelectionError("authorized DAG execution scope is required")
+    if user_id and user_id != scope.user_id:
+        raise DagWorkspaceSelectionError("user_id does not match authorized scope")
+    user_id = scope.user_id
     try:
         resolved_workspace, resolved_project, canonical_run_store = await _scope(
             dag_data,
+            scope=scope,
             workspace_id=workspace_id,
             project_id=project_id,
         )

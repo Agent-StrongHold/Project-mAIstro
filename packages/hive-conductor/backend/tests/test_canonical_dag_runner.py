@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from services.dag_execution_scope import DagExecutionScope
 
 
 def _canonical_test_container() -> tuple[Any, Any]:
@@ -18,7 +19,10 @@ def _canonical_test_container() -> tuple[Any, Any]:
 
     class _Projects:
         async def get(self, project_id: str) -> Any:
-            return SimpleNamespace(project_id=project_id, workspace_id="w")
+            # Projects live in the authorized scope's Workspace: the canonical
+            # RunStore validates Graph scope at admission (#766/#1113), so the
+            # fake must agree with the DagExecutionScope fixture.
+            return SimpleNamespace(project_id=project_id, workspace_id="test-workspace")
 
         async def root_for_workspace(self, workspace_id: str) -> Any:
             return SimpleNamespace(project_id="root-project", workspace_id=workspace_id)
@@ -33,6 +37,13 @@ def _canonical_test_container() -> tuple[Any, Any]:
             graph_run_store=graph_store,
         ),
         graph_store,
+    )
+
+
+@pytest.fixture
+def execution_scope() -> DagExecutionScope:
+    return DagExecutionScope(
+        workspace_id="test-workspace", project_id="test-project", user_id="test-user"
     )
 
 
@@ -191,7 +202,7 @@ def test_cycle_is_rejected_before_execution() -> None:
 
 @pytest.mark.asyncio
 async def test_required_node_failure_terminalizes_canonical_run_failed(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
     import services.dag_agents as dag_agents
@@ -209,6 +220,7 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
             "edges": [],
         },
         llm_builder=_fake_llm_builder(fail_prompt="fail-me"),
+        scope=execution_scope,
     )
 
     assert result["status"] == "failed"
@@ -221,7 +233,7 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
 
 @pytest.mark.asyncio
 async def test_fanout_runs_under_one_canonical_run(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
     import services.dag_agents as dag_agents
@@ -243,6 +255,7 @@ async def test_fanout_runs_under_one_canonical_run(
             ],
         },
         llm_builder=_fake_llm_builder(),
+        scope=execution_scope,
     )
 
     assert result["status"] == "completed"
@@ -256,7 +269,7 @@ async def test_fanout_runs_under_one_canonical_run(
 
 @pytest.mark.asyncio
 async def test_run_scout_executes_under_the_same_canonical_run(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
     import services.dag_agents as dag_agents
@@ -276,6 +289,7 @@ async def test_run_scout_executes_under_the_same_canonical_run(
             "edges": [],
         },
         llm_builder=_fake_llm_builder(),
+        scope=execution_scope,
     )
 
     assert result["status"] == "completed"
@@ -373,77 +387,111 @@ def test_invalid_legacy_shapes_are_rejected_before_a_run_exists(
 
 
 @pytest.mark.asyncio
-async def test_scope_resolves_the_default_workspace_and_its_root_project(
+async def test_scope_uses_only_the_authorized_immutable_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With a live container, an unscoped legacy DAG is admitted into the
-    configured workspace and the workspace's root project, not a compat scope."""
     import services.canonical_dag_runner as runner
     import services.dag_agents as dag_agents
 
-    class _Config:
-        workspace_id = "ws-configured"
-
-    class _Root:
-        project_id = "root-project"
-
-    class _ScopeStore:
-        async def root_for_workspace(self, workspace_id: str) -> _Root:
-            return _Root()
-
     class _Container:
-        config = _Config()
-        project_scope_store = _ScopeStore()
         run_store = "the-canonical-run-store"
         graph_run_store = "the-canonical-graph-store"
 
+    scope = DagExecutionScope(
+        workspace_id="ws-authorized", project_id="root-project", user_id="user-1"
+    )
     monkeypatch.setattr(runner, "_container", lambda: _Container())
     monkeypatch.setattr(dag_agents, "_container", lambda: _Container())
 
-    workspace, project, run_store = await runner._scope({}, workspace_id=None, project_id=None)
+    workspace, project, run_store = await runner._scope(
+        {"workspace_id": "legacy-injection", "project_id": "legacy-project"},
+        scope=scope,
+        workspace_id=None,
+        project_id=None,
+    )
 
     assert (workspace, project, run_store) == (
-        "ws-configured",
+        "ws-authorized",
         "root-project",
         "the-canonical-run-store",
     )
 
 
 @pytest.mark.asyncio
-async def test_scope_prefers_the_dag_declared_workspace_and_project(
+async def test_scope_rejects_scope_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.canonical_dag_runner as runner
-    import services.dag_agents as dag_agents
 
-    class _Config:
-        workspace_id = "ws-configured"
+    scope = DagExecutionScope(workspace_id="ws", project_id="project", user_id="user")
+    monkeypatch.setattr(runner, "_container", lambda: None)
 
-    class _ScopeStore:
-        async def root_for_workspace(self, workspace_id: str) -> Any:  # pragma: no cover
-            raise AssertionError("a declared project must not consult the root scope")
+    with pytest.raises(ValueError, match="does not match authorized scope"):
+        await runner._scope({}, scope=scope, workspace_id="other", project_id=None)
 
-    class _Container:
-        config = _Config()
-        project_scope_store = _ScopeStore()
-        run_store = "the-canonical-run-store"
-        graph_run_store = "the-canonical-graph-store"
 
-    monkeypatch.setattr(runner, "_container", lambda: _Container())
-    monkeypatch.setattr(dag_agents, "_container", lambda: _Container())
+@pytest.mark.asyncio
+async def test_scope_rejects_project_id_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.canonical_dag_runner as runner
 
-    workspace, project, _ = await runner._scope(
-        {"workspace_id": "ws-declared", "project_id": "p-declared"},
-        workspace_id=None,
-        project_id=None,
-    )
+    scope = DagExecutionScope(workspace_id="ws", project_id="project", user_id="user")
+    monkeypatch.setattr(runner, "_container", lambda: None)
 
-    assert (workspace, project) == ("ws-declared", "p-declared")
+    with pytest.raises(ValueError, match="project_id does not match authorized scope"):
+        await runner._scope({}, scope=scope, workspace_id=None, project_id="other-project")
+
+
+@pytest.mark.asyncio
+async def test_scope_rejects_a_missing_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    monkeypatch.setattr(runner, "_container", lambda: None)
+
+    with pytest.raises(ValueError, match="authorized DAG execution scope is required"):
+        await runner._scope({}, scope=None, workspace_id=None, project_id=None)
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_rejects_a_missing_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    with pytest.raises(ValueError, match="authorized DAG execution scope is required"):
+        await runner.execute_dag(
+            {"id": "no-scope", "name": "no-scope", "nodes": [_safe_node("a")], "edges": []},
+            llm_builder=_fake_llm_builder(),
+            scope=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_rejects_a_user_id_that_does_not_match_the_scope(
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
+) -> None:
+    import services.canonical_dag_runner as runner
+
+    with pytest.raises(ValueError, match="user_id does not match authorized scope"):
+        await runner.execute_dag(
+            {
+                "id": "mismatched-user",
+                "name": "mismatched-user",
+                "nodes": [_safe_node("a")],
+                "edges": [],
+            },
+            user_id="someone-else",
+            llm_builder=_fake_llm_builder(),
+            scope=execution_scope,
+        )
 
 
 @pytest.mark.asyncio
 async def test_execute_dag_returns_unavailable_without_the_canonical_spine(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
     import services.dag_agents as dag_agents
@@ -452,7 +500,8 @@ async def test_execute_dag_returns_unavailable_without_the_canonical_spine(
     monkeypatch.setattr(dag_agents, "_container", lambda: None)
 
     result = await runner.execute_dag(
-        {"id": "unavailable", "nodes": [_safe_node("a")], "edges": []}
+        {"id": "unavailable", "nodes": [_safe_node("a")], "edges": []},
+        scope=execution_scope,
     )
 
     assert result == {
@@ -528,7 +577,9 @@ def test_recovery_refuses_a_run_whose_nodes_lack_durable_legacy_metadata() -> No
 
 @pytest.mark.asyncio
 async def test_a_metrics_recording_failure_never_fails_the_completed_run(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    execution_scope: DagExecutionScope,
 ) -> None:
     """Node metrics are a projection of the Run, never a co-owner of its
     outcome: a broken ingest logs and the canonical truth still returns."""
@@ -551,6 +602,7 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
         result = await runner.execute_dag(
             _legacy_dag(nodes=[_safe_node("a")]),
             llm_builder=_fake_llm_builder(),
+            scope=execution_scope,
         )
 
     assert result["status"] == "completed"

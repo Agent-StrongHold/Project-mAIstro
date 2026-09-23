@@ -10,6 +10,7 @@ fire into a Run.
 from __future__ import annotations
 
 import asyncio
+import logging
 import pathlib
 import sys
 from datetime import UTC, datetime, timedelta
@@ -418,7 +419,44 @@ def test_a_scheduled_graph_run_does_not_create_preconvergence_provenance() -> No
         registry.deregister("sched-prov")
 
 
-def test_a_schedule_firing_mints_its_own_request_id() -> None:
+def _wired_firing_container(monkeypatch: pytest.MonkeyPatch, scope_ids: list[str]) -> Any:
+    """The canonical two-store seam a firing needs, with each schedule's scope
+    id pre-admitted in the Project store (#1113: there is no fallback store to
+    read — a firing proves its provenance on canonical Runs in the canonical
+    RunStore, never on a process-private lifecycle)."""
+    from types import SimpleNamespace
+
+    import services.dag_agents as dag_agents
+
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.projects.scope import Project
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.store import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    for scope_id in scope_ids:
+        projects._projects[scope_id] = Project(  # type: ignore[attr-defined]
+            project_id=scope_id,
+            workspace_id=scope_id,
+            name="Schedule scope",
+            parent_project_id=None,
+            is_root=True,
+        )
+    run_store = InMemoryRunStore(project_store=projects)
+    container = SimpleNamespace(
+        a2a_delegator=object(),
+        guest_peers=object(),
+        run_store=run_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+    )
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
+    return container
+
+
+def test_a_schedule_firing_mints_its_own_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1063: a timer tick has no incoming HTTP request, so it must not admit
     silently uncorrelated, and must not inherit whatever unrelated Attempt's
     ids happen to still be bound on this event loop tick -- it starts clean
@@ -442,6 +480,7 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
     )
     stub = _schedule_stub("s-reqid", "sched-reqid")
     stores.schedules._data["s-reqid"] = stub  # type: ignore[attr-defined]
+    container = _wired_firing_container(monkeypatch, ["hive:schedule:s-reqid"])
     try:
         # A stray ambient context, as if this tick shared the event loop with
         # some unrelated in-flight Attempt -- it must not leak into the Run
@@ -452,9 +491,7 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
                 _ScheduleRunner()._fire_schedule("s-reqid", stub, scheduled_for=scheduled_for)
             )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid"]
         assert len(scheduled) == 1
         request_id = scheduled[0].provenance.get("request_id")
@@ -465,7 +502,9 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
         registry.deregister("sched-reqid")
 
 
-def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
+def test_two_firings_of_the_same_schedule_get_different_request_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import stores
     from services.dag_agents import get_registry
     from services.scheduler import _ScheduleRunner
@@ -482,6 +521,7 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
     )
     stub = _schedule_stub("s-reqid-2", "sched-reqid-2")
     stores.schedules._data["s-reqid-2"] = stub  # type: ignore[attr-defined]
+    container = _wired_firing_container(monkeypatch, ["hive:schedule:s-reqid-2"])
     try:
         runner = _ScheduleRunner()
         asyncio.run(
@@ -495,9 +535,7 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
             )
         )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid-2"]
         assert len(scheduled) == 2
         ids = {r.provenance.get("request_id") for r in scheduled}
@@ -1038,56 +1076,70 @@ def test_a_manual_run_is_unavailable_without_the_canonical_spine(
 
 def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1063: `POST /v1/schedules/{id}/run` is a real HTTP request that
-    RequestIDMiddleware already bound an id for -- `fire_now` must forward
+    RequestIDMiddleware already bound an id for -- the fire must forward
     it rather than minting an unrelated one, or the request/response and the
     resulting Run's provenance would carry two different correlation ids for
-    the same logical request."""
+    the same logical request. The canonical admitter stamps the ambient id
+    onto the Run it admits (#1113: the compatibility store this Run used to
+    land in no longer exists)."""
     import stores
-    from services.scheduler import fire_now
 
     from maistro.observability.correlation import bind_execution_context
-    from maistro.scheduling import InMemoryScheduleStore
 
     _register("sched-manual-reqid")
-    stub = _bounded_stub("s-man-reqid", "sched-manual-reqid")
-    stores.schedules._data["s-man-reqid"] = stub  # type: ignore[attr-defined]
-    _with_store(monkeypatch, InMemoryScheduleStore())
-    try:
+    row = _canonical_row("s-man-reqid")
+    row.mission_template_id = "sched-manual-reqid"
+    stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+
+    async def scenario() -> tuple[Any, str | None]:
+        container, _root = await _canonical_manual_fixture()
+        _with_container(monkeypatch, container)
+        from services.scheduler import fire_now
+
         with bind_execution_context(request_id="http-req-42"):
-            run_id = asyncio.run(fire_now("s-man-reqid"))
+            return container, await fire_now("s-man-reqid")
 
-        from services.dag_agents import _fallback_run_store
-
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+    container, run_id = asyncio.run(scenario())
+    try:
+        assert run_id
+        run = asyncio.run(container.run_store.get_run(run_id))
+        assert run is not None
         assert run.provenance["request_id"] == "http-req-42"
     finally:
-        stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
+        stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
 def test_a_manual_run_with_no_ambient_request_mints_its_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A manual fire triggered with no request id in scope (e.g. a script
-    calling the service function directly) still gets a real one, not a
-    blank provenance field."""
+    calling the service function directly) still starts work and stays
+    correlatable by its own Run id: the canonical admitter stamps provenance
+    it was given (#1113) and never fabricates a correlation id the request
+    did not carry."""
     import stores
-    from services.scheduler import fire_now
-
-    from maistro.scheduling import InMemoryScheduleStore
 
     _register("sched-manual-noreqid")
-    stub = _bounded_stub("s-man-noreqid", "sched-manual-noreqid")
-    stores.schedules._data["s-man-noreqid"] = stub  # type: ignore[attr-defined]
-    _with_store(monkeypatch, InMemoryScheduleStore())
+    row = _canonical_row("s-man-noreqid")
+    row.mission_template_id = "sched-manual-noreqid"
+    stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+
+    async def scenario() -> tuple[Any, str | None]:
+        container, _root = await _canonical_manual_fixture()
+        _with_container(monkeypatch, container)
+        from services.scheduler import fire_now
+
+        return container, await fire_now("s-man-noreqid")
+
+    container, run_id = asyncio.run(scenario())
     try:
-        run_id = asyncio.run(fire_now("s-man-noreqid"))
-
-        from services.dag_agents import _fallback_run_store
-
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
-        assert run.provenance.get("request_id")
+        assert run_id
+        run = asyncio.run(container.run_store.get_run(run_id))
+        assert run is not None
+        assert run_id not in run.provenance.values()
+        assert "request_id" not in run.provenance
     finally:
-        stores.schedules._data.pop("s-man-noreqid", None)  # type: ignore[attr-defined]
+        stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
 def test_a_manual_run_that_cannot_start_leaves_no_stamp(
@@ -1664,3 +1716,81 @@ def test_a_fire_recorded_after_the_row_was_read_survives_the_definition_refresh(
     recorded = asyncio.run(store.get("s-refresh"))
     assert recorded is not None and recorded.runs_so_far == 1
     assert recorded.next_due_at == noon + timedelta(hours=1)
+
+
+@pytest.mark.parametrize("winner", ["run-the-cursor-lost", None])
+def test_the_tick_reports_a_live_run_the_cursor_never_named(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, winner: str | None
+) -> None:
+    """#1059: the tick reports the winner `last_run_id` does not name.
+
+    A ticker that died before `record_fire` left its Run live and the pointer
+    empty, so the admitter resolves that Run itself and hands it back as
+    `active_run_id`. The tick's log is the only place an operator can see that
+    overlap was judged against a Run the cursor never named -- and, under
+    CANCEL_OTHER, which Run the admitter asked to cancel.
+
+    Both arms, because the ordinary tick reports nothing: an evaluation that
+    found no such Run must stay silent rather than logging an absent winner.
+    """
+    from services.scheduler import _ScheduleRunner
+
+    async def scenario() -> None:
+        runner = _ScheduleRunner()
+        schedule = _canonical_row()
+
+        async def _get(_sid: Any) -> None:
+            return None
+
+        container = SimpleNamespace(schedule_store=SimpleNamespace(get=_get))
+
+        async def scope(_schedule: Any, _container: Any) -> object:
+            return object()
+
+        async def definition(*_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(exhausted=False, max_runs=3)
+
+        async def prime(_definition: Any, _container: Any) -> None:
+            return None
+
+        async def active(_definition: Any, _container: Any) -> bool:
+            return True
+
+        async def audit(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        class _AdmitterReportingTheWinner:
+            async def admit_due(self, *_args: Any, **_kwargs: Any) -> Any:
+                return SimpleNamespace(
+                    skipped=[],
+                    already_fired=[],
+                    active_run_id=winner,
+                    cancel_active_run=True,
+                    failures=[],
+                    run_ids=[],
+                )
+
+        monkeypatch.setattr(runner, "_canonical_scope", scope)
+        monkeypatch.setattr(runner, "_definition_for", definition)
+        monkeypatch.setattr(runner, "_prime_template", prime)
+        monkeypatch.setattr(runner, "_canonical_active_run", active)
+        monkeypatch.setattr(runner, "_audit_canonical_admission", audit)
+
+        admitter: Any = _AdmitterReportingTheWinner()
+        with caplog.at_level(logging.INFO, logger="services.scheduler"):
+            await runner._evaluate_canonical(
+                "s-1059",
+                schedule,
+                now=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                container=container,
+                admitter=admitter,
+            )
+
+        if winner is None:
+            assert "the cursor did not name" not in caplog.text
+        else:
+            assert winner in caplog.text
+            assert "the cursor did not name" in caplog.text
+            assert "cancel requested: True" in caplog.text
+
+    asyncio.run(scenario())

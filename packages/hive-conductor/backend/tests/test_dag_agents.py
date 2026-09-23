@@ -215,9 +215,34 @@ def test_the_node_gets_the_canonical_run_store_not_the_durable_one(monkeypatch) 
     )
 
 
+_SYNTH_DAG_NODE = {"nodes": [{"id": "s", "kind": "agent.synth_dag"}]}
+
+
+def test_the_synth_dag_node_gets_the_durable_graph_store_from_the_container(
+    monkeypatch,
+) -> None:
+    """#1193: the durable graph store is what `agent.synth_dag` files its
+    synthesized sub-graph into. It is the *other* store — `graph_run_store`,
+    not `run_store` — and the bridge hands it on so the node cannot arrive
+    with `run_store=None` and complete with a success that ran nothing."""
+    import services.dag_agents as dag_agents
+
+    container = _StubContainer()
+    _with_container(monkeypatch, container)
+
+    node = dag_agents._resolve_nodes_with()("s", _SYNTH_DAG_NODE)
+
+    assert node._run_store is container.graph_run_store
+    assert node._run_store is not container.run_store
+
+
 @pytest.mark.ac("M1-E-1113/AC-3")
 def test_without_a_bridge_graph_nodes_are_unavailable(monkeypatch) -> None:
-    """Stub/degraded mode must not resolve executable Graph nodes."""
+    """Stub/degraded mode must not resolve executable Graph nodes (#1113).
+
+    Supersedes ADR-082526-3ca6/AC-5's standalone resolver behavior: a
+    no-spine process refuses before composing any node rather than resolving
+    against a private fallback."""
     import services.dag_agents as dag_agents
     import services.engine as engine_module
 

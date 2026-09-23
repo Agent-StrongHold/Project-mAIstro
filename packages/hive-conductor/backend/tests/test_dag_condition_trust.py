@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from services.dag_execution_scope import DagExecutionScope
 
 
 def _canonical_test_container() -> tuple[Any, Any]:
@@ -17,7 +18,9 @@ def _canonical_test_container() -> tuple[Any, Any]:
 
     class _Projects:
         async def get(self, project_id: str) -> Any:
-            return SimpleNamespace(project_id=project_id, workspace_id="w")
+            # Agree with the authorized execution scope: the canonical
+            # RunStore validates Graph scope at admission (#766/#1113).
+            return SimpleNamespace(project_id=project_id, workspace_id="test-workspace")
 
         async def root_for_workspace(self, workspace_id: str) -> Any:
             return SimpleNamespace(project_id="root-project", workspace_id=workspace_id)
@@ -127,6 +130,9 @@ async def test_arbitrary_legacy_condition_cannot_silently_skip_successor(
             ],
         },
         llm_builder=_fake_llm_builder,
+        scope=DagExecutionScope(
+            workspace_id="test-workspace", project_id="test-project", user_id="test-user"
+        ),
     )
 
     assert result["status"] == "completed"
