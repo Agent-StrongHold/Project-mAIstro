@@ -37,8 +37,10 @@ Scope: the legacy Hive DAG (every node `hive.legacy_node`) and Evolve
 (`evolve.*`) ticks own Runs that never pause, so the Runs these wakers actually
 reach are schedule-admitted registered DAGs, via #837's recovery halves. A
 registered DAG run by hand, the orchestrator's, or a synthesized one has no
-production drain for an answered or elapsed pause until
-`Container.resume_parked_runs` gets its #62 cadence.
+production drain for an answered pause. Hive has ticked
+`Container.resume_parked_runs` since #62, but it re-enters only elapsed timers
+of consumer-executed Runs and is a Container method, which these module-level
+checks do not read; it is not counted here.
 """
 
 from __future__ import annotations
@@ -153,9 +155,6 @@ _HUMAN_WAKERS = (_HITL_ANSWER, _HITL_CANCEL)
 # `expire_human_work` is not listed: it expires HITL deadlines only when
 # someone calls `POST /v1/hitl/expire`, and a deadline nobody ticks is not a
 # waker (`test_a_deadline_only_a_route_reaches_is_not_a_waker`).
-#
-# `Container.resume_parked_runs` also re-enters these for consumer-executed
-# Runs, but has no production caller until the #62 cadence ticks it.
 
 #: Reachable, and `resume_due_graph_runs` accepts WAITING, but each owns only
 #: its own admission's Runs, none of which can hold a Jira or delegation node
