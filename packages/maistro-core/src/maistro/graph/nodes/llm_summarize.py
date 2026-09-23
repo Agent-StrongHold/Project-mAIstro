@@ -16,11 +16,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-<<<<<<< HEAD
-from typing import Any, ClassVar
-=======
 from typing import TYPE_CHECKING, Any, ClassVar
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
 
 from pydantic import BaseModel, Field
 
@@ -91,15 +87,11 @@ class LlmSummarizeNode(BaseNode[LlmSummarizeIn, LlmSummarizeOut]):
     # The shipped model path crosses the governed model egress (#56): the
     # Container's effect context is what makes Bindings resolve; the bare
     # default authorizes nothing, which is a refusal rather than a no-op.
-<<<<<<< HEAD
-    optional_authorities: ClassVar[Mapping[str, str]] = {"effect_context": "effect_context"}
-=======
     optional_authorities: ClassVar[Mapping[str, str]] = {
         "effect_context": "effect_context",
         "registry": "provider_registry",
         "router": "llm_router",
     }
->>>>>>> 0221d2cd799ec075e30c33e0b2e2fda573865aef
     kind_category: ClassVar = "sync.llm"
     input_schema: ClassVar[type[BaseModel]] = LlmSummarizeIn
     output_schema: ClassVar[type[BaseModel]] = LlmSummarizeOut
