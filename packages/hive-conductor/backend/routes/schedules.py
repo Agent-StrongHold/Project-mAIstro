@@ -5,9 +5,15 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import stores
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from models.schemas import Schedule
 from pydantic import BaseModel, ConfigDict, field_validator
+from services import dag_run_inspection, workspace_authority
+from services.dag_execution_scope import (
+    DagWorkspaceSelectionError,
+    authorize_hive_dag_scope,
+    authorize_hive_dag_workspace,
+)
 
 router = APIRouter(tags=["schedules"])
 
@@ -67,9 +73,68 @@ def _check_fire_id(value: str | None) -> str | None:
     return stripped
 
 
+def _actor(request: Request) -> str:
+    """The authenticated principal; a schedule is never owned by "system"."""
+    user = getattr(request.state, "user", None) or {}
+    actor = str(user.get("id") or "").strip()
+    if not actor:
+        raise HTTPException(status_code=401, detail="authentication required")
+    return actor
+
+
+async def _visible_schedule(request: Request, schedule_id: str) -> Schedule:
+    """The row, if the caller is a member of its Workspace; else one 404.
+
+    Missing, ownerless and foreign rows share the refusal so this route is
+    not an existence oracle for other Workspaces' schedules.
+    """
+    actor = _actor(request)
+    schedule = stores.schedules.get(schedule_id)
+    if schedule is None or not await workspace_authority.is_member(actor, schedule.workspace_id):
+        raise HTTPException(status_code=404, detail="schedule not found")
+    # Re-read after the await: a concurrent delete or fire may have landed,
+    # and acting on the pre-await copy would resurrect or rewind the row.
+    current = stores.schedules.get(schedule_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return current
+
+
+_WRITER_ROLES = frozenset({"owner", "editor"})
+_SCOPE_REFUSED = "Schedule Workspace scope is not authorized"
+
+
+async def _require_writer(actor: str, workspace_id: str) -> None:
+    """A viewer may read a Workspace's schedules, not arm or retarget them."""
+    if await workspace_authority.member_role(actor, workspace_id) not in _WRITER_ROLES:
+        raise HTTPException(status_code=403, detail=_SCOPE_REFUSED)
+
+
+async def _writable_schedule(
+    request: Request, schedule_id: str, *, require_active: bool = True
+) -> Schedule:
+    """A visible row the caller may change; an archived Workspace admits no
+    edit or Run, the same admission `POST /v1/dags/{id}/run` applies."""
+    schedule = await _visible_schedule(request, schedule_id)
+    actor = _actor(request)
+    await _require_writer(actor, schedule.workspace_id)
+    if require_active:
+        try:
+            await authorize_hive_dag_workspace(workspace_id=schedule.workspace_id, user_id=actor)
+        except DagWorkspaceSelectionError as exc:
+            raise HTTPException(status_code=403, detail=_SCOPE_REFUSED) from exc
+    current = stores.schedules.get(schedule_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return current
+
+
 @router.get("", response_model=list[Schedule])
-def list_schedules() -> list[Schedule]:
-    return list(stores.schedules.values())
+async def list_schedules(request: Request) -> list[Schedule]:
+    allowed = await dag_run_inspection.authorized_workspace_ids(_actor(request))
+    return [
+        row for row in stores.schedules.values() if row.workspace_id and row.workspace_id in allowed
+    ]
 
 
 @router.get("/history")
@@ -78,10 +143,8 @@ def schedule_history() -> list:
 
 
 @router.get("/{schedule_id}", response_model=Schedule)
-def get_schedule(schedule_id: str) -> Schedule:
-    if schedule_id not in stores.schedules:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    return stores.schedules[schedule_id]
+async def get_schedule(schedule_id: str, request: Request) -> Schedule:
+    return await _visible_schedule(request, schedule_id)
 
 
 class CreateScheduleBody(BaseModel):
@@ -94,17 +157,32 @@ class CreateScheduleBody(BaseModel):
     enabled: bool = True
     timezone: str = "UTC"
     max_runs: int | None = None
+    # Selections, not authority: the create route admits them through the
+    # canonical Workspace/Project service before anything is stored.
+    workspace_id: str = ""
+    project_id: str = ""
 
     _tz = field_validator("timezone")(_check_timezone)
     _bound = field_validator("max_runs")(_check_max_runs)
 
 
 @router.post("", response_model=Schedule, status_code=201)
-def create_schedule(body: CreateScheduleBody) -> Schedule:
+async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedule:
+    actor = _actor(request)
+    try:
+        scope = await authorize_hive_dag_scope(
+            workspace_id=body.workspace_id, user_id=actor, project_id=body.project_id
+        )
+    except DagWorkspaceSelectionError as exc:
+        raise HTTPException(status_code=403, detail=_SCOPE_REFUSED) from exc
+    await _require_writer(actor, scope.workspace_id)
     sid = str(uuid4())
     t = _now()
     schedule = Schedule(
         id=sid,
+        user_id=scope.user_id,
+        workspace_id=scope.workspace_id,
+        project_id=scope.project_id,
         name=body.name,
         description=body.description,
         cron_expression=body.cron_expression,
@@ -146,10 +224,8 @@ class UpdateScheduleBody(BaseModel):
 
 
 @router.put("/{schedule_id}", response_model=Schedule)
-def update_schedule(schedule_id: str, body: UpdateScheduleBody) -> Schedule:
-    if schedule_id not in stores.schedules:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    schedule = stores.schedules[schedule_id]
+async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: Request) -> Schedule:
+    schedule = await _writable_schedule(request, schedule_id)
     updates = body.model_dump(exclude_none=True)
     t = _now()
     updates["updated_at"] = t
@@ -159,10 +235,9 @@ def update_schedule(schedule_id: str, body: UpdateScheduleBody) -> Schedule:
 
 
 @router.delete("/{schedule_id}", status_code=204)
-def delete_schedule(schedule_id: str) -> None:
-    if schedule_id not in stores.schedules:
-        raise HTTPException(status_code=404, detail="schedule not found")
-    stores.schedules.pop(schedule_id)
+async def delete_schedule(schedule_id: str, request: Request) -> None:
+    await _writable_schedule(request, schedule_id, require_active=False)
+    stores.schedules.pop(schedule_id, None)
 
 
 class ManualFireBody(BaseModel):
@@ -184,6 +259,7 @@ class ManualFireBody(BaseModel):
 @router.post("/{schedule_id}/run", response_model=Schedule)
 async def run_schedule(
     schedule_id: str,
+    request: Request,
     body: ManualFireBody | None = None,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Schedule:
@@ -203,8 +279,7 @@ async def run_schedule(
     the Run the first call created and no second Run exists.  A call carrying
     no identity is its own deliberate firing, with a server-minted token.
     """
-    if schedule_id not in stores.schedules:
-        raise HTTPException(status_code=404, detail="schedule not found")
+    await _writable_schedule(request, schedule_id)
     from services.scheduler import ScheduleAdmissionUnavailable, ScheduleNotFireable, fire_now
 
     raw = (body.fire_id if body is not None else None) or idempotency_key
@@ -227,4 +302,7 @@ async def run_schedule(
         # broken. 503 says the dependency is not there and the request may be
         # retried once it is.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return stores.schedules[schedule_id]
+    fired = stores.schedules.get(schedule_id)
+    if fired is None:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return fired
