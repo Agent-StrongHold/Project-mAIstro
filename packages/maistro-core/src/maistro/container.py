@@ -892,6 +892,8 @@ class Container:
             run_store=self.run_store,
             effect_context=self.capability_effects,
             graph_run_store=self.graph_run_store,
+            provider_registry=self.provider_registry,
+            llm_router=self.llm_router,
         )
 
     async def recover_abandoned_attempts(
@@ -1815,6 +1817,9 @@ async def create_container(
         pg_pool=pg_pool, db_pool=db_pool
     )
     capability_effects = new_effect_context(invocation_store=capability_invocation_store)
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+
+    await bootstrap_model_bindings(config, capability_effects)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2602,6 +2607,8 @@ def build_node_resolver(
     run_store: RunStore | None = None,
     effect_context: CapabilityEffectContext | None = None,
     graph_run_store: DurableRunStore | None = None,
+    provider_registry: LLMProviderRegistry | None = None,
+    llm_router: LLMRouter | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
 
@@ -2673,5 +2680,11 @@ def build_node_resolver(
         "graph_run_store": graph_run_store,
         "effect_context": resolved_effect_context,
         "node_resolver": _resolver,
+        # The Container's populated model authorities (#1079): a resolver-built
+        # `llm.summarize` routes through the same registry/cost-aware router
+        # the rest of the deployment uses, instead of a private empty registry
+        # that can only ever gateway-passthrough a named alias.
+        "provider_registry": provider_registry,
+        "llm_router": llm_router,
     }
     return _resolver
