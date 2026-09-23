@@ -8,7 +8,7 @@ PIDs or CPU unbounded. This module only observes: it never decides readiness.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -29,7 +29,11 @@ class EffectiveContainerLimits:
     cpu_max_cores: float | Unbounded | Unknown
 
     def as_dict(self) -> dict[str, int | float | str]:
-        return {field.name: getattr(self, field.name) for field in fields(self)}
+        return {
+            "memory_max_bytes": self.memory_max_bytes,
+            "pids_max": self.pids_max,
+            "cpu_max_cores": self.cpu_max_cores,
+        }
 
 
 def _read(path: Path) -> str | None:

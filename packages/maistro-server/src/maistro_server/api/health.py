@@ -180,6 +180,7 @@ async def readiness(
         "http_pool": http_pool_result,
     }
     all_ok = all(c.status == "ok" for c in checks.values())
+    container_limits = read_effective_container_limits(CGROUP_ROOT).as_dict()
 
     result = DetailedHealthResponse(
         status="ok" if all_ok else "degraded",
@@ -188,7 +189,7 @@ async def readiness(
         version=request.app.version,
         checks=checks,
         effective_resource_policy=settings.effective_resource_policy().as_dict(),
-        container_limits=read_effective_container_limits(CGROUP_ROOT).as_dict(),
+        container_limits=container_limits,
         strike_tracker=_strike_tracker_diagnostics(container),
     )
 
