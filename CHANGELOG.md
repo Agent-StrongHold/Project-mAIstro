@@ -25,6 +25,31 @@ or placeholder-only section.
 
 ### Security
 
+- **Design trust review records no longer recommend upgrading content the engine
+  blocks (#817, partial).** `scan_and_record` now runs the shared Design
+  `scan_blocking_patterns` over the content it records, instead of assigning
+  empty flags. Script/iframe/`javascript:` markup, prompt-injection phrasing,
+  base64 blobs and hidden Unicode are now recorded as SKULL with explicit flags
+  and a `banish` recommendation. `upgrade` is recommended only when the scanner
+  the output scan uses finds nothing. The engine's accept/reject outcome is
+  unchanged, because the output scan already rejected this content.
+
+- **Concurrent registrations can no longer publish two identities under the
+  same username (#1248).** The register route's availability check and the
+  UUID-keyed write were separate steps, so the store's key (a fresh UUID, not
+  the username) never enforced uniqueness — two requests racing the same
+  username could both pass the check and both write, leaving two identities
+  answering to one username. The check, invitation spend, and write are now
+  one critical section (an in-process lock) backed by a durable claim:
+  `ModelStore.put_if_unique` and `PersistedStore.put_model_if_unique` make the
+  username claim and the row's insert one SQLite transaction, so the
+  uniqueness boundary survives across independent application processes, not
+  just within one. `test_concurrent_open_registration_claims_username_once`
+  drives eight threads at the same username through the real route (one 200,
+  seven 409, one stored identity); `test_independent_process_writers_publish_one_username`
+  proves the same claim holds across two separate `multiprocessing` writers
+  sharing one SQLite file.
+
 - **pydantic-ai-slim removed from the API and research images, clearing
   CVE-2026-25580 (HIGH) (#1515).** ADR-094 already cut pydantic-ai from the codebase
   (zero `pydantic_ai` imports remain), but both Dockerfiles still installed
@@ -192,6 +217,43 @@ or placeholder-only section.
 
 ### Added
 
+- **Every maistro-core node kind is proven to get the Container's own
+  authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
+  resolves each registered core kind that declares an authority through a real
+  `create_container()` Container and asserts it receives the exact
+  Container-owned harness adapters, usage log, A2A delegator, guest peers,
+  canonical and graph Run stores, capability-effect context, provider
+  registry, LLM router, and resolver, so the Container dropping one and
+  letting `build_node_resolver`'s bare default stand in now fails CI. Test
+  only; no wiring gap was found.
+- **`GET /v1/runs/{run_id}/node-runs` now lists each NodeRun's Attempts,
+  including the agent a chat turn dispatched to (#223).** Every NodeRun carries
+  an additive `attempts` array of `attempt_id`, `ordinal`, `status`,
+  `executor_id`, `created_at`, `started_at`, `finished_at` and `agent`
+  (null where none was recorded, as for tasks). This is the public reader for
+  ADR-082526-7f02's "the Attempt answers which agent ran". `Attempt.result`
+  and `Attempt.error` are deliberately not exposed, since they can carry raw
+  provider or exception text.
+
+- **Governed model egress is wired into production Container composition
+  (#1079).** `AgentConfig.model_bindings` declares authorized Workspace/Project
+  `model.chat` Bindings; `create_container()` bootstraps them into the exact
+  per-Container `CapabilityEffectContext` production effect nodes consume, and
+  `execute_admitted_runs`, `resume_parked_runs`, and Hive's `dag_agents` all
+  resolve `llm.summarize` through the same canonical Provider/Router
+  authorities instead of each constructing its own fallback. The physical
+  model call now authenticates from the Binding's own scoped credential
+  (`CredentialRouting`, resolved from `AgentConfig.litellm_key` at bootstrap)
+  rather than a flat environment-variable key, so a call with no authorized
+  Binding, or a Binding whose credential isn't registered in its own
+  Workspace/Project scope, refuses with `CredentialScopeError` before any
+  request reaches the gateway. `test_model_egress_container_composition.py`
+  proves production composition end-to-end (Bindings bootstrap through the
+  Container, zero configured Bindings authorizes nothing, a Container-resolved
+  `llm.summarize` reads real Provider metadata and executes through governed
+  Invocation with Run/NodeRun/Attempt correlation, and incorrect Workspace
+  scope is rejected before the physical transport is invoked).
+
 - **Canvas generation jobs converge onto canonical Run/NodeRun/Attempt
   execution (#735).** `maistro_canvas`'s durable generation runner is wired to
   the canonical executor: `canvas/executor.py` and `canvas/store.py` carry
@@ -350,6 +412,82 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The DAG Builder's Run button reports the canonical Run truthfully
+  (#53).**
+  The execution log now shows the canonical `run_id` the run socket already
+  sends, with a link that opens that Run in DAG Runs (`/dag-runs?run=<id>`).
+  A `waiting`/`paused` Run shows as parked, with its unfinished nodes not
+  reported as FAIL, rather than "Connection closed"; `cancelled` and `timed_out` show as
+  non-success terminal states; a canonical `failed` frame reads "Failed"
+  instead of a bare "Error". "Connection closed" now appears only when the
+  socket closes before any terminal or parked frame. Presentation only: no
+  backend or lifecycle change.
+
+- **Evolve canonical Runs now record their durable execution owner at
+  admission (#51).** `run_canonical_evolution_cycle()` admitted its Run via
+  `RunStore.create_run()` without the standard `executor: "durable_graph"`
+  provenance marker every other canonical adapter (`canonical_dag_runner.py`,
+  `dag_agents.py`) stamps at admission, then passed the same un-marked
+  `provenance` dict to `run_durable_graph()` expecting it to backfill the
+  marker — but that function only applies its `provenance` argument when it
+  creates a brand-new Run itself (`run_store=None`); against a canonical
+  `run_store` it adopts the already-admitted Run as-is and silently ignores
+  the argument. Every Evolve Run therefore permanently lacked the marker,
+  making its executor unidentifiable to audit/history consumers inspecting
+  Run provenance. Fixed by setting `"executor": "durable_graph"` directly in
+  the provenance dict built before admission, matching the existing
+  convention.
+
+- **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
+  predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
+  keyword argument, with a default, when `Schedule.recovered_occurrences`
+  recovery landed (#1059) -- but the admitter named it on every call
+  regardless of whether there was anything to credit, so an external
+  `ScheduleStore` implementation using the previously valid
+  `record_fire(self, schedule_id, *, fired_at, run_id, next_due_at,
+  fires=None, disable=False)` signature raised `TypeError: unexpected
+  keyword argument 'recovered'` on every ordinary recurring fire after
+  upgrading, not merely a recovering one. `recovered=` is now passed only
+  when the set is non-empty, which keeps the common, no-recovery case
+  working unchanged against an older store; a genuinely recovered claim
+  still names it, and a store that cannot accept it still fails loudly
+  rather than silently losing the credit. `maistro-core`'s own
+  implementations (the protocol, `InMemoryScheduleStore`,
+  `SqliteScheduleStore`, `PgScheduleStore`) already accept the keyword and
+  are unaffected.
+- **Builders' canonical pipeline executor no longer disagrees with legacy
+  gate/revision, step-budget, and failure-reporting semantics (#1067).** A
+  post-merge audit of #734/#744 found 4 parity defects in
+  `CanonicalGraphPipelineExecutor`, two of which could silently mark a Run
+  `COMPLETED` while a gate was still failing or dropping a same-wave
+  sibling's stale output into a revised stage's input: (1) a same-wave gate
+  revision now invalidates its stale descendants only after the whole ready
+  frontier settles, instead of racing a slower sibling's own commit inside
+  the failing node's coroutine; (2) a gated stage with no `revise_target`
+  already re-offered itself correctly (fixed on `develop` before this audit
+  landed); (3) the durable walk's step bound is now derived from Builders'
+  own admitted pipeline size and iteration budget instead of inheriting an
+  unrelated generic 256-step ceiling that could fail a large valid pipeline;
+  (4) two stages failing in the same concurrent wave now project one
+  consistent authoritative failed stage and error, derived from canonical's
+  own selected failure, instead of a reversed `NodeRun` scan paired with a
+  separately racing shared error variable. A follow-up review found three
+  correctness gaps in that same fix before merge: the revision ledger's
+  `flush()` was applied once per *stage dispatch* rather than once per
+  *frontier*, so a fast/immediate dispatcher could still fail a genuine
+  wave-mate out of its own admitted wave (the flush now runs from the
+  canonical node resolver, which only ever fires once per frontier, strictly
+  after the previous frontier's whole dispatch batch has returned); the
+  transient "stale guard" skip marker was not cleared before a stage's real
+  redispatch, so a stage that failed for real after an earlier stale defer
+  was misreported `SKIPPED` instead of `FAILED` (now cleared as soon as the
+  stale guard is passed, before any real work is attempted); and the derived
+  step bound assumed a skip-only frontier happens at most once per graph
+  node for the whole run, undercounting a revision that repeatedly replays
+  an already-skipped node's frontier (now scales the free-frontier
+  allowance by graph size per real dispatch, not by a flat one-per-node
+  total).
+
 - **Every ADR body status line now agrees with its front matter, and the
   body-status ratchet is empty (no linked issue: completes the `#387` cleanup
   begun in the entry below).** The 28 legacy contradictions `#387` banked are
@@ -391,6 +529,24 @@ or placeholder-only section.
   for hydrating all of them every tick; it now passes `admission_source` into
   the query, which both SQL backends push down. The per-candidate source check
   stays as defense in depth.
+
+- **Ratchet bases resolve for rebased topic pushes (no linked issue: CI infra).**
+  Restores the #727/#534 base rule in three workflows that had drifted off it.
+  `quality.yml`'s coverage gate, `ci.yml`'s root suite and
+  `vulture-ratchet.yml` named
+  `RATCHET_BASE_REV` themselves and fell through to `github.event.before` for
+  *every* push. That is right only for a protected branch, which really does
+  replace that revision; on a topic branch `before` is the branch's own
+  previous tip, and any rebase orphans it — unreachable from every ref, so
+  `fetch-depth: 0` (which fetches refs, not orphans) cannot supply it. The
+  ratchet then refused with "base revision could not be resolved" and the
+  candidate went red on base provenance while its pull-request run passed on
+  byte-identical content; a re-run could not clear it, because `before` is
+  fixed in the stored event payload. All three now use the integration base
+  for topic pushes, matching the two sibling declarations that were already
+  correct and what `ratchet_provenance._push_event_base` computes when no base
+  is named. A new test pins the shape of every declaration so the two
+  behaviours cannot drift apart again.
 
 - **The Simple/Power toggle is removed rather than left silently inert
   (#1409, #1411, #1410).** It promised "Power Mode (DAGs, prompts, topology)" but
