@@ -822,8 +822,10 @@ or placeholder-only section.
   with the answer, the Run is left open for recovery, and a dispatch failure
   whose recording also failed still arrives as the dispatch's own exception.
   A runtime deadline that cancelled the dispatch still arrives as
-  `RuntimeDeadlineExceeded`, and a failure before the dispatch still
-  propagates unchanged without reaching the model.
+  `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
+  fails arrives as the cancellation, never as a bare store error the
+  pre-dispatch fallback would answer again; and a failure before the dispatch
+  still propagates unchanged without reaching the model.
 - **A launch the store refuses no longer masks itself as a lifecycle error
   (#1108 follow-up to #1288).** When the Attempt's own RUNNING write failed,
   the executor's failure path asked the lifecycle for `FAILED` from `CREATED`

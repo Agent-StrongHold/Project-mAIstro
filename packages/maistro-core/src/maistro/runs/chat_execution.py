@@ -69,7 +69,7 @@ from maistro.runs.chat_admission import chat_turn_outcome
 from maistro.runs.model import NodeRun
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError, RunStore
-from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime
+from maistro.runtime import ExecutionRuntime, PythonExecutionRuntime, RuntimeDeadlineExceeded
 
 #: `executor_id` recorded on every Attempt a chat turn drives, the way
 #: `TASK_EXECUTOR_ID` names the task runner. It answers "what kind of work was
@@ -274,16 +274,22 @@ class ChatAttemptExecutor:
         except Exception as exc:
             if not turn.started or exc is turn.error:
                 raise
-            if isinstance(turn.error, Exception):
-                # The dispatch failed and then the spine could not record that
-                # it did. The failure the caller can act on is the dispatch's;
-                # the store's is chained behind it.
+            if turn.error is not None:
+                if isinstance(exc, RuntimeDeadlineExceeded) and not isinstance(
+                    turn.error, Exception
+                ):
+                    # The deadline cut the dispatch off and was recorded: the
+                    # runtime's exception is the outcome, and substituting the
+                    # `CancelledError` the dispatch saw would disguise a
+                    # timeout as a client disconnect.
+                    raise
+                # The dispatch failed, or was cancelled, and then the spine
+                # could not record that it did. The failure the caller can act
+                # on is the dispatch's; the store's is chained behind it. A bare
+                # store error must never escape here, because the caller would
+                # read it as pre-dispatch and ask the model again.
                 raise turn.error from exc
-            if turn.response is None:
-                # The dispatch was cut off rather than failing on its own — a
-                # deadline cancelled it — so the runtime's exception is the
-                # outcome, and substituting the `CancelledError` the dispatch
-                # saw would disguise a timeout as a client disconnect.
+            if turn.response is None:  # pragma: no cover - a dispatch returns or raises
                 raise
             raise ChatDispatchUnrecorded(run_id, response=turn.response) from exc
         if turn.response is None:  # pragma: no cover - unreachable: run always fills it

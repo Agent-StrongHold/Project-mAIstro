@@ -38,8 +38,9 @@ from maistro.runs.model import (
     RunStatus,
 )
 from maistro.runs.reconciliation import AttemptLifecycleReconciler
+from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunIntegrityError
-from maistro.runtime.execution import RuntimeDeadlineExceeded
+from maistro.runtime import PythonExecutionRuntime, RuntimeDeadlineExceeded
 from maistro.types.config import AgentConfig
 
 MESSAGES = [{"role": "user", "content": "hi"}]
@@ -519,6 +520,69 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
 
         _, attempts = await _spine(container, run.run_id)
         assert attempts[0].status in TERMINAL_ATTEMPT_STATUSES
+
+    async def test_a_cancelled_turn_whose_cancel_record_fails_is_not_redispatched(
+        self,
+    ) -> None:
+        """The Run is cancelled while the model call is in flight and the
+        CANCELLED Attempt write fails. The store error must not escape bare:
+        the container reads a bare `RunIntegrityError` as pre-dispatch and
+        would answer a cancelled Run with a second, unrecorded model call."""
+        container = await _container()
+        real = container.run_store
+        started = asyncio.Event()
+        calls = 0
+
+        async def _slow(_messages: list[dict[str, Any]], **_kw: Any) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await asyncio.sleep(5)
+            return {}
+
+        container.conduit.route_request = _slow  # type: ignore[method-assign]
+        container.run_store = _RecordingVeto(  # type: ignore[assignment]
+            real, method="transition_attempt", target=AttemptStatus.CANCELLED
+        )
+        run = await container.chat_admitter.admit(MESSAGES)
+        await real.transition_run(run.run_id, RunStatus.QUEUED)
+        run = await real.transition_run(run.run_id, RunStatus.RUNNING)
+
+        turn = asyncio.create_task(container.route_request(MESSAGES, run=run))
+        await started.wait()
+        await RunExecutionService(store=real, runtime=PythonExecutionRuntime()).cancel_run(
+            run.run_id
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        assert calls == 1
+
+    async def test_a_deadline_whose_record_fails_does_not_escape_as_pre_dispatch(
+        self,
+    ) -> None:
+        """Same rule under a deadline: the TIMED_OUT write fails after the
+        dispatch was cut off, and what reaches the caller is not a bare
+        `RunIntegrityError` its pre-dispatch fallback would answer again."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _RecordingVeto(
+            container.run_store, method="transition_attempt", target=AttemptStatus.TIMED_OUT
+        )
+
+        async def _slow() -> dict[str, Any]:
+            await asyncio.sleep(5)
+            return {}
+
+        with pytest.raises(BaseException) as failed:
+            await ChatAttemptExecutor(store, timeout_s=0.01).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _slow
+            )
+
+        assert not isinstance(failed.value, RunIntegrityError)
+        assert isinstance(failed.value.__cause__, RunIntegrityError)
 
     async def test_a_raw_store_failure_before_the_dispatch_never_reaches_the_model(
         self,
