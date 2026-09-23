@@ -49,3 +49,22 @@ Attempt) plus the deterministic per-NodeRun finalize marker and the
 fail-closed `_recovery_resolver` keep replay from double-executing model
 effects or double-applying domain mutations. PR #1313 body and branch
 commit messages contain no premature closure keywords (Refs only).
+
+Verification note (repair-phase re-run, clean tree at head 22d3833d =
+fc54aa8e + inventory-note provenance commit; the prior verification's
+evidence was rejected only because its worktree changed mid-run, not for
+any check failure): re-executed at this exact head -- pytest
+test_evolution_service.py + test_evolution_canonical_graph.py +
+test_evolution_recovery.py + test_evolution_recovery_cadence.py -> 77
+passed, then test_model_egress_container_composition.py +
+test_evolution_persisted_pair_plan.py + test_evolution_canonical_edge_cases.py
+-> 24 passed; `ruff check .` and `ruff format --check .` clean;
+check-model-egress.py OK (baseline 23 -> candidate 22 direct callers,
+services.evolution pruned, no unauthorized expansion), check-reachability.py
+OK (1115 modules, ledger matches), check-wiring-reads.py OK (11 unread,
+ledger matches), check-suite-inventory.py OK (2658 recorded for
+hive-conductor/backend/tests). Confirmed in source: zero httpx/aiohttp/
+requests/urllib usage across services/evolution*.py; Invocation stamped
+with binding workspace/project + run/node_run/attempt (invocation.py);
+maistro_evolve.providers.openai_compatible imported only by its own package
+re-export, with no production wiring.
