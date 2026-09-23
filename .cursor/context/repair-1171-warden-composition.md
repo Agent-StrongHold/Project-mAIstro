@@ -1,5 +1,15 @@
 # repair-1171 — canonical Warden composition on Conductor + event re-entry
 
+## Second validation round (job 0387d5b6, head d461035)
+
+`check-4.log` failed on exactly one stale test fake:
+`test_maistro_core_adapter.py::test_start_carries_the_model_bindings_onto_the_container_config`
+still declared `fake_create_container(config)` without `**kwargs`, so the
+bridge's intentional `warden_llm=` kwarg raised `TypeError`. The other five
+fakes in the file had already been widened; this one was missed. Fix: accept
+`**kwargs` like its siblings (test-only, one line). Re-run: 80 passed for the
+conductor suite, 133 passed for the core issue suites, ruff/mypy/gates clean.
+
 ## What the prior validation actually failed on
 
 `check-1.log` (job c669514f) recorded 47 ruff `invalid-syntax` errors — all a

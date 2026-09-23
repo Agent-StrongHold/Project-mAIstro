@@ -304,7 +304,7 @@ async def test_start_carries_the_model_bindings_onto_the_container_config(monkey
     container = _fake_container()
     captured: dict[str, object] = {}
 
-    async def fake_create_container(config):
+    async def fake_create_container(config, **kwargs):
         captured["config"] = config
         return container
 
