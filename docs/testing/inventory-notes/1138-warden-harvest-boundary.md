@@ -32,3 +32,15 @@ audit trail carries campaign/repository/base correlation. Mutation
 validation executed: disabling the runner guard, the scout scan, the
 builder system-prompt admission, or the resume admission each fails the
 adversarial tests (2/1/1/2 failures respectively).
+
+Revalidated at merge head `11b1a55ea` (develop base `84d937add`, no test
+delta): the develop merge touched no `maistro-rsi`/`maistro-evolve` file and
+left `WardenVerdict` unchanged (only `Violation`/`AuditEntry` moved to
+canonical types). Full battery re-executed: 756 rsi + 645 evolve tests pass,
+ruff check/format clean, suite-inventory/security-inventory/reachability
+(+dispositions, provenance) gates pass. Mutation checks re-executed at this
+head: removing the runner guard fails 2 tests; ignoring the resume-patch
+admission fails 2 tests; both mutations reverted with the tree byte-verified
+clean. One unrelated pre-existing upstream failure
+(`maistro-core/tests/security/test_log_redaction.py::test_install_is_idempotent`)
+reproduces on canonical develop and is out of scope for this lane.
