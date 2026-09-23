@@ -205,11 +205,18 @@ async def run_schedule(
     """
     if schedule_id not in stores.schedules:
         raise HTTPException(status_code=404, detail="schedule not found")
-    from services.scheduler import ScheduleNotFireable, fire_now
+    from services.scheduler import ScheduleAdmissionUnavailable, ScheduleNotFireable, fire_now
 
     fire_id = (body.fire_id if body is not None else None) or idempotency_key
     try:
         await fire_now(schedule_id, fire_id=fire_id)
     except ScheduleNotFireable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ScheduleAdmissionUnavailable as exc:
+        # A configured Container missing its admission wiring is a server
+        # misconfiguration, not a schedule that cannot fire (#1119): 409 would
+        # tell the caller to fix the schedule, when the process is what is
+        # broken. 503 says the dependency is not there and the request may be
+        # retried once it is.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return stores.schedules[schedule_id]

@@ -103,11 +103,16 @@ async def _fixture(
                 metadata={"entry_node": "only"},
             )
         )
+    from maistro.scheduling.admission import ScheduleRunAdmitter
+
     container = SimpleNamespace(
         run_store=runs,
         template_store=templates,
         schedule_store=schedules,
         project_scope_store=projects,
+        # The configured Container constructs this seam once so every producer
+        # shares one admission authority; the fixture mirrors that wiring.
+        schedule_admitter=ScheduleRunAdmitter(runs, templates, schedules),
     )
     row = _Row(
         "s-1",

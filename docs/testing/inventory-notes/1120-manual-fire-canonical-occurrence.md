@@ -17,9 +17,10 @@ race resolves the winner's Run via the new `find_occurrence_run` read half of
 the claim; an unclaimed fire has no Run to reconcile; and nominal claims
 resolve through the same lookup. Supporting changes: `occurrence_key`
 understands manual fires, the SQLite/PostgreSQL claim indexes become
-`COALESCE('manual:' || fire_id, scheduled_for)` (migration 034), and
-recurring admissions now stamp `schedule_trigger: "recurring"` (asserted in
-`test_admission.py`, no new collected cases).
+`COALESCE('manual:' || fire_id, scheduled_for)` (migration 039 — renumbered
+from 034 after develop's #1056 took that id), and recurring admissions now
+stamp `schedule_trigger: "recurring"` (asserted in `test_admission.py`, no
+new collected cases).
 
 Adds ten cases in the Hive suite's `test_manual_fire_canonical.py`: canonical
 Workspace/Project/Run provenance for a manual fire with the legacy
@@ -35,3 +36,22 @@ driving `POST /v1/schedules/{id}/run` twice with one `Idempotency-Key` and
 asserting one Run consumed to a completed NodeRun and Attempt; and the
 standalone no-Container fallback still reachable only through the same
 `_canonical_admitter` gate the recurring loop uses.
+
+## Merge reconciliation with develop's #1119 spine (2026-09-12)
+
+Merging `origin/develop` (which shipped its own canonical manual-fire
+implementation via `admit_due(manual=True)`) onto this branch reconciled the
+two designs: develop's admitter spine (atomic `reserve_fire`/`settle_fire`
+quota, fail-closed `ScheduleAdmissionUnavailable`, request correlation,
+consumer-tick execution) kept as the authority, with this branch's occurrence
+identity ported into it — `admit_due(..., manual=True, fire_id=...)` claims
+`(schedule_id, 'manual:' + fire_id)`, and a duplicate claim returns
+`ScheduleAdmission.reconciled_run_id` (the winner's receipt) instead of a
+bare refusal. No test-count changes from the reconciliation itself; two
+existing develop assertions were updated to the reconciled contract:
+`test_admission.py::test_a_claimed_occurrence_is_reported_not_recreated` now
+races on one `fire_id` token (the instant was never the identity #1120
+required) and asserts the reconciliation, and
+`test_schedule_manual_fire_canonical.py`'s route E2E asserts the Run is
+consumed to `COMPLETED` by the manual fire's prompt consumer tick rather than
+left `QUEUED` for the 30s recurring tick.
