@@ -7,6 +7,7 @@ import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.binding_store import (
+    BindingDisabled,
     BindingNotFound,
     BindingScopeDenied,
     InMemoryBindingStore,
@@ -285,6 +286,21 @@ async def test_resolve_of_an_unregistered_binding_is_not_found() -> None:
     with pytest.raises(BindingNotFound, match="'binding-404' is not registered"):
         await store.resolve(
             "binding-404",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="node-1",
+            capability="external_write",
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_of_a_disabled_binding_refuses_instead_of_authorizing() -> None:
+    store = InMemoryBindingStore()
+    await store.put(_binding().model_copy(update={"disabled": True}))
+
+    with pytest.raises(BindingDisabled, match="'binding-1' is disabled"):
+        await store.resolve(
+            "binding-1",
             workspace_id="ws-1",
             project_id="project-1",
             node_id="node-1",
