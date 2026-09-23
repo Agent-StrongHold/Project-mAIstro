@@ -62,3 +62,23 @@ acceptance path at this head: the locked min(absolute, idle) resolve in
 untouched; the accepted-handshake control refreshes), observational whoami,
 all six locked session mutation paths, and the Profile session-health card
 without secrets. Remote CI completion remains the only unverified item.
+
+Fifth round (independent verification at merge head 65d423ed5, the auto-1187
+merge of develop 750edd84d): zero production-code delta to the session-policy
+files since the fourth-round anchor 147d44a89 (the merge brings only develop's
+#1192 pause-waker test, its inventory note, and the CHANGELOG). Re-executed at
+this exact head: focused idle-policy suite 12/12, full backend suite 2666
+passed, ruff check clean, ruff format clean, suite-inventory gate ok (2666),
+ADR-index and ADR-status-language gates ok. Re-derived acceptance: ADR-077
+governs 30-minute idle + 7-day absolute server-side expiry; every
+`stores.sessions` mutation runs under `_SESSION_LOCK`; HTTP and WS paths both
+use resolve -> authorize -> serialized fail-closed touch (denied handshakes and
+permission-denied requests leave `last_activity_at` untouched, pinned by
+`test_rejected_websocket_handshake_does_not_refresh_idle_expiry` and
+`test_revocation_mid_handshake_denies_without_refreshing_idle_expiry`);
+`whoami` is observational (restoration cannot slide idle expiry, #1050);
+Profile renders the session-health card from `whoami` policy metadata with no
+session id. Live rollup on this head: formal-conformance, exact-debt-ledger,
+Quality gate, lint-and-type-check, docker-build, and both e2e jobs SUCCESS;
+the CI `test` job, coverage publish gate, and `gates-ran` were still pending
+at verification time (locally corroborated by the 2666-pass run).
