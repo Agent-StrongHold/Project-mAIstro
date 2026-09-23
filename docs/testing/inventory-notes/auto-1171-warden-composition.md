@@ -133,3 +133,47 @@ number below was measured fresh, not carried forward:
 
 No code change was warranted this round: the only prior real failure is
 demonstrably fixed at this head, and no acceptance criterion lacks evidence.
+
+## Verification round 4 (head 8151b3e2b, post-develop merge) — independent re-proof
+
+Round-4 lane job a9ba2786 (this head) ran all seven driver checks green; the
+"prior validation failed" pointer resolves to job 8915763e, whose result.json
+shows **returncode 0 on all seven checks** followed by a provider
+context-size crash (`exceeds 16384 tokens`) — infra, not a code failure. Every
+number below was re-measured fresh at the exact head, not carried forward:
+
+- `ruff check .` clean; `ruff format --check .`: 2528 files already formatted.
+- Core issue suites (harness_runner, events, handlers, container security
+  wiring): **133 passed**. Conductor issue suites (agents, chat-created,
+  harness, adapter): **80 passed**, including
+  `test_start_carries_the_model_bindings_onto_the_container_config` — the test
+  job 0387d5b6's check-4 had failed before fe7ba28c5.
+- Full backend suite re-run: **2663 passed / 1 skipped** (~79 s) — matches the
+  recorded inventory (2664 collected) with no collateral regression from the
+  engine/conftest composition seam.
+- `mypy` (documented six-package command): Success, 712 files. (Running
+  `mypy packages/maistro-core/src` alone shows 5 pre-existing
+  `maistro_bootstrap.*` import-not-found errors in untouched `cli/` files —
+  resolved by the documented command that includes `maistro-bootstrap/src`.)
+- Gates: `check-suite-inventory.py` both suites ok; `check-reachability.py`
+  exit 0 (188 unreachable; the pruned `maistro.events.handlers` entry is the
+  ratchet's required action after container.py's `_wire_event_handlers`
+  import made the module reachable).
+- Acceptance re-derived: all eight criteria hold at this head. Chat and
+  agent-scan converge on `scan_config` → `engine.warden`; harness routes and
+  `HarnessSessionManager` read the same `engine.warden`; event re-entry is
+  bound per-Container via `handlers_for_warden` (`conductor_chat` absent from
+  `BUILTIN_HANDLERS`), scans the exact labelled POSTed string at the
+  `tool_result` boundary, and fails closed (`EventSecurityUnavailable` /
+  `EventPayloadBlocked`) before HTTP. #1158 hardening is structural:
+  `normalize_for_detection` runs inside `Warden.scan` (detector.py:146) and no
+  route/event-local normalizer exists.
+- Closure-keyword review: PR #1447 body is "Draft auto-opened … Refs #1171"
+  (no closure keyword); branch commit messages contain no
+  fixes/closes/resolves-#N (sole regex hit is the prose word "fail-closes").
+- Non-blocking observations: `warden_llm` is gated on a configured LLM key in
+  the bridge (`llm_client if llm_key else None`), so a keyless-LLM deployment
+  runs layers 1–2.5 only — path parity (the acceptance requirement) still
+  holds because every consumer shares that one instance, and the code comment
+  documents the intent; `SafeHarnessRunner.start_session` uses a
+  function-local `import json` (style nit, ruff-clean).
