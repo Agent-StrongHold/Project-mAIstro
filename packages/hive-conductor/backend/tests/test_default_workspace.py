@@ -1,0 +1,205 @@
+"""#1037 owner decision 2: a Workspace-less turn runs in the caller's default Workspace.
+
+Driven against the real canonical Workspace store behind
+`services.workspace_authority`; one leg runs the canonical store and Hive's
+persisted claim on real SQLite files, and one simulates a second process that
+won the durable claim first.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+import stores
+from models.workspace import WorkspacePresentation
+from services import default_workspace, workspace_authority
+
+from maistro.workspaces.store import InMemoryWorkspaceStore
+
+
+@pytest.fixture(autouse=True)
+def canonical(monkeypatch: pytest.MonkeyPatch) -> InMemoryWorkspaceStore:
+    store = InMemoryWorkspaceStore()
+    monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: store)
+    default_workspace.reset_for_tests()
+    _drop_recovery_evidence()
+    yield store
+    default_workspace.reset_for_tests()
+    _drop_recovery_evidence()
+
+
+def _drop_recovery_evidence() -> None:
+    # The in-memory canonical fallback replays `stores.workspaces` into every
+    # fresh store; one test's Workspaces must not reappear in the next.
+    for key in list(stores.workspaces.keys()):
+        stores.workspaces.pop(key, None)
+
+
+@pytest.mark.asyncio
+async def test_first_call_creates_a_workspace_owned_by_the_caller(
+    canonical: InMemoryWorkspaceStore,
+) -> None:
+    view = await default_workspace.resolve_default_workspace("alice")
+
+    assert await workspace_authority.member_role("alice", view.id) == "owner"
+    assert [w.workspace_id for w in await canonical.list_for_user("alice")] == [view.id]
+    assert view.name == default_workspace.DEFAULT_WORKSPACE_NAME
+
+
+@pytest.mark.asyncio
+async def test_later_and_concurrent_calls_return_the_same_workspace(
+    canonical: InMemoryWorkspaceStore,
+) -> None:
+    concurrent = await asyncio.gather(
+        *(default_workspace.resolve_default_workspace("alice") for _ in range(10))
+    )
+    later = await default_workspace.resolve_default_workspace("alice")
+
+    assert {view.id for view in concurrent} == {later.id}
+    assert len(await canonical.list_for_user("alice")) == 1
+
+
+@pytest.mark.asyncio
+async def test_each_user_gets_their_own_default(canonical: InMemoryWorkspaceStore) -> None:
+    alice, bob = await asyncio.gather(
+        default_workspace.resolve_default_workspace("alice"),
+        default_workspace.resolve_default_workspace("bob"),
+    )
+
+    assert alice.id != bob.id
+    assert not await workspace_authority.is_member("bob", alice.id)
+    assert not await workspace_authority.is_member("alice", bob.id)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_default_is_replaced_never_resurrected(
+    canonical: InMemoryWorkspaceStore,
+) -> None:
+    first = await default_workspace.resolve_default_workspace("alice")
+    await workspace_authority.delete_workspace(first.id)
+
+    replacement, again = await asyncio.gather(
+        default_workspace.resolve_default_workspace("alice"),
+        default_workspace.resolve_default_workspace("alice"),
+    )
+
+    assert replacement.id == again.id != first.id
+    assert await canonical.get(first.id) is None
+    assert [w.workspace_id for w in await canonical.list_for_user("alice")] == [replacement.id]
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_default_is_not_handed_back(canonical: InMemoryWorkspaceStore) -> None:
+    first = await default_workspace.resolve_default_workspace("alice")
+    await workspace_authority.set_member(first.id, user_id="carol", role="owner")
+    await workspace_authority.remove_member(first.id, user_id="alice")
+
+    replacement = await default_workspace.resolve_default_workspace("alice")
+
+    assert replacement.id != first.id
+    assert await workspace_authority.member_role("alice", replacement.id) == "owner"
+    assert not await workspace_authority.is_member("alice", first.id)
+    assert await canonical.get(first.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_blank_principal_is_refused() -> None:
+    with pytest.raises(ValueError):
+        await default_workspace.resolve_default_workspace("  ")
+
+
+@pytest.mark.asyncio
+async def test_losing_the_durable_claim_to_another_process_converges_on_the_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aiosqlite
+
+    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+    from maistro.state import PersistedStore, State
+    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
+
+    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
+    state = State(db_path=str(tmp_path / "hive.db"))
+    try:
+        scopes = SqliteProjectScopeStore(conn)
+        await scopes.ensure_schema()
+        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
+        await canonical.ensure_schema()
+        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
+        persisted = PersistedStore(state)
+        persisted.initialize()
+        monkeypatch.setattr(stores, "_persisted", persisted)
+
+        winner = await canonical.create(creator_user_id="alice", name="Winner")
+        # Another worker already claimed alice's first default; this process's
+        # in-memory view has never seen that claim.
+        default_workspace.reset_for_tests()
+        assert persisted.put_raw_if_absent(
+            default_workspace.CLAIM_STORE,
+            default_workspace.claim_key("alice", 0),
+            json.dumps({"user_id": "alice", "workspace_id": winner.workspace_id}),
+        )
+        workspace_authority.presentation_store()[winner.workspace_id] = WorkspacePresentation(
+            workspace_id=winner.workspace_id,
+            persona_template_id="personal",
+            updated_at=datetime.now(UTC),
+        )
+
+        monkeypatch.setattr(default_workspace._claims_store(), "_data", {})
+        resolved = await default_workspace.resolve_default_workspace("alice")
+        owned = await canonical.list_for_user("alice")
+    finally:
+        state.close()
+        await conn.close()
+
+    assert resolved.id == winner.workspace_id
+    assert [w.workspace_id for w in owned] == [winner.workspace_id]
+
+
+@pytest.mark.asyncio
+async def test_the_default_survives_a_sqlite_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aiosqlite
+
+    from maistro.projects.sqlite_scope_store import SqliteProjectScopeStore
+    from maistro.state import PersistedStore, State
+    from maistro.workspaces.sqlite_store import SqliteWorkspaceStore
+
+    conn = await aiosqlite.connect(tmp_path / "workspaces.db")
+    try:
+        scopes = SqliteProjectScopeStore(conn)
+        await scopes.ensure_schema()
+        canonical = SqliteWorkspaceStore(conn, project_store=scopes)
+        await canonical.ensure_schema()
+        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
+
+        first_state = State(db_path=str(tmp_path / "hive.db"))
+        first = PersistedStore(first_state)
+        first.initialize()
+        monkeypatch.setattr(stores, "_persisted", first)
+        created = await default_workspace.resolve_default_workspace("alice")
+        first_state.flush()
+        first_state.close()
+
+        second_state = State(db_path=str(tmp_path / "hive.db"))
+        second = PersistedStore(second_state)
+        second.initialize()
+        monkeypatch.setattr(stores, "_persisted", second)
+        default_workspace.reset_for_tests()
+        workspace_authority.reset_for_tests()
+        monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
+        try:
+            after_restart = await default_workspace.resolve_default_workspace("alice")
+        finally:
+            second_state.close()
+        owned = await canonical.list_for_user("alice")
+    finally:
+        await conn.close()
+
+    assert after_restart.id == created.id
+    assert [w.workspace_id for w in owned] == [created.id]
