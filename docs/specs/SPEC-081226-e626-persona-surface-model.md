@@ -47,7 +47,7 @@ owners:
 
 # SPEC-081226-e626: Persona and Product Surface Model
 
-- **Status:** Active
+- **Status:** AC Defined
 - **Date:** 2026-08-14 revision
 - **ADR:** `ADR-081226-e626`
 

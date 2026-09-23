@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
@@ -864,6 +865,41 @@ async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:
     assert await expire_hitl_pauses(losing_store, now=_AFTER) == []
 
 
+async def test_expiry_scan_pages_past_a_long_ineligible_prefix() -> None:
+    """#1056: a run of ineligible PAUSED Runs longer than both the caller's
+    ``limit`` and the scan's own page size must not hide an expired HITL pause
+    ordered behind them. Before the fix, ``list_by_status(..., limit=N)`` was
+    applied directly at the store, so a small ``limit`` alone could never see
+    past an ineligible prefix that long -- the scan had to actually advance a
+    cursor across more than one page to find it."""
+    store = InMemoryDurableRunStore()
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+
+    def _created_at(record: DurableRunRecord, moment: datetime) -> DurableRunRecord:
+        return record.model_copy(
+            update={"run": record.run.model_copy(update={"created_at": moment})}
+        )
+
+    # More than the scan's own default page size (100), so finding the
+    # expired pause requires walking multiple pages, not just decoupling
+    # `limit` from a single larger fetch.
+    for i in range(120):
+        machine_wait = _with_pause_entry(
+            _paused_record(f"machine-{i}"),
+            {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
+        )
+        await store.create(_created_at(machine_wait, base + timedelta(seconds=i)))
+
+    expired = _created_at(
+        _paused_record("expired-behind-the-prefix"), base + timedelta(seconds=500)
+    )
+    await store.create(expired)
+
+    settled = await expire_hitl_pauses(store, now=_AFTER, limit=5)
+
+    assert [record.run_id for record in settled] == ["expired-behind-the-prefix"]
+
+
 # --- #1097: a malformed answer must not rewrite the durable deadline -------
 
 
@@ -983,3 +1019,66 @@ async def test_a_valid_answer_before_the_preserved_deadline_still_settles() -> N
         paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
     )
     assert settled.status is RunStatus.COMPLETED
+
+
+class _OverEagerIndexStore(InMemoryDurableRunStore):
+    """A store whose deadline index offers a Run the durable pause disagrees with.
+
+    The index is a projection written beside the record, so it can be stale or
+    simply wrong after a crash between the two writes. Everything it returns is
+    therefore re-derived from the pause itself before anything is settled.
+    """
+
+    async def list_hitl_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        project_ids: Collection[str] | None = None,
+        workspace_ids: Collection[str] | None = None,
+    ) -> list[DurableRunRecord]:
+        del now, limit, project_ids, workspace_ids
+        return list(self._rows.values())
+
+
+@pytest.mark.asyncio
+async def test_an_index_hit_whose_pause_is_not_elapsed_is_not_timed_out() -> None:
+    """`list_hitl_due` proposes; the durable pause disposes.
+
+    A deadline index that says due while the pause says otherwise must not
+    settle the Run. Timing out on the projection alone would let a stale index
+    row cancel live human work.
+    """
+    store = _OverEagerIndexStore()
+    await store.create(_paused_record("hitl-index-not-elapsed"))
+
+    assert await expire_hitl_pauses(store, now=_BEFORE) == []
+
+    record = await store.get("hitl-index-not-elapsed")
+    assert record is not None
+    assert record.run.status is RunStatus.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_an_index_hit_with_no_readable_pause_is_skipped_not_settled() -> None:
+    """A frontier node carrying no usable pause entry is passed over.
+
+    `hitl_pause` refuses the node rather than guessing, and the scan moves to
+    the next active node instead of settling a Run on a pause it cannot read.
+    """
+    store = _OverEagerIndexStore()
+    record = _paused_record("hitl-index-unreadable")
+    metadata = dict(record.graph_state.metadata)
+    metadata["pauses"] = {"ask": {"kind": "timer", "resume_at": _DEADLINE.isoformat()}}
+    metadata.pop("pause", None)
+    await store.create(
+        record.model_copy(
+            update={"graph_state": record.graph_state.model_copy(update={"metadata": metadata})}
+        )
+    )
+
+    assert await expire_hitl_pauses(store, now=_AFTER) == []
+
+    stored = await store.get("hitl-index-unreadable")
+    assert stored is not None
+    assert stored.run.status is RunStatus.PAUSED

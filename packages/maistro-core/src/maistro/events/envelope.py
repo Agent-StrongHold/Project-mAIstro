@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from maistro.observability.correlation import current_execution_context
+from maistro.security.redact import redact_structure
+from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -155,10 +157,27 @@ class EventEnvelope:
 
     def __post_init__(self) -> None:
         _validate_envelope_structure(self)
+        # Bounds first, scrub second, bounds again. The first order is
+        # load-bearing twice over: rejecting resource abuse must not require
+        # first running the redactor over an unbounded payload, and
+        # `redact_structure` recurses, so it may only see a structure whose
+        # depth ceiling has already been enforced.
         _check_field_bounds("payload", self.payload)
         _check_field_bounds("provenance", self.provenance)
-        object.__setattr__(self, "payload", copy.deepcopy(self.payload))
-        object.__setattr__(self, "provenance", copy.deepcopy(self.provenance))
+        # `redact_structure` rebuilds every container it walks, so it is also
+        # the deep copy this constructor owes its caller. That holds because the
+        # bounds check above rejects anything `json` cannot encode, leaving only
+        # immutable leaves (str/int/float/bool/None) to share.
+        object.__setattr__(self, "payload", redact_structure(self.payload))
+        object.__setattr__(self, "provenance", redact_structure(self.provenance))
+        # And bounds again after the scrub: redaction can *grow* a field (an
+        # empty value under a secret name becomes `[REDACTED]`; a short token
+        # becomes a longer label), so a payload that passed the first check
+        # near the ceiling can come out of the scrub above it. The pre-scrub
+        # check bounds how much work the redactor is handed; this one is what
+        # makes the advertised ceiling hold for what a backend actually sees.
+        _check_field_bounds("payload", self.payload)
+        _check_field_bounds("provenance", self.provenance)
 
     @property
     def stream_id(self) -> str:
@@ -386,8 +405,8 @@ class SqliteEventStore:
         self._lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        await self._conn.executescript(_SCHEMA)
-        await self._conn.commit()
+        async with serialized_schema_upgrade(self._conn):
+            await execute_schema_script(self._conn, _SCHEMA)
 
     async def append(self, event: EventEnvelope) -> EventEnvelope:
         return (await self.append_with_disposition(event)).event
