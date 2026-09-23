@@ -1,12 +1,11 @@
-/** App-level light/dark appearance, distinct from per-workspace themes.
+/** App-level light/dark scheme, distinct from per-workspace persona themes.
  *
- * Precedence: an active workspace's non-default `theme_id` (fantasia, etc.,
- * applied by WorkspaceContext) always wins; otherwise the user's stored
- * appearance choice applies; with nothing stored we follow the OS
- * `prefers-color-scheme`. Dark rides the existing `[data-theme="dark"]`
- * token set in themes/dark.css -- the same attribute the workspace theme
- * system already uses, so no component needs to know which of the two
- * mechanisms set it.
+ * The Workspace tokens (themes/workspace-tokens.css) split the two axes the
+ * old stylesheet conflated: `data-scheme` on <html> is light or dark and is
+ * the user's choice (or the OS preference when nothing is stored);
+ * `data-theme` is the workspace's persona template (greenhouse, slate,
+ * studio) and is set by WorkspaceContext. Every persona has both schemes, so
+ * neither axis ever needs to know about the other.
  */
 
 const STORAGE_KEY = "hive_appearance";
@@ -24,16 +23,13 @@ export function resolveAppearance(): Appearance {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-/** Stamp the resolved appearance onto <html> -- but never clobber a
- * workspace theme another caller has applied (any data-theme value other
- * than our own "dark"). */
+/** Stamp the resolved scheme onto <html>. Light is the tokens' `:root`, so it
+ * is the absence of the attribute rather than a value of its own. */
 export function applyAppearance(): void {
-  const current = document.documentElement.dataset.theme;
-  if (current && current !== "dark") return;
   if (resolveAppearance() === "dark") {
-    document.documentElement.dataset.theme = "dark";
+    document.documentElement.dataset.scheme = "dark";
   } else {
-    delete document.documentElement.dataset.theme;
+    delete document.documentElement.dataset.scheme;
   }
 }
 

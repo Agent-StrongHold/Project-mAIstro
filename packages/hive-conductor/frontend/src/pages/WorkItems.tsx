@@ -10,19 +10,29 @@ type DraftRow = WorkItemDraft;
 
 export default function WorkItems() {
   const toast = useToast();
-  const { activeWorkspaceId } = useWorkspaces();
+  const { activeWorkspaceId, ready } = useWorkspaces();
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState<string | null>(null);
   const [createType, setCreateType] = useState<WorkItemType | null>(null);
 
   const load = useCallback(async () => {
+    // Work items are drafted within a workspace (#129), so a request naming
+    // none is refused. The active workspace has to travel with it, which
+    // means waiting for the workspace list to resolve (#1427): on a first
+    // session the active id is null until GET /v1/workspaces returns, and a
+    // request sent before that carries an empty id and flashes an error the
+    // page then heals on its own.
+    if (!ready) return;
+    if (!activeWorkspaceId) {
+      setDrafts([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      // Work items are drafted within a workspace (#129), so a request naming
-      // none is refused. The active workspace has to travel with it.
       const res = await apiGet<{ drafts: DraftRow[] }>(
-        `/v1/work-items?workspace_id=${encodeURIComponent(activeWorkspaceId ?? "")}`,
+        `/v1/work-items?workspace_id=${encodeURIComponent(activeWorkspaceId)}`,
       );
       setDrafts(res.drafts ?? []);
     } catch (err) {
@@ -30,7 +40,7 @@ export default function WorkItems() {
     } finally {
       setLoading(false);
     }
-  }, [toast, activeWorkspaceId]);
+  }, [toast, activeWorkspaceId, ready]);
 
   useEffect(() => {
     void load();
@@ -49,14 +59,14 @@ export default function WorkItems() {
         title="Jira drafts"
         subtitle="Gated Jira hierarchy — clarify, edit, then confirm to post (never auto-created)"
         actions={
-          <Link to="/agents" className="btn" style={{ fontSize: 9, padding: "2px 8px" }}>
+          <Link to="/agents" className="btn" style={{ fontSize: 12, padding: "2px 8px" }}>
             ← Program
           </Link>
         }
       />
 
       <div className="card" style={{ marginBottom: 14, padding: 12 }}>
-        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginBottom: 8 }}>
+        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 8 }}>
           CREATE NEW (requires your approval)
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -65,7 +75,7 @@ export default function WorkItems() {
               key={wt}
               type="button"
               className="btn btn-accent"
-              style={{ fontSize: 8 }}
+              style={{ fontSize: 12 }}
               onClick={() => setCreateType(wt)}
             >
               + {labelForWorkType(wt)}
@@ -74,8 +84,17 @@ export default function WorkItems() {
         </div>
       </div>
 
-      {loading ? (
+      {!ready || loading ? (
         <LoadingSpinner />
+      ) : !activeWorkspaceId ? (
+        <div
+          className="card"
+          role="status"
+          style={{ padding: 20, fontFamily: "var(--hand)", color: "var(--pencil)" }}
+        >
+          No workspace selected. Drafts live inside a workspace: pick or create one in the
+          tab bar first.
+        </div>
       ) : drafts.length === 0 ? (
         <div className="card" style={{ padding: 20, fontFamily: "var(--hand)", color: "var(--pencil)" }}>
           No drafts yet. Start from the Program page (suggestions or agent buttons) or create one above.
@@ -95,13 +114,13 @@ export default function WorkItems() {
                   {labelForWorkType(d.work_type)}
                   {d.fields.summary ? `: ${d.fields.summary}` : ""}
                 </span>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: statusColor(d.status) }}>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: statusColor(d.status) }}>
                   {d.status}
                   {d.posted_issue_key ? ` · ${d.posted_issue_key}` : ""}
                 </span>
               </div>
               {d.suggestion_reason && (
-                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 4 }}>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>
                   {d.suggestion_reason}
                 </div>
               )}
