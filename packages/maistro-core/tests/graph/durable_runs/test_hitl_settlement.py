@@ -620,7 +620,6 @@ async def test_reconcile_repairs_crash_after_answer_before_run_mirror(
     assert canonical is not None and canonical.status is RunStatus.COMPLETED
 
 
-
 @pytest.mark.ac("SPEC-083026-73c1/AC-1")
 async def test_reconcile_cancelled_evidence_without_pause_detail() -> None:
     """A cancellation remains repairable when legacy evidence lacks pause detail."""
@@ -827,8 +826,6 @@ async def test_expiry_pages_past_a_projection_that_cannot_be_repaired() -> None:
     assert [record.run_id for record in settled] == [valid.run_id]
     cancelled = await run_store.get_run(stale.run_id)
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
-
-
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-1")
