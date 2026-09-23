@@ -54,3 +54,31 @@ Known non-green gates on this head, measured inherited from the develop base
   0 unproven) and chain mandate pass.
 - `test_log_redaction.py::test_install_is_idempotent` fails identically on the
   base commit (environment-dependent, pre-existing).
+
+Repair-phase re-verification (L155, head 918c1ff38, 2026-09-23)
+---------------------------------------------------------------
+
+Every claim above was re-executed on this head rather than carried forward:
+
+- browser client + net guard: 127 passed; real-Chromium transport: 4 passed;
+  Conductor browser policy + engine service: 38 passed; `test_ssrf.py` +
+  `test_outbound_policy.py`: 141 passed; `test_transport.py`: 32 passed.
+- `ruff check .`, `ruff format --check .`, `check-security-inventory.py`,
+  `check-model-egress.py` (which also runs `check_direct_effects.py`), and
+  `check-suite-inventory.py` for both suites: all pass.
+- The two inherited gate failures were reproduced on a `git archive` of base
+  8bb344e32, independently of the record above: `check-vulture-baseline.py`
+  exits 1 on both (1430 findings at base, 1429 here — the branch removes one;
+  `quality/vulture-baseline.json` has no diff), and `check-ac-state.py
+  --run-tests --ratchet` exits 1 on both with the identical design_coverage
+  33.0281 below the 33.9095 floor, while this head's per-change acceptance
+  mandate (22 criteria, 0 unproven) and chain mandate pass.
+- Transport census re-derived at this head: the only production outbound
+  transports are httpx through `maistro.http` and the five guarded Playwright
+  entry points; no `aiohttp`/`urllib.request`/`requests`/raw outbound socket
+  exists outside `security/ssrf.py`'s resolver and config parsing.
+
+No code change was needed in this phase; the prior findings (unguarded
+`hill-climb-ui.sh` contexts, its Hyperlight dispatch, and the SECURITY.md
+enumeration gap) were already fixed on this branch and are pinned by
+`test_hyperlight_hill_climb_guards_each_sync_browser_context`.
