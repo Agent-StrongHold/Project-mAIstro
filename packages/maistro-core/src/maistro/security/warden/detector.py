@@ -15,7 +15,7 @@ import logging
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from maistro.security._types import WardenVerdict
 from maistro.security.normalize import normalize_for_detection
@@ -221,7 +221,16 @@ def _bounded_untrusted_context(
     return selected
 
 
-_SINGLE_CHARACTER_RUN = re.compile(r"(?<!\w)(?:[A-Za-z0-9@$](?:[\s._-]+[A-Za-z0-9@$]){2,})(?!\w)")
+# Separators an attacker can place between the characters or the words of
+# an instruction override. Curated, not open-ended: whitespace plus the
+# punctuation that renders as nothing between letters in common fonts (dot,
+# hyphen, underscore, comma, semicolon, colon, pipe, slash). Digits and the
+# leetspeak symbols stay out -- they are payload, not separators.
+_SEPARATOR_RUN = re.compile(r"[\s._,\-;:/|]+")
+
+_SINGLE_CHARACTER_RUN = re.compile(
+    r"(?<!\w)(?:[A-Za-z0-9@$](?:[\s._,\-;:/|]+[A-Za-z0-9@$]){2,})(?!\w)"
+)
 
 
 def _collapse_single_character_runs(text: str) -> str:
@@ -234,17 +243,67 @@ def _collapse_single_character_runs(text: str) -> str:
     runs again. Compact phrase rules then recognize the override without
     altering the primary view.
     """
-    return _SINGLE_CHARACTER_RUN.sub(lambda match: re.sub(r"[\s._-]+", "", match.group()), text)
+    return _SINGLE_CHARACTER_RUN.sub(lambda match: _SEPARATOR_RUN.sub("", match.group()), text)
 
 
-def _detection_views(text: str) -> tuple[str, ...]:
+def _literal_views(text: str) -> tuple[str, str]:
+    """Separator-free readings of ``text`` for the reject patterns alone.
+
+    An override does not need single-character runs at all. Between words:
+    ``ignore_all_previous_instructions`` and ``you-are-now-a-pirate`` hide a
+    phrase the primary view never sees, because every reject pattern anchors
+    on whitespace. Inside words: ``ig-nore all previous instructions`` and a
+    payload split mid-word across turns (the turn join inserts a newline
+    inside ``instruc|tions``) leave no intact phrase for those anchors
+    either. Two bounded readings close both shapes:
+
+    - removal: every separator deleted. Word-internal splits reunite and
+      collide with the whitespace-free compact override pattern.
+    - replacement: every separator run becomes one space. All the
+      whitespace-anchored phrase patterns then see canonical spacing, so
+      the same defect class cannot survive on the other families by
+      substituting punctuation for spaces.
+
+    Ordinary prose already separates words with spaces, which replacement
+    preserves -- the false-positive surface this adds is text that
+    deliberately uses non-space separators, which is the attack. Both views
+    destroy the whitespace statistics the heuristic layer measures, and
+    removal destroys word structure outright, so neither is ever handed to
+    the heuristics or the semantic layer.
+    """
+    return (
+        normalize_for_detection(_SEPARATOR_RUN.sub("", text)),
+        normalize_for_detection(_SEPARATOR_RUN.sub(" ", text)),
+    )
+
+
+class _DetectionViews(NamedTuple):
+    """Canonical detection views: structure-preserving first, then literal.
+
+    ``structural`` views keep word boundaries (the compact one only compacts
+    bounded single-character runs) and are the sole input to the heuristic
+    and semantic layers. ``literal`` holds the separator-free readings used
+    by the reject patterns alone.
+    """
+
+    structural: tuple[str, ...]
+    literal: tuple[str, ...]
+
+
+def _detection_views(text: str) -> _DetectionViews:
     compact = _collapse_single_character_runs(text)
     if compact != text:
         # The first normalization pass cannot fold a digit that is a token by
         # itself. Compacting first turns spaced leetspeak into mixed tokens,
         # so one bounded second pass handles both obfuscation layers.
         compact = normalize_for_detection(compact)
-    return (text, compact) if compact != text else (text,)
+    structural = (text,) if compact == text else (text, compact)
+    removed, spaced = _literal_views(structural[-1])
+    literal: list[str] = []
+    for view in (removed, spaced):
+        if view not in structural and view not in literal:
+            literal.append(view)
+    return _DetectionViews(structural, tuple(literal))
 
 
 def _windows(text: str) -> Iterator[str]:
@@ -365,11 +424,14 @@ class Warden:
         scan_input = "\n".join((*prior_context, content))
 
         # Full fold (Unicode, zero-width, homoglyph, and bounded leetspeak)
-        # runs before every detector. The compact secondary view handles
-        # single-character runs while the primary view preserves ordinary prose.
+        # runs before every detector. The compact structural view handles
+        # single-character runs while the primary view preserves ordinary
+        # prose; the literal views catch separators placed inside words or
+        # substituted for the spaces between them, including a mid-word turn
+        # boundary.
         content_views = _detection_views(normalize_for_detection(scan_input))
 
-        reject_flags = _scan_reject_views(content_views)
+        reject_flags = _scan_reject_views((*content_views.structural, *content_views.literal))
         if reject_flags:
             return WardenVerdict(
                 clean=False,
@@ -378,7 +440,7 @@ class Warden:
                 confidence=0.9,
             )
 
-        heuristic_flags = _scan_heuristic_views(content_views)
+        heuristic_flags = _scan_heuristic_views(content_views.structural)
         if heuristic_flags:
             flags.extend(flag for flag in heuristic_flags if flag not in flags)
             return WardenVerdict(
@@ -390,7 +452,7 @@ class Warden:
 
         # Semantic analysis operates on the canonical primary view. It sees
         # untrusted context but never trusted system/developer instructions.
-        content_norm = content_views[0]
+        content_norm = content_views.structural[0]
         poisoned, semantic_flags = semantic_tool_poisoning_scan(content_norm)
         if poisoned:
             flags.extend(semantic_flags)
