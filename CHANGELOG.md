@@ -385,6 +385,19 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Canvas admission recovery can no longer run a generation job past its
+  retry ceiling (#1550).** The receipt reconciliation added by #1531
+  requeued any RUNNING Canvas job whose worker lease had expired (or was
+  missing) back to `pending` while its canonical Run was still queued. It
+  did not check `attempts` against `max_attempts`, and
+  `claim_next_pending` has no ceiling predicate, so only the lease reaper
+  enforced the budget. Reconciliation runs on every runner poll tick, about
+  30x as often as the reaper, so a worker that kept dying between its
+  claim and the first stage (a crash, an OOM, or a poison job) got the job
+  reclaimed and the image provider called again, with no limit. Recovery
+  now leaves an exhausted receipt `running` for the reaper, which fails it
+  canonically. An exhausted receipt with no lease at all gets an
+  already-expired one so the reaper still finds it.
 - **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
   predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
   keyword argument, with a default, when `Schedule.recovered_occurrences`
