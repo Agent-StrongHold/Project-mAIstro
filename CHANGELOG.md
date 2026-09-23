@@ -34,10 +34,14 @@ or placeholder-only section.
   change owner or scope. List returns only schedules in the caller's
   Workspaces, and get/update/delete/manual run answer the same 404 for a
   missing, foreign, or ownerless (pre-existing) schedule. Removing a member
-  removes their access. Manual fires of a bound schedule now create their Run
-  in the bound Workspace/Project instead of the configured default. Operators:
-  schedules created before this change have no Workspace and are no longer
-  visible over the API; recreate them from a Workspace.
+  removes their access, and a manual run in an archived Workspace is refused.
+  With a configured Container, fires of a bound schedule create their Run in
+  the bound Workspace/Project instead of the configured default. Operators:
+  schedules created before this change (including the seeded `sch-1`) have no
+  Workspace, are no longer visible over the API, and still fire automatically
+  in the default Workspace until the automatic-fire half of #1201 lands;
+  remove them from the schedule store directly before recreating them from a
+  Workspace, or both copies will fire.
 
 - **Workspace access decisions now live in one core seam (#1150, partial).**
   `maistro.workspaces.WorkspaceAuthorizer` answers "may this principal VIEW or

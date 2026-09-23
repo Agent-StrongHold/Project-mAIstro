@@ -230,3 +230,42 @@ def test_membership_removal_revokes_access(principals: dict[str, Any]) -> None:
 
     assert principals["bob"].get(f"/v1/schedules/{sid}").status_code == 404
     assert sid not in {row["id"] for row in principals["bob"].get("/v1/schedules").json()}
+
+
+def test_manual_run_in_an_archived_workspace_is_refused(principals: dict[str, Any]) -> None:
+    """The same admission rule as `POST /v1/dags/{id}/run`: an inactive
+    Workspace admits no new Run, whichever door the request came through."""
+    import stores
+    from services import workspace_authority
+
+    sid = _create(principals, "alice")["id"]
+    asyncio.run(workspace_authority.update_presentation(principals["alice_ws"].id, active=False))
+
+    response = principals["alice"].post(f"/v1/schedules/{sid}/run")
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "schedule not found"}
+    assert stores.schedules[sid].last_run_id is None
+
+
+def test_delete_of_an_already_deleted_row_is_a_404_not_a_500(
+    principals: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The membership check awaits; a concurrent delete that lands in that
+    window must not turn the loser's request into a KeyError."""
+    import stores
+    from services import workspace_authority
+
+    sid = _create(principals, "alice")["id"]
+    real = workspace_authority.is_member
+
+    async def racing(user_id: str, workspace_id: str | None) -> bool:
+        allowed = await real(user_id, workspace_id)
+        stores.schedules.pop(sid, None)
+        return allowed
+
+    monkeypatch.setattr(workspace_authority, "is_member", racing)
+
+    assert principals["alice"].delete(f"/v1/schedules/{sid}").status_code == 404
+    assert principals["alice"].put(f"/v1/schedules/{sid}", json={"name": "x"}).status_code == 404
+    assert sid not in stores.schedules, "an update must not resurrect a deleted row"

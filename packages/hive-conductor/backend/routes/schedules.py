@@ -9,7 +9,11 @@ from fastapi import APIRouter, HTTPException, Request
 from models.schemas import Schedule
 from pydantic import BaseModel, ConfigDict, field_validator
 from services import dag_run_inspection, workspace_authority
-from services.dag_execution_scope import DagWorkspaceSelectionError, authorize_hive_dag_scope
+from services.dag_execution_scope import (
+    DagWorkspaceSelectionError,
+    authorize_hive_dag_scope,
+    authorize_hive_dag_workspace,
+)
 
 router = APIRouter(tags=["schedules"])
 
@@ -70,7 +74,12 @@ async def _visible_schedule(request: Request, schedule_id: str) -> Schedule:
     schedule = stores.schedules.get(schedule_id)
     if schedule is None or not await workspace_authority.is_member(actor, schedule.workspace_id):
         raise HTTPException(status_code=404, detail="schedule not found")
-    return schedule
+    # Re-read after the await: a concurrent delete or fire may have landed,
+    # and acting on the pre-await copy would resurrect or rewind the row.
+    current = stores.schedules.get(schedule_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return current
 
 
 @router.get("", response_model=list[Schedule])
@@ -182,7 +191,7 @@ async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: R
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
     await _visible_schedule(request, schedule_id)
-    stores.schedules.pop(schedule_id)
+    stores.schedules.pop(schedule_id, None)
 
 
 @router.post("/{schedule_id}/run", response_model=Schedule)
@@ -197,7 +206,15 @@ async def run_schedule(schedule_id: str, request: Request) -> Schedule:
     A fire that cannot happen is a 409 rather than a silent stamp: the caller
     asked for work to start, and it did not.
     """
-    await _visible_schedule(request, schedule_id)
+    schedule = await _visible_schedule(request, schedule_id)
+    try:
+        # Membership alone admits reads; a new Run also needs the Workspace
+        # to be active, the same admission `POST /v1/dags/{id}/run` applies.
+        await authorize_hive_dag_workspace(
+            workspace_id=schedule.workspace_id, user_id=_actor(request)
+        )
+    except DagWorkspaceSelectionError as exc:
+        raise HTTPException(status_code=404, detail="schedule not found") from exc
     from services.scheduler import ScheduleAdmissionUnavailable, ScheduleNotFireable, fire_now
 
     try:
