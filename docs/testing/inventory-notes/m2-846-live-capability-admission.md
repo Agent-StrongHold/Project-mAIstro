@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +7
+  packages/maistro-core/tests: +8
   packages/hive-conductor/backend/tests: +6
 ---
 
@@ -29,3 +29,14 @@ evaluator (`test_model_chat_egress.py` setup-hook/structured-output,
 now opt into the explicit `binding_scope_policy` M1 baseline; no test was added
 or removed by the repair, so the delta above stays the original #846 split with
 `846-live-capability-admission.md` (+2/+2 there, +7/+6 here).
+
+Merge-reconciliation pass (auto-846, develop ffd6fdb16): the incoming Canvas
+visual-quality fixtures re-introduced the same pattern —
+`test_canvas_model_egress.py` built its effect context without an evaluator and
+the shipped fail-closed composition denied the shipped route (proving the
+control works). That fixture now also opts into `binding_scope_policy`, matching
+the container's composition. One test was added to `test_governed_invocation.py`
+(`test_policy_dependency_outage_fails_closed_and_is_audited`): a policy
+evaluator that raises produces an audited `invocation.fail-closed` denial with
+no provider selection or call — the explicit no-AllowAllGate-fallback proof at
+the governed seam. Delta becomes maistro-core +8 / hive-conductor +6.
