@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Workspace access decisions now live in one core seam (#1150, partial).**
+  `maistro.workspaces.WorkspaceAuthorizer` answers "may this principal VIEW or
+  ADMINISTER this Workspace?" from the Workspace store, with one
+  `WorkspaceAuthorizationDenied` for a missing Workspace, a foreign Workspace
+  and a blank principal. maistro-server's `require_workspace_membership` and
+  `require_workspace_owner` now delegate to it. Unknown actions and non-string
+  principals are denied. Responses are unchanged: a denial is 404
+  `Workspace not found`, and a member who is not an owner still gets 403.
+  Project-level actions and the hive-conductor membership checks do not use
+  the seam yet.
+
 - **Design trust review records no longer recommend upgrading content the engine
   blocks (#817, partial).** `scan_and_record` now runs the shared Design
   `scan_blocking_patterns` over the content it records, instead of assigning
