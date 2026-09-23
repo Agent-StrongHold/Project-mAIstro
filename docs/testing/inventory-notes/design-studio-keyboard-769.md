@@ -13,6 +13,28 @@ collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
 API tests).
 
+## Executed evidence (repair round 3, post-merge revalidation at 2845e1c98)
+
+After the develop merge, all journeys were re-executed against the same
+worktree's sources. Backend: `uvicorn main:app` serving the rebuilt
+`frontend/dist` on `HIVE_BASE_URL=http://127.0.0.1:8102` (the root workspace
+venv plus an editable `maistro-design` install satisfies the backend's
+imports). Frontend: `npm run build` (tsc + vite) — clean.
+
+- `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts`:
+  6/6 passed (9.7s) against the live routed app.
+- `deck-sanitization.spec.ts`: 4/4 passed (1.8s). Local-run note: the spec
+  bundles the real DeckBuilder sources, so run it with `E2E_SRC_ROOT` /
+  `E2E_NODE_PATHS` pointed at a CI-shaped tree — if `frontend/node_modules`
+  is reachable from `E2E_SRC_ROOT`, esbuild bundles a second React copy and
+  the hooks blow up. CI's image copies only the listed sources, so it is
+  unaffected.
+- `scripts/check-suite-inventory.py` exit 0 (13 suites);
+  `scripts/check-frontend-api-routes.py` exit 0; ruff check/format clean;
+  frontend eslint 0 errors; 68 design-route backend tests pass; the
+  `packages/hive-conductor/Dockerfile` image builds (its comments document
+  why the [identity]/coincurve extra is excluded on the Python 3.14 base).
+
 ## Executed evidence (repair round 2)
 
 After resolving the develop merge (28732d5ed), the journeys were executed for
