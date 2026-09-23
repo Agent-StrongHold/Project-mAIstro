@@ -593,16 +593,6 @@
       "rationale": "AttemptResult evidence comparison introduced by execution-spine convergence; tracked by the complexity ratchet at its reviewed introduction value."
     },
     {
-      "key": "packages/maistro-core/src/maistro/scheduling/admission.py::ScheduleRunAdmitter.admit_due",
-      "path": "packages/maistro-core/src/maistro/scheduling/admission.py",
-      "line": 189,
-      "name": "admit_due",
-      "classname": "ScheduleRunAdmitter",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "#1311 moved manual schedule fire onto this canonical scoped admission path (fail-closed when the container lacks collaborators), concentrating the due-scan/claim/settle branching here. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/security/auth_jwt.py::JWTAuthProvider._get_jwks_client",
       "path": "packages/maistro-core/src/maistro/security/auth_jwt.py",
       "line": 131,

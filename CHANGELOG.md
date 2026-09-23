@@ -25,6 +25,22 @@ or placeholder-only section.
 
 ### Security
 
+- **Concurrent registrations can no longer publish two identities under the
+  same username (#1248).** The register route's availability check and the
+  UUID-keyed write were separate steps, so the store's key (a fresh UUID, not
+  the username) never enforced uniqueness — two requests racing the same
+  username could both pass the check and both write, leaving two identities
+  answering to one username. The check, invitation spend, and write are now
+  one critical section (an in-process lock) backed by a durable claim:
+  `ModelStore.put_if_unique` and `PersistedStore.put_model_if_unique` make the
+  username claim and the row's insert one SQLite transaction, so the
+  uniqueness boundary survives across independent application processes, not
+  just within one. `test_concurrent_open_registration_claims_username_once`
+  drives eight threads at the same username through the real route (one 200,
+  seven 409, one stored identity); `test_independent_process_writers_publish_one_username`
+  proves the same claim holds across two separate `multiprocessing` writers
+  sharing one SQLite file.
+
 - **pydantic-ai-slim removed from the API and research images, clearing
   CVE-2026-25580 (HIGH) (#1515).** ADR-094 already cut pydantic-ai from the codebase
   (zero `pydantic_ai` imports remain), but both Dockerfiles still installed
@@ -365,6 +381,23 @@ or placeholder-only section.
   the provenance dict built before admission, matching the existing
   convention.
 
+- **`ScheduleRunAdmitter` no longer breaks a downstream `ScheduleStore` that
+  predates crash-recovery credit (#1533).** `record_fire` grew a `recovered`
+  keyword argument, with a default, when `Schedule.recovered_occurrences`
+  recovery landed (#1059) -- but the admitter named it on every call
+  regardless of whether there was anything to credit, so an external
+  `ScheduleStore` implementation using the previously valid
+  `record_fire(self, schedule_id, *, fired_at, run_id, next_due_at,
+  fires=None, disable=False)` signature raised `TypeError: unexpected
+  keyword argument 'recovered'` on every ordinary recurring fire after
+  upgrading, not merely a recovering one. `recovered=` is now passed only
+  when the set is non-empty, which keeps the common, no-recovery case
+  working unchanged against an older store; a genuinely recovered claim
+  still names it, and a store that cannot accept it still fails loudly
+  rather than silently losing the credit. `maistro-core`'s own
+  implementations (the protocol, `InMemoryScheduleStore`,
+  `SqliteScheduleStore`, `PgScheduleStore`) already accept the keyword and
+  are unaffected.
 - **Builders' canonical pipeline executor no longer disagrees with legacy
   gate/revision, step-budget, and failure-reporting semantics (#1067).** A
   post-merge audit of #734/#744 found 4 parity defects in
