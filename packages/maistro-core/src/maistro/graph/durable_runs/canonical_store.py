@@ -158,6 +158,37 @@ def _answered_hitl_evidence(
     return evidence
 
 
+def _requeue_answered_nodes(
+    record: DurableRunRecord,
+    evidence: Mapping[str, datetime],
+) -> DurableRunRecord | None:
+    """Draft the repair that requeues answered nodes still held paused.
+
+    Returns the repaired record, or None when no covered node can move:
+    either none of the evidenced nodes exists on the record, or every one of
+    them has already settled. The Run re-queues at the newest accepted answer
+    so no node is asked to resume before the moment its own answer was
+    accepted.
+    """
+    matching = [node for node in record.node_runs if node.node_id in evidence]
+    if not matching or all(node.status in TERMINAL_RUN_STATUSES for node in matching):
+        return None
+    node_runs = list(record.node_runs)
+    for index, node_run in enumerate(node_runs):
+        if node_run.status is RunStatus.PAUSED and node_run.node_id in evidence:
+            node_runs[index] = transition_node_run(
+                node_run,
+                RunStatus.QUEUED,
+                at=evidence[node_run.node_id],
+            )
+    return record.model_copy(
+        update={
+            "run": transition_run(record.run, RunStatus.QUEUED, at=max(evidence.values())),
+            "node_runs": tuple(node_runs),
+        }
+    )
+
+
 class CanonicalDurableRunStore:
     """Persist and assemble durable graph runs over `RunStore` + continuations."""
 
@@ -294,26 +325,10 @@ class CanonicalDurableRunStore:
         record = await self.get(continuation.run_id)
         if record is None:
             return False
-        matching = [node for node in record.node_runs if node.node_id in evidence]
-        if not matching or all(node.status in TERMINAL_RUN_STATUSES for node in matching):
+        repaired = _requeue_answered_nodes(record, evidence)
+        if repaired is None:
             return False
-
-        node_runs = list(record.node_runs)
-        for index, node_run in enumerate(node_runs):
-            if node_run.status is RunStatus.PAUSED and node_run.node_id in evidence:
-                node_runs[index] = transition_node_run(
-                    node_run,
-                    RunStatus.QUEUED,
-                    at=evidence[node_run.node_id],
-                )
-        answered_at = max(evidence.values())
-        desired = record.model_copy(
-            update={
-                "run": transition_run(record.run, RunStatus.QUEUED, at=answered_at),
-                "node_runs": tuple(node_runs),
-            }
-        )
-        await mirror_lifecycle(desired, run_store=self._run_store)
+        await mirror_lifecycle(repaired, run_store=self._run_store)
         return True
 
     async def _reconcile_terminal_hitl(

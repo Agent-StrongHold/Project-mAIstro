@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
+    GraphContinuation,
     InMemoryGraphContinuationStore,
     resume_durable_graph,
     run_durable_graph,
@@ -29,13 +30,18 @@ from maistro.graph.durable_runs.hitl import (
 from maistro.graph.durable_runs.stores import (
     InMemoryDurableRunStore,
     SqliteDurableRunStore,
+    answer_record,
 )
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, get_node, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
-from maistro.runs.lifecycle import transition_attempt, transition_node_run
+from maistro.runs.lifecycle import (
+    settle_open_node_run,
+    transition_attempt,
+    transition_node_run,
+)
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
 
 from .._canonical_helpers import durable_record
@@ -618,6 +624,247 @@ async def test_reconcile_repairs_crash_after_answer_before_run_mirror(
     assert [attempt.ordinal for attempt in resumed.attempts] == [1, 2]
     canonical = await run_store.get_run(paused.run_id)
     assert canonical is not None and canonical.status is RunStatus.COMPLETED
+
+
+async def _paused_hitl_run(
+    workspace_id: str,
+    *,
+    store_type: type[CanonicalDurableRunStore] = CanonicalDurableRunStore,
+) -> tuple[
+    CanonicalDurableRunStore,
+    InMemoryRunStore,
+    InMemoryGraphContinuationStore,
+    DurableRunRecord,
+]:
+    """A canonical store holding one Run paused on a human question."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(workspace_id)
+    project = await projects.create(
+        workspace_id=workspace_id,
+        parent_project_id=root.project_id,
+        name="HITL",
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = store_type(run_store, continuations)
+    graph = Graph(
+        workspace_id=workspace_id,
+        project_id=project.project_id,
+        name="answered but interrupted",
+        nodes=[Node(node_id="ask", node_type=_AnswerThenComplete.kind)],
+    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    paused = await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+    return store, run_store, continuations, paused
+
+
+async def _write_answer_residue(
+    store: CanonicalDurableRunStore,
+    continuations: InMemoryGraphContinuationStore,
+    run_id: str,
+    *,
+    answers: object = None,
+) -> None:
+    """Land the accepted-answer continuation without touching the spine.
+
+    This is the crash window the answered-HITL reconciler exists for: the
+    continuation write committed, the process died before either canonical
+    mirror ran. ``answers`` replaces the evidence metadata, so a caller can
+    simulate a foreign or buggy writer; the default writes the record the
+    real answer path produces.
+    """
+    record = await store.get(run_id)
+    assert record is not None
+    answered = answer_record(record, "ask", {"answer": "yes"}, at=_BEFORE)
+    if answers is not None:
+        graph_state = answered.graph_state.model_copy(
+            update={"metadata": {**answered.graph_state.metadata, "hitl_answers": answers}}
+        )
+        continuation = GraphContinuation.of(answered).model_copy(
+            update={"graph_state": graph_state}
+        )
+    else:
+        continuation = GraphContinuation.of(answered)
+    await continuations.update(continuation)
+
+
+async def test_reconcile_requeues_a_node_still_paused_behind_its_answer() -> None:
+    """An answer that outran every canonical mirror un-pauses the node.
+
+    The other crash test lands with the NodeRun already queued, because the
+    answer path transitions the node before the spine mirror that crashed.
+    The narrower window — death between the continuation write and the node
+    transition — is what this drives: the reconciler must requeue the node at
+    its accepted-answer instant, queue the Run, and leave a resume that
+    continues the same physical Attempt history rather than restarting it.
+    """
+    store, run_store, continuations, paused = await _paused_hitl_run("ws-hitl-answer-requeue")
+    await _write_answer_residue(store, continuations, paused.run_id)
+
+    assert await store.reconcile_run(paused.run_id) is True
+
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.QUEUED
+    [node_run] = await run_store.list_node_runs(paused.run_id)
+    assert node_run.status is RunStatus.QUEUED
+    assert node_run.updated_at == _BEFORE
+
+    resumed = await resume_durable_graph(
+        paused.run_id,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_store=run_store,
+    )
+    assert resumed.status is RunStatus.COMPLETED
+    assert [attempt.status for attempt in resumed.attempts] == [
+        AttemptStatus.COMPLETED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert [attempt.ordinal for attempt in resumed.attempts] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        pytest.param("a bare string, not a mapping", id="non-mapping-answer"),
+        pytest.param({"ask": {"answered_at": 3}}, id="non-string-instant"),
+        pytest.param({"ask": {"answered_at": "yesterday, probably"}}, id="unparseable-instant"),
+        pytest.param({"ask": {"answered_at": "2026-08-30T19:59:59"}}, id="naive-instant"),
+    ],
+)
+async def test_reconcile_refuses_answer_evidence_it_cannot_trust(answers: object) -> None:
+    """Only store-authored, time-zone-true instants may revive a paused Run.
+
+    Evidence that a caller wrote into the continuation — or that lost its
+    zone on the way through a serializer — is not a decision the spine ever
+    made. The reconciler must leave such a Run exactly as it found it:
+    paused, with the human's answer still pending.
+    """
+    store, run_store, continuations, paused = await _paused_hitl_run("ws-hitl-untrusted-evidence")
+    await _write_answer_residue(store, continuations, paused.run_id, answers=answers)
+
+    assert await store.reconcile_run(paused.run_id) is False
+
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.PAUSED
+    [node_run] = await run_store.list_node_runs(paused.run_id)
+    assert node_run.status is RunStatus.PAUSED
+    assert node_run.updated_at != _BEFORE
+
+
+async def test_reconcile_refuses_answer_evidence_when_the_record_cannot_be_assembled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record that vanishes mid-reconcile must not be fabricated back.
+
+    Between the spine read that admitted this Run to the reconciler and the
+    assembled read the answered-HITL repair performs, a concurrent purge can
+    take the record away. Repairing from a half-read record would mirror
+    transitions the store can no longer account for, so the split survives
+    for the next tick instead.
+    """
+    store, run_store, continuations, paused = await _paused_hitl_run("ws-hitl-record-vanished")
+    await _write_answer_residue(store, continuations, paused.run_id)
+
+    async def record_vanished_mid_reconcile(run_id: str) -> DurableRunRecord | None:
+        return None
+
+    monkeypatch.setattr(store, "get", record_vanished_mid_reconcile)
+
+    assert await store.reconcile_run(paused.run_id) is False
+
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.PAUSED
+
+
+async def test_reconcile_refuses_answer_evidence_for_already_settled_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evidence for nodes that have all settled must reopen nothing.
+
+    A contradictory store pairing — answer evidence on the continuation,
+    every evidenced node already terminal on the record — is what a repair
+    that raced its own completion leaves behind. Replaying the requeue would
+    resurrect settled work, so the reconciler reports no change.
+    """
+    store, run_store, continuations, paused = await _paused_hitl_run("ws-hitl-settled-evidence")
+    await _write_answer_residue(store, continuations, paused.run_id)
+    assembled = await store.get(paused.run_id)
+    assert assembled is not None
+    [node_run] = assembled.node_runs
+    settled = assembled.model_copy(
+        update={"node_runs": (settle_open_node_run(node_run, RunStatus.CANCELLED, at=_AFTER),)}
+    )
+
+    async def already_settled(run_id: str) -> DurableRunRecord | None:
+        return settled
+
+    monkeypatch.setattr(store, "get", already_settled)
+
+    assert await store.reconcile_run(paused.run_id) is False
+
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.PAUSED
+    [untouched] = await run_store.list_node_runs(paused.run_id)
+    assert untouched.status is RunStatus.PAUSED
+
+
+async def test_resume_repair_falls_back_to_the_bounded_sweep_on_legacy_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store predating targeted resume repair still gets its residue fixed.
+
+    The reconcile affordance is duck-typed: stores older than it expose only
+    the bounded sweep. Resume must route the pre-flight repair through that
+    sweep — one Run's worth, not the whole queue — rather than skipping the
+    repair and resuming on top of a contradictory spine.
+    """
+
+    class _PreReconcileCanonicalStore(CanonicalDurableRunStore):
+        """A canonical store from before the targeted repair affordance."""
+
+        reconcile_run: None = None  # shadows the subclass's newer affordance
+
+    store, run_store, _, paused = await _paused_hitl_run(
+        "ws-hitl-legacy-sweep", store_type=_PreReconcileCanonicalStore
+    )
+    original_transition_run = run_store.transition_run
+    crash = True
+
+    async def crash_before_run_mirror(run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal crash
+        if crash and target is RunStatus.QUEUED:
+            crash = False
+            raise RuntimeError("injected crash after HITL answer write")
+        return await original_transition_run(run_id, target, **kwargs)
+
+    monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await store.submit_hitl_answer(paused.run_id, "ask", {"answer": "yes"}, at=_BEFORE)
+
+    swept: list[int] = []
+    original_sweep = store.reconcile_persistence
+
+    async def spy_reconcile_persistence(*, limit: int = 100) -> int:
+        swept.append(limit)
+        return await original_sweep(limit=limit)
+
+    monkeypatch.setattr(store, "reconcile_persistence", spy_reconcile_persistence)
+
+    resumed = await resume_durable_graph(
+        paused.run_id,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_store=run_store,
+    )
+    assert resumed.status is RunStatus.COMPLETED
+    assert swept == [1]
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-1")

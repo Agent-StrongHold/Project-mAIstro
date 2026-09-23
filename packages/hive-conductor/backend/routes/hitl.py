@@ -106,22 +106,6 @@ async def _require_workspace_access(request: Request, workspace_id: str) -> None
         raise HTTPException(status_code=404, detail="run not found")
 
 
-def _request_user_id(request: Request) -> str:
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user_id
-
-
-async def _require_workspace_access(request: Request, workspace_id: str) -> None:
-    if not await is_member(_request_user_id(request), workspace_id):
-        # Do not confirm that an out-of-scope Run exists. This matches the
-        # scoped DAG inspection door: missing and unauthorized ids are one
-        # answer, while membership remains the canonical authorization check.
-        raise HTTPException(status_code=404, detail="run not found")
-
-
 def _session_principal(request: Request) -> str:
     """The verified session principal behind this request, never "system".
 
