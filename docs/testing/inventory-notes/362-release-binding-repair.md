@@ -168,3 +168,36 @@ DoD: document is validated from the registry (drift rejected); disabled
 workflows cannot back implemented status (derived YAML state + mismatch
 rejection, tested live). Residual UNVERIFIED: live GitHub Actions resolution in
 production and first real tag release — require maintainer GitHub mutations.
+
+## Independent verification at HEAD fec3601e3014d6be5b020a3334b676a131afc32e (job 86fe3fd755494596a50ef2e29bdfa5af)
+
+Verifier role: re-derived acceptance from issue #362 and executed every check
+below fresh at this HEAD; driver check-*.log files covered only uv sync, ruff
+check and ruff format, so pytest and the compliance gates were run explicitly.
+Read-only except this note; no control, workflow, or test was edited.
+
+- `uv run python scripts/check-compliance.py`: exit 0 (registry + COMPLIANCE.md
+  valid at rest; zero implemented claims; ART-15/17 unverified, evidence none).
+- `--require-release-evidence --release-digest fec3601e...`: exit 1,
+  fail-closed (registry.release_digest is intentionally null at rest).
+- Same + `--resolve-release-evidence --resolved-output <tmp>`: exit 1, 52
+  problems explicitly naming EU-AI-ACT-ART-15 and -17; output file NOT written.
+- `uv run pytest tests/test_check_compliance.py tests/test_release_guard.py -q`:
+  120 passed in 8.92s. `tests/test_branch_policy.py -q`: 12 passed.
+- `uv run ruff check .` / `ruff format --check .`: passed (2530 files).
+- `uv run python scripts/check-ratchet-provenance.py`: OK, 0 violations.
+- Live AC2 probe driving `validate_registry`: forged implemented claims BLOCKED
+  for disabled workflow, manual-only, never-run, failing result, >90d stale,
+  wrong evidence digest, and GitHub-404 (unreachable evidence is not evidence).
+- Doc/registry cross-check: 28/28 control IDs match; statuses match registry;
+  no disabled-manual-workflow claim remains in COMPLIANCE.md.
+- release.yml guard wiring re-read: publish jobs all `needs` guard; compliance
+  step uses `$GITHUB_SHA` with resolve+upload (`if-no-files-found: error`);
+  branch-protection.json requires `Compliance registry` on develop and main.
+- PR body and commit messages scanned: no premature closure keywords
+  (fixes/closes/resolves #N absent).
+
+Verdict recorded for this lane: MERGE-READY (writer handoff only, not
+integration approval). Residual UNVERIFIED: first production Actions evidence
+run and a real tag release require maintainer GitHub mutations, which are
+prohibited here.
