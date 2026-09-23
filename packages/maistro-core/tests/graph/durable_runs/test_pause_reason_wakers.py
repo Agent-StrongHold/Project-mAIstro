@@ -7,18 +7,27 @@ PAUSED alone -- so a dispatched delegation can wait forever and no test fails.
 
 `PAUSE_REASON_WAKERS` below is the missing statement, kept test-local on
 purpose: a production registry nobody imports would itself be unreachable
-code. Each waker is checked mechanically rather than trusted:
+code. Each waker is checked mechanically rather than trusted, within limits:
 
-* the entrypoint exists and has a production caller (a registered route, or a
-  call from a non-test tree), so a waker only tests reach does not count;
+* the entrypoint exists and has a production caller (a registered route for a
+  person's answer or cancel; a call from a non-test tree for anything that must
+  fire on its own), so a waker only tests reach does not count. Callers are
+  matched by name, one hop deep: a tick loop that is itself never started would
+  still pass;
 * the entrypoint calls the canonical API it claims to go through, and that
   API's accepted parked status -- pinned behaviourally at the end of this file
   -- matches the status the executor parks the reason in. That is the
   WAITING/PAUSED mismatch expressed as a failing assertion.
 
-`UNWOKEN` is the known-gap ledger. It is strict both ways: a reason missing
-from the map and the ledger fails, and a ledgered reason that gains a waker
+`UNWOKEN` is the known-gap ledger. It is strict both ways against the map: a
+reason missing from both fails, and a ledgered reason given a waker entry
 fails until it leaves the ledger.
+
+Scope: the mapped ticks own only Runs admitted by the legacy Hive DAG adapter
+and by Evolve. Runs from other admission sources (scheduled registered DAGs,
+the orchestrator, synthesized DAGs) have no production drain for an answered
+or elapsed pause until `Container.resume_parked_runs` gets its #62 cadence and
+#837 lands registered-DAG recovery.
 """
 
 from __future__ import annotations
@@ -82,14 +91,14 @@ class Waker:
 
 
 #: The parked status each canonical API accepts. The HITL rows are pinned by
-#: the behavioural tests at the bottom; `resume_due_graph_runs` by its own
-#: eligibility set. An answer settles PAUSED -> QUEUED, which is what the
+#: the behavioural tests at the bottom; `resume_due_graph_runs` by equality
+#: with its own eligibility set. An answer settles PAUSED -> QUEUED, which is what the
 #: queued-recovery seam drains.
 VIA_ACCEPTS: dict[str, frozenset[RunStatus]] = {
     "submit_hitl_answer": frozenset({RunStatus.PAUSED}),
     "cancel_hitl": frozenset({RunStatus.PAUSED}),
     "expire_hitl_pauses": frozenset({RunStatus.PAUSED}),
-    "resume_due_graph_runs": frozenset({RunStatus.WAITING}),
+    "resume_due_graph_runs": frozenset({RunStatus.WAITING, RunStatus.RUNNING}),
     "recover_queued_graph_runs": frozenset({RunStatus.QUEUED}),
 }
 
@@ -103,9 +112,12 @@ _HUMAN_WAKERS = (
         Entry(_HITL_ROUTES, "answer_human_work", "submit_hitl_answer"),
         resumed_by=_QUEUED_RECOVERY,
     ),
-    Waker("deadline", Entry(_HITL_ROUTES, "expire_human_work", "expire_hitl_pauses")),
     Waker("cancel", Entry(_HITL_ROUTES, "cancel_human_work", "cancel_hitl")),
 )
+# `expire_human_work` is not listed: it expires HITL deadlines only when
+# someone calls `POST /v1/hitl/expire`, and a deadline nobody ticks is not a
+# waker (`test_a_deadline_only_a_route_reaches_is_not_a_waker`).
+#
 # `Container.resume_parked_runs` also re-enters these for consumer-executed
 # Runs, but has no production caller until the #62 cadence ticks it.
 _TIMER_WAKERS = (
@@ -246,7 +258,12 @@ def _has_production_caller(root: pathlib.Path, entry: Entry, fn: ast.AST) -> boo
     return False
 
 
-def entry_problems(root: pathlib.Path, entry: Entry) -> list[str]:
+#: Kinds that must fire without anyone asking. A registered route is how a
+#: person answers or cancels; it is not how a deadline or a timer elapses.
+TICK_KINDS = frozenset({"deadline", "timer"})
+
+
+def entry_problems(root: pathlib.Path, entry: Entry, *, route_counts: bool = True) -> list[str]:
     where = f"{entry.path}:{entry.name}"
     source = root / entry.path
     if not source.exists():
@@ -257,7 +274,8 @@ def entry_problems(root: pathlib.Path, entry: Entry) -> list[str]:
     problems: list[str] = []
     if entry.via not in _called_names(fn):
         problems.append(f"{where}: does not call {entry.via}")
-    if not (_is_registered_route(root, entry.path, fn) or _has_production_caller(root, entry, fn)):
+    routed = route_counts and _is_registered_route(root, entry.path, fn)
+    if not (routed or _has_production_caller(root, entry, fn)):
         problems.append(f"{where}: no reachable production caller outside tests")
     return problems
 
@@ -288,14 +306,16 @@ def kind_problems(reason: str, waker: Waker) -> list[str]:
 
 def waker_problems(root: pathlib.Path, wakers: Mapping[str, tuple[Waker, ...]]) -> list[str]:
     problems: list[str] = []
-    entries: set[Entry] = set()
+    route_counts: dict[Entry, bool] = {}
     for reason, specs in wakers.items():
         for waker in specs:
             problems.extend(kind_problems(reason, waker))
-            entries.add(waker.entry)
-            entries.update(waker.resumed_by)
-    for entry in sorted(entries, key=lambda e: (e.path, e.name)):
-        problems.extend(entry_problems(root, entry))
+            ticked = waker.kind in TICK_KINDS
+            route_counts[waker.entry] = route_counts.get(waker.entry, True) and not ticked
+            for follow in waker.resumed_by:
+                route_counts[follow] = False
+    for entry in sorted(route_counts, key=lambda e: (e.path, e.name)):
+        problems.extend(entry_problems(root, entry, route_counts=route_counts[entry]))
     return problems
 
 
@@ -420,6 +440,16 @@ def test_an_unregistered_route_is_unreachable(tmp_path: pathlib.Path) -> None:
     ]
 
 
+def test_a_deadline_only_a_route_reaches_is_not_a_waker() -> None:
+    deadline = Waker("deadline", Entry(_HITL_ROUTES, "expire_human_work", "expire_hitl_pauses"))
+
+    problems = waker_problems(REPO_ROOT, {PAUSE_AWAITING_HUMAN_ANSWER: (deadline,)})
+
+    assert problems == [
+        f"{_HITL_ROUTES}:expire_human_work: no reachable production caller outside tests"
+    ]
+
+
 def test_an_entrypoint_that_skips_its_canonical_api_fails() -> None:
     entry = replace(_HUMAN_WAKERS[0].entry, via="resume_due_graph_runs")
 
@@ -451,8 +481,8 @@ def test_hitl_settlement_refuses_a_waiting_run(outcome: str) -> None:
         settle_hitl_record(_waiting_delegation_record(), "d", outcome)  # type: ignore[arg-type]
 
 
-def test_timed_resume_takes_waiting_and_never_paused() -> None:
-    assert RunStatus.WAITING in recovery._RESUME_ELIGIBLE_STATUSES
+def test_timed_resume_accepts_exactly_its_declared_statuses() -> None:
+    assert VIA_ACCEPTS["resume_due_graph_runs"] == recovery._RESUME_ELIGIBLE_STATUSES
     assert RunStatus.PAUSED not in recovery._RESUME_ELIGIBLE_STATUSES
 
 
