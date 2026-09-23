@@ -30,10 +30,12 @@ what let the original bug survive, so the CI wiring is the part that matters.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -111,7 +113,8 @@ EXPECTED_TABLES = frozenset(
         # live on the message table (#327).
         "session_turns",
         "sessions",
-        # Admission claims for task submission (037). Durable and replica-shareable
+        # Admission claims for task submission (038, fenced by 039). Durable and
+        # replica-shareable
         # so a retried submit resolves to the original receipt rather than minting
         # a second Run (#1176).
         "task_idempotency",
@@ -251,6 +254,177 @@ class TestIndexIntent:
         assert set(definitions) == set(descending), f"missing: {set(descending) - set(definitions)}"
         for name, definition in definitions.items():
             assert "created_at DESC" in definition, f"{name} is not descending: {definition}"
+
+
+class TestTheChainSurvivesRuntimeSelfProvisioning:
+    """The claims table has two owners (#1176): this chain, and the runtime —
+    `PgTaskIdempotencyStore.ensure_schema` provisions the fenced table at wire
+    time on a spine-ready pool. The shipped entrypoint applies the chain under
+    the migration advisory lock before any replica serves, so a provisioning
+    can never race the chain from below; what migration 039 instead meets is
+    whatever a hand-managed database has standing under the claims name — the
+    migration-038 shape, which it fences in place; a fenced provisioning,
+    which it adopts; or a foreign shape, which it refuses loudly rather than
+    stamping over."""
+
+    CLAIM_COLUMNS: ClassVar[set[str]] = {
+        "scope_key",
+        "claim_token",
+        "fingerprint",
+        "request",
+        "task_id",
+        "run_id",
+        "completed_at",
+        "created_at",
+        "expires_at",
+        "lease_expires_at",
+    }
+
+    def _provision_at_runtime(self) -> None:
+        """What wiring does on a spine-ready pool below head: the real
+        `ensure_schema`, not a re-spelling of its DDL."""
+
+        async def provision() -> None:
+            import asyncpg
+
+            from maistro.tasks.idempotency import PgTaskIdempotencyStore
+
+            pool = await asyncpg.create_pool(dsn=DATABASE_URL, min_size=1, max_size=1)
+            try:
+                await PgTaskIdempotencyStore(pool).ensure_schema()
+            finally:
+                await pool.close()
+
+        asyncio.run(provision())
+
+    def _claim_columns(self) -> set[str]:
+        return {
+            str(row[0])
+            for row in _query(
+                "select column_name from information_schema.columns "
+                "where table_name = 'task_idempotency'"
+            )
+        }
+
+    def _recreate_the_038_table(self) -> None:
+        """Leave behind exactly what migration 038 creates, so the shared
+        fixture's `downgrade base` — which replays 038's own downgrade, index
+        and table — finds a chain-owned shape after a test dropped it."""
+        _execute(
+            "create table task_idempotency ("
+            "scope_key text not null,"
+            "fingerprint text not null,"
+            "request text not null,"
+            "task_id text,"
+            "run_id text,"
+            "created_at bigint not null,"
+            "expires_at bigint not null,"
+            "lease_expires_at bigint not null,"
+            "constraint pk_task_idempotency primary key (scope_key)"
+            ")"
+        )
+        _execute("create index ix_task_idempotency_expires on task_idempotency (expires_at)")
+
+    def test_upgrade_evolves_the_migration_038_table_in_place(self, empty_database) -> None:
+        """The mainline path: every deployment that walked the chain to 038
+        holds the unfenced claims shape, and 039 — not a rewrite of landed
+        038 — is what fences it. Rows admitted under 038 survive with
+        backfilled fence tokens; their receipts keep replaying."""
+        _alembic("upgrade", "038")
+        _execute(
+            "insert into task_idempotency (scope_key, fingerprint, request, task_id,"
+            " run_id, created_at, expires_at, lease_expires_at)"
+            " values ('scope-1', 'fp', '{}', 'task-1', 'run-1', 1,"
+            " 999999999999999, 1)"
+        )
+        # The runtime's own provisioning runs against the standing 038 table
+        # too (a restart on new code, before migrations caught up): its
+        # CREATE TABLE IF NOT EXISTS must no-op rather than clobber or
+        # half-fence the shape — 039 is the migration that fences it.
+        self._provision_at_runtime()
+        assert "claim_token" not in self._claim_columns(), (
+            "wire-time provisioning mutated the standing 038 table"
+        )
+
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        assert self._claim_columns() == self.CLAIM_COLUMNS
+        rows = _query("select scope_key, claim_token, completed_at from task_idempotency")
+        assert rows == [("scope-1", rows[0][1], 0)], "the admitted row did not survive"
+        assert rows[0][1], "the fence token was not backfilled"
+        assert _query("select version_num from alembic_version") == [("039",)]
+
+    def test_upgrade_adopts_a_fenced_provisioning_without_a_primary_key(
+        self, empty_database
+    ) -> None:
+        """A wire-time provisioning that predates the PRIMARY KEY in
+        ensure_schema leaves a column-complete table with no unique constraint
+        — adopting it as-is would stamp head over a shape the store's
+        INSERT ... ON CONFLICT cannot write through. The migration must
+        reconstruct the PK, or refuse."""
+        _alembic("upgrade", "038")
+        _execute("drop table task_idempotency")
+        # All ten columns, but no PK and no index — the shape an early
+        # provisioning leaves standing:
+        _execute(
+            "create table task_idempotency ("
+            "scope_key text not null,"
+            "claim_token text not null,"
+            "fingerprint text not null,"
+            "request text not null,"
+            "task_id text,"
+            "run_id text,"
+            "completed_at bigint not null default 0,"
+            "created_at bigint not null,"
+            "expires_at bigint not null,"
+            "lease_expires_at bigint not null"
+            ")"
+        )
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        assert _query("select version_num from alembic_version") == [("039",)]
+        pks = {
+            str(row[0])
+            for row in _query(
+                "select a.attname from pg_index i "
+                "join pg_attribute a on a.attnum = any(i.indkey) and a.attrelid = i.indrelid "
+                "where i.indrelid = 'task_idempotency'::regclass and i.indisprimary"
+            )
+        }
+        assert pks == {"scope_key"}, f"primary key missing or wrong: {pks}"
+        assert "ix_task_idempotency_expires" in {
+            str(row[0])
+            for row in _query(
+                "select indexname from pg_indexes where tablename = 'task_idempotency'"
+            )
+        }, "the purge index was not restored"
+
+    def test_upgrade_refuses_to_stamp_over_a_foreign_table_shape(self, empty_database) -> None:
+        """A table under the claims name WITHOUT the columns migration 039
+        owns is neither the 038 claim table nor the runtime's provisioning,
+        and stamping head over a shape the store cannot read would hide the
+        damage behind a green upgrade."""
+        _alembic("upgrade", "038")
+        _execute("drop table task_idempotency")
+        _execute("create table task_idempotency (scope_key text primary key)")
+        try:
+            result = _alembic("upgrade", "head")
+
+            assert result.returncode != 0
+            assert "missing" in result.stderr
+            assert _query("select version_num from alembic_version") == [("038",)]
+            # And the foreign table was left exactly as found — visible, not
+            # silently adopted or dropped.
+            assert self._claim_columns() == {"scope_key"}
+        finally:
+            # The refusal leaves the foreign table standing by design; the
+            # `empty_database` fixture can only downgrade what the chain owns,
+            # so the foreign table is replaced with the shape 038 creates —
+            # leaving anything else would poison every later test's `upgrade
+            # head` and the fixture's own downgrade exactly the way the
+            # refusal just proved it poisons the chain.
+            _execute("drop table task_idempotency")
+            self._recreate_the_038_table()
 
 
 class TestADesignProjectIsWritableOnACleanDatabase:
