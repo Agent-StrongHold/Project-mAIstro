@@ -208,9 +208,9 @@ or placeholder-only section.
 
 ### Added
 
-- **Every shipped node kind is proven to get the Container's own authorities
-  through `Container.node_resolver()` (#44, #1082).** A new sweep resolves each
-  registered production kind that declares an authority through a real
+- **Every maistro-core node kind is proven to get the Container's own
+  authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
+  resolves each registered core kind that declares an authority through a real
   `create_container()` Container and asserts it receives the exact
   Container-owned harness adapters, usage log, A2A delegator, guest peers,
   canonical and graph Run stores, capability-effect context, provider

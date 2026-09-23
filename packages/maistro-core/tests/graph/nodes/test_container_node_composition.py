@@ -47,7 +47,7 @@ async def _production_container() -> Any:
     from maistro.container import create_container
     from maistro.types import AgentConfig
 
-    container = await create_container(AgentConfig(router_api_key="test-key"))  # type: ignore[arg-type]
+    container = await create_container(AgentConfig(router_api_key="test-key"))
     # A default Container shares the process-wide usage log, which is also
     # `build_node_resolver`'s own fallback; a deployment-owned log is the
     # only way a dropped `usage_log` shows up as a substitution.
