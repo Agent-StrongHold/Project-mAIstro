@@ -10,7 +10,14 @@ import pytest
 from fastapi import HTTPException
 from routes.evolution import trigger_cycle
 from services.evolution import _EvolutionService
-from services.evolution_graph import _evaluate_one, run_canonical_evolution_cycle
+from services.evolution_graph import (
+    FinalizeReconciliationRequired,
+    _BattleInput,
+    _evaluate_one,
+    _finalize_cycle,
+    _TournamentWork,
+    run_canonical_evolution_cycle,
+)
 
 import maistro_evolve.cycle as cycle_module
 from maistro.graph.durable_runs import (
@@ -45,6 +52,7 @@ class _Genome:
 class _Population:
     def __init__(self, genomes: list[_Genome]) -> None:
         self._items = {genome.id: genome for genome in genomes}
+        self._cycle_markers: dict[str, dict[str, Any]] = {}
 
     def add(self, genome: _Genome) -> None:
         self._items[genome.id] = genome
@@ -57,6 +65,12 @@ class _Population:
 
     def cull_bottom(self, pct: float) -> int:
         return 0
+
+    def record_cycle_marker(self, marker_id: str, payload: dict[str, Any]) -> None:
+        self._cycle_markers[marker_id] = payload
+
+    def get_cycle_marker(self, marker_id: str) -> dict[str, Any] | None:
+        return self._cycle_markers.get(marker_id)
 
 
 class _Harness:
@@ -82,6 +96,7 @@ class _Harness:
 class _Tournament:
     def __init__(self) -> None:
         self.battles: list[tuple[str, str, str]] = []
+        self._published: set[tuple[str, str]] = set()
 
     def record_battle(
         self,
@@ -89,8 +104,15 @@ class _Tournament:
         benchmark: str,
         genome_a_id: str,
         genome_b_id: str,
+        node_run_id: str | None = None,
+        attempt_id: str | None = None,
         **_: Any,
     ) -> None:
+        key = (node_run_id or "", benchmark)
+        if node_run_id and key in self._published:
+            return
+        if node_run_id:
+            self._published.add(key)
         self.battles.append((benchmark, genome_a_id, genome_b_id))
 
     def get_avg_elo(self, genome_id: str) -> float:
@@ -985,3 +1007,160 @@ async def test_recovered_evaluation_node_run_reuses_published_score_without_reev
     assert persisted.harness_params["total_cost_usd"] == 0.01
     assert persisted.harness_params["evaluation_runs"] == genome.harness_params["evaluation_runs"]
     assert output.evaluation_attempt_id == "attempt-before-crash"
+
+
+def test_recovered_battle_node_run_reuses_published_result_without_double_recording() -> None:
+    """#1064: a fresh Attempt beneath the same battle NodeRun must not
+    re-apply wins/losses/Elo a second time."""
+    import maistro_evolve.tournament as tournament_module
+
+    genome_a = SimpleNamespace(id="g1", eval_scores={"proxy": 0.8})
+    genome_b = SimpleNamespace(id="g2", eval_scores={"proxy": 0.4})
+    population = SimpleNamespace(
+        get=lambda gid: {"g1": genome_a, "g2": genome_b}.get(gid),
+        list_all=lambda: [genome_a, genome_b],
+    )
+    tournament = tournament_module.EloTournament()
+    cycle = SimpleNamespace(tournament=tournament)
+    work = _TournamentWork(cycle=cycle, population=population, membership_ids=["g1", "g2"])
+
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="evolve-battle-1",
+        node_run_id="battle-node-1",
+        attempt_id="attempt-before-crash",
+    )
+    first = work.run_pair(_BattleInput(pairs=[("g1", "g2")], pair_index=0), ctx)
+    elo_after_first = tournament.get_elo("g1", "proxy")
+    assert first.battle_node_run_id == "battle-node-1"
+    assert tournament.get_stats()["total_battles"] == 1
+
+    recovered_ctx = ctx.model_copy(update={"attempt_id": "attempt-after-recovery"})
+    second = work.run_pair(_BattleInput(pairs=[("g1", "g2")], pair_index=0), recovered_ctx)
+
+    assert second == first
+    assert tournament.get_stats()["total_battles"] == 1
+    assert tournament.get_elo("g1", "proxy") == elo_after_first
+
+
+@pytest.mark.asyncio
+async def test_recovered_finalize_node_run_reuses_published_result_without_double_mutation() -> (
+    None
+):
+    """#1064: a fresh Attempt beneath the same finalize NodeRun must not
+    re-cull/re-breed/re-advance the cycle counter a second time."""
+    monkeypatch_calls = {"compute_fitness": 0}
+
+    class _CountingCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            monkeypatch_calls["compute_fitness"] += 1
+            return super()._compute_all_fitness(population)
+
+    genome_a, genome_b = _Genome("g1"), _Genome("g2")
+    genome_a.eval_scores["proxy"] = 0.5
+    genome_b.eval_scores["proxy"] = 0.7
+    population = _Population([genome_a, genome_b])
+    tournament = _Tournament()
+    cycle = _CountingCycle(harness=_Harness(), tournament=tournament)
+    config = _config(population_size=3, eval_batch_size=2)
+
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="evolve-finalize",
+        node_run_id="finalize-node-1",
+        attempt_id="attempt-before-crash",
+    )
+    first = await _finalize_cycle(cycle, population, config, None, ctx)
+    assert monkeypatch_calls["compute_fitness"] == 1
+    assert cycle._cycle_count == 1
+    population_size_after_first = len(population.list_all())
+    child_after_first = population.get("child")
+    assert child_after_first is not None
+
+    recovered_ctx = ctx.model_copy(update={"attempt_id": "attempt-after-recovery"})
+    second = await _finalize_cycle(cycle, population, config, None, recovered_ctx)
+
+    assert second == first
+    # Compute-fitness (and by extension cull/breed/self-improve) never ran
+    # a second time; the cached committed output was returned instead.
+    assert monkeypatch_calls["compute_fitness"] == 1
+    assert cycle._cycle_count == 1
+    assert len(population.list_all()) == population_size_after_first
+
+
+@pytest.mark.asyncio
+async def test_finalize_fault_after_partial_mutation_blocks_automatic_retry() -> None:
+    """#1064: faulting after SOME finalization mutations but before the
+    Attempt commits must not let a retry silently re-apply or silently
+    succeed. It must fail closed until an operator reconciles."""
+
+    class _FaultingCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            raise RuntimeError("synthetic mid-finalize fault")
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    cycle = _FaultingCycle(harness=_Harness(), tournament=_Tournament())
+    config = _config(population_size=2, eval_batch_size=2)
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="evolve-finalize",
+        node_run_id="finalize-node-1",
+        attempt_id="attempt-before-crash",
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic mid-finalize fault"):
+        await _finalize_cycle(cycle, population, config, None, ctx)
+
+    marker = population.get_cycle_marker("finalize:finalize-node-1")
+    assert marker is not None
+    assert marker["status"] == "faulted"
+
+    recovered_ctx = ctx.model_copy(update={"attempt_id": "attempt-after-recovery"})
+    with pytest.raises(FinalizeReconciliationRequired):
+        await _finalize_cycle(cycle, population, config, None, recovered_ctx)
+
+
+@pytest.mark.asyncio
+async def test_finalize_cycle_without_node_context_skips_marker_bookkeeping() -> None:
+    """#1064: ``_finalize_cycle`` is also called directly (no durable graph
+    Attempt) by callers that never pass ``ctx`` -- its default. With no
+    NodeRun to key an idempotency marker on, ``marker_id`` stays ``None``
+    and all three ``marker_id is not None`` checks take their False branch:
+    finalize still runs and returns a real output, it just records nothing
+    into the population's cycle-marker store."""
+    genome_a, genome_b = _Genome("g1"), _Genome("g2")
+    genome_a.eval_scores["proxy"] = 0.5
+    genome_b.eval_scores["proxy"] = 0.7
+    population = _Population([genome_a, genome_b])
+    cycle = _Cycle(harness=_Harness(), tournament=_Tournament())
+    config = _config(population_size=3, eval_batch_size=2)
+
+    output = await _finalize_cycle(cycle, population, config, None)
+
+    assert output.population_size == len(population.list_all())
+    assert population.get_cycle_marker("finalize:anything") is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_cycle_fault_without_node_context_propagates_without_marker() -> None:
+    """Same fault as the partial-mutation test above, but with no ``ctx``:
+    the exception still propagates to the caller (finalize is not made
+    idempotent for callers outside a durable graph Attempt), and -- since
+    ``marker_id`` is ``None`` -- the except block's own guard also takes its
+    False branch, so no faulted marker is recorded anywhere to reconcile."""
+
+    class _FaultingCycle(_Cycle):
+        def _compute_all_fitness(self, population: _Population) -> list[_Genome]:
+            raise RuntimeError("synthetic mid-finalize fault")
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    cycle = _FaultingCycle(harness=_Harness(), tournament=_Tournament())
+    config = _config(population_size=2, eval_batch_size=2)
+
+    with pytest.raises(RuntimeError, match="synthetic mid-finalize fault"):
+        await _finalize_cycle(cycle, population, config, None)
+
+    assert population.get_cycle_marker("finalize:finalize-node-1") is None

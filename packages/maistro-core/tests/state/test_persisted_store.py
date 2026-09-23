@@ -15,6 +15,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
+from maistro.state import PersistedStore, State
+
 
 class SampleModel(BaseModel):
     id: str
@@ -252,3 +254,528 @@ class TestMultipleStores:
 
         assert store.get("missions", "k1", SampleModel) is None
         assert store.get("agents", "k1", SampleModel) is not None
+
+
+class TwoFieldModel(BaseModel):
+    """A model with two candidate unique fields, for testing multi-field claims."""
+
+    id: str
+    name: str
+    email: str
+
+
+class TestPutModelUnique:
+    """PersistedStore.put_model_unique (#1248/#1259) — the transactional upsert
+    that keeps a record's durable uniqueness claim(s) consistent with its row.
+
+    The claim table (``unique_fields``) is normalized-value keyed per
+    (store_name, field_name); a write that would collide with a claim held by
+    a *different* record key is rejected before either table is touched.
+    """
+
+    def test_new_record_claims_the_field_and_persists(self, state_with_store) -> None:
+        state, store = state_with_store
+        model = SampleModel(id="u1", name="alice")
+
+        assert store.put_model_unique("users", "u1", model, ("name",)) is True
+
+        got = store.get("users", "u1", SampleModel)
+        assert got is not None
+        assert got.name == "alice"
+
+        reader = state.open_reader()
+        try:
+            row = reader.execute(
+                "SELECT record_key FROM unique_fields "
+                "WHERE store_name = ? AND field_name = ? AND normalized_value = ?",
+                ("users", "name", "alice"),
+            ).fetchone()
+        finally:
+            reader.close()
+        assert row is not None
+        assert row[0] == "u1"
+
+    def test_resaving_the_same_key_updates_without_conflict(self, state_with_store) -> None:
+        """The claim belongs to the row's own key, so re-upserting it is not
+        a collision (`existing[0] != key` is False) — it takes the DELETE +
+        re-INSERT path and still lands the new field values."""
+        state, store = state_with_store
+        store.put_model_unique("users", "u1", SampleModel(id="u1", name="alice"), ("name",))
+
+        assert (
+            store.put_model_unique(
+                "users", "u1", SampleModel(id="u1", name="alice", value=7), ("name",)
+            )
+            is True
+        )
+
+        got = store.get("users", "u1", SampleModel)
+        assert got.value == 7
+        reader = state.open_reader()
+        try:
+            count = reader.execute(
+                "SELECT COUNT(*) FROM unique_fields WHERE store_name = ? AND record_key = ?",
+                ("users", "u1"),
+            ).fetchone()[0]
+        finally:
+            reader.close()
+        assert count == 1
+
+    def test_second_key_with_same_normalized_value_is_rejected(self, state_with_store) -> None:
+        state, store = state_with_store
+        store.put_model_unique("users", "u1", SampleModel(id="u1", name="alice"), ("name",))
+
+        # Casefold-equal, not identical — the claim compares normalized values.
+        rejected = store.put_model_unique(
+            "users", "u2", SampleModel(id="u2", name="Alice"), ("name",)
+        )
+
+        assert rejected is False
+        assert store.get("users", "u2", SampleModel) is None
+        reader = state.open_reader()
+        try:
+            count = reader.execute(
+                "SELECT COUNT(*) FROM unique_fields WHERE store_name = ? AND record_key = ?",
+                ("users", "u2"),
+            ).fetchone()[0]
+        finally:
+            reader.close()
+        assert count == 0
+
+    def test_second_unique_field_collision_also_rejects(self, state_with_store) -> None:
+        """Every field in `unique_fields` is a separate claim; a collision on
+        the second one is enough to refuse the whole write, and the first
+        field's still-free value must not be claimed either (the loop returns
+        before any INSERT)."""
+        state, store = state_with_store
+        store.put_model_unique(
+            "users",
+            "u1",
+            TwoFieldModel(id="u1", name="alice", email="a@example.com"),
+            ("name", "email"),
+        )
+
+        rejected = store.put_model_unique(
+            "users",
+            "u2",
+            TwoFieldModel(id="u2", name="bob", email="a@example.com"),
+            ("name", "email"),
+        )
+
+        assert rejected is False
+        assert store.get("users", "u2", TwoFieldModel) is None
+        reader = state.open_reader()
+        try:
+            row = reader.execute(
+                "SELECT record_key FROM unique_fields "
+                "WHERE store_name = ? AND field_name = ? AND normalized_value = ?",
+                ("users", "name", "bob"),
+            ).fetchone()
+        finally:
+            reader.close()
+        # The `name` field was free, but must not have been claimed on a
+        # write that was refused for the `email` collision.
+        assert row is None
+
+    def test_bad_field_name_surfaces_as_runtime_error(self, state_with_store) -> None:
+        """An attribute error inside the writer thread's transaction is
+        caught, rolled back, and re-raised on the calling thread — never
+        left to hang or to silently drop the write."""
+        _, store = state_with_store
+        model = SampleModel(id="u1", name="alice")
+
+        with pytest.raises(RuntimeError, match="unique model write failed"):
+            store.put_model_unique("users", "u1", model, ("does_not_exist",))
+
+        assert store.get("users", "u1", SampleModel) is None
+
+    def test_times_out_when_the_writer_never_runs_the_transaction(
+        self, state_with_store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bounded like every other write in this module (`put_raw_if_absent`
+        has the same `completed.wait(timeout=...)` guard): a writer that never
+        drains the queue must not hang the caller forever."""
+        state, store = state_with_store
+        monkeypatch.setattr(state, "submit", lambda _fn: None)
+
+        with pytest.raises(TimeoutError, match="timed out waiting for unique model write"):
+            store.put_model_unique(
+                "users", "u1", SampleModel(id="u1", name="alice"), ("name",), timeout=0.01
+            )
+
+
+class TestPutModelIfUnique:
+    """PersistedStore.put_model_if_unique (#1248/#1259) — check-then-insert as
+    one transaction, so two independent process writers cannot both publish a
+    UUID-keyed record for the same field value (the registration race)."""
+
+    def test_inserts_when_the_field_value_is_available(self, state_with_store) -> None:
+        _, store = state_with_store
+
+        assert (
+            store.put_model_if_unique("users", "u1", SampleModel(id="u1", name="alice"), "name")
+            is True
+        )
+
+        got = store.get("users", "u1", SampleModel)
+        assert got is not None
+        assert got.name == "alice"
+
+    def test_rejects_when_the_field_value_is_already_claimed(self, state_with_store) -> None:
+        _, store = state_with_store
+        store.put_model_if_unique("users", "u1", SampleModel(id="u1", name="alice"), "name")
+
+        rejected = store.put_model_if_unique(
+            "users", "u2", SampleModel(id="u2", name="ALICE"), "name"
+        )
+
+        assert rejected is False
+        assert store.get("users", "u2", SampleModel) is None
+
+    def test_rejected_insert_leaves_the_original_record_untouched(self, state_with_store) -> None:
+        _, store = state_with_store
+        store.put_model_if_unique(
+            "users", "u1", SampleModel(id="u1", name="alice", value=1), "name"
+        )
+
+        store.put_model_if_unique(
+            "users", "u2", SampleModel(id="u2", name="alice", value=2), "name"
+        )
+
+        original = store.get("users", "u1", SampleModel)
+        assert original.value == 1
+
+    def test_kv_row_collision_after_a_successful_claim_surfaces_as_runtime_error(
+        self, state_with_store
+    ) -> None:
+        """The claim insert and the kv_store insert are one transaction. If the
+        claim insert succeeds (the field value is free) but the *key* already
+        has a row in ``kv_store`` from outside this method (no ``ON CONFLICT``
+        clause here, unlike ``put``), the second INSERT raises — and the whole
+        transaction, claim included, must roll back rather than leave an
+        orphaned claim with no matching record."""
+        state, store = state_with_store
+        # A pre-existing row for this key, written directly (bypassing the
+        # unique-claim machinery) — the situation a migration or an older
+        # code path could leave behind.
+        store.put("users", "u1", SampleModel(id="u1", name="preexisting"))
+
+        with pytest.raises(RuntimeError, match="unique model insert failed"):
+            store.put_model_if_unique("users", "u1", SampleModel(id="u1", name="newclaim"), "name")
+
+        # The row is unchanged, and the claim insert was rolled back with it.
+        got = store.get("users", "u1", SampleModel)
+        assert got.name == "preexisting"
+        reader = state.open_reader()
+        try:
+            row = reader.execute(
+                "SELECT record_key FROM unique_fields "
+                "WHERE store_name = ? AND field_name = ? AND normalized_value = ?",
+                ("users", "name", "newclaim"),
+            ).fetchone()
+        finally:
+            reader.close()
+        assert row is None
+
+    def test_times_out_when_the_writer_never_runs_the_transaction(
+        self, state_with_store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bounded like every other write in this module: a writer that never
+        drains the queue must not hang the caller forever."""
+        state, store = state_with_store
+        monkeypatch.setattr(state, "submit", lambda _fn: None)
+
+        with pytest.raises(TimeoutError, match="timed out waiting for unique model insert"):
+            store.put_model_if_unique(
+                "users", "u1", SampleModel(id="u1", name="alice"), "name", timeout=0.01
+            )
+
+
+class UserLikeModel(BaseModel):
+    """Stands in for hive-conductor's ``HiveUser`` — the field name (not just
+    the store name) matters here, since the reconciliation warning and the
+    DB-level index below both key off `$.username` specifically."""
+
+    id: str
+    username: str
+
+
+def _write_raw_user(state: State, key: str, username: str) -> None:
+    """Insert a `users` row straight into `kv_store`, bypassing every
+    unique-claim code path — the shape of a pre-#1248 legacy write, and of a
+    same-DB write from an old-version process during a rolling upgrade."""
+    conn = state._writer
+    assert conn is not None
+    conn.execute(
+        "INSERT INTO kv_store (store_name, key, value, updated_at) VALUES (?, ?, ?, ?)",
+        ("users", key, f'{{"id": "{key}", "username": "{username}"}}', "2026-01-01T00:00:00Z"),
+    )
+    conn.commit()
+
+
+class TestDuplicateUsernameMigrationReconciliation:
+    """Codex review finding 2 (PR #1528): `kv_unique_fields_001`'s
+    ``INSERT OR IGNORE`` claims a `unique_fields` row for only the first
+    pre-existing `users` record it sees per normalized username, leaving
+    every other duplicate active and unclaimed. `PersistedStore.initialize()`
+    must surface that loudly rather than silently accept the ambiguity."""
+
+    def test_unclaimed_legacy_duplicates_are_logged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        state.open_writer()
+        state.run_migration(
+            "kv_store_001",
+            "CREATE TABLE IF NOT EXISTS kv_store "
+            "(store_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, PRIMARY KEY (store_name, key))",
+        )
+        # Three pre-existing rows share one username — only the first can be
+        # claimed by INSERT OR IGNORE's per-normalized-value primary key.
+        _write_raw_user(state, "legacy-1", "duplicate")
+        _write_raw_user(state, "legacy-2", "duplicate")
+        _write_raw_user(state, "legacy-3", "Duplicate")  # casefold-equal too
+        _write_raw_user(state, "legacy-4", "unique-one")
+
+        with caplog.at_level("WARNING", logger="maistro.state"):
+            store = PersistedStore(state)
+            store.initialize()
+
+        warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+        reconciliation_warnings = [w for w in warnings if "no durable uniqueness claim" in w]
+        assert len(reconciliation_warnings) == 1
+        message = reconciliation_warnings[0]
+        assert "2 " in message  # two of the three duplicates are unclaimed
+        assert "legacy-2" in message or "legacy-3" in message
+        assert "legacy-4" not in message  # the unambiguous row is not flagged
+
+        reader = state.open_reader()
+        try:
+            claimed = {
+                row[0]
+                for row in reader.execute(
+                    "SELECT record_key FROM unique_fields "
+                    "WHERE store_name = 'users' AND field_name = 'username'"
+                ).fetchall()
+            }
+        finally:
+            reader.close()
+        # Exactly one of the three duplicates holds the claim; the other two
+        # remain active, unclaimed rows in kv_store — the exact ambiguity the
+        # warning exists to surface, not silently resolve on its own.
+        assert len(claimed & {"legacy-1", "legacy-2", "legacy-3"}) == 1
+        assert "legacy-4" in claimed
+        state.close()
+
+    def test_no_warning_when_usernames_are_unique(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        state.open_writer()
+        state.run_migration(
+            "kv_store_001",
+            "CREATE TABLE IF NOT EXISTS kv_store "
+            "(store_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, PRIMARY KEY (store_name, key))",
+        )
+        _write_raw_user(state, "u1", "alice")
+        _write_raw_user(state, "u2", "bob")
+
+        with caplog.at_level("WARNING", logger="maistro.state"):
+            store = PersistedStore(state)
+            store.initialize()
+
+        assert not [r for r in caplog.records if "duplicate username" in r.message]
+        state.close()
+
+    def test_warning_persists_across_repeated_initialize_calls(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The warning is not a one-shot migration side effect — it must keep
+        firing on every startup until an operator actually resolves the
+        duplicates, or a fleet that never restarts would never see it again
+        after the first boot post-upgrade."""
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        state.open_writer()
+        state.run_migration(
+            "kv_store_001",
+            "CREATE TABLE IF NOT EXISTS kv_store "
+            "(store_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, PRIMARY KEY (store_name, key))",
+        )
+        _write_raw_user(state, "legacy-1", "duplicate")
+        _write_raw_user(state, "legacy-2", "duplicate")
+        store = PersistedStore(state)
+
+        store.initialize()
+        with caplog.at_level("WARNING", logger="maistro.state"):
+            store.initialize()
+
+        assert [r for r in caplog.records if "duplicate username" in r.message]
+        state.close()
+
+
+class TestUsernameUniquenessDatabaseBoundary:
+    """Codex review finding 4 (PR #1528): `unique_fields` only stops a writer
+    that knows to consult it. During a rolling upgrade a still-running
+    old-version process registers users through the generic `put()` path,
+    which writes straight to `kv_store` without ever touching `unique_fields`
+    — invisible to a new-version process's availability check. The
+    `kv_users_username_unique_001` migration puts a real SQL UNIQUE index on
+    `kv_store` itself, so it is enforced no matter which code path wrote the
+    row."""
+
+    def test_index_is_created_on_a_clean_database(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+
+        store.initialize()
+
+        reader = state.open_reader()
+        try:
+            found = reader.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'kv_store_users_username_unique'"
+            ).fetchone()
+            applied = reader.execute(
+                "SELECT 1 FROM schema_migrations WHERE name = 'kv_users_username_unique_001'"
+            ).fetchone()
+        finally:
+            reader.close()
+        assert found is not None
+        assert applied is not None
+        state.close()
+
+    def test_old_code_path_writing_a_duplicate_username_is_rejected_at_the_db(
+        self, tmp_path: Path
+    ) -> None:
+        """Simulates the exact mixed-version scenario: a new-version process
+        holds the `unique_fields` claim for "alice"; an old-version process
+        (using the generic `put()` path, unaware `unique_fields` exists)
+        tries to insert a *second*, differently-keyed row for "alice". The
+        DB-level index must refuse it even though `put()` never consults
+        `unique_fields`."""
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+        store.initialize()
+
+        assert store.put_model_unique(
+            "users", "u1", UserLikeModel(id="u1", username="alice"), ("username",)
+        )
+
+        import sqlite3
+
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            # `put`, not `put_model_unique` — the old-version code path, which
+            # never checks `unique_fields` and has no special handling for
+            # this: the DB-level index is what stops it, and `put()` simply
+            # surfaces whatever the writer thread raised (#1238).
+            store.put("users", "u2", UserLikeModel(id="u2", username="alice"))
+
+        got = store.get("users", "u2", UserLikeModel)
+        assert got is None
+        state.close()
+
+    def test_old_code_path_overwriting_its_own_row_to_a_free_username_still_works(
+        self, tmp_path: Path
+    ) -> None:
+        """The index must not block the ordinary, non-colliding case: an
+        old-version process updating its own row via `put()` to a username
+        nobody else holds."""
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+        store.initialize()
+
+        store.put("users", "u1", UserLikeModel(id="u1", username="alice"))
+        store.put("users", "u1", UserLikeModel(id="u1", username="alice-renamed"))
+
+        got = store.get("users", "u1", UserLikeModel)
+        assert got is not None
+        assert got.username == "alice-renamed"
+        state.close()
+
+    def test_preexisting_legacy_duplicates_degrade_gracefully_without_crashing(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """SQLite refuses to create a UNIQUE index over data that already
+        violates it. `initialize()` must not let that abort startup — an
+        operator who has not yet resolved the legacy duplicates should still
+        get the application-level enforcement this DB already had, with a
+        clear warning, not a crash."""
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        state.open_writer()
+        state.run_migration(
+            "kv_store_001",
+            "CREATE TABLE IF NOT EXISTS kv_store "
+            "(store_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, PRIMARY KEY (store_name, key))",
+        )
+        _write_raw_user(state, "legacy-1", "duplicate")
+        _write_raw_user(state, "legacy-2", "duplicate")
+
+        with caplog.at_level("WARNING", logger="maistro.state"):
+            store = PersistedStore(state)
+            store.initialize()  # must not raise
+
+        assert any(
+            "username-uniqueness index" in r.message
+            for r in caplog.records
+            if r.levelname == "WARNING"
+        )
+        reader = state.open_reader()
+        try:
+            found = reader.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'kv_store_users_username_unique'"
+            ).fetchone()
+        finally:
+            reader.close()
+        assert found is None
+        state.close()
+
+    def test_index_is_created_once_legacy_duplicates_are_resolved(self, tmp_path: Path) -> None:
+        """The migration is retried on every `initialize()`, so it self-heals
+        the moment an operator resolves the duplicates and restarts."""
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        state.open_writer()
+        state.run_migration(
+            "kv_store_001",
+            "CREATE TABLE IF NOT EXISTS kv_store "
+            "(store_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, PRIMARY KEY (store_name, key))",
+        )
+        _write_raw_user(state, "legacy-1", "duplicate")
+        _write_raw_user(state, "legacy-2", "duplicate")
+        store = PersistedStore(state)
+        store.initialize()
+
+        # Operator resolves it: remove the loser.
+        conn = state._writer
+        assert conn is not None
+        conn.execute("DELETE FROM kv_store WHERE store_name = 'users' AND key = 'legacy-2'")
+        conn.execute(
+            "DELETE FROM unique_fields WHERE store_name = 'users' AND record_key = 'legacy-2'"
+        )
+        conn.commit()
+
+        store.initialize()
+
+        reader = state.open_reader()
+        try:
+            found = reader.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'kv_store_users_username_unique'"
+            ).fetchone()
+        finally:
+            reader.close()
+        assert found is not None
+        state.close()

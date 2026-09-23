@@ -296,6 +296,12 @@ class GenerationJobRecord:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat(),
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "leased_by": self.leased_by,
+            "lease_expires_at": (
+                self.lease_expires_at.isoformat() if self.lease_expires_at else None
+            ),
             "org_id": self.org_id,
         }
 
