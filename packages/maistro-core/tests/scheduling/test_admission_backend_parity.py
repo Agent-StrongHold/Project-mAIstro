@@ -6,11 +6,12 @@ tick leaves behind — `runs_so_far`, `last_run_id`, `last_fired_at`,
 `next_due_at`, `enabled` — are written by three different `record_fire`
 implementations, so the same scenario runs here against each, wired through
 `wire_execution_spine` exactly as a deployment wires them, and must leave the
-same rows.
+same cursor state.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,10 +24,16 @@ import pytest
 from maistro.graph.definitions import GraphTemplate, Node
 from maistro.runs.store import RunStore
 from maistro.runs.wiring import wire_execution_spine
-from maistro.scheduling.admission import ScheduleRunAdmitter
+from maistro.scheduling.admission import ScheduleAdmission, ScheduleRunAdmitter
 from maistro.scheduling.model import Schedule
-from maistro.scheduling.store import ScheduleStore
+from maistro.scheduling.pg_store import PgScheduleStore
+from maistro.scheduling.store import InMemoryScheduleStore, ScheduleStore, SqliteScheduleStore
 
+STORE_FOR = {
+    "memory": InMemoryScheduleStore,
+    "sqlite": SqliteScheduleStore,
+    "postgres": PgScheduleStore,
+}
 NOON = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 WORKSPACE = "issue-46-parity"
 TEMPLATE_ID = "issue-46-template"
@@ -57,6 +64,9 @@ async def backend(
         conns = [conn, schedule_conn]
     elif request.param == "postgres":
         if pg_pool is None:
+            if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
+                msg = "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_PG_DSN is empty"
+                raise RuntimeError(msg)
             pytest.skip("MAISTRO_TEST_PG_DSN is not set")
         pool = pg_pool
     try:
@@ -70,6 +80,9 @@ async def backend(
         ) = await wire_execution_spine(
             conn, workspace_id=WORKSPACE, pg_pool=pool, schedule_conn=schedule_conn
         )
+        # A spine that fell back to in-memory stores would pass every
+        # assertion below while testing nothing durable.
+        assert isinstance(schedules, STORE_FOR[request.param])
         root = await projects.root_for_workspace(WORKSPACE)
         project = await projects.create(
             workspace_id=WORKSPACE, parent_project_id=root.project_id, name="Parity"
@@ -91,13 +104,12 @@ async def backend(
             await c.close()
 
 
-async def _tick(backend: Backend, now: datetime) -> list[str]:
+async def _tick(backend: Backend, now: datetime) -> list[ScheduleAdmission]:
     """What the canonical tick does: admit whatever `due()` selects."""
-    run_ids: list[str] = []
-    for schedule in await backend.schedules.due(now=now):
-        admission = await backend.admitter.admit_due(schedule, now=now)
-        run_ids.extend(admission.run_ids)
-    return run_ids
+    return [
+        await backend.admitter.admit_due(schedule, now=now)
+        for schedule in await backend.schedules.due(now=now)
+    ]
 
 
 async def _row(backend: Backend) -> dict[str, object]:
@@ -146,8 +158,8 @@ async def test_enable_disable_and_max_runs_leave_identical_rows(backend: Backend
     )
     one_pm = NOON + timedelta(hours=1)
 
-    first = await _tick(backend, NOON)
-    assert len(first) == 1
+    [first] = await _tick(backend, NOON)
+    assert len(first.run_ids) == 1 and first.disabled is False
     assert await _row(backend) == {
         "enabled": True,
         "runs_so_far": 1,
@@ -175,8 +187,9 @@ async def test_enable_disable_and_max_runs_leave_identical_rows(backend: Backend
     # Re-enabled, it fires the owed occurrence; that reaches max_runs, so the
     # same write disables it and clears the due cursor.
     await backend.schedules.put(schedule.model_copy(update={"enabled": True}))
-    second = await _tick(backend, one_pm)
-    assert len(second) == 1
+    [second] = await _tick(backend, one_pm)
+    # `disabled` is read back from the same `record_fire` that counted the run.
+    assert len(second.run_ids) == 1 and second.disabled is True
     assert await _row(backend) == {
         "enabled": False,
         "runs_so_far": 2,
@@ -188,10 +201,16 @@ async def test_enable_disable_and_max_runs_leave_identical_rows(backend: Backend
     two_pm = NOON + timedelta(hours=2)
     assert await backend.schedules.due(now=two_pm) == []
     assert await _tick(backend, two_pm) == []
-    assert await _occurrence_run_ids(backend, NOON, one_pm, two_pm) == [*first, *second, None]
+    assert await _occurrence_run_ids(backend, NOON, one_pm, two_pm) == [
+        *first.run_ids,
+        *second.run_ids,
+        None,
+    ]
 
 
-async def test_a_future_schedule_records_its_cursor_and_leaves_due(backend: Backend) -> None:
+async def test_a_not_yet_due_schedule_records_its_cursor_and_leaves_due(
+    backend: Backend,
+) -> None:
     tick = NOON + timedelta(seconds=30)
     await backend.schedules.put(
         Schedule(
@@ -205,7 +224,10 @@ async def test_a_future_schedule_records_its_cursor_and_leaves_due(backend: Back
         )
     )
 
-    assert await _tick(backend, tick) == []
+    # An unknown cursor is due by contract; the evaluation fires nothing and
+    # only records where the first occurrence is.
+    [admission] = await _tick(backend, tick)
+    assert admission.run_ids == ()
     assert await _row(backend) == {
         "enabled": True,
         "runs_so_far": 0,
