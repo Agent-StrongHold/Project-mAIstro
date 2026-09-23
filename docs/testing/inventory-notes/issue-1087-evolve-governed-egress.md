@@ -36,3 +36,16 @@ The direct-egress inventories remove `services.evolution`; the standalone
 `maistro_evolve.providers.openai_compatible` adapter remains an intentionally
 unreachable library boundary and is not used by production Evolve entry
 points.
+
+Verification note (independent, head fc54aa8e = 31e111d45 + develop 8bb344e32
+merge): re-ran test_evolution_service.py, test_evolution_canonical_graph.py,
+test_evolution_recovery.py, test_evolution_recovery_cadence.py, and
+maistro-core test_model_egress_container_composition.py -> 83 passed;
+`ruff check .` clean; check-model-egress.py OK (services.evolution pruned,
+22 callers, no expansion), reachability and wiring-read gates OK. Invocation
+effect-key dedup (invocation.py: COMPLETED returns prior result,
+CREATED/RUNNING/UNKNOWN block, only FAILED is retriable under a later
+Attempt) plus the deterministic per-NodeRun finalize marker and the
+fail-closed `_recovery_resolver` keep replay from double-executing model
+effects or double-applying domain mutations. PR #1313 body and branch
+commit messages contain no premature closure keywords (Refs only).
