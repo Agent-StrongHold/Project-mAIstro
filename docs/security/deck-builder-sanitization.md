@@ -18,10 +18,13 @@ The existing `/decks` route/navigation containment remains in place until parent
 
 ## Implemented boundary
 
-- `frontend/src/lib/deckSanitizer.ts` defines the single Deck HTML/SVG allowlist. It strips executable elements/attributes, active or remote URL schemes, and CSS network/code primitives while retaining the supported presentation subset.
+- `frontend/src/lib/deckSanitizer.ts` defines the single Deck HTML/SVG allowlist. It strips executable elements/attributes, active or remote URL schemes (including blob/file/ftp/websocket and other known non-HTTP schemes), and CSS network/code primitives while retaining the supported presentation subset.
 - Sanitization is applied to model-authored slide markup, slide-state updates, editable preview state, presentation rendering, built-in templates, and HTML export.
-- Rich paste and drop prevent the browser's default insertion/navigation behavior and sanitize before any untrusted HTML reaches the live DOM.
+- Rich paste and drag/drop prevent the browser's default insertion/navigation behavior and sanitize before any untrusted HTML reaches the live DOM; dragover is canceled so URI drops cannot fall through to browser navigation.
+- Editable preview blur sanitizes the live DOM before copying it into React state, so an edit cannot leave an unsafe transient DOM behind while the state update commits.
 - Exported document titles are escaped as text before interpolation.
+- No sanitizer dependency is required: the boundary uses the browser's DOM/CSS parsers plus a local reviewed allowlist, so there is no new package or license surface to pin.
+- CSS escapes/comments are rejected before CSSOM normalization because the supported presentation templates do not need obfuscated declarations.
 - The sanitizer reparses and scrubs serialized output a second time so parser mutation cannot introduce an unexamined executable construct.
 
 ## Adversarial browser evidence
@@ -34,4 +37,4 @@ The existing `/decks` route/navigation containment remains in place until parent
 - safe representative presentation markup and built-in Deck templates remain renderable;
 - exported HTML remains free of executable markup and raw-title injection.
 
-The repository CI frontend lint/build and frontend test steps pass on the branch after the branch-owned lint correction. Full required CI remains the merge gate for PR #757.
+The browser evidence above is the lane-local security proof; this document does not claim hosted CI status. The repository's normal frontend lint/build and required checks remain merge gates. The existing `/decks` route redirect and omitted shell navigation are intentionally unchanged; parent #311 owns their eventual removal.
