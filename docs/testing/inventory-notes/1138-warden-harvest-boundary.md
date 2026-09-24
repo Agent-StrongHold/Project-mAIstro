@@ -81,3 +81,24 @@ admission off fails `test_hostile_resumed_patch_is_refused_before_apply` +
 `test_unavailable_warden_refuses_resumed_patch`; both reverted, tree
 byte-identical to `43822db55` (`git status --porcelain` empty, all 26
 runner+resume tests green again).
+
+Revalidated at merge head `b96ce7b36` (develop base `60862b6c`, no test
+delta): that develop merge touched no `maistro-rsi`/`maistro-evolve`/
+`maistro.security` file. This round independently re-derived the seam sweep
+instead of trusting prior claims — every model seam re-read at this head:
+`gateway.py` (scan before HTTP I/O), `runner.py` (injected `llm_call` wrapped),
+`local_loop.py` (builder system prompt, saved-patch resume, hyper-mutation
+prompt, regression-judge diff), `autorun.py` (proposer, prompt, ledger-at-use),
+`__main__.py` (mutator, harvest), `scout.py` (both calls), `regression_judge.py`,
+`benchmarks/swebench_pro.py`; `free_router.py` verified to send only a literal
+ping and `quota_burn.py` only model listing — neither carries harvest content.
+Full battery re-executed at this head: 756 rsi + 645 evolve tests pass, ruff
+check/format clean, suite-inventory (13 suites), security-inventory (59 paths),
+reachability (+dispositions, provenance) gates pass. Mutation evidence
+re-executed by this round at this head: replacing `llm_call = guarded_llm_call`
+with a pass-through of the injected call fails
+`test_injected_llm_call_is_guarded_for_both_genome_evals` +
+`test_llm_call_reaches_evaluate_genome`; deleting the resume admission check in
+`_load_saved_patches` fails `test_hostile_resumed_patch_is_refused_before_apply`
++ `test_unavailable_warden_refuses_resumed_patch`; both restored from byte
+backups with `git status --porcelain` empty and `git diff` empty afterwards.
