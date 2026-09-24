@@ -439,3 +439,38 @@ packages/maistro-evolve` (CI installs it; local venv did not have it).
   required `formal-conformance` check failing oracle+implementation
   co-changes (demonstrated exit 1). Gate-script self-neutering co-change and
   live PR-CI rollup remain follow-ups for #160 (push prohibited here).
+
+## Independent pass at head `c932a0d15` (driver job c513cbcb7d01, merge of develop base 60862b6c into auto-341)
+
+Driver checks present and green: `check-0.log` (`uv sync --locked --extra dev`),
+`check-1.log` (`ruff check` → All checks passed), `check-2.log` (`ruff format
+--check` → 2533 files already formatted). Everything below re-executed fresh at
+this exact head; no tree edits were made (mutations ran via in-memory pytest
+plugins on `PYTHONPATH=/tmp/maistro-muts`, so the worktree stayed pristine).
+
+- Targeted: `pytest formal/models/test_dangerous_tools.py
+  formal/models/test_external_content.py -q --hypothesis-seed=0` → **271
+  passed**; `pytest tests/test_check_formal_oracle_independence.py -q` → **3
+  passed**. `uv run ruff check .` re-run independently → clean.
+- Full required-CI equivalent: dedicated `pgvector:pg18` container on
+  `127.0.0.1:5432` (CI-shaped creds), `alembic upgrade head`,
+  `MAISTRO_TEST_PG_DSN`/`MAISTRO_TEST_DATABASE_URL` set, `pytest formal/models/
+  -q --timeout=300 --hypothesis-seed=0` → **664 passed in 43.67s** (after `uv
+  pip install -e packages/maistro-evolve`, which CI installs and local venv
+  lacked).
+- Gate (real script): `--base 60862b6c` → **exit 0** (bootstrap: oracle absent
+  at base); `--base not-a-commit` → **exit 2** (fails closed); scratch clone of
+  this head with a committed oracle+`patterns.py` co-change → **exit 1**.
+- Mutation battery (in-memory, this head): weaken `rm\s+-rf\s+[/~]` →
+  `rm\s+-rf\s+/` → **6 failed** (remove-home witnesses — stale prior finding
+  again refuted); delete 21 of 22 keeping only `sudo\s+` → **193 failed**;
+  benign-prefix shadow short-circuit → **95 failed**; deny check dropped from
+  `MicroVMSandbox.exec` → **41 failed** (exactly the enforcement-path tests).
+- Live read-only refresh (`gh pr view 1452`): head `headRefOid` equals
+  `c932a0d15…`, draft, body "Refs #341" (no fixes/closes/resolves), and the
+  **`formal-conformance` check is SUCCESS on this exact head** (run
+  36063055491); `.github/branch-protection.json` lists `formal-conformance` as
+  required on both develop and main. Unrelated rollup noise at this snapshot:
+  `integration-scope`/`gates-ran`/MinIO jobs failing, `test`/`docker-build`
+  in progress — none touch this change's 16-file surface; PR remains a draft
+  claim-stake.
