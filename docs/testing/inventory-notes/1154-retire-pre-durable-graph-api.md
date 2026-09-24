@@ -141,3 +141,34 @@ Re-validated after this pass: `ruff check .` clean; `ruff format --check .` clea
 `check-retired-guidance.py`, `check-execution-lifecycles.py`,
 `check-convergence-matrix.py` all exit 0; ledger JSON valid. No test files
 changed in this pass: suite inventories unchanged.
+
+## Independent verification (bc4f97d66, lane head after develop merge 1dea30df)
+
+Re-derived and re-executed at the merge head: `tests/graph` 1124 passed / 79 skipped
+(includes `test_retired_executor.py` and the full `tests/graph/durable_runs/` suite the
+driver's check list omits); hive `test_graph_runner.py` 21 passed (driver log);
+`ruff check .` + `ruff format --check .` clean (driver logs); `git diff --check
+1dea30df..bc4f97d66` exit 0 (dag.py markers stay resolved); `mypy` clean on the canonical
+six-package set (710 files); `check-retired-guidance.py`, `check-execution-lifecycles.py`,
+`check-convergence-matrix.py`, `check-merge-markers.py` all exit 0; both suite
+inventories match (driver logs). Shipped Graph work crosses only `run_durable_graph`
+(`master.py:630`, `builders/graph_executor.py:890`, `dag_agents.py:213`,
+`canonical_dag_runner.py:558`, `evolution_graph.py:898`, turing `execution.py:370`);
+`testing/harness.py` constructs no Graph work; `quality/retired-guidance.json` records
+`pre-durable-run-graph` as retired by #1154; docs retirement annotations present
+(ADR-062 top note, CONVERGENCE-MATRIX rows, SPEC-070226-b624 line 41). No closure
+keywords in the PR body or commit messages. Stop condition respected.
+
+**Open finding (this head):** `scripts/check-vulture-baseline.py` exits 1 at
+bc4f97d66 — candidate-ledger bookkeeping regressed in the merge: 2 stale rows for
+`credential_store_v2.py` (`AgnosticCredentialStore`, `get_first_secret_by_type`; file
+deleted on the develop side by f546365fa) and 2 unbanked rows
+(`tests/graph/durable_runs/test_pause_reason_wakers.py:89` `pytestmark`, added by
+750edd84d; hive-conductor `tests/conftest.py:62` `_isolate_credential_store`, added by
+f546365fa). The d6ddd9f04 re-bank was clean for the pre-merge tree (verified: the
+wakers test is absent and credential_store_v2.py still present at d6ddd9f04); the
+merge changed the tree without re-banking. Repair is the doctrine-sanctioned
+findings-only re-bank (`--update`) at this head; no authorization grants are involved.
+The trusted-section bulk remains the develop base's own failure set (probe:
+`list_confirms` exists at 1dea30df but is absent from the base ledger), needing the
+grants-first PR outside this lane.
