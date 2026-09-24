@@ -553,21 +553,6 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
-    async def find_child_run_by_effect(
-        self,
-        parent_run_id: str,
-        effect_key: str,
-    ) -> Run | None:
-        payload = await self._payload(
-            """SELECT run_id, payload, archive_key FROM canonical_runs
-               WHERE parent_run_id = $1
-                 AND payload -> 'provenance' ->> 'effect_key' = $2
-               ORDER BY payload ->> 'created_at', run_id LIMIT 1""",
-            parent_run_id,
-            effect_key,
-        )
-        return Run.model_validate(payload) if payload is not None else None
-
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -667,13 +652,6 @@ class PgRunStore:
             effect_key,
         )
         return Run.model_validate(payload) if payload is not None else None
-
-    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
-        async with self._pool.acquire() as conn, conn.transaction():
-            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
-            updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
-            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
-            return updated
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the unique occurrence claim through its expression index."""

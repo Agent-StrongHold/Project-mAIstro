@@ -36,3 +36,28 @@ Blocking findings (repair required, none addressed by this note):
   `_replace_node_run`).
 - PR 1326 is draft with red CI (integration-scope, exact-debt-ledger, CI test,
   coverage (MinIO), object storage (MinIO), quality gate).
+
+---
+
+## Post-merge addendum (L42 repair, head a5788b422 + follow-up commits)
+
+This addendum supersedes the blocking-finding list above where facts changed.
+
+Executed at the merged head (develop ba2f1f077 merged into auto-42, then
+reconciled): ruff check/format clean; mypy (all six package src trees) clean;
+pytest core runs+graph+capabilities+a2a+runtime+tasks = 2903 passed; events +
+integration + persistence + builders = 974 passed; maistro-server = 363
+passed; hive-conductor backend = 2481 passed; tests/migrations = 14 passed
+after re-threading the duplicated `034` revision; check-execution-lifecycles
+PASS (19 classified, 0 violations); check-lifecycle-provenance PASS.
+
+Upstream state re-checked live: #1169 CLOSED, #1170 CLOSED, #1194 still OPEN,
+#42 OPEN, PR 1326 still draft and CONFLICTING (the local merge here resolves
+the conflicting content; the PR itself was not touched per lane rules).
+
+Debt-ledger: the merge plus dead-code removal reduced the unauthorized vulture
+identities to exactly one: `create_a2a_task`
+(packages/maistro-server/src/maistro_server/api/a2a.py) — a live route handler
+that must be banked via a reviewed grant, which lane rules prohibit this
+worker from making. `scripts/check-vulture-baseline.py` therefore still exits
+1 pending that grant.

@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS capability_invocations (
     attempt_id TEXT NOT NULL,
     binding_id TEXT NOT NULL,
     effect_key TEXT NOT NULL,
+    effect_scope TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
     revision BIGINT NOT NULL DEFAULT 0,
     created_at DOUBLE PRECISION NOT NULL,
@@ -61,14 +62,18 @@ class PgInvocationStore:
                 "ALTER TABLE capability_invocations "
                 "ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0"
             )
+            await connection.execute(
+                "ALTER TABLE capability_invocations "
+                "ADD COLUMN IF NOT EXISTS effect_scope TEXT NOT NULL DEFAULT ''"
+            )
 
     async def create(self, invocation: Invocation) -> Invocation:
         payload = json.loads(invocation.model_dump_json())
         row = await self._pool.fetchrow(
             """INSERT INTO capability_invocations (
                    invocation_id, run_id, node_run_id, attempt_id, binding_id,
-                   effect_key, status, revision, created_at, payload
-               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+                   effect_key, effect_scope, status, revision, created_at, payload
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
                ON CONFLICT DO NOTHING
                RETURNING invocation_id""",
             invocation.invocation_id,
@@ -77,6 +82,7 @@ class PgInvocationStore:
             invocation.attempt_id,
             invocation.binding.binding_id,
             invocation.effect_key,
+            invocation.effect_scope or invocation.node_run_id,
             invocation.status.value,
             invocation.revision,
             invocation.created_at.timestamp(),
@@ -136,16 +142,28 @@ class PgInvocationStore:
         node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> list[Invocation]:
-        rows = await self._pool.fetch(
-            """SELECT payload FROM capability_invocations
-               WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
-               ORDER BY created_at ASC, invocation_id ASC""",
-            run_id,
-            node_run_id,
-            binding_id,
-            effect_key,
-        )
+        if effect_scope is None:
+            rows = await self._pool.fetch(
+                """SELECT payload FROM capability_invocations
+                   WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                run_id,
+                node_run_id,
+                binding_id,
+                effect_key,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """SELECT payload FROM capability_invocations
+                   WHERE run_id=$1 AND effect_scope=$2 AND binding_id=$3 AND effect_key=$4
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                run_id,
+                effect_scope,
+                binding_id,
+                effect_key,
+            )
         return [_row_to_invocation(row) for row in rows]
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:

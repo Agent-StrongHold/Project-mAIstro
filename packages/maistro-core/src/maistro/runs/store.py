@@ -457,12 +457,6 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
-    async def find_child_run_by_effect(
-        self,
-        parent_run_id: str,
-        effect_key: str,
-    ) -> Run | None: ...
-
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -477,12 +471,6 @@ class RunStore(Protocol):
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> RunEffectClaim: ...
-
-    async def update_run_provenance(
-        self,
-        run_id: str,
-        updates: dict[str, Any],
-    ) -> Run: ...
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the canonical Run claiming one scheduled occurrence."""
@@ -1003,19 +991,6 @@ class InMemoryRunStore:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
 
-    async def find_child_run_by_effect(
-        self,
-        parent_run_id: str,
-        effect_key: str,
-    ) -> Run | None:
-        for run in self._runs.values():
-            if (
-                run.parent_run_id == parent_run_id
-                and run.provenance.get("effect_key") == effect_key
-            ):
-                return run.model_copy(deep=True)
-        return None
-
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -1074,12 +1049,6 @@ class InMemoryRunStore:
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return RunEffectClaim(run.model_copy(deep=True), True)
-
-    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
-        run = self._require_run(run_id)
-        updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
-        self._runs[run_id] = updated
-        return updated.model_copy(deep=True)
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve an occurrence through its claim index, never by scanning Runs."""

@@ -422,20 +422,6 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
-    async def find_child_run_by_effect(
-        self,
-        parent_run_id: str,
-        effect_key: str,
-    ) -> Run | None:
-        row = await self._fetchone(
-            """SELECT payload FROM canonical_runs
-               WHERE parent_run_id = ?
-                 AND json_extract(payload, '$.provenance.effect_key') = ?
-               ORDER BY rowid LIMIT 1""",
-            (parent_run_id, effect_key),
-        )
-        return model_of_json(Run, row[0]) if row is not None else None
-
     async def claim_run_by_effect(  # noqa: C901
         self,
         graph: Graph,
@@ -533,22 +519,6 @@ class SqliteRunStore:
             (effect_key,),
         )
         return model_of_json(Run, row[0]) if row is not None else None
-
-    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
-        async with self._write_lock:
-            row = await self._fetchone(
-                "SELECT payload FROM canonical_runs WHERE run_id = ?", (run_id,)
-            )
-            if row is None:
-                raise RunNotFound(run_id)
-            run = model_of_json(Run, row[0])
-            updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
-            await self._conn.execute(
-                "UPDATE canonical_runs SET payload = ? WHERE run_id = ?",
-                (json_of(updated), run_id),
-            )
-            await self._conn.commit()
-            return updated
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the unique occurrence claim without scanning Run payloads."""

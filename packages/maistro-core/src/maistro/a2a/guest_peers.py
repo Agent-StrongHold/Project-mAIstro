@@ -74,14 +74,6 @@ class InMemoryAuditLogger:
         )
 
 
-class DelegationMessages(list[dict[str, str]]):
-    """JSON-compatible messages carrying transport idempotency metadata."""
-
-    def __init__(self, messages: list[dict[str, str]], *, effect_key: str = "") -> None:
-        super().__init__(messages)
-        self.effect_key = effect_key
-
-
 class GuestPeerManager:
     """Registry of trusted external A2A peers with secure delegation."""
 
@@ -181,7 +173,6 @@ class GuestPeerManager:
         The key is sent at the transport boundary so a remote admission service
         can deduplicate a request whose caller lost its lease after dispatch.
         """
-        idempotency_key = idempotency_key or str(getattr(messages, "effect_key", ""))
         if idempotency_key:
             cached = self._idempotent_receipts.get((peer_name, idempotency_key))
             if cached is not None:
