@@ -148,3 +148,49 @@ pause-reason-waker content — zero security-surface drift), read-only lane:
 - Closure-keyword review: no `fixes/closes/resolves #N` trailer in any commit
   subject/body between `750edd84d` and `fce027262`; PR #1389 body says only
   "Refs #817" and remains draft.
+
+## Independent verification round 4 (auto-817 @ d39b0de, all four prior findings re-probed)
+
+Re-executed at the lane's exact starting head `d39b0dea982ee7b1960b30cdca6e2fd19cfaea88`.
+No production file changed this round; this is fresh executed evidence only.
+
+- **L817 probe (round-1 finding) re-executed and closed:**
+  `scan_and_record("<math><mi>x</mi></math>", ...)` now returns
+  `tier=skull, recommendation=banish,
+  flags=("content: visual artifact active-element",), confidence=0.9` —
+  the exact classification real Chromium reports for the same markup
+  (blocked, `active-element`), so AC-2/AC-4 parity holds in both
+  directions. Full 7-case probe: script/`onerror`/`data:text/html`/CSS
+  `url()`/leading-escape `\75rl(` all SKULL/`banish` with explicit shared
+  flags; clean brief stays T3/`upgrade` with `()` flags.
+- **SAST gate re-executed:** CI-exact semgrep (all four configs, `--error
+  packages/ tests/`) exits 0 — 364 rules over 1888 files, 0 findings;
+  targeted re-run over `frontend/src/lib/` (125 rules) also 0 findings.
+  bandit Medium+ strict gate: 0.
+- **Vulture gate re-executed:** CI-exact scope
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) exits 0:
+  1415 reviewed identities -> 1415 findings vs base `750edd84d`.
+- **Static/regression battery:** `ruff check .` + `ruff format --check .`
+  clean on tracked files; mypy (AGENTS.md 712-file scope) clean;
+  `check-suite-inventory.py` ok (13/13 suites);
+  `packages/maistro-design/tests` 309 passed;
+  `packages/maistro-core/tests` 10130 passed / 654 skipped (DB-dependent).
+- **Browser corpus re-executed against the current sources:** rebuilt the
+  Playwright image from this worktree (`auto817-playwright-r4`, npm layer
+  cached) with the live `visualArtifactRenderer.tsx` bind-mounted read-only
+  over the baked copy; `deck-sanitization.spec.ts` 5/5 passed in Chromium,
+  including the MathML `active-element` scan-reason, the
+  `recommendVisualArtifactTrust` parity block (MathML -> `review`), and the
+  `\75rl(` fail-closed assertions.
+- **One pre-existing red outside this issue, recorded not repaired:**
+  `maistro-core/tests/security/test_log_redaction.py::test_install_is_idempotent`
+  fails under pytest 9.1.1's logging plugin (assert 2 == 0) and passes with
+  `-p no:logging`. The test and `log_redaction.py` are byte-identical to
+  develop base `60862b6c`; this branch's only lock delta is hive-conductor
+  gaining `cryptography`. An isolated probe of `install_log_redaction`
+  outside that suite confirms the production function is idempotent, so the
+  defect is test/plugin interaction drift, not #817 scope.
+- The three scratch probe scripts left untracked by the failed prior run
+  (`repro.py`, `repro_v2.py`, `test_scan.py`) were preserved by moving them
+  out of the worktree to the job directory; their assertions are superseded
+  by the committed corpora above.
