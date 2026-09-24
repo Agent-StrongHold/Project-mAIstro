@@ -82,3 +82,26 @@ session id. Live rollup on this head: formal-conformance, exact-debt-ledger,
 Quality gate, lint-and-type-check, docker-build, and both e2e jobs SUCCESS;
 the CI `test` job, coverage publish gate, and `gates-ran` were still pending
 at verification time (locally corroborated by the 2666-pass run).
+
+Sixth round (independent verification at 82ea544a5, zero production delta to
+the session-policy surfaces since the fifth-round anchor 65d423ed5 — that head
+added only this note's fifth-round entry): re-executed from scratch rather
+than trusting prior claims. Focused idle-policy suite 12/12; full backend
+suite 2666 passed; `ruff check .` and `ruff format --check .` clean;
+suite-inventory gate ok (13 suites); ADR-index and ADR-status-language gates
+ok; all three exact-debt-ledger steps pass locally (check-ratchet-provenance,
+check-shipped-surface-truth, check-vulture-baseline: 1415 reviewed identities
+== baseline with no drift). Acceptance re-derived at this exact head: ADR-077
+records the governed decision (30-minute sliding idle + seven-day absolute,
+server-authoritative); `routes/auth.py::_resolve_session` evaluates
+`min(absolute, idle)` inside the shared `_SESSION_LOCK` (also held by
+`purge_all_sessions`), pops expired/revoked/deactivated records fail-closed,
+and touches only monotonically forward with the absolute cap anchored to
+creation; HTTP middleware and both WebSocket routes order resolve ->
+authorize -> serialized touch so a denied request or handshake — including a
+`dags.write` revocation winning between the handshake's admission check and
+its re-check — never slides the idle window; `whoami` is observational, so
+#1050 restoration cannot extend authentication (pinned by
+`test_whoami_is_observational_and_cannot_keep_an_idle_session_alive`, and
+surfaced in Profile's SESSION HEALTH card). Remote CI completion on the PR
+rollup remains the only unverifiable item from this environment.
