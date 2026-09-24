@@ -112,3 +112,50 @@ untouched) fails exactly
 `project_ids`/`workspace_ids` filters from the `/expire` store tick fails
 `test_expiry_endpoint_only_settles_authorized_workspace_projects`. Exact
 edits restored, tree clean, 27/27 re-confirmed.
+
+## #364 reconciliation merge re-validation (head `c85177741`)
+
+The develop tip (`60862b6c5`, "WIP: [M2-A][#364] Enforce Workspace object
+authorization on HITL list/answer/cancel routes") independently implemented
+workspace-object HITL authorization and conflicted with this branch's #1110
+work in seven files. The mid-merge state left by the crashed driver was
+salvaged (backed up to the job directory first) and resolved so both layers
+compose instead of competing: maistro-core `durable_runs` adopts #364's
+canonical `HitlAuthorization` store API (typed effective-principal evidence,
+live membership recheck inside `_mutate_hitl`, delegation evidence, `GET
+/{run_id}/{node_id}` inspect door), while the route keeps #1110's Project
+authority (`authorize_project` with `hitl.inspect/answer/cancel`),
+intended-reviewer binding, and denial audit; `/pending` composes Workspace
+membership + per-record live membership recheck before payload disclosure
+(#364) with per-authorized-Project keyset walks (#1110/#1109), and `/expire`
+keeps Project-level `hitl.cancel` narrowing by passing the lane's optional
+`project_ids` filter through #364's `_due_candidates`. The expiry isolation
+test develop seeded under the fixture default Project was re-seeded into the
+Workspace's canonical root Project, and develop's spliced
+`project_id == "project-hitl"` inspect assertion was corrected to compare
+against the seeded record's canonical root Project id. Validation at the
+merge head: 32/32 door+timeout tests, 505 passed / 21 skipped in
+durable_runs, the full hive-conductor backend suite (2669 passed / 1
+skipped), maistro-core full suite (10163 passed / 654 skipped / 1 xfailed),
+`ruff check` + `ruff format --check` clean repo-wide, canonical mypy clean
+(713 files), and the `check-public-routes`, `check-security-inventory`,
+`check-shipped-surface-truth`, `check-reachability`,
+`check-reachability-dispositions`, `check-convergence-matrix`,
+`check-doc-links`, `check-suite-inventory`, `check-wiring-reads`,
+`check-agent-store-writes`, `check-model-egress`, `check-cross-package-imports`,
+`check-durable-table-inventory`, `check-execution-lifecycles`,
+`check-contract-markers`, `check-ac-state`, `check-radon-baseline`,
+`check-credential-authority`, and `check-owned-store-access` gates green.
+Mutation checks at this head: (1) no-op `_require_project_access`
+(authentication intact) fails exactly
+`test_project_reviewer_isolated_from_sibling_hitl_work`; (2) dropping the
+per-record `authorization.permits` disclosure recheck fails exactly
+`test_pending_rechecks_membership_before_disclosing_payload`; exact reverse
+edits restore the committed tree byte-for-byte and 32/32 pass.
+`check-vulture-baseline` is red, but identically red on pure develop's tip
+(verified in a scratch worktree: same 1432 findings, larger unbanked delta
+including 121 pydantic + 63 hive-service NEW identities), i.e. pre-existing
+trunk ledger drift outside this lane's scope. `inventory-delta` re-counted
+against the new develop base `60862b6c5`: exactly +2 test functions in
+`packages/hive-conductor/backend/tests` (2423 → 2425); core `durable_runs`
+unchanged at 435.
