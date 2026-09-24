@@ -109,3 +109,24 @@ exceptions into an audited `invocation.fail-closed` DENY before
 resolver/executor run, sessions store only `provider_name`, and
 `RuleBasedRepair` holds only an Invocation-backed invoker that re-resolves the
 Binding and provider per call. Only this note changed after the checks ran.
+
+Independent verification pass 4 (auto-846, head e990f9728, develop-merge
+revalidation): re-executed the full battery at the assigned head with a clean
+worktree — `uv sync --locked --extra dev`, `ruff check .` +
+`ruff format --check .` clean; the 12 assigned capabilities files 161 passed;
+the 6 hive-conductor route/wiring files 103 passed; full
+`tests/capabilities` slice 339 passed; mypy clean (713 files);
+`check-suite-inventory.py` OK (conductor 2669 / core 10786);
+`check_direct_effects.py` OK (45 sites, 2 CANONICAL_INVOCATION). The earlier
+failed job (711fa686, `test_setup_hook_runs_after_authorization_before_model_http`
+denied by the unconfigured default) is superseded: that fixture now opts into
+`binding_scope_policy` and passes under the shipped fail-closed composition.
+Acceptance re-derived from the issue: route `_configured_harness_policy()` is a
+bounded deny (`BudgetRule(count<=0)`), `_admission_unavailable` refuses
+policy-less/Invocation-less managers, governed seam converts evaluator outages
+into audited `invocation.fail-closed` DENY before resolver runs, sessions store
+only `provider_name`, repair actor holds only an Invocation-backed invoker that
+re-resolves Binding+provider per call, and disable/revoke-after-construction
+tests assert zero provider calls on the real route and repair paths. PR #1439
+body ("Refs #846", draft) and all branch commit messages carry no closure
+keywords. Only this note changed after the checks ran.
