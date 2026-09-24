@@ -189,3 +189,26 @@ branch stays reachable for session-shaped records). Re-executed at this head:
 focused idle-policy suite 17/17; full backend suite 2685 passed; `ruff check .`
 clean; `ruff format --check .` clean; suite-inventory gate ok with this note's
 delta (+17, 2685 collected).
+
+Tenth round (independent verification at 27f4fa266): re-executed the lane
+checks from scratch rather than trusting prior rounds — `ruff check .` clean,
+`ruff format --check .` clean (2534 files), focused idle-policy suite 17/17,
+full backend suite 2685 passed, suite-inventory gate ok (2685 recorded),
+check-adr-index and check-adr-status-language ok. Re-derived acceptance at
+this exact head: ADR-077 records the governed 30-minute idle + seven-day
+absolute decision; `_resolve_session` evaluates `min(absolute, idle)` inside
+`_SESSION_LOCK` with monotonic refresh and creation-anchored absolute cap;
+HTTP middleware and both WS routes order resolve -> authorize -> serialized
+fail-closed touch; `whoami` and `request_log` are observational; the only
+`get_current_user` callers are the middleware and request log (verified by
+grep — no other touch path exists); every `stores.sessions` mutation path is
+lock-covered. The eighth-round setup-claim exploit stays fixed and pinned by
+its three protection tests plus controls, all passing in this round's run.
+Closure hygiene re-checked: PR #1471 body says "Refs #1187" only; no branch
+commit contains a fixes/closes/resolves keyword with an issue reference.
+Verified `git diff` vs develop base 60862b6c5 touches no workflow, compose,
+docker, or MinIO file, so the recorded CI failures (MinIO service-container
+startup, the integration-scope aggregator's evidence wait on it, and the
+gates-ran rollup) remain infrastructure downstream of a service container,
+not this branch's surfaces. Remote CI completion on the PR rollup remains the
+only unverified item from this environment.
