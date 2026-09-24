@@ -111,3 +111,51 @@ Re-executed the full battery from scratch, trusting no prior claims; head
   `test_log_redaction.py`, `log_redaction.py`, `redact.py`, `uv.lock` and
   `pyproject.toml` are all byte-identical develop-base↔head, so the red is
   provably pre-existing.
+
+## Third re-validation at head `f153133ac` (driver log absent — full battery re-run)
+
+The assigned driver produced no `check-*.log` files (manifest `checks: []`), so
+the battery was re-executed from scratch at head `f153133ac` (develop
+`750edd84d` merged onto the second-pass head), trusting no prior claim:
+
+- `ruff check .` and `ruff format --check .` clean; the full AGENTS.md mypy
+  command (all six package `src` trees) clean — 712 source files.
+- Exact-debt-ledger CI steps re-run locally: `check-ratchet-provenance.py` OK,
+  `check-shipped-surface-truth.py` OK, `check-vulture-baseline.py` (CI args)
+  exit 0 — 1415 reviewed identities → 1415 findings, `never_allowlist: 0`,
+  confirming the removed `semantic_tool_poisoning_scan` stays removed at this
+  head.
+- `check-security-inventory.py` exit 0 (65 cited paths resolve, 23 inventory
+  rows match the code), so SECURITY.md's resource-limit rows and the
+  product-path-evidence sections still point at real tests/constants.
+- `pytest packages/maistro-core/tests/security/test_sentinel_policy.py
+  tests/security/test_warden_pii_bypass.py
+  tests/security/test_warden_regex_equivalence.py
+  tests/security/sentinel/test_pii_evasion_normalization.py` → 69 passed;
+  `test_warden_regex_equivalence.py -v -rs` → 7 passed, none skipped
+  (google-re2 installed), including the whole-verdict product-path engine
+  comparison; the seven `test_post_call_real_warden_*` and
+  `test_post_call_pii_match_value_is_masked_on_product_path` nodes pass by
+  name.
+- `pytest packages/maistro-core/tests/security` → 1263 passed / 19 skipped /
+  1 failed; the failure is `test_log_redaction.py::test_install_is_idempotent`,
+  re-confirmed pre-existing: the same test fails on the clean canonical clone
+  (separate checkout, `57ddca502`), and base↔head diff on
+  `test_log_redaction.py`/`log_redaction.py`/`redact.py`/`pyproject.toml` is
+  empty (the only delta is `uv.lock` gaining a hive-conductor `cryptography`
+  dep from the develop merge — unrelated to pytest).
+- `pytest packages/maistro-core/tests/agents/strategies/test_direct.py
+  test_react.py` → 28 passed; `pytest formal/models/test_warden_semantic.py
+  --hypothesis-seed=0` → 12 passed.
+- Alembic (prior PR #1463 conformance failure): `alembic heads` → single head
+  `036_audit_log_org_scope`, `alembic branches` → empty, `alembic history`
+  constructs the 43-revision linear map without `KeyError: '033'`, and exactly
+  one file exists each for `033_project_membership_unique_per_principal` and
+  `034_hitl_deadline_index`; `pytest tests/migrations` → 17 passed / 79
+  skipped (DB-gated).
+- Product-path reachability re-checked in source: `container.py` wires the
+  container Warden into `Sentinel`, and `orchestrator/output_security.py`
+  defaults the output gate to the real `Warden()` — the tested path is the one
+  production runs. `pii_filter.py` `scan_for_pii` and `redact` both operate on
+  the same `normalize_for_scan` view, matching the offset-consistency
+  regression tests.
