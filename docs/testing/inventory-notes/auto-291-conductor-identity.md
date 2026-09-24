@@ -198,3 +198,36 @@ only, so all prior image provenance carries to this head):
   the evidence of record. frontend/e2e still has no CI owner (compose e2e runs
   tests/e2e only); no #291 criterion requires it and the spec was executed
   live here. No premature closure keywords in the PR body or commit messages.
+
+Repair-lane re-verification at final head 183ac8fb (delta from e7b318b2f is
+this note only; all independent execution below is from this pass, not
+inherited):
+
+- Gates: ruff check + ruff format --check clean (2535 files); conductor
+  test_identity_health + test_setup_guard + test_api 55 passed; engine identity
+  69 passed; extra_guard 6 passed; tests/test_prepull_base_images.py 25
+  passed; check gates build-context/deployment-claims/doc-links/
+  image-inventory/workflow-write-safety/shipped-surface-truth/
+  security-inventory/cross-package-imports/shell-execution all PASS;
+  check-suite-inventory: 13 suites match (conductor backend 2670).
+- Image provenance re-proven at this head: hive-conductor:l291-final's
+  services/identity_health.py, routes/health.py, routes/setup.py and
+  requirements.txt md5-identical to the worktree.
+- Both verbatim security.yml in-image verification commands re-executed:
+  default -> identity=operational python=3.13.15 bip-utils=2.12.1
+  coincurve=21.0.0 pynacl=1.6.2 (msgpack/setuptools floors held);
+  observability -> observability=importable identity=operational.
+- Live Playwright frontend/e2e/setup.spec.ts against a fresh l291-final
+  container (host port 18311): 8/8 passed, including the unavailable- and
+  misconfigured-health gating tests ("no action offered", toggle disabled).
+- Full support-matrix arc observed live on the shipped image: fresh boot ->
+  misconfigured/setup_incomplete (required=false); setup without
+  crypto_identity (via the e2e wizard completion) -> disabled with readiness
+  identity=true; POST /v1/setup/complete with crypto_identity on two fresh
+  containers (ports 18312/18313) -> 24-word one-time mnemonic returned,
+  identity=operational/provisioned, readiness identity=true.
+- Prior findings confirmed fixed at this head: security.yml builds BOTH
+  Conductor profiles and verifies each in-image (observability build +
+  verification steps present under the `containers` job); e2e setup.spec.ts
+  asserts the disabled action under unavailable and misconfigured health
+  responses, executed live above.
