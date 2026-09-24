@@ -472,7 +472,7 @@ class PersistedStore:
         self._enforce_username_uniqueness_at_db_boundary()
 
     def _warn_about_unclaimed_duplicate_usernames(self) -> None:
-        """Surface pre-existing duplicate usernames the backfill couldn't claim.
+        """Surface usernames no durable uniqueness layer claims.
 
         `kv_unique_fields_001`'s `INSERT OR IGNORE` claims a `unique_fields`
         row for only the first `users` record it sees per normalized
@@ -487,6 +487,22 @@ class PersistedStore:
         runs on every `initialize()`, not just when the migration first
         applies, so the warning does not go away on its own — only resolving
         the duplicates does.
+
+        Two layers count as a durable uniqueness claim here: the
+        `unique_fields` row above, and the canonical username-claim index
+        account allocation writes in the same transaction as the user row
+        (#1061 — `username_claims` in `kv_store`, whose active record must
+        name this exact row). The canonical layer decides: a record whose
+        claim is quarantined, corrupt, or points at another key is still
+        flagged, and an active claim can name only one row, so of a
+        duplicated pair exactly the loser stays loud. Without the second
+        clause, every account created through the atomic allocation seam —
+        which writes the claim and the row together and bypasses
+        `put_model_unique` — would raise this false alarm on every restart
+        until its first password rehash happened to heal the
+        `unique_fields` row. `lower()` matches the normalization the DB-level
+        username index uses (the same lower-vs-casefold Unicode divergence,
+        warning-only here).
         """
         reader = self._state.open_reader()
         try:
@@ -499,6 +515,13 @@ class PersistedStore:
                 "  SELECT 1 FROM unique_fields u "
                 "  WHERE u.store_name = 'users' AND u.field_name = 'username' "
                 "  AND u.record_key = k.key"
+                ")"
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM kv_store c "
+                "  WHERE c.store_name = 'username_claims' "
+                "  AND c.key = 'username:' || lower(json_extract(k.value, '$.username')) "
+                "  AND json_extract(c.value, '$.status') = 'active' "
+                "  AND json_extract(c.value, '$.user_id') = k.key"
                 ")"
             ).fetchall()
         finally:
