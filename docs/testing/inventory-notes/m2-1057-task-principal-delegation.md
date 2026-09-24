@@ -43,3 +43,23 @@ database, the round-trip, and the explicit-system-actor legacy-receipt check),
 `packages/maistro-server/tests/api` 356 passed, `packages/maistro-core/tests/tasks` 315
 passed, Hive bridge suites 50 passed, `ruff check` / `ruff format --check`,
 `check-compose-secrets.py` and `verify-monorepo-layout.sh` all pass.
+
+Independent repair-phase validation (merge head `cc4ab4db7`, no code or test
+changes in this phase — verification only): the full battery was re-executed
+from scratch — `packages/maistro-core/tests/tasks` 315 passed,
+`packages/maistro-server/tests/api` 356 passed, the three Hive bridge suites
+`test_production_workspace_scope.py` / `test_workspace_scoped_submission.py` /
+`test_adapter_ports.py` 23 passed (including the two-user E2E through real Hive
+session logins with spoofed body user ids), `tests/migrations/` 97 passed
+against a fresh `pgvector/pgvector:pg18` container (single-head chain,
+upgrade-from-empty, round trip, and
+`test_pre_provenance_receipts_become_explicit_system_work` asserting
+`('system', 'system')`), plus `ruff check` / `ruff format --check`,
+`check-suite-inventory.py`, `check-compose-secrets.py` and
+`verify-monorepo-layout.sh`. Harness note for future runs: the live-Postgres
+suites must be invoked with only `MAISTRO_TEST_DATABASE_URL` set — also
+exporting `DATABASE_URL` silently overrides the fixtures' `DB_HOST/DB_PORT/
+DB_NAME/DB_USER/DB_PASSWORD` scratch-database targeting
+(`resolve_database_url` precedence), which shows up as spurious
+`UndefinedTableError` failures in the store-leg suites, not as a fixture
+guard.
