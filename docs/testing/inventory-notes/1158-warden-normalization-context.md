@@ -158,3 +158,46 @@ Validation at this head: 60 warden detector tests, 232 across the seven
   #1158 surface files, `ruff check`/`format --check` clean, mypy
   security+agents 105 files clean, `check-security-inventory.py` OK,
   `check-suite-inventory.py` reconciles with this note's +36.
+
+## Repair pass 5 (2026-09-24): independent re-verification at merge head
+
+Re-validated every acceptance criterion against head `d10f660ca` without
+trusting prior claims. No code changes were needed; the two prior findings
+were confirmed already closed at this head:
+
+- Artificer cross-call aggregation (`strategy.py`): executed probe with the
+  production `FauxProvider` re-ran the original finding — two individually
+  clean tool fragments reconstructing `ignore all previous instructions`.
+  The completing fragment is replaced with `[BLOCKED: tool result ...]` and
+  `provider.call_log[3]` (the next model call) receives the blocked
+  placeholder, not the raw fragment.
+- The Artificer multi-tool aggregation regression exists and passes
+  (`tests/agents/artificer/test_strategy.py::
+  test_warden_scans_ordered_prior_tool_results`), alongside the ReAct twin
+  and the five `TestMultiTurnTrustAggregation` Agent-level regressions.
+
+Executed 30-case adversarial probe against production `Warden`: plain,
+spaced-letter, leetspeak, composed spaced-leet, comma/dot single-character
+runs, zero-width, Cyrillic-homoglyph, underscore/hyphen/slash word-joins
+across role/wipe/jailbreak/extraction/mode families, and word-internal
+separators all `blocked=True`; plain, mid-word, and separator-phrase
+cross-turn splits refused; 7 benign controls clean (hyphenated compounds,
+paths, `24/7`, `3.14`, polite-ignore prose); trusted context containing an
+override does not contaminate a benign scan; a 200x10KB context collapses to
+2 turns / exactly 16384 bytes. (An initial probe self-found a false FAIL on
+a mid-word split whose aggregate `follow the instructions` is benign, not an
+override -- corrected payload blocks as expected.)
+
+Validation at this head: 232 tests across the seven #1158 surface files
+(including the 5 Agent-level and 6 harness-selection tests re-run by name),
+`ruff check`/`ruff format --check` clean, mypy security+agents 105 files
+clean, `check-security-inventory.py` OK (59 paths, 23 rows),
+`check-suite-inventory.py` OK (13 suites).
+
+One label note for reviewers: `#1137`/`#1138`/`#1139` do not resolve to any
+in-repo artifact (issue numbers only); every reachable ingress path named in
+the acceptance criterion (gate.py, agents/base.py, harness_safety.py,
+react.py, artificer/strategy.py, conduit.py, sentinel post_call) consumes
+the hardened `Warden.scan` directly, and `normalize_for_detection` is
+imported only by `security/warden/detector.py` — no ingress implements a
+separate normalizer.
