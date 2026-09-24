@@ -230,3 +230,56 @@ the eighth pass (6b7ccb9beff7); all results re-executed fresh:
   `_reconcile_pending_fires` lease recovery; cursor untouched by manual fire.
 
 No new defects. No tree edits beyond this note.
+
+## Tenth-pass independent verification @ c82ee9bc02d9 (2026-09-24)
+
+Repair-phase re-validation at the same code state as the ninth pass (HEAD is
+the ninth pass's note commit; zero code deltas since 6b7ccb9beff7). No
+check-*.log existed in this job's directory, so every check was re-executed
+fresh and no prior claim was trusted:
+
+- ruff check EXIT=0 ("All checks passed!"), ruff format --check clean (2535
+  files already formatted).
+- radon gate EXIT=0 (70 reviewed C-or-worse blocks -> 70; 0 new / 0
+  regressed / 0 stale; baseline base 1dea30dfe30c, candidate c82ee9bc02d9).
+- vulture gate EXIT=1 still (1430 findings vs 1415 reviewed) — upstream
+  staleness re-proven cheap but exact: `git diff 1dea30dfe HEAD -- quality/`
+  is **empty** (vulture-baseline, ratchet-authorizations, radon-baseline all
+  byte-identical to the merged develop tip), so the branch banks nothing new;
+  the remedy stays a reviewed grant, out of lane by hard prohibition.
+- Focused Hive suites (test_manual_fire_canonical,
+  test_schedule_manual_fire_canonical, test_schedule_workspace_scope,
+  test_scheduler), bare .venv python per SUITE-INVENTORY: **100 passed**.
+- Five key E2Es re-run individually, all PASSED:
+  test_the_manual_fire_route_runs_the_canonical_spine_end_to_end (real POST
+  /v1/schedules/{id}/run + Idempotency-Key double submit -> one Run in
+  canonical Workspace/Project scope, provenance schedule_trigger=manual +
+  schedule_fire_id, prompt consumption to completed NodeRun + Attempt),
+  test_a_double_submit_reconciles_to_one_run,
+  test_an_idempotency_key_meets_the_fire_id_contract,
+  test_the_standalone_fallback_is_gated_to_no_container,
+  test_a_retry_after_exhaustation_returns_the_winners_receipt.
+- maistro-core tests/scheduling: 247 passed / 34 skipped (PG legs
+  capability-gated; PG parity 1361 passed on a fresh pg18 container in the
+  ninth pass at this same code state).
+- runs/test_spine_conformance.py manual subset: 8 passed / 4 skipped
+  (SQLite legs); runs/test_sqlite_store.py: 24 passed;
+  tests/migrations/test_audit_scope_migration.py: 3 passed.
+- Doc gates: check-convergence-matrix.py EXIT=0, check-doc-links.py EXIT=0,
+  check-suite-inventory.py EXIT=0.
+- Code re-read confirming each criterion's production path: fire_now gates
+  on _canonical_admitter -> _fire_manual_canonical (scheduler.py:92-103);
+  ScheduleAdmissionUnavailable fail-closed for an unwired Container;
+  hive:schedule:{sid} + run_registered_dag only in the no-Container compat
+  branch (_as_definition :229-230, _fire_schedule :834/:847); occurrence
+  identity (schedule_id, "manual:" + fire_id) via occurrence_key
+  (sources.py:94-107); provenance stamping schedule_trigger
+  manual|recurring + schedule_fire_id (admission.py:1334-1346);
+  reserve->settle PendingFire with _reconcile_pending_fires recovery;
+  reconciliation hands the winner's receipt
+  (_fire_manual_canonical reconciled_run_id branch); CONVERGENCE-MATRIX row
+  128 + summary 181 name recurring+manual canonical admission with
+  run_registered_dag as the no-Container fallback only.
+
+No new defects. No tree edits beyond this note.
+
