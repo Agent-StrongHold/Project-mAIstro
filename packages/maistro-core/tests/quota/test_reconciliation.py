@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
+from maistro.observability.metrics import registry as metrics_registry
 from maistro.quota.rate_profile import LimitUnit
 from maistro.quota.reconciliation import (
     AdaptiveReconciliationPolicy,
@@ -110,6 +113,12 @@ def test_due_respects_current_interval() -> None:
 # --- maybe_reconcile ---------------------------------------------------------
 
 
+def _counter_total(name: str) -> float:
+    """Sum one registry counter's samples (all label sets)."""
+
+    return sum(sample["value"] for sample in metrics_registry.counter(name, "").collect())
+
+
 async def test_verifier_outage_is_unavailable_evidence_not_an_exception() -> None:
     state = ReconciliationState(policy=AdaptiveReconciliationPolicy(min_interval_s=1.0))
 
@@ -123,6 +132,29 @@ async def test_verifier_outage_is_unavailable_evidence_not_an_exception() -> Non
     assert outcome.snapshot is None
     assert outcome.error is not None
     assert state.last_explicit_check_at == 10.0
+
+
+async def test_verifier_outage_surfaces_error_evidence_metric(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An outage must be observable evidence, not a swallowed exception.
+
+    #718: the error counter and the warning log are what make the outage
+    reachable by an operator even when the background caller discards the
+    returned outcome.
+    """
+
+    state = ReconciliationState(policy=AdaptiveReconciliationPolicy(min_interval_s=1.0))
+    before = _counter_total("quota_reconciliation_errors_total")
+
+    with caplog.at_level(logging.WARNING, logger="maistro.quota.reconciliation"):
+        outcome = await maybe_reconcile(
+            state, "s-outage", InMemoryUsageLog(), _UnavailableVerifier(), now=10.0
+        )
+
+    assert outcome is not None and outcome.error is not None
+    assert _counter_total("quota_reconciliation_errors_total") == before + 1
+    assert any("quota verification unavailable" in record.getMessage() for record in caplog.records)
 
 
 async def test_not_due_yet_returns_none_without_calling_verifier() -> None:
@@ -169,7 +201,9 @@ async def test_matching_delta_records_match_and_grows_interval() -> None:
     assert state.last_remaining == 98.0
 
 
-async def test_mismatching_delta_records_mismatch_and_shrinks_interval() -> None:
+async def test_mismatching_delta_records_mismatch_and_shrinks_interval(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # Low floor + several matches first so the shrink is observable rather
     # than masked by the min_interval_s clamp.
     policy = AdaptiveReconciliationPolicy(min_interval_s=1.0, decrease_factor=0.4)
@@ -183,11 +217,18 @@ async def test_mismatching_delta_records_mismatch_and_shrinks_interval() -> None
     log.record("s1", cost_usd=0.5, now=15.0)
     verifier = _FakeVerifier([90.0])
 
-    outcome = await maybe_reconcile(state, "s1", log, verifier, now=grown)
+    mismatch_metric_before = _counter_total("quota_reconciliation_mismatches_total")
+    with caplog.at_level(logging.WARNING, logger="maistro.quota.reconciliation"):
+        outcome = await maybe_reconcile(state, "s1", log, verifier, now=grown)
 
     assert outcome is not None
     assert outcome.matched is False
     assert policy.current_interval_s == pytest.approx(grown * 0.4)
+    # The drift itself must reach an operator: the mismatch is metriced and
+    # logged where it is computed, so discarding the returned outcome cannot
+    # silence it (#718).
+    assert _counter_total("quota_reconciliation_mismatches_total") == mismatch_metric_before + 1
+    assert any("quota reconciliation mismatch" in record.getMessage() for record in caplog.records)
 
 
 async def test_credit_top_up_does_not_crash_zero_provider_delta() -> None:
