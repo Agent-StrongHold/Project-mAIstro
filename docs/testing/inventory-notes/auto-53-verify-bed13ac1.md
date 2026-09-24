@@ -59,3 +59,71 @@ docstring marker (comment-only change, no behavior change). The gate now
 reports "no unapproved new architecture island" (exit 0).
 
 No tests added or removed in this pass; inventory unchanged.
+
+## Independent verify (job 0fbf8df2, HEAD d46a6450e, base 1dea30dfe)
+
+Fresh execution by the independent verifier at the exact lane head; no source
+changes made. All commands below were run in this worktree, not trusted from
+logs:
+
+- `uv run pytest packages/maistro-core/tests/test_container_chat_runs.py -q`
+  -> 35 passed
+- Hive 10-file verifier battery (the check-4 set) -> 184 passed
+- `uv run ruff check .` -> clean
+- `scripts/check-m1-convergence-freeze.py --base 1dea30dfe` -> exit 0
+- `check-suite-inventory.py` for hive-conductor + maistro-core suites -> ok
+- `test_workspace_agent_identity.py` + `test_agent_materialization.py` +
+  `test_agent_port_truthful_unavailable.py` + `test_m0_tool_containment.py`
+  -> 48 passed
+
+Acceptance re-derived from the issue, mapped to evidence inspected in source:
+
+- One canonical Run per shipped DAG execution (#736):
+  `test_created_dag_run_uses_one_canonical_run_for_history_projection` asserts
+  the FAILED Run list is exactly `[run_id]` with projection
+  `canonical_run_id == run_id`; `test_run_dag_uses_one_canonical_run...`
+  monkeypatches `graph_runner.execute_dag` to raise, proving the legacy path
+  is unreachable. Route: `routes/dags.py::run_dag` -> `run_registered_dag`
+  (`create_run(QUEUED)` then `run_durable_graph`).
+- Chat canonical admission (#1037): every `/chat/complete` and `/chat/stream`
+  branch (normal, dashboard-contained, gate-refused, interview) crosses
+  `execute_conversation_turn` -> `Container.route_conversation_request`
+  (`container.py:536`) -> ChatRunAdmitter + Conduit; tool-disabled callback is
+  a thunk inside `_conduit_dispatch`, so M2 egress can replace it without a
+  second executor.
+- Run/NodeRun/Attempt evidence: `test_container_chat_runs.py:75-88` asserts
+  distinct run_ids per turn, one NodeRun + one Attempt each, stable
+  `workspace_agent_id` + session/request provenance.
+- Conduit front door: `test_conversation_only_callback_enters_conduit_before_execution`
+  wraps `conduit.route_request` and requires it to run before the callback.
+- Stable Workspace Agent seam (#840): 14 identity tests (insert-once, first
+  materialization race, persona swap keeps identity, sqlite restart durability,
+  id-squat refusal, foreign-row refusal, delete-cascade) plus roster-scoped
+  materialization through the single `instantiate_agent` factory path; a stub
+  port fails closed (`test_agent_port_truthful_unavailable`).
+- Non-chat resolution: `test_repeated_resolution_returns_one_stable_agent_per_workspace`.
+- Child Graph/Run correlation: `run_registered_dag(parent_run_id=,
+  parent_node_run_id=)` (services/dag_agents.py) with canonical store parent
+  correlation tests (`maistro-core tests/runs/test_store.py:143,199`);
+  chat-initiated delegation does not exist in M1 (tool-disabled), so the
+  end-to-end chat->child case is design-satisfied, not test-proven.
+- #1036 inspection: `test_canonical_dag_run_inspection.py` (waiting projection
+  refreshes from recovery; canonical list includes runs without product
+  history); DagRun projection copies canonical status and cannot contradict it
+  (`test_run_dag_cannot_project_a_failed_canonical_node_as_completed`,
+  `test_projection_preserves_a_waiting_canonical_run`).
+- Failure truthfulness: `run_dag` returns `error` whenever the canonical Run
+  did not complete (`routes/dags.py:617-620`); a broken projection store never
+  rewrites execution (`test_run_dag_projection_failure_does_not_rewrite_execution`).
+- Convergence freeze gate exit 0 at this head (the d46a6450e marker commit is
+  comment-only for production code and truthful: `_StandaloneCanonicalGraphStore`
+  adds no storage; writes go through `CanonicalDurableRunStore`).
+
+Closure-keyword review: PR #1364 body says "Refs #53" only; no
+fixes/closes/resolves in any commit message on the branch
+(`git log --format=%B | grep -iE 'fixes #|closes #|resolves #'` -> no match).
+No issue-closure actions performed by the verifier. Child-issue closure
+(#736/#840/#1036/#1037) and CI status remain driver/GitHub actions -> UNVERIFIED
+here by design; M2/M3/M4 layering and compatibility criteria are architectural
+(single persistent identity seam, thunk-replaceable egress, parent-correlated
+child Runs), consistent with the gate and code inspection above.
