@@ -251,3 +251,59 @@ accepted from prior claims. Residual UNVERIFIED (unchanged, requires
 maintainer GitHub mutations prohibited here): the first production
 compliance-evidence Actions run and the first real tag release. Handoff:
 MERGE-READY as writer handoff only, never integration approval.
+
+## Repair-phase salvage + re-validation at HEAD 3ef1380a9 (job 54da79961e5e4abd86a939b0770e9b43)
+
+A prior failed run (job 2ea95045649e4270b591f3e069555f47) left ONE uncommitted
+edit: `quality/compliance-registry.json` re-pointing EU-AI-ACT-ART-09 from
+ADR-072 (threat model) to ADR-032 (builder contracts) with a structural-gate
+test ref and a rewritten scope. That edit contradicted the run's own recorded
+report.txt ("ART-09 incorrectly references ADR-032 instead of ADR-072; next
+step: reference the risk-management requirement and ADR-072") and made
+`check-compliance.py` exit 1 with `COMPLIANCE.md row for EU-AI-ACT-ART-09 does
+not match the registry` (live AC3 drift detection). The patch was preserved at
+`~/Git/wt/incoming-362-salvage.patch`; the salvage was then completed in the
+prior run's own intended direction (ART-09 bound to ADR-072, scope
+"engine documentation only; legal sufficiency is human-owned") via a normal
+file edit, restoring byte-identical HEAD content. No git destructive command
+was used. No check-*.log files existed in this job directory (manifest
+checks: []); all evidence below was executed fresh at HEAD 3ef1380a9.
+
+- `uv run python scripts/check-compliance.py`: exit 0 (28 controls, zero
+  implemented, zero evidence, release_digest null at rest; ART-15/17
+  unverified; status split 17 partial / 5 documented / 2 planned / 2 N/A /
+  2 unverified).
+- Release mode at HEAD, `--require-release-evidence --release-digest
+  3ef1380a9...`: exit 1 with 79 fail-closed problems, last
+  `registry.release_digest does not match --release-digest` (a commit cannot
+  contain its own digest; release.yml never uses this mode without
+  `--resolve-release-evidence`).
+- Same + `--resolve-release-evidence --resolved-output <tmp>`: exit 1, 52
+  problems explicitly naming EU-AI-ACT-ART-15/-17 unverified with no evidence;
+  the resolved output file stayed 0 bytes (no green fabricated).
+- Live AC2 probe (out-of-tree, drives `validate_registry` + `_workflow_state`):
+  forged implemented claims BLOCKED for disabled workflow (real mutation.yml
+  state mismatch), never-run, failing result, stale >90d, evidence bound to a
+  different digest, unreachable artifact (REAL GitHub API HTTP 404 — network
+  provenance path reachable and fail-closed, not mocked), zero evidence
+  (`release_digest does not name a commit in this checkout`), and expired
+  window; dispatch-only YAML derives (enabled=False, manual_only=True).
+- `uv run pytest tests/test_check_compliance.py tests/test_release_guard.py
+  tests/test_branch_policy.py -q`: 132 passed in 9.57s.
+- `uv run ruff check .`: passed. `uv run ruff format --check .`: passed
+  (2531 files). `uv run python scripts/check-ratchet-provenance.py`: OK,
+  0 violations, 36 quality JSON consumers have provenance.
+- Wiring re-read: release.yml guard runs the checker with
+  `--require-release-evidence --release-digest "$GITHUB_SHA"
+  --resolve-release-evidence`, uploads `release-compliance.json` with
+  `if-no-files-found: error`, and all four publish jobs (wheels, pypi, images,
+  release) `needs` guard; ci.yml `Compliance registry` job is a required
+  context for develop and main in `.github/branch-protection.json`.
+- Merge 3ef1380a9 (vs 6571b96c7) touched only an unrelated Graph architecture
+  test, its inventory note, and CHANGELOG — no compliance surface changed.
+
+Verdict for this run: all six acceptance criteria and both DoD items map to
+executed evidence at this HEAD. Residual UNVERIFIED (requires maintainer
+GitHub mutations prohibited here): first production Actions evidence run and
+first real tag release. The uncommitted salvage was resolved, documented, and
+committed; the worktree is left clean.
