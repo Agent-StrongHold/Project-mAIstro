@@ -143,3 +143,26 @@ independent re-execution, not inherited from earlier addenda):
   is the evidence of record. frontend/e2e still has no CI owner (compose e2e
   runs tests/e2e only); no #291 criterion requires it, and the spec was
   executed live here.
+
+Writer-lane re-verification at head bae8919df (independent re-execution; the
+only delta from 67be62413 is this note itself, so code provenance carries):
+
+- Gates: ruff check + format --check clean; extra_guard 6, conductor
+  api+identity_health+setup_guard 55, engine identity 69, prepull 25 passed;
+  both suite inventories match (2670 / 10776); nine check-*.py gates PASS
+  (build-context, deployment-claims, doc-links, image-inventory,
+  shell-execution, workflow-write-safety, security-inventory,
+  shipped-surface-truth, cross-package-imports).
+- Image provenance re-proven at this head: hive-conductor:l291-final's
+  services/identity_health.py, routes/health.py, routes/setup.py and
+  requirements.txt byte-identical to the worktree; both profiles re-verified
+  in-image with the verbatim security.yml commands (identity=operational
+  python=3.13.15 with exact wheel pins; observability=importable).
+- Live arc re-observed against a fresh l291-final container: boot ->
+  misconfigured/setup_incomplete (required=false); setup without
+  crypto_identity -> disabled with readiness identity=true; fresh container
+  with crypto_identity -> did persisted, identity=operational/provisioned.
+- Live Playwright setup.spec.ts re-run against a fresh l291-final container
+  (host port 18294): 8/8 passed, including both gating tests asserting the
+  Crypto Identity toggle is disabled with unavailable and misconfigured
+  health responses, and full five-step completion to Live Operations.
