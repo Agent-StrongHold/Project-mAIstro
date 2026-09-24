@@ -7,7 +7,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from maistro.graph.definitions import Edge, Graph, Node
-from maistro.graph.durable_runs import resume_durable_graph, run_durable_graph
+from maistro.graph.durable_runs import (
+    HitlAuthorization,
+    resume_durable_graph,
+    run_durable_graph,
+)
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
@@ -25,6 +29,27 @@ from maistro.runs.model import (
 )
 
 LegacyResolver = Callable[[str, dict[str, Any]], BaseNode[Any, Any]]
+
+
+async def _allow_test_hitl_membership(_principal: str, _workspace_id: str) -> bool:
+    return True
+
+
+def hitl_authorization() -> HitlAuthorization:
+    """Explicit test principal covering the canonical fixture Workspaces."""
+    return HitlAuthorization(
+        effective_principal="test-hitl-operator",
+        workspace_ids=frozenset(
+            {
+                "test-workspace",
+                "ws-canonical-store",
+                "ws-canonical",
+                "ws-hitl-deadline",
+                "ws-hitl-canonical-deadline",
+            }
+        ),
+        membership_check=_allow_test_hitl_membership,
+    )
 
 
 def graph_from_dag(
