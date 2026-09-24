@@ -283,3 +283,55 @@ fresh and no prior claim was trusted:
 
 No new defects. No tree edits beyond this note.
 
+
+## Eleventh-pass independent verification @ 628097feb73a (2026-09-24)
+
+Re-validation at the new merged head: 628097feb73a = develop tip 60862b6c5eb1
+merged into the branch (brings #1392 and the rest of the develop queue under
+the manual-fire identity work), so the tenth pass's code-state claim no longer
+held and every check was re-executed at this head. No check-*.log existed in
+this job's directory; nothing was trusted from prior passes.
+
+- Incoming salvage: the worktree carried one untracked scratch file,
+  verify_idempotency.py (a broken manual idempotency draft — duplicate method
+  definition, unused imports). Preserved verbatim in the job directory as
+  salvage-verify_idempotency.py, then removed from the worktree: it was the
+  sole cause of both `ruff check` (5 errors) and `ruff format --check` (1 file)
+  failing; the tracked tree is clean on both.
+- ruff check EXIT=0; ruff format --check clean (2534 files formatted).
+- mypy (AGENTS.md target set): Success, no issues in 713 source files.
+- radon gate EXIT=0 at this head: 69 reviewed C-or-worse blocks -> 69, 0 new /
+  0 stale (baseline base 60862b6c5eb1, candidate 628097feb73a) — the
+  first-pass finding's unbaselined `_admit_manual` remains resolved.
+- vulture gate EXIT=1 (1432 findings vs 1415 reviewed) — upstream staleness
+  re-proven at this exact head, stronger than prior passes: a raw vulture scan
+  (`vulture packages tests --exclude */.venv/*`) of a `git archive` of the
+  develop base 60862b6c5eb1 and of this head yields **byte-identical finding
+  multisets — 1432 == 1432, 0 new, 0 fixed** — and `git diff 60862b6c5..HEAD
+  -- quality/` is empty. Same scan + same ledger at the base tip, so the gate
+  fails identically there; the branch banks nothing and the remedy stays a
+  reviewed grant (out of lane by hard prohibition).
+- maistro-core scheduling + runs suites, no PG: 421 passed / 147 skipped.
+- Same suites on a **fresh disposable pgvector:pg18 container** (port-isolated
+  from the stale shared DB), `alembic upgrade head` applied cleanly to 042
+  (the branch's manual-fire occurrence migration is the single head), then
+  `MAISTRO_TEST_PG_DSN` set: **568 passed, 0 skipped, 0 failed** — including
+  the spine-conformance PG legs the first pass saw fail only environmentally.
+- Full Hive backend suite: **2682 passed, 1 skipped** — includes
+  test_the_manual_fire_route_runs_the_canonical_spine_end_to_end (real
+  POST /v1/schedules/{id}/run, real Container, Idempotency-Key double submit
+  -> one Run, canonical workspace/project, schedule_trigger=manual +
+  schedule_fire_id provenance, completed NodeRun + Attempt, runs_so_far == 1,
+  run_registered_dag monkeypatched to raise) and
+  test_manual_fire_over_http_creates_one_canonical_run.
+- tests/migrations/test_audit_scope_migration.py: 3 passed.
+- Gate scripts: check-convergence-matrix.py EXIT=0,
+  check-m1-convergence-freeze.py --base 60862b6c5eb1 EXIT=0,
+  check-reachability-dispositions.py EXIT=0, check-security-inventory.py
+  EXIT=0, check-suite-inventory.py EXIT=0 for both touched suites.
+- Race semantics re-read at this head: reserve->settle PendingFire lease,
+  loser-reconciliation (test_a_loser_that_missed_the_probe_reconciles_to_the_
+  winner), concurrent max_runs (test_concurrent_manual_fires_cannot_exceed_
+  max_runs), and the unique-occurrence index as the last word on PG.
+
+No new defects. No tree edits beyond this note.
