@@ -248,3 +248,45 @@ COMPLETED SUCCESS; PR body "Refs #341" only, no closure keywords; overall
 rollup still had `integration-scope` IN_PROGRESS → merge-readiness of the
 live rollup remains UNVERIFIED (push prohibited); org-ruleset and
 gate-script-alone residuals unchanged.
+
+Repair-lane verification at the final lane head `bb4ac576f` (clean worktree at
+the exact SHA; job driver check-*.log files were absent from the job
+directory, so every number below was executed fresh in this pass; all
+mutations sandboxed under `/tmp`, worktree untouched throughout):
+`uv run ruff check .` clean, `uv run ruff format --check .` clean (2527
+files); `tests/test_check_formal_oracle_independence.py` → **3 passed**;
+targeted `pytest formal/models/test_dangerous_tools.py -q
+--hypothesis-seed=0` → **256 passed**; full required-CI equivalent
+`pytest formal/models/ -q --timeout=300 --hypothesis-seed=0` → **664
+passed** against a dedicated pgvector:pg18 container on 127.0.0.1:55477
+after `alembic upgrade head`, with `maistro_evolve` importable as the
+workflow's explicit install provides. Mutation battery in a
+PYTHONPATH-shadowed copy of `maistro-core/src` (precedence proven via
+`patterns.__file__`/`microvm.__file__`; unmutated shadow baseline 256
+passed), each failing the exact prior-finding command:
+`rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/` weakening → **6 failed** (the originally
+reported in-memory-weakening finding is refuted at this head);
+21-of-22 deletion retaining only `sudo\s+` → **193 failed**; benign-prefix
+shadow short-circuit in `is_dangerous_command` → **199 failed**; deny check
+removed from `MicroVMSandbox.exec` → **202 failed**; `sudo\s+` narrowing →
+**7 failed**. Oracle-independence gate end-to-end (real script, scratch
+clone): this PR vs base `8bb344e32b8693574fc0be7a93f86d941616b62c` →
+bootstrap **exit 0** (oracle verified absent at base via `git cat-file`);
+post-landing oracle-only follow-up → **exit 0**; oracle+implementation
+co-change → **exit 1**; unresolvable base → **exit 2** (fails closed).
+SECURITY-CONFORMANCE.md claim map re-checked: all 9 referenced test names
+resolve to defs in `test_dangerous_tools.py`; ADR-072/ADR-073 and SPEC-190
+exist in-tree; `formal/extractors`/`formal/generated` absent with zero
+references (retired). Live GitHub (read-only): `formal-conformance`
+COMPLETED SUCCESS at PR 1452 head `c83eb9b28`; rulesets re-read — "Pr merge"
+(21421373) still `required_approving_review_count: 0`, code-owner review
+off, BUT `strict_required_status_checks_policy: true` with
+`formal-conformance` required plus a merge queue, so a self-approving
+oracle+implementation co-change is mechanically blocked by the required
+check regardless of the 0-approval review config; "Main merge" (21701487)
+requires 1 approval with the same required checks. Live rollup for PR 1452
+additionally shows `test` and `Coverage gate` FAILURE — outside this
+issue's formal-conformance scope, unchanged residual for integration
+rollup. Residuals unchanged: pushing the local notes-only commits is
+prohibited from verification; gate-script self-neutering co-change remains
+visible-in-diff (follow-up #160).
