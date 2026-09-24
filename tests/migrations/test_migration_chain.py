@@ -150,6 +150,24 @@ def _alembic(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _head_revision() -> str:
+    """The chain's single head, as alembic itself resolves it.
+
+    Spelled as a query instead of a literal because a tip literal here already
+    rotted once: `038` was head when the adoption tests below were written, and
+    the reconciliation onto develop's chain (`039` -> `040` ->
+    `036_audit_log_org_scope`) moved the tip without touching what those tests
+    actually verify — that an upgrade from below head reaches head, not any
+    particular revision id. Comparing against `alembic heads` keeps the
+    assertion about the stamp, not about a number that belongs to history.
+    """
+    result = _alembic("heads")
+    assert result.returncode == 0, result.stderr
+    revisions = [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+    assert len(revisions) == 1, f"expected exactly one head, found: {revisions}"
+    return revisions[0]
+
+
 def _query(sql: str, params: tuple[object, ...] = ()) -> list[tuple[object, ...]]:
     # psycopg 3: the declared synchronous driver. A bare `postgresql://` URL
     # resolves to psycopg2 inside SQLAlchemy, which is why `to_sync_url` names
@@ -327,7 +345,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
                 "select indexname from pg_indexes where tablename = 'task_idempotency'"
             )
         }
-        assert _query("select version_num from alembic_version") == [("038",)]
+        assert _query("select version_num from alembic_version") == [(_head_revision(),)]
 
     def test_adopts_runtime_provisioned_table_without_a_primary_key(self, empty_database) -> None:
         """A provisioning that predates the PRIMARY KEY in ensure_schema leaves
@@ -355,7 +373,7 @@ class TestTheChainSurvivesRuntimeSelfProvisioning:
         try:
             result = _alembic("upgrade", "head")
             assert result.returncode == 0, result.stderr
-            assert _query("select version_num from alembic_version") == [("038",)]
+            assert _query("select version_num from alembic_version") == [(_head_revision(),)]
             pks = {
                 str(row[0])
                 for row in _query(
