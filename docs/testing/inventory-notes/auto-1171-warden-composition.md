@@ -209,6 +209,54 @@ was supplied with this job, so all evidence below is first-hand:
   in this round: 4 scans, user_input×3 + tool_result, one Warden, zero HTTP
   after the blocked preview.
 
+## Repair-lane validation round 7 (job cdbffdb59, head d08c4f7f2) — no code change
+
+Round 6's evidence was rejected by its driver solely for process: the verify-phase
+agent committed evidence docs, mutating the worktree under test (result.json:
+`failure_kind: worktree_changed`). The code itself was never implicated. This
+writer-lane round re-proves every acceptance criterion first-hand at that exact
+head, before any tree mutation, so the numbers below describe the code as
+validated:
+
+- `ruff check .` clean; `ruff format --check .`: 2533 files already formatted.
+- Core issue suites (harness_runner, events, handlers, container security
+  wiring): **133 passed**. Conductor issue suites (conftest, agents routes,
+  chat-created agents, harness routes, maistro-core adapter): **80 passed**.
+- `packages/hive-conductor/backend/tests/test_harness_routes.py` full file
+  verbose: **13 passed**, including by name
+  `test_identical_malicious_content_uses_one_canonical_warden` (one Warden
+  instance, 4 scans: `user_input`×3 via chat content_filter / agent-scan
+  flagged / harness 400, plus `tool_result` via the Container-style bound
+  EventBus, `TriggerActionFailure` with `EventPayloadBlocked` cause,
+  `event_client.calls == []`) and
+  `test_cached_manager_does_not_survive_container_security_teardown`.
+- Named re-entry proofs: `TestConductorChatAction` (8 tests incl.
+  `test_scans_exact_labelled_reentry_with_tool_result_boundary`,
+  `test_blocked_preview_never_reaches_conductor`,
+  `test_missing_warden_fails_closed_before_http`) plus
+  `test_container_warden_composition_reaches_l3_and_event_reentry` (the
+  configured layer-3 judge is consulted on the event path): **8 passed**.
+- Full conductor backend suite: **2670 passed / 1 skipped / 0 failed** (82 s).
+- `mypy` (documented six-package command): Success, 713 source files.
+- Gates exit 0: check-suite-inventory (conductor 2671 / core 10783),
+  check-reachability, check-wiring-reads, check-cross-package-imports,
+  check-contract-markers.
+- Structural re-checks at this head: zero `Warden(` construction under
+  `packages/hive-conductor/backend` production code; `engine.warden`
+  (services/engine.py:84) is Container-first and raises
+  `WardenCompositionUnavailable` with neither source; `conductor_chat` remains
+  absent from `BUILTIN_HANDLERS` and is registered only via
+  `handlers_for_warden` from `container._wire_event_handlers`; the production
+  `get_event_bus()` singleton has no production callers;
+  `normalize_for_detection` runs only inside `Warden.scan`
+  (detector.py:155) with no route/event-local normalizer; conductor_chat_action
+  (events/handlers.py:117) scans the exact labelled string it later POSTs,
+  with `provenance=handler_metadata` / `boundary=tool_result` labels keeping
+  handler metadata distinct from payload text.
+
+All eight acceptance criteria hold at this head with first-hand evidence; no
+repair to production code or tests was warranted this round.
+
 ## Independent verification round 6 (job 50922cfc, head 1c11d63de) — no code change
 
 Supplied check-*.log files all returncode 0 (uv sync, ruff check, ruff format,

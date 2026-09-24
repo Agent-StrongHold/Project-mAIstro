@@ -127,3 +127,16 @@ full backend 2663P/1S/0F; mypy 712 files clean; five CI gates exit 0.
 Equivalence test re-read: same Warden object across chat/scan/harness/event
 re-entry, exactly 4 scans (user_input×3 + tool_result), zero HTTP after a
 blocked preview. Inventory note round 3 section records the details.
+
+## Round 7 (job cdbffdb59, head d08c4f7f2) — repair-lane validation, no code change
+
+Round 6 was rejected purely for process (verify-phase agent mutated the
+worktree by committing evidence; result.json: `worktree_changed`). This round
+re-ran the whole battery first-hand at that head BEFORE touching the tree:
+ruff clean/format clean; core issue suites 133P; conductor issue suites 80P;
+harness routes 13P incl. the 4-path equivalence test by name; handler +
+container L3 named proofs 8P; full backend suite 2670P/1S/0F (82 s); mypy
+713 files success; five CI gates exit 0 (suite-inventory ×2, reachability,
+wiring-reads, cross-package-imports, contract-markers). All eight acceptance
+criteria hold with first-hand evidence; no production/test repair warranted.
+Details: docs/testing/inventory-notes/auto-1171-warden-composition.md (round 7).
