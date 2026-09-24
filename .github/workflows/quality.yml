@@ -811,6 +811,11 @@ jobs:
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
 
+      # Credential authority is checked against the same reachable module graph;
+      # a renamed unscoped store must fail before it can become a route dependency.
+      - name: credential authority (reachable stores are classified and scoped)
+        run: uv run python scripts/check-credential-authority.py
+
       # Both gates above stop one level short of the DI root. `Container` is not
       # a value object -- its fields exist so the runtime can consume them -- and
       # a field that is constructed, stored and read by nobody is wiring that
