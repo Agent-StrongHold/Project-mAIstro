@@ -99,3 +99,45 @@ develop base and not branch-caused. Shipped Graph work crosses only
 is the read-only `LegacyGraphRunArchive` (`mode=ro`, `resume()` raises
 `LegacyRunNotResumable`). No closure keywords in the PR body or commit messages.
 Stop condition re-checked: no executor gained persistence.
+
+## Repair pass (verifier findings at 2399a55a1)
+
+The verifier reported two findings against 2399a55a1. Both were re-derived from
+scratch; one was already resolved, one was root-caused and settled further:
+
+- `builders/dag.py` conflict markers: not present. `git diff --check` exits 0 on a
+  clean tree and a marker scan of the file finds none; the repair landed in
+  35b3920d9 stands.
+- `check-vulture-baseline.py` exit 1: root-caused with a base-tree experiment, not
+  assumed. Scanning the develop base 8bb344e32 itself (scratch worktree, empty
+  probe commit, same interpreter and scan args) reproduces the failure there:
+  trusted NEW=967 / stale=952 with a mirrored candidate section, versus head's
+  trusted NEW=968 / stale=952 before this pass. The failure set is therefore
+  byte-for-byte upstream (the develop ledger, last banked at 84d937add, does not
+  match its own tree: e.g. 486 hive-conductor findings in the base scan against a
+  ledger that records none), and per the ratchet's own doctrine a candidate branch
+  cannot authorize it ("land a reviewed grant first"). What the branch controls
+  was settled in this pass:
+  - candidate ledger re-banked from a real scan (`--update`): candidate
+    bookkeeping section is now empty (0 NEW / 0 stale); rule definitions
+    untouched, findings lists only;
+  - `GraphNodeResult.next_nodes` removed: zero producers and zero consumers
+    repo-wide, and the durable executor derives successors from `graph.edges`
+    (`durable_runs/executor.py::_next_nodes`), never from this field, so it is
+    pre-durable traversal residue exactly like the retired executor's other
+    name-matches. Its removal converts the branch's one unbanked trusted key into
+    a trusted stale row (a debt fix, the ratchet-correct direction); the
+    candidate row was pruned by the same `--update`.
+  - Final attribution: the branch's entire trusted-section footprint vs the
+    develop base is +1 NEW (the already-authorized `parallel_generations` grant)
+    and +1 stale (the `next_nodes` fix); the remaining 967 NEW / 952→953 stale
+    identities are the develop base's own failure set and need the grants-first
+    PR outside this lane.
+
+Re-validated after this pass: `ruff check .` clean; `ruff format --check .` clean
+(2522 files); `tests/graph` + `tests/testing` 1137 passed / 79 skipped;
+`tests/orchestrator` + `tests/integration/test_chat_to_graph_e2e.py` + canvas
+`test_canonical_execution.py` + hive `test_graph_runner.py` 217 passed;
+`check-retired-guidance.py`, `check-execution-lifecycles.py`,
+`check-convergence-matrix.py` all exit 0; ledger JSON valid. No test files
+changed in this pass: suite inventories unchanged.

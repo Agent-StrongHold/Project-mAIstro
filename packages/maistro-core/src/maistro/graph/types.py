@@ -206,7 +206,6 @@ class GraphNodeResult(BaseModel):
     success: bool = True
     output: str = ""
     tokens_used: int = 0
-    next_nodes: list[AgentRole | str] = Field(default_factory=list)
     candidates: list[str] = Field(default_factory=list)
     selected_candidate: int = 0
     parallel_group: int | None = None
