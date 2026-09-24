@@ -102,3 +102,61 @@ checks re-executed in this tree anyway:
   wheel-imports SUCCESS. Coverage gate, CI `test`, integration-scope,
   docker-build, and gates-ran were still IN_PROGRESS at review time and
   are recorded as UNVERIFIED-pending, not inferred green.
+
+## Repair-pass verification at 57ddca502ba75c20de093f78eef522c01d98d382 (2026-09-24)
+
+Head is 57ddca502 (cb7ec38f plus this note's own post-merge record); the
+HITL production surfaces are byte-identical to cb7ec38f. This pass closed
+the two gaps every earlier record left: the Postgres conformance legs ran
+for real, and the Coverage gate was reproduced from locally produced
+data at the CI argument spelling. Evidence:
+
+- **Postgres legs executed, not skipped.** Throwaway pg18 container,
+  `alembic upgrade head`, then `MAISTRO_TEST_PG_DSN` set:
+  `test_continuation_conformance.py` + `test_hitl_settlement.py` = 86
+  passed, 0 skipped (the 14 pg-parametrized conformance legs — keyset
+  paging, deadline query, pre-index backfill — now actually ran).
+  Full `durable_runs/` suite with pg: **494 passed, 0 skipped**.
+- Full hive backend suite: 2663 passed, 1 skipped. Targeted
+  door/timeout/dag triplet: 41 passed.
+- `ruff check .` / `ruff format --check .`: clean (2533 files). `mypy`
+  over the exact ci.yml nine-package battery (core, server, turing,
+  canvas, bootstrap, registry, evolve, rsi, design): clean, 775 files.
+  (Running only `packages/maistro-core/src` reports 5 import-not-found
+  errors for `maistro_bootstrap.*` — a checking-environment artifact,
+  not branch debt; the full battery resolves them.)
+- Quality gate scripts, all exit 0: radon baseline, xenon (0 block
+  violations vs baseline 77), vulture ledger, reachability +
+  dispositions, convergence matrix, credential authority, wiring reads,
+  agent-store writes, contract markers, security inventory, image
+  inventory, backlog consistency, enumerations, doc links, release
+  consistency, `bump_version.py --check`, execution-lifecycles (19
+  classified).
+- **AC-state ratchet + mandate at the develop base 1dea30df, with pg:**
+  `check-ac-state.py --run-tests --ratchet --mandate 1dea30df` — ratchet
+  OK (10 counters on ceilings, 1 on floor, grant #729 honored),
+  acceptance mandate OK (0 unproven touched criteria), chain mandate OK.
+- **Coverage gate (diff half) reproduced locally**: `coverage run
+  --branch` over full `durable_runs/` + full hive backend, then
+  `check-diff-coverage coverage.xml --base 1dea30df` — "ok: every
+  measured file this change touches is at or above 90% lines / 80%
+  branch arcs" (4 measured production files; 5 test files exempt).
+  The publish-set 87% aggregate is unaffected: this branch only adds
+  covered lines to maestro-core. **Verifier trap:** scoping coverage to
+  only the two targeted core test files makes `attempt_executor.py`
+  branch arcs 75% (the `reconcile_persistence is not None` False arc at
+  line 198 is covered by resume tests elsewhere in the package, not by
+  the settlement suite) and fails the gate spuriously — measure at the
+  suite scope CI uses before reporting a coverage regression.
+- Acceptance criteria re-derived at this head: waiting is durable and
+  tied to Run + NodeRun + `pauses` metadata (fold pauses human results
+  to `PAUSED`); answer/timeout/cancel are store-owned, serialized,
+  deadline-deterministic and restart-safe (survive-restart tests pass on
+  memory, SQLite, and now Postgres); resume keeps the yielded Attempt
+  and creates ordinal 2 (attempts `[1, 2]` both COMPLETED) while timeout
+  preserves the single Attempt; `/v1/hitl/pending` reads canonical
+  `PAUSED` Runs workspace-scoped with an advancing keyset cursor;
+  `hitl_settlements` stays evidence-only and the routes translate store
+  refusals without re-deciding lifecycle; standalone human work is
+  refused (`test_standalone_registered_human_work_is_refused`,
+  `test_hitl_store_requires_the_canonical_graph_spine`).
