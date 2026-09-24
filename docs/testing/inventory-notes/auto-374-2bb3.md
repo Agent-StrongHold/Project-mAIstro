@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: -1
+  tests/: +6
 ---
 
 # auto-374-2bb3
@@ -26,3 +26,17 @@ collect cleanly (102 nodes, no errors); the drift is merge-shaped, not a silentl
 That +2 absorbs into this same note: −3 + 2.
 
 Net recorded delta: −1. Produced by `check-suite-inventory.py --update`, not estimated.
+
+## Repair follow-up (corpus honesty, second wave)
+
+Independent re-verification flagged that the corpus honesty standard enforced on the three
+originally parametrized documents was not applied to seven more specs that received the identical
+front-matter-only move (Proposed ADR from `substrate`/`implements` into `related`) with the
+present-tense governing prose left intact: SPEC-070226-6489 (ADR-084), SPEC-070226-82ea (ADR-099),
+SPEC-070226-b234 (ADR-086), SPEC-070226-b624 (ADR-071), SPEC-070226-c4f8 (ADR-101),
+SPEC-070226-cb8d (ADR-079), SPEC-070226-fbe3 (ADR-081). The repair rewords each document's prose
+to mark the Proposed ADR as retained design context rather than shipped authority, and extends the
+same parametrization over them: 3 collected nodes → 10, i.e. +7. Net for this note: −1 + 7 = +6.
+A corpus-wide sweep for `ADR-* (specifies|mandates|says)` against active specs now returns only
+these repaired documents plus SPEC-080126-3a7c (itself Superseded — a non-active source, outside
+the gate's scope by design). Produced by `check-suite-inventory.py --update`, not estimated.

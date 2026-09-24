@@ -503,6 +503,13 @@ def test_updating_the_ledger_rewrites_it(monkeypatch: pytest.MonkeyPatch, tmp_pa
         ("SPEC-070226-af02-p1-resilience-control.md", "ADR-066", False),
         ("SPEC-070226-2b70-observability-replay-pii-tiers.md", "ADR-055", True),
         ("SPEC-062126-d421-medley-import-sanitization-pipeline.md", "ADR-083", True),
+        ("SPEC-070226-6489-identity-lifecycle.md", "ADR-084", True),
+        ("SPEC-070226-82ea-builders-dag.md", "ADR-099", True),
+        ("SPEC-070226-b234-events-triggers-reactor.md", "ADR-086", True),
+        ("SPEC-070226-b624-orchestrator-waves.md", "ADR-071", True),
+        ("SPEC-070226-c4f8-hierarchical-orchestration.md", "ADR-101", True),
+        ("SPEC-070226-cb8d-llm-provider-registry.md", "ADR-079", True),
+        ("SPEC-070226-fbe3-deployment-topology.md", "ADR-081", True),
     ],
 )
 def test_proposed_related_design_is_marked_historical_not_governing(
@@ -513,7 +520,7 @@ def test_proposed_related_design_is_marked_historical_not_governing(
     Moving a governing citation to `related` silences the front-matter check,
     so the prose has to carry the status honestly: the citation stays (history
     remains citable) but the body must say the authority is not live. Each
-    entry here is a document where an Accepted spec treated a Proposed ADR as
+    entry here is a document where an active spec treated a Proposed ADR as
     realised, governing fact — the exact laundering #374 names.
     """
     path = ROOT / "docs" / "specs" / spec_name

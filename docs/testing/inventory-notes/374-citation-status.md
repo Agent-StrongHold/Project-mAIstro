@@ -76,3 +76,14 @@ affected documents, so coverage looks broader than it is. Repair: apply the same
 pattern to the seven documents and extend the parametrized corpus test over them (no test-suite
 node-count change if done by extending the existing parametrization's argument list: +7 collected
 nodes against the current 3, net +4 — run `check-suite-inventory.py --update`, do not estimate).
+
+## Resolution (this branch)
+
+The repair above was applied on this branch: all seven documents now mark their Proposed ADR as
+retained design context, not shipped authority (including the two extra normative citations in
+SPEC-070226-82ea: "ADR-099 requires" → "the ADR-099 proposal requires", and the `gate_exhausted`
+policy attribution), and the parametrization was extended from 3 to 10 documents (64 tests in
+`tests/test_check_citation_status.py`, all passing). A corpus-wide sweep for
+`ADR-* (specifies|mandates|says)` against active specs now returns only the repaired documents
+plus SPEC-080126-3a7c (itself `Superseded` — a non-active source, exempt by design). The node-count
+reconciliation (−1 + 7 = +6) and prose live in `auto-374-2bb3.md`.

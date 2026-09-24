@@ -27,9 +27,11 @@ owners:
 
 ## Context
 
-Hive Conductor currently runs on localhost for development. ADR-081 specifies production deployment
+Hive Conductor currently runs on localhost for development. ADR-081 proposes production deployment
 topology: multi-instance high-availability (active-active or active-passive), persistent state
-backup, and recovery procedures for data loss / instance failure.
+backup, and recovery procedures for data loss / instance failure. ADR-081 remains Proposed and is
+retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-087).
 
 ## Goals
 

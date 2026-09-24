@@ -30,8 +30,10 @@ owners:
 
 ## Context
 
-ADR-084 specifies identity lifecycle: onboarding (agent identity creation), authority token issuance
+ADR-084 proposes identity lifecycle: onboarding (agent identity creation), authority token issuance
 (CapabilityToken per ADR-024), recovery (if key is lost), and offboarding (revoke all tokens).
+ADR-084 remains Proposed and is retained as design context only; it is not shipped authority for
+this SPEC — the operative authority is this SPEC under its Accepted substrate (ADR-021, ADR-024).
 
 DID method is did:key (per ADR-021 baseline); agent authority tokens are JWT-like credentials
 signed by the agent's DID. This SPEC wires the full lifecycle.
@@ -144,7 +146,8 @@ async def offboard_agent(
 ```
 
 Revokes every live token issued by the agent's DID, soft-archives the identity by setting
-`offboarded_at` (archive, never hard-delete — ADR-084 §4), and emits
+`offboarded_at` (archive, never hard-delete; ADR-084 §4 is the originating proposal, not shipped
+authority), and emits
 `("identity.offboarded", agent_id)` via the injected `emit` callable (event-bus wiring is the
 caller's concern). Idempotent: a second offboard keeps the original `offboarded_at`.
 

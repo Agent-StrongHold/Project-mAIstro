@@ -33,10 +33,12 @@ owners:
 
 ## Context
 
-Agents currently call the OpenAI-compatible gateway directly. ADR-079 specifies a unified provider
+Agents currently call the OpenAI-compatible gateway directly. ADR-079 proposes a unified provider
 registry where operators declare available models (claude-3-opus, gpt-4-turbo, local-llama, etc.),
 each with cost/latency/tier metadata, and a router that selects the best model for each call
-based on task requirements (reasoning depth, latency budget, cost constraint).
+based on task requirements (reasoning depth, latency budget, cost constraint). ADR-079 remains
+Proposed and is retained as design context only; it is not shipped authority for this SPEC — the
+operative authority is this SPEC under its Accepted substrate (ADR-085).
 
 ## Goals
 
