@@ -117,3 +117,57 @@ Fresh validation of the post-reconciliation head; not trusting earlier notes:
   `packages/*/src` scan). Reproduced locally with the exact CI command. The
   gate requires a separately reviewed vulture-ledger grant; ledger edits are
   prohibited in this implementation lane.
+
+## Independent verification (2026-09-24, head a8e3695ba, post-develop-merge)
+
+Fresh validation after merging develop `60862b6c5` into the lane branch;
+not trusting earlier entries:
+
+- Suites green: full hive backend `2693 passed, 1 skipped`; core
+  `test_unique_claim_transactions.py` + `test_persisted_store.py`
+  `51 passed`; targeted registry/voice-auth/registration-policy
+  `102 passed`; registry + registration-policy after mutation restore
+  `58 passed`. Full core producer for the coverage run: `10177 passed,
+  654 skipped`, with the same pre-existing WSL-environment failure in
+  `test_container_postgres.py` documented above (unchanged by this branch).
+- Gates: `ruff check` clean, `ruff format --check` clean (2536 files),
+  `mypy` clean (713 files), `check-durable-table-inventory`,
+  `check-owned-store-access`, `check-agent-store-writes` all green.
+- Diff-coverage gate run END TO END for the first time on this lane:
+  both CI producers executed locally (`coverage run --branch
+  --source=packages/maistro-core/src/maistro -m pytest
+  packages/maistro-core/tests`, then `coverage run --append --branch
+  --source=packages/hive-conductor/backend -m pytest
+  packages/hive-conductor/backend/tests`), `coverage xml`, then
+  `check-diff-coverage.py coverage.xml --base origin/develop` → exit 0,
+  "every measured file this change touches is at or above 90% lines /
+  80% branch arcs".
+- Live mutation re-executed on this head, two variants, both reverted
+  byte-identical (sha256-verified) with the suite green after restore:
+  1. Registry `_write_batch` durable path replaced by get_raw-scan +
+     put_raw-upsert writes (the historical shape; `put_raw` is
+     `ON CONFLICT DO UPDATE`, so a second writer silently overwrites the
+     first's claim). Kills 2 tests semantically:
+     `test_allocator_calls_storage_atomic_claim_seam` (atomic seam not
+     used) and `test_durable_loser_at_the_atomic_layer_is_refused`
+     (DID NOT RAISE UsernameTakenError — the durable conflict decision
+     is gone). The 32-thread race test still passes under this mutant
+     because the module-level `_LOCK` serializes in-process allocations;
+     the durable-layer contract tests are what catch it in-process.
+     A first no-fallback variant additionally errored 3 tests
+     (AttributeError on the LegacyBackend fake, which has no put_raw).
+  2. Register route allocation replaced by `_username_taken()` +
+     `stores.users[user_id] = user` (the issue's literal mutation).
+     Kills 3 tests: the static route-shape assertion,
+     `TestInvitations::test_durable_claim_loses_after_the_in_memory_check_passes`,
+     and `TestInvitations::test_allocation_outage_answers_503_with_a_retry_hint`.
+- Vulture `exact-debt-ledger` re-characterized on this head: the gate
+  still fails (exit 1), but `state.py:817`/`:873` are NO LONGER flagged —
+  the scan args (`packages tests`) include `hive-conductor/backend`, so
+  the atomic-claim functions have a visible caller and vulture never
+  emits them. The remaining failure is repo-wide ledger drift: 285
+  distinct files carry NEW identities and every one of them is outside
+  this branch's 15-file diff (verified with `comm` against
+  `git diff --name-only 60862b6c5..HEAD`); `quality/` is byte-identical
+  between base and head. The failure is therefore unattributable to this
+  lane and the reviewed-grant handoff stands.
