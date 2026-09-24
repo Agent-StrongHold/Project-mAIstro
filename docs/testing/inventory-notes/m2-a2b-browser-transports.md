@@ -507,3 +507,53 @@ every claim below was executed at this head:
   Banking the fall would be a ledger edit — out of scope for an ordinary
   repair.
 - No code change was needed in this round; the only edit is this record.
+
+Independent verification record (L155, head f19ead10a, 2026-09-24)
+------------------------------------------------------------------
+
+Re-derived at the post-merge head `f19ead10a` (merge of develop `60862b6c5`
+into the repair head `50ecb72e`). Every claim below was executed at this head,
+not carried forward from the b8ecf38a8 record:
+
+- Driver checks re-run locally: `ruff check .` + `ruff format --check .`
+  clean; core browser suite 127 passed; conductor `test_browser_network_policy`
+  + `test_engine_service` 38 passed; both `check-suite-inventory.py` runs ok.
+- The develop merge removed `playwright` from the dev lock (the driver's
+  `uv sync --locked` uninstalls it), so the four integration proofs in
+  `test_playwright_transport.py` skip in the locked venv. They were re-run for
+  real at this head after a venv-only `uv pip install playwright==1.63.0`
+  (the version the sync removed; no tracked file changed): **131 passed,
+  0 skipped**, including all four real-Chromium proofs —
+  `test_real_chromium_rechecks_a_redirect_before_the_private_connection`
+  asserts the private server received **zero requests** after a public 302
+  into it, i.e. the redirect-to-private criterion is proven at the actual
+  Chromium route boundary, not through a fake wrapper.
+- Gates green at this head: `check_direct_effects.py` (50 sites, all
+  dispositioned), `check-security-inventory.py` (63 paths / 23 rows),
+  `check-model-egress.py` (23 direct callers, no expansion). SECURITY.md
+  rows 167–168 still enumerate all five Playwright transports (client.py,
+  ui_auto_climb.py, widgets.py, run_hill_climb.py, hill-climb-ui.sh) with the
+  honest `partial`/separate-Chromium wording; the embedded hill-climb-ui.sh
+  heredoc Python still compiles after shell-variable substitution.
+- `check-vulture-baseline.py` rc=1 re-confirmed **inherited**: a detached
+  base-`60862b6c5` worktree, scanned with the same interpreter and
+  `RATCHET_BASE_REV=1dea30dfe`, reproduces the identical rule-level drift
+  (same NEW identities in `hive-conductor/dags/__init__.py:48` and
+  `dags/author_selector.py:204`, same pruned `maistro_bootstrap/session.py`
+  identity). The branch changes none of the drift files and leaves
+  `quality/vulture-baseline.json` byte-identical. Clearing it needs a
+  reviewed ledger grant — out of lane scope.
+- `check-ac-state.py --run-tests --ratchet` rc=1 re-confirmed **inherited**:
+  the same command at the detached base worktree reports the identical
+  `design coverage: 33.0281% over 155 taken decisions` failing the same
+  33.9095 floor; the branch moves coverage by exactly 0.0000 and the
+  per-change mandate at head is green (22 criteria claimed, 0 unproven).
+- One extra inherited red found and dispositioned this round:
+  `packages/maistro-core/tests/security/test_log_redaction.py::
+  test_install_is_idempotent` fails inside the full security-suite run
+  (1261 passed / 1 failed) and fails identically at the detached base
+  worktree with the same interpreter; the branch touches none of
+  `log_redaction.py` / `redact.py` / that test file.
+- No premature closure keywords: PR 1451 body says "Refs #155" only; no
+  branch commit message contains a `Fixes/Closes/Resolves #N` trailer (the
+  `dc3df6b63` subject uses "close" as a verb, which auto-closes nothing).
