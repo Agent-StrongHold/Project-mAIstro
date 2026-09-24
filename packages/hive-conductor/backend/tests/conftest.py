@@ -75,6 +75,21 @@ def _init_engine() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_credential_store(tmp_path: Path):
+    """Give each backend test a fresh encrypted store.
+
+    The application store is a module-level dependency, so a credential saved
+    by one route test must not alter another user's assertions in a later test.
+    """
+    from services import user_credentials as cred_svc
+
+    previous = cred_svc._store
+    cred_svc.init_credential_store(tmp_path / "credentials")
+    yield
+    cred_svc._store = previous
+
+
+@pytest.fixture(autouse=True)
 def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Redirect wizard-authored persona templates to tmp_path."""
     import services.persona_authoring as persona_authoring
