@@ -160,3 +160,44 @@ data at the CI argument spelling. Evidence:
   refusals without re-deciding lifecycle; standalone human work is
   refused (`test_standalone_registered_human_work_is_refused`,
   `test_hitl_store_requires_the_canonical_graph_spine`).
+
+## Independent re-verification at 091c7f418 (2026-09-24)
+
+Fresh verify job after the prior run died without emitting its result
+record (the prior `failure_kind: worker_error` was an output-contract
+failure, not a tree failure; no check-*.log files were produced). The
+tree at this head adds only inventory notes over 57ddca50 — every HITL
+production surface is byte-identical. Nothing was assumed from earlier
+records; all evidence below was re-executed in this worktree:
+
+- `ruff check .` / `ruff format --check .`: clean (2533 files).
+- `mypy` six-package battery per AGENTS.md (core, server, turing,
+  canvas, bootstrap, registry): clean, 713 source files.
+- `packages/maistro-core/tests/graph/durable_runs -q`: 473 passed,
+  21 skipped; the skip census is entirely `MAISTRO_TEST_PG_DSN` legs.
+- **Postgres legs reproduced on a fresh `pgvector/pgvector:pg18`
+  container** (`alembic upgrade head` from empty, then
+  `MAISTRO_TEST_PG_DSN` set): `test_continuation_conformance.py` +
+  `test_hitl_settlement.py` = 86 passed, 0 skipped; full
+  `durable_runs/` = **494 passed, 0 skipped**. Restart-safety,
+  deadline determinism, and continuation-store conformance therefore
+  hold on the Postgres backend in this tree, not only on SQLite.
+- Targeted hive suites (hitl door, hitl timeout/cancel, dag agents,
+  registered-dag recovery, workspace authority): 57 passed. Full
+  `packages/hive-conductor/backend/tests -q`: 2663 passed, 1 skipped.
+- `scripts/check-ac-state.py`: exit 0. `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+  (CI spelling): 1415 reviewed identities -> 1414 findings, exit 0.
+- Acceptance criteria re-checked against reachable code at this head:
+  human pause folds Run+NodeRun to `PAUSED` with durable `pauses`
+  entries (`authoritative_fold.py`); answer/timeout/cancel are the
+  three store-owned transitions on the `DurableRunStore` protocol,
+  serialized, deadline-deterministic (an elapsed deadline beats a late
+  answer or cancel; timeout is refused before the deadline), and
+  crash-repaired by `reconcile_run`/`reconcile_persistence`; a paused
+  HITL run refuses resume without an accepted answer and resumes
+  through canonical physical Attempts; `/v1/hitl/pending` reads only
+  canonical `PAUSED` state, workspace-scoped; routes translate store
+  refusals and never own lifecycle, while `hitl_settlements` stays
+  evidence-only and the yielded Attempt is preserved on timeout.
+- No code changes were needed in this pass; this note is the only edit.
