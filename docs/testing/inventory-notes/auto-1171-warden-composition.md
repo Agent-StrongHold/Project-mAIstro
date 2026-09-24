@@ -208,3 +208,24 @@ was supplied with this job, so all evidence below is first-hand:
   (test_identical_malicious_content_uses_one_canonical_warden) executed green
   in this round: 4 scans, user_input×3 + tool_result, one Warden, zero HTTP
   after the blocked preview.
+
+## Independent verification round 6 (job 50922cfc, head 1c11d63de) — no code change
+
+Supplied check-*.log files all returncode 0 (uv sync, ruff check, ruff format,
+core issue suites 133 passed, conductor issue suites 80 passed, both
+check-suite-inventory runs). First-hand re-execution on this exact head:
+
+- Core issue suites: **133 passed**; conductor issue suites: **80 passed**;
+  `test_identical_malicious_content_uses_one_canonical_warden` seen passing by
+  name (4 scans of one Warden: user_input×3 + tool_result, zero HTTP).
+- Full conductor backend suite: **2670 passed / 1 skipped / 0 failed** (92 s).
+- `ruff check .` clean; `mypy` six-package command: success, 713 source files.
+- Gates exit 0: check-reachability (baseline legitimately drops
+  maistro.events.handlers — now imported by container._wire_event_handlers),
+  check-suite-inventory (both suites), check-wiring-reads,
+  check-cross-package-imports, check-contract-markers.
+- Structural re-checks: no production `EventBus(` outside the Container
+  (`get_event_bus` singleton has no production callers); `conductor_chat`
+  absent from `BUILTIN_HANDLERS` and registered only via
+  `handlers_for_warden` at Container wiring; commit messages and PR #1447
+  body contain no closure keywords.
