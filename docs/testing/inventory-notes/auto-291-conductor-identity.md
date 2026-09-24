@@ -231,3 +231,50 @@ inherited):
   verification steps present under the `containers` job); e2e setup.spec.ts
   asserts the disabled action under unavailable and misconfigured health
   responses, executed live above.
+
+Repair-writer re-verification at final head 4759c9f83 (merge of develop
+60862b6c5 into auto-291; delta from 183ac8fb is that merge plus this note —
+no identity surface changed: Dockerfile, identity_health, routes/health+setup,
+requirements.txt, security.yml, support-matrix docs, Setup.tsx and
+setup.spec.ts are all absent from the 183ac8fb..HEAD diff):
+
+- Gates re-run green at this head: ruff check + ruff format --check (2535
+  files); conductor test_api + test_identity_health + test_setup_guard 55
+  passed; engine identity 69 passed; extra_guard + prepull 31 passed;
+  canonical mypy clean (713 files); check-suite-inventory 13 suites match
+  (conductor backend 2677 — grew coherently with the merge's HITL/workspace
+  tests); check gates build-context/deployment-claims/doc-links/
+  image-inventory/cross-package-imports/workflow-write-safety/
+  shell-execution/security-inventory/shipped-surface-truth all PASS.
+- Image provenance re-proven at this head: hive-conductor:l291-final's
+  services/identity_health.py, routes/health.py, routes/setup.py and
+  requirements.txt md5-identical to the worktree, so the earlier in-build and
+  in-image evidence carries to this tree.
+- Both verbatim security.yml in-image verification commands re-executed
+  against those images: default -> identity=operational python=3.13.15
+  bip-utils=2.12.1 coincurve=21.0.0 pynacl=1.6.2 (msgpack/setuptools floors
+  held); observability -> observability=importable identity=operational.
+- Live support-matrix arc re-observed on fresh l291-final containers at this
+  head: fresh boot -> identity=misconfigured/setup_incomplete with
+  identity_required=false; POST /v1/setup/complete with crypto_identity ->
+  24-word one-time mnemonic returned, identity_persisted=true, liveness
+  identity=operational/provisioned, /health/ready checks.identity=true; fresh
+  container with setup sans crypto_identity -> no mnemonic,
+  identity=disabled/crypto_identity_not_enabled, identity_required=false,
+  readiness identity=true. The unavailable state remains unit-tested only
+  (test_identity_health_distinguishes_missing_runtime) because the shipped
+  image structurally cannot reach it: the build fails if the extra does not
+  import.
+- Both prior findings re-confirmed fixed in-tree at this head: security.yml
+  builds both profiles (default + INSTALL_OBSERVABILITY=1) under the
+  `containers` job with per-image in-image verification steps;
+  frontend/e2e/setup.spec.ts asserts the Crypto Identity toggle is DISABLED
+  (`toBeDisabled()`, not copy-only) under unavailable and misconfigured
+  health responses.
+- Residuals unchanged: GitHub Actions execution of the security containers
+  job remains UNVERIFIED from this read-only lane (job fires on
+  PR-to-main/main pushes/nightly, not develop PRs; no GitHub mutations
+  permitted) — the verbatim local in-image replication is the evidence of
+  record. frontend/e2e still has no CI owner (compose e2e runs tests/e2e
+  only); no #291 criterion requires it, and the spec was executed live at
+  183ac8fb with the frontend byte-identical since.
