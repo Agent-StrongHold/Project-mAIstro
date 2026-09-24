@@ -127,6 +127,16 @@ const designSystems = {
   bundled_count: 1,
 };
 
+const designProjects = [
+  {
+    id: "project-1",
+    name: "Durable Run lineage infographic",
+    skill_slug: "infographic",
+    design_system_slug: "default",
+    output_count: 1,
+  },
+];
+
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext({ baseURL: test.info().project.use.baseURL });
 
@@ -148,6 +158,9 @@ test.beforeAll(async ({ browser }) => {
   });
   await page.route("**/v1/design/systems", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designSystems) });
+  });
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designProjects) });
   });
 });
 
@@ -180,6 +193,9 @@ test("Design Studio is the parent surface and never enables fake visual executio
   }
 
   await expect(page.getByText(/10 design skills and 1 design system available/)).toBeVisible();
+  await expect(page.getByText("Persisted Design projects", { exact: true })).toBeVisible();
+  await expect(page.getByText("Durable Run lineage infographic", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 stored output", { exact: true })).toBeVisible();
   const availableSkills = page.getByLabel("Available design skills");
   await expect(availableSkills.getByText("Hero Image", { exact: true })).toBeVisible();
   await expect(availableSkills.getByText("Social Card", { exact: true })).toBeVisible();
@@ -206,6 +222,30 @@ test("Design Studio is the parent surface and never enables fake visual executio
   await expect(product).not.toContainText("#735");
   await expect(product).not.toContainText("#752");
   await expect(product).not.toContainText("M3 #");
+});
+
+test("Design Studio reports unavailable persistence instead of an empty durable state", async () => {
+  await page.unroute("**/v1/design/projects");
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Design persistence unavailable (DATABASE_URL not set)" }),
+    });
+  });
+
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+
+  const projectsHeader = page.getByText("Persisted Design projects", { exact: true }).locator("..");
+  await expect(projectsHeader.getByText("unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Persisted Design projects are unavailable:.*DATABASE_URL not set/)).toBeVisible();
+  await expect(page.getByText("No persisted Design projects in this scope.", { exact: true })).toHaveCount(0);
+
+  // Keep the shared serial browser state truthful for the following catalog test.
+  await page.unroute("**/v1/design/projects");
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designProjects) });
+  });
 });
 
 test("Deck is a contained Design Studio mode, not a route escape", async () => {

@@ -204,9 +204,15 @@ const STYLE_PROPERTIES = new Set([
 ]);
 
 const NETWORK_OR_CODE_CSS = /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()/i;
-const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|javascript\s*:|vbscript\s*:|data\s*:|https?\s*:|\/\/)/i;
+const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|(?:javascript|vbscript|data|blob|file|filesystem|ftp|http|https|ws|wss|about|mailto|tel|cid)\s*:|\/\/)/i;
+// CSS escapes/comments can hide a blocked function from a lexical check. They
+// are not needed by the supported templates, so reject them before CSSOM
+// normalization rather than trying to decode every browser CSS grammar.
+const OBFUSCATED_CSS = /\\|\/\*/;
 
 function sanitizeStyle(styleText: string): string {
+  if (OBFUSCATED_CSS.test(styleText)) return "";
+
   const source = document.createElement("div");
   source.setAttribute("style", styleText);
   const target = document.createElement("div");
@@ -286,12 +292,14 @@ function sanitizeOnce(markup: string): string {
 /**
  * Sanitize untrusted Deck HTML/SVG into the product's presentation-only subset.
  *
+ * The unknown input type is intentional: stored JSON can outlive the TypeScript
+ * model, so a malformed value must fail closed at this boundary too.
  * Two passes intentionally sanitize the serialized result again. That makes a
  * parser mutation unable to introduce a construct that was not examined in its
  * final browser interpretation.
  */
-export function sanitizeDeckMarkup(markup: string): string {
-  if (!markup) return "";
+export function sanitizeDeckMarkup(markup: unknown): string {
+  if (typeof markup !== "string" || !markup) return "";
   return sanitizeOnce(sanitizeOnce(markup));
 }
 
