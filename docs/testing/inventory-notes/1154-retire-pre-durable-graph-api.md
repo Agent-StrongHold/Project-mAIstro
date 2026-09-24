@@ -172,3 +172,41 @@ findings-only re-bank (`--update`) at this head; no authorization grants are inv
 The trusted-section bulk remains the develop base's own failure set (probe:
 `list_confirms` exists at 1dea30df but is absent from the base ledger), needing the
 grants-first PR outside this lane.
+
+## Repair pass (verifier finding executed at 1051c69d7)
+
+The re-bank was executed as prescribed. `check-vulture-baseline.py --update`
+rewrote `quality/vulture-baseline.json` with a findings-only delta of exactly the
+four flagged rows: pruned the 2 stale `credential_store_v2.py` rows (file absent
+at head AND at base 1dea30df — `git cat-file -e` both ABSENT) and banked the 2
+new rows (`tests/graph/durable_runs/test_pause_reason_wakers.py::pytestmark` under
+dataclass-declarative-field, hive `tests/conftest.py::_isolate_credential_store`
+under pytest-discovered-test-surface; both files byte-identical base↔head, no
+commits touch them in 1dea30df..HEAD — so the prior section's per-commit
+provenance attribution is corrected here: the rows are unbanked-at-base lag the
+merge surfaced, not new debt the merge commits introduced). Rule definitions
+untouched; no other findings churn (2-file diff).
+
+Post-repair attribution, re-derived not assumed: the candidate-bookkeeping
+section is now empty (0 NEW / 0 stale); the gate still exits 1 on the
+trusted-section `unauthorized` set only, and that set is proven base-inherited
+by two independent probes: (1) `list_confirms` exists in base source but not in
+the base ledger; (2) none of the 48 files carrying printed trusted deltas changed
+in `git diff --name-only 1dea30df..HEAD -- packages tests` (intersection empty).
+The residual still requires the grants-first PR outside this lane.
+
+Re-validated at this head: `tests/graph` 1124 passed / 79 skipped (incl.
+`test_retired_executor.py`); driver file set (harness_node, protocol,
+retired_executor, stream5_parity, chat_to_graph_e2e, ensemble, faux_provider,
+testing/harness) 95 passed; hive `test_graph_runner.py` 21 passed;
+`ruff check .` + `ruff format --check .` clean (2528 files); `git diff --check`
+clean on tree and on 1dea30df..HEAD; `check-retired-guidance.py`,
+`check-execution-lifecycles.py`, `check-convergence-matrix.py`,
+`check-merge-markers.py` exit 0; both suite inventories match. Direct probes:
+`maistro.graph.run` / `maistro.graph.strategy` unimportable; `maistro.graph.__all__`
+exposes neither `run_graph` nor `GraphRun`; shipped Graph work crosses only
+`run_durable_graph` (master.py:630, graph_executor.py:890, agent_synth_dag.py:474,
+ evolution_graph.py:898, canonical_dag_runner.py:558, dag_agents.py:213); zero
+non-test `run_graph(`/`GraphRun(` callers; `pre-durable-run-graph` ledger entry
+carries `retired_by: #1154`; no closure keywords in branch commit messages. No
+test files changed in this pass: suite inventories unchanged.
