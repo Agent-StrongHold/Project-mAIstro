@@ -13,6 +13,45 @@ collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
 API tests).
 
+## Executed evidence (repair round 6, independent revalidation at 516b7357)
+
+Re-ran the acceptance battery at this head (worktree `/home/dev/Git/wt/auto-769`):
+
+- Frontend rebuilt from source (`npm run build`, tsc + vite clean, 3.5s) and
+  served by `uv run --no-project uvicorn main:app` from
+  `packages/hive-conductor/backend` on port 8102 (persisted setup-complete
+  instance at `~/.conductor`; `GET /v1/setup/status` → `setup_complete: true`).
+- `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts`:
+  **6/6 passed (11.4s)** against the live routed app — tab-order selection of
+  all 9 artifact modes with `aria-pressed` state, brief-gated editor entry,
+  fixed-page add-layer/nudge journey with a full-page axe scan, Deck editor →
+  presentation dialog → Exit, plus the catalog-degradation journey.
+- `deck-sanitization.spec.ts`: **4/4 passed (1.8s)** with the
+  `tests/Dockerfile.playwright` copy set staged under `E2E_SRC_ROOT` and the
+  e2e standalone `react`/`react-dom` as `E2E_NODE_PATHS`.
+- `uv run pytest packages/hive-conductor/backend/tests -q -k design`:
+  **75 passed** in 5.5s; `uv run ruff check .` clean; `uv run ruff format
+  --check .` clean (2528 files); `scripts/check-suite-inventory.py` **exit 0**
+  (13 suites — the note front matter parses and `packages/hive-conductor/
+  tests/e2e` collects 23 nodes as recorded); `scripts/check-frontend-api-
+  routes.py` exit 0 (215 routes); frontend `npm run lint` 0 errors (90
+  pre-existing warnings).
+- Prior verifier findings re-checked against this head, all stale or
+  non-lane: no `disabled`-forever editor entry exists (entry is
+  `disabled={!canOpenEditor}`, enabled by typing a brief — DesignStudio.tsx
+  `openEditor`); `/decks` is routed (`App.tsx` `<Route path="decks">` with
+  M0 containment lifted) and the Deck editor opens from Design Studio; the
+  keyboard spec's axe scans run with **no disabled rules** (the only
+  `color-contrast` exclusions in the e2e tree are in `credential-labels` and
+  `modal-a11y`, which are different features); the coincurve/cp314 compose
+  failure is the loudly-documented `[identity]` exclusion in
+  `packages/hive-conductor/Dockerfile` (upstream wheel gap, SPEC-072726-3439),
+  not a #769 regression.
+- Lane boundary re-checked via `git show --stat` on every lane commit
+  (bb4e24375, 2df251b73, 8e1b93882, c6d068d3e): only Design-Studio pages,
+  e2e specs, and this note changed. `AppShell.tsx` untouched; visible focus
+  ships from the shell's `button:focus-visible` rule (`src/index.css:600`).
+
 ## Executed evidence (repair round 5, independent revalidation at 2df251b73)
 
 Re-ran the acceptance battery at this head from the rebuilt sources:
