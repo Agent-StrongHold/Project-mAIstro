@@ -93,3 +93,22 @@ edit reverted, `git status`/`git diff` clean, 27/27 restored. The
 `inventory-delta` count was recomputed from `git show` of the develop base:
 still exactly +2 test functions (20→21 door, 5→6 timeout/cancel).
 
+
+## Repair-lane re-validation (head `95613cec8`)
+
+This pass re-proved the branch at the assigned head after the `750edd84d`
+merge (no driver check-*.log files existed for the job). `ruff check` +
+`ruff format --check` clean; 27/27 door+timeout tests; 32/32
+`test_hitl_settlement.py`; the full hive-conductor backend suite (2655
+passed / 1 skipped); canonical mypy clean (712 files); the
+`check_enumerations`, `check-enumerations-provenance`, `check-public-routes`,
+`check-suite-inventory`, `check-security-inventory`,
+`check-owned-store-access`, and `check-agent-store-writes` gates green. The
+mutation check was executed live in two parts at this head: (1) a no-op
+`authorize_project` call in `_require_project_access` (authentication
+untouched) fails exactly
+`test_hitl_routes_are_scoped_to_the_callers_workspaces` and
+`test_project_reviewer_isolated_from_sibling_hitl_work`; (2) dropping the
+`project_ids`/`workspace_ids` filters from the `/expire` store tick fails
+`test_expiry_endpoint_only_settles_authorized_workspace_projects`. Exact
+edits restored, tree clean, 27/27 re-confirmed.
