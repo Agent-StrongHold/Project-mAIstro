@@ -133,3 +133,32 @@ apart), the integration-scope aggregator's evidence-wait for that missing
 evidence, and the gates-ran rollup of the same — infrastructure downstream of
 one service container; this branch's diff touches no MinIO, workflow, docker,
 or compose files versus the develop base.
+
+Eighth round (independent verification at 3ee9f6030): re-executed the lane
+checks rather than trusting the seventh-round claims — `ruff check .` clean,
+`ruff format --check .` clean, focused idle-policy suite 12/12, full backend
+suite 2680 passed, suite-inventory gate ok (2680 recorded), ADR-index,
+shipped-surface-truth, and public-routes gates ok; the default-scope vulture
+run's single unclassified finding is the gitignored
+`frontend/node_modules/flatted` copy already documented above (environmental,
+not this branch). Closure hygiene: PR #1471 body says "Refs #1187" only and no
+branch commit contains fixes/closes/resolves. NEW FINDING (regression
+introduced by this branch, reproduced end-to-end):
+`routes/auth.py::_resolve_session` now pops ANY stored record whose
+`created_at` is missing/unparseable, and the first-run setup claim sentinel
+(`routes/setup.py` `_SETUP_CLAIM_KEY = "__hive_setup_claim__"`, record shape
+`{"claimed_at": ...}`) lives in the same `stores.sessions` JsonStore. An
+UNAUTHENTICATED `GET /v1/tasks` with `Cookie: hive_session=__hive_setup_claim__`
+travels `AuthMiddleware._get_user -> resolve_principal -> get_current_user ->
+_resolve_session` and deletes the in-flight one-shot setup claim —
+`JsonStore.pop` even deletes the durable record (`services/model_store.py`
+`JsonStore.pop` -> `self._persisted.delete`). That releases the
+`put_if_absent` lock `routes/setup.py` relies on so two concurrent first-user
+attempts produce exactly one owner, re-admitting a second
+`/v1/setup/complete` during the provisioning window (repro: claim present
+before, 401 to the attacker, `_is_setup_complete()` False after; base
+develop 60862b6c5 returned None for the same record WITHOUT popping). No test
+covers the auth-path/setup-claim interaction. Fix direction: pop only records
+with a parseable `created_at` (true expired sessions), or move the setup
+sentinel out of the session store. Verdict this round: NEEDS-REPAIR on that
+finding; all #1187 acceptance criteria themselves remain demonstrated.
