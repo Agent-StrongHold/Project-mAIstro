@@ -70,3 +70,35 @@ head adds no production or test code over f35b1bd. Everything re-executed:
   `hive-conductor-e2e-ui`; the only two failures are the pip-audit
   network fault documented above. This head differs from f35b1bd by this
   note only.
+
+## Independent verification at cb7ec38f8ada265aea0b89324df94c1100f95b0d (2026-09-24)
+
+Post-merge verify pass: this head is 8936ac61 plus a merge of develop
+1dea30df; `git diff 8936ac61..cb7ec38f` over every lane surface (durable_runs
+src+tests, hitl route, dag_agents service, hitl door/timeout/dag tests) is
+empty, so the previously verified HITL code is byte-identical here. All
+checks re-executed in this tree anyway:
+
+- `test_hitl_settlement.py` + `test_continuation_conformance.py`: 72
+  passed, 14 skipped (matches the driver's check-3 exactly).
+- `test_hitl_door.py` + `test_hitl_timeout_cancel.py` +
+  `test_dag_agents.py`: 41 passed (matches check-4).
+- Full `durable_runs/` suite: 473 passed, 21 skipped. Full hive backend
+  suite: 2663 passed, 1 skipped (= the 2664 suite-inventory count; the
+  +8 over the pre-merge 2656 are develop's own tests, folded by the
+  inventory check, which passes for both suites).
+- `ruff check .` and `ruff format --check .`: clean (2533 files).
+  `mypy` over the six `packages/*/src` trees: clean, 713 files.
+- Quality-gate scripts at this head: reachability (1117 modules / 188
+  unreachable), doc-links, contract-markers, wiring-reads,
+  execution-lifecycles (19 classified), `check_enumerations.py`,
+  `bump_version.py --check` — all exit 0.
+- PR #1327 body and every branch commit message: no closure keywords
+  (body says "Refs #48" only).
+- Live CI (read-only API) at this head: Quality gate SUCCESS, security,
+  SAST, and Supply chain (pip-audit) all SUCCESS (the f35b1bd pip-audit
+  network fault did not recur); lint-and-type-check, postgres pg17/pg18,
+  MinIO, durable-events, strike-ladder, hive-conductor-e2e/-e2e-ui,
+  wheel-imports SUCCESS. Coverage gate, CI `test`, integration-scope,
+  docker-build, and gates-ran were still IN_PROGRESS at review time and
+  are recorded as UNVERIFIED-pending, not inferred green.
