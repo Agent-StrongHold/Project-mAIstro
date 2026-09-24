@@ -87,3 +87,33 @@ test_container_postgres.py::test_an_unreachable_server_is_an_error_not_a_fallbac
   (SYN dropped by mirrored networking) instead of raising `ECONNREFUSED`. The
   test, `container.py`, and asyncpg are unchanged by this branch; verified with
   a bare `asyncpg.connect` hang outside the test suite.
+
+## Independent verification (2026-09-24, head 36f81563 + db0c6d590)
+
+Fresh validation of the post-reconciliation head; not trusting earlier notes:
+
+- Full hive suite `2686 passed, 1 skipped`; core `state` suites `114 passed`;
+  targeted registry/voice/registration-policy/auth/setup suites `219 passed`.
+- The two hive tests CI failed on the stale head `873f1a4f4` (2026-09-20 runs)
+  — `TestLostSetupMarkerCannotReopenBootstrap` and
+  `test_first_run_provisions_vault_and_persists_seed`, both "409 Username is
+  already taken" — pass on this head; no CI run exists yet for `36f81563`.
+- Diff-coverage gate math (gate's own `audit`, floors 90/80) applied to the
+  seven #1061 surfaces vs base `b41be6b5e^`, with CI's per-package
+  `coverage run --branch` producer and the FULL hive suite: all seven at or
+  above both floors. A subset-only producer first showed real gaps
+  (`auth.py:712,715` 503 handler; `model_store.py` 41.9%) that the full-suite
+  producer covers — the earlier subset run was the artifact, not the code.
+- Live mutation of `_write_batch` to the historical scan-then-write shape
+  fails 7 tests including the 32-thread/2-writer race and the atomic-seam
+  spy; reverted byte-identical (`git status` clean).
+- Gates green: `ruff check`, `ruff format --check`, `mypy` (713 files),
+  `check-durable-table-inventory`, `check-owned-store-access`,
+  `check-agent-store-writes`.
+- OUTSTANDING (out of this lane's authority): `exact-debt-ledger` fails on
+  this head — vulture flags `state.py:817 put_raw_with_unique_claims` and
+  `state.py:873 delete_raw_with_unique_claims` as NEW core-public-api-surface
+  debt (callers live in `packages/hive-conductor/backend`, outside the
+  `packages/*/src` scan). Reproduced locally with the exact CI command. The
+  gate requires a separately reviewed vulture-ledger grant; ledger edits are
+  prohibited in this implementation lane.
