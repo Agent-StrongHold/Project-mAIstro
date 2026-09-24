@@ -177,3 +177,34 @@ number below was re-measured fresh at the exact head, not carried forward:
   holds because every consumer shares that one instance, and the code comment
   documents the intent; `SafeHarnessRunner.start_session` uses a
   function-local `import json` (style nit, ruff-clean).
+
+## Independent verification round 5 (job 21c90ffd, head 18e5ba9f) — no code change
+
+Re-ran the full battery from scratch on the exact merge head; no check-*.log
+was supplied with this job, so all evidence below is first-hand:
+
+- `ruff check .` clean; `ruff format --check .` 2528 files formatted.
+- Core issue suites (events, container security wiring, harness_runner):
+  **393 passed / 51 skipped**.
+- Conductor issue suites (harness routes, agents routes, chat-created agents,
+  maistro-core adapter, agent materialization): **105 passed**.
+- Full conductor backend suite: **2663 passed / 1 skipped / 0 failed** (89.8 s).
+- `mypy` (documented six-package command): Success, 712 source files.
+- Gates exit 0: check-wiring-reads, check-cross-package-imports,
+  check-contract-markers, check-suite-inventory, check-reachability.
+- Acceptance re-derived on production code at this head: engine.warden
+  (services/engine.py:84) is the only composition source and raises
+  WardenCompositionUnavailable; zero `Warden(` constructions in conductor
+  production code; adapter passes `warden_llm` into `create_container`
+  (maistro_core.py:195) whose single `Warden(llm=…)` (container.py:1540) backs
+  chat gate → scan_config, agent scan, harness manager, and the per-Container
+  EventBus binding (handlers_for_warden; conductor_chat absent from
+  BUILTIN_HANDLERS). conductor_chat_action (events/handlers.py:121) scans the
+  exact labelled POSTed message at the tool_result boundary before any HTTP,
+  so a blocked security_event_escalation preview cannot re-enter as an
+  instruction channel; provenance/boundary labels separate handler metadata
+  from payload; normalize_for_detection runs only inside Warden.scan
+  (detector.py:146). The four-path equivalence test
+  (test_identical_malicious_content_uses_one_canonical_warden) executed green
+  in this round: 4 scans, user_input×3 + tool_result, one Warden, zero HTTP
+  after the blocked preview.
