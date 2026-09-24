@@ -402,3 +402,49 @@ head e2811241e. Nothing above was trusted without re-measurement:
   Reaching a private target from a permitted public start through browser
   navigation is refused at the hop that matters, at the actual Playwright
   route boundary — no fake HTTP wrapper involved.
+
+## L155 independent verifier pass at a2b9880ff (2026-09-24)
+
+Verify-phase pass at the lane head `a2b9880ff` (merge of develop
+`1dea30dfe` into auto-155; the repair work at `e2811241e`/`b937c2be0` is an
+ancestor and survived the merge — none of the guarded call sites regressed).
+
+Re-executed at this head, with `uv sync --all-extras` (the pyproject-
+documented install for the browser extra; the verify driver's plain
+`uv sync` had removed playwright):
+
+- Core browser battery `pytest packages/maistro-core/tests/tools/browser/`:
+  **127 passed, 4 skipped → re-run with playwright installed: the 4
+  real-Chromium transport proofs pass** (redirect-to-private denied before
+  the private server receives anything, allowed redirect followed inside
+  the guard, model-directed loopback refused pre-connect, exact-origin
+  scoping). Conductor battery `test_browser_network_policy.py +
+  test_engine_service.py`: **38 passed**, including the source assertions
+  that keep `hill-climb-ui.sh` on `guarded_context`/`sync_client`.
+- Security battery `tests/security/`: **1261 passed, 1 failed** —
+  `test_log_redaction.py::test_install_is_idempotent`. Reproduced
+  identically at base `1dea30dfe` in a detached worktree; the base→head
+  diff touches no redaction file. Pre-existing environment drift, not a
+  branch regression.
+- Inherited-gate re-derivation at this head: `check-vulture-baseline.py`
+  rc=1, but the 116 files carrying "NEW identity" findings have an **empty
+  intersection** with the branch's 19 changed files, and head scans 1429
+  findings vs base 1430 (one fixed, none added). `check-ac-state.py`
+  rc=1 is only the design-coverage floor: the 33.9095 floor is a note
+  banked at `93401f348` (`chatgpt-issue-729-...`, `measured_with_tests`);
+  the fresh head measurement is **33.0281% over 155 decisions, byte-equal
+  to the committed per-decision dict**, the branch moves coverage by
+  exactly 0.0000 and touches no ac-state note, and the change's own
+  acceptance mandate passes (22 criteria, 0 unproven). Both failures are
+  present at the merge base and out of this branch's scope to bank.
+- Gates green at head: `ruff check .`, canonical mypy (713 files, 0
+  issues), `check-security-inventory.py` (63 paths / 23 rows),
+  `check_direct_effects.py` (50 sites, all dispositioned),
+  `check-suite-inventory.py` (13 suites).
+- Transport census re-done at the merge head: every Playwright entry point
+  (BrowserClient, `ui_auto_climb.screenshot`, `widgets.capture_screenshot`,
+  `run_hill_climb.py` ×2, `hill-climb-ui.sh` ×2) attaches a guard before
+  the first page; `design_render`'s Playwright renderer still refuses
+  (unimplemented); no aiohttp/urllib/raw-socket outbound transports exist
+  in production code. PR body and branch commits carry no closure keyword
+  ("Refs #155" only).
