@@ -40,6 +40,7 @@ from maistro.graph.nodes import (
 
 from .._canonical_helpers import (
     durable_record,
+    hitl_authorization,
 )
 from .._canonical_helpers import (
     resume_legacy_dag_fixture as resume_durable_dag,
@@ -405,7 +406,9 @@ async def test_hitl_dag_resumes_after_submit_answer(mem_store: DurableRunStore) 
     )
     assert started.status == RunStatus.PAUSED
 
-    await mem_store.submit_hitl_answer(started.run_id, "ask", {"answer": "yes"})
+    await mem_store.submit_hitl_answer(
+        started.run_id, "ask", {"answer": "yes"}, authorization=hitl_authorization()
+    )
     resumed = await resume_durable_dag(
         started.run_id,
         store=mem_store,
@@ -480,7 +483,9 @@ async def test_sqlite_paused_run_resumes_after_simulated_restart(tmp_path) -> No
     assert persisted is not None
     assert persisted.status == RunStatus.PAUSED
     # Submit the answer.
-    await store2.submit_hitl_answer(run_id, "ask", {"answer": "shipped"})
+    await store2.submit_hitl_answer(
+        run_id, "ask", {"answer": "shipped"}, authorization=hitl_authorization()
+    )
     final = await resume_durable_dag(run_id, store=store2, node_resolver=_resolver)
     assert final.status == RunStatus.COMPLETED
     # And the answer survived the restart through to the downstream node.
