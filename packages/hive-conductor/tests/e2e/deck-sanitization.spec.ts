@@ -163,7 +163,7 @@ async function putCaretAtEnd(locator: ReturnType<Page["locator"]>): Promise<void
 
 function expectNoExecutableMarkup(html: string, allowTrustedDocumentMeta = false): void {
   expect(html).not.toMatch(
-    /<\s*(?:script|iframe|form|img|object|embed|link|base|foreignObject|use|a)\b/i,
+    /<\s*(?:script|iframe|form|img|object|embed|link|base|foreignObject|use|animate|image|a)\b/i,
   );
   if (allowTrustedDocumentMeta) {
     expect(html).not.toMatch(/<meta\b[^>]*(?:http-equiv|content\s*=)/i);
@@ -171,7 +171,9 @@ function expectNoExecutableMarkup(html: string, allowTrustedDocumentMeta = false
     expect(html).not.toMatch(/<meta\b/i);
   }
   expect(html).not.toMatch(/\son[a-z]+\s*=/i);
-  expect(html).not.toMatch(/(?:javascript|vbscript|data)\s*:/i);
+  expect(html).not.toMatch(
+    /(?:javascript|vbscript|data|blob|file|filesystem|ftp|https?|wss?|ws|about|mailto|tel|cid)\s*:/i,
+  );
   expect(html).not.toMatch(/url\s*\(/i);
   expect(html).not.toContain(ATTACKER);
 }
@@ -260,6 +262,17 @@ test("rich paste and drop are sanitized before browser insertion, then export st
   expect(attackerRequests).toEqual([]);
 
   await putCaretAtEnd(preview);
+  const dragOverPrevented = await preview.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.setData("text/uri-list", "http://attacker.invalid/dragover");
+    return !element.dispatchEvent(new DragEvent("dragover", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }));
+  });
+  expect(dragOverPrevented).toBe(true);
+
   const dropHostile = `<strong>Dropped safely</strong><iframe src="http://${ATTACKER}/drop"></iframe><a href="javascript:window.__deckPwned=8">bad</a>`;
   const dropPrevented = await preview.evaluate((element, payload) => {
     const transfer = new DataTransfer();
@@ -295,13 +308,56 @@ test("rich paste and drop are sanitized before browser insertion, then export st
   expect(attackerRequests).toEqual([]);
 });
 
+test("edited DOM is sanitized again before it can become stored slide state", async () => {
+  await loadFresh();
+  const preview = page.locator('[contenteditable="true"]');
+  await preview.focus();
+  const htmlAfterBlur = await preview.evaluate((element) => {
+    // Model the browser DOM after an edit/undo operation. The production blur
+    // handler must treat this DOM as untrusted before copying it into state.
+    element.innerHTML =
+      '<h2>Edited through the DOM</h2><script>window.__deckPwned=16</script>' +
+      '<img onerror="window.__deckPwned=17">';
+    element.blur();
+    // Return the DOM immediately, before a later assertion could hide a
+    // boundary failure behind React's state update.
+    return element.innerHTML;
+  });
+
+  expectNoExecutableMarkup(htmlAfterBlur);
+  await expect(preview).toContainText("Edited through the DOM");
+  await expect(preview.locator("script, img")).toHaveCount(0);
+  expectNoExecutableMarkup(await preview.innerHTML());
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
+
+  await page.getByRole("button", { name: "Present" }).click();
+  const exit = page.getByRole("button", { name: "Exit (Esc)" });
+  await expect(exit.locator("..")).toContainText("Edited through the DOM");
+  await expect(exit.locator("..").locator("script, img")).toHaveCount(0);
+  expect(attackerRequests).toEqual([]);
+});
+
+test("malformed stored values fail closed at the shared Deck boundary", async () => {
+  await loadFresh();
+  const outputs = await page.evaluate(() => {
+    const sanitize = (
+      window as Window & { __sanitizeDeckMarkup: (markup: unknown) => string }
+    ).__sanitizeDeckMarkup;
+    return [null, 42, {}, ["<script>bad</script>"]].map((value) => sanitize(value));
+  });
+  expect(outputs).toEqual(["", "", "", ""]);
+  expect(attackerRequests).toEqual([]);
+});
+
 test("mutation, encoded, SVG, and CSS payload families fail closed while presentation markup survives", async () => {
   await loadFresh();
   const payloads = [
     '<svg><g/onload=window.__deckPwned=10//<p>safe</p></svg>',
     '<math><mtext><img src=x onerror=window.__deckPwned=11></mtext></math><strong>safe</strong>',
     '<a href="jav&#x61;script:window.__deckPwned=12">bad</a><em>safe</em>',
-    '<svg><use href="http://attacker.invalid/icon#x"></use><image href="data:text/html,<script>alert(1)</script>"></image><circle cx="5" cy="5" r="4"></circle></svg>',
+    '<svg><use href="http://attacker.invalid/icon#x"></use><image href="data:text/html,<script>alert(1)</script>"></image><circle cx="5" cy="5" r="4" fill="blob:http://attacker.invalid/id" stroke="ftp://attacker.invalid/line"></circle></svg>',
     '<div style="background:url(\\6a avascript:alert(1));color:#fff">safe</div>',
     '<div style="background-image:image-set(url(http://attacker.invalid/a) 1x);font-size:20px">safe</div>',
     '<style>@import url(http://attacker.invalid/x);</style><p>safe</p>',
@@ -371,16 +427,79 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
   expect(attackerRequests).toEqual([]);
 });
 
-test("built-in Deck templates remain renderable through the sanitizer", async () => {
+test("CSS obfuscation and active SVG families fail closed in preview and presentation", async () => {
   await loadFresh();
-  await page.getByRole("button", { name: /Hero KPI/ }).click();
+  const hostile = `<slide index="1">
+    <div style="background-image:u\\72l(http://${ATTACKER}/css);color:#fff">CSS escape survives as text</div>
+    <div style="background-image:/*hidden*/url(http://${ATTACKER}/comment);color:#fff">CSS comment survives as text</div>
+    <svg><animate attributeName="x" onbegin="window.__deckPwned=14" /><image href="http://${ATTACKER}/image" /><circle cx="5" cy="5" r="4" fill="#fff" /></svg>
+    <a href="jav&#x61;script:window.__deckPwned=15">Encoded navigation</a>
+    <object data="http://${ATTACKER}/object"></object><embed src="http://${ATTACKER}/embed"><p>Embedded-safe text</p>
+  </slide>`;
+
+  await generate(hostile);
 
   const preview = page.locator('[contenteditable="true"]');
-  await expect(preview).toContainText("Portfolio Snapshot");
-  await expect(preview).toContainText("Active Use Cases");
-  const html = await preview.innerHTML();
-  expect(html).toContain("linear-gradient");
-  expectNoExecutableMarkup(html);
+  await expect(preview).toContainText("CSS escape survives as text");
+  await expect(preview).toContainText("CSS comment survives as text");
+  await expect(preview).toContainText("Embedded-safe text");
+  await expect(
+    preview.getByText("CSS comment survives as text", { exact: true }),
+  ).not.toHaveAttribute("style");
+  await expect(preview.locator("svg circle")).toHaveCount(1);
+  await expect(preview.locator("animate, image, object, embed")).toHaveCount(0);
+  const previewHtml = await preview.innerHTML();
+  expectNoExecutableMarkup(previewHtml);
+  expect(previewHtml).toContain("CSS escape survives as text");
+  expect(previewHtml).toContain("CSS comment survives as text");
+  expect(attackerRequests).toEqual([]);
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
+
+  await page.getByRole("button", { name: "Present" }).click();
+  const exit = page.getByRole("button", { name: "Exit (Esc)" });
+  await expect(exit).toBeVisible();
+  const presentation = exit.locator("..");
+  await expect(presentation).toContainText("CSS escape survives as text");
+  await expect(presentation).toContainText("CSS comment survives as text");
+  await expect(
+    presentation.getByText("CSS comment survives as text", { exact: true }),
+  ).not.toHaveAttribute("style");
+  await expect(presentation.locator("svg circle")).toHaveCount(1);
+  await expect(presentation.locator("animate, image, object, embed")).toHaveCount(0);
+  const presentationHtml = await presentation.innerHTML();
+  expectNoExecutableMarkup(presentationHtml);
+  expect(presentationHtml).toContain("CSS escape survives as text");
+  expect(presentationHtml).toContain("CSS comment survives as text");
+  expect(attackerRequests).toEqual([]);
+  expect(
+    await page.evaluate(() => (window as Window & { __deckPwned?: number }).__deckPwned),
+  ).toBe(0);
+});
+
+test("all built-in Deck templates remain renderable through the sanitizer", async () => {
+  await loadFresh();
+  const preview = page.locator('[contenteditable="true"]');
+  const templates = [
+    { button: /Hero KPI/, text: "Portfolio Snapshot" },
+    { button: /Status Funnel/, text: "Lifecycle Funnel" },
+    { button: /Category Mix/, text: "Automations & Agents" },
+    { button: /Migration Progress/, text: "Platform v2 Migration" },
+    { button: /PM Load/, text: "PM Workload Distribution" },
+    { button: /Record List/, text: "Closest to Migration" },
+    { button: /Title Slide/, text: "Use Case Portfolio Health" },
+    { button: /Thank You/, text: "Thank You" },
+  ];
+
+  for (const template of templates) {
+    await page.getByRole("button", { name: template.button }).click();
+    await expect(preview).toContainText(template.text);
+    const html = await preview.innerHTML();
+    expect(html).toContain("style");
+    expectNoExecutableMarkup(html);
+  }
+  expect(attackerRequests).toEqual([]);
 });
 
 test("poster, infographic, and flyer use the shared boundary for preview, edit, and export", async () => {

@@ -217,7 +217,12 @@ const STYLE_PROPERTIES = new Set([
 ]);
 
 const NETWORK_OR_CODE_CSS = /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()/i;
-const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|javascript\s*:|vbscript\s*:|data\s*:|https?\s*:|\/\/)/i;
+const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|(?:javascript|vbscript|data|blob|file|filesystem|ftp|http|https|ws|wss|about|mailto|tel|cid)\s*:|\/\/)/i;
+// CSS escapes/comments can hide a blocked function from a lexical check. They
+// are not needed by the supported presentation templates, so reject them
+// before CSSOM normalization rather than trying to decode every browser CSS
+// grammar.
+const OBFUSCATED_CSS = /\\|\/\*/;
 
 export const VISUAL_ARTIFACT_BLOCK_REASONS = [
   "active-element",
@@ -241,6 +246,11 @@ export type VisualArtifactTrustRecommendation = "upgrade" | "review";
 type SanitizationContext = { reasons: Set<VisualArtifactBlockReason> };
 
 function sanitizeStyle(styleText: string, context: SanitizationContext): string {
+  if (OBFUSCATED_CSS.test(styleText)) {
+    context.reasons.add("css-network-or-code");
+    return "";
+  }
+
   const source = document.createElement("div");
   source.setAttribute("style", styleText);
   const target = document.createElement("div");
@@ -365,8 +375,14 @@ export function recommendVisualArtifactTrust(markup: string): VisualArtifactTrus
   return scanVisualArtifactMarkup(markup).blocked ? "review" : "upgrade";
 }
 
-/** The one HTML/SVG trust boundary shared by every Design Studio visual mode. */
-export function sanitizeVisualArtifactMarkup(markup: string): string {
+/**
+ * The one HTML/SVG trust boundary shared by every Design Studio visual mode.
+ * The unknown input type is intentional: stored JSON can outlive the
+ * TypeScript model, so a malformed value must fail closed at this boundary
+ * too.
+ */
+export function sanitizeVisualArtifactMarkup(markup: unknown): string {
+  if (typeof markup !== "string") return "";
   return scanVisualArtifactMarkup(markup).sanitizedMarkup;
 }
 
@@ -374,6 +390,18 @@ export function createSanitizedVisualArtifactFragment(markup: string): DocumentF
   const template = document.createElement("template");
   template.innerHTML = sanitizeVisualArtifactMarkup(markup);
   return template.content;
+}
+
+/**
+ * Write sanitized markup into a live host element through the reviewed
+ * boundary. Editing surfaces call this after an edit/undo so an unsafe
+ * transient DOM cannot survive between the edit and React's state commit.
+ * This is the only sanctioned executable sink outside the React component
+ * above; model-authored strings must not be assigned to the DOM anywhere
+ * else.
+ */
+export function writeSanitizedVisualArtifact(host: HTMLElement, markup: unknown): void {
+  host.innerHTML = sanitizeVisualArtifactMarkup(markup);
 }
 
 type SanitizedVisualArtifactProps = Omit<

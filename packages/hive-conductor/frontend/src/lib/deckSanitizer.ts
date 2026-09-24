@@ -17,8 +17,13 @@ import {
   sanitizeVisualArtifactMarkup,
 } from "./visualArtifactRenderer";
 
-/** @deprecated Use sanitizeVisualArtifactMarkup for all Design Studio modes. */
-export function sanitizeDeckMarkup(markup: string): string {
+/**
+ * @deprecated Use sanitizeVisualArtifactMarkup for all Design Studio modes.
+ * The unknown input type is intentional: stored JSON can outlive the
+ * TypeScript model, so a malformed value must fail closed at this boundary
+ * too.
+ */
+export function sanitizeDeckMarkup(markup: unknown): string {
   return sanitizeVisualArtifactMarkup(markup);
 }
 

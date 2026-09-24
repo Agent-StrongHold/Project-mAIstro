@@ -456,6 +456,36 @@ class TestDesignOutput:
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
+    def test_to_dict_preserves_preparation_content_and_provenance(self):
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="prompt-stack",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat.MARKDOWN,
+                value="prepared prompt",
+            ),
+            metadata={"production_stage": "prompt_preparation", "visual_generation": False},
+            run_id="run-1",
+            node_run_id="node-1",
+            attempt_id="attempt-1",
+        )
+
+        assert output.to_dict() == {
+            "format": "markdown",
+            "content": "prepared prompt",
+            "url": None,
+            "trust_tier": "t3",
+            "metadata": {"production_stage": "prompt_preparation", "visual_generation": False},
+            "artifact_kind": "file",
+            "run_id": "run-1",
+            "node_run_id": "node-1",
+            "attempt_id": "attempt-1",
+        }
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
     def test_content_raises_shape_error_for_container_root(self):
         from maistro_design.types import (
             ArtifactKind,
