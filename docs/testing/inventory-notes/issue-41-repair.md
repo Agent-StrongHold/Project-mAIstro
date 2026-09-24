@@ -30,3 +30,25 @@ primary-key reconstruction) were already asserting correctly and are untouched.
 No production code changed in this round; all 15 tests in the file pass against
 a live server, and `scripts/check-suite-inventory.py` records the consolidated
 delta in `auto-41-5cc9.md`.
+
+## Round 3 (final validation record, head 03f512946)
+
+Full battery re-run at the finished head; no code changed, evidence only.
+Against a fresh pgvector/pg18 server (`MAISTRO_TEST_DATABASE_URL`):
+`tests/migrations/test_migration_chain.py` 15 passed — `EXPECTED_TABLES`
+matches the live catalog exactly, and all four runtime-self-provisioning
+scenarios (adoption, PK-less adoption, incompatible-type refusal, foreign-shape
+refusal) behave as asserted. The chain applies `038 -> 039 -> 040 ->
+036_audit_log_org_scope` to head on a clean database. With the chain applied and
+`MAISTRO_TEST_PG_DSN` set, `test_idempotency_durable.py` 27 passed including the
+real-server reconcile test (`quota_usage` requires the full schema, which is why
+the DSN-only run must follow `alembic upgrade head`). Sans DSN, the core tasks
+suite is 333 passed / 1 skipped, `test_tasks_idempotency.py` 13 passed,
+maistro-server API 359 passed, integration E2E 5 passed,
+`packages/maistro-core/tests/runs` + `graph/durable_runs` 1324 passed / 224
+skipped, hive-conductor 2661 passed / 1 skipped. `ruff check`,
+`ruff format --check`, the six-package mypy command from AGENTS.md (713 files),
+`check-suite-inventory.py`, `check-doc-links.py`, and
+`check-durable-table-inventory.py` all pass. Residual (out of tree scope):
+issue tracker closure of #1176 is a GitHub mutation workers are prohibited from
+performing; the code contract it owns is implemented and proven here.
