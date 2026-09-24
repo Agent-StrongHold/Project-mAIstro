@@ -104,3 +104,42 @@ previous verify job 8b5d3ef6 failed on worker exit, all 7 driver checks green):
   replication above is the evidence of record; frontend/e2e still has no CI
   owner (compose e2e runs tests/e2e only), which no #291 acceptance criterion
   requires.
+
+Final-head verification at merge commit 67be62413 (develop 1dea30dfe merged in;
+independent re-execution, not inherited from earlier addenda):
+
+- The develop merge touched none of the identity surfaces (Dockerfile,
+  identity_health, routes/health+setup, security.yml, support-matrix docs);
+  it brought unrelated credential/design/security test deltas, and the suite
+  inventories grew coherently (conductor 2670, core 10776).
+- Driver gates green at this head (uv sync, ruff check, ruff format --check,
+  extra_guard 6, conductor api+identity_health+setup_guard 55, both suite
+  inventories match). Independently re-executed: extra_guard 6 passed,
+  test_identity_health+test_setup_guard 25 passed, test_api 30 passed,
+  tests/test_prepull_base_images.py 25 passed, engine identity suite 69
+  passed, and check gates build-context/deployment-claims/doc-links/
+  image-inventory/shell-execution/workflow-write-safety/security-inventory/
+  shipped-surface-truth/cross-package-imports all PASS. security.yml parses
+  with both image builds and both in-image verification steps in the
+  `containers` job.
+- Both l291-final image profiles re-verified in-image verbatim (CI commands):
+  default printed identity=operational (python 3.13.15, bip-utils 2.12.1,
+  coincurve 21.0.0, pynacl 1.6.2, msgpack/setuptools floors held);
+  observability printed observability=importable identity=operational. Image
+  provenance proven at this head: the image's services/identity_health.py,
+  routes/health.py, routes/setup.py and requirements.txt are byte-identical
+  to the worktree.
+- Live deployment contract observed against the shipped default image: fresh
+  boot -> /health identity=misconfigured/setup_incomplete,
+  identity_required=false, /health/ready identity=false; five-step setup
+  without crypto_identity -> disabled, readiness identity=true; setup with
+  crypto_identity (POST /v1/setup/complete, did persisted, one-time mnemonic
+  returned) -> identity=operational/provisioned. Live Playwright
+  setup.spec.ts against the same image: 8/8 passed, including unavailable-
+  and misconfigured-health gating with the Crypto Identity toggle disabled.
+- Residuals unchanged: GitHub Actions execution of the security containers
+  job remains UNVERIFIED (read-only lane; job fires on PR-to-main/main
+  pushes/nightly, not develop PRs) — the verbatim local in-image replication
+  is the evidence of record. frontend/e2e still has no CI owner (compose e2e
+  runs tests/e2e only); no #291 criterion requires it, and the spec was
+  executed live here.
