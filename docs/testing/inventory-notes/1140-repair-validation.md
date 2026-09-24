@@ -73,3 +73,32 @@ Evidence at candidate `99664046bf2d`, base `1dea30dfe30c`:
 
 Residual: Docker E2E not re-run this pass (host port 8101 occupied by an unrelated service, as documented above); in-process suites cover the acceptance criteria. Remote CI/browser e2e not run from this lane.
 
+## Writer validation at head 8d07c01c (repair lane, no code changes)
+
+Head `8d07c01cdd03` differs from the validated `99664046bf2d` only by this documentation file (`git diff 99664046b..HEAD --name-only` returns `docs/testing/inventory-notes/1140-repair-validation.md`), so all production code is byte-identical to the previously proven head. Every acceptance criterion was re-proven first-hand here rather than trusted from earlier claims.
+
+First-hand probes against production behavior (in-memory only; no tree edits):
+
+- Live route discovery through the real `app.routes` trees (including FastAPI lazy `_IncludedRouter` contexts): conductor 265 (method, path) identities vs 72 declarations, turing 15 identities vs 11 declarations — `_route_entry_failures` reports zero unclassified live routes for both applications.
+- Undeclared route: a `GET /v1/brand-new` route injected into the real Turing app yields `turing GET /v1/brand-new: registered route has no declaration`.
+- Expired exemption: an `expires: 2026-09-01` turing fixture fails with `exemption expired on 2026-09-01`.
+- Misleading suffix: `/v1/unrelated/invoke` matched against an exact `/v1/invoke` public declaration is rejected for both applications (`_route_matches` offers only exact/boundary-prefix/template kinds; no suffix rule exists).
+- Runtime default-deny against the real Turing app via TestClient: unauthenticated `/v1/feed` -> 401; authenticated human on undeclared `/v1/undeclared-future-route` -> 403 `Route authorization declaration required`; authenticated human on declared `/v1/feed` -> 200; non-admin human on `/v1/admin` -> 403 `Permission 'turing.admin' required`; an absent declaration (policy `None`) denies — an unmapped route can never mean allow.
+- Canonical vocabulary: registry permissions `turing.vault_read`/`turing.vault_write`/`turing.chat`/`turing.admin` equal `canonical_permission(Scope.TURING_*)` (`turing:vault_read` -> `turing.vault_read`); `_PERMISSION_RE` (`scope.verb`) is enforced identically by the gate and `maistro.security.http_routes`.
+
+Commands re-run green at this head:
+
+- `uv run python3 scripts/check-public-routes.py` (the exact CI command, `.github/workflows/ci.yml:187`): exit 0, both production apps imported, 20 unauthenticated paths declared and base-authorized, ratchet 12 -> 12 identities, "both live route tables are declared and authorized".
+- `uv run ruff check .` and `uv run ruff format --check .`: clean (2537 files formatted).
+- `uv run pytest tests/test_route_permission_gate.py packages/maistro-core/tests/security/test_http_route_policy.py packages/maistro-core/tests/security/test_route_registry_location.py packages/maistro-turing/backend/tests/test_auth.py -q`: 111 passed.
+- `uv run pytest packages/maistro-turing/backend/tests -q`: 78 passed.
+- `uv run pytest tests/test_check_public_routes.py tests/test_m1_542_policy_coverage.py tests/test_check_enumerations.py tests/test_ratchet_provenance.py tests/test_m1_542_diff_coverage_edges.py tests/test_m1_542_review_regressions.py -q`: 115 passed.
+- `uv run pytest packages/hive-conductor/backend/tests -q`: 2678 passed, 1 existing skip.
+- `uv run python scripts/check_enumerations.py`: no new enumeration gaps; suite inventory gates match for core, Conductor, and Turing suites.
+
+Prior-findings disposition: (1) required Quality gate FAILURE at `6ebc7503` is remote CI state at an older head — the branch's later commits re-proved every CI-failure gate green at `99664046b` (radon 70 -> 70, ratchet provenance, formal constants no drift, diff-coverage 9/9, mypy) and `8d07c01c` is docs-only over it; re-running remote CI requires a push, which this lane is prohibited from performing. (2) The Docker E2E `Bind for 127.0.0.1:8101` failure is environmental (unrelated host service holds the port); compose e2e passed in an isolated project at earlier heads whose production files are byte-identical to this head, and #1140's acceptance criteria are covered by the in-process evidence above.
+
+Stop-condition check: `scripts/check-public-routes.py` remains the one policy mechanism (loop over `("conductor", "turing")`) backed by the single shared `maistro.security.http_routes` matcher consumed by both runtime middlewares; no second Turing-only checker exists (`ls scripts/ | grep route` shows only `check-public-routes.py` and the pre-existing frontend API check). docker-compose.yml declares no Turing service; Turing enablement and product authorization dependencies (`require_admin`, `require_turing_scope`, `require_user_or_turing_scope`) are unchanged — the middleware only adds the declaration floor.
+
+Residual for the integrator: push the branch so required CI re-runs at the final head; the local evidence above predicts green. Docker compose e2e was not re-run this pass (environmental port conflict, previously green at byte-identical production code).
+
