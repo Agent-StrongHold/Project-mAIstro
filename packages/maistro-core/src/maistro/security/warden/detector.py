@@ -51,6 +51,10 @@ _PATTERN_TIMEOUT_S = 0.5
 _SCAN_WINDOW_CHARS = 50 * 1024
 _SCAN_OVERLAP_CHARS = 2 * 1024
 
+# The detector mechanism is the canonical policy version consumed by boundary
+# audit records. Turing must not create a second policy identifier.
+WARDEN_POLICY_VERSION = "warden-code-v1"
+
 
 def _windows(text: str) -> Iterator[str]:
     """`text` in overlapping windows shared by every regex scan phase.
@@ -166,9 +170,14 @@ def _scan_reject_patterns(scan_content: str) -> list[str]:
 class Warden:
     """Threat detector. Runs at user_input and tool_result boundaries only.
 
+    ``policy_version`` identifies this canonical detector mechanism for audit
+    correlation; consumers must not replace it with a product-local policy.
+
     Layers 1-2.5 are always active (free, instant).
     Layer 3 (LLM) is optional -- requires an LLM client and model to be configured.
     """
+
+    policy_version = WARDEN_POLICY_VERSION
 
     def __init__(
         self,
