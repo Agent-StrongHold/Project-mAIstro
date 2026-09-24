@@ -628,6 +628,63 @@ def test_run_endpoint_reports_unavailable_without_the_canonical_spine(
         stores.dags.pop(dag_id, None)
 
 
+def test_run_endpoint_treats_a_failed_baseline_run_as_no_baseline(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed canonical Run is truth about the DAG, not a success (#1113).
+
+    Only the `unavailable` shape short-circuits the endpoint. A Run that was
+    admitted and then failed raises `CanonicalDagExecutionError` with a failed
+    status; the endpoint continues without a baseline, and no proposal can
+    validate because every variant run fails identically — nothing may be
+    surfaced as an improvement over a run that never completed.
+    """
+    import services.benchmark_eval as benchmark_eval
+    import services.graph_runner as graph_runner
+    import stores
+    from services.graph_runner import CanonicalDagExecutionError
+
+    dag_id = "d-failed-baseline"
+    stores.dags[dag_id] = {
+        "id": dag_id,
+        "name": "Failed baseline",
+        "description": "exercise the failed-baseline branch",
+        "nodes": [{"id": "n1", "role": "worker", "prompt": "work"}],
+        "edges": [],
+    }
+    try:
+        workspace_id = _optimizer_workspace(admin_client)
+        _seed_metrics(dag_id, "n1", count=10, failed=8, p95=100)
+
+        async def _failed_run(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise CanonicalDagExecutionError(
+                {
+                    "status": "failed",
+                    "run_id": "r-failed",
+                    "error": "node n1 failed",
+                    "node_results": {},
+                }
+            )
+
+        async def _no_score(_result: Any, _task: Any) -> dict[str, Any]:
+            return {"total": 10}
+
+        monkeypatch.setattr(graph_runner, "execute_dag", _failed_run)
+        monkeypatch.setattr(benchmark_eval, "evaluate_dag_run", _no_score)
+
+        response = admin_client.post(f"/v1/optimizer/{dag_id}/run?workspace_id={workspace_id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body.get("status") != "unavailable"
+        assert body["baseline_score"] == 0.0
+        assert body["validated"] is True
+        assert body["proposals"] == []
+        assert body["proposals_tested"] == 0
+    finally:
+        stores.dags.pop(dag_id, None)
+
+
 async def test_authorized_hill_climb_reports_unavailable_without_the_spine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

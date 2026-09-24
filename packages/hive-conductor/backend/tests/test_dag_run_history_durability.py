@@ -647,3 +647,39 @@ class TestTheChatProducerDrivenEndToEnd:
         assert answer["status"] == "completed"
         assert answer["score"] == 0
         assert store.get_run(answer["run_id"])["status"] == "completed"
+
+    @pytest.mark.ac("M1-E-1113/AC-3")
+    async def test_a_refused_execution_is_unavailable_not_a_generic_error(
+        self, monkeypatch: Any
+    ) -> None:
+        """The no-spine refusal keeps its own shape through the chat tool.
+
+        `execute_dag` fails closed by raising `CanonicalDagExecutionError`
+        whose result says `unavailable`; the producer must surface that
+        degraded capability as-is rather than as a generic DAG failure
+        (#1113).
+        """
+        import services.graph_runner as graph_runner_module
+        from services.chat_completion import _tool_run_workflow
+        from services.graph_runner import CanonicalDagExecutionError
+
+        store = DagRunStore(records=FakeRecords())
+        self._install(monkeypatch, store, events_fail=False, exec_fails=False)
+
+        async def _unavailable(*_a: Any, **_k: Any) -> dict[str, Any]:
+            raise CanonicalDagExecutionError(
+                {
+                    "status": "unavailable",
+                    "run_id": None,
+                    "error": "canonical Graph execution is unavailable",
+                    "node_results": {},
+                }
+            )
+
+        monkeypatch.setattr(graph_runner_module, "execute_dag", _unavailable)
+
+        answer = await _tool_run_workflow({"dag_id": "d-1"}, "u-1", None)
+
+        assert answer["status"] == "unavailable"
+        assert answer["run_id"] is None
+        assert "canonical Graph execution" in answer["error"]
