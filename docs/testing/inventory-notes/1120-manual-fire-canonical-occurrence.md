@@ -163,3 +163,27 @@ without spending so a pre-Run crash claims nothing and a post-admission crash
 recovers via `_reconcile_pending_fires`. No premature closure keywords in the
 PR body or commit messages (references only). No issues remain open on this
 verifier's list.
+
+## Independent re-verification pass at 87d783f7e (2026-09-23)
+
+Docs-only delta from 5e75e7e9, so the code surface is identical; every claim
+above was re-derived and re-executed rather than trusted. Gates: ruff check
+and format clean; radon EXIT=0 (70/70); convergence-matrix checker EXIT=0;
+mypy clean across all six packages (712 files); both touched suite
+inventories match. The vulture gate still exits 1 (1430 vs 1415 reviewed);
+this pass compared the **raw vulture scans** (not just the checker's summary)
+of head 87d783f7e and a git-archive tree of base 8bb344e32 — 1430 = 1430
+line-normalized findings, `diff` empty — proving upstream ledger staleness.
+PG legs on a fresh disposable pg18 container after `alembic upgrade head`
+through the full chain to single head 042: core scheduling + runs dirs
+1361 passed / 3 skipped, and the **entire** Hive backend suite 2668 passed /
+1 skipped — including the real-route E2E `test_the_manual_fire_route_runs_
+the_canonical_spine_end_to_end` (one Idempotency-Key, two POSTs, one Run,
+canonical Workspace/Project, manual provenance, completed NodeRun + Attempt,
+`runs_so_far == 1`), the loser-race reconciliation
+`test_a_loser_that_missed_the_probe_reconciles_to_the_winner`, and the
+crash-window cases (`test_a_crashed_fire_leaves_no_firing_and_a_retry_fires`,
+`test_a_crash_between_reserve_and_run_leaves_no_firing_behind`). Without a
+DSN the same core suites pass 516/150 skipped and the four focused Hive
+manual-fire suites 100 passed. No defects found; no tree changes made by
+verification itself beyond this note.
