@@ -277,3 +277,41 @@ check-suite-inventory runs). First-hand re-execution on this exact head:
   absent from `BUILTIN_HANDLERS` and registered only via
   `handlers_for_warden` at Container wiring; commit messages and PR #1447
   body contain no closure keywords.
+
+## Independent verification round 8 (job f31ec541, head a2fb1a23b) — no code change
+
+Verify lane at the post-merge head (`60862b6c5` develop merged into auto-1171).
+Supplied check-*.log files all returncode 0. First-hand re-execution on this
+exact head:
+
+- Core issue suites (harness_runner, events, container security wiring):
+  **133 passed**; conductor issue suites (agents/harness/chat-created/
+  adapter routes): **80 passed**.
+- Full conductor backend suite: **2677 passed / 1 skipped / 0 failed** (65 s),
+  matching the recorded inventory count 2678.
+- `ruff check .` clean; `mypy` six-package command: success, 713 source files.
+- Gates exit 0: check-suite-inventory (conductor 2678 / core 10825),
+  check-reachability (1117 production modules), check-wiring-reads,
+  check-cross-package-imports, check-contract-markers.
+- Acceptance re-derived from the issue, not from summaries: engine.warden is
+  Container-first with `WardenCompositionUnavailable` fail-closed (engine.py);
+  harness `_get_manager` discards managers from replaced compositions and
+  routes map unavailability to 503; agent scan surfaces
+  `AgentScannerUnavailable` → 503 with nothing stored; `conductor_chat` is
+  registered only via `handlers_for_warden` from `_wire_event_handlers`, scans
+  the exact labelled string it POSTs at boundary `tool_result`, and a blocked
+  `security_event_escalation` preview raises `EventPayloadBlocked` before any
+  HTTP; `Warden(llm=warden_llm)` in `create_container` gives chat, agent scan,
+  harness, and event re-entry one composition including the layer-3 judge
+  (`test_container_warden_composition_reaches_l3_and_event_reentry` proves the
+  configured judge is consulted and a replacement Container's judge is not).
+  `test_identical_malicious_content_uses_one_canonical_warden` seen passing:
+  4 scans of one Warden instance, boundaries user_input×3 + tool_result.
+- No closure keywords in PR #1447 body ("Refs" only) or branch commit messages.
+- Environment-only, pre-existing, out of scope: re-produced
+  `test_log_redaction.py::test_install_is_idempotent` failing under pytest's
+  logging plugin (two plugin LogCaptureHandlers attach to the logger during
+  the call phase and get wrapped, so the strict `== 0` assertion sees 2);
+  passes with `-p no:logging` and in a bare-python probe; file untouched by
+  this branch (initial-release provenance). Full backend suite at this head
+  is 0 failed, so no lane impact.
