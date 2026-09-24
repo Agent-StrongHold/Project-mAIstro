@@ -1,6 +1,7 @@
 import {
   type ClipboardEvent,
   type DragEvent,
+  type FocusEvent,
   useCallback,
   useEffect,
   useRef,
@@ -145,6 +146,14 @@ export default function DeckBuilder() {
     updateSlide(active, target.innerHTML);
   }, [active, updateSlide]);
 
+  const handlePreviewBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    const safeHtml = sanitizeDeckMarkup(event.currentTarget.innerHTML);
+    // Do not leave an edited DOM value live in the browser between blur and
+    // React's state commit. The same boundary protects both the DOM and state.
+    event.currentTarget.innerHTML = safeHtml;
+    updateSlide(active, safeHtml);
+  }, [active, updateSlide]);
+
   const handlePreviewPaste = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     // Prevent browser insertion before examining rich clipboard data. An <img>
     // can start a request as soon as it enters the DOM; sanitizing on blur is
@@ -247,8 +256,9 @@ ${slides.map(s => `<div class="slide">${sanitizeDeckMarkup(s.html)}</div>`).join
           </div>
           <div ref={previewRef} contentEditable suppressContentEditableWarning
             onPaste={handlePreviewPaste}
+            onDragOver={e => e.preventDefault()}
             onDrop={handlePreviewDrop}
-            onBlur={e => updateSlide(active, e.currentTarget.innerHTML)}
+            onBlur={handlePreviewBlur}
             dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
             style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "var(--text-floor)" }} />
           <textarea value={slides[active]?.notes || ""} onChange={e => setSlides(s => s.map((sl, i) => i === active ? { ...sl, notes: e.target.value } : sl))}
