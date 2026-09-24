@@ -105,3 +105,31 @@ its re-check — never slides the idle window; `whoami` is observational, so
 `test_whoami_is_observational_and_cannot_keep_an_idle_session_alive`, and
 surfaced in Profile's SESSION HEALTH card). Remote CI completion on the PR
 rollup remains the only unverifiable item from this environment.
+
+Seventh round (repair-lane re-validation at merge head fd216cb2e, the
+auto-1187 merge of develop 60862b6c5): zero production delta to the seven
+session-policy surfaces since the sixth-round anchor 82ea544a5 (git diff
+--stat shows only this note grew); re-executed from scratch rather than
+trusting prior claims. `ruff check .` clean; `ruff format --check .` clean
+(2534 files); focused idle-policy suite 12/12; full backend suite 2680
+passed (develop's merge added tests; was 2666); suite-inventory gate ok (13
+suites); ADR-index and ADR-status-language gates ok; ratchet-provenance and
+shipped-surface-truth ok; the CI-contract vulture invocation
+(`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) exited 0
+with 1415 reviewed identities == 1415 findings. The vulture default scope
+remains red on vendored `frontend/node_modules/flatted/python/flatted.py` —
+the documented trunk/environmental drift of
+`auto-1058-vulture-invocation.md`, not this branch's surfaces. #1050
+re-verified at the frontend layer: `AuthGuard` restoration uses the
+observational `whoami` call; `WorkspaceContext`'s `ACTIVE_WORKSPACE_KEY` and
+`lib/uiState.ts` conveniences are localStorage product state with no authority;
+no settings/preferences route can change the module-constant session TTLs.
+Remote CI at this exact head was inspected read-only: `test`,
+`lint-and-type-check`, both hive-conductor e2e jobs, `docker-build`, postgres
+pg17/pg18, `security`, the Quality gate, and coverage (PostgreSQL,
+no-services) all SUCCESS; the failures are `Start MinIO`
+service-container startup (coverage-MinIO and object-storage jobs, ~33 s
+apart), the integration-scope aggregator's evidence-wait for that missing
+evidence, and the gates-ran rollup of the same — infrastructure downstream of
+one service container; this branch's diff touches no MinIO, workflow, docker,
+or compose files versus the develop base.
