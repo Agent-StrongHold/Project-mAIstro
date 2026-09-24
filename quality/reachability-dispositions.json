@@ -20,13 +20,12 @@
       ]
     },
     {
-      "id": "hive-persistence-v2",
+      "id": "hive-pg-persistence",
       "subsystem": "Agent Conductor services",
       "disposition": "CONNECT",
-      "rationale": "Second-generation persistence helpers that predate the storage decision. ADR-082226-5104 makes PostgreSQL the durable system of record, so these are wiring owed rather than debt.",
+      "rationale": "The remaining pg_persisted helper predates the storage decision. ADR-082226-5104 makes PostgreSQL the durable system of record, so this helper is wiring owed rather than a second credential authority; credential_store_v2 is retired by #1186.",
       "root": "maistro.container / main.py startup, per ADR-082226-5104",
       "modules": [
-        "@flat/hive-conductor/services.credential_store_v2",
         "@flat/hive-conductor/services.pg_persisted"
       ]
     },
