@@ -1668,7 +1668,6 @@ name = "hive-conductor"
 version = "0.9.0"
 source = { editable = "packages/hive-conductor" }
 dependencies = [
-    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "maistro-core", extra = ["bcrypt"] },
@@ -1693,7 +1692,6 @@ observability = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cryptography", specifier = ">=50.0.0,<51" },
     { name = "fastapi", specifier = ">=0.115.0,<1" },
     { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0.0,<7" },
