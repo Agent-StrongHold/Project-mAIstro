@@ -21,8 +21,8 @@ from .base import (
     BaseNode,
     NodeContext,
     ReplaySemantics,
+    hitl_resume_at,
     pause_until,
-    preserved_hitl_deadline,
 )
 
 
@@ -82,7 +82,7 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
                     timed_out=bool(resumed.get("timed_out", False)),
                 )
 
-        resume_at = preserved_hitl_deadline(resumed, timeout_seconds=inputs.timeout_seconds)
+        resume_at = hitl_resume_at(ctx, inputs.timeout_seconds, resumed=resumed)
         pause_until(
             PAUSE_AWAITING_HUMAN_APPROVAL,
             resume_at=resume_at,

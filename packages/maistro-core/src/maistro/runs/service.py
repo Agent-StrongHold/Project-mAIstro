@@ -12,10 +12,11 @@ from maistro.runs.execution import (
     AttemptContextFactory,
     AttemptExecutionService,
     AttemptReconciler,
+    _active_run_attempts,
+    _cancel_settled_node_runs,
 )
 from maistro.runs.lifecycle import InvalidLifecycleTransition
 from maistro.runs.model import (
-    TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AcceptedNodeOutcome,
     Attempt,
@@ -235,13 +236,7 @@ class RunExecutionService:
         if run.status in TERMINAL_RUN_STATUSES:
             return run
 
-        node_runs = await self._store.list_node_runs(run_id)
-        active_attempts = [
-            attempt
-            for node_run in node_runs
-            for attempt in await self._store.list_attempts(node_run.node_run_id)
-            if attempt.status not in TERMINAL_ATTEMPT_STATUSES
-        ]
+        active_attempts = await _active_run_attempts(self._store, run_id)
         # Another canceller or normal completion may win this durable fence
         # after the initial read. Only cancellation is idempotent; a completed
         # or failed outcome remains authoritative.
@@ -262,17 +257,7 @@ class RunExecutionService:
         # Queue-only Nodes have no Attempt owner to notify. Terminalize those
         # logical records directly; active Attempts must settle themselves so
         # an unreachable owner is never represented as stopped work.
-        for node_run in await self._store.list_node_runs(run_id):
-            if node_run.status in TERMINAL_RUN_STATUSES:
-                continue
-            attempts = await self._store.list_attempts(node_run.node_run_id)
-            if any(attempt.status not in TERMINAL_ATTEMPT_STATUSES for attempt in attempts):
-                continue
-            await self._store.transition_node_run(
-                node_run.node_run_id,
-                RunStatus.CANCELLED,
-                error="execution cancelled",
-            )
+        await _cancel_settled_node_runs(self._store, run_id)
         cancelled = await self._store.get_run(run_id)
         if cancelled is None:  # pragma: no cover - store contract violation
             raise ValueError(f"Run {run_id!r} disappeared during cancellation")

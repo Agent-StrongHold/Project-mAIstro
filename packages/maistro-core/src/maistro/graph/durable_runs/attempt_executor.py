@@ -36,7 +36,7 @@ from . import executor as traversal
 from .authoritative_fold import fold_authoritative_frontier
 from .execution_store import DurableRunExecutionStore
 from .launch import require_admitted_launch_state
-from .protocol import DurableRunStore
+from .protocol import DurableRunStore, RecoveryInfrastructureError
 from .spine import mirror_lifecycle
 from .types import DurableRunRecord
 
@@ -411,6 +411,11 @@ async def _walk_frontier(
         await asyncio.shield(
             _persist_cancelled_run(record.run_id, store=store, run_store=run_store)
         )
+        raise
+    except RecoveryInfrastructureError:
+        # A classified store/session failure is infrastructure wide: reloading
+        # the record or terminalizing the Run would itself go through the
+        # broken store. Let it reach the recovery boundary untouched.
         raise
     except Exception as exc:
         latest = await _reload_record(record.run_id, store=store, cause=exc)

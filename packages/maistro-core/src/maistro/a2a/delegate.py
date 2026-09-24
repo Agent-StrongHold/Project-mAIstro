@@ -107,26 +107,24 @@ class A2ADelegator:
         Raises:
             ValueError: If delegation not allowed or invalid
         """
-        if delegation_mode == DelegationMode.NONE and to_agent:
-            raise ValueError("Cannot specify to_agent with delegation_mode=NONE")
+        to_agent = self._validated_target(from_agent, task, to_agent, delegation_mode)
 
-        capabilities = self._agent_capabilities.get(from_agent, [])
-        if not capabilities:
-            raise ValueError(f"Agent {from_agent} has no delegation capabilities")
-
-        if to_agent and to_agent not in capabilities:
-            raise ValueError(
-                f"Agent {from_agent} cannot delegate to {to_agent}. Allowed: {capabilities}"
-            )
-
-        effect_key = str((metadata or {}).get("effect_key") or "")
+        # A delegation admission may be retried after the canonical child Run
+        # was reserved.  The key is the transport's receipt-side idempotency
+        # identity; never mint a second task for the same logical hand-off.
+        task_metadata = dict(metadata or {})
+        delegation_key = task_metadata.get("delegation_key")
+        if delegation_key:
+            for existing in self._tasks.values():
+                if existing.metadata.get("delegation_key") == delegation_key:
+                    return existing.id
+        # Legacy effect-scoped receipt identity: callers that address the
+        # transport by replay effect_key dedupe on the same rule.
+        effect_key = str(task_metadata.get("effect_key") or "")
         if effect_key:
             for existing in self._tasks.values():
                 if existing.metadata.get("effect_key") == effect_key:
                     return existing.id
-
-        if not to_agent:
-            to_agent = self._select_best_agent(from_agent, task, delegation_mode)
 
         task_id = str(uuid.uuid4())
 
@@ -142,7 +140,7 @@ class A2ADelegator:
             result=None,
             error=None,
             delegation_mode=delegation_mode,
-            metadata=metadata or {},
+            metadata=task_metadata,
         )
 
         self._tasks[task_id] = task_obj
@@ -154,6 +152,40 @@ class A2ADelegator:
             delegation_mode,
         )
         return task_id
+
+    def _validated_target(
+        self,
+        from_agent: str,
+        task: str,
+        to_agent: str | None,
+        delegation_mode: DelegationMode,
+    ) -> str:
+        """Validate a delegation request and resolve its concrete target.
+
+        The one admission guard shared by `delegate_task` (which admits the
+        transport task) and `resolve_target` (which only previews the choice),
+        so a refusal can never disagree between the two paths.
+        """
+        if delegation_mode == DelegationMode.NONE and to_agent:
+            raise ValueError("Cannot specify to_agent with delegation_mode=NONE")
+        capabilities = self._agent_capabilities.get(from_agent, [])
+        if not capabilities:
+            raise ValueError(f"Agent {from_agent} has no delegation capabilities")
+        if to_agent and to_agent not in capabilities:
+            raise ValueError(
+                f"Agent {from_agent} cannot delegate to {to_agent}. Allowed: {capabilities}"
+            )
+        return to_agent or self._select_best_agent(from_agent, task, delegation_mode)
+
+    def resolve_target(
+        self,
+        from_agent: str,
+        task: str,
+        to_agent: str | None,
+        delegation_mode: DelegationMode,
+    ) -> str:
+        """Resolve and validate the target without admitting transport work."""
+        return self._validated_target(from_agent, task, to_agent, delegation_mode)
 
     def _select_best_agent(self, from_agent: str, task: str, mode: DelegationMode) -> str:
         """Select best agent for delegation based on mode."""
@@ -181,6 +213,17 @@ class A2ADelegator:
     def get_task_status(self, task_id: str) -> A2ATask | None:
         """Get task status."""
         return self._tasks.get(task_id)
+
+    def get_task_by_delegation_key(self, delegation_key: str) -> A2ATask | None:
+        """Recover a task accepted for one logical delegation."""
+        return next(
+            (
+                task
+                for task in self._tasks.values()
+                if task.metadata.get("delegation_key") == delegation_key
+            ),
+            None,
+        )
 
     def update_task_status(
         self,

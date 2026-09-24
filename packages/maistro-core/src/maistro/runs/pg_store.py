@@ -61,6 +61,10 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.retention_scope import (
+    RetentionScope,
+    WorkspaceRetentionScope,
+)
 from maistro.runs.sources import occurrence_key
 from maistro.runs.store import (
     DEFAULT_ARCHIVE_AFTER,
@@ -71,6 +75,7 @@ from maistro.runs.store import (
     AttemptNotFound,
     DuplicateOccurrence,
     NodeRunNotFound,
+    PurgeOutcome,
     RunEffectClaim,
     RunIntegrityError,
     RunNotFound,
@@ -114,6 +119,48 @@ _PAYLOAD_TABLES = {
 
 #: Status values that mean a Run or NodeRun is finished, as stored.
 _TERMINAL_STATUS_VALUES = tuple(sorted(status.value for status in TERMINAL_RUN_STATUSES))
+
+
+#: Retention candidate selection — the two scope variants' whole difference is
+#: one Workspace predicate line (#1175).
+#: One more row than the batch is requested (the LIMIT parameter is sent as
+#: ``limit + 1``) so the outcome can say whether the scope drained or the
+#: batch ran out; the surplus row's lock lives only as long as the
+#: transaction.
+_PURGE_CANDIDATES_SQL_GLOBAL = """SELECT run_id
+    FROM canonical_runs r
+    WHERE r.retention_expires_at IS NOT NULL
+      AND r.retention_expires_at <= $1
+      AND r.status = ANY($2::text[])
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_node_runs n
+          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+          WHERE n.run_id = r.run_id
+      )
+    ORDER BY r.retention_expires_at
+    LIMIT $3
+    FOR UPDATE SKIP LOCKED"""
+
+_PURGE_CANDIDATES_SQL_SCOPED = """SELECT run_id
+    FROM canonical_runs r
+    WHERE r.retention_expires_at IS NOT NULL
+      AND r.retention_expires_at <= $1
+      AND r.status = ANY($2::text[])
+      AND r.workspace_id = $3
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM canonical_node_runs n
+          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
+          WHERE n.run_id = r.run_id
+      )
+    ORDER BY r.retention_expires_at
+    LIMIT $4
+    FOR UPDATE SKIP LOCKED"""
 
 
 class PgRunStore:
@@ -211,60 +258,100 @@ class PgRunStore:
 
     async def purge_expired_runs(
         self,
+        scope: RetentionScope,
         *,
         now: datetime | None = None,
         limit: int = DEFAULT_PURGE_BATCH,
-    ) -> int:
-        """Delete up to ``limit`` expired terminal Runs. Returns how many went.
+    ) -> PurgeOutcome:
+        """Delete up to ``limit`` expired terminal Runs inside ``scope``.
 
-        One statement, in one transaction, in the order the foreign keys
-        require: Attempts, then NodeRuns, then Runs. Every FK into the spine is
-        `ON DELETE RESTRICT` by design, so retention must not be the thing that
-        discovers that.
+        One statement set, in one transaction, in the order the foreign keys
+        require: Attempts, then NodeRuns, then Runs. Every FK into the spine
+        is `ON DELETE RESTRICT` by design, so retention must not be the thing
+        that discovers that.
+
+        The scope is the whole of the deletion authority (#1175): the
+        Workspace predicate sits in the candidate SELECT itself, so a
+        Workspace's sweep can never even lock a row filed outside it, and a
+        store-wide sweep happens only through an explicit
+        `GlobalRetentionScope`. One more candidate than the batch is locked
+        so the outcome can say whether the scope drained or the batch ran
+        out; the surplus row is released untouched when the transaction ends.
+
+        The Graph continuation (migration 021) has no foreign key into the
+        spine, so it is deleted here explicitly, in the same transaction —
+        a continuation that outlived its Run would be picked up by the
+        recovery scan as a due run_id that no longer resolves. The canonical
+        Event log (migration 030) is the opposite disposition: append-only
+        provenance, kept and counted, never emptied by retention.
 
         `FOR UPDATE SKIP LOCKED` on the candidate select rather than plain
         `FOR UPDATE`: two processes sweeping concurrently should divide the
         work, not queue behind each other, and a Run another transaction is
-        mid-transition on is one this sweep should leave alone anyway.
+        mid-transition on is one this sweep should leave alone anyway. Two
+        Workspace sweepers share the store without racing into each other's
+        scope, because the predicate is inside the SELECT: candidates outside
+        the scope are invisible to this transaction's locks.
         """
         if limit <= 0:
             raise ValueError("limit must be positive")
         cutoff = now if now is not None else datetime.now(UTC)
+        workspace_scoped = isinstance(scope, WorkspaceRetentionScope)
         async with self._pool.acquire() as conn, conn.transaction():
-            rows = await conn.fetch(
-                """SELECT run_id FROM canonical_runs r
-                    WHERE r.retention_expires_at IS NOT NULL
-                      AND r.retention_expires_at <= $1
-                      AND r.status = ANY($2::text[])
-                      AND NOT EXISTS (
-                          SELECT 1 FROM canonical_runs c WHERE c.parent_run_id = r.run_id
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM canonical_node_runs n
-                          JOIN canonical_runs c2 ON c2.parent_node_run_id = n.node_run_id
-                          WHERE n.run_id = r.run_id
-                      )
-                    ORDER BY r.retention_expires_at
-                    LIMIT $3
-                    FOR UPDATE SKIP LOCKED""",
-                cutoff,
-                _TERMINAL_RUN_STATUS_VALUES,
-                limit,
-            )
-            run_ids = [row["run_id"] for row in rows]
+            # Two literal statements, selected by branch: the scope variants'
+            # whole difference is the one Workspace predicate line, and each
+            # call site keeps its own parameter list.
+            if workspace_scoped:
+                assert isinstance(scope, WorkspaceRetentionScope)  # narrowed above
+                rows = await conn.fetch(
+                    _PURGE_CANDIDATES_SQL_SCOPED,
+                    cutoff,
+                    _TERMINAL_RUN_STATUS_VALUES,
+                    scope.workspace_id,
+                    limit + 1,
+                )
+            else:
+                rows = await conn.fetch(
+                    _PURGE_CANDIDATES_SQL_GLOBAL,
+                    cutoff,
+                    _TERMINAL_RUN_STATUS_VALUES,
+                    limit + 1,
+                )
+            backlog_remaining = len(rows) > limit
+            selected = rows[:limit]
+            run_ids = [row["run_id"] for row in selected]
             if not run_ids:
-                return 0
-            await conn.execute(
+                return PurgeOutcome(scope=scope)
+            deleted_attempts = await conn.fetch(
                 """DELETE FROM canonical_attempts a
                    USING canonical_node_runs n
-                   WHERE a.node_run_id = n.node_run_id AND n.run_id = ANY($1::text[])""",
+                   WHERE a.node_run_id = n.node_run_id AND n.run_id = ANY($1::text[])
+                   RETURNING a.attempt_id""",
                 run_ids,
             )
-            await conn.execute(
-                "DELETE FROM canonical_node_runs WHERE run_id = ANY($1::text[])", run_ids
+            deleted_node_runs = await conn.fetch(
+                "DELETE FROM canonical_node_runs WHERE run_id = ANY($1::text[]) RETURNING node_run_id",
+                run_ids,
             )
-            await conn.execute("DELETE FROM canonical_runs WHERE run_id = ANY($1::text[])", run_ids)
-        return len(run_ids)
+            deleted_runs = await conn.fetch(
+                "DELETE FROM canonical_runs WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                run_ids,
+            )
+            continuations = 0
+            if await conn.fetchval("SELECT to_regclass('public.graph_continuations') IS NOT NULL"):
+                deleted_continuations = await conn.fetch(
+                    "DELETE FROM graph_continuations WHERE run_id = ANY($1::text[]) RETURNING run_id",
+                    run_ids,
+                )
+                continuations = len(deleted_continuations)
+        return PurgeOutcome(
+            scope=scope,
+            runs=len(deleted_runs),
+            node_runs=len(deleted_node_runs),
+            attempts=len(deleted_attempts),
+            continuations=continuations,
+            backlog_remaining=backlog_remaining,
+        )
 
     async def archive_cold_runs(
         self,
@@ -309,6 +396,7 @@ class PgRunStore:
                       AND finished_at IS NOT NULL
                       AND finished_at <= $1
                       AND status = ANY($2::text[])
+                      AND (payload -> 'provenance' ->> 'schedule_id') IS NULL
                     ORDER BY finished_at
                     LIMIT $3
                     FOR UPDATE SKIP LOCKED""",
@@ -587,6 +675,55 @@ class PgRunStore:
             await self._write(conn, "canonical_runs", "run_id", run_id, updated)
             return updated
 
+    async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
+        """Resolve the unique occurrence claim through its expression index."""
+        payload = await self._payload(
+            """SELECT run_id, payload, archive_key FROM canonical_runs
+               WHERE (payload -> 'provenance' ->> 'schedule_id') = $1
+                 AND (payload -> 'provenance' ->> 'scheduled_for') = $2
+               LIMIT 1""",
+            schedule_id,
+            scheduled_for,
+        )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def find_delegation_run(self, delegation_key: str) -> Run | None:
+        async with self._pool.acquire() as conn:
+            payload = await conn.fetchval(
+                """SELECT payload FROM canonical_runs
+                   WHERE payload->'provenance'->>'delegation_key' = $1""",
+                delegation_key,
+            )
+        return Run.model_validate(payload) if payload is not None else None
+
+    async def attach_delegation_receipt(
+        self, run_id: str, task_id: str, *, target_agent: str | None = None
+    ) -> Run:
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            existing = str(run.provenance.get("a2a_task_id") or "")
+            if existing and existing != task_id:
+                raise RunIntegrityError("delegation receipt conflicts with canonical receipt")
+            provenance = dict(run.provenance)
+            provenance["a2a_task_id"] = task_id
+            if target_agent:
+                provenance["target_agent"] = target_agent
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        return updated
+
+    async def claim_delegation_transport_attempt(self, run_id: str) -> bool:
+        """Lock the child and record an irreversible transport boundary claim."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
+            if run.provenance.get("transport_attempted"):
+                return False
+            provenance = dict(run.provenance)
+            provenance["transport_attempted"] = True
+            updated = run.model_copy(update={"provenance": provenance})
+            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
+        return True
+
     async def list_by_status(
         self,
         status: RunStatus,
@@ -594,6 +731,8 @@ class PgRunStore:
         limit: int = 100,
         offset: int = 0,
         project_id: str | None = None,
+        workspace_id: str | None = None,
+        admission_source: str | None = None,
         after: tuple[str, str] | None = None,
     ) -> list[Run]:
         """Runs currently in ``status``, oldest first (#251).
@@ -617,6 +756,12 @@ class PgRunStore:
         if project_id is not None:
             sql += f" AND project_id = ${len(params) + 1}"
             params.append(project_id)
+        if workspace_id is not None:
+            sql += f" AND workspace_id = ${len(params) + 1}"
+            params.append(workspace_id)
+        if admission_source is not None:
+            sql += f" AND payload->'provenance'->>'admission_source' = ${len(params) + 1}"
+            params.append(admission_source)
         if after is not None:
             cursor_param = len(params) + 1
             sql += f" AND (payload->>'created_at', run_id) > (${cursor_param}, ${cursor_param + 1})"

@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from maistro.observability.correlation import bind_execution_context
+from maistro.runs.lifecycle import InvalidLifecycleTransition, StaleLeaseRenewal
 from maistro.runs.model import (
     PAUSE_AWAITS_HUMAN,
     TERMINAL_ATTEMPT_STATUSES,
@@ -32,7 +33,7 @@ from maistro.runs.reconciliation import (
     AttemptLifecycleStore,
     CancellationCause,
 )
-from maistro.runs.store import RunIntegrityError
+from maistro.runs.store import AttemptNotFound, RunIntegrityError
 from maistro.runtime import (
     ExecutionCallable,
     ExecutionPaused,
@@ -173,6 +174,31 @@ class AttemptExecutionStore(AttemptLifecycleStore, Protocol):
     ) -> Attempt: ...
 
 
+async def _active_run_attempts(store: AttemptExecutionStore, run_id: str) -> list[Attempt]:
+    """Every non-terminal Attempt under one Run, in node-run then attempt order."""
+    return [
+        attempt
+        for node_run in await store.list_node_runs(run_id)
+        for attempt in await store.list_attempts(node_run.node_run_id)
+        if attempt.status not in TERMINAL_ATTEMPT_STATUSES
+    ]
+
+
+async def _cancel_settled_node_runs(store: AttemptExecutionStore, run_id: str) -> None:
+    """Cancel node runs whose Attempts have all settled (queue-only Nodes)."""
+    for node_run in await store.list_node_runs(run_id):
+        if node_run.status in TERMINAL_RUN_STATUSES:
+            continue
+        attempts = await store.list_attempts(node_run.node_run_id)
+        if any(attempt.status not in TERMINAL_ATTEMPT_STATUSES for attempt in attempts):
+            continue
+        await store.transition_node_run(
+            node_run.node_run_id,
+            RunStatus.CANCELLED,
+            error="execution cancelled",
+        )
+
+
 class AttemptExecutionService:
     """Execute physical Attempts while keeping lifecycle authority in domain code.
 
@@ -238,12 +264,26 @@ class AttemptExecutionService:
                 await asyncio.sleep(interval)
                 try:
                     await self._store.renew_lease(attempt_id, fencing_token=token, ttl=ttl)
-                except Exception:
-                    # The Attempt may have terminalized under us, or the store
-                    # may be briefly unavailable. Neither is this task's problem
-                    # to solve: stop renewing and let the lease lapse, which is
-                    # the same outcome as the process dying and is safe.
+                except (AttemptNotFound, InvalidLifecycleTransition, StaleLeaseRenewal):
+                    # Permanent: this Attempt can never be renewed again with
+                    # this token -- it is gone, terminalized, its lease already
+                    # lapsed, or recovery superseded the holder. The executor's
+                    # own terminalization runs into the same refusal through
+                    # its fencing token, so there is nothing left to prove.
                     return
+                except Exception:
+                    # Transient: the store may be briefly unreachable, but the
+                    # executor is alive *in this process* and keeps running.
+                    # Quitting here would fake death -- the lease would lapse
+                    # and a live Attempt would become reclaimable while its
+                    # work continues, which is the double-execution window.
+                    # One failed tick does not lapse the lease (the cadence is
+                    # a third of the TTL), so keep proving liveness on the next
+                    # tick. A store that stays unreachable past the TTL lapses
+                    # the lease on its own -- that is the genuine-death outcome
+                    # reclamation exists for (ADR-082526-b36a), and it falls
+                    # out of renewal failing, not from this loop quitting.
+                    continue
 
         return asyncio.create_task(_beat())
 
@@ -489,6 +529,40 @@ class AttemptExecutionService:
             await self._reconcile(terminal)
         return terminal
 
+    async def _claim_active_attempt(self, attempt: Attempt, *, token: str) -> Attempt:
+        """Re-read and claim the Attempt as RUNNING, refusing terminal states.
+
+        ``asyncio.CancelledError`` propagates for an already-cancelled Attempt
+        so the caller's cleanup path records cancellation rather than an
+        integrity failure; every other non-active state is an integrity error.
+        """
+        persisted_attempt = await self._store.get_attempt(attempt.attempt_id)
+        if persisted_attempt is None:
+            raise RunIntegrityError(f"Attempt {attempt.attempt_id!r} disappeared before launch")
+        if persisted_attempt.status in TERMINAL_ATTEMPT_STATUSES:
+            if persisted_attempt.status is AttemptStatus.CANCELLED:
+                raise asyncio.CancelledError
+            raise RunIntegrityError("execute_claimed requires an active Attempt")
+        attempt = persisted_attempt
+        if attempt.status is AttemptStatus.CREATED:
+            attempt = await self._store.transition_attempt(
+                attempt.attempt_id,
+                AttemptStatus.RUNNING,
+                fencing_token=token,
+            )
+        elif attempt.status is not AttemptStatus.RUNNING:
+            raise RunIntegrityError("execute_claimed requires an active Attempt")
+        return attempt
+
+    async def _require_active_run_for_launch(self, node_run_id: str) -> None:
+        """Refuse to launch under a Run that already reached a terminal state."""
+        current_node = await self._store.get_node_run(node_run_id)
+        current_run = (
+            await self._store.get_run(current_node.run_id) if current_node is not None else None
+        )
+        if current_run is not None and current_run.status in TERMINAL_RUN_STATUSES:
+            raise asyncio.CancelledError
+
     async def _launch_claimed(
         self,
         attempt: Attempt,
@@ -505,32 +579,8 @@ class AttemptExecutionService:
         runtime_task: asyncio.Task[Any] | None = None
         try:
             async with self._launch_lock:
-                persisted_attempt = await self._store.get_attempt(attempt.attempt_id)
-                if persisted_attempt is None:
-                    raise RunIntegrityError(
-                        f"Attempt {attempt.attempt_id!r} disappeared before launch"
-                    )
-                if persisted_attempt.status in TERMINAL_ATTEMPT_STATUSES:
-                    if persisted_attempt.status is AttemptStatus.CANCELLED:
-                        raise asyncio.CancelledError
-                    raise RunIntegrityError("execute_claimed requires an active Attempt")
-                attempt = persisted_attempt
-                if attempt.status is AttemptStatus.CREATED:
-                    attempt = await self._store.transition_attempt(
-                        attempt.attempt_id,
-                        AttemptStatus.RUNNING,
-                        fencing_token=token,
-                    )
-                elif attempt.status is not AttemptStatus.RUNNING:
-                    raise RunIntegrityError("execute_claimed requires an active Attempt")
-                current_node = await self._store.get_node_run(attempt.node_run_id)
-                current_run = (
-                    await self._store.get_run(current_node.run_id)
-                    if current_node is not None
-                    else None
-                )
-                if current_run is not None and current_run.status in TERMINAL_RUN_STATUSES:
-                    raise asyncio.CancelledError
+                attempt = await self._claim_active_attempt(attempt, token=token)
+                await self._require_active_run_for_launch(attempt.node_run_id)
                 runtime_context = _materialize_execution_context(
                     attempt,
                     execution_context,
@@ -637,13 +687,7 @@ class AttemptExecutionService:
 
     async def _cancel_local_run(self, run_id: str) -> None:
         async with self._launch_lock:
-            node_runs = await self._store.list_node_runs(run_id)
-            active = [
-                attempt
-                for node_run in node_runs
-                for attempt in await self._store.list_attempts(node_run.node_run_id)
-                if attempt.status not in TERMINAL_ATTEMPT_STATUSES
-            ]
+            active = await _active_run_attempts(self._store, run_id)
             current_run = await self._store.get_run(run_id)
             if current_run is None:
                 raise RunIntegrityError(f"Run {run_id!r} does not exist")
@@ -652,17 +696,7 @@ class AttemptExecutionService:
                     run_id, RunStatus.CANCELLED, error="execution cancelled"
                 )
             await asyncio.gather(*(self._runtime.cancel(attempt.attempt_id) for attempt in active))
-            for node_run in await self._store.list_node_runs(run_id):
-                if node_run.status in TERMINAL_RUN_STATUSES:
-                    continue
-                attempts = await self._store.list_attempts(node_run.node_run_id)
-                if any(attempt.status not in TERMINAL_ATTEMPT_STATUSES for attempt in attempts):
-                    continue
-                await self._store.transition_node_run(
-                    node_run.node_run_id,
-                    RunStatus.CANCELLED,
-                    error="execution cancelled",
-                )
+            await _cancel_settled_node_runs(self._store, run_id)
 
     async def _terminalize_if_open(
         self,
@@ -690,6 +724,19 @@ class AttemptExecutionService:
             raise RunIntegrityError(f"Attempt {attempt_id!r} disappeared during execution")
         if current.status in TERMINAL_ATTEMPT_STATUSES:
             return current, False
+        if current.status is AttemptStatus.CREATED and status is not AttemptStatus.CANCELLED:
+            # A CREATED Attempt never launched: the RUNNING claim never landed,
+            # so no physical work happened that could fail or time out. The
+            # lifecycle deliberately gives CREATED no edge to FAILED or
+            # TIMED_OUT -- recording one would claim a physical outcome the
+            # attempt never had and count a failure that never happened
+            # (ADR-082426-f170's distinction: cancelled means nothing ran,
+            # failed means work happened). CANCELLED is the honest, legal word
+            # for abandoned before launch -- the same record
+            # `_cancel_local_attempt` and `reclaim_attempt` write for an
+            # Attempt that never finished -- while the real reason survives in
+            # `error` and the caller still sees the original exception.
+            status = AttemptStatus.CANCELLED
         return (
             await self._terminalize(
                 attempt_id,

@@ -531,3 +531,51 @@ async def test_a_task_worker_without_a_ttl_is_unchanged(wired) -> None:
     assert attempts[0].execution_lease is not None
     assert attempts[0].execution_lease.expires_at is None
     assert await runs.reclaim_expired_attempts() == []
+
+
+# --- cancelling through the queue's canonical seam -------------------------
+
+
+async def test_cancelling_an_unknown_task_id_is_not_a_cancellation(wired) -> None:
+    queue, _runs = wired
+
+    assert await queue.cancel("task-never-was") is False
+
+
+async def test_cancelling_a_task_whose_run_already_completed_is_refused(wired) -> None:
+    """The receipt is a projection; a finished Run is not cancellable.
+
+    When the canonical Run already reached a successful terminal state, the
+    queue must not mark the task CANCELLED — that would contradict the Run
+    the receipt projects.
+    """
+    queue, runs = wired
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+    run_id = task.run_id or ""
+    await runs.transition_run(run_id, RunStatus.RUNNING)
+    await runs.transition_run(run_id, RunStatus.COMPLETED, result="done")
+
+    assert await queue.cancel(task.task_id) is False
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is not TaskStatus.CANCELLED
+
+
+async def test_a_queue_without_an_admitter_cancels_only_the_receipt() -> None:
+    queue = TaskQueue()
+
+    task = await queue.submit(TaskCreate(description="Fix the parser"))
+
+    assert await queue.cancel(task.task_id) is True
+    receipt = queue.get(task.task_id)
+    assert receipt is not None
+    assert receipt.status is TaskStatus.CANCELLED
+
+
+async def test_the_admitter_reports_a_run_that_never_existed(wired) -> None:
+    _queue, runs = wired
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=root.project_id)
+
+    assert await admitter.cancel_run("run-never-was") is False

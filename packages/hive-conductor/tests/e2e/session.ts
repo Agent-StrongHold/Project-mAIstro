@@ -119,3 +119,27 @@ export async function loginAsPM(page: Page) {
     page.locator('form button[type="submit"]').click(),
   ]);
 }
+
+/**
+ * The admin account the setup wizard creates. Admin holds every permission
+ * without task-scoped elevation (middleware/auth.py `principal_has_permission`),
+ * which is what a spec needs when the action under test is a protected write
+ * the daily-user account is never granted -- archiving a workspace, saving
+ * its tool bindings. The selectors are loginAsPM's, for the reasons recorded
+ * above it.
+ */
+export async function loginAsAdmin(page: Page) {
+  await page.goto("/login");
+  const usernameInput = page.locator('input[autocomplete="username"]').first();
+  const passwordInput = page.locator('input[autocomplete="current-password"]').first();
+  await usernameInput.waitFor({ state: "visible" });
+  await usernameInput.fill(ADMIN_USER);
+  await passwordInput.fill(ADMIN_PASS);
+  await Promise.all([
+    page.waitForResponse(
+      (r) => r.url().includes("/v1/auth/login") && r.request().method() === "POST",
+      { timeout: 15000 },
+    ),
+    page.locator('form button[type="submit"]').click(),
+  ]);
+}
