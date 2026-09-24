@@ -1,4 +1,16 @@
-"""Persist quota event identities for crash-safe retries (#1204)."""
+"""Persist quota event identities for crash-safe retries (#1204).
+
+Revision ID: 039_quota_usage_event_identity
+Revises: 036_audit_log_org_scope
+Create Date: 2026-09-10
+
+Originally parented on ``038`` when trunk's tip was 038; merging develop's
+``039_canvas_job_admission_key`` and ``040`` restored a two-head fork that
+fails every deployment's ``upgrade head`` with "Multiple head revisions are
+present". This revision now follows the develop chain tip
+``036_audit_log_org_scope``, keeping the chain linear — the same
+reconciliation this repository's other re-parented revisions document.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "039_quota_usage_event_identity"
-down_revision = "038"
+down_revision = "036_audit_log_org_scope"
 branch_labels = None
 depends_on = None
 

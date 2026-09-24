@@ -1,7 +1,6 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +10
-  tests/migrations: +0 (pin moved; 11 existing cases now run against the revision that creates `quota_usage_events`)
 ---
 # #1204 SQLite usage-log idempotency
 
@@ -28,20 +27,36 @@ container: the legacy timestamp-only table upgrades and backfills
 (2 requests / 25 total tokens for a 15-token backfilled row plus a 10-token
 event), and a repeated `record_usage(event_id=...)` keeps `request_count=1`.
 
+## Retention and chain-tip repairs
+
+Two durable-bookkeeping repairs from the validation round: `quota_usage_events`
+needed an entry in `quality/durable-table-retention.json` (recorded honestly as
+`undecided` against #325, which owns retention — this issue creates the ledger,
+it does not decide its lifetime), and the `usage_events` entry's note no longer
+claims `SqliteUsageLog` is unwired. The migration's parent also moved from
+`038` to the develop chain tip `036_audit_log_org_scope` after develop's
+`039`/`040` re-forked the chain; `test_audit_scope_migration`'s head pin
+follows the new tip, the same reconciliation its own comment narrates for
+#1531 and #1079.
+
 ## Migration chain linearization
 
 The branch's migration previously shared trunk's renumbered 033-035 space and
 sat as a second alembic head, which fails CI's `alembic upgrade head`. It is
-renamed to `039_quota_usage_event_identity` with `down_revision = "038"`,
-giving a single head. `tests/migrations/test_migration_chain.py` applies the
-full chain to an empty PostgreSQL database, and the downgrade/upgrade cycle
-recreates `quota_usage_events` — both run green against the live server.
+renamed to `039_quota_usage_event_identity`; after develop's
+`039_canvas_job_admission_key` and `040` merged, its parent moved again — from
+`038` to the develop chain tip `036_audit_log_org_scope` — because the old
+parent re-forked the chain into two heads. `tests/migrations/test_migration_chain.py`
+applies the full chain to an empty PostgreSQL database, and the
+downgrade/upgrade cycle recreates `quota_usage_events` — both run green
+against the live server.
 
 ## Pinned-revision store suite follows its own convention
 
 `tests/migrations/test_quota_and_session_stores.py` pins the revision the
 durable stores run against; `PgQuotaTracker` now touches `quota_usage_events`,
-which the old pin (023) predates. Per the suite's documented drift procedure
+which the old pin (023) predates. The pin moves *within* the existing suite,
+so that suite's collected count does not change — hence no delta for it above. Per the suite's documented drift procedure
 (the #327 move), the pin moves to `039_quota_usage_event_identity`; the
 fixture's plain upgrade-from-empty already exercised the `vector`-dependent
 001, so no new image coupling is introduced. All 11 cases pass against the

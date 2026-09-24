@@ -90,11 +90,16 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # parent this revision had claimed). It therefore follows the current
     # develop chain tip (040, the tip of 035 -> ... -> 038 -> 039 -> 040) so
     # every deployment's ordinary ``upgrade head`` applies the audit scope
-    # migration rather than leaving it on a competing branch.
+    # migration rather than leaving it on a competing branch. The chain has
+    # since grown past it again: #1204 appends `039_quota_usage_event_identity`
+    # as the new tip, exactly as any tip-landing branch does — the invariants
+    # that matter are that the chain still has one head and that this revision
+    # sits on the path `upgrade head` walks, not that it is the tip forever.
     assert revision.down_revision == "040"
-    assert directory.get_heads() == ["036_audit_log_org_scope"]
-    walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
+    assert directory.get_heads() == ["039_quota_usage_event_identity"]
+    walked = {item.revision for item in directory.walk_revisions("base", "heads")}
     assert revision.revision in walked
+    assert "039_quota_usage_event_identity" in walked
 
 
 def test_backfill_is_bounded_and_stops_after_the_last_batch(migration: ModuleType) -> None:

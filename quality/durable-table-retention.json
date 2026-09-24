@@ -646,6 +646,19 @@
       "notes": "One row per provider per billing cycle; raw-vs-aggregate retention is still open on #325."
     },
     {
+      "table": "quota_usage_events",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Durable event identities (#1204) that make record_usage retries and crash-ambiguous commits harmless; created by migration 039 and SqliteQuotaTracker.ensure_schema. No DELETE anywhere; how long the ledger rows must outlive their aggregates is #325's call."
+    },
+    {
       "table": "reactor_log",
       "backends": [
         "sqlite"
@@ -818,7 +831,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#325",
-      "notes": "No DELETE, and restore full-scans the table. SqliteUsageLog is not wired into any production path yet."
+      "notes": "No DELETE, and restore full-scans the table. Wired into production by Container._wire_sqlite_backend (#1204), whose snapshot/restore are idempotent by event identity; retention itself stays open on #325."
     }
   ]
 }
