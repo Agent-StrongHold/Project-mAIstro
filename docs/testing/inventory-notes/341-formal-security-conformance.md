@@ -331,3 +331,38 @@ gate-script self-neutering co-change remains visible-in-diff (follow-up
 #160); live ruleset approval counts (0-approval "Pr merge" ruleset) remain a
 GitHub-config residual compensated by `strict_required_status_checks_policy`
 + merge queue per prior round's read-only refresh.
+
+Repair-lane pass at the final lane head `2abcf59e9` (clean worktree at the
+exact job SHA `2abcf59e9db65e2844aa0fc86e5472057cc2ce9f`; driver check-*.log
+files again absent from the job directory, so every number below was executed
+fresh at this SHA; mutation edits made in-tree and restored by `cp` from a
+/tmp backup, each restore verified with `git diff --quiet` — no git
+restore/reset used): all three prior findings adjudicated.
+(1) The "in-memory weakening `[/~]`→`/` still passes 65 tests" finding is
+STALE at this head: re-executed against
+`pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0`, the
+unmutated baseline is **256 passed** (the file was rewritten since the finding)
+and the same source weakening fails it with **6 failed** (remove-home oracle,
+property, 3 compositions, production `MicroVMSandbox.exec` enforcement).
+(2) The "complete required-CI formal run UNVERIFIED — asyncpg timeout, no
+local PostgreSQL" finding is RESOLVED: a dedicated pgvector:pg18 container on
+127.0.0.1:5432 + `alembic upgrade head`, then the exact required-CI command
+`pytest formal/models/ -q --timeout=300 --hypothesis-seed=0` with
+`MAISTRO_TEST_PG_DSN`/`MAISTRO_TEST_DATABASE_URL` set → **664 passed**,
+`test_run_lease_fence.py` included (the previously-failing command now runs to
+completion).
+(3) The 0-approval-ruleset finding stands as an org-side residual; the
+in-repo mechanical control was re-verified: real
+`scripts/check-formal-oracle-independence.py --base 1dea30dfe` → bootstrap
+**exit 0** (oracle absent at base), unresolvable base → **exit 2** (fails
+closed), `tests/test_check_formal_oracle_independence.py` → **3 passed**
+(committed co-change rejection asserted), and the workflow runs the gate on
+`pull_request` + `merge_group` with `formal-conformance` required at
+`.github/branch-protection.json:50,112`. The demonstrated 21-of-22 deletion
+(retaining only `sudo\s+`) was re-run against the exact required-CI command
+with the database up → **193 failed**, so the mutation fails required CI.
+`uv run ruff check .` and `uv run ruff format --check .` clean;
+`formal/extractors`/`formal/generated` still absent with zero live
+references. Residuals unchanged: pushing to observe the live rollup for
+PR 1452 is prohibited (UNVERIFIED); gate-script self-neutering co-change
+remains visible-in-diff (follow-up #160).
