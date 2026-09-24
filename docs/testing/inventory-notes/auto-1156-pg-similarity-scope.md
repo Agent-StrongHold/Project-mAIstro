@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/persistence/test_pg_learnings.py: +5
+  packages/maistro-core/tests: +5
 ---
 # auto-1156: real-PostgreSQL legs for the similarity query's scope axes
 
