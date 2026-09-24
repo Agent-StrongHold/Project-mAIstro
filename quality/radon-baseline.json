@@ -223,16 +223,6 @@
       "rationale": "The #1263-family HITL lifecycle-mirror work funnels terminal-evidence resolution into the durable-run executor's node context build. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::answer_record",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
-      "line": 109,
-      "name": "answer_record",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "The #1263-family durable answer record mirrors HITL settlement state onto the canonical spine. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record",
       "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
       "line": 139,
