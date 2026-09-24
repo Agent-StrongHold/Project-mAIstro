@@ -58,3 +58,32 @@ across two state writers): the second same-username row is refused by the
 persist a duplicate identity in durable mode; the in-tree
 `test_scan_then_write_mutation_loses_the_race` proves the duplicate identity
 the same mutation produces in memory mode.
+
+## Independent verification (2026-09-23, this worktree)
+
+Re-verified from a clean tree at `8a99a1363`, not trusting the claims above:
+
+- Full suites green: hive-conductor `2679 passed, 1 skipped`; core
+  `state+persistence 576 passed`; targeted registration/registry/core-claim
+  suites `89 passed`.
+- Multi-process race, run outside the test suite: 6 spawned OS processes on
+  one shared SQLite file, three rounds — each round exactly one winner, one
+  `users` row, one `username_claims` row, every loser `UsernameTakenError`.
+- Live mutation of `_write_batch` to scan-then-write (reverted byte-identical
+  afterwards) fails three tests: `test_allocator_calls_storage_atomic_claim_seam`,
+  `test_durable_loser_at_the_atomic_layer_is_refused`, and
+  `TestInvitations::test_independent_process_writers_publish_one_username`; the
+  `kv_store_users_username_unique` SQL index additionally refuses the duplicated
+  row with `IntegrityError`.
+- Diff-coverage gate reproduced with CI's own producer commands and
+  `--base 8bb344e32`: `ok: every measured file this change touches is at or
+  above 90% lines / 80% branch arcs`.
+- Gates green: `check-agent-store-writes`, `check-owned-store-access`,
+  `check-enumerations-provenance`, `check-doc-links`,
+  `check-durable-table-inventory`, `ruff check`, `ruff format --check`.
+- Known environmental failure, NOT this change: `packages/maistro-core/tests/
+test_container_postgres.py::test_an_unreachable_server_is_an_error_not_a_fallback`
+  times out in this WSL environment because connections to `127.0.0.1:1` hang
+  (SYN dropped by mirrored networking) instead of raising `ECONNREFUSED`. The
+  test, `container.py`, and asyncpg are unchanged by this branch; verified with
+  a bare `asyncpg.connect` hang outside the test suite.
