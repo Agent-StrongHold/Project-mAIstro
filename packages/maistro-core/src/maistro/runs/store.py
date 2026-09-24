@@ -457,12 +457,6 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
-    async def find_child_run_by_effect(
-        self,
-        parent_run_id: str,
-        effect_key: str,
-    ) -> Run | None: ...
-
     async def find_run_by_effect(self, effect_key: str) -> Run | None: ...
 
     async def claim_run_by_effect(
@@ -479,12 +473,6 @@ class RunStore(Protocol):
         retention_expires_at: datetime | None = None,
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> RunEffectClaim: ...
-
-    async def update_run_provenance(
-        self,
-        run_id: str,
-        updates: dict[str, Any],
-    ) -> Run: ...
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the canonical Run claiming one scheduled occurrence."""
@@ -1077,24 +1065,37 @@ class InMemoryRunStore:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
 
-    async def find_child_run_by_effect(
-        self,
-        parent_run_id: str,
-        effect_key: str,
-    ) -> Run | None:
-        for run in self._runs.values():
-            if (
-                run.parent_run_id == parent_run_id
-                and run.provenance.get("effect_key") == effect_key
-            ):
-                return run.model_copy(deep=True)
-        return None
-
     async def find_run_by_effect(self, effect_key: str) -> Run | None:
         for run in self._runs.values():
             if run.provenance.get("effect_key") == effect_key:
                 return run.model_copy(deep=True)
         return None
+
+    def _require_parent_scope(
+        self,
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> Run | None:
+        """Validate the optional parent chain for an effect claim; return the parent."""
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
+        if parent is None:
+            return None
+        validate_child_scope(
+            parent,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
+        )
+        if parent_node_run_id is not None:
+            parent_node_run = self._require_node_run(parent_node_run_id)
+            if parent_node_run.run_id != parent_run_id:
+                raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+        return parent
 
     async def claim_run_by_effect(
         self,
@@ -1123,20 +1124,12 @@ class InMemoryRunStore:
         for existing in self._runs.values():
             if existing.provenance.get("effect_key") == effect_key:
                 return RunEffectClaim(existing.model_copy(deep=True), False)
-        if parent_node_run_id is not None and parent_run_id is None:
-            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-        parent = self._require_run(parent_run_id) if parent_run_id is not None else None
-        if parent is not None:
-            validate_child_scope(
-                parent,
-                workspace_id=graph.workspace_id,
-                project_id=graph.project_id,
-                allow_cross_project=allow_cross_project,
-            )
-            if parent_node_run_id is not None:
-                parent_node_run = self._require_node_run(parent_node_run_id)
-                if parent_node_run.run_id != parent_run_id:
-                    raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+        self._require_parent_scope(
+            graph,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            allow_cross_project=allow_cross_project,
+        )
         run = admit_in_state(
             Run(
                 workspace_id=graph.workspace_id,
@@ -1154,12 +1147,6 @@ class InMemoryRunStore:
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return RunEffectClaim(run.model_copy(deep=True), True)
-
-    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
-        run = self._require_run(run_id)
-        updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
-        self._runs[run_id] = updated
-        return updated.model_copy(deep=True)
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve an occurrence through its claim index, never by scanning Runs."""

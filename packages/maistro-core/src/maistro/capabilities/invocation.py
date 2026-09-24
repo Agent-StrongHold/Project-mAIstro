@@ -410,6 +410,30 @@ class InvocationExecutionService:
         )
         return history[-1] if history else None
 
+    async def _completed_replay_after_admission_race(
+        self,
+        *,
+        run_id: str,
+        node_run_id: str,
+        binding: Binding,
+        effect_key: str,
+    ) -> Invocation | None:
+        """Re-read canonical history after an admission race with another worker.
+
+        Another worker may have completed the effect between our initial
+        history read and the store-level admission guard. Returns the accepted
+        completed Invocation, or None when the race outcome is not a replay.
+        """
+        latest_history = await self._store.list_effect(
+            run_id=run_id,
+            node_run_id=node_run_id,
+            binding_id=binding.binding_id,
+            effect_key=effect_key,
+        )
+        if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
+            return latest_history[-1]
+        return None
+
     async def invoke(
         self,
         *,
@@ -481,14 +505,14 @@ class InvocationExecutionService:
                 # initial history read. Re-read the canonical row so a stale
                 # admission returns the accepted result instead of dispatching
                 # or surfacing a misleading race error.
-                latest_history = await self._store.list_effect(
+                replay = await self._completed_replay_after_admission_race(
                     run_id=run_id,
                     node_run_id=node_run_id,
-                    binding_id=binding.binding_id,
+                    binding=binding,
                     effect_key=effect_key,
                 )
-                if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
-                    return latest_history[-1]
+                if replay is not None:
+                    return replay
                 raise
             running = invocation.model_copy(
                 update={

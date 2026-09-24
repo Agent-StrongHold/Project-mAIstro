@@ -438,21 +438,33 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
-    async def find_child_run_by_effect(
+    async def _require_locked_parent_scope(
         self,
-        parent_run_id: str,
-        effect_key: str,
-    ) -> Run | None:
-        row = await self._fetchone(
-            """SELECT payload FROM canonical_runs
-               WHERE parent_run_id = ?
-                 AND json_extract(payload, '$.provenance.effect_key') = ?
-               ORDER BY rowid LIMIT 1""",
-            (parent_run_id, effect_key),
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> None:
+        """Validate the optional parent chain inside the claim transaction."""
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        parent = await self._require_run(parent_run_id) if parent_run_id else None
+        if parent is None:
+            return
+        validate_child_scope(
+            parent,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
         )
-        return model_of_json(Run, row[0]) if row is not None else None
+        if parent_node_run_id is None:
+            return
+        parent_node_run = await self._require_node_run(parent_node_run_id)
+        if parent_node_run.run_id != parent_run_id:
+            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
 
-    async def claim_run_by_effect(  # noqa: C901
+    async def claim_run_by_effect(
         self,
         graph: Graph,
         *,
@@ -482,22 +494,12 @@ class SqliteRunStore:
                 if row is not None:
                     await self._conn.commit()
                     return RunEffectClaim(model_of_json(Run, row[0]), False)
-                if parent_node_run_id is not None and parent_run_id is None:
-                    raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-                parent = await self._require_run(parent_run_id) if parent_run_id else None
-                if parent is not None:
-                    validate_child_scope(
-                        parent,
-                        workspace_id=graph.workspace_id,
-                        project_id=graph.project_id,
-                        allow_cross_project=allow_cross_project,
-                    )
-                    if parent_node_run_id is not None:
-                        parent_node_run = await self._require_node_run(parent_node_run_id)
-                        if parent_node_run.run_id != parent_run_id:
-                            raise RunIntegrityError(
-                                "parent_node_run_id does not belong to parent_run_id"
-                            )
+                await self._require_locked_parent_scope(
+                    graph,
+                    parent_run_id=parent_run_id,
+                    parent_node_run_id=parent_node_run_id,
+                    allow_cross_project=allow_cross_project,
+                )
                 run = admit_in_state(
                     Run(
                         workspace_id=graph.workspace_id,
@@ -549,22 +551,6 @@ class SqliteRunStore:
             (effect_key,),
         )
         return model_of_json(Run, row[0]) if row is not None else None
-
-    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
-        async with self._write_lock:
-            row = await self._fetchone(
-                "SELECT payload FROM canonical_runs WHERE run_id = ?", (run_id,)
-            )
-            if row is None:
-                raise RunNotFound(run_id)
-            run = model_of_json(Run, row[0])
-            updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
-            await self._conn.execute(
-                "UPDATE canonical_runs SET payload = ? WHERE run_id = ?",
-                (json_of(updated), run_id),
-            )
-            await self._conn.commit()
-            return updated
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the unique occurrence claim without scanning Run payloads."""

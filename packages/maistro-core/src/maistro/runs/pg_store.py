@@ -555,20 +555,33 @@ class PgRunStore:
         )
         return Run.model_validate(payload) if payload is not None else None
 
-    async def find_child_run_by_effect(
+    async def _require_locked_parent_scope(
         self,
-        parent_run_id: str,
-        effect_key: str,
-    ) -> Run | None:
-        payload = await self._payload(
-            """SELECT run_id, payload, archive_key FROM canonical_runs
-               WHERE parent_run_id = $1
-                 AND payload -> 'provenance' ->> 'effect_key' = $2
-               ORDER BY payload ->> 'created_at', run_id LIMIT 1""",
-            parent_run_id,
-            effect_key,
+        conn: asyncpg.Connection,
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> None:
+        """Validate the optional parent chain inside the claim transaction."""
+        if parent_run_id is None:
+            return
+        parent_payload = await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
+        parent = Run.model_validate(parent_payload)
+        validate_child_scope(
+            parent,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
         )
-        return Run.model_validate(payload) if payload is not None else None
+        if parent_node_run_id is None:
+            return
+        parent_node_run = NodeRun.model_validate(
+            await self._locked(conn, "canonical_node_runs", "node_run_id", parent_node_run_id)
+        )
+        if parent_node_run.run_id != parent_run_id:
+            raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
 
     async def claim_run_by_effect(
         self,
@@ -613,25 +626,13 @@ class PgRunStore:
                 return RunEffectClaim(
                     Run.model_validate(decode_evidence(decode_payload(existing_payload))), False
                 )
-            if parent_run_id is not None:
-                parent_payload = await self._locked(conn, "canonical_runs", "run_id", parent_run_id)
-                parent = Run.model_validate(parent_payload)
-                validate_child_scope(
-                    parent,
-                    workspace_id=graph.workspace_id,
-                    project_id=graph.project_id,
-                    allow_cross_project=allow_cross_project,
-                )
-                if parent_node_run_id is not None:
-                    parent_node_run = NodeRun.model_validate(
-                        await self._locked(
-                            conn, "canonical_node_runs", "node_run_id", parent_node_run_id
-                        )
-                    )
-                    if parent_node_run.run_id != parent_run_id:
-                        raise RunIntegrityError(
-                            "parent_node_run_id does not belong to parent_run_id"
-                        )
+            await self._require_locked_parent_scope(
+                conn,
+                graph,
+                parent_run_id=parent_run_id,
+                parent_node_run_id=parent_node_run_id,
+                allow_cross_project=allow_cross_project,
+            )
             inserted = await conn.fetchrow(
                 """INSERT INTO canonical_runs
                    (run_id, workspace_id, project_id, parent_run_id,
@@ -669,13 +670,6 @@ class PgRunStore:
             effect_key,
         )
         return Run.model_validate(payload) if payload is not None else None
-
-    async def update_run_provenance(self, run_id: str, updates: dict[str, Any]) -> Run:
-        async with self._pool.acquire() as conn, conn.transaction():
-            run = Run.model_validate(await self._locked(conn, "canonical_runs", "run_id", run_id))
-            updated = run.model_copy(update={"provenance": {**run.provenance, **updates}})
-            await self._write(conn, "canonical_runs", "run_id", run_id, updated)
-            return updated
 
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the unique occurrence claim through its expression index."""

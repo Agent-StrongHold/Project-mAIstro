@@ -128,13 +128,14 @@ class TestDelegationFilesAChildRun:
         assert first.metadata["run_id"] == second.metadata["run_id"]
         assert first.metadata["task_id"] == second.metadata["task_id"]
         assert len(delegator._tasks) == 1
-        assert (
-            await store.find_child_run_by_effect(
-                parent.run_id,
-                node.replay_effect_key(node.input_schema.model_validate(inputs), context),
-            )
-            is not None
+        child = await store.find_run_by_effect(
+            node.replay_effect_key(node.input_schema.model_validate(inputs), context)
         )
+        assert child is not None
+        # The replayed child Run stays bound to the delegating parent's scope.
+        assert child.parent_run_id == parent.run_id
+        assert child.workspace_id == parent.workspace_id
+        assert child.project_id == parent.project_id
 
     async def test_independent_worker_reuses_receipt_without_local_task_deduplication(self) -> None:
         """The durable claim, not a worker-local A2A queue, is the authority."""

@@ -47,3 +47,36 @@ for upgrade and downgrade. `test_audit_scope_migration.py` and the
 capability-table migration scan pin are updated to enumerate 042 (same
 strictness — any further migration touching `capability_invocations` still
 fails); their node counts are unchanged.
+
+## CI-gate repair round against `1e02cf2` (no suite delta)
+
+The verifier run at `1e02cf2` failed five CI jobs. Repairs, all evidence
+driven, none cosmetic:
+
+- SAST: `SqliteInvocationStore.list_effect` composed its SQL with an f-string
+  fragment (bandit B608 at invocation_store.py:184). The method now issues two
+  fully literal statements — one per `node_run_id` arity — mirroring the
+  PostgreSQL twin; behaviour and parameters are unchanged.
+- Quality gate: the `claim_run_by_effect` implementations (memory/SQLite/PG)
+  and `InvocationExecutionService.invoke` had crossed the radon C threshold
+  against the trusted baseline. The optional parent-chain validation moved into
+  a `_require_locked_parent_scope` helper per store and the admission-race
+  re-read moved into `_completed_replay_after_admission_race`; pure code motion,
+  all suites (including the PostgreSQL legs) pass, and the ratchet reports
+  70 → 70 reviewed blocks with no new findings or regressions.
+- exact-debt-ledger / shipped-surface: the new A2A admission route
+  (`POST /tasks/create:create_a2a_task`) is now classified in
+  `quality/shipped-surface-truth.json` as canonical (it admits one idempotent
+  remote delegation through `RunStore.claim_run_by_effect`).
+- exact-debt-ledger / vulture: the two new FastAPI handlers are banked in the
+  `fastapi-route-handler` findings ledger (candidate bookkeeping); the grant
+  that authorizes them against the trusted base must land on the integration
+  base in a separate change by design (`ratchet_provenance.load_authorizations`
+  reads grants from the base revision, so a branch cannot authorize its own
+  debt). Two store methods this branch added with no caller anywhere —
+  `update_run_provenance` (×3 stores, dead) and `find_child_run_by_effect`
+  (×3 stores, one test caller) — are deleted per the ledger's own policy that
+  new unreachable-code findings must be fixed, never allowlisted; the delegate
+  replay test now asserts the child Run through `find_run_by_effect` and adds
+  the parent-scope binding assertions, so the replay proof is unchanged in
+  strength.
