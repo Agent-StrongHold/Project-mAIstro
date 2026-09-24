@@ -61,3 +61,51 @@ identities to exactly one: `create_a2a_task`
 that must be banked via a reviewed grant, which lane rules prohibit this
 worker from making. `scripts/check-vulture-baseline.py` therefore still exits
 1 pending that grant.
+
+---
+
+## L42 repair re-validation (head 607453bc0, driver job fdc969865d78)
+
+Independent re-check at the lane head (the prior driver run died on a provider
+error before executing any check, so nothing above was trusted). Everything
+below was executed fresh in this session:
+
+- `uv run ruff check .` clean; `uv run ruff format --check .` clean (2495
+  files); mypy over all six package src trees clean (711 files).
+- pytest: graph/durable_runs + graph/nodes = 712 passed; capabilities + runs =
+  1138 passed; a2a + runtime + tasks = 454 passed; server = 363 passed;
+  tests/migrations = 14 passed; chat lease + capabilities = 313 passed;
+  container chat/runs + run service + event authority = 88 passed;
+  hive-conductor cancel routes = 9 passed.
+- Gates: `check-execution-lifecycles` PASS (19 classified, 0 violations);
+  `check-lifecycle-provenance` PASS; `check-vulture-baseline` still exits 1 on
+  exactly the one unbanked `create_a2a_task` identity (grant outside lane
+  authority, unchanged).
+- **Independent reproduction of the prior ambiguous-replay finding** (scratch
+  script, not committed): an EFFECT_KEY node dispatching an external effect
+  whose provider dies with a generic exception, under `max_attempts: 3`, now
+  yields exactly **1 physical dispatch** (was 2 pre-fix): visit 1 dispatches
+  and the Invocation lands UNKNOWN; visits 2-3 raise `UnsafeEffectRetry`
+  ("manual/reconciliation evidence is required before retry") because the
+  effect identity `(run_id, effect_scope, binding, effect_key)` is stable
+  across NodeRun visits. History stays chronological: NodeRun ordinals 1,2,3,
+  one completed (physically tried) Attempt each, NodeRuns/Run FAILED. This
+  confirms the `effect_scope` contract end to end on the in-memory store; the
+  SQLite and pg durable stores scope `list_effect` identically (pg INSERT
+  binding covered by 607453bc0).
+- Upstream re-checked live read-only: #1169 CLOSED, #1170 CLOSED, **#1194
+  still OPEN**, #42 OPEN. #1194's enforcement implementation is present and
+  proven in-branch; only the issue-closure action remains, which lane rules
+  assign to the orchestrator.
+- Residual risk recorded (no evidence of a reachable duplicate on canonical
+  paths): the durable Invocation stores' partial unique index
+  `uq_capability_invocation_active_effect` keys on `(run_id, node_run_id,
+  binding_id, effect_key)`, so the *database-level* hard guarantee does not
+  span NodeRun visits; cross-visit dedupe relies on the scoped `list_effect`
+  check inside `InvocationExecutionService.invoke` plus Attempt fencing/run
+  ownership. A scope-keyed partial index would make the DB guarantee match the
+  logical contract; left for the integrator to weigh.
+- Verdict at this head: branch code needs no further repair; #42 acceptance
+  cannot be fully signed off from this lane because #1194 closure and the
+  `create_a2a_task` ledger grant are external actions (NEEDS-DEEP-REVIEW
+  handoff).
