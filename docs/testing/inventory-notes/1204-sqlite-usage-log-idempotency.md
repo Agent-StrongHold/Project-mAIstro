@@ -27,6 +27,19 @@ container: the legacy timestamp-only table upgrades and backfills
 (2 requests / 25 total tokens for a 15-token backfilled row plus a 10-token
 event), and a repeated `record_usage(event_id=...)` keeps `request_count=1`.
 
+## Develop-merge resolution (60862b6c5)
+
+Merging develop's 60862b6c5 into the lane conflicted in
+`docs/architecture/CONVERGENCE-MATRIX.md` only: develop's #1470 rewrote the
+Credentials row around the retired `credential_store_v2`, which this same merge
+applies, so its row text was taken; but its Quota share of `most` was rejected
+because `check-convergence-matrix.py` recomputes the merged tree's unreachable
+quota share as `some` (7 of 14 modules) — the branch's wired quota backends are
+part of that arithmetic. No quota/persistence source file conflicted: develop
+did not touch the #1204 surfaces, and the migration chain re-verified as a
+single linear head (`039_quota_usage_event_identity`) applying cleanly from
+empty PostgreSQL.
+
 ## Retention and chain-tip repairs
 
 Two durable-bookkeeping repairs from the validation round: `quota_usage_events`
