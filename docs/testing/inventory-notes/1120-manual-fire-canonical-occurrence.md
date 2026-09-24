@@ -187,3 +187,46 @@ crash-window cases (`test_a_crashed_fire_leaves_no_firing_and_a_retry_fires`,
 DSN the same core suites pass 516/150 skipped and the four focused Hive
 manual-fire suites 100 passed. No defects found; no tree changes made by
 verification itself beyond this note.
+
+## Ninth-pass independent verification @ 6b7ccb9beff7 (2026-09-24)
+
+Re-derived from the issue text, not trusted from prior passes. Same head as
+the eighth pass (6b7ccb9beff7); all results re-executed fresh:
+
+- ruff check EXIT=0 ("All checks passed!"), ruff format clean (2535 files).
+- radon gate EXIT=0 (70/70 baselined, 0 new/regressed/stale).
+- vulture gate EXIT=1 still (1430 findings vs 1415 reviewed) — re-proven
+  upstream, not branch-caused: raw `vulture packages tests` scans of HEAD and
+  a git-archive tree of merge base 1dea30dfe give **identical identity
+  multisets (1255 unique, 0 added / 0 removed)**; quality/ ledgers are
+  byte-identical base..HEAD. Remedy remains a reviewed grant, out of lane.
+- Core scheduling + runs + tests/migrations/test_audit_scope_migration.py:
+  1124 passed / 243 skipped without a DSN; **with a fresh pg18 container**
+  (dedicated `auto-1120-verify2-pg`, port 47331) after `DATABASE_URL=…
+  alembic upgrade head` running the full chain to single head 042:
+  **1361 passed / 3 skipped** — spine conformance green on memory, SQLite,
+  **and PostgreSQL** legs, including the five manual-fire occurrence-identity
+  cases and the migration-042 index rewrite.
+- Focused Hive suites (test_manual_fire_canonical,
+  test_schedule_manual_fire_canonical, test_schedule_workspace_scope,
+  test_scheduler): 100 passed. Entire Hive backend suite: **2675 passed /
+  1 skipped**.
+- mypy packages/maistro-core/src: 5 errors, all `import-not-found` for
+  `maistro_bootstrap.*` inside untouched `maistro/cli/_builders_tui.py` /
+  `_install.py` (bootstrap extras not synced in this scratch); a git-archive
+  base tree shows the same environmental class (31 similar stub errors), and
+  **no error touches the branch's changed files**.
+- Doc gates: check-convergence-matrix.py EXIT=0 (52 subsystems / 1117
+  modules), check-doc-links.py EXIT=0.
+- Closure-keyword audit: 0 matches for `fixes/closes/resolves #N` across all
+  commit messages base..HEAD; PR #1315 body says "Refs #1120" only (draft).
+- Code re-read (not just tests): `fire_now` fails closed with
+  `ScheduleAdmissionUnavailable` for a configured-but-unwired Container;
+  `run_registered_dag` is reachable only from the no-Container compat branches
+  (scheduler.py `_fire_schedule` callers :127/:722); occurrence identity is
+  `(schedule_id, "manual:" + fire_id)` (sources.py `occurrence_key`),
+  provenance stamps `schedule_trigger` manual|recurring + `schedule_fire_id`
+  (admission.py `_admit_one`); reserve→settle `PendingFire` ordering with
+  `_reconcile_pending_fires` lease recovery; cursor untouched by manual fire.
+
+No new defects. No tree edits beyond this note.
