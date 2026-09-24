@@ -166,3 +166,35 @@ only delta from 67be62413 is this note itself, so code provenance carries):
   (host port 18294): 8/8 passed, including both gating tests asserting the
   Crypto Identity toggle is disabled with unavailable and misconfigured
   health responses, and full five-step completion to Live Operations.
+
+Independent verifier pass at head e7b318b2f (delta from bae8919df is this note
+only, so all prior image provenance carries to this head):
+
+- Re-executed: ruff check clean; extra_guard 6, conductor
+  api+identity_health+setup_guard 55, full conductor backend 2670 (matches
+  inventory), distribution+prepull 30, engine identity 69 — all passed. Ten
+  check gates rc=0 (build-context, deployment-claims, doc-links,
+  image-inventory, shell-execution, workflow-write-safety,
+  security-inventory, shipped-surface-truth, cross-package-imports,
+  suite-inventory).
+- Image provenance re-proven: hive-conductor:l291-final's
+  services/identity_health.py, routes/health.py, routes/setup.py and
+  requirements.txt byte-identical to this worktree. Both verbatim security.yml
+  in-image commands re-executed: default → identity=operational (python
+  3.13.15, bip-utils 2.12.1, coincurve 21.0.0, pynacl 1.6.2, msgpack/setuptools
+  floors held); observability → observability=importable identity=operational.
+- Live support-matrix arc re-observed on fresh l291-final containers: boot →
+  misconfigured/setup_incomplete with identity_required=false; setup without
+  crypto_identity → disabled (readiness identity=true); setup with
+  crypto_identity → DID persisted, one-time mnemonic returned,
+  identity=operational/provisioned.
+- Live Playwright frontend/e2e/setup.spec.ts against a fresh l291-final
+  container (host port 18303): 8/8 passed, including the unavailable- and
+  misconfigured-health gating tests asserting the Crypto Identity toggle is
+  disabled ("no action offered").
+- Residuals unchanged: GitHub Actions execution of the security containers job
+  remains UNVERIFIED from this read-only lane (job fires on PR-to-main/main
+  pushes/nightly, not develop PRs); the verbatim local in-image replication is
+  the evidence of record. frontend/e2e still has no CI owner (compose e2e runs
+  tests/e2e only); no #291 criterion requires it and the spec was executed
+  live here. No premature closure keywords in the PR body or commit messages.
