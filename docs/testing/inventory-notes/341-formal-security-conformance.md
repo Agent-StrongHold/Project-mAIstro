@@ -366,3 +366,36 @@ with the database up → **193 failed**, so the mutation fails required CI.
 references. Residuals unchanged: pushing to observe the live rollup for
 PR 1452 is prohibited (UNVERIFIED); gate-script self-neutering co-change
 remains visible-in-diff (follow-up #160).
+
+Independent verifier pass at the final lane head `6ca739401` (clean worktree at
+the exact job SHA; driver check-0/1/2.log = uv sync + ruff check + ruff format,
+all clean, no pytest — every number below re-executed fresh in this pass; all
+mutations ran through an in-memory `pytest_configure` plugin under `/tmp`
+(worktree verified clean via `git status` after the battery)):
+`uv run ruff check .` clean; `tests/test_check_formal_oracle_independence.py`
+→ **3 passed**; targeted `pytest formal/models/test_dangerous_tools.py -q
+--hypothesis-seed=0` → **256 passed**; full required-CI equivalent
+`MAISTRO_TEST_PG_DSN/MAISTRO_TEST_DATABASE_URL=… pytest formal/models/ -q
+--timeout=300 --hypothesis-seed=0` (PYTHONPATH includes
+`packages/maistro-evolve/src`; dedicated pgvector:pg18 on 127.0.0.1:55771
+after `alembic upgrade head`) → **664 passed**, `test_run_lease_fence.py`
+included. Mutation battery, all failing: rm-weakening `[/~]`→`/` → **6
+failed** (prior stale finding refuted again at this head); 21-of-22 deletion
+retaining only `sudo\s+` → **193 failed** on the targeted suite AND **193
+failed / 471 passed** on the exact full required-CI command with the database
+up; benign-prefix shadow short-circuit (patched at `dangerous_tools` and
+`microvm` bindings) → **89 failed**; `microvm.is_dangerous_command` → `[]`
+(deny check unreachable) → **41 failed**. Gate end-to-end (real script):
+this PR vs base `1dea30dfe` → bootstrap **exit 0** (oracle verified absent at
+base via `git cat-file`); unresolvable base → **exit 2**; scratch clone:
+oracle-only change → **exit 0**; oracle+implementation co-change → **exit 1**.
+`formal-conformance` confirmed required at
+`.github/branch-protection.json:50,112`; SECURITY-CONFORMANCE.md claim map
+names all resolve to defs in `test_dangerous_tools.py` (9/9);
+`test_external_content.py` no longer imports `INJECTION`/`INVISIBLE`
+implementation constants; `formal/extractors`/`formal/generated` absent with
+zero live references. No closure keywords in the PR body ("Refs #341" only) or
+commits `1dea30dfe..6ca739401` (sole hit is prose "closes the prior
+finding"). Residuals unchanged: live GitHub CI rollup for PR 1452 UNVERIFIED
+(push prohibited); org-ruleset 0-approval config and gate-script
+self-neutering co-change remain follow-ups for #160.
