@@ -40,6 +40,14 @@
       "reason": "This registry is the explicit policy that classifies collaboration-state representations."
     },
     {
+      "id": "credential-authority",
+      "kind": "specification",
+      "paths": [
+        "quality/credential-authority.json"
+      ],
+      "reason": "Reviewed credential-authority classification: which credential implementation is canonical, reachable, or retired is policy whose change is the substantive change, not a repository-wide measurement that unrelated branches must rewrite."
+    },
+    {
       "id": "compatibility-contracts",
       "kind": "specification",
       "paths": [

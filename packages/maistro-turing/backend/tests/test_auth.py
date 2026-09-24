@@ -37,6 +37,24 @@ def test_service_key_authenticates(turing_service_client):
     assert r.json()["authenticated"] is False
 
 
+def test_app_uses_injected_canonical_security_composition() -> None:
+    from maistro.security.composition import build_canonical_security_dependencies
+
+    from ..main import create_app
+    from ..security import TuringInboundSecurity
+    from ..state import get_state
+
+    dependencies = build_canonical_security_dependencies()
+    security = TuringInboundSecurity(
+        warden=dependencies.warden,
+        audit_log=dependencies.audit_log,
+    )
+    isolated_app = create_app(inbound_security=security)
+
+    assert isolated_app.state.turing_security is security
+    assert get_state().inbound_security is security
+
+
 def test_authenticated_undeclared_v1_path_is_default_deny(authed_client):
     response = authed_client.get("/v1/undeclared-future-route")
     assert response.status_code == 403

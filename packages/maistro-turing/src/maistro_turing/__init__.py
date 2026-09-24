@@ -30,6 +30,7 @@ from maistro_turing.protocols import (
     WisdomInvariantViolation,
     WorkingMemoryStore,
 )
+from maistro_turing.runtime import TuringContentBlocked
 from maistro_turing.self_model import (
     ALL_FACETS,
     CANONICAL_FACETS,
@@ -105,6 +106,7 @@ __all__ = [
     "TodoStatus",
     "Trait",
     "TuringClassifierBridge",
+    "TuringContentBlocked",
     "TuringMemoryBridge",
     "TuringProviderBridge",
     "TuringSecurityBridge",
