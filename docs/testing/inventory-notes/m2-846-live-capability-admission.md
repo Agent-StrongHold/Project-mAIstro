@@ -91,3 +91,21 @@ holds only an Invocation-backed invoker, revoke/disable effective on live
 route+repair actors with zero provider calls asserted, no `AllowAllGate`
 symbol under `packages/*/src`. No closure keywords in PR #1439 body or commit
 messages. Only this note changed after the checks ran.
+
+Independent verification pass 3 (auto-846, head 4a28060f8, repair-revalidation
+job): the prior repair job died before executing any checks, so the full
+battery was re-run from scratch at the assigned head with a clean tree:
+`ruff check .` + `ruff format --check .` clean; capabilities slice 339 passed;
+hive-conductor route/wiring slice 103 passed; the 6 route-level acceptance
+tests and the 11 acceptance-mapped core files re-executed individually (140
+passed); mypy clean (712 files); `check-suite-inventory.py` OK (13 suites,
+conductor 2662 / core 10747); `check_direct_effects.py` OK (45 sites, 2
+CANONICAL_INVOCATION). Re-derived acceptance from source: route builds its
+manager only through `_configured_harness_policy()` (bounded deny; a
+policy-less manager is unreachable), manager `_admission_unavailable` refuses
+Invocation-less or policy-less managers, effect-context default
+`_unconfigured_policy` denies, governed seam converts policy-evaluator
+exceptions into an audited `invocation.fail-closed` DENY before
+resolver/executor run, sessions store only `provider_name`, and
+`RuleBasedRepair` holds only an Invocation-backed invoker that re-resolves the
+Binding and provider per call. Only this note changed after the checks ran.
