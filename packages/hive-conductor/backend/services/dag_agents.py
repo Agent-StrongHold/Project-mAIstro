@@ -148,7 +148,16 @@ _fallback_canonical_run_store = InMemoryRunStore(project_store=_fallback_project
 
 
 class _StandaloneCanonicalGraphStore(CanonicalDurableRunStore):
-    """Canonical graph store with a read-only compatibility index for Hive."""
+    """Canonical graph store with a read-only compatibility index for Hive.
+
+    M1 product-local projection: Graph
+
+    This subclass adds no storage of its own: every Run/NodeRun/Attempt write
+    goes through ``CanonicalDurableRunStore`` over the canonical RunStore, and
+    the bounded ``_rows`` index below is a presentation adapter that older
+    HITL/scheduler callers refresh from those canonical writes. It is a Hive
+    local view of the durable graph record, not a second graph authority.
+    """
 
     def __init__(self) -> None:
         super().__init__(_fallback_canonical_run_store, InMemoryGraphContinuationStore())

@@ -30,3 +30,32 @@ changes:
   `test_default_workspace.py`, `test_chat_brief_interview.py`) -> 46 passed
 
 The prior failure is closed at this HEAD.
+
+## Repair-phase re-validation (job 65d64099, HEAD 777458f64, base 1dea30dfe)
+
+Re-validation after merging develop `1dea30dfe` (Warden trust boundaries, deck
+sanitization, credential_store_v2 retirement, Design Studio) into `auto-53`.
+The earlier verify job e533c060 at `8ff261b15` had passed all seven
+deterministic checks but failed to emit its result record (worker error, not a
+tree defect), so this pass re-proves the merged tree:
+
+- `uv run ruff check .` / `uv run ruff format --check .` -> clean
+- the exact 10-file verifier battery from the historical check-4 failure ->
+  184 passed
+- full `packages/hive-conductor/backend/tests` -> 2665 passed, 1 skipped
+- full `packages/maistro-core/tests` -> 10124 passed, 654 skipped, 1 xfailed
+- `check-suite-inventory.py` (hive 2666, core 10779) -> ok
+- `check-wiring-reads.py` -> ledger matches the current unread set
+
+One real gate finding, repaired: `scripts/check-m1-convergence-freeze.py
+--base 1dea30dfe` flagged `_StandaloneCanonicalGraphStore`
+(`packages/hive-conductor/backend/services/dag_agents.py`) as a new
+shared-owner-shaped type overlapping the Graph concept without a projection
+marker. The class adds no storage of its own — every write goes through
+`CanonicalDurableRunStore` over the canonical RunStore, and its `_rows` index
+is a read-only presentation adapter refreshed from canonical writes — so the
+repair documents that truthfully with the `M1 product-local projection: Graph`
+docstring marker (comment-only change, no behavior change). The gate now
+reports "no unapproved new architecture island" (exit 0).
+
+No tests added or removed in this pass; inventory unchanged.
