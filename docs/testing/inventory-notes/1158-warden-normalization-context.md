@@ -201,3 +201,59 @@ react.py, artificer/strategy.py, conduit.py, sentinel post_call) consumes
 the hardened `Warden.scan` directly, and `normalize_for_detection` is
 imported only by `security/warden/detector.py` — no ingress implements a
 separate normalizer.
+
+## Repair pass 6 (2026-09-24): merge of the Turing Warden boundary WIP,
+re-verification at the new merge head
+
+Salvaged an in-progress merge of `1dea30dfe` (WIP: Warden on Turing backend
+inbound trust boundaries #1444, plus #1467/#1470/#1486/#1552 lane work) into
+auto-1158. Exactly one file conflicted, `security/warden/detector.py`;
+resolution kept BOTH sides: the full #1158 hardening (context bounds,
+`WardenContext`, `_DetectionViews`/`_literal_views`) and the incoming
+`WARDEN_POLICY_VERSION = "warden-code-v1"` constant, placed before its
+consumer `Warden.policy_version` so the Turing boundary audit records
+correlate against the canonical detector policy instead of a product-local
+identifier. The conflicted pre-resolution file is preserved outside the tree
+as `/tmp/detector.conflicted.backup.py` and the full pre-merge diff as
+`../incoming-1158-salvage.patch`.
+
+Re-validated every acceptance criterion at merge head `65c379693` with fresh
+executed probes (production `Warden`, no mocks on the detection path):
+spaced-letter, leetspeak (`1gnore 4ll prev1ous 1nstruct1ons`), composed
+spaced-leet, zero-width, and Cyrillic-homoglyph overrides all `blocked=True`
+while five benign prose controls stay clean; a mid-word cross-turn split
+(`…instruc` + `tions: none`) whose fragments are individually at most
+heuristic-suspicious (never blocked) is blocked at the completing turn;
+200×10KB context collapses to 2 turns / exactly 16384 bytes; trusted
+provenance context containing an override is not joined into a benign scan.
+Re-ran the Artificer end-to-end probe with `FauxProvider`: both fragments of
+the reconstructed override reach `provider.call_log[3]` only as
+`[BLOCKED: tool result …]` placeholders.
+
+New coverage consumed from the merge: `tests/security/test_composition.py`
+pins `dependencies.warden.policy_version == WARDEN_POLICY_VERSION`; the
+classification of `#1139` sharpens — the Turing backend (`maistro-turing/
+backend/security.py`) now refuses startup without the canonical `Warden`
+(`RuntimeError`), delegates `scan_text`/`scan_payload` to `Warden.scan`, and
+adds no second normalizer (`normalize_for_detection` still imported only by
+`security/warden/detector.py` across `packages/*/src`).
+
+Validation at this head: `tests/security` 1288 passed (19 skipped; 1
+deselected below), `tests/agents` + `test_harness_runner.py` +
+`test_conduit.py` 796 passed, `packages/maistro-turing` 255 passed, detector
+cross-turn/bounds/trusted-context selection 18 passed, Agent multi-turn
+selection 22 passed; `ruff check` clean (core+turing), `ruff format --check`
+clean (1342 files), `mypy` security+agents+turing clean (118 files);
+`check-security-inventory.py` OK, `check-suite-inventory.py` OK,
+`check-cross-package-imports.py` OK, `check-convergence-matrix.py` OK,
+`verify-monorepo-layout.sh` OK.
+
+Residual, unchanged and out of scope:
+`tests/security/test_log_redaction.py::test_install_is_idempotent` fails
+deterministically under pytest 9.1.1 — also at pre-merge `1615d1c42` (verified
+in a throwaway worktree with its own venv). The plugin's per-phase
+`LogCaptureHandler`s land on the target logger between the fixture and the
+test body, so the second `install_log_redaction` wraps those two handlers;
+direct execution of the production function is idempotent (second call
+returns 0). Fixture-local interaction with pytest's logging plugin, not a
+#1158 regression; the file is untouched since the initial release.
