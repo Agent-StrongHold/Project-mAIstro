@@ -29,3 +29,31 @@ Known pre-existing, out-of-scope: `security/test_log_redaction.py::
 test_install_is_idempotent` fails identically on develop base 1dea30df under
 pytest 9 (its capture handlers attach after the fixture installs redaction —
 handlers-added-later is outside `install_log_redaction`'s documented contract).
+
+## Re-verification at head bba39fad7 against develop base 60862b6c
+
+Independent re-run of the full battery on a fresh empty pgvector:pg18 database
+(`verify72`, chain 001 -> 039 applied, single head `039`):
+
+- persistence + quota + elevation-durable + container-wiring: 760 passed,
+  0 skipped; strikes battery 69 passed, 0 skipped; `tests/migrations` 93
+  passed live; maistro-server 365 passed; ruff/mypy/check-doc-links/
+  check-suite-inventory clean.
+- Two environment pitfalls worth recording for future lanes, both proven by
+  controlled re-runs (neither is a product defect):
+  1. `security/test_strike_tracker_conformance.py` gates its PostgreSQL leg on
+     `MAISTRO_TEST_DATABASE_URL`, *not* `MAISTRO_TEST_PG_DSN`. Exporting only
+     the latter silently skips 19 tests (this is the same symptom as the
+     original "19 skipped" finding). `MAISTRO_REQUIRE_PG_LEGS` turns the skip
+     into a hard failure for CI (the `strike-ladder` job sets it).
+  2. `tests/migrations` fixtures build the alembic subprocess env from `DB_*`
+     variables, but `resolve_database_url` gives `DATABASE_URL` precedence.
+     Exporting `DATABASE_URL` alongside them redirects the subprocess to the
+     other database (scratch DB stays empty; symptoms like "learnings has no
+     embedding column"). Run this suite with `DATABASE_URL` unset.
+- The `test_log_redaction.py::test_install_is_idempotent` failure reproduces
+  identically at this head; the test file and the redaction module are
+  byte-identical between this branch and develop, and neither is touched by
+  the branch diff — confirmed pre-existing, still out of #72 scope.
+- No production code and no tests changed by this re-verification; no
+  inventory delta.
