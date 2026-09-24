@@ -40,3 +40,29 @@ same parametrization over them: 3 collected nodes → 10, i.e. +7. Net for this 
 A corpus-wide sweep for `ADR-* (specifies|mandates|says)` against active specs now returns only
 these repaired documents plus SPEC-080126-3a7c (itself Superseded — a non-active source, outside
 the gate's scope by design). Produced by `check-suite-inventory.py --update`, not estimated.
+
+## Third-wave re-verification and develop-drift merge (1dea30df)
+
+The lane arrived with an in-progress, conflicted merge of develop 1dea30df onto the
+#374-repair head 0be75b2d; the single conflict was `docs/architecture/CONVERGENCE-MATRIX.md`.
+Resolved to preserve both parents' intents under the #374 rule:
+
+- Skills row keeps the governing cell `ADR-069, ADR-070` (both Accepted). The incoming side's
+  `ADR-083` is a Proposed decision and may not be a direct governing authority; it is named only
+  as design context in the disposition prose ("trust-policy design context in Proposed ADR-083,
+  not shipped authority"), which the matrix scan deliberately does not read as governing.
+- Credentials row adopts the incoming #1186 wording (`services.user_credentials`; the merge
+  deletes `credential_store_v2.py`, so the parent row would have named a dead module). Its only
+  governing citation, ADR-063, is Accepted.
+
+Re-verification evidence on the merged tree: `check-citation-status.py` OK with 0 baselined
+exceptions; `tests/test_check_citation_status.py` 64 passed; mypy clean on `maistro-registry`;
+`check-convergence-matrix.py` OK (52 subsystems / 1117 modules); `check-suite-inventory.py` OK
+(13 suites match); `maistro_registry.cli lint` 407 files clean. A live in-process probe of
+`citations.check_citations` reproduced all four diagnostics (Superseded→names active replacement;
+forked supersession→contradictory active authority; cycle→reported; Proposed→refused). Grep
+confirmations: no active-status document holds ADR-055 or ADR-083 in `substrate`/`implements`;
+the only governing-field ADR-083 citations (SPEC-080226-510f, ADR-082226-4478) sit on Proposed
+sources, which the gate exempts by design (`test_only_active_sources_claim_live_authority`).
+
+No collected-node change: inventory-delta for this section is +0.
