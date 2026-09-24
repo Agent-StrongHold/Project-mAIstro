@@ -400,7 +400,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "deletes the stored secret for a provider",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
@@ -410,7 +410,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "stores the provider secret in the vault",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
@@ -420,7 +420,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "persists per-user provider config within allow-listed fields",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "stores.user_provider_config + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/dag_runs.py",
@@ -547,10 +547,10 @@
       "method": "POST",
       "route": "/projects",
       "handler": "create_design_project",
-      "disposition": "canonical",
+      "disposition": "domain-state",
       "production_enabled": true,
-      "reason": "generates and persists a design project from discovery responses through the validated pipeline",
-      "effect_owner": "design pipeline: Warden scan, prompt stack, DB persist"
+      "reason": "prepares and persists a Design project/prompt stack; it does not claim visual generation",
+      "effect_owner": "DesignEngine preparation + DesignProjectStore persistence"
     },
     {
       "source": "packages/hive-conductor/backend/routes/design.py",
@@ -559,7 +559,7 @@
       "handler": "create_render_job",
       "disposition": "disabled",
       "production_enabled": false,
-      "reason": "rendering is explicitly unavailable until a canonical worker, durable artifact store, and output-serving route exist (D-14 facade, #286)",
+      "reason": "compatibility endpoint fails explicitly until the canonical Canvas rendering seam exists; it creates no process-local job or output",
       "owner_issue": 286
     },
     {
