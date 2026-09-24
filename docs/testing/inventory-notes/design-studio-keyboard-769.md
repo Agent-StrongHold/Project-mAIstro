@@ -13,6 +13,79 @@ collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
 API tests).
 
+## Executed evidence (repair round 7, merge reconciliation of develop base 60862b6c5)
+
+The assigned develop base was merged into this lane. It carried #1486 (M1-C4
+truthfulness rewrite that had disabled every Design Studio editor entry), the
+#364/#66 HITL + Turing trust-boundary work, and the #311/#752 Deck sanitization
+boundary. Three files conflicted; each was resolved as a union that keeps both
+sides' contracts, then re-proven against a live stack:
+
+- `packages/hive-conductor/frontend/src/pages/DesignStudio.tsx` — kept the
+  brief-gated editor entry (`disabled={!canOpenEditor}`, line 245: enabled by
+  typing, never permanently disabled), the fixed-page/Deck editor transitions
+  with the textless focus anchor, and took develop's persisted-projects card
+  verbatim (lines 210-232, including the 503 "Persisted Design projects are
+  unavailable" messaging develop's new journey asserts).
+- `packages/hive-conductor/frontend/src/pages/DeckBuilder.tsx` — kept the
+  keyboard-complete ordered-page listbox, Move earlier/later, presentation
+  dialog with focus management, and Save/Export controls; restored develop's
+  `handlePreviewBlur` DOM-sanitization boundary (line 124) and `onDragOver`
+  prevention (line 146). The missing `onDragOver` was caught by a real failing
+  deck-sanitization test during this round's validation and fixed — the
+  sanitization boundary from #752 and the keyboard surface from #769 now ship
+  in one component.
+- `packages/hive-conductor/tests/e2e/design-studio-truthfulness.spec.ts` —
+  both develop's "reports unavailable persistence instead of an empty durable
+  state" journey (line 232) and the keyboard-safe contained-Deck journey (line
+  256, URL asserted to stay on `/cli/canvas`).
+
+Validation re-run at this merged head:
+
+- Frontend `npm run build` (tsc + vite) clean; `npm run lint` 0 errors (90
+  pre-existing warnings); `uv run ruff check .` and `uv run ruff format
+  --check .` clean; `scripts/check-suite-inventory.py` exit 0 (13 suites);
+  `scripts/check-frontend-api-routes.py` exit 0 (216 routes).
+- Backend: `pytest packages/hive-conductor/backend/tests -q -k design` → **82
+  passed**; `-k "hitl or workspace or credential or registered_dag"` → **317
+  passed**; `packages/maistro-design/tests` + `packages/maistro-turing` (src
+  and backend) + `tests/test_credential_authority.py` → **576 passed**;
+  `packages/maistro-core/tests/graph/durable_runs` +
+  `packages/maistro-core/tests/security` → **1766 passed, 40 skipped**. One
+  environmental failure, pre-existing and confirmed identical on the develop
+  base clone (57ddca502):
+  `packages/maistro-core/tests/security/test_log_redaction.py::
+  test_install_is_idempotent` fails under pytest 9.1.1's logging plugin
+  (passes with `-p no:logging`); the module is untouched by this lane and by
+  the merge.
+- Live e2e — backend `uv run --no-project uvicorn main:app` serving the
+  freshly rebuilt `frontend/dist` on 127.0.0.1:8102 (`GET /v1/setup/status` →
+  `setup_complete: true`): `design-studio-keyboard.spec.ts` +
+  `design-studio-truthfulness.spec.ts` **7/7 passed (9.3s)**;
+  `deck-sanitization.spec.ts` **7/7 passed (2.1s)** via the CI-shaped
+  `E2E_SRC_ROOT`/`E2E_NODE_PATHS` staging copied from
+  `tests/Dockerfile.playwright`.
+
+Driver findings disposition, re-verified against this merged head:
+
+- "inventory-delta mapping malformed / check-suite-inventory exits 2" — stale;
+  the front matter parses and the checker exits 0 (13 suites).
+- "DesignStudio.tsx permanently disables the only generation/editor entry;
+  generation/editing/export unavailable" — true only of the develop base's
+  #1486 containment. The merged page's entry is brief-gated (line 245) and the
+  real editors open; asserted by keyboard journey test 3 and truthfulness
+  journey test 6 against the live app.
+- "App.tsx redirects the Deck route; Open Deck editor disabled" — stale;
+  `App.tsx:195` routes `/decks` (M0 containment lifted) and `AppShell.tsx` is
+  untouched by the merge resolution.
+- "keyboard spec only scans the picker parent; excludes color-contrast" —
+  stale; the spec scans `main` with no disabled rules and full-page scans run
+  inside both editors (all green in this round's runs).
+- "docker compose build fails (coincurve metadata under Python 3.14)" —
+  upstream cp314 wheel gap, loudly excluded via the `[identity]` extra in
+  `packages/hive-conductor/Dockerfile`; not a #769 regression. This round's
+  e2e evidence was produced by running the stack directly instead of compose.
+
 ## Executed evidence (repair round 6, independent revalidation at 516b7357)
 
 Re-ran the acceptance battery at this head (worktree `/home/dev/Git/wt/auto-769`):

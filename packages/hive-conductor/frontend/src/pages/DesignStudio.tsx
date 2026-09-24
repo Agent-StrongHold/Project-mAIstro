@@ -11,6 +11,19 @@ type DesignSkill = { slug: string; name: string; mode: string; description: stri
 type DesignSystem = { slug: string; name: string };
 type DesignSystemsResponse = { systems: DesignSystem[]; catalog: { available: boolean; cause: string | null; count: number }; ready: boolean; cause: string | null };
 type CatalogState = { status: "loading" | "ready" | "degraded" | "unavailable"; skills: DesignSkill[]; systems: DesignSystem[]; message: string };
+type DesignProject = {
+  id: string;
+  name: string;
+  skill_slug: string;
+  design_system_slug: string;
+  output_count: number;
+};
+
+type ProjectState = {
+  status: "loading" | "ready" | "unavailable";
+  projects: DesignProject[];
+  message: string;
+};
 
 const ARTIFACT_MODES: ArtifactMode[] = [
   { id: "deck", name: "Presentation / Deck", description: "Multi-page presentations with slide navigation, presentation mode, and deck export." },
@@ -48,13 +61,19 @@ export default function DesignStudio() {
   const [editor, setEditor] = useState<"fixed" | "deck" | null>(null);
   const [status, setStatus] = useState("Choose an artifact type, describe the brief, and open its editor.");
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading", skills: [], systems: [], message: "Checking design resources..." });
+  const [projectState, setProjectState] = useState<ProjectState>({
+    status: "loading",
+    projects: [],
+    message: "Loading persisted Design projects…",
+  });
 
   useEffect(() => {
     let cancelled = false;
     async function loadCatalog() {
-      const [skillsResult, systemsResult] = await Promise.allSettled([
+      const [skillsResult, systemsResult, projectsResult] = await Promise.allSettled([
         apiGet<DesignSkill[]>("/v1/design/skills"),
         apiGet<DesignSystemsResponse>("/v1/design/systems"),
+        apiGet<DesignProject[]>("/v1/design/projects"),
       ]);
       if (cancelled) return;
       const skills = skillsResult.status === "fulfilled" ? skillsResult.value : [];
@@ -65,6 +84,24 @@ export default function DesignStudio() {
         setSelectedSkillSlug((current) => current || next.slug);
         setResponses((current) => Object.keys(current).length > 0 ? current : Object.fromEntries((next.discovery_form ?? []).map((field) => [field.key, fieldValue(field)])));
       }
+      const projectsFailure = failureMessage(projectsResult);
+      if (projectsResult.status === "fulfilled") {
+        const projects = projectsResult.value;
+        setProjectState({
+          status: "ready",
+          projects,
+          message: projects.length === 0
+            ? "No persisted Design projects in this scope."
+            : `${projects.length} persisted Design project${projects.length === 1 ? "" : "s"} in this scope.`,
+        });
+      } else {
+        setProjectState({
+          status: "unavailable",
+          projects: [],
+          message: `Persisted Design projects are unavailable: ${projectsFailure ?? "the Design service did not respond."}`,
+        });
+      }
+
       if (failures.length > 0) {
         setCatalog({ status: "unavailable", skills, systems, message: `Some design resources are unavailable: ${failures.join("; ")}` });
         return;
@@ -168,6 +205,30 @@ export default function DesignStudio() {
           <select value={systemSlug} onChange={(event) => setSelectedSystemSlug(event.target.value)}><option value="">Choose a design system</option>{catalog.systems.map((system) => <option key={system.slug} value={system.slug}>{system.name}</option>)}</select>
         </label>}
         {skill && <p id="design-skill-help" style={{ color: "var(--pencil)", fontSize: 11, marginBottom: 0 }}>{skill.description}</p>}
+      </section>
+
+      <section className="card" style={{ marginBottom: 16 }} aria-labelledby="persisted-projects-title">
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}><h2 id="persisted-projects-title" style={{ fontFamily: "var(--hand)", fontSize: 15, margin: 0 }}>Persisted Design projects</h2><span style={{ fontFamily: "var(--mono)", fontSize: 9, textTransform: "uppercase" }}>{projectState.status}</span></div>
+        <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginTop: 6 }}>
+          {projectState.message} These are read-only facts from the Design service; they do not claim that visual generation occurred.
+        </div>
+        {projectState.projects.length > 0 && (
+          <div role="list" style={{ display: "grid", gap: 8, marginTop: 10 }} aria-label="Persisted Design projects">
+            {projectState.projects.map((project) => (
+              <div key={project.id} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{project.name}</span>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>
+                    {project.output_count} stored output{project.output_count === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 3 }}>
+                  {project.skill_slug} · {project.design_system_slug}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="card" style={{ marginBottom: 16 }} aria-labelledby="artifact-brief-title">
