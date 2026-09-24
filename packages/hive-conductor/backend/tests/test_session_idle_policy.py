@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 import stores
+from fastapi import Response
 from fastapi.testclient import TestClient
 from main import app
 from routes import auth as auth_routes
@@ -287,3 +288,119 @@ def test_explicit_session_revocation_takes_effect_immediately(
 
     assert client.get("/v1/tasks").status_code == 401
     assert client.get("/v1/auth/whoami").json()["authenticated"] is False
+
+
+# --- Non-session store records must survive forged session cookies (#1187) ---
+#
+# The sessions store is a shared KV: the setup wizard keeps its durable
+# one-shot first-run claim and its completed-setup config marker there, and
+# neither record has a session shape. Resolution and logout therefore fail
+# closed WITHOUT deleting records they do not recognize — otherwise an
+# unauthenticated request naming a marker in its session cookie could evict
+# the boundary that keeps a second /v1/setup/complete from minting a
+# competing admin account.
+
+_CLAIM = {"claimed_at": "2030-01-01T00:00:00+00:00"}
+
+
+def test_resolution_denies_but_never_deletes_non_session_records() -> None:
+    from routes.setup import _SETUP_CLAIM_KEY, _SETUP_KEY
+
+    stores.sessions[_SETUP_CLAIM_KEY] = dict(_CLAIM)
+    stores.sessions[_SETUP_KEY] = {"completed_at": "2030-01-01T00:00:00+00:00"}
+    try:
+        assert auth_routes._resolve_session(_SETUP_CLAIM_KEY) is None
+        assert auth_routes._resolve_session(_SETUP_KEY) is None
+        # Denied for authentication purposes, yet both markers remain.
+        assert _SETUP_CLAIM_KEY in stores.sessions
+        assert _SETUP_KEY in stores.sessions
+        # ... and the one-shot insert boundary still holds against a rival.
+        assert stores.sessions.put_if_absent(_SETUP_CLAIM_KEY, dict(_CLAIM)) is False
+    finally:
+        stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+        stores.sessions.pop(_SETUP_KEY, None)
+
+
+def test_forged_marker_cookie_through_the_middleware_releases_nothing() -> None:
+    """End-to-end: an unauthenticated request whose session cookie names the
+    setup claim gets 401 and leaves first-run one-shot semantics intact."""
+    from routes.setup import _SETUP_CLAIM_KEY, _is_setup_complete
+
+    stores.sessions[_SETUP_CLAIM_KEY] = dict(_CLAIM)
+    try:
+        client = TestClient(app)
+        assert (
+            client.get("/v1/tasks", cookies={"hive_session": _SETUP_CLAIM_KEY}).status_code == 401
+        )
+        assert (
+            client.get("/v1/auth/whoami", cookies={"hive_session": _SETUP_CLAIM_KEY}).json()[
+                "authenticated"
+            ]
+            is False
+        )
+        assert _SETUP_CLAIM_KEY in stores.sessions
+        assert _is_setup_complete() is True
+        assert stores.sessions.put_if_absent(_SETUP_CLAIM_KEY, dict(_CLAIM)) is False
+    finally:
+        stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+
+
+def test_logout_cannot_delete_the_setup_claim_marker() -> None:
+    """Logout is authenticated, so a forged-cookie logout is refused at the
+    middleware — and the route's own pop (reachable via direct callers) must
+    only ever evict records that resolved as live sessions."""
+    from routes.setup import _SETUP_CLAIM_KEY, _is_setup_complete
+
+    stores.sessions[_SETUP_CLAIM_KEY] = dict(_CLAIM)
+    try:
+        client = TestClient(app)
+        # Over HTTP the middleware refuses the request outright...
+        response = client.post("/v1/auth/logout", cookies={"hive_session": _SETUP_CLAIM_KEY})
+        assert response.status_code == 401
+        assert _SETUP_CLAIM_KEY in stores.sessions
+        # ... and invoking the route directly (no middleware) still refuses to
+        # delete the marker: only resolved sessions are evicted.
+        assert auth_routes.logout(Response(), hive_session=_SETUP_CLAIM_KEY)["ok"] is True
+        assert _SETUP_CLAIM_KEY in stores.sessions
+        assert _is_setup_complete() is True
+    finally:
+        stores.sessions.pop(_SETUP_CLAIM_KEY, None)
+
+
+def test_logout_still_invalidates_a_live_session() -> None:
+    """Control for the logout guard: a real session is still evicted."""
+    client = TestClient(app)
+    assert (
+        client.post(
+            "/v1/auth/login", json={"username": "testuser", "password": "testpass"}
+        ).status_code
+        == 200
+    )
+    session_id = client.cookies.get("hive_session")
+    assert session_id
+
+    assert client.post("/v1/auth/logout").json()["ok"] is True
+    assert session_id not in stores.sessions
+    assert client.get("/v1/auth/whoami").json()["authenticated"] is False
+
+
+def test_corrupt_session_records_are_still_evicted() -> None:
+    """The eviction branch stays reachable for session-shaped records: a real
+    session whose timestamps became unparseable is cleaned up, while the
+    marker records (no session shape at all) never enter that branch."""
+    from routes.setup import _SETUP_CLAIM_KEY
+
+    session_id = "corrupt-created-at"
+    stores.sessions[session_id] = {
+        "user_id": "user",
+        "created_at": "not-a-timestamp",
+        "last_activity_at": "also-not-a-timestamp",
+    }
+    stores.sessions[_SETUP_CLAIM_KEY] = {"claimed_at": "not-a-timestamp"}
+    try:
+        assert auth_routes._resolve_session(session_id) is None
+        assert session_id not in stores.sessions
+        assert _SETUP_CLAIM_KEY in stores.sessions
+    finally:
+        stores.sessions.pop(session_id, None)
+        stores.sessions.pop(_SETUP_CLAIM_KEY, None)

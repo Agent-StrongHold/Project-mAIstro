@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +12
+  packages/hive-conductor/backend/tests: +17
 ---
 
 # #1187 authenticated session idle policy
@@ -162,3 +162,30 @@ covers the auth-path/setup-claim interaction. Fix direction: pop only records
 with a parseable `created_at` (true expired sessions), or move the setup
 sentinel out of the session store. Verdict this round: NEEDS-REPAIR on that
 finding; all #1187 acceptance criteria themselves remain demonstrated.
+
+Ninth round (repair at this head): the eighth-round finding is fixed at the
+resolution boundary, where the defect lived. `routes/auth.py` gains
+`_is_session_record` (a `TypeGuard` recognizing the session shape: string
+`created_at` AND non-empty string `user_id` — neither setup marker has either,
+the config marker carries `completed_at`), and `_resolve_session` now fails
+closed WITHOUT deleting records that do not resolve as sessions; eviction is
+reserved for genuine session records (expired, deactivated, corrupt-created-at
+sessions are still popped, so the cleanup branch stays reachable for real
+sessions). Defense-in-depth at the second mutation path: `logout` pops only
+records that resolved as live sessions — over HTTP the middleware already
+refuses unresolvable cookies with 401 before the route runs, but the route's
+raw-cookie pop was directly reachable by non-HTTP callers. `purge_all_sessions`
+(pre-existing at base, operator-only remediation) still clears the whole store
+and is left untouched. Five cases added to `test_session_idle_policy.py`:
+`test_resolution_denies_but_never_deletes_non_session_records` (both markers
+survive resolution; `put_if_absent` still refuses a rival claim),
+`test_forged_marker_cookie_through_the_middleware_releases_nothing` (the
+eighth-round repro end-to-end: 401 to the attacker, claim intact,
+`_is_setup_complete()` True), `test_logout_cannot_delete_the_setup_claim_marker`
+(401 over HTTP AND direct route invocation cannot delete the marker),
+`test_logout_still_invalidates_a_live_session` (control: real logout works),
+and `test_corrupt_session_records_are_still_evicted` (control: the eviction
+branch stays reachable for session-shaped records). Re-executed at this head:
+focused idle-policy suite 17/17; full backend suite 2685 passed; `ruff check .`
+clean; `ruff format --check .` clean; suite-inventory gate ok with this note's
+delta (+17, 2685 collected).

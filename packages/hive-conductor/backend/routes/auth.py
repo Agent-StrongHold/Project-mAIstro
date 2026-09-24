@@ -11,7 +11,7 @@ import re
 import threading
 import time as _time
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeGuard, cast
 from uuid import uuid4
 
 import stores
@@ -229,6 +229,26 @@ def _session_expiries(sess: dict[str, Any], now: datetime) -> tuple[datetime, da
     )
 
 
+def _is_session_record(sess: object) -> TypeGuard[dict[str, Any]]:
+    """Whether a record in the sessions store claims to be an auth session.
+
+    The sessions store is a shared KV, not a session-only table: the setup
+    wizard keeps its durable one-shot first-run claim (``claimed_at``) and the
+    completed-setup config marker (``completed_at``) there, and neither has a
+    session shape. Anything without the session shape fails resolution closed
+    — and must never be *deleted* by resolution: popping records that do not
+    parse as sessions would let any unauthenticated request name a marker in
+    its session cookie and evict a one-shot boundary it could never read.
+    Eviction is reserved for records that resolve as real sessions.
+    """
+    return (
+        isinstance(sess, dict)
+        and isinstance(sess.get("created_at"), str)
+        and isinstance(sess.get("user_id"), str)
+        and bool(sess["user_id"])
+    )
+
+
 def _resolve_session(
     session_id: str,
     *,
@@ -247,7 +267,10 @@ def _resolve_session(
     current = now or _session_now()
     with _SESSION_LOCK:
         sess = stores.sessions.get(session_id)
-        if not isinstance(sess, dict):
+        if not _is_session_record(sess):
+            # Fail closed WITHOUT deleting: the store also holds the setup
+            # claim/config markers, and destroying those on an unparseable
+            # record would release the first-run one-shot boundary (#1187).
             return None
         expiries = _session_expiries(sess, current)
         if expiries is None or current >= min(expiries):
@@ -889,7 +912,15 @@ def logout(response: Response, hive_session: str | None = Cookie(None)) -> dict[
         with _SESSION_LOCK:
             user_info = _resolve_session(hive_session)
             actor = user_info.get("username", "unknown") if user_info else "unknown"
-            stores.sessions.pop(hive_session, None)
+            # Pop only what resolved as a live session: the pop keys off the
+            # raw presented cookie value, which any caller can name, while the
+            # store also holds the setup claim/config markers — deleting those
+            # on an unresolvable cookie would let a request evict a one-shot
+            # boundary it could never read. Expired or revoked sessions are
+            # already evicted by the resolution above, so real sessions are
+            # invalidated here exactly as before.
+            if user_info is not None:
+                stores.sessions.pop(hive_session, None)
         log_audit("logout", actor)
     # A cookie is only cleared when the delete matches the attributes it was set
     # with. Dropping path/secure/samesite here left the original cookie in place
