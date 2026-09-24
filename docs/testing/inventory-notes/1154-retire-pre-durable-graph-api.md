@@ -210,3 +210,41 @@ exposes neither `run_graph` nor `GraphRun`; shipped Graph work crosses only
 non-test `run_graph(`/`GraphRun(` callers; `pre-durable-run-graph` ledger entry
 carries `retired_by: #1154`; no closure keywords in branch commit messages. No
 test files changed in this pass: suite inventories unchanged.
+
+## Repair round (verifier finding executed at c69883ed1, merge 60862b6c5)
+
+Both prior findings re-checked against the merged head before acting:
+
+1. `builders/dag.py` conflict markers — resolved before this round: `git diff
+   --check` exits 0 on the working tree and on `60862b6c5..HEAD` (the markers
+   existed only in an unresolved intermediate state, absent at c69883ed1).
+2. `check-vulture-baseline.py` exit 1 — re-derived, not assumed. The newest
+   merge (c69883ed1 of develop base 60862b6c5) regressed candidate bookkeeping
+   again, exactly as the 1051c69d7 round documented for the previous merge: the
+   candidate ledger lacked 2 rows (`hive routes/hitl.py::inspect_human_work`,
+   `tests/graph/durable_runs/test_hitl_settlement.py::current_graph`), both in
+   files byte-identical base↔head (`git diff` empty; identities present via
+   `git show 60862b6c5:<file>`). Repair is the same doctrine-sanctioned
+   findings-only re-bank: `--update` produced a 2-row diff and no other churn;
+   the candidate-bookkeeping section is now empty.
+
+Residual exit 1 re-attributed with a complete-set probe (not the capped print):
+classifying the scan under the trusted rules and diffing against the trusted
+ledger at 60862b6c5 yields 969 unauthorized findings across 343 distinct files;
+the intersection with this branch's 27 changed package files is EMPTY, so the
+bulk is the develop base's own ledger staleness and still requires the
+grants-first PR outside this lane. No authorization grants were added.
+
+Re-validated at this head: `tests/graph` 1166 passed / 79 skipped (incl.
+`test_retired_executor.py`); driver file set 95 passed; hive
+`test_graph_runner.py` 21 passed; `ruff check .` + `ruff format --check .`
+clean; `git diff --check` clean (tree and base..HEAD);
+`check-retired-guidance.py`, `check-execution-lifecycles.py`,
+`check-convergence-matrix.py`, `check-merge-markers.py`, both suite
+inventories exit 0. Surface re-checked after the merge: `maistro.graph.__all__`
+exposes neither `run_graph` nor `GraphRun`; `durable_runs/executor.py`'s
+historical `run_durable_graph` delegates to the single canonical
+`attempt_executor` implementation; `LegacyGraphRunArchive` is read-only
+("reproducible, not resumable"); ADR-062/ADR-065/SPEC-b624 carry top-of-file
+#1154 retirement notes; CONVERGENCE-MATRIX rows 52/124 mark the pre-durable API
+RETIRED. No test files changed in this pass: suite inventories unchanged.
