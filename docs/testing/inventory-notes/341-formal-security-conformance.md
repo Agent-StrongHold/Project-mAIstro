@@ -290,3 +290,44 @@ issue's formal-conformance scope, unchanged residual for integration
 rollup. Residuals unchanged: pushing the local notes-only commits is
 prohibited from verification; gate-script self-neutering co-change remains
 visible-in-diff (follow-up #160).
+
+Independent review at lane head `981763ca4` (merge of develop `1dea30dfe` into
+auto-341; job driver ran `uv sync --locked --extra dev` + `ruff check .` +
+`ruff format --check .`, all clean — driver ran no pytest, so every number
+below was executed fresh at this SHA; all mutations sandboxed under `/tmp`
+via PYTHONPATH plugins, worktree untouched):
+targeted `pytest formal/models/test_dangerous_tools.py
+formal/models/test_external_content.py -q --hypothesis-seed=0` → **271
+passed**; full required-CI equivalent `pytest formal/models/ -q
+--hypothesis-seed=0` → **664 passed** against a dedicated pgvector:pg18
+container on 127.0.0.1:55931 after `alembic upgrade head` (prior
+no-local-Postgres finding resolved; `maistro_evolve` missing from the
+driver-synced env was repaired with editable installs mirroring the
+workflow's explicit `pip install -e` steps — formal/ declares no
+maistro-evolve dependency, so a bare `uv sync` env cannot collect
+`test_rsi_*`; env-only, no tree change). In-memory mutation battery
+(`pytest_configure` plugin patching `dangerous_tools` + sandbox bindings,
+tree untouched): `rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/` weakening → **6 failed**;
+21-of-22 deletion retaining only `sudo\s+` → **193 failed**; benign-prefix
+allowlist shadow short-circuit (patched into `is_dangerous_command` at
+`dangerous_tools`/`microvm`/`docker`/`server` binding sites) → **95 failed** —
+all three fail the exact prior-finding command. Gate (real script): base
+`1dea30dfe` → bootstrap exit 0 (oracle absent at base); base `HEAD~1`
+(notes-only change) → exit 0; unresolvable base → exit 2;
+`tests/test_check_formal_oracle_independence.py` → **3 passed** (includes
+committed oracle+implementation co-change → violations asserted).
+`formal-conformance` required at `.github/branch-protection.json:50,112`;
+workflow runs the gate on `pull_request` + `merge_group` and has no
+artifact-regeneration step; `formal/extractors`/`formal/generated` absent,
+zero references; SECURITY-CONFORMANCE.md claim map names resolve to defs in
+`test_dangerous_tools.py`; ADR-072/073 + SPEC-190 exist in-tree. Merge
+commit `981763ca4` adds only `security/composition.py` +
+`security/warden/detector.py` to the protected prefix (no changes to
+`patterns.py`/`dangerous_tools.py`/judged behavior — consistent with the 664
+pass). No closure keywords with issue refs in commit bodies `1dea30dfe..HEAD`
+or the PR body ("Refs #341" only). Residuals unchanged: live CI rollup for
+PR 1452 not observable from this lane (UNVERIFIED, push prohibited);
+gate-script self-neutering co-change remains visible-in-diff (follow-up
+#160); live ruleset approval counts (0-approval "Pr merge" ruleset) remain a
+GitHub-config residual compensated by `strict_required_status_checks_policy`
++ merge queue per prior round's read-only refresh.
