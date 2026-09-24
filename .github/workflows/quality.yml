@@ -401,12 +401,26 @@ jobs:
       # own base, exactly as vulture-ratchet.yml does. tests/conftest.py
       # captures this value and keeps it away from every test except the gate
       # self-checks that opt in.
+      #
+      # `before` is right only for a protected-branch push, which really does
+      # replace that revision. A topic branch's `before` is its own previous
+      # tip, orphaned by any rebase and therefore unfetchable even at
+      # `fetch-depth: 0`, so the ratchet refuses with "base revision could not
+      # be resolved" and this job reds on a candidate whose pull-request run is
+      # green on identical content. Topic pushes use the integration base their
+      # PR run uses.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)
             || github.event_name == 'merge_group'
             && github.event.merge_group.base_sha
-            || github.event.before }}
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -796,6 +810,11 @@ jobs:
       # This ratchet closes that blind spot at module granularity.
       - name: reachability ratchet (built-but-never-wired modules)
         run: uv run python scripts/check-reachability.py
+
+      # Credential authority is checked against the same reachable module graph;
+      # a renamed unscoped store must fail before it can become a route dependency.
+      - name: credential authority (reachable stores are classified and scoped)
+        run: uv run python scripts/check-credential-authority.py
 
       # Both gates above stop one level short of the DI root. `Container` is not
       # a value object -- its fields exist so the runtime can consume them -- and

@@ -95,6 +95,7 @@ async def test_log_inserts_with_team_id_and_tool_name_defaults(
     assert call.args == (
         "tool_call",
         "u1",
+        "",  # org_id getattr default
         "",  # team_id getattr default
         "a1",
         "bash",
@@ -106,13 +107,22 @@ async def test_log_inserts_with_team_id_and_tool_name_defaults(
 
 
 @pytest.mark.asyncio
+async def test_log_persists_org_scope(log: PgAuditLog, conn: FakeConnection) -> None:
+    await log.log(AuditEntry(boundary="b", user_id="u", org_id="org-a", agent_id="a"))
+
+    call = conn.calls[0]
+    assert "org_id" in call.query
+    assert call.args[2] == "org-a"
+
+
+@pytest.mark.asyncio
 async def test_log_tool_name_none_becomes_empty_string(
     log: PgAuditLog, conn: FakeConnection
 ) -> None:
     entry = AuditEntry(boundary="b", user_id="u", agent_id="a", tool_name=None)
     await log.log(entry)
     call = conn.calls[0]
-    assert call.args[4] == ""
+    assert call.args[5] == ""
 
 
 @pytest.mark.asyncio
@@ -120,18 +130,16 @@ async def test_log_team_id_passthrough_when_present(log: PgAuditLog, conn: FakeC
     entry = AuditEntry(boundary="b", user_id="u", team_id="team-9", agent_id="a")
     await log.log(entry)
     call = conn.calls[0]
-    assert call.args[2] == "team-9"
+    assert call.args[3] == "team-9"
 
 
 @pytest.mark.asyncio
-async def test_get_entries_no_filters_uses_where_true(
-    log: PgAuditLog, conn: FakeConnection
-) -> None:
+async def test_get_entries_defaults_to_system_scope(log: PgAuditLog, conn: FakeConnection) -> None:
     conn.queue_fetch([])
     await log.get_entries()
     call = conn.calls[0]
-    assert "WHERE TRUE" in call.query
-    assert call.args == (100,)
+    assert "WHERE org_id = $1" in call.query
+    assert call.args == ("", 100)
 
 
 @pytest.mark.asyncio
@@ -142,8 +150,8 @@ async def test_get_entries_user_id_filter_builds_param(
     await log.get_entries(user_id="u1", limit=5)
     call = conn.calls[0]
     assert "user_id = $1" in call.query
-    assert "LIMIT $2" in call.query
-    assert call.args == ("u1", 5)
+    assert "LIMIT $3" in call.query
+    assert call.args == ("u1", "", 5)
 
 
 @pytest.mark.asyncio
@@ -153,8 +161,24 @@ async def test_get_entries_both_filters_combined_with_and(
     conn.queue_fetch([])
     await log.get_entries(user_id="u1", agent_id="a1")
     call = conn.calls[0]
-    assert "user_id = $1 AND agent_id = $2" in call.query
-    assert call.args == ("u1", "a1", 100)
+    assert "user_id = $1 AND agent_id = $2 AND org_id = $3" in call.query
+    assert call.args == ("u1", "a1", "", 100)
+
+
+@pytest.mark.asyncio
+async def test_get_entries_org_scope_composes_in_sql(log: PgAuditLog, conn: FakeConnection) -> None:
+    conn.queue_fetch([])
+    await log.get_entries(user_id="u1", agent_id="a1", org_id="org-a")
+    call = conn.calls[0]
+    assert "user_id = $1 AND agent_id = $2 AND org_id = $3" in call.query
+    assert call.args == ("u1", "a1", "org-a", 100)
+
+
+@pytest.mark.asyncio
+async def test_get_entries_rejects_none_org_scope(log: PgAuditLog, conn: FakeConnection) -> None:
+    with pytest.raises(ValueError, match="pass '' for an unscoped read"):
+        await log.get_entries(org_id=None)  # type: ignore[arg-type]
+    assert conn.calls == []
 
 
 @pytest.mark.asyncio
@@ -168,6 +192,7 @@ async def test_get_entries_returns_reconstructed_audit_entries(
                 "timestamp": ts,
                 "boundary": "tool_call",
                 "user_id": "u1",
+                "org_id": "org-a",
                 "team_id": "team-1",
                 "agent_id": "a1",
                 "tool_name": "bash",
@@ -178,13 +203,14 @@ async def test_get_entries_returns_reconstructed_audit_entries(
             }
         ]
     )
-    entries = await log.get_entries(user_id="u1")
+    entries = await log.get_entries(user_id="u1", org_id="org-a")
     assert len(entries) == 1
     e = entries[0]
     assert isinstance(e, AuditEntry)
     assert e.timestamp == ts
     assert e.boundary == "tool_call"
     assert e.user_id == "u1"
+    assert e.org_id == "org-a"
     assert e.team_id == "team-1"
     assert e.agent_id == "a1"
     assert e.tool_name == "bash"
@@ -204,6 +230,7 @@ async def test_get_entries_missing_optional_fields_default(
     e = entries[0]
     assert e.boundary == ""
     assert e.user_id == ""
+    assert e.org_id == ""
     assert e.team_id == ""
     assert e.agent_id == ""
     assert e.tool_name is None
@@ -213,10 +240,10 @@ async def test_get_entries_missing_optional_fields_default(
     assert e.request_id == ""
 
 
-def test_allowed_filter_columns_is_exactly_user_and_agent_id() -> None:
+def test_allowed_filter_columns_include_org_scope() -> None:
     from maistro.persistence.pg_audit import _ALLOWED_FILTER_COLUMNS
 
-    assert frozenset({"user_id", "agent_id"}) == _ALLOWED_FILTER_COLUMNS
+    assert frozenset({"user_id", "agent_id", "org_id"}) == _ALLOWED_FILTER_COLUMNS
 
 
 @pytest.mark.asyncio
@@ -233,3 +260,42 @@ async def test_get_entries_invalid_filter_column_raises(
     monkeypatch.setattr(pg_audit_module, "_ALLOWED_FILTER_COLUMNS", frozenset({"agent_id"}))
     with pytest.raises(ValueError, match="Invalid filter column: 'user_id'"):
         await log.get_entries(user_id="u1")
+
+
+@pytest.mark.asyncio
+async def test_get_entries_rejects_unknown_keyword(log: PgAuditLog) -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'status'"):
+        await log.get_entries(status="denied")  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_two_org_scope_and_schema(
+    pg_pool: Any,
+) -> None:
+    """Exercise the migration, write, and predicate against PostgreSQL itself."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+
+    async with pg_pool.acquire() as conn:
+        columns = await conn.fetch(
+            """SELECT column_name, is_nullable, column_default
+               FROM information_schema.columns
+               WHERE table_name = 'audit_log' AND column_name = 'org_id'"""
+        )
+        indexes = await conn.fetch(
+            """SELECT indexdef FROM pg_indexes
+               WHERE tablename = 'audit_log' AND indexname = 'ix_audit_log_scope'"""
+        )
+    assert [row["column_name"] for row in columns] == ["org_id"]
+    assert columns[0]["is_nullable"] == "YES"
+    assert columns[0]["column_default"] in ("''::text", "''::character varying")
+    assert '(org_id, "timestamp")' in indexes[0]["indexdef"]
+
+    audit = PgAuditLog(pg_pool)
+    await audit.log(AuditEntry(boundary="org-a", user_id="u", org_id="org-a"))
+    await audit.log(AuditEntry(boundary="org-b", user_id="u", org_id="org-b"))
+
+    entries = await audit.get_entries(user_id="u", org_id="org-a")
+
+    assert [entry.boundary for entry in entries] == ["org-a"]
+    assert all(entry.org_id == "org-a" for entry in entries)
