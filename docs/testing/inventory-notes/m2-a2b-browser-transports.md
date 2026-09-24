@@ -448,3 +448,62 @@ documented install for the browser extra; the verify driver's plain
   (unimplemented); no aiohttp/urllib/raw-socket outbound transports exist
   in production code. PR body and branch commits carry no closure keyword
   ("Refs #155" only).
+
+## L155 repair-writer re-derivation at the stable head b8ecf38a8 (2026-09-24)
+
+Repair round against the develop base `60862b6c5eb1` (note: the ratchet
+scripts resolve their *trusted* ledger base to `1dea30dfe30c`, an ancestor of
+that develop base, via event metadata). The prior finding set named the
+`hill-climb-ui.sh` browser transport, its Hyperlight dispatch, the SECURITY.md
+enumeration, and the two inherited gate failures. Nothing was carried forward;
+every claim below was executed at this head:
+
+- Findings 1–3 (unguarded `hill-climb-ui.sh` contexts, `ui_climb_vm.py`
+  reachability, SECURITY.md omission) do **not** reproduce at this head: the
+  fix landed on this branch in `5b3cac761` ("govern hyperlight hill-climb
+  browser transport"), an ancestor of the prior verify head `a2b9880ff` —
+  the finding text quotes the pre-fix line numbers. Re-proofs executed:
+  `test_hyperlight_hill_climb_guards_each_sync_browser_context` pins the
+  script source (`configure_outbound_policy(BASE, URL)`, `sync_client` for
+  scoring, `service_workers="block"`, `SyncBrowserNetworkGuard...attach` on
+  both context creations, no unguarded `browser.new_page(`); the embedded
+  heredoc Python compiles after shell-variable substitution; the four other
+  Playwright entry points (`tools/browser/client.py`, `ui_auto_climb.py`,
+  `widgets.py`, `run_hill_climb.py`) each attach the guard before the first
+  page. SECURITY.md rows 167–168 name all five transports, including
+  "`hill-climb-ui.sh`, the script the Hyperlight UI-climb workload
+  dispatches", and keep the honest `partial`/separate-Chromium wording.
+- Batteries re-run at this head: core browser `pytest
+  packages/maistro-core/tests/tools/browser/ -q` → **131 passed, 0 skipped**
+  (playwright present), including all four real-Chromium transport proofs by
+  name (`test_real_chromium_rechecks_a_redirect_before_the_private_connection`:
+  the private server receives zero requests). Conductor
+  `test_browser_network_policy.py` + `test_engine_service.py` → **38
+  passed**. Ordinary-HTTP seam `test_outbound_policy.py` + `test_transport.py`
+  + `test_ssrf.py` → **173 passed**.
+- Gates green at head: `ruff check .`, `ruff format --check .`,
+  `check-security-inventory.py` (63 paths / 23 rows),
+  `check-suite-inventory.py` for both suites, `check_direct_effects.py`
+  (50 sites, all dispositioned), `check-model-egress.py` (23 direct callers,
+  no expansion).
+- Finding 4 (`check-vulture-baseline.py` rc=1) re-derived as **inherited**, at
+  scan level: a detached base-`60862b6c` worktree scanned with the same
+  interpreter and classified under the base's own (byte-identical) ledger
+  yields the identical rule-level drift (core-public-api-surface −544,
+  pytest-discovered-test-surface +448, fastapi-route-handler +206/−10, …);
+  the base run itself bails early on its self-resolution guard before delta
+  checking, which is why prior base logs look clean. Head scans 1429 findings
+  vs base 1432; the ledger `quality/vulture-baseline.json` is byte-identical
+  across base, `1dea30dfe` and head; no branch-changed file appears in the
+  drift. Clearing it needs a reviewed ledger grant — out of scope for an
+  ordinary repair.
+- Finding 5 (`check-ac-state.py --run-tests --ratchet` rc=1) re-derived as
+  **inherited**: the same command at the detached base worktree with
+  `RATCHET_BASE_REV=1dea30dfe…` (matching the head run's trusted base)
+  reports the identical `design coverage: 33.0281% over 155 taken decisions
+  (93 at zero)` and fails against the same 33.9095 floor with the identical
+  message. The branch moves design coverage by exactly 0.0000; the
+  per-change mandate at head stays green (22 criteria claimed, 0 unproven).
+  Banking the fall would be a ledger edit — out of scope for an ordinary
+  repair.
+- No code change was needed in this round; the only edit is this record.
