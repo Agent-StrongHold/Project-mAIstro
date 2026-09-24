@@ -87,3 +87,45 @@ policy attribution), and the parametrization was extended from 3 to 10 documents
 `ADR-* (specifies|mandates|says)` against active specs now returns only the repaired documents
 plus SPEC-080126-3a7c (itself `Superseded` — a non-active source, exempt by design). The node-count
 reconciliation (−1 + 7 = +6) and prose live in `auto-374-2bb3.md`.
+
+## Independent re-verification (head b404b1b61500) — NEEDS-REPAIR
+
+Re-executed at this head: `tests/test_check_citation_status.py` 64 passed;
+`tests/test_check_reachability.py` + `tests/test_m1_542_policy_coverage.py` 40 passed;
+`check-citation-status.py` OK (0 exceptions, ledger intentionally empty);
+`check-citation-status-provenance.py` OK (46 reviewed → 0 current, base 60862b6c5e);
+`check-convergence-matrix.py` OK; `check-suite-inventory.py` OK (13 suites);
+`ruff check`/`format --check` clean; mypy `packages/maistro-registry/src` clean. No closure
+keywords in the PR body or branch commit messages. All removed matrix citations were confirmed
+non-active targets (Proposed/Deprecated/Superseded).
+
+The checker, its status-combination coverage, and the front-matter/matrix gates are sound. What
+fails acceptance is the same corpus-honesty standard the second wave claimed to have swept clean:
+its sweep pattern `ADR-* (specifies|mandates|says)` misses the verbs `requires`/`defines` and
+`SPEC-*` targets. A broader sweep (active-source spec/ADR prose, verbs
+specifies|mandates|says|requires|defines|governs, ADR and SPEC targets) finds four coordinates the
+repair never reached — two of them documents this branch itself moved from `implements` to
+`related` with the present-tense prose left intact and zero status language in the file:
+
+- docs/specs/SPEC-254-shadow-git-workspace.md:45 "ADR-049 requires every agent edit …" — ADR-049
+  is Deprecated (docs/adr/ADR-049-shadow-git-rollback.md:5); this branch moved ADR-049 from
+  `implements` to `related` (diff vs 60862b6c5e), silencing the gate, and the file carries no
+  "design context / not shipped authority" marking anywhere.
+- docs/specs/SPEC-255-parallel-wave-fan-in.md:47 "ADR-052 requires intra-task parallel
+  sub-agents …" — ADR-052 is Deprecated (docs/adr/ADR-052-parallel-agent-waves.md:5); identical
+  front-matter-only move by this branch, no status language.
+- docs/specs/SPEC-062126-d421-medley-import-sanitization-pipeline.md:44 "SPEC-005 specifies the
+  publisher VC / signing / revocation trust chain" — SPEC-005 is Proposed
+  (docs/specs/SPEC-005-clawhub-full.md) and sits in `related`; the file disclaims ADR-083 but not
+  SPEC-005.
+- docs/specs/SPEC-182-a2a-delegation-implementation.md:45 "ADR-058 defines one protocol …" —
+  ADR-058 is Proposed; mitigated by the explicit disclaimer at :34 ("remains Proposed; … not
+  shipped authority"), lower severity, but the verb list should still cover it.
+
+These violate "Proposed/non-active decisions cannot silently govern shipped behaviour" and the
+DoD line "historical citations … cannot be mistaken for normative" at exactly the laundering
+shape the branch's own `test_proposed_related_design_is_marked_historical_not_governing`
+docstring names. Repair: apply the established prose-disclaimer pattern to the four documents
+(two unmarked, two partial), extend the existing parametrization over the new pairs, and widen
+the recorded sweep pattern to include `requires|defines` and `SPEC-*` targets; run
+`check-suite-inventory.py --update` rather than estimating the node delta.
