@@ -399,3 +399,43 @@ commits `1dea30dfe..6ca739401` (sole hit is prose "closes the prior
 finding"). Residuals unchanged: live GitHub CI rollup for PR 1452 UNVERIFIED
 (push prohibited); org-ruleset 0-approval config and gate-script
 self-neutering co-change remain follow-ups for #160.
+
+## Independent pass at head `926d4283a` (driver job 588a1366910a, no check-*.log present)
+
+No driver-provided check logs existed for this pass; every number below was
+re-executed fresh in this worktree at the exact starting head. Local env: new
+dedicated `pgvector:pg18` container on `127.0.0.1:5432` (same creds as the CI
+service) after `alembic upgrade head`, plus `uv pip install -e
+packages/maistro-evolve` (CI installs it; local venv did not have it).
+
+- Targeted: `pytest formal/models/test_dangerous_tools.py
+  formal/models/test_external_content.py
+  tests/test_check_formal_oracle_independence.py -q --hypothesis-seed=0` →
+  **274 passed** (256 dangerous-tools + 15 external-content + 3 gate tests).
+- Full required-CI equivalent: `MAISTRO_TEST_PG_DSN`/`MAISTRO_TEST_DATABASE_URL`
+  set to the local CI-shaped DSN, `pytest formal/models/ -q
+  --hypothesis-seed=0` → **664 passed in 63s**, `test_run_lease_fence.py`
+  included — prior "required-CI formal run UNVERIFIED (no local PG)" finding
+  is now resolved with a real PostgreSQL on 127.0.0.1:5432.
+- Gate (real script): `--base 60862b6c` (develop base) → **exit 0** bootstrap
+  branch, oracle verified absent at base via `git cat-file -e` (exit≠0);
+  scratch clone of this head with a committed oracle+patterns co-change →
+  **exit 1** with the co-change message. Unresolvable-base exit 2 previously
+  demonstrated and unchanged.
+- Mutation battery (backup → edit → pytest → restore from backup → `git diff`
+  empty after each), all against `test_dangerous_tools.py`:
+  weaken `rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/` → **6 failed** (incl.
+  `remove-home`, refuting the stale prior finding again); delete 21 of 22
+  patterns keeping only `rm\s+-rf\s+[/~]` → **189 failed**; benign-prefix
+  shadow short-circuit (`echo|cd|cat|ls ` → `[]`) in
+  `is_dangerous_command` → **95 failed**; deny check removed from
+  `MicroVMSandbox.exec` → **41 failed**. A malformed-splice intermediate
+  state also failed collection — every degrade path is observed, not
+  assumed. Suite green again (**256 passed**) after restoration.
+- Residuals unchanged: live GitHub rulesets record
+  `required_approving_review_count=0` / `require_code_owner_reviews=false`
+  (honestly mirrored in `.github/branch-protection.json`), so CODEOWNERS is
+  advisory in practice; the operative anti-self-approval mechanism is the
+  required `formal-conformance` check failing oracle+implementation
+  co-changes (demonstrated exit 1). Gate-script self-neutering co-change and
+  live PR-CI rollup remain follow-ups for #160 (push prohibited here).
