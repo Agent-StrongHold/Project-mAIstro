@@ -41,10 +41,14 @@ os.environ.setdefault("TURING_SERVICE_KEY", "test-turing-service-key")
 @pytest.fixture(autouse=True)
 def _reset_state():
     from ..execution import reset_execution_plane
+    from ..main import app
     from ..state import reset_state
 
-    reset_state()
-    reset_execution_plane()
+    # Reuse the exact canonical security object composed by the application;
+    # tests must not accidentally exercise a parallel Warden/audit authority.
+    app.state.turing_security.audit_log._entries.clear()
+    reset_state(inbound_security=app.state.turing_security)
+    reset_execution_plane(inbound_security=app.state.turing_security)
     yield
 
 
