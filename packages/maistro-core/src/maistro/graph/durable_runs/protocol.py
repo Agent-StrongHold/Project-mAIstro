@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.runs.model import RunStatus
 
+from .hitl import HitlAuthorization
 from .types import DurableRunRecord
 
 
@@ -57,12 +57,11 @@ class DurableRunStore(Protocol):
     async def list_hitl_due(
         self,
         *,
+        authorization: HitlAuthorization,
         now: datetime,
         limit: int = 100,
-        project_ids: Collection[str] | None = None,
-        workspace_ids: Collection[str] | None = None,
     ) -> list[DurableRunRecord]:
-        """Return due paused Runs within optional canonical scope filters."""
+        """Return due paused Runs visible to the effective principal."""
         ...
 
     async def list_for_project(
@@ -75,7 +74,9 @@ class DurableRunStore(Protocol):
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist an answer and queue only a valid paused Run for resume."""
         ...
@@ -85,7 +86,9 @@ class DurableRunStore(Protocol):
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause whose persisted deadline elapsed."""
         ...
@@ -95,7 +98,9 @@ class DurableRunStore(Protocol):
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Terminalize a human pause by explicit cancellation."""
         ...

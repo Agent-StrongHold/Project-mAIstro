@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Mapping, ValuesView
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -19,11 +19,13 @@ from maistro.sqlite_schema import (
 
 from .fair_scan import cursor_time
 from .hitl import (
+    HitlAuthorization,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
     earliest_hitl_deadline,
     hitl_deadline,
     hitl_pause,
+    require_hitl_authorization,
     settlement_time,
 )
 from .types import DurableRunRecord
@@ -59,6 +61,28 @@ def _created_cursor(record: DurableRunRecord) -> tuple[str, str]:
 
 def _clone(record: DurableRunRecord) -> DurableRunRecord:
     return DurableRunRecord.model_validate_json(record.model_dump_json())
+
+
+def _sorted_due_records(
+    records: ValuesView[DurableRunRecord],
+    now: datetime,
+) -> list[DurableRunRecord]:
+    """PAUSED records whose durable HITL deadline elapsed, earliest first."""
+    due = [
+        record
+        for record in records
+        if record.run.status is RunStatus.PAUSED
+        and (deadline := earliest_hitl_deadline(record)) is not None
+        and deadline <= now
+    ]
+    due.sort(
+        key=lambda record: (
+            earliest_hitl_deadline(record),
+            record.run.created_at,
+            record.run_id,
+        )
+    )
+    return due
 
 
 def _is_malformed_verdict_answer(
@@ -131,13 +155,18 @@ def _pause_metadata_after_answer(
     return metadata
 
 
-def answer_record(
+def _answerable_moment(
     record: DurableRunRecord,
     node_id: str,
-    answer: dict[str, Any],
-    *,
-    at: datetime | None = None,
-) -> DurableRunRecord:
+    at: datetime | None,
+) -> datetime:
+    """Validate that the record accepts a human answer, and stamp its clock.
+
+    Every refusal here is the durable rule itself, shared by every store
+    backend: not paused, off the active frontier, an explicit non-HITL pause,
+    or an already-elapsed deadline. Returning the normalized moment keeps the
+    answer stamping and the deadline comparison on one clock.
+    """
     if record.run.status is not RunStatus.PAUSED:
         raise ValueError(f"run {record.run_id!r} not paused on HITL (status={record.run.status})")
     if node_id not in record.graph_state.active_node_ids:
@@ -145,8 +174,12 @@ def answer_record(
             f"run {record.run_id!r} waiting on frontier "
             f"{record.graph_state.active_node_ids!r}, not {node_id!r}"
         )
-
-    paused_index = _paused_node_run_index(record, node_id)
+    pauses_raw = record.graph_state.metadata.get("pauses", {})
+    pause = pauses_raw.get(node_id) if isinstance(pauses_raw, Mapping) else None
+    # Legacy records may lack a pause projection, but an explicit non-HITL
+    # pause is never answerable through the human-decision seam.
+    if isinstance(pause, Mapping) and pause.get("kind") != "hitl":
+        raise ValueError(f"run {record.run_id!r} node {node_id!r} is not awaiting human input")
     moment = settlement_time(at)
     deadline = hitl_deadline(record, node_id, require_pause=False)
     if deadline is not None and deadline <= moment:
@@ -154,6 +187,18 @@ def answer_record(
             f"run {record.run_id!r} HITL deadline elapsed for node {node_id!r} "
             f"at {deadline.isoformat()}"
         )
+    return moment
+
+
+def answer_record(
+    record: DurableRunRecord,
+    node_id: str,
+    answer: dict[str, Any],
+    *,
+    at: datetime | None = None,
+) -> DurableRunRecord:
+    moment = _answerable_moment(record, node_id, at)
+    paused_index = _paused_node_run_index(record, node_id)
     # The pause payload the *node* wrote is the only server-side fact in a
     # resume, and `_pause_metadata_after_answer` is about to delete it. Stamp it
     # onto the answer first, after the caller's keys so a submitted `_pause`
@@ -349,28 +394,26 @@ class InMemoryDurableRunStore:
     async def list_hitl_due(
         self,
         *,
+        authorization: HitlAuthorization,
         now: datetime,
         limit: int = 100,
-        project_ids: Collection[str] | None = None,
-        workspace_ids: Collection[str] | None = None,
     ) -> list[DurableRunRecord]:
-        rows = [
-            record
-            for record in self._rows.values()
-            if record.run.status is RunStatus.PAUSED
-            and (project_ids is None or record.run.project_id in project_ids)
-            and (workspace_ids is None or record.run.workspace_id in workspace_ids)
-            and (deadline := earliest_hitl_deadline(record)) is not None
-            and deadline <= now
-        ]
-        rows.sort(
-            key=lambda record: (
-                earliest_hitl_deadline(record),
-                record.run.created_at,
-                record.run_id,
-            )
-        )
-        return [_clone(record) for record in rows[:limit]]
+        require_hitl_authorization(authorization)
+        if limit <= 0:
+            return []
+        visible: list[DurableRunRecord] = []
+        for record in _sorted_due_records(self._rows.values(), now):
+            if (
+                record.run.workspace_id in authorization.workspace_ids
+                and await authorization.permits(
+                    record.run.workspace_id,
+                    consume_evidence=False,
+                )
+            ):
+                visible.append(_clone(record))
+                if len(visible) >= limit:
+                    break
+        return visible
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         runs = [record for record in self._rows.values() if record.run.project_id == project_id]
@@ -383,43 +426,76 @@ class InMemoryDurableRunStore:
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
-            record = self._rows.get(run_id)
-            if record is None:
-                raise KeyError(f"no such run: {run_id!r}")
-            updated = answer_record(record, node_id, answer, at=at)
-            self._rows[run_id] = updated
-            return _clone(updated)
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: answer_record(current, node_id, answer, at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
 
     async def timeout_hitl(
         self,
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
-            record = self._rows.get(run_id)
-            if record is None:
-                raise KeyError(f"no such run: {run_id!r}")
-            updated = settle_hitl_record(record, node_id, "timed_out", at=at)
-            self._rows[run_id] = updated
-            return _clone(updated)
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
 
     async def cancel_hitl(
         self,
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def _mutate_authorized_hitl(
+        self,
+        run_id: str,
+        mutate: Callable[[DurableRunRecord], DurableRunRecord],
+        *,
+        authorization: HitlAuthorization,
+        workspace_id: str | None,
+    ) -> DurableRunRecord:
+        """Authorize one HITL decision, then apply it under the store lock.
+
+        The object decision and the durable write share one critical section
+        with the caller's membership-revocation lock, so a Workspace revoked
+        between the live check and the write cannot settle a pause.
+        """
+        require_hitl_authorization(authorization)
+        async with authorization.hold_membership_mutation(), self._lock:
             record = self._rows.get(run_id)
             if record is None:
                 raise KeyError(f"no such run: {run_id!r}")
-            updated = settle_hitl_record(record, node_id, "cancelled", at=at)
+            if workspace_id is not None and record.run.workspace_id != workspace_id:
+                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+            if not await authorization.permits(
+                record.run.workspace_id,
+                consume_evidence=True,
+            ):
+                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
+            updated = mutate(record)
             self._rows[run_id] = updated
             return _clone(updated)
 
@@ -573,19 +649,35 @@ class SqliteDurableRunStore:
     async def list_hitl_due(
         self,
         *,
+        authorization: HitlAuthorization,
         now: datetime,
         limit: int = 100,
-        project_ids: Collection[str] | None = None,
-        workspace_ids: Collection[str] | None = None,
     ) -> list[DurableRunRecord]:
-        return await asyncio.to_thread(
-            _list_hitl_due_sync,
-            self,
-            now,
-            limit,
-            project_ids,
-            workspace_ids,
-        )
+        require_hitl_authorization(authorization)
+        if limit <= 0:
+            return []
+        requested = limit
+        visible: list[DurableRunRecord] = []
+        seen: set[str] = set()
+        while True:
+            rows = await asyncio.to_thread(_list_hitl_due_sync, self, now, requested)
+            for record in rows:
+                if record.run_id in seen:
+                    continue
+                seen.add(record.run_id)
+                if (
+                    record.run.workspace_id in authorization.workspace_ids
+                    and await authorization.permits(
+                        record.run.workspace_id,
+                        consume_evidence=False,
+                    )
+                ):
+                    visible.append(record)
+                    if len(visible) >= limit:
+                        return visible[:limit]
+            if len(rows) < requested:
+                return visible
+            requested *= 2
 
     async def list_for_project(self, project_id: str, *, limit: int = 25) -> list[DurableRunRecord]:
         return await asyncio.to_thread(
@@ -601,44 +693,72 @@ class SqliteDurableRunStore:
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
-            return await asyncio.to_thread(
-                _mutate_hitl_sync,
-                self,
-                run_id,
-                lambda current: answer_record(current, node_id, answer, at=at),
-            )
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: answer_record(current, node_id, answer, at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
 
     async def timeout_hitl(
         self,
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
-            return await asyncio.to_thread(
-                _mutate_hitl_sync,
-                self,
-                run_id,
-                lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
-            )
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
 
     async def cancel_hitl(
         self,
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
+        return await self._mutate_authorized_hitl(
+            run_id,
+            lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            authorization=authorization,
+            workspace_id=workspace_id,
+        )
+
+    async def _mutate_authorized_hitl(
+        self,
+        run_id: str,
+        mutate: Callable[[DurableRunRecord], DurableRunRecord],
+        *,
+        authorization: HitlAuthorization,
+        workspace_id: str | None,
+    ) -> DurableRunRecord:
+        require_hitl_authorization(authorization)
+        # The authorization decision runs inside the SQLite write transaction,
+        # after its canonical Run read and before its versioned write. A
+        # pre-read check leaves a revocation-to-write interval in which a
+        # caller can settle a formerly visible pause.
+        loop = asyncio.get_running_loop()
+        async with authorization.hold_membership_mutation(), self._lock:
             return await asyncio.to_thread(
                 _mutate_hitl_sync,
                 self,
                 run_id,
-                lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+                mutate,
+                workspace_id,
+                authorization,
+                loop,
             )
 
 
@@ -717,8 +837,18 @@ def _mutate_hitl_sync(
     store: SqliteDurableRunStore,
     run_id: str,
     mutate: Callable[[DurableRunRecord], DurableRunRecord],
+    workspace_id: str | None,
+    authorization: HitlAuthorization,
+    loop: asyncio.AbstractEventLoop,
 ) -> DurableRunRecord:
-    """Serialize one HITL decision and its optimistic write in one transaction."""
+    """Authorize and serialize one HITL decision in one write transaction.
+
+    The membership authority is asynchronous, whereas SQLite work runs in a
+    worker thread. ``run_coroutine_threadsafe`` lets the worker retain its
+    ``BEGIN IMMEDIATE`` transaction while the request loop resolves live
+    membership/delegation evidence. The Run cannot be changed between that
+    object decision and the subsequent versioned write.
+    """
     with store._connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         persisted = conn.execute(
@@ -729,6 +859,14 @@ def _mutate_hitl_sync(
             raise KeyError(f"no such run: {run_id!r}")
 
         current = store._from_row(persisted)
+        if workspace_id is not None and current.run.workspace_id != workspace_id:
+            raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+        permitted = asyncio.run_coroutine_threadsafe(
+            authorization.permits(current.run.workspace_id, consume_evidence=True),
+            loop,
+        ).result()
+        if not permitted:
+            raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
         updated = mutate(current)
         row = {**store._to_row(updated), "expected_version": current.version}
         cursor = conn.execute(
@@ -794,30 +932,17 @@ def _list_hitl_due_sync(
     store: SqliteDurableRunStore,
     now: datetime,
     limit: int,
-    project_ids: Collection[str] | None,
-    workspace_ids: Collection[str] | None,
 ) -> list[DurableRunRecord]:
-    if project_ids is not None and not project_ids:
-        return []
-    if workspace_ids is not None and not workspace_ids:
-        return []
-    query = """SELECT * FROM durable_graph_runs
+    with store._connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM durable_graph_runs
                 WHERE status = ?
                   AND hitl_deadline_at IS NOT NULL
-                  AND hitl_deadline_at <= ?"""
-    params: list[Any] = [RunStatus.PAUSED.value, now.isoformat()]
-    if project_ids is not None:
-        placeholders = ", ".join("?" for _ in project_ids)
-        query += f" AND project_id IN ({placeholders})"
-        params.extend(project_ids)
-    if workspace_ids is not None:
-        placeholders = ", ".join("?" for _ in workspace_ids)
-        query += f" AND json_extract(record_json, '$.run.workspace_id') IN ({placeholders})"
-        params.extend(workspace_ids)
-    query += " ORDER BY hitl_deadline_at ASC, run_id ASC LIMIT ?"
-    params.append(limit)
-    with store._connect() as conn:
-        rows = conn.execute(query, params).fetchall()
+                  AND hitl_deadline_at <= ?
+             ORDER BY hitl_deadline_at ASC, run_id ASC
+                LIMIT ?""",
+            (RunStatus.PAUSED.value, now.isoformat(), limit),
+        ).fetchall()
     return [store._from_row(row) for row in rows]
 
 

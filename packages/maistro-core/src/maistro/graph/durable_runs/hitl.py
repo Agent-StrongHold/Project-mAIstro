@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -15,12 +18,199 @@ class HitlSettlementError(ValueError):
     """A durable human pause cannot accept the requested settlement."""
 
 
+class HitlAuthorizationRequired(KeyError):
+    """A HITL read or mutation must carry effective-principal evidence."""
+
+
 class HitlDeadlineElapsed(HitlSettlementError):
     """An answer arrived at or after the pause's durable deadline."""
 
 
 class HitlDeadlinePending(HitlSettlementError):
     """A timeout was requested before the pause's durable deadline."""
+
+
+WorkspaceMembershipCheck = Callable[[str, str], Awaitable[bool]]
+HitlEvidenceValidator = Callable[["HitlDelegationEvidence"], Awaitable[bool]]
+HitlEvidenceConsumer = Callable[["HitlDelegationEvidence"], Awaitable[None]]
+
+
+def _require_claim_text(value: str, message: str) -> None:
+    """Reject blank effective-principal evidence text."""
+    if not value.strip():
+        raise ValueError(message)
+
+
+def _require_claim_scope(values: Collection[str], message: str) -> None:
+    """Reject an empty Workspace/action scope or any blank member of it."""
+    if not values or any(not value.strip() for value in values):
+        raise ValueError(message)
+
+
+def _require_claim_page(values: Collection[str], message: str) -> None:
+    """Reject blank members of a candidate page; an empty page stays valid."""
+    if any(not value.strip() for value in values):
+        raise ValueError(message)
+
+
+@dataclass(frozen=True)
+class HitlDelegationEvidence:
+    """Validated shape of a service delegation capability.
+
+    The durable store must not treat an opaque string as authority. The issuer,
+    subject, action, Workspace scope, and expiry are all bound in the evidence;
+    the supplied validator and consumer connect this shape to the caller's
+    live delegation registry and one-use/ledger semantics.
+    """
+
+    issuer: str
+    subject: str
+    workspace_ids: frozenset[str]
+    actions: frozenset[str]
+    expires_at: datetime
+    token_id: str
+
+    def __post_init__(self) -> None:
+        _require_claim_text(self.issuer, "HITL delegation evidence requires an issuer")
+        _require_claim_text(self.subject, "HITL delegation evidence requires a subject")
+        _require_claim_scope(
+            self.workspace_ids, "HITL delegation evidence requires Workspace scope"
+        )
+        _require_claim_scope(self.actions, "HITL delegation evidence requires an action scope")
+        _require_claim_text(self.token_id, "HITL delegation evidence requires a token id")
+        if self.expires_at.tzinfo is None:
+            raise ValueError("HITL delegation evidence expiry must include a timezone")
+
+    def is_current(self, *, effective_principal: str, workspace_id: str, action: str) -> bool:
+        """Check claims that can be evaluated without consulting the issuer."""
+        return (
+            self.subject == effective_principal
+            and workspace_id in self.workspace_ids
+            and action in self.actions
+            and datetime.now(UTC) < self.expires_at.astimezone(UTC)
+        )
+
+
+@dataclass(frozen=True)
+class HitlAuthorization:
+    """Effective-principal evidence for a scoped HITL operation.
+
+    ``workspace_ids`` is a candidate page, not the authorization decision. The
+    membership check is repeated by the canonical mutation immediately before
+    it settles a record, so a revoked membership cannot use a stale page or a
+    route pre-read to win a later answer, cancellation, or timeout.
+
+    Construction is the evidence boundary itself: every path through
+    ``__init__`` runs the same validation, so a service cannot present an
+    opaque string as delegation authority or scope it beyond the evidence's
+    own Workspace/action claims. The verified session comes from the
+    authentication boundary (the product auth adapter resolves the principal
+    and supplies the live membership check); a delegated service must present
+    typed :class:`HitlDelegationEvidence` bound to its effective principal.
+    """
+
+    effective_principal: str
+    workspace_ids: frozenset[str]
+    membership_check: WorkspaceMembershipCheck
+    membership_mutation_lock: asyncio.Lock | None = field(default=None, repr=False, compare=False)
+    delegation_evidence: HitlDelegationEvidence | None = None
+    evidence_validator: HitlEvidenceValidator | None = None
+    evidence_consumer: HitlEvidenceConsumer | None = None
+    action: str = "hitl.settle"
+    _evidence_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        _require_claim_text(
+            self.effective_principal, "HITL authorization requires an effective principal"
+        )
+        _require_claim_page(
+            self.workspace_ids, "HITL authorization cannot contain a blank Workspace id"
+        )
+        _require_claim_text(self.action, "HITL authorization requires an action")
+        if self.delegation_evidence is None:
+            if self.evidence_validator is not None or self.evidence_consumer is not None:
+                raise ValueError("HITL evidence callbacks require delegation evidence")
+            return
+        self._bind_delegation_evidence(self.delegation_evidence)
+
+    def _bind_delegation_evidence(self, evidence: HitlDelegationEvidence) -> None:
+        """Fail closed unless typed evidence covers this exact operation."""
+        if not isinstance(evidence, HitlDelegationEvidence):
+            raise TypeError("delegated HITL authorization requires typed evidence")
+        if evidence.subject != self.effective_principal:
+            raise ValueError("delegation evidence subject must match the effective principal")
+        if not self.workspace_ids.issubset(evidence.workspace_ids):
+            raise ValueError("delegation evidence does not cover the requested Workspaces")
+        if self.evidence_validator is None or self.evidence_consumer is None:
+            raise ValueError("delegated HITL authorization requires validation and consumption")
+
+    @asynccontextmanager
+    async def hold_membership_mutation(self) -> AsyncIterator[None]:
+        """Hold the auth authority's revocation lock through one settlement.
+
+        Product adapters supply this lock and use it for membership removal, so
+        membership cannot be revoked after its live check but before the
+        durable write. Backends without a colocated authority retain the
+        explicit live predicate but do not claim this stronger serialization.
+        """
+        if self.membership_mutation_lock is None:
+            yield
+            return
+        async with self.membership_mutation_lock:
+            yield
+
+    async def permits(self, workspace_id: str, *, consume_evidence: bool = False) -> bool:
+        """Revalidate membership and delegated authority for one Workspace.
+
+        Discovery only validates delegated evidence. Settlement passes
+        ``consume_evidence=True`` so one-use authority is not spent while
+        paging candidates that may later be rejected by canonical state.
+        """
+        if workspace_id not in self.workspace_ids:
+            return False
+        if not await self.membership_check(self.effective_principal, workspace_id):
+            return False
+        evidence = self.delegation_evidence
+        if evidence is None:
+            return True
+        if not evidence.is_current(
+            effective_principal=self.effective_principal,
+            workspace_id=workspace_id,
+            action=self.action,
+        ):
+            return False
+        validator = self.evidence_validator
+        consumer = self.evidence_consumer
+        assert validator is not None and consumer is not None
+        try:
+            # Serialize validation and consumption so a one-use token cannot
+            # authorize two concurrent settlements through this object.
+            async with self._evidence_lock:
+                if not await validator(evidence):
+                    return False
+                if consume_evidence:
+                    await consumer(evidence)
+        except Exception:
+            # An unavailable or already-consumed delegation is a denial, never
+            # a reason to let the canonical store proceed without evidence.
+            return False
+        return True
+
+
+def require_hitl_authorization(
+    authorization: HitlAuthorization | None,
+) -> HitlAuthorization:
+    """Reject unscoped callers before resolving a target Run.
+
+    HITL settlement is an object-authorized operation, not a capability-only
+    service call. Keeping this check at the shared boundary prevents a new
+    durable backend from accidentally treating the argument as optional.
+    """
+    if authorization is None:
+        raise HitlAuthorizationRequired("HITL authorization is required")
+    return authorization
 
 
 def hitl_pause(record: DurableRunRecord, node_id: str) -> dict[str, object]:
@@ -146,6 +336,38 @@ def earliest_hitl_deadline(record: DurableRunRecord) -> datetime | None:
     )
 
 
+async def _due_candidates(
+    store: DurableRunStore,
+    *,
+    moment: datetime,
+    limit: int,
+    authorization: HitlAuthorization,
+    project_ids: Collection[str] | None = None,
+) -> list[DurableRunRecord]:
+    """Page the due index until an authorized settlement page is complete."""
+    requested = limit
+    candidates: list[DurableRunRecord] = []
+    seen: set[str] = set()
+    while True:
+        page = await store.list_hitl_due(
+            authorization=authorization,
+            now=moment,
+            limit=requested,
+        )
+        for record in page:
+            if record.run_id in seen:
+                continue
+            seen.add(record.run_id)
+            if record.run.workspace_id not in authorization.workspace_ids:
+                continue
+            if project_ids is not None and record.run.project_id not in project_ids:
+                continue
+            candidates.append(record)
+        if len(candidates) >= limit or len(page) < requested:
+            return candidates[:limit]
+        requested *= 2
+
+
 def _expired_hitl_node_id(record: DurableRunRecord, moment: datetime) -> str | None:
     """The first active node whose durable HITL deadline has elapsed, if any."""
     for node_id in record.graph_state.active_node_ids:
@@ -164,14 +386,18 @@ async def expire_hitl_pauses(
     *,
     now: datetime | None = None,
     limit: int = 100,
+    authorization: HitlAuthorization,
     project_ids: Collection[str] | None = None,
-    workspace_ids: Collection[str] | None = None,
 ) -> list[DurableRunRecord]:
     """Settle at most ``limit`` paused Runs whose persisted deadline elapsed.
 
     This is an operator-scheduled tick, not a background task. It derives no
     deadline from process-local time or node configuration: only the absolute
-    timestamp already present in the durable pause is authoritative.
+    timestamp already present in the durable pause is authoritative. A
+    product-supplied authorization binds the effective principal (or explicit
+    delegation evidence) to canonical Workspace scope before any timeout
+    mutation is requested. The authorization is mandatory even for an
+    internal operator, which must provide explicit delegation evidence.
 
     ``limit`` bounds *expired-HITL* PAUSED Runs settled by this call, not a
     fixed prefix of every PAUSED Run in the store (#1056). Candidates come from
@@ -181,6 +407,8 @@ async def expire_hitl_pauses(
     candidate is still revalidated below against the durable pause itself.
     """
     if limit <= 0:
+        return []
+    if not authorization.workspace_ids:
         return []
     moment = settlement_time(now)
     # ``list_hitl_due`` is a deadline-indexed candidate query. Its limit is
@@ -192,15 +420,17 @@ async def expire_hitl_pauses(
     # not due, so the keyset walk is not needed here. `fair_page_scan` still
     # carries the timed-resume path in `canonical_store.scan_due_page`, which
     # has no equivalent index.
-    #
-    # `project_ids`/`workspace_ids` are the caller's authorized scopes (#1110):
-    # the tick settles human decisions, so it must not cross a Project the
-    # requesting principal could not settle through the door itself.
-    candidates = await store.list_hitl_due(
-        now=moment,
+    # ``project_ids``, when supplied, narrows the tick to Projects the caller
+    # holds settlement authority over (#1110): the tick settles human
+    # decisions, so it must not cross a Project the requesting principal could
+    # not settle through the door itself. Workspace scope is always enforced
+    # through the authorization's own live membership predicate.
+    candidates = await _due_candidates(
+        store,
+        moment=moment,
         limit=limit,
+        authorization=authorization,
         project_ids=project_ids,
-        workspace_ids=workspace_ids,
     )
     settled: list[DurableRunRecord] = []
     for record in candidates:
@@ -208,17 +438,28 @@ async def expire_hitl_pauses(
         if expired_node_id is None:
             continue
         try:
-            settled.append(await store.timeout_hitl(record.run_id, expired_node_id, at=moment))
-        except ValueError:
-            # Another answer, cancellation, or expiry may have won after the
-            # bounded scan. Its committed decision is the canonical outcome.
+            settled.append(
+                await store.timeout_hitl(
+                    record.run_id,
+                    expired_node_id,
+                    at=moment,
+                    workspace_id=record.run.workspace_id,
+                    authorization=authorization,
+                )
+            )
+        except (KeyError, ValueError):
+            # Membership can be revoked after candidate discovery, or another
+            # decision can win. Neither case permits a settlement here.
             continue
     return settled
 
 
 __all__ = [
+    "HitlAuthorization",
+    "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
+    "HitlDelegationEvidence",
     "HitlSettlementError",
     "earliest_hitl_deadline",
     "expire_hitl_pauses",

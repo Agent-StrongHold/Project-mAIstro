@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -28,7 +28,12 @@ from maistro.runs.store import RunIntegrityError, RunStore
 
 from .continuation import GraphContinuation, GraphContinuationStore
 from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage, cursor_time
-from .hitl import earliest_hitl_deadline, settlement_time
+from .hitl import (
+    HitlAuthorization,
+    earliest_hitl_deadline,
+    require_hitl_authorization,
+    settlement_time,
+)
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
@@ -444,10 +449,9 @@ class CanonicalDurableRunStore:
     async def list_hitl_due(
         self,
         *,
+        authorization: HitlAuthorization,
         now: datetime,
         limit: int = 100,
-        project_ids: Collection[str] | None = None,
-        workspace_ids: Collection[str] | None = None,
     ) -> list[DurableRunRecord]:
         """Elapsed human pauses the canonical Run agrees are paused.
 
@@ -459,15 +463,22 @@ class CanonicalDurableRunStore:
         runs, and the page is widened past any candidate that still does not
         qualify, rather than re-reading one permanent prefix forever.
         """
+        require_hitl_authorization(authorization)
+        if limit <= 0:
+            return []
         requested = limit
         due: list[DurableRunRecord] = []
         for _ in range(_CANDIDATE_PAGES):
             run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=requested)
             due = []
             for record in await self._assemble_all(run_ids):
-                if project_ids is not None and record.run.project_id not in project_ids:
+                workspace_id = record.run.workspace_id
+                if workspace_id not in authorization.workspace_ids:
                     continue
-                if workspace_ids is not None and record.run.workspace_id not in workspace_ids:
+                if not await authorization.permits(
+                    workspace_id,
+                    consume_evidence=False,
+                ):
                     continue
                 candidate = await self._reconcile_hitl_due_candidate(record, now)
                 if candidate is not None:
@@ -513,7 +524,9 @@ class CanonicalDurableRunStore:
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist an answer and queue only valid verdicts for resume.
 
@@ -525,6 +538,8 @@ class CanonicalDurableRunStore:
         return await self._mutate_hitl(
             run_id,
             lambda current: answer_record(current, node_id, answer, at=at),
+            workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def timeout_hitl(
@@ -532,12 +547,16 @@ class CanonicalDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist an elapsed HITL deadline and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+            workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def cancel_hitl(
@@ -545,23 +564,37 @@ class CanonicalDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist explicit HITL cancellation and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def _mutate_hitl(
         self,
         run_id: str,
         mutate: Callable[[DurableRunRecord], DurableRunRecord],
+        authorization: HitlAuthorization,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
+        require_hitl_authorization(authorization)
+        async with authorization.hold_membership_mutation(), self._lock:
             current = await self.get(run_id)
             if current is None:
                 raise KeyError(f"no such run: {run_id!r}")
+            if workspace_id is not None and current.run.workspace_id != workspace_id:
+                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+            if not await authorization.permits(
+                current.run.workspace_id,
+                consume_evidence=True,
+            ):
+                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = mutate(current)
             await self._continuations.update(GraphContinuation.of(updated))
             await mirror_lifecycle(updated, run_store=self._run_store)

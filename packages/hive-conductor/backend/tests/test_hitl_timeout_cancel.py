@@ -300,6 +300,127 @@ async def test_expiry_endpoint_only_settles_authorized_workspace_projects(
         store._rows.pop(foreign_run_id, None)
 
 
+@pytest.fixture
+def workspace_writer_client() -> Iterator[Any]:
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+
+    stores.users["scope-user"] = stores.users["user"].model_copy(
+        update={
+            "id": "scope-user",
+            "username": "scope-user",
+            "permissions": ["dags.write"],
+        }
+    )
+    client = TestClient(app)
+    try:
+        assert (
+            client.post(
+                "/v1/auth/login", json={"username": "scope-user", "password": "testpass"}
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/v1/auth/elevate",
+                json={
+                    "password": "testpass",
+                    "permissions": ["dags.write"],
+                    "task_id": "hitl-expiry-scope-test",
+                },
+            ).status_code
+            == 200
+        )
+        yield client
+    finally:
+        stores.users.pop("scope-user", None)
+
+
+async def test_expiry_endpoint_cannot_timeout_a_foreign_workspace(
+    seeded: _Seeded, workspace_writer_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bounded timeout request applies only to canonical member Workspaces."""
+    _admin_client, store, _seed = seeded
+    mine = await create_workspace(
+        creator_user_id="scope-user",
+        name="HITL expiry mine",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    other = await create_workspace(
+        creator_user_id="other-tenant",
+        name="HITL expiry other",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    now = datetime.now(UTC) - timedelta(minutes=1)
+    mine_id = "hitl-expiry-scope-mine"
+    other_id = "hitl-expiry-scope-other"
+    race_id = "hitl-expiry-scope-revoked"
+    # Discovery walks authorized Projects (#1110), so the seeded records must
+    # live in their Workspace's canonical root Project to be in scope at all.
+    from services.workspace_authority import canonical_store_for_tests
+
+    projects = canonical_store_for_tests().project_store
+    mine_root = await projects.root_for_workspace(mine.id)
+    other_root = await projects.root_for_workspace(other.id)
+    await store.create(
+        _paused_record(mine_id, deadline=now, workspace_id=mine.id, project_id=mine_root.project_id)
+    )
+    await store.create(
+        _paused_record(
+            other_id, deadline=now, workspace_id=other.id, project_id=other_root.project_id
+        )
+    )
+    try:
+        response = workspace_writer_client.post("/v1/hitl/expire?limit=10")
+
+        assert response.status_code == 200
+        assert response.json() == {"expired": 1, "run_ids": [mine_id]}
+        mine_record = await store.get(mine_id)
+        other_record = await store.get(other_id)
+        assert mine_record is not None and mine_record.run.status is RunStatus.TIMED_OUT
+        assert other_record is not None and other_record.run.status is RunStatus.PAUSED
+
+        # The same two-Workspace boundary applies after the local timeout has
+        # won a race: a late answer or cancel cannot settle the foreign pause.
+        assert (
+            workspace_writer_client.post(
+                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "late"}
+            ).status_code
+            == 404
+        )
+        assert workspace_writer_client.post(f"/v1/hitl/{other_id}/ask/cancel").status_code == 404
+        other_record = await store.get(other_id)
+        assert other_record is not None and other_record.run.status is RunStatus.PAUSED
+
+        import routes.hitl as hitl_routes
+
+        await store.create(
+            _paused_record(
+                race_id, deadline=now, workspace_id=mine.id, project_id=mine_root.project_id
+            )
+        )
+
+        async def revoked_membership(_user_id: str, _workspace_id: str) -> bool:
+            return False
+
+        monkeypatch.setattr(hitl_routes, "is_member", revoked_membership)
+        response = workspace_writer_client.post("/v1/hitl/expire?limit=10")
+        assert response.json() == {"expired": 0, "run_ids": []}
+        race_record = await store.get(race_id)
+        assert race_record is not None and race_record.run.status is RunStatus.PAUSED
+    finally:
+        store._rows.pop(mine_id, None)
+        store._rows.pop(other_id, None)
+        store._rows.pop(race_id, None)
+
+
 def test_settlement_endpoints_keep_the_existing_dags_write_scope(authed_client: Any) -> None:
     assert authed_client.post("/v1/hitl/expire").status_code == 403
     assert authed_client.post("/v1/hitl/no-run/ask/cancel").status_code == 403

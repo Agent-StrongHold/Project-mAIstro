@@ -144,6 +144,9 @@ async def test_a_machine_wait_is_not_offered_to_a_human(seeded) -> None:
     body = client.get("/v1/hitl/pending").json()
 
     assert [item for item in body if item["run_id"] == "hitl-machine-wait"] == []
+    response = client.post("/v1/hitl/hitl-machine-wait/ask/answer", json={"answer": "yes"})
+    assert response.status_code == 409
+    assert "human answer" in response.json()["detail"]
 
 
 async def test_pending_reaches_a_hitl_pause_behind_a_long_machine_prefix(seeded) -> None:
@@ -389,6 +392,91 @@ def scoped_client():
         stores.users.pop("scope-user", None)
 
 
+async def test_hitl_membership_predicate_guards_mutation(seeded, monkeypatch) -> None:
+    """Removing the canonical membership predicate must kill this test."""
+    client, store, seed = seeded
+    await seed("hitl-membership-predicate")
+
+    import routes.hitl as hitl_routes
+
+    calls: list[tuple[str, str]] = []
+
+    async def deny_membership(user_id: str, workspace_id: str) -> bool:
+        calls.append((user_id, workspace_id))
+        return False
+
+    monkeypatch.setattr(hitl_routes, "is_member", deny_membership)
+    response = client.post(
+        "/v1/hitl/hitl-membership-predicate/ask/cancel",
+    )
+
+    assert response.status_code == 404
+    assert len(calls) == 1 and calls[0][0] and calls[0][1]
+    record = await store.get("hitl-membership-predicate")
+    assert record is not None and record.run.status is RunStatus.PAUSED
+
+
+async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, monkeypatch) -> None:
+    """A revocation between target lookup and settlement must win."""
+    client, store, seed = seeded
+    import routes.hitl as hitl_routes
+
+    for run_id, action in (("hitl-answer-revoked", "answer"), ("hitl-cancel-revoked", "cancel")):
+        await seed(run_id)
+        checks: list[bool] = []
+
+        def membership_revoked_factory(checks: list[bool]):
+            async def membership_revoked(_user_id: str, _workspace_id: str) -> bool:
+                checks.append(True)
+                return len(checks) == 1
+
+            return membership_revoked
+
+        monkeypatch.setattr(hitl_routes, "is_member", membership_revoked_factory(checks))
+        if action == "answer":
+            response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
+        else:
+            response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
+        assert response.status_code == 404
+        assert len(checks) == 2
+        record = await store.get(run_id)
+        assert record is not None and record.run.status is RunStatus.PAUSED
+
+        monkeypatch.undo()
+
+
+async def test_pending_rechecks_membership_before_disclosing_payload(seeded, monkeypatch) -> None:
+    """The pending queue's Workspace-id snapshot is not the disclosure decision.
+
+    A membership revoked after the route resolved the caller's Workspaces but
+    before a paused record's payload is read must not receive that payload:
+    each item-carrying record is revalidated against live canonical membership
+    immediately before disclosure, the same discovery-mode predicate
+    `list_hitl_due` applies for the expiry path. Removing that recheck fails
+    this test — the revoked payload would be disclosed and no recheck would
+    ever run.
+    """
+    client, store, seed = seeded
+    await seed("hitl-revoked-mid-list")
+
+    import routes.hitl as hitl_routes
+
+    rechecks: list[str] = []
+
+    async def revoked(_user_id: str, workspace_id: str) -> bool:
+        rechecks.append(workspace_id)
+        return False
+
+    monkeypatch.setattr(hitl_routes, "is_member", revoked)
+
+    body = client.get("/v1/hitl/pending").json()
+
+    assert [item for item in body if item["run_id"] == "hitl-revoked-mid-list"] == []
+    assert rechecks, "the per-record live membership recheck never ran"
+    record = await store.get("hitl-revoked-mid-list")
+    assert record is not None and record.run.status is RunStatus.PAUSED
+
+
 @pytest.fixture
 def blocked_answer_clients():
     """Two independently authenticated requesters for attribution coverage."""
@@ -486,12 +574,17 @@ async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -
     try:
         pending = scoped_client.get("/v1/hitl/pending").json()
         assert {item["run_id"] for item in pending} == {mine_id, mine_second_id}
+        inspected = scoped_client.get(f"/v1/hitl/{mine_id}/ask")
+        assert inspected.status_code == 200
+        assert inspected.json()["project_id"] == mine_root.project_id
+        assert scoped_client.get(f"/v1/hitl/{other_id}/ask").status_code == 404
 
         # A foreign id is indistinguishable from a missing id as well as being
         # unable to mutate it; otherwise this door leaks Run existence.
         assert (
             scoped_client.post(
-                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "yes"}
+                f"/v1/hitl/{other_id}/ask/answer",
+                json={"answer": "yes", "_pause": {"forged": True}},
             ).status_code
             == 404
         )
@@ -685,9 +778,12 @@ async def test_an_unknown_run_is_404(seeded) -> None:
 async def test_a_run_that_is_not_paused_is_409(seeded) -> None:
     """Distinct from the unknown-run refusal, which is the point of mapping
     the store's three separately."""
-    client, store, seed = seeded
+    client, _store, seed = seeded
     await seed("hitl-not-paused")
-    await store.submit_hitl_answer("hitl-not-paused", "ask", {"answer": "first"})
+    assert (
+        client.post("/v1/hitl/hitl-not-paused/ask/answer", json={"answer": "first"}).status_code
+        == 200
+    )
 
     response = client.post("/v1/hitl/hitl-not-paused/ask/answer", json={"answer": "second"})
 
@@ -853,3 +949,37 @@ def test_an_unscoped_principal_cannot_list_pending_work(authed_client) -> None:
     the same scope rather than being readable by anyone authenticated.
     """
     assert authed_client.get("/v1/hitl/pending").status_code == 403
+
+
+async def test_a_stale_pause_entry_for_a_resumed_node_is_not_offered(seeded) -> None:
+    """Pause metadata can outlive the NodeRun it described.
+
+    A continuation that resumed (or crashed past) one node leaves its entry
+    behind in ``pauses``; the queue and the inspect door both re-check the
+    canonical NodeRun status, so the stale entry neither becomes pending work
+    nor an inspectable node. The refusal shares the missing-run answer so it
+    cannot serve as an existence oracle either.
+    """
+    client, store, seed = seeded
+    await seed("hitl-stale-pause")
+    record = store._rows["hitl-stale-pause"]
+    pauses = dict(record.graph_state.metadata["pauses"])
+    pauses["review"] = {"kind": "hitl", "metadata": {"question": "late edit?"}}
+    metadata = dict(record.graph_state.metadata)
+    metadata["pauses"] = pauses
+    store._rows["hitl-stale-pause"] = record.model_copy(
+        update={
+            "graph_state": record.graph_state.model_copy(update={"metadata": metadata}),
+        }
+    )
+
+    body = client.get("/v1/hitl/pending").json()
+
+    mine = [item for item in body if item["run_id"] == "hitl-stale-pause"]
+    assert [item["node_id"] for item in mine] == ["ask"]
+    # The live pause is inspectable once the caller is Workspace-authorized...
+    response = client.get("/v1/hitl/hitl-stale-pause/ask")
+    assert response.status_code == 200
+    assert response.json()["node_id"] == "ask"
+    # ...while the stale entry is refused with the same detail as a missing Run.
+    assert client.get("/v1/hitl/hitl-stale-pause/review").status_code == 404

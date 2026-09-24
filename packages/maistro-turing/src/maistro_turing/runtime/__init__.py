@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -89,6 +89,10 @@ def load_turing_config(
 # ---------------------------------------------------------------- actor ------
 
 
+class TuringContentBlocked(RuntimeError):
+    """Untrusted content was refused at a Turing trust boundary."""
+
+
 class TuringActor:
     """Bridges internal durable-memory events to outward-facing actions.
 
@@ -108,12 +112,39 @@ class TuringActor:
         self._provider = provider
         self._self_id = self_id
 
+    async def _scan_memory_value(self, value: Any, *, kind: str) -> dict[str, Any]:
+        """Scan structured memory metadata before the memory adapter consumes it."""
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                key_scan = await self._security.scan_self_write(str(key), kind=kind)
+                if key_scan.get("verdict") != "allowed":
+                    return key_scan
+                nested_scan = await self._scan_memory_value(nested, kind=kind)
+                if nested_scan.get("verdict") != "allowed":
+                    return nested_scan
+            return {"verdict": "allowed", "flags": []}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for nested in value:
+                nested_scan = await self._scan_memory_value(nested, kind=kind)
+                if nested_scan.get("verdict") != "allowed":
+                    return nested_scan
+            return {"verdict": "allowed", "flags": []}
+        if isinstance(value, str):
+            return await self._security.scan_self_write(value, kind=kind)
+        return {"verdict": "allowed", "flags": []}
+
     async def handle_memory_event(self, content: str, tier: str, **kwargs: Any) -> str:
-        """Store a memory and scan it for security issues."""
+        """Store a memory only after content and metadata pass Warden."""
         scan = await self._security.scan_self_write(content, kind=tier)
-        if scan.get("verdict") == "blocked":
+        if scan.get("verdict") != "allowed":
             logger.warning("self-write blocked by warden: %s", scan.get("flags"))
             return ""
+
+        metadata_scan = await self._scan_memory_value({"tier": tier, **kwargs}, kind=tier)
+        if metadata_scan.get("verdict") != "allowed":
+            logger.warning("self-write metadata blocked by warden: %s", metadata_scan.get("flags"))
+            return ""
+
         return await self._memory.store_episode(
             content=content,
             tier=tier,
@@ -149,7 +180,17 @@ class TuringChatSession:
         self._history: list[dict[str, str]] = []
 
     async def handle_message(self, message: str) -> str:
-        """Process a user message and return a response."""
+        """Scan input and the provider result before trusted use."""
+        scan_user_input = getattr(self._security, "scan_user_input", None)
+        if scan_user_input is None:
+            # Compatibility for small test doubles and older bridge adapters;
+            # the canonical bridge exposes scan_user_input directly.
+            scan = await self._security.scan_self_write(message, kind="chat-input")
+        else:
+            scan = await scan_user_input(message)
+        if scan.get("verdict") != "allowed":
+            raise TuringContentBlocked("user input refused by Warden")
+
         self._history.append({"role": "user", "content": message})
 
         await self._classifier.classify_message(message)
@@ -167,6 +208,12 @@ class TuringChatSession:
             "\n".join(prompt_parts),
             max_tokens=1000,
         )
+        result_scan = await self._security.scan_tool_result(reply, tool_name="turing-model")
+        if result_scan.get("verdict") != "allowed":
+            # Do not append or persist a model result until Warden has cleared
+            # it; provider choice must not change the trust boundary.
+            self._history.pop()
+            raise TuringContentBlocked("model result refused by Warden")
 
         self._history.append({"role": "assistant", "content": reply})
 
