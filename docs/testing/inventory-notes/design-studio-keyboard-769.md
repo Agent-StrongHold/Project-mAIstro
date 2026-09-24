@@ -13,6 +13,38 @@ collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
 API tests).
 
+## Executed evidence (repair round 5, independent revalidation at 2df251b73)
+
+Re-ran the acceptance battery at this head from the rebuilt sources:
+
+- Frontend rebuilt from source (`npm run build`, tsc + vite clean) and served
+  by `uvicorn main:app` on `HIVE_BASE_URL=http://127.0.0.1:8102` (setup-complete
+  instance).
+- `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts`:
+  **6/6 passed (10.5s)** — tab-order selection of all 9 artifact modes with
+  `aria-pressed` state, brief-gated editor entry (disabled → typed via keyboard
+  → enabled), fixed-page layer/nudge journey, Deck editor → presentation
+  dialog → Exit → focus restore, plus axe scans of the fixed-page editor, the
+  Deck editor, and the open presentation dialog with no disabled rules and
+  zero violations.
+- `deck-sanitization.spec.ts`: **4/4 passed (2.8s)** via the CI-shaped staging
+  (the `tests/Dockerfile.playwright` copy set staged under `E2E_SRC_ROOT` with
+  the e2e standalone `react`/`react-dom` as `E2E_NODE_PATHS`).
+- `uv run pytest packages/hive-conductor/backend/tests -q -k design`: **75
+  passed**; `uv run ruff check .` and `uv run ruff format --check .` clean;
+  `scripts/check-suite-inventory.py` exit 0 (13 suites);
+  `scripts/check-frontend-api-routes.py` exit 0 (215 routes); frontend
+  `npm run lint` 0 errors (90 pre-existing warnings).
+- Lane boundary and focus re-checked in source: no lane commit touches
+  `AppShell.tsx` or global shell CSS; DeckBuilder focuses its Exit button when
+  the presentation opens and returns focus to the Present button on close
+  (`presentationReturnRef`); FixedPageEditor exposes X/Y/W/H numeric inputs,
+  8 px nudge buttons, and Move earlier/later with "dragging is never required"
+  copy; visible focus comes from `button:focus-visible` (`src/index.css:600`).
+- Prior finding E stays environmental/upstream: coincurve publishes no cp314
+  wheels, so the hive image excludes the `[identity]` extra loudly
+  (`packages/hive-conductor/Dockerfile:58-63`); not a #769 regression.
+
 ## Executed evidence (repair round 4, revalidation at 8e1b93882)
 
 Re-ran the full battery against this head (backend: `uv run --no-project uvicorn
