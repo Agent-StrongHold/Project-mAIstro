@@ -75,3 +75,48 @@ Independent re-run, not a restatement of the record above:
   the tree. The durable-events and coincurve/Python-3.14 findings trace to
   trunk commits merged into this branch (`git branch -r --contains` shows
   them on origin/develop), not lane-authored work.
+
+## Re-verification record (repair lane, head fa1715866)
+
+Third independent pass; all evidence re-executed fresh, not restated:
+
+- `uv run ruff check .`: the only failures (5, all fixable) are in the
+  untracked prior-run scratch probe `repro_metrics.py` (git-unknown, does
+  not ship); `ruff check packages/ docs/ scripts/ tests/` and
+  `ruff format --check` on tracked paths (2439 files) pass.
+- Focused pytest (core metrics/SLO/resource-policy, server metrics/health/
+  rate-limit/resource-policy-health/strike-tracker-health): **152 passed**.
+- Canonical mypy (all six package srcs per AGENTS.md): **Success, 712 source
+  files**. (Scoped core+server runs surface only the pre-existing
+  `maistro_bootstrap` import-resolution notes in release-vintage `cli/_*`
+  files, which the canonical all-srcs invocation resolves.)
+- `scripts/check-reachability.py`: exit 0 (189 unreachable of 1115 modules,
+  within ratchet).
+- Live probes against the full production app (`maistro_server.main.app`),
+  19/19 pass: anonymous `/metrics` 401 with zero metric names; arbitrary
+  user Bearer 401; wrong-scope service key 403, no families; forwarded
+  headers do not bypass auth; scoped scraper 200 Prometheus exposition,
+  also through proxy headers; `/health` and `/health/live` exactly
+  `{"status":"ok"}`; `/health/ready` failure body exactly
+  `{"status":"not_ready"}` with no dependency detail; `/health/startup`
+  only `{status, startup_complete}`.
+- #818 adversarial cardinality re-proven on the full app: 300 distinct
+  random attacker paths grew `http_requests_total` by exactly 2 series
+  (`route="unrouted"` × status 404/429); no attacker URL appears in any
+  label value; the unrouted fallback exists.
+- Registry family backstop re-proven: `MetricsRegistry(max_metrics_per_registry=50)`
+  minted 200 dynamic families, collected 51 (50 capped + unlabeled overflow
+  counter), `metrics_registry_overflow_total == 150`.
+- Runtime label audit over the live registry after exercising `/health`,
+  `/health/ready`, an unrouted path, and `/metrics`: label keys are exactly
+  `dependency`, `method`, `outcome`, `route`, `status` — no user/tenant/
+  prompt/model/credential/path keys; `route` values are route templates and
+  `unrouted`; SLO `service_key` labels are sha256 digests (slo.py
+  `_service_key_label`). Static emission-site grep found no metric call
+  carrying model/tenant/user identifiers.
+- CI triage re-checked: `uv run alembic history` resolves the full chain
+  through 032→033→…→040 (exit 0); the branch touches no alembic or
+  formal-conformance files. The `quality.yml` credential-gate removal in
+  this branch's diff arrives via merges of origin/develop commits
+  (`8bb344e32`, `ba2f1f077`; both `git branch -r --contains` on
+  origin/develop), not lane-authored edits.
