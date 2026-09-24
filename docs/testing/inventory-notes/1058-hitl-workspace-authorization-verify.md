@@ -60,3 +60,27 @@ Documentation-only verifier note. No production or test code changed.
   required (4 failed / 1 passed). The surviving pin is the route-level
   `is_member` denial test, which is killed by removing the route predicate
   instead — both authorization layers are pinned. Worktree left clean.
+
+## Independent re-validation at 034cfc4dd (verify lane, post-merge) — NEEDS-REPAIR
+
+- Worktree clean at 034cfc4dd (merge of develop 1dea30dfe into auto-1058).
+- Full backend suite: **2667 passed / 1 skipped / 0 failed**; ruff check and
+  format clean; both suite-inventory gates ok; the previously repaired
+  `test_registered_dag_recovery.py` passes in isolation (backend HITL
+  quartet 48 passed).
+- **New un-reconciled develop caller found:**
+  `uv run pytest packages/maistro-core/tests` — **1 failed, 10162 passed**:
+  `test_pause_reason_wakers.py:912::test_hitl_expiry_settles_exactly_its_declared_statuses`
+  raises `TypeError: expire_hitl_pauses() missing 1 required keyword-only
+  argument: 'authorization'`. The test arrived with develop #1552
+  (750edd84d) and calls the pre-cutover signature; the merge into auto-1058
+  did not reconcile it — the same failure class the 2e2275e1e repair fixed
+  for `test_registered_dag_recovery.py`. The driver's deterministic checks
+  missed it because `check-suite-inventory` compares *collection counts*
+  only, and the targeted pytest lanes did not include this file.
+- Mutation probes re-executed at this head without tree edits via /tmp
+  pytest plugins: patching `HitlAuthorization.permits -> True` fails the 4
+  store-level guard tests; patching `routes.hitl.is_member -> True` fails
+  `test_hitl_routes_are_scoped_to_the_callers_workspaces` (foreign inspect
+  returns 200 — real leak). Both predicates are load-bearing; worktree left
+  untouched.
