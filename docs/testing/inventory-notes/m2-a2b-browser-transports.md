@@ -337,3 +337,68 @@ against the base tree directly, not from the earlier record:
   `run_hill_climb.py`, `hill-climb-ui.sh`; `browser_use` only in
   `tools/browser/`; no closure reference (`fixes/closes/resolves #N`) in
   any of the 19 branch commit messages.
+
+Repair-writer re-derivation at the stable head e2811241e (L155, 2026-09-24)
+---------------------------------------------------------------------------
+
+The previous repair run died on a provider context overflow before touching
+the tree, so this round re-executed every inherited claim from scratch at
+head e2811241e. Nothing above was trusted without re-measurement:
+
+- Test batteries: `uv sync --locked --all-extras` (installs the `browser`
+  extra, playwright 1.63.0), then `pytest packages/maistro-core/tests/tools/browser`
+  → 131 passed, and `test_playwright_transport.py` → all 4 real-Chromium
+  proofs pass (the earlier "4 skipped" state is the missing-extra
+  environment, not a skip on this tree). `pytest
+  packages/hive-conductor/backend/tests/test_browser_network_policy.py
+  packages/hive-conductor/backend/tests/test_engine_service.py` → 38
+  passed. `pytest packages/maistro-core/tests/security` → 1255 passed,
+  1 failed (`test_log_redaction.py::test_install_is_idempotent`); that
+  failure reproduces identically in the detached base-8bb344e3 worktree
+  (`/home/dev/Git/worktrees/base-8bb344e3-verify`) and the base→head diff
+  touches no redaction file — pre-existing, unrelated to egress.
+- `check-vulture-baseline.py` rc=1 re-derived as inherited with a
+  scan-level identity diff, not just ledger equality: fresh vulture scans
+  of the base tree (1430 findings) and head tree (1429) classified under
+  the shared ledger rules give, per rule, identical deltas vs the ledger
+  for every rule (e.g. fastapi-route-handler 205 new / 10 stale at BOTH
+  base and head), with exactly one base-only identity —
+  `run_hill_climb.py::COMPONENT_PATH`, fixed by this branch — and zero
+  head-only identities. The ledger is byte-identical across base,
+  origin/develop (1dea30dfe) and head, so the merge base fails the gate
+  the same way; and since `quality/ratchet-authorizations.json` carries no
+  vulture grants, even a candidate `--update` cannot clear the
+  unauthorized-vs-trusted path. Not repairable inside this lane; the
+  branch is strictly debt-neutral-to-better.
+- `check-ac-state.py --run-tests --ratchet --mandate 3e9f7525…` rc=1
+  re-derived as inherited and the earlier 31.769% reading corrected: with
+  the full extras environment a fresh head measurement (`--run-tests --out`)
+  reports design_coverage **33.0281% over 155 decisions**, per-decision
+  dict byte-equal to the committed `quality/ac-state.json` AND to a fresh
+  base-8bb344e3 measurement run the same way. The branch moves design
+  coverage by exactly 0.0000; the 33.9095 floor is already undercut at the
+  merge base. The acceptance mandate itself passes at head: "every
+  criterion this change declares is proven" (22 added/newly-claimed since
+  the mandate base, 0 unproven-undeclared); the ratchet's single FAIL line
+  is the floor undercut. The 31.769% in the prior verifier artifact was an
+  environment artifact of measuring without the browser extra.
+- Gates re-run green at head: `ruff check .`, `ruff format --check .`,
+  `check-security-inventory.py` (63 paths / 23 rows),
+  `check-model-egress.py` and `check_direct_effects.py` (50 direct
+  callers, all dispositioned), `check-suite-inventory.py` (13 suites).
+- Acceptance mapping re-verified in the tests themselves: explicit browse
+  (`test_client.py::test_browse_runs_on_a_guarded_session_too`,
+  `test_browse_denies_a_redirect_hop_into_a_private_target`),
+  search/model-directed navigation
+  (`test_search_web_attaches_the_guard_before_the_agent_sees_the_context`,
+  `test_search_web_denies_a_destination_the_model_invented`,
+  `test_browser_session_creating_its_own_context_is_governed`),
+  redirect-to-private (`test_net_guard.py::test_a_redirect_hop_from_public_to_private_is_denied_at_that_hop`,
+  real-Chromium
+  `test_real_chromium_rechecks_a_redirect_before_the_private_connection`),
+  scoped internal allowances
+  (`test_a_configured_origin_is_allowed_and_the_allowance_stays_scoped`,
+  `test_host_configured_browser_origins_are_reachable_and_scoped`).
+  Reaching a private target from a permitted public start through browser
+  navigation is refused at the hop that matters, at the actual Playwright
+  route boundary — no fake HTTP wrapper involved.
