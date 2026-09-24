@@ -315,3 +315,60 @@ exact head:
   passes with `-p no:logging` and in a bare-python probe; file untouched by
   this branch (initial-release provenance). Full backend suite at this head
   is 0 failed, so no lane impact.
+
+## Repair-lane validation round 9 (job 5d987053, head 44105bc7) — no code change
+
+Round 8's evidence was process-rejected (`worktree_changed`: the verify agent's
+own evidence commit moved head a2fb1a23b → 44105bc7), so this round re-derived
+every acceptance criterion first-hand at 44105bc7 — whose diff vs a2fb1a23b is
+the round-8 docs commit only. Commands and outcomes, all run in this worktree:
+
+- `uv run ruff check .` — all checks passed; `uv run ruff format --check .` —
+  2533 files already formatted.
+- Core issue suites (harness_runner, test_events, test_handlers,
+  test_container_security_wiring): **133 passed** (2.8 s).
+- Conductor issue suites (conftest, agents, chat-created-agents, harness,
+  maistro-core adapter): **80 passed** (3.0 s) — includes the adapter test that
+  job 0387d failed on (`fake_create_container` now accepts `warden_llm`).
+- Full conductor backend suite: **2677 passed / 1 skipped / 0 failed** (86.6 s)
+  = recorded inventory 2678. `check-suite-inventory` both suites: ok
+  (conductor 2678, core 10825).
+- `uv run mypy` (six-package command): success, no issues in 713 source files.
+- Named acceptance nodes re-run by name: equivalence test + event handler
+  suite 38 passed; harness/agents `-k "warden or scan or fail"` 29 passed.
+
+Criteria re-derived from source at this head, not from summaries:
+
+1. Canonical composition: `EngineService.warden` reads the Container first,
+   then the explicit composition slot, else raises
+   `WardenCompositionUnavailable` (engine.py:84-101); zero `Warden()`
+   constructions under `packages/hive-conductor/backend` outside tests (grep).
+2. Same layers incl. L3 judge: one `Warden(llm=warden_llm)` in
+   `create_container` (container.py:1540) backs Gate, harness, agent scan, and
+   the bound EventBus (`_wire_event_handlers`, container.py:1445-1449, 1769);
+   `policy_version = WARDEN_POLICY_VERSION` on that one instance
+   (detector.py:129); tool_result L3 classification on the same object
+   (detector.py:190-193); L3 reachability proven by
+   `test_container_warden_composition_reaches_l3_and_event_reentry`.
+3. Fail closed: harness 503 (`test_start_fails_closed_without_container_
+   security_composition`, `..._when_container_warden_cannot_scan`), agent scan
+   503 with nothing stored (`AgentScannerUnavailable`,
+   agent_materialization.py:114-128; named agent-route tests), event re-entry
+   `EventSecurityUnavailable` before any HTTP
+   (`test_missing_warden_fails_closed_before_http`).
+4. Exact-representation re-entry scan: `conductor_chat_action` scans the very
+   labelled string it later POSTs (handlers.py:121-143, boundary
+   `tool_result`).
+5. Escalation preview is not an instruction channel: scan precedes any HTTP
+   and a blocked preview raises `EventPayloadBlocked`; equivalence test
+   asserts `event_client.calls == []`.
+6. Provenance labels: `[maistro event re-entry; provenance=handler_metadata]`
+   vs `[untrusted event payload; boundary=tool_result] … [/untrusted event
+   payload]`.
+7. #1158 inherited: `normalize_for_detection` runs inside `Warden.scan`
+   (detector.py:155); no security normalizer exists in Conductor production
+   code (grep hits are LLM payload-shape adapters only).
+8. Cross-path equivalence: `test_identical_malicious_content_uses_one_
+   canonical_warden` — one Warden object, exactly 4 scans (user_input ×3 +
+   tool_result), blocked chat never reaches the model, harness 400, flagged
+   agent scan, zero HTTP after a blocked escalation preview.
