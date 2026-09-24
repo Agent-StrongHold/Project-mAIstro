@@ -400,7 +400,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "deletes the stored secret for a provider",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
@@ -410,7 +410,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "stores the provider secret in the vault",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "services.user_credentials.UserCredentialStore + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/credentials.py",
@@ -420,7 +420,7 @@
       "disposition": "domain-state",
       "production_enabled": true,
       "reason": "persists per-user provider config within allow-listed fields",
-      "effect_owner": "credential vault store + audit log"
+      "effect_owner": "stores.user_provider_config + audit log"
     },
     {
       "source": "packages/hive-conductor/backend/routes/dag_runs.py",
@@ -547,10 +547,10 @@
       "method": "POST",
       "route": "/projects",
       "handler": "create_design_project",
-      "disposition": "canonical",
+      "disposition": "domain-state",
       "production_enabled": true,
-      "reason": "generates and persists a design project from discovery responses through the validated pipeline",
-      "effect_owner": "design pipeline: Warden scan, prompt stack, DB persist"
+      "reason": "prepares and persists a Design project/prompt stack; it does not claim visual generation",
+      "effect_owner": "DesignEngine preparation + DesignProjectStore persistence"
     },
     {
       "source": "packages/hive-conductor/backend/routes/design.py",
@@ -559,7 +559,7 @@
       "handler": "create_render_job",
       "disposition": "disabled",
       "production_enabled": false,
-      "reason": "rendering is explicitly unavailable until a canonical worker, durable artifact store, and output-serving route exist (D-14 facade, #286)",
+      "reason": "compatibility endpoint fails explicitly until the canonical Canvas rendering seam exists; it creates no process-local job or output",
       "owner_issue": 286
     },
     {
@@ -1416,6 +1416,16 @@
     {
       "source": "packages/hive-conductor/backend/routes/workspaces.py",
       "method": "POST",
+      "route": "/default",
+      "handler": "ensure_default_workspace",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "returns the caller's default workspace and its Workspace Agent, creating them once (#1037)",
+      "effect_owner": "canonical WorkspaceStore + stores.agents via agent_materialization"
+    },
+    {
+      "source": "packages/hive-conductor/backend/routes/workspaces.py",
+      "method": "POST",
       "route": "/persona-templates",
       "handler": "create_persona_template_route",
       "disposition": "domain-state",
@@ -1468,10 +1478,10 @@
       "method": "WEBSOCKET",
       "route": "/dags/{dag_id}/run",
       "handler": "stream_dag_run",
-      "disposition": "unresolved",
+      "disposition": "canonical",
       "production_enabled": true,
-      "owner_issue": 766,
-      "reason": "executes the DAG through services.graph_runner.execute_dag_streaming, the pre-durable legacy executor distinct from the canonical execute_dag the HTTP twin POST /{dag_id}/run already uses; gated on dags.write and workspace-selection authorization, but the execution path itself is the #44/#766 convergence gap this entry discloses rather than hides"
+      "reason": "the DagBuilder Run button's socket: gated on dags.write and admitted by authorize_hive_dag_scope against the canonical WorkspaceStore before accept(); services.graph_runner.execute_dag_streaming is a frame facade over canonical_dag_runner.execute_dag, so the button's run is one interactive durable Run/NodeRun/Attempt in the authorized Workspace/Project, audited as dag_run, and the same dag_run_store projection POST /{dag_id}/run records is written under the canonical run_id as soon as the Run settles; an unexpected (non-Run) failure frame carries only the exception kind, while a failed Run reports its canonical error exactly as the HTTP route does (#766)",
+      "effect_owner": "services.dag_execution_scope.authorize_hive_dag_scope -> services.graph_runner.execute_dag_streaming -> services.canonical_dag_runner.execute_dag (durable Run/NodeRun/Attempt) + services.dag_run_store projection"
     },
     {
       "source": "packages/maistro-canvas/frontend/server/lulu/service.py",

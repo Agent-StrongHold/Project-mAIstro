@@ -798,4 +798,4 @@ async def test_execute_dag_streaming_yields_failed_on_exception(
         events.append(ev)
     assert events[0]["status"] == "started"
     assert events[-1]["status"] == "failed"
-    assert "synthetic" in events[-1]["error"]
+    assert events[-1]["error"] == "RuntimeError: execution failed; see server logs"
