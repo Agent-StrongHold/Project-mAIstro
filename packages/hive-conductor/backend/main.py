@@ -21,6 +21,7 @@ from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
 from routes import (
     agents,
+    attention,
     audit,
     auth,
     capabilities,
@@ -325,6 +326,7 @@ def create_app() -> FastAPI:
     app.include_router(program.router, prefix="/v1/program")
     app.include_router(work_items.router, prefix="/v1/work-items")
     app.include_router(workspaces.router, prefix="/v1/workspaces")
+    app.include_router(attention.router, prefix="/v1/workspaces")
     app.include_router(mcp.router, prefix="/v1/mcp")
     app.include_router(cli.router, prefix="/v1/cli")
     app.include_router(containers.router, prefix="/v1/containers")
