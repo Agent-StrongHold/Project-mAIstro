@@ -38,7 +38,7 @@ the incoming side, which ships its own inventory notes (`1058-*`,
   `routes.hitl.is_member`, so the revocation-must-win scenario is unchanged
   (404, Run stays PAUSED, exactly two membership checks).
 
-## Independent validation at the merge commit 678c16316bb8 (2026-09-25)
+## Independent validation at 87f71178d (merge 678c16316 + the settlement/door fix, 2026-09-25)
 
 - `uv run pytest packages/maistro-core/tests/graph/durable_runs -q` — 515
   passed, 21 skipped (all skips are `MAISTRO_TEST_PG_DSN` legs).
