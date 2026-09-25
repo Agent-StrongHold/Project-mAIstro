@@ -320,3 +320,52 @@ this worktree):
   is 3.13.15 *with* the pinned wheel set). Comment rewritten to state the
   shipped contract and the enforced Python-3.14 boundary; no behavioral
   change (marker itself unchanged).
+
+Independent verifier pass at merged head 78325c061 (auto-291 = branch merged
+with develop 2c8022fe8; driver checks all green: uv sync --locked --extra dev,
+ruff check, ruff format --check 2547 files, engine extra_guard 6 passed,
+conductor test_api+test_identity_health+test_setup_guard 55 passed, suite
+inventories ok for hive-conductor/backend/tests and maistro-core/tests):
+
+- The develop merge touched image inputs (maistro-core source, conductor
+  backend main.py/routes/services, Dockerfile, requirements.txt), so prior
+  image provenance was stale for this head. Rebuilt BOTH profiles in this
+  worktree at 78325c061: hive-conductor:l291-verify2 and
+  hive-conductor-obs:l291-verify2. The Dockerfile in-build smoke test step
+  (identity import + ConductorSeed.generate/did_key derivation + version
+  assertions; opentelemetry imports under INSTALL_OBSERVABILITY=1) executed
+  and passed in both builds.
+- Both security.yml in-image verification commands executed verbatim against
+  the fresh images: default profile printed
+  `identity=operational python=3.13.15 bip-utils=2.12.1 coincurve=21.0.0
+  pynacl=1.6.2` (msgpack>=1.2.1 and setuptools>=78.1.1 asserted); observability
+  profile printed `observability=importable identity=operational
+  python=3.13.15`.
+- Merge survived identity wiring re-verified in-tree: routes/health.py wires
+  identity_health into /health (identity, identity_required, degraded) and
+  /health/ready checks; requirements.txt pins bip-utils==2.12.1 /
+  coincurve==21.0.0 / pynacl==1.6.2 with the corrected 3.13-contract comment;
+  security.yml retains both profile builds and both in-image verify steps.
+- Gates re-run and witnessed at this head: engine identity 69 passed;
+  tests/test_prepull_base_images.py 25 passed; conductor 55 passed (above).
+- Live deployment contract re-observed at this head against a fresh
+  hive-conductor:l291-verify2 container: /health reports
+  identity={status: misconfigured, reason: setup_incomplete},
+  identity_required=false, degraded=true; /health/ready reports
+  checks.identity=false with ready=true (pre-setup is not a failed capability).
+- Playwright e2e executed LIVE against the shipped image (frontend bundle from
+  the image, PLAYWRIGHT_BASE_URL -> published port): 8/8 passed, including
+  "does not offer crypto identity when the runtime is unavailable" and
+  "... when the deployment is misconfigured" (both assert the Crypto Identity
+  toggle toBeDisabled) and full setup completion on the live deployment.
+- Closure-keyword audit: PR #1465 body says "Refs #291" only; no
+  fixes/closes/resolves in any commit message on the branch.
+- Live CI refresh (read-only gh pr view) at this head: prior MinIO findings
+  resolved — "object storage (MinIO)" and "coverage (MinIO)" now SUCCESS;
+  hive-conductor-e2e / e2e-ui / wheel-imports / lint-and-type / SAST /
+  postgres pg17+pg18 / coverage(no-services, MinIO, PostgreSQL) SUCCESS.
+  IN_PROGRESS at refresh time: docker-build (the containers job carrying the
+  in-image identity verification), integration-scope, CI test, coverage gate;
+  gates-ran PENDING. GitHub CI execution of the identity contract therefore
+  remains UNVERIFIED as of this refresh; the verbatim local in-image
+  replication above is the evidence of record.
