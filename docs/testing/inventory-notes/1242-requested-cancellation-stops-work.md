@@ -216,3 +216,73 @@ executed fresh at 9d16dec8e, not inherited.
   `60862b6c..9d16dec8e` diff are upstream develop state — the file is already
   absent from every merged develop snapshot (ba2f1f077, 71d0c1120, 551c38b5e,
   78bb72906, aa9502100, ffd6fdb16, 8bb344e32).
+
+## Independent verification at exact head 0a52fea57
+
+Job 9594f87d (repair lane LAUD6, 2026-09-25). 0a52fea57 = 60862b6c5 (develop
+merge) + this note file's own commits, so the code under test is the merge's.
+Every claim below was executed fresh in this round; nothing inherited.
+
+- `uv run ruff check .` → clean; `uv run ruff format --check .` → clean
+  (2534 files).
+- `uv run mypy` over all six `packages/*/src` trees → Success, 713 files.
+- Vulture per-identity ledger gate at this head:
+  `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0, 1415 reviewed
+  identities / 1415 findings, baseline base 60862b6c5, candidate 0a52fea572ae.
+- `uv run pytest packages/maistro-core/tests/tasks/test_requested_cancellation.py
+  -q` → **10 passed**; `uv run pytest packages/maistro-core/tests/tasks -q` →
+  **319 passed**.
+- Bite check re-derived independently: throwaway worktree at `55f59f334^`
+  (1e52dc174), head's `test_requested_cancellation.py` copied in → **6 failed /
+  4 passed**; `test_cancel_stops_the_running_work` among the failures. The
+  regression suite cannot pass on the audited receipt-only terminalization and
+  passes on this head.
+- Real-Postgres leg (fresh throwaway `pgvector/pgvector:pg18` container,
+  `alembic upgrade head` applied, `MAISTRO_TEST_PG_DSN` set):
+  `uv run pytest packages/maistro-core/tests/persistence -q` → **624 passed**;
+  the previously flaked `test_pg_sessions_concurrency.py` (line-89 retention
+  race) green **5× back-to-back** — the 23b4de340 DB-clock cutoff holds.
+- CI-shaped pytest shards (env as in ci.yml:243 — `MAISTRO_TEST_PG_DSN` +
+  `MAISTRO_TEST_DATABASE_URL`, `DATABASE_URL` unset, matching formal-
+  conformance.yml:115 which scopes `DATABASE_URL` to the Alembic step only):
+  `packages/maistro-core/tests` → **10783 passed, 46 skipped, 1 xfailed**;
+  `packages/maistro-server/tests` → 369 passed;
+  `packages/hive-conductor/backend/tests` → 2667 passed, 1 skipped.
+- Full-tree `uv run pytest -x -q` probed twice for the exact-head doctrine and
+  stopped on two order/environment artifacts, neither attributable to this
+  branch (branch diff vs origin/develop is 8 files: the two #1242 notes,
+  pg_sessions.py, queue.py, runner.py, tests/config/__init__.py,
+  test_pg_sessions.py, test_requested_cancellation.py — `container.py`,
+  `persistence/__init__.py` and every polluting consumer untouched):
+  1. With `DATABASE_URL` also exported (over-broad env, not CI's shape),
+     `TestGetTaskResult::test_task_with_result_returns_result_body` fails:
+     the test calls `queue.set_result` synchronously and `_persist` reaches
+     `asyncio.create_task` with no running loop (queue.py:182). Production
+     callers all run inside the loop; with `DATABASE_URL` unset (CI) the
+     factory is None and the test passes — reproduced green in the CI-shaped
+     server shard above.
+  2. In CI's env, the full-tree run fails at
+     `hive-conductor .../test_auth_throttle_routes.py::
+     test_a_forwarded_header_from_a_trusted_proxy_is_used`
+     (`assert '10.1.2.3' == '203.0.113.9'`): cross-package settings-cache
+     pollution that only exists when maistro-core/server suites share one
+     pytest process with hive-conductor — a shape no CI job creates (ci.yml
+     shards per package; the only multi-path job, ci.yml:499, combines
+     `tests/` + hive-conductor + maistro-design only, and that exact shape
+     was run here: 6525 passed, 1 failed — see 3).
+  3. That ci.yml:499 shape's single failure is
+     `tests/migrations/test_pg_store_wiring.py::
+     test_an_unreachable_server_fails_without_leaking_the_password`, whose
+     premise is instant ECONNREFUSED on `127.0.0.1:1`. A raw socket probe on
+     this host shows connects to port 1 **time out (3×30 s)** instead of
+     refusing — a WSL/firewall blackhole — so the test exercises a timeout
+     path under load that CI never sees; it passes in isolation (60 s of
+     timeouts) and its import path is untouched by this branch.
+  Residual: a single-process, whole-tree pytest run is not a CI shape and is
+  not green on this host for reasons 2–3; every CI-shaped invocation above is
+  green.
+- Prior finding "no PR body/ID supplied" remains UNVERIFIED by design: no
+  GitHub mutations are permitted from this lane, and no PR body exists for a
+  local branch; the closure-keyword scan of commit messages in prior rounds
+  found no `fixes/closes/resolves` forms.
