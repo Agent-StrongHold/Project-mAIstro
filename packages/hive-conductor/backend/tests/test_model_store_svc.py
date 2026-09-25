@@ -536,3 +536,95 @@ def test_put_if_unique_no_persisted_success_returns_true() -> None:
     s = ModelStore("ms", _Named)
     assert s.put_if_unique("a", _Named(id="a", name="alice"), "name") is True
     assert s["a"].name == "alice"
+
+
+# --- #1037: insert-once, durable discard, durable refresh -----------------
+
+
+class _KeyedPersisted(_FakePersisted):
+    """A durable backend holding raw rows by key, deciding insert-once conflicts."""
+
+    def __init__(self, rows: dict[str, str] | None = None) -> None:
+        super().__init__()
+        self.rows = dict(rows or {})
+
+    def put_raw_if_absent(self, store_name: str, key: str, raw: str) -> bool:
+        if key in self.rows:
+            return False
+        self.rows[key] = raw
+        return True
+
+    def get(self, store_name: str, key: str, model_class: Any) -> Any:
+        raw = self.rows.get(key)
+        return None if raw is None else model_class.model_validate_json(raw)
+
+    def get_raw(self, store_name: str, key: str) -> str | None:
+        return self.rows.get(key)
+
+
+def test_model_store_put_if_absent_inserts_once_in_memory() -> None:
+    from services.model_store import ModelStore
+
+    s = ModelStore("ms", _Model)
+    assert s.put_if_absent("a", _Model(id="a", value=1)) is True
+    assert s.put_if_absent("a", _Model(id="a", value=2)) is False
+    assert s["a"].value == 1
+
+
+def test_model_store_put_if_absent_adopts_another_processes_durable_row() -> None:
+    from services.model_store import ModelStore
+
+    p = _KeyedPersisted({"a": _Model(id="a", value=7).model_dump_json()})
+    s = ModelStore("ms", _Model, persisted=p)
+
+    assert s.put_if_absent("a", _Model(id="a", value=1)) is False
+    assert s["a"].value == 7
+    assert s.put_if_absent("b", _Model(id="b", value=2)) is True
+    assert _Model.model_validate_json(p.rows["b"]).value == 2
+
+
+def test_model_store_put_if_absent_refuses_what_it_cannot_decide() -> None:
+    from services.model_store import ModelStore
+
+    with pytest.raises(RuntimeError, match="conflict-safe inserts"):
+        ModelStore("ms", _Model, persisted=_FakePersisted()).put_if_absent(
+            "a", _Model(id="a", value=1)
+        )
+    vanished = _KeyedPersisted()
+    vanished.put_raw_if_absent = lambda *_args: False  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="conflicting durable record"):
+        ModelStore("ms", _Model, persisted=vanished).put_if_absent("a", _Model(id="a", value=1))
+    with pytest.raises(TypeError, match="unique fields"):
+        ModelStore("ms", _Named, unique_fields=("name",)).put_if_absent(
+            "a", _Named(id="a", name="n")
+        )
+
+
+def test_model_store_discard_reaches_the_backend_for_an_uncached_key() -> None:
+    from services.model_store import ModelStore
+
+    p = _FakePersisted()
+    s = ModelStore("ms", _Model, persisted=p)
+    s["cached"] = _Model(id="cached", value=1)
+
+    s.discard("cached")
+    s.discard("uncached")
+    ModelStore("ms", _Model).discard("nowhere")
+
+    assert "cached" not in s
+    assert p.delete_calls == [("ms", "cached"), ("ms", "uncached")]
+
+
+def test_json_store_refresh_adopts_a_record_written_after_load() -> None:
+    from services.model_store import JsonStore
+
+    p = _KeyedPersisted()
+    s = JsonStore("js", persisted=p)
+    s.initialize()
+    assert s.refresh("k") is False
+
+    p.rows["k"] = '{"owner": "other"}'
+
+    assert s.refresh("k") is True
+    assert s["k"] == {"owner": "other"}
+    assert JsonStore("js").refresh("k") is False
