@@ -13,6 +13,40 @@ collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
 API tests).
 
+## Executed evidence (repair round 9, independent revalidation at 9841ae58f)
+
+Re-ran the whole battery at the current head (`9841ae58f`, clean tree, no tree
+edits this round) after the round-8 run died on a provider timeout:
+
+- Round-0 findings re-checked in source, all still stale: the note front
+  matter parses (`check-suite-inventory.py` exit 0, 13 suites); the editor
+  entry is `disabled={!canOpenEditor}` (DesignStudio.tsx:245, brief-gated,
+  `role="status"` state at :246) with the Availability card reporting
+  editing/presentation/export available; `App.tsx:195` routes `/decks` with
+  the containment-lifted comment; the keyboard spec's three axe scans (main-
+  scoped and two full-page inside the editors) carry no `disableRules`.
+- `uv run ruff check .` + `uv run ruff format --check .` → clean (2533 files);
+  `uv run pytest packages/hive-conductor/backend/tests -q -k design` →
+  **82 passed**; `npm run build` (tsc + vite) → clean; `npm run lint` →
+  0 errors (90 warnings); `scripts/check-frontend-api-routes.py` → exit 0
+  (216 routes across 61 call-site files).
+- Live e2e re-executed: `uv run --no-project uvicorn main:app` serving the
+  rebuilt `frontend/dist` on 127.0.0.1:8102 (`GET /v1/setup/status` →
+  `setup_complete: true`, `GET /cli/canvas` → 200).
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts` →
+  **7/7 passed (11.1s)**; `deck-sanitization.spec.ts` → **7/7 passed (2.4s)**
+  via the `tests/Dockerfile.playwright`-shaped staging. Local-staging note:
+  the standalone `node_modules` copy must now include `scheduler` (a react-dom
+  19.2 transitive dep) alongside `react`/`react-dom`, or the esbuild bundle
+  fails with `Could not resolve "scheduler"` — CI's `npm install` image is
+  unaffected. Server stopped after the run; tree left clean.
+- The compose-build failure in the round-0 findings is the documented upstream
+  coincurve cp314 gap (`packages/hive-conductor/Dockerfile:58-63`,
+  SPEC-072726-3439), not a #769 regression; the lane boundary still holds —
+  `git diff --name-only 60862b6c5..HEAD` touches neither `AppShell.tsx` nor
+  `index.css` (the `button:focus-visible` outline at index.css:600-604
+  pre-exists).
+
 ## Executed evidence (repair round 8, independent re-admission validation at ad7245a78)
 
 Re-derived every acceptance criterion at the merged head (clean tree,
