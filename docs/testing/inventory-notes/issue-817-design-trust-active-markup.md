@@ -362,3 +362,43 @@ Fresh evidence executed at the merged head `23fefb6a7`:
 
 No production or test file changed this round (validation + merge only);
 no new tests added, so no inventory-delta change.
+
+## Independent verification round 8 (auto-817 @ 8b586577a, verifier lane)
+
+Re-executed at the lane's exact head `8b586577a30e236dc6d5125966679efed2ad335d`
+(develop base `2c8022fe8` merged; `git diff 23fefb6a7..8b586577a` touches only
+`.github/workflows/{ci,release,security}.yml` action-version bumps and this
+note — zero production-code drift vs the round-7 evidence head). All evidence
+below executed fresh in this round; read-only probes plus this note.
+
+- **Lane pytest re-executed:** `uv run pytest
+  packages/maistro-core/tests/security/warden/test_detector.py
+  packages/maistro-core/tests/security/warden/test_visual_artifact_vocabulary.py
+  packages/maistro-design/tests/test_design.py
+  packages/maistro-design/tests/test_scan.py
+  packages/maistro-design/tests/test_trust_prescan.py -q` → **217 passed**.
+  `packages/hive-conductor/backend/tests/test_design_renderers.py` → 7 passed.
+  `uv run ruff check .` → clean. Suite inventory ok for hive-conductor
+  backend (2722), maistro-core (10908), maistro-design (310).
+- **Pre-scan probe re-executed** (`scan_and_record` + review-queue records):
+  `<math><mi>x</mi></math>` → `tier=skull, rec=banish, conf=0.9,
+  flags=("content: visual artifact active-element",)` (round-1 finding stays
+  fixed); `<script>`, handler attr, `data:text/html` iframe, CSS `url()` →
+  all `skull/banish` with explicit shared flags; clean paragraph →
+  `t3/upgrade/()`.
+- **Chromium corpus re-executed at this head** (image `auto817-playwright-r4`,
+  live worktree `visualArtifactRenderer.tsx`, `deckSanitizer.ts`,
+  `DeckBuilder.tsx`, `DesignStudio.tsx`, `FixedPageArtifactEditor.tsx` and the
+  spec bind-mounted read-only): `deck-sanitization.spec.ts` → **8/8 passed**
+  (payload families, CSS obfuscation/active SVG fail-closed, trust-recommendation
+  parity).
+- **SAST gate re-executed** (`uvx semgrep --config tools/semgrep/maistro-rules.yaml
+  --config p/security-audit --error packages/hive-conductor/frontend/src/lib/`)
+  → rc=0, 22 rules / 10 files / **0 findings**; the reviewed-sink
+  `nosemgrep` annotation at `visualArtifactRenderer.tsx:394` holds.
+- **Vulture gate re-executed** (`scripts/check-vulture-baseline.py`) → rc=0;
+  the prior unapproved-debt finding does not reproduce.
+- **Closure-keyword review re-executed:** `git log 2c8022fe8..8b586577a`
+  (38 commits) contains no `fixes/closes/resolves #N`; PR #1389 body says
+  only "Refs #817", remains draft, and live `headRefOid` equals this head
+  (the round-7 "snapshot not the review head" block is resolved).
