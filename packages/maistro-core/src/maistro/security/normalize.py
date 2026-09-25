@@ -23,11 +23,17 @@ Three folds, applied in order where applicable:
    returned/redacted canonical text at step 2 and scans a separate same-length
    homoglyph-folded detection view, so legitimate non-Latin prose is not
    rewritten while confusable secrets are still detected.
+
+Additionally, this module provides a helper to convert JSON-serializable values
+to a deterministic string for security scanning, ensuring that mapping keys are
+included in the scanned representation.
 """
 
 from __future__ import annotations
 
+import json
 import unicodedata
+from typing import Any
 
 # Invisible characters that are not category Cf but still interrupt a token
 # without rendering. U+034F exists specifically to break character sequences.
@@ -118,3 +124,19 @@ def normalize_for_redaction(text: str) -> str:
     same-length ``fold_homoglyphs`` view while keeping offsets anchored here.
     """
     return strip_invisibles(unicodedata.normalize("NFKD", text))
+
+
+def to_scan_string(value: Any) -> str:
+    """Return a string representation of a JSON-serializable value for security scanning.
+
+    For strings, returns the string unchanged.
+    For other JSON-serializable values (dict, list, tuple, int, float, bool, None),
+    returns the JSON string with sorted keys to ensure deterministic representation.
+    Other objects are fallen back to ``str``.
+    """
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
