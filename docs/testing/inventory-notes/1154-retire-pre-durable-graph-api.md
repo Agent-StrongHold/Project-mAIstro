@@ -248,3 +248,47 @@ historical `run_durable_graph` delegates to the single canonical
 ("reproducible, not resumable"); ADR-062/ADR-065/SPEC-b624 carry top-of-file
 #1154 retirement notes; CONVERGENCE-MATRIX rows 52/124 mark the pre-durable API
 RETIRED. No test files changed in this pass: suite inventories unchanged.
+
+## Repair round (re-validation at bd346d241, both prior findings re-derived)
+
+Both verifier findings re-checked from scratch at the prescribed head; neither
+required a code change, and both attributions were re-proven with fresh probes:
+
+1. `builders/dag.py` conflict markers — absent at this head: `git diff --check`
+   exits 0 and a repo-wide marker scan (`^<<<<<<<`/`=======`/`>>>>>>>` line
+   anchors over packages/, docs/, scripts/) finds none.
+2. `check-vulture-baseline.py` exit 1 — re-derived with complete-set probes, not
+   the capped human output. Full vulture scans of this tree and of the
+   merge-base 60862b6c5 in a scratch worktree (same interpreter, same args,
+   line numbers normalized) are IDENTICAL except two identities: head adds
+   `config/models.py::parallel_generations` — already granted at that base
+   (`git show 60862b6c5:quality/ratchet-authorizations.json`, issue #1154) —
+   and head removes `graph/types.py::evaluation_score`. So head's unauthorized
+   set is a strict subset of the base's own failure set: the gate fails
+   byte-identically at the develop merge-base, which landed hive-conductor /
+   canvas / evolve / rsi / design code without re-banking its ledger
+   (`list_confirms` and ~1000 like identities exist in base source and are
+   absent from the base ledger). Grants are read from the base revision
+   (`ratchet_provenance.load_authorizations`), so per the gate's own doctrine
+   ("Running --update in this branch cannot authorize it; land a reviewed grant
+   first") the residual requires the grants-first PR outside this lane; this
+   branch contributes zero unauthorized keys and the candidate-bookkeeping
+   section is empty (0 NEW / 0 stale in this round's full run). No grants were
+   added.
+
+Re-validated at this head: `ruff check .` clean; `ruff format --check .` clean
+(2528 files); `tests/graph` 1166 passed / 79 skipped (incl.
+`test_retired_executor.py`); `tests/testing` + `tests/resilience` +
+`tests/integration/test_chat_to_graph_e2e.py` + `tests/orchestrator/waves` +
+`tests/builders` 494 passed / 1 xfailed; hive `test_graph_runner.py` +
+`test_graph_runner_injection.py` 30 passed (root venv, PYTHONPATH=backend);
+`mypy` clean on `maistro.graph` + `maistro.testing` (70 files);
+`check-retired-guidance.py`, `check-execution-lifecycles.py`,
+`check-convergence-matrix.py`, `check-merge-markers.py`, and
+`check-suite-inventory.py` (13 suites) all exit 0. Surface probes re-run:
+`maistro.graph.__all__` exposes neither `run_graph` nor `GraphRun`;
+`maistro.graph.run` / `.strategy` / `.phases` unimportable; shipped Graph work
+crosses only `run_durable_graph` (master.py:630, builders/graph_executor.py:890,
+agent_synth_dag.py:474) and `GraphExecutionState` traversal semantics remain
+consumed by durable_runs (executor/recovery/stores/authoritative_fold). No test
+files changed in this pass: suite inventories unchanged.
