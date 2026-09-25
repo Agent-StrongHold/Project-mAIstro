@@ -346,8 +346,13 @@ class CanvasCanonicalExecution:
     async def _project_receipt(  # noqa: C901 - terminal projection is an explicit state table
         self, job: Any, run: Run, canvas_store: Any
     ) -> Any:
-        from maistro_canvas.types import JobStatus
+        from maistro_canvas.types import JobLeaseLostError, JobStatus
 
+        # The projection is computed from a detached read; the write is a
+        # compare-and-set on what was read. Without it a stale copy (read
+        # before a reap and re-claim) could put the receipt back to an older
+        # status and attempt count over a live claim (Codex #1560).
+        read_status, read_attempts = job.status, job.attempts
         changed = False
         if run.status in {RunStatus.FAILED, RunStatus.TIMED_OUT}:
             target = JobStatus.FAILED
@@ -380,6 +385,22 @@ class CanvasCanonicalExecution:
             # (`reap_expired_leases`) may decide a worker is lost; recovery
             # leaves a live lease alone.
             target = job.status
+        elif (
+            job.status is JobStatus.RUNNING
+            and run.status in {RunStatus.CREATED, RunStatus.QUEUED}
+            and job.attempts >= job.max_attempts
+        ):
+            # A lost worker at its retry ceiling: requeueing it would let the
+            # next claim run the provider past ``max_attempts``. Hand it to
+            # the lease reaper instead -- no holder, an expired lease stamp --
+            # whose exhausted branch fails it through canonical reconciliation.
+            target = job.status
+            if job.leased_by is not None:
+                job.leased_by = None
+                changed = True
+            if job.lease_expires_at is None:
+                job.lease_expires_at = datetime.now(UTC)
+                changed = True
         else:
             # Only CREATED/QUEUED are admission states. Once canonical work is
             # RUNNING, recovery must not turn an owned Canvas lease back into
@@ -403,7 +424,17 @@ class CanvasCanonicalExecution:
                 job.lease_expires_at = None
                 changed = True
         if changed:
-            return await canvas_store.update_job(job, org_id=job.org_id)
+            try:
+                return await canvas_store.update_job(
+                    job,
+                    org_id=job.org_id,
+                    expected_status=read_status,
+                    expected_attempts=read_attempts,
+                )
+            except JobLeaseLostError:
+                # A newer writer moved the receipt; the next tick re-projects
+                # from its current state.
+                return await canvas_store.get_job(job.id, org_id=job.org_id)
         return job
 
     async def _completed_paths(self, run_id: str) -> list[str] | None:
@@ -434,12 +465,20 @@ class CanvasCanonicalExecution:
         run_id: str,
         stage: str,
         operation: Callable[[], Awaitable[T]],
+        *,
+        timeout_s: float | None = None,
     ) -> T:
         """Execute or retry one Canvas stage under one canonical NodeRun.
 
         A stage that already completed is replayed from durable Attempt evidence,
         not sent to the provider again. A failed previous try is retried under
         the same NodeRun, leaving both Attempts inspectable.
+
+        ``timeout_s`` is enforced by the canonical Runtime, not by cancelling
+        the caller: a deadline must be recorded as a ``TIMED_OUT`` Attempt the
+        NodeRun can retry. Cancelling the awaiting task instead reads as a
+        *requested* cancellation, which terminalizes the NodeRun and the Run
+        and breaks every remaining Canvas retry (Codex #1560).
         """
 
         run = await self._require_run(run_id)
@@ -479,6 +518,7 @@ class CanvasCanonicalExecution:
                 context,
                 executor=_execute,
                 executor_id=_CANVAS_EXECUTOR_ID,
+                timeout_s=timeout_s,
             )
         else:
             attempts = await self._runs.list_attempts(node_run.node_run_id)
@@ -501,13 +541,14 @@ class CanvasCanonicalExecution:
                     error="Canvas worker lease was reclaimed before retry",
                     cancellation=CancellationCause.RECOVERED,
                 )
-                return await self.execute_stage(run_id, stage, operation)
+                return await self.execute_stage(run_id, stage, operation, timeout_s=timeout_s)
             attempt = await self._service.retry_node(
                 node_run.node_run_id,
                 None,
                 context,
                 executor=_execute,
                 executor_id=_CANVAS_EXECUTOR_ID,
+                timeout_s=timeout_s,
             )
         if captured:
             return await self._project_stage_result(run_id, stage, captured[0])

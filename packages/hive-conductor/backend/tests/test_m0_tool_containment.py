@@ -6,6 +6,9 @@ import pytest
 from models.schemas import ChatCompletionRequest
 from routes import chat, voice
 
+# Model-reaching turns are admitted as canonical chat Runs (#1037).
+pytestmark = pytest.mark.usefixtures("chat_run_spine")
+
 
 class FakeLLM:
     def __init__(self) -> None:
