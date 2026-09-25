@@ -75,6 +75,8 @@ def _test_authorization() -> HitlAuthorization:
                 "ws-1097",
                 "owned-workspace",
                 "foreign-workspace",
+                "ws-hitl-answer-reconcile",
+                "ws-hitl-legacy-sweep",
             }
         ),
         membership_check=_allow_test_membership,
@@ -978,7 +980,13 @@ async def test_reconcile_repairs_crash_after_answer_before_run_mirror(
 
     monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
     with pytest.raises(RuntimeError, match="injected crash"):
-        await store.submit_hitl_answer(paused.run_id, "ask", {"answer": "yes"}, at=_BEFORE)
+        await store.submit_hitl_answer(
+            paused.run_id,
+            "ask",
+            {"answer": "yes"},
+            at=_BEFORE,
+            authorization=_test_authorization(),
+        )
 
     interrupted = await run_store.get_run(paused.run_id)
     assert interrupted is not None and interrupted.status is RunStatus.PAUSED
@@ -1221,7 +1229,13 @@ async def test_resume_repair_falls_back_to_the_bounded_sweep_on_legacy_stores(
 
     monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
     with pytest.raises(RuntimeError, match="injected crash"):
-        await store.submit_hitl_answer(paused.run_id, "ask", {"answer": "yes"}, at=_BEFORE)
+        await store.submit_hitl_answer(
+            paused.run_id,
+            "ask",
+            {"answer": "yes"},
+            at=_BEFORE,
+            authorization=_test_authorization(),
+        )
 
     swept: list[int] = []
     original_sweep = store.reconcile_persistence

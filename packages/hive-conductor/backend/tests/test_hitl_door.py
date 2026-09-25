@@ -405,8 +405,6 @@ async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, m
         record = await store.get(run_id)
         assert record is not None and record.run.status is RunStatus.PAUSED
 
-        monkeypatch.undo()
-
 
 async def test_pending_rechecks_membership_before_disclosing_payload(seeded, monkeypatch) -> None:
     """The pending queue's Workspace-id snapshot is not the disclosure decision.
