@@ -66,3 +66,54 @@ intact. Executed evidence on the resolved tree:
   recommendation=upgrade.
 - `npx tsc --noEmit` clean; `uv run ruff check .` and `ruff format --check .`
   clean.
+
+## 2026-09-25 repair re-validation (head 904df3203, job 7ec19d5d)
+
+All four prior verifier findings re-checked against the committed tree; none
+reproduced:
+
+1. `trust.py` recommending `upgrade` for active markup: repaired by the union
+   merge — `scan_and_record` feeds `scan_visual_artifact_markup` reasons into
+   `warden_flags`, and `_warden_recommendation` returns `upgrade` only when
+   flags are empty. Executed probes (scratch reproducers, since backed up to
+   the job directory): `<svg onload=...>` → tier=skull, flags=`(event-handler)`,
+   recommendation=`banish`; `<script>`/CSS-url/javascript:/`data:text/html img`
+   → skull + `banish`. Committed equivalents:
+   `test_trust_prescan.py::test_hostile_content_is_flagged_skull_and_never_upgraded`
+   and `::test_renderer_blocked_markup_is_never_upgraded`.
+2. Trust check via test-harness global: the spec now reads
+   `data-trust-recommendation` off the shipped `FixedPageArtifactEditor` DOM
+   (`deck-sanitization.spec.ts` "Read the recommendation from the shipped
+   fixed-page component"), exercising hostile loaded content → `review` and a
+   safe paste → `upgrade`.
+3. `DesignStudio.tsx` fixed-page editor without load/persist path: now mounted
+   with `initialMarkup`/`initialTrustRecommendation`/`onMarkupChange` backed by
+   `localStorage` persistence (`persistArtifactMarkup`); availability panel
+   reports Edit+preview available and HTML export available for fixed pages,
+   matching the shipped component.
+4. Full-tree `pytest -x -q` collection ImportError (`from config import
+   get_settings`): pre-existing full-tree collection shadowing by
+   `packages/hive-conductor/backend/tests` (documented ~34 offline collection
+   errors); unchanged from develop, out of this lane's scope. Also pre-existing
+   on the canonical clone: 4 CORS-fixture errors in
+   `packages/maistro-core/tests/config/test_cors_validation.py`.
+
+Executed on this head:
+
+- Fresh `docker build` of `tests/Dockerfile.playwright` from this worktree;
+  `npx playwright test deck-sanitization` — **8/8 passed** (added since the
+  last section: malformed stored values fail closed; trust verdict from the
+  shipped fixed-page component).
+- `npx playwright test visual-artifact-boundary` — **3/3 passed**; negative
+  control: a scratch `RogueMode.tsx` with its own `innerHTML` sink failed the
+  spec (`pages/RogueMode.tsx uses .innerHTML assignment`, `1 failed`),
+  restoring `3 passed` when removed — new-mode-without-shared-renderer fails
+  by construction.
+- `uv run pytest packages/maistro-design/tests -x -q` — 287 passed.
+- `uv run ruff check .` / `ruff format --check .` — clean (the only flagged
+  files were the two untracked scratch reproducers at the repo root, now
+  preserved in the job directory and removed from the worktree; `test_cases.py`
+  would otherwise be collected by root-level pytest).
+- Not run here: `design-studio-keyboard/truthfulness` specs require a live hive
+  backend (`loginAsPM`); the #768 acceptance paths are covered by the two
+  standalone specs above.
