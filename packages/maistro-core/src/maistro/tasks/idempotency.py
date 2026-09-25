@@ -78,7 +78,7 @@ on a configured PostgreSQL pool, because a claim tier *more* durable than the
 Runs it names is its own duplication hazard: a claim that survives a restart
 beside an ephemeral spine replays a receipt whose Run died, and the retry
 believes work was admitted that no longer exists. On a spine-ready pool the
-claims table is provisioned at wire time (``ensure_schema``) — migration 034
+claims table is provisioned at wire time (``ensure_schema``) — migration 038
 need not have run yet — and a provisioning failure there fails the wiring
 rather than degrading: beside a durable spine, process-local claims would be
 the one tier that forgets, minting a second Run for the first retried
@@ -1258,7 +1258,7 @@ async def wire_task_idempotency(conn: Any, *, pg_pool: Any = None) -> TaskIdempo
     coincidence of two wirings that could drift.
 
     - **Spine-ready pool → durable claims.** ``ensure_schema`` provisions the
-      table at wiring time, so migration 034 need not have run yet. A
+      table at wiring time, so migration 038 need not have run yet. A
       provisioning failure on this pool — a role without CREATE on a
       hand-provisioned database, say — raises :class:`ConfigError` and the
       process does not start: the spine is durable right there, so falling

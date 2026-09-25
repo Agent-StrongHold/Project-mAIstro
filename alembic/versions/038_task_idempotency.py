@@ -82,8 +82,9 @@ depends_on = None
 #: generic spellings are deliberate: they compile to the same DDL as the
 #: title-case aliases, and they are the exact classes a dialect's reflection
 #: hands back for those DDL types (``TEXT`` for ``Text``, ``BIGINT`` for
-#: ``BigInteger``) — so the reconcile path's strict type identity holds on a
-#: live server instead of failing on a class-alias technicality.
+#: ``BigInteger``) — so the reconcile path's compiled-name comparison matches
+#: a live server's reflection exactly instead of failing on a class-alias
+#: technicality.
 CLAIM_COLUMNS: Final = (
     sa.Column("scope_key", sa.TEXT, nullable=False),
     sa.Column("claim_token", sa.TEXT, nullable=False),
@@ -154,7 +155,11 @@ def _validate_claim_columns(inspector: sa.Inspector) -> None:
     malformed = []
     for expected in CLAIM_COLUMNS:
         actual = actual_columns[expected.name]
-        if type(actual["type"]) is not type(expected.type):
+        # Compare compiled type names rather than classes: reflection hands
+        # back exactly sqltypes.TEXT/BIGINT on live PostgreSQL, but a dialect
+        # reflecting a subclass that compiles to the same DDL must not fail
+        # the reconcile either — what matters is the shape the store binds to.
+        if str(actual["type"]).upper() != str(expected.type).upper():
             malformed.append(
                 f"{expected.name} has type {actual['type']!s}, expected {expected.type!s}"
             )

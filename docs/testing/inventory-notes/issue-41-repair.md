@@ -52,3 +52,48 @@ skipped, hive-conductor 2661 passed / 1 skipped. `ruff check`,
 `check-durable-table-inventory.py` all pass. Residual (out of tree scope):
 issue tracker closure of #1176 is a GitHub mutation workers are prohibited from
 performing; the code contract it owns is implemented and proven here.
+
+## Round 4 (repair pass, lane auto-41)
+
+Addressed the recorded findings against this head:
+
+- **EXPECTED_TABLES / live migration chain (finding 1).** Already repaired on
+  this branch by `eb6b7b36b` (chain-owned tables only; runtime-provisioned
+  capability/workspace-lifecycle tables excluded). Re-verified against a fresh
+  pgvector/pg18 server: `tests/migrations/test_migration_chain.py` 15 passed —
+  `EXPECTED_TABLES` matches the live catalog exactly, head stamps via
+  `_head_revision()`, and all four runtime-self-provisioning scenarios behave
+  as asserted.
+- **038 reconcile-path validation (finding 3).** Already repaired on this
+  branch: full shape check (compiled type names, nullability, `completed_at`
+  zero default, `scope_key` PK reconstruction, expiry index) plus loud refusal
+  of foreign shapes. The salvaged uncommitted hunk comparing compiled type
+  names (`str(actual["type"]).upper() != str(expected.type).upper()`) is kept
+  and the file's `CLAIM_COLUMNS` comment updated to describe it: live
+  PostgreSQL reflection hands back exactly `sqltypes.TEXT`/`sqltypes.BIGINT`
+  (verified on the live server), so the comparison matches a real reconcile
+  byte-for-byte while tolerating a dialect subclass that compiles to the same
+  DDL. No gate weakened: missing columns, nullability, default, PK and index
+  checks are untouched and still refuse.
+- **Stale revision references.** The renumbering left `migration 034` docstring
+  pointers in `maistro/tasks/idempotency.py` (the revision is now 038;
+  `034_hitl_deadline_index` is unrelated). Corrected. Noted, out of this
+  issue's scope: `capabilities/invocation_store.py` cites revision 034 for the
+  capability schema, which now lives in `035_capability_invocations`.
+- **LocalTaskBackend idempotency wiring (finding 2).** Already implemented:
+  `LocalTaskBackend.__init__` takes `idempotency_store` and hands it to
+  `TaskQueue`; the server (`main.py`) and conductor engine pass the container's
+  claim store. Proven by the suites below.
+- **#1176 tracker state (finding 4).** The issue remains open on GitHub;
+  closing it is a GitHub mutation this worker is prohibited from performing.
+  The durable admission-idempotency contract it owns is implemented and proven
+  here.
+
+Fresh evidence at this round's head (dedicated pgvector/pg18 container, port
+55491): `test_migration_chain.py` 15 passed (live);
+`test_idempotency_durable.py` 27 passed (`MAISTRO_TEST_PG_DSN`, chain at head);
+core tasks 333 passed / 1 skipped; `test_tasks_idempotency.py` 13 passed;
+`maistro-core/tests/integration` 5 passed (chat→graph E2E);
+`test_engine_service.py` 35 passed; `ruff check`, `ruff format --check`, mypy
+on `maistro/tasks/idempotency.py`, `check-suite-inventory.py`,
+`check-doc-links.py`, `check-durable-table-inventory.py` all clean.
