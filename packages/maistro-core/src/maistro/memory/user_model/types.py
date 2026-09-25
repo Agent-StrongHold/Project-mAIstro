@@ -83,6 +83,18 @@ class Correction:
     reason: str
     corrected_at: datetime = field(default_factory=_now)
 
+    def __post_init__(self) -> None:
+        """Provenance must name a person and a comparable instant."""
+        if not self.corrected_by.strip():
+            raise ValueError("corrected_by must be the canonical user id")
+        _require_aware(corrected_at=self.corrected_at)
+
+
+def _require_aware(**stamps: datetime | None) -> None:
+    for name, stamp in stamps.items():
+        if stamp is not None and stamp.tzinfo is None:
+            raise ValueError(f"{name} must be timezone-aware")
+
 
 def normalize_statement(statement: str) -> str:
     """Case- and whitespace-insensitive form used for lineage identity."""
@@ -125,6 +137,17 @@ class UserModelFact:
 
     def __post_init__(self) -> None:
         """Reject revisions that could not have come from a valid lineage."""
+        self._check_lineage()
+        self._check_timeline()
+        # Durable twins hand back plain strings; keep the enums canonical.
+        object.__setattr__(self, "state", FactState(self.state))
+        object.__setattr__(self, "sensitivity", FactSensitivity(self.sensitivity))
+        if not isinstance(self.reusable, bool):
+            raise TypeError("reusable must be a bool")
+        if any(not hint.strip() for hint in self.persona_hints):
+            raise ValueError("persona_hints must not contain blank hints")
+
+    def _check_lineage(self) -> None:
         if not self.owner_user_id.strip():
             raise ValueError("owner_user_id must be the canonical user id")
         if not self.lineage_id:
@@ -135,6 +158,17 @@ class UserModelFact:
             raise ValueError("supersedes is set exactly when revision > 1")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("confidence must be within [0, 1]")
+
+    def _check_timeline(self) -> None:
+        _require_aware(
+            first_observed=self.first_observed,
+            last_observed=self.last_observed,
+            last_reinforced=self.last_reinforced,
+            valid_from=self.valid_from,
+            valid_until=self.valid_until,
+        )
+        if min(self.last_observed, self.last_reinforced) < self.first_observed:
+            raise ValueError("a fact cannot be observed or reinforced before first_observed")
         if (
             self.valid_from is not None
             and self.valid_until is not None

@@ -8,6 +8,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from maistro.memory.user_model import (
+    Correction,
+    EvidenceRef,
+    FactSensitivity,
     FactState,
     InMemoryUserModelStore,
     RevisionConflictError,
@@ -52,6 +55,34 @@ def test_fact_rejects_malformed_values() -> None:
     now = datetime.now(UTC)
     with pytest.raises(ValueError, match="valid_until"):
         _fact("u1", "x", valid_from=now, valid_until=now - timedelta(days=1))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _fact("u1", "x", valid_from=datetime(2026, 1, 1))
+    with pytest.raises(ValueError, match="first_observed"):
+        _fact("u1", "x", first_observed=now, last_observed=now - timedelta(seconds=1))
+    with pytest.raises(ValueError, match="first_observed"):
+        _fact(
+            "u1",
+            "x",
+            first_observed=now,
+            last_observed=now,
+            last_reinforced=now - timedelta(seconds=1),
+        )
+    with pytest.raises(TypeError, match="reusable"):
+        _fact("u1", "x", reusable="yes")
+    with pytest.raises(ValueError, match="persona_hints"):
+        _fact("u1", "x", persona_hints=("photographer", " "))
+    with pytest.raises(ValueError, match="corrected_by"):
+        Correction(corrected_by=" ", reason="r")
+    with pytest.raises(ValueError, match="corrected_at"):
+        Correction(corrected_by="u1", reason="r", corrected_at=datetime(2026, 1, 1))
+
+
+def test_fact_rehydrates_enum_strings_from_durable_rows() -> None:
+    fact = _fact("u1", "x", state="under_review", sensitivity="sensitive")
+    assert fact.state is FactState.UNDER_REVIEW
+    assert fact.sensitivity is FactSensitivity.SENSITIVE
+    with pytest.raises(ValueError):
+        _fact("u1", "x", sensitivity="public")
 
 
 async def test_append_and_read_current_revision() -> None:
@@ -100,10 +131,16 @@ async def test_list_for_user_never_returns_other_owner_facts() -> None:
 
 async def test_tombstone_hides_lineage_purges_content_and_blocks_recreation() -> None:
     store = InMemoryUserModelStore()
-    fact = _fact("u1", "likes cameras")
+    fact = _fact(
+        "u1",
+        "likes cameras",
+        evidence=(EvidenceRef(workspace_id="ws-a", memory_id="m1"),),
+        persona_hints=("photographer",),
+    )
     await store.append_revision(fact)
 
     tomb = await store.tombstone(fact.lineage_id, acting_user_id="u1", reason="user deleted")
+    assert (tomb.evidence, tomb.persona_hints) == ((), ())
 
     assert tomb.state is FactState.TOMBSTONED
     assert tomb.statement == ""

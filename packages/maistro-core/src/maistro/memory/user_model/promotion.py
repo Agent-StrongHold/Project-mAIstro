@@ -25,7 +25,6 @@ from maistro.memory.user_model.types import (
     PromotionRefusedError,
     StaleEvidenceError,
     TombstonedLineageError,
-    UserModelError,
     UserModelFact,
     fact_key,
     new_fact_id,
@@ -86,8 +85,9 @@ class _Auditor:
             await self.record(action, detail)
             try:
                 await store.append_revision(fact)
-            except UserModelError as exc:
-                raise await self.refuse(action, exc, detail) from None
+            except Exception as exc:
+                await self.refuse(action, exc, detail)
+                raise
         return facts[0]
 
 
@@ -202,8 +202,8 @@ async def promote_evidence(
         fresh = [f for f in contradicted if not _seen(f, memory.memory_id)]
         if not fresh:
             return contradicted[0]
-        flagged = [_next_revision(f, ref, now, state=FactState.UNDER_REVIEW) for f in fresh]
-        return await auditor.write(store, "flag_for_review", flagged)
+        reviews = [_next_revision(f, ref, now, state=FactState.UNDER_REVIEW) for f in fresh]
+        return await auditor.write(store, "flag_for_review", reviews)
     fact = UserModelFact(
         lineage_id=new_fact_id(),
         revision=1,
