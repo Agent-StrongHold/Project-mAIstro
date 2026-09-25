@@ -518,3 +518,55 @@ so every deterministic check was re-executed here.
 
 No production or test file changed this round (fresh validation evidence
 only); no new tests added, so no inventory-delta change.
+
+## Independent verification round 11 (auto-817 @ 14cd6c89, verifier+writer lane)
+
+Re-executed at the lane's exact manifest head
+`14cd6c89f77414fe3bf5a80f4648d30cae5dcdbc` (develop merge `b906cc577` included;
+this resolves the prior "verification worktree changed; evidence rejected"
+block). `git diff 0c843db29..HEAD -- <lane surfaces>` is empty, so round-10
+evidence carries over; everything below was additionally executed fresh at
+this head, before this note was committed.
+
+- **Lane pytest re-executed:** warden detector + vocabulary + design
+  test_design/test_scan/test_trust_prescan → **217 passed**;
+  `packages/hive-conductor/backend/tests/test_design_renderers.py` → **7
+  passed**. `ruff check .` → clean; `ruff format --check .` → 2556 files
+  formatted. Suite inventory → maistro-design 310, maistro-core 11000,
+  hive-conductor backend 2766, all match.
+- **Pre-scan probes re-executed at this head:** `<math><mi>x</mi></math>` →
+  `skull/banish`, flag `visual artifact active-element`; `<script>`,
+  `onerror`, script-SVG, `data:text/html`, CSS `url()`, `\75rl(`, meta
+  refresh, `foreignObject` iframe, prompt injection → all `skull/banish` with
+  explicit shared flags; clean brief → `t3/upgrade/()`. Non-heuristic
+  pre-scan flags == `scan_blocking_patterns(..., visual_artifact=True)`
+  verdict on every probe (AC-4 parity), and `upgrade` only when the boundary
+  passes (AC-2).
+- **Chromium corpus re-executed at this head** (isolated /tmp esbuild bundle
+  of the real `visualArtifactRenderer.tsx` + cached Chromium via
+  playwright-core): 10-case corpus — all hostile families `blocked=true`
+  with declared `VISUAL_ARTIFACT_BLOCK_REASONS` reasons, payloads stripped
+  (`<math>`/`<script>`/`<img>`/`<a data:text/html>`/`<style>` sanitize to
+  empty/neutral), zero script execution; `recommend('<math><mi>x</mi></math>')
+  → "review"`, `recommend('<h1>safe</h1>') → "upgrade"`.
+- **SAST re-executed** (uvx semgrep, custom + p/security-audit +
+  p/owasp-top-ten + p/secrets) over the five changed frontend files → **0
+  findings**; the reviewed-sink `nosemgrep` annotation holds.
+- **Vulture gate re-executed CI-exact** (`scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) →
+  **rc=0, 1414 → 1414**. Neither prior #817 debt identity
+  (`VISUAL_ARTIFACT_BLOCK_REASONS`, `container.py`) appears. Note: running
+  the script with NO args (whole tree incl. `tests/` and hive backend)
+  exits 1 with mass pre-existing debt — proven develop-inherited, not this
+  branch: every reported file is byte-identical to base (not in
+  `git diff b906cc577..HEAD --name-only`) and the base ledger contains zero
+  identities for them (e.g. `hive-conductor/backend/main.py`: 0 entries).
+- **mypy AGENTS.md battery re-executed → Success: no issues in 715 source
+  files.**
+- **Closure-keyword review re-executed:** PR #1389 body says "Refs #817"
+  only; `git log develop..HEAD` contains no fixes/closes/resolves for #817
+  (one pre-existing "Closes #1422" in 6d8bd20a9 targets that commit's own
+  task issue, not the review issue).
+
+No production or test file changed this round (fresh validation evidence
+only); no new tests added, so no inventory-delta change.
