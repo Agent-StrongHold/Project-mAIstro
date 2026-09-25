@@ -239,3 +239,54 @@ files, so every acceptance check below was re-executed locally.
   `semantic_tool_poisoning_scan` stays pruned from both ledgers);
   `check-doc-links.py` exit 0 (1161 files, 0 broken); `check-suite-inventory.py`
   exit 0; `alembic heads` → single head `036_audit_log_org_scope`.
+
+## Sixth validation pass at head `8a7323aa` (driver checks absent — battery re-run after the develop merge)
+
+The assigned driver again produced no `check-*.log` files (manifest
+`checks: []`), so the battery was re-executed at head `8a7323aa` (develop tip
+`03c8ba83a` merged; local history also strictly contains `origin/auto-74`
+`c11969b54`, so the earlier push non-fast-forward block is resolved in-tree —
+the next driver push fast-forwards). Trusting no prior claim:
+
+- Product-path window/timeout nodes (`test_sentinel_policy.py -k
+  "post_call_real_warden or pii_match"`) → **8 passed**; the targeted file set
+  (`test_sentinel_policy.py` + `test_warden_pii_bypass.py` +
+  `test_warden_regex_equivalence.py` +
+  `sentinel/test_pii_evasion_normalization.py`) → **70 passed**.
+- Engine equivalence: `import re2` OK and `_regex.re2_available()` True under
+  `uv run`; `test_warden_regex_equivalence.py -rs` → **7 passed, 0 skipped**;
+  `test_warden_product_path_matches_with_fallback_engine` compares full
+  `(clean, blocked, flags)` tuples over >10k-probe corpus + a 7k-token padded
+  cross-window payload on both engines.
+- Strategies (`test_direct.py` + `test_react.py`, incl. the
+  `test_reason_pii_filter_import_error_blocks_unredacted_result` security-block-
+  as-failure pin) → **28 passed**; `formal/models/test_warden_semantic.py
+  --hypothesis-seed=0` → **12 passed**.
+- Full `pytest packages/maistro-core/tests/security` → **1270 passed / 19
+  skipped / 1 failed**; the single red is the documented pre-existing
+  `test_install_is_idempotent` pytest-9 interaction: re-confirmed at this head
+  by empty base↔head diffs (`git diff 03c8ba83a..HEAD` and
+  `git diff 84402748f..HEAD`) on `test_log_redaction.py`, `log_redaction.py`,
+  `redact.py` — the failure reproduces identically and is out of #74 scope.
+- CI-repair step run exactly as briefed: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → exit 0,
+  1415 reviewed identities → 1415 findings, `unclassified: 0`,
+  `never_allowlist: 0` (candidate `8a7323aa` vs base `03c8ba83a`) — the prior
+  `semantic.py:136 semantic_tool_poisoning_scan` exact-debt finding stays
+  resolved (function removed; composition lives in the product path
+  `detector._scan_semantic_windowed`, exercised by the tests above). No ledger
+  amendment was needed: nothing new is unbanked and nothing had to be granted.
+- Prior PR #1463 alembic finding stays resolved: `alembic heads` → single head
+  `036_audit_log_org_scope`, `alembic branches` → empty, exactly one file each
+  for 033/034; `pytest tests/migrations` → 17 passed / 79 skipped.
+- Gates at this head: `ruff check .` clean; `ruff format --check .` → 2542
+  files clean; `check-security-inventory.py` exit 0 (65 cited paths resolve,
+  23 inventory rows match); `check-doc-links.py` exit 0;
+  `check-suite-inventory.py` exit 0; full AGENTS.md mypy command → **713
+  source files, no issues**. SECURITY.md (`:123-129`) and COMPLIANCE.md
+  (`:38`, `:55-58`) cite the product-path test nodes, not constants alone.
+
+No code changes were needed in this round: every prior #74 finding is already
+fixed at this head and the full battery is green apart from the documented,
+provably pre-existing pytest-9 log-redaction red. This pass adds evidence
+only.
