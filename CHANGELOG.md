@@ -447,8 +447,9 @@ or placeholder-only section.
   backends (#325).**
   The retention inventory said PostgreSQL session rows accumulate, but
   `PgSessionStore.append_messages` (the store the PostgreSQL container wires)
-  already deletes expired messages and turn markers inside every append
-  transaction, as `SqliteSessionStore` does after commit. Both entries are now
+  already deletes expired messages and turn markers inside each writing
+  append transaction, as `SqliteSessionStore` does after commit. The purge is
+  driven by appends, so expired rows persist until the next one. Both entries are now
   `ttl_purge` with the append path as their deletion path, backed by a SQLite
   and PostgreSQL-gated regression that ages real rows past the TTL and proves
   the next append removes them from both tables.
