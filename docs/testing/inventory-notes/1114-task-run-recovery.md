@@ -154,3 +154,48 @@ The prior finding remains fixed at this head (fix `71f683441`: a lone
 NodeRun is not stranded-claim evidence; Attempt presence decides). No
 source changes were needed this round; the only tree delta is this note and
 the develop merge.
+
+## Verification record (L1114 independent review @ 8bf0263c411b, second develop sync)
+
+Fresh independent verification at head `8bf0263c411b4a23f026dafb08d21d752ccc7260`
+(the round after `a994af1447`: merge of develop `55c5ad892` — M1-B8 HITL waiting
+NodeRuns — into `auto-1114`). The previous round's evidence was rejected only
+because the worktree moved (develop sync); no code defect was found and lane
+surfaces (`maistro/tasks`, `maistro/runs/admission`, server `main.py` wiring)
+are byte-identical to the previously verified state (`git diff a994af1447..
+8bf0263c` on those paths is empty). Battery re-executed by this reviewer with
+`MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@127.0.0.1:21435/maistro`
+(lane pg `auto-1114-pg2`, PG18, `alembic upgrade head` clean at this head):
+
+- `test_admission.py` + `test_issue_1114_repro.py` = **60 passed, 0 skipped**;
+  full `packages/maistro-core/tests/tasks/` = **341 passed, 0 skipped** — both
+  PG crash boundaries and both stranded-claim terminal-disposition tests
+  executed for real.
+- Prior finding re-proven fixed by name at this head:
+  `test_recovery_terminalizes_a_running_claim_whose_node_run_has_no_attempt`
+  and `test_postgres_lone_node_run_is_not_stranded_claim_evidence` PASSED
+  (terminalization keys on Attempt evidence via `_has_attempt_evidence`,
+  queue.py:147/562 — a lone NodeRun is no longer treated as evidence).
+- `packages/maistro-server/tests/api/test_main.py` = 17 passed (lifespan
+  `queue.recover(run_store)` wiring intact).
+- Gates re-run: `ruff check .` clean; core+server `check-suite-inventory` ok;
+  mypy six-package set Success (713 files); `check-execution-lifecycles` OK
+  19/19 (no second lifecycle); `check-ac-state` rc=0; `check-compliance` rc=0.
+- `check-vulture-baseline.py` rc=1 at this head (~891 NEW identities, ~220
+  "no longer found") — **develop-side drift inherited via the mandated sync**,
+  not lane-authored: every implicated file (`hive-conductor/backend/**`,
+  `maistro_server/api/*`, `maistro_server/main.py::unhandled_exception_
+  handler`, bootstrap/canvas/orchestrator identities) is byte-identical to the
+  develop base `55c5ad892` (`git diff 55c5ad892..8bf0263c` on those paths is
+  empty), the ledger differs only by the lane's ensemble `recover` prune, and
+  no lane surface or lane test appears in the NEW lists (lane tests remain
+  properly ledgered). The gate therefore fails identically at the develop base
+  itself; the previous round's rc=0 was against the older develop `2c8022fe8`.
+  No repair action possible from this lane without touching out-of-scope
+  surfaces; recorded for the develop-side owners.
+- Closure-keyword audit repeated: 0 `fixes/closes/resolves` in branch commit
+  subjects/bodies at this head; live `gh pr view 1488` body says only
+  "Refs #1114", headRefOid matches `8bf0263c411b`.
+
+All issue acceptance criteria re-proven at this head by the executed tests
+above; no source changes made this round — this note is the only tree delta.
