@@ -1066,7 +1066,10 @@ or placeholder-only section.
   `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
   fails arrives as the cancellation, never as a bare store error the
   pre-dispatch fallback would answer again; a dispatch that caught the
-  deadline and answered late still arrives as `RuntimeDeadlineExceeded`; an
+  deadline and answered late still arrives as `RuntimeDeadlineExceeded`, even
+  when its TIMED_OUT record then fails (the deadline is found on either link
+  of the exception chain, and the store error is chained as its explicit
+  cause so it shows in the traceback); an
   answer behind a Run already fenced CANCELLED ends the turn cancelled rather
   than being handed back; and a failure before the dispatch still propagates
   unchanged without reaching the model.
