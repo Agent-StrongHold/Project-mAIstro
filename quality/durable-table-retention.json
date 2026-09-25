@@ -737,12 +737,12 @@
         "postgres",
         "sqlite"
       ],
-      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_sessions.py",
+      "owner_module": "packages/maistro-core/src/maistro/persistence/pg_sessions.py",
       "data_class": "conversation_history",
-      "retention": "undecided",
-      "deletion_path": "maistro.persistence.sqlite_sessions:SqliteSessionStore.purge_expired",
+      "retention": "ttl_purge",
+      "deletion_path": "maistro.persistence.pg_sessions:PgSessionStore.append_messages",
       "issue": "#325",
-      "notes": "SQLite purges expired rows inline on every write. PgSessionStore.purge_expired exists but nothing in production calls it, so on PostgreSQL rows accumulate."
+      "notes": "Both backends purge rows past the store TTL inline on every append_messages that writes (a duplicate-turn retry returns before the purge): PgSessionStore (the store the PostgreSQL container wires) inside the append transaction via _purge_through, SqliteSessionStore.append_messages right after commit via purge_expired. Messages and turn markers are always deleted together. The purge is driven by chat traffic, not a timer: expired rows persist until the next append on any session. Test: packages/maistro-core/tests/persistence/test_session_ttl_purge.py."
     },
     {
       "table": "sessions",
@@ -750,12 +750,12 @@
         "postgres",
         "sqlite"
       ],
-      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_sessions.py",
+      "owner_module": "packages/maistro-core/src/maistro/persistence/pg_sessions.py",
       "data_class": "conversation_history",
-      "retention": "undecided",
-      "deletion_path": "maistro.persistence.sqlite_sessions:SqliteSessionStore.purge_expired",
+      "retention": "ttl_purge",
+      "deletion_path": "maistro.persistence.pg_sessions:PgSessionStore.append_messages",
       "issue": "#325",
-      "notes": "SQLite purges expired rows inline on every write. PgSessionStore.purge_expired exists but nothing in production calls it, so on PostgreSQL rows accumulate."
+      "notes": "Both backends purge rows past the store TTL inline on every append_messages that writes (a duplicate-turn retry returns before the purge): PgSessionStore (the store the PostgreSQL container wires) inside the append transaction via _purge_through, SqliteSessionStore.append_messages right after commit via purge_expired. Messages and turn markers are always deleted together. The purge is driven by chat traffic, not a timer: expired rows persist until the next append on any session. Test: packages/maistro-core/tests/persistence/test_session_ttl_purge.py."
     },
     {
       "table": "story_templates",
