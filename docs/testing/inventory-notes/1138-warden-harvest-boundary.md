@@ -173,3 +173,30 @@ admission off in `_load_saved_patches` fails
 `test_unavailable_warden_refuses_resumed_patch` (2 failed); both files
 restored byte-identical (`cmp` vs backups, `git status --porcelain` empty)
 and the 4 adversarial tests pass again post-restore.
+
+Revalidation at merge head `36a7a1f8dd` (develop base `5eeac0734b`; prior
+repair head `4a4d91d66b`; `git diff 4a4d91d66b..HEAD -- packages/maistro-rsi
+packages/maistro-evolve packages/maistro-core/src/maistro/security` is empty —
+that merge added only compliance-evidence scripts/tests). Independently
+executed evidence at this head: an out-of-tree adversarial probe drove
+`RsiCycle.run` with a malicious candidate system prompt through the REAL
+`proxy_swebench` benchmark — all 10 candidate samples were refused with the
+truthful `error: RSI harvest content was not admitted (blocked)` outcome
+(score 0.0) and the payload never reached the model callable; the run's
+`JsonlAuditSink` wrote 40 durable records (20 admitted / 20 blocked) carrying
+workspace/run/source_repository/source_base/candidate_id/policy_version/digest
+and zero payload or credential text. Full battery re-executed: 756 rsi + 645
+evolve (6 skipped) tests pass, 66 `ac`-marked #1138 tests pass, 13
+non-production-reachability node IDs pass, 58 conductor containment tests
+pass, ruff check/format repo-wide clean, suite-inventory (13 suites),
+security-inventory (59 paths) and all four reachability gates pass. Mutation
+evidence independently re-executed with byte backups: removing the runner
+guard call fails `test_injected_llm_call_is_guarded_for_both_genome_evals`
+(1 failed; the plumbing-only `test_llm_call_reaches_evaluate_genome` passes
+under this mutation — earlier notes overstated that count), and gating the
+resume admission off fails `test_hostile_resumed_patch_is_refused_before_apply`
++ `test_unavailable_warden_refuses_resumed_patch` (2 failed); both files
+restored byte-identical (`cmp` vs backups, `git status --porcelain` empty)
+and all 26 runner+resume tests green post-restore. Push-blocking note: the
+earlier non-fast-forward is resolved locally — `origin/auto-1138` (`8b7c8fb16`)
+is an ancestor of this head, so a future push is a fast-forward.
