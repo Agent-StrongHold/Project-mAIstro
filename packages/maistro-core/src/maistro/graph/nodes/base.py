@@ -213,6 +213,7 @@ class BaseNode(Generic[InputT, OutputT]):
                 status="failed",
                 error_code=type(exc).__name__,
                 error_message=str(exc)[:512],
+                metadata=dict(getattr(exc, "result_metadata", None) or {}),
             )
 
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:

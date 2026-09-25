@@ -533,7 +533,10 @@ or placeholder-only section.
   Run. It used to complete with `success=False` (or, for an undispatchable
   config, `success=True` and "not executed") inside its output, letting the
   parent Run report success for work that never happened. A child that
-  COMPLETED, or is parked WAITING/PAUSED, still completes the node.
+  COMPLETED, or is parked WAITING/PAUSED, still completes the node. A failed
+  node whose child was dispatched still spends its recursion level, so a
+  `max_attempts` retry or a `continue_on_failure` successor starts one level
+  deeper rather than spawning again at the same depth.
 
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**

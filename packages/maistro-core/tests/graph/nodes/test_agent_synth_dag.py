@@ -377,6 +377,7 @@ async def test_role_shaped_config_with_a_store_fails_with_the_reason() -> None:
     assert "not executed" in reason
     assert "not registered" in reason
     assert await _child_runs(store) == []
+    assert result.metadata == {}
 
 
 async def test_a_failed_child_run_fails_the_node_naming_the_child() -> None:
@@ -401,6 +402,8 @@ async def test_a_failed_child_run_fails_the_node_naming_the_child() -> None:
     assert child.run.parent_run_id == "parent-run"
     assert child.run_id in reason
     assert "sub-graph execution failed" in reason
+    # The child ran, so the fold still charges its recursion level.
+    assert result.metadata == {"dispatched": True, "child_run_id": child.run_id}
 
 
 async def test_unscoped_context_fails_rather_than_inventing_scope() -> None:

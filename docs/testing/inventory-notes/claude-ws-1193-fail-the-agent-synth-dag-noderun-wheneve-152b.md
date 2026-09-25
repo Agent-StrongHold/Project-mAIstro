@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +2
+  packages/maistro-core/tests: +6
 ---
 # claude-ws-1193-fail-the-agent-synth-dag-noderun-wheneve-152b
 
@@ -16,3 +16,9 @@ dispatches nothing or its child Run does not complete.
   one (a refusal now fails the Run, so there is no next node to observe), and
   two new walks pin the blocked-shape and outside-allowlist cases as FAILED
   NodeRuns with no child Run. The failed-subgraph test was inverted in place.
+- `tests/graph/durable_runs/test_durable_runs.py`: +2 more — a failed synth
+  node whose child was dispatched still spends its recursion level: one walk
+  retries it (`max_attempts: 2`, child depths 1 then 2) and one continues past
+  it (`continue_on_failure`, successor sees depth 1).
+- `tests/graph/durable_runs/test_executor_mutants.py`: +2 — `_actually_spawned`
+  counts a failed synth result with `dispatched` metadata, and not one without.

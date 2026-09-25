@@ -120,12 +120,19 @@ class SynthDagFailed(RuntimeError):
 
     `BaseNode.run` turns this into a failed NodeResult, so the canonical NodeRun
     ends FAILED with the reason — naming the child Run when there is one —
-    rather than COMPLETED with a flag saying the work did not happen.
+    rather than COMPLETED with a flag saying the work did not happen. A child
+    that was dispatched is also carried in the result's metadata: it still
+    spent a recursion level, and the durable fold charges it even though the
+    node failed, so a retry or a `continue_on_failure` successor cannot spawn
+    again at the same depth.
     """
 
     def __init__(self, reason: str, *, child_run_id: str = "") -> None:
         self.reason = reason
         self.child_run_id = child_run_id
+        self.result_metadata: dict[str, Any] = (
+            {"dispatched": True, "child_run_id": child_run_id} if child_run_id else {}
+        )
         super().__init__(f"child run {child_run_id}: {reason}" if child_run_id else reason)
 
 
