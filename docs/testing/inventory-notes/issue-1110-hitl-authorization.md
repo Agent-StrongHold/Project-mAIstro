@@ -152,10 +152,11 @@ Mutation checks at this head: (1) no-op `_require_project_access`
 per-record `authorization.permits` disclosure recheck fails exactly
 `test_pending_rechecks_membership_before_disclosing_payload`; exact reverse
 edits restore the committed tree byte-for-byte and 32/32 pass.
-`check-vulture-baseline` is red, but identically red on pure develop's tip
-(verified in a scratch worktree: same 1432 findings, larger unbanked delta
-including 121 pydantic + 63 hive-service NEW identities), i.e. pre-existing
-trunk ledger drift outside this lane's scope. `inventory-delta` re-counted
+`check-vulture-baseline` was red at the merge head, but identically red on
+pure develop's tip (verified in a scratch worktree: same 1432 findings,
+larger unbanked delta including 121 pydantic + 63 hive-service NEW
+identities), i.e. pre-existing trunk ledger drift outside this lane's scope
+— since reconciled upstream: at this head the gate is green (see below). `inventory-delta` re-counted
 against the new develop base `60862b6c5`: exactly +2 test functions in
 `packages/hive-conductor/backend/tests` (2423 → 2425); core `durable_runs`
 unchanged at 435.
@@ -186,3 +187,45 @@ disclosure recheck fails
 `test_pending_rechecks_membership_before_disclosing_payload`. All mutation
 edits were restored byte-exact from a pre-mutation copy; `git status` and
 `git diff` clean before committing this note.
+
+## Repair-lane re-validation (head `0bde3c370`)
+
+The successor repair lane (both immediately prior attempts died on provider
+errors before executing anything, so no driver check-*.log files existed and
+no prior-round claim was trusted) re-executed the full battery at the
+assigned head: `ruff check` + `ruff format --check` clean repo-wide; 32/32
+door+timeout tests; 505 passed / 21 skipped in `maistro-core` durable_runs;
+`mypy --strict` clean over the 17 `durable_runs` sources (the canonical
+`mypy --strict packages/maistro-core/src` run reports only 5 pre-existing
+`maistro_bootstrap.*` import-not-found errors — CI's `--all-extras` type env
+resolves those; none in files this branch touches); the
+`check-public-routes`, `check_enumerations`, `check-enumerations-provenance`,
+`check-suite-inventory`, `check-security-inventory`,
+`check-owned-store-access`, and `check-agent-store-writes` gates green; and
+`check-vulture-baseline` green at this head (exit 0, 1415 reviewed → 1415
+findings, baseline `60862b6c5`) — the ledger drift the merge-head round saw
+was reconciled on develop, so no ledger amendment was needed or made. The
+full hive-conductor backend suite: 2669 passed / 1 skipped. The mutation
+check was executed live in two parts, authentication untouched throughout:
+(1) an early-return no-op in `authorize_project` fails exactly
+`test_project_reviewer_isolated_from_sibling_hitl_work` (the
+Workspace-scoped listing still holds via the independent membership
+boundary — defense in depth); (2) rewriting the `/pending` store read to a
+global `list_by_status` with the per-record `authorization.permits`
+disclosure recheck removed fails 8 door tests including
+`test_hitl_routes_are_scoped_to_the_callers_workspaces` and
+`test_pending_rechecks_membership_before_disclosing_payload`. The mutated
+`routes/hitl.py` was restored from the committed blob and verified
+byte-identical by md5 against `git show HEAD:` before re-confirming 32/32;
+the mutated scratch copy was preserved outside the tree. `inventory-delta`
+re-counted against the ratchet baseline `60862b6c5`: exactly +2 test
+functions in `packages/hive-conductor/backend/tests` (24→25 door —
+`test_project_reviewer_isolated_from_sibling_hitl_work`; 6→7 timeout —
+`test_expiry_endpoint_only_settles_authorized_workspace_projects`);
+`maistro-core` durable_runs tests unchanged. Against the older manifest
+base `55c5ad892` the net delta is +1: develop itself absorbed
+`test_hitl_routes_are_scoped_to_the_callers_workspaces` and removed
+`test_hitl_endpoint_fails_closed_without_canonical_spine` when it retired
+the `get_canonical_run_store` seam for `get_run_store`'s standalone
+fallback — a trunk refactor this branch's merges followed, not a lane
+deletion.
