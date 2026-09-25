@@ -4,7 +4,7 @@ import time
 from datetime import UTC, datetime
 
 from config import get_settings
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from models.schemas import ReadyResponse
 
 _START = time.monotonic()
@@ -80,6 +80,22 @@ def _log_redaction_active() -> bool:
         return False
 
 
+def _workspace_authority_available() -> bool:
+    """Whether Workspace requests can reach their canonical store (#37).
+
+    Unlike the informational checks, this one gates readiness: with a database
+    configured and no Container owning it, every Workspace request fails
+    closed, so the instance is unusable rather than degraded. Unreadable state
+    reports as unavailable, never as ready.
+    """
+    try:
+        from services.workspace_authority import canonical_store_available
+
+        return canonical_store_available()
+    except Exception:
+        return False
+
+
 @router.get("/health")
 def health() -> dict:
     settings = get_settings()
@@ -148,7 +164,7 @@ def health() -> dict:
 
 
 @router.get("/health/ready")
-def ready() -> ReadyResponse:
+def ready(response: Response) -> ReadyResponse:
     try:
         from services.foundation import get_foundation
 
@@ -173,4 +189,10 @@ def ready() -> ReadyResponse:
     except Exception:
         checks["identity"] = False
     checks["log_redaction"] = _log_redaction_active()
-    return ReadyResponse(ready=checks["api"], checks=checks)
+    checks["workspace_authority"] = _workspace_authority_available()
+    is_ready = checks["api"] and checks["workspace_authority"]
+    if not is_ready:
+        # 503 so the image and Compose healthchecks, which only look at the
+        # status code, take the instance out of rotation.
+        response.status_code = 503
+    return ReadyResponse(ready=is_ready, checks=checks)

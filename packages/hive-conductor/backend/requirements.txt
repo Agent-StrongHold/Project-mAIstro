@@ -50,6 +50,12 @@ sqlalchemy[asyncio]>=2.0.0,<3
 # ran the security scanner on stdlib `re` with no timeout support at all —
 # the exact degraded mode the conditional fallback was deleted for hiding.
 regex>=2024.5.15,<2027
+# Same reason, for the embedded Container on a configured DATABASE_URL (#37):
+# `maistro.persistence` imports asyncpg at import time (core hard dep), and a
+# `sqlite:` URL puts it on core's SQLite stores, which import aiosqlite (core's
+# `sqlite` extra).
+asyncpg>=0.30,<1
+aiosqlite>=0.20,<1
 # The scheduler's configured Container imports maistro.identity during startup;
 # this backend installs maistro-core through sys.path rather than its identity
 # extra, so keep the identity runtime dependency explicit for Python 3.12 CI.

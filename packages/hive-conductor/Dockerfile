@@ -115,6 +115,11 @@ COPY packages/hive-conductor/backend/ /app/backend/
 COPY packages/hive-conductor/cage/ /app/cage/
 COPY packages/hive-conductor/eval/ /app/eval/
 COPY packages/hive-conductor/dags/ /app/dags/
+# The canonical agent roster. The default MAISTRO_AGENTS_DIR ("agents")
+# resolves against the backend directory, and the embedded bridge builds its
+# roster with require_agents=True: without these files it fails to start, and
+# with DATABASE_URL set every Workspace request then fails closed (#37).
+COPY agents/ /app/backend/agents/
 COPY --from=frontend /build/dist /app/frontend/dist
 # Persistent conductor state dir, pre-owned by the nonroot uid (see pybuild).
 COPY --from=pybuild --chown=65532:65532 /app/state_seed /data
