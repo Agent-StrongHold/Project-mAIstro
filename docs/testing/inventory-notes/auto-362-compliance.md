@@ -85,3 +85,43 @@ No source edits; validation-only round recorded in this note.
 - Residual UNVERIFIED (unchanged, requires GitHub mutations outside this
   lane): first production `compliance-evidence.yml` push run on main/develop,
   and the first real tag resolving evidence at that exact SHA.
+
+## Independent verifier re-validation (2026-09-25, head `3cbd0cc3c5d33a5f186112fa193109725e0cb449`)
+
+Fresh review run at the exact PR head; develop base `03c8ba83a7119c7bf9f734aff0ab8be4cbf975c0`
+unchanged. Delta `357fcbc7f..HEAD` is note-only (this file, +34 lines), so all
+gates behave identically at both heads.
+
+- `uv run pytest tests/test_check_compliance.py -x -q`: **97 passed** (10.2s),
+  executed by the verifier, not inherited.
+- `uv run ruff check .`: clean. `uv run python scripts/check-compliance.py`:
+  exit 0 ("compliance registry and COMPLIANCE.md are valid").
+  `scripts/check-branch-protection.py`: exit 0.
+- Release mode executed by verifier:
+  `check-compliance.py --require-release-evidence --release-digest <HEAD>`
+  → exit 1, fail-closed problems incl. "registry.release_digest does not match
+  --release-digest" and all release_required controls not implemented.
+- Verifier's own forgery probes (in-memory module load, no tracked-file edits):
+  forged `implemented` ART-15 rejected (no digest/no evidence/no last_verified);
+  disabled-workflow evidence rejected ("has disabled workflow evidence
+  supporting implemented status"); 8-cell table row rejected ("has 8 cells;
+  expected 9"); forged document row rejected (registry drift);
+  `_workflow_state(compliance-evidence.yml)` → `(True, False)`; STATUSES =
+  exactly the six required; MAX_EVIDENCE_AGE = 90 days.
+- mypy gate re-run with the exact CI target list (`packages/*/src`):
+  "Success: no issues found in 713 source files", exit 0 — confirms the strict
+  mypy notes above are non-gate.
+- wheel-imports CI failure at `357fcbc7f` independently reproduced as green by
+  the verifier: all 10 package wheels built with `uv build` into a temp dist,
+  `scripts/verify-wheel-imports.py --dist ... --python 3.12` → exit 0 ("All
+  wheels import from a clean venv"). Lane diff touches no `packages/*`;
+  `integration-scope` aggregates `wheel-imports` → both CI failures are
+  transient, not acceptance failures.
+- Closure-keyword audit: PR #1464 body contains only "Refs #362"; no
+  fixes/closes/resolves with issue refs in any commit message on the branch
+  (one commit body uses the word "closes" in prose about a coverage finding,
+  no issue ref — cannot auto-close).
+- Residual UNVERIFIED (unchanged, requires GitHub mutations outside this
+  read-only lane): live CI rollup at head `3cbd0cc3c`, first production
+  `compliance-evidence.yml` push run, and the first real tag resolving
+  evidence at its exact SHA.
