@@ -109,3 +109,32 @@ audit findings against the merged code — no repair was required:
   `check-reachability-dispositions-provenance`, `check-ratchet-provenance`,
   `check-convergence-matrix`, `check-branch-independence`,
   `check-durable-table-inventory`, `check-m1-convergence-freeze` — all exit 0.
+
+## Re-verification round after provider-timeout round (same head, no code change)
+
+The next repair round died on a provider timeout without executing; its
+"worker made no commit" result left the evidence unrecorded as executed.
+This round re-executed every prior finding check and the AC7 probe from
+scratch at head `a3b5e357e` (trusting nothing but the commands run here):
+
+- Findings re-confirmed fixed: `_wire_capability_effects` seeds durable
+  Binding/Invocation/Event stores (SQLite/PostgreSQL) plus the provisioning
+  seam and `bootstrap_model_bindings`; `Invocation` carries and validates
+  workspace/project correlation against the resolved Binding snapshot;
+  `Binding.disabled` fails closed as `BindingDisabled` before any client is
+  constructed; `check_direct_effects` counts GET and PM URL boundaries;
+  `check-security-inventory` exits 0 (59 paths, 23 rows, 2 counted claims).
+- AC7 negative probe re-executed: temporary graph node with
+  `shared_client().get("https://acme.atlassian.net/rest/api/2/search")`
+  made the gate exit 1 with unclassified
+  `_rogue_probe.py::probe::PM_POLLING_EFFECT:pm-polling-http#1`; after
+  removal the clean tree exits 0 (61 sites, all dispositioned).
+- Tests re-run: `test_pm_polling_nodes.py` 8 passed; capabilities package
+  339 passed; `test_sync_kinds` + branch/gap/wait suites 59 passed;
+  `tests/test_check_direct_effects.py` 26 passed.
+- Gates re-run: ruff check + format --check (2530 files), mypy across all six
+  package src trees (714 files, success), `check-reachability`,
+  `check-convergence-matrix`, `check-m1-convergence-freeze --base b906cc57`,
+  and `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (unclassified: 0) — all exit 0.
+- No production or test code changed in this round; evidence-only update.
