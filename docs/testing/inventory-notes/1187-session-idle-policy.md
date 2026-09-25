@@ -286,3 +286,26 @@ the 2733-pass run), integration-scope, Coverage gate, docker-build, and the
 gates-ran rollup — remote CI completion remains the only unverified item.
 Closure hygiene re-checked on the live body and all commit subjects:
 "Refs #1187" only; no fixes/closes/resolves anywhere.
+
+Thirteenth round (post-preflight repair at ad715fc46): the lane's prior block
+was a hosted-PR-snapshot preflight mismatch, and the branch had diverged from
+origin/develop (3 behind: #1327 HITL waiting NodeRuns, #1586 buildx bump,
+#1464 compliance-evidence gating). Merged origin/develop (55c5ad892) into
+auto-1187 — zero conflicts: none of the three commits touches any file in
+this branch's diff (their overlap set with the merge-base..HEAD diff is
+empty, and `quality/vulture-baseline.json`'s one-identity removal is
+con develop-side). Re-executed the full battery at the merge head:
+`ruff check .` clean; `ruff format --check .` clean (2546 files); focused
+idle-policy suite 17/17; full backend suite 2736 passed / 5 skipped (2741
+collected — the +3 delta over round 12 is develop's own test_dag_agents and
+test_hitl additions, and the suite-inventory gate matches at 2741, ok);
+vulture baseline ratchet clean against base 55c5ad892e68 with zero unbanked
+identities (exit 0); suite-inventory, check-adr-index, check-compliance
+("compliance registry and COMPLIANCE.md are valid"), check-doc-links, and
+check-frontend-api-routes (165 call sites resolve) all pass. Acceptance
+derivation unchanged: grep confirms every `stores.sessions[` write lives in
+routes/auth.py (resolution refresh, issuance, elevation grants) — no
+workspace/restoration/preferences route can touch auth-session lifetime,
+holding the #1050 separation; whoami stays observational
+(_SESSION_ACTIVITY_EXCLUDED_PATHS); the governed 30-minute idle + seven-day
+absolute constants are module-level in routes/auth.py, not settings-writable.
