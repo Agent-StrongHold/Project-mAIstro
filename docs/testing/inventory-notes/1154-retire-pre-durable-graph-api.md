@@ -292,3 +292,32 @@ crosses only `run_durable_graph` (master.py:630, builders/graph_executor.py:890,
 agent_synth_dag.py:474) and `GraphExecutionState` traversal semantics remain
 consumed by durable_runs (executor/recovery/stores/authoritative_fold). No test
 files changed in this pass: suite inventories unchanged.
+
+Independent verify round at head `2b9011cfd1f9` (develop merge `03c8ba83a`
+merged into `auto-1154`; tree clean, `git diff --check` exit 0):
+
+- Driver lane reproduced: changed-file pytest 95 passed; hive
+  `test_graph_runner.py` 21 passed; both `check-suite-inventory.py` suites
+  (hive 2721, core 10653) match; `ruff check .` clean;
+  `ruff format --check .` 2537 files clean.
+- Acceptance gates re-run: `check-retired-guidance.py`,
+  `check-convergence-matrix.py`, `check-execution-lifecycles.py` (ratchet
+  base `03c8ba83a` -> candidate `2b9011cfd1f`, 17 classified vocabularies),
+  `check-merge-markers.py` — all exit 0.
+- Full `tests/graph` tree re-run at this head: 1202 passed / 97 skipped,
+  including `test_retired_executor.py` and the durable_runs suites.
+- Vulture exit 1 re-derived at the merged head as base-inherited: all 133
+  flagged paths intersect the PR diff only at `builders/dag.py`, whose diff is
+  docstring-only; the flagged `iterations` field exists unchanged at base
+  (base line 90). Grants read from base (`ratchet_provenance.py:498`
+  `resolve_baseline`), so the residual clears only via a grants-first PR on
+  develop; this branch adds zero unauthorized identities.
+- `builders/dag.py` conflict-marker finding from the earlier round is
+  obsolete: line-anchored marker scan empty, `check-merge-markers.py` exit 0.
+- Surface probes re-run live: `maistro.graph` exposes neither `run_graph` nor
+  `GraphRun`; `maistro.graph.run` / `.strategy` raise ModuleNotFoundError;
+  `durable_runs.run_durable_graph` importable; shipped execution entries call
+  only `run_durable_graph` (master.py:630, builders/graph_executor.py:890,
+  graph/nodes/agent_synth_dag.py:474); `legacy_archive.py` is a read-only
+  pre-convergence reader. PR #1318 body and commit subjects contain no
+  fixes/closes/resolves keywords.
