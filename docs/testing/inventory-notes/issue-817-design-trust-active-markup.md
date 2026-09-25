@@ -402,3 +402,49 @@ below executed fresh in this round; read-only probes plus this note.
   (38 commits) contains no `fixes/closes/resolves #N`; PR #1389 body says
   only "Refs #817", remains draft, and live `headRefOid` equals this head
   (the round-7 "snapshot not the review head" block is resolved).
+
+## Independent verification round 9 (auto-817 @ c23e4ddaaf, verifier lane)
+
+Re-executed at the lane's exact head `c23e4ddaaf652a46282e63ee95633ff274d7bcad`
+(manifest head == live PR #1389 `headRefOid`, confirmed via read-only
+`gh pr view` refresh; `git diff 8b586577a..c23e4ddaaf` touches only this note —
+zero production/test drift vs the round-8 evidence head). All evidence below
+was executed fresh in this round, before this note was committed.
+
+- **Deterministic driver checks inspected:** job
+  `c98297b81ab64bd9a18cb4d01919c889` check-0..7 all rc=0 (`uv sync --locked`,
+  `ruff check .`, `ruff format --check .` → 2546 files, 217 lane tests, 7
+  backend renderer tests, suite inventories ok: hive-conductor backend 2722,
+  maistro-core 10908, maistro-design 310).
+- **Lane pytest re-executed by this round:** 217 passed (warden detector +
+  visual-artifact vocabulary + design/scan/trust-prescan);
+  `test_design_renderers.py` → 7 passed.
+- **Pre-scan probe re-executed:** `scan_and_record('<math><mi>x</mi></math>')`
+  → `skull/banish/0.9/('content: visual artifact active-element',)`; `<script>`,
+  event-handler attr, `data:text/html`, CSS `url()`, CSS `\75rl(` escape → all
+  `skull/banish` with explicit shared flags; benign paragraph →
+  `t3/upgrade/()` and output boundary passes. Pre-scan flags ≡ output-boundary
+  flags on every probe (AC-4).
+- **Chromium corpus re-executed by this round** (image `auto817-playwright-r4`,
+  live worktree sources + spec bind-mounted read-only):
+  `deck-sanitization.spec.ts` → **8/8 passed (3.0s)**, including the MathML
+  cases at spec lines 359/392/412 (`<math><mi>x</mi></math>` blocked and
+  `recommend == "review"`) and attacker-server request counts of zero.
+- **Vulture gate:** CI-exact argv
+  `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → **rc=0** (1415 → 1415 identities, base
+  `2c8022fe` → candidate `c23e4ddaaf`). Observation (not a branch regression):
+  the *bare* default invocation (`packages tests`) exits 1 with ~30 net
+  scan-vs-ledger drift that reproduces identically at the base tree — a
+  base-scan diff showed **0 HEAD-only identities** and 2 HEAD-removed
+  (`render_to_pdf` methods); the enforced CI gate is the scoped invocation
+  (workflows `vulture-ratchet.yml:82`, `quality.yml:812`), and hosted
+  `exact-debt-ledger` SUCCESS agrees.
+- **Closure-keyword review re-executed:** `git log 2c8022fe8..c23e4ddaaf`
+  contains no `fixes/closes/resolves #N`; live PR #1389 body says only
+  "Refs #817", draft, `headRefOid == c23e4ddaaf` (round-7 "snapshot not the
+  review head" block stays resolved).
+- **Hosted CI:** multiple checks IN_PROGRESS and `gates-ran` PENDING at review
+  time → hosted CI UNVERIFIED per contract (local evidence stands on its own);
+  one empty-workflow `devskim` FAILURE coexists with a successful DevSkim
+  workflow run (draft-PR noise, no local correlate).
