@@ -307,3 +307,49 @@ executed evidence at this HEAD. Residual UNVERIFIED (requires maintainer
 GitHub mutations prohibited here): first production Actions evidence run and
 first real tag release. The uncommitted salvage was resolved, documented, and
 committed; the worktree is left clean.
+
+## Round 4 — develop-base merge reconcile and re-validation (job ec982d76ce6847999236d9f0ddba4012)
+
+Started at HEAD e05a1d449 with the develop base 60862b6c5 mid-merge and one
+unmerged path: `quality/branch-independence.json`. The conflict was two
+independent additions to the `surfaces` array (HEAD added `compliance-registry`,
+develop base added `credential-authority`); resolved by keeping both entries,
+validated JSON (32 surfaces, no duplicate IDs), and committed as merge
+2cf10b731. No destructive git command was used; no check-*.log files existed in
+this job directory (manifest checks: []), so all evidence below was executed
+fresh at HEAD 2cf10b731249c42a909e691b7e3a5f6445299c57.
+
+- `uv run python scripts/check-compliance.py`: exit 0 at rest (28 controls,
+  zero implemented, zero evidence; ART-15/17 unverified).
+- Release mode `--require-release-evidence --release-digest 2cf10b731...`:
+  exit 1, 79 fail-closed problems (intended: a commit cannot contain its own
+  digest; release.yml uses resolve mode).
+- Same + `--resolve-release-evidence --resolved-output /tmp/...`: exit 1,
+  52 problems; the resolved output file was not written (fail-closed).
+- New CLI-level forged-green probes (real checker binary, forged registry at
+  the real `quality/` path so refs resolve, byte-identical restore verified by
+  `git status`): (A) implemented claim citing a nonexistent
+  `compliance-evidence` artifact URL → `HTTP Error 404: Not Found` from the
+  REAL GitHub API, exit 1; (B) green evidence citing the disabled
+  `mutation.yml` with forged `workflow_enabled: true` → derived-state
+  mismatches for `workflow_enabled` and `manual_only`, exit 1.
+- `uv run pytest tests/test_check_compliance.py tests/test_release_guard.py
+  tests/test_branch_independence.py tests/test_branch_independence_repository.py
+  tests/test_check_branch_independence_base.py tests/test_check_branch_protection.py
+  tests/test_branch_policy.py -q`: 205 passed in 13.45s (includes
+  `test_real_tag_can_resolve_post_commit_evidence_without_source_edit`, whose
+  fixture builds a real git repo with a real annotated tag and a real pytest
+  subprocess, faking only the GitHub API boundary).
+- `uv run python scripts/check-branch-independence.py`: PASS.
+  `uv run python scripts/check-ratchet-provenance.py`: OK, 37 quality JSON
+  consumers have explicit provenance (36 → 37 from credential-authority.json).
+- `uv run ruff check .` passed; `uv run ruff format --check .` passed
+  (2536 files) over the merged tree.
+- Wiring re-confirmed at this HEAD: ci.yml `Compliance registry` required for
+  develop and main; release.yml guard resolves evidence at `$GITHUB_SHA` and
+  all four publish jobs need guard; compliance-evidence.yml runs on push to
+  main/develop/integration plus workflow_dispatch, never on tags.
+
+Verdict for this round: all acceptance evidence re-proven at the merged HEAD.
+Residual UNVERIFIED (requires maintainer GitHub mutations, prohibited here):
+first production Actions evidence run and first real tag release.
