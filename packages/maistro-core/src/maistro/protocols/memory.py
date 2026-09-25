@@ -10,6 +10,7 @@ from maistro.types.memory import REINFORCE_DELTA
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from maistro.memory.user_model.types import UserModelFact
     from maistro.types.memory import (
         DecaySweep,
         EpisodicMemory,
@@ -404,4 +405,39 @@ class AuditLog(Protocol):
         limit: int = 100,
     ) -> list[AuditEntry]:
         """Retrieve audit entries with optional filtering."""
+        ...
+
+
+@runtime_checkable
+class UserModelStore(Protocol):
+    """Durable, owner-keyed lineages of UserModelFact revisions (#1047).
+
+    Facts are never decayed or updated in place: every change appends a
+    revision, and a tombstoned lineage can never be written again.
+    """
+
+    async def append_revision(self, fact: UserModelFact) -> UserModelFact:
+        """Append the next revision; it must directly follow the current one."""
+        ...
+
+    async def current(self, lineage_id: str) -> UserModelFact | None:
+        """The latest revision of a lineage, if any."""
+        ...
+
+    async def history(self, lineage_id: str) -> list[UserModelFact]:
+        """Every retained revision of a lineage, oldest first."""
+        ...
+
+    async def list_for_user(self, owner_user_id: str) -> list[UserModelFact]:
+        """Current revisions of one owner's live lineages; never another owner's."""
+        ...
+
+    async def tombstone(
+        self, lineage_id: str, *, acting_user_id: str, reason: str
+    ) -> UserModelFact:
+        """Delete a lineage's content for good, keeping who deleted it and why."""
+        ...
+
+    async def is_tombstoned(self, lineage_id: str) -> bool:
+        """Whether the lineage was tombstoned and must not be recreated."""
         ...

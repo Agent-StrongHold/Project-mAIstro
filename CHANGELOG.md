@@ -261,6 +261,21 @@ or placeholder-only section.
 
 ### Added
 
+- **Durable user model: `UserModelFact` and self-consented promotion
+  (#1047, partial).** New `maistro.memory.user_model` package: a frozen,
+  revisioned `UserModelFact` owned by the canonical user id (evidence refs,
+  confidence, `active`/`under_review`/`superseded`/`tombstoned` state,
+  validity window, sensitivity, reusable flag, correction provenance, persona
+  hints), a `UserModelStore` protocol, and an in-memory store.
+  `promote_evidence` is the only write path from episodic memory: it
+  promotes only the acting user's own memory (cross-user still needs SPEC-242
+  consent), audits every attempt, refuses to recreate a tombstoned lineage or
+  revive a corrected statement, and puts contradicted facts under review with
+  a new revision instead of overwriting them. `correct_fact` and
+  `forget_fact` are the owner's explicit revise/delete paths. Durable
+  SQLite/PostgreSQL stores, the migration, recall, and the SPEC-242 ADR
+  follow in later PRs.
+
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
   `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap
