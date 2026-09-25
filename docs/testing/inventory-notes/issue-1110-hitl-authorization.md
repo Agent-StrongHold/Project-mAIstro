@@ -159,3 +159,30 @@ trunk ledger drift outside this lane's scope. `inventory-delta` re-counted
 against the new develop base `60862b6c5`: exactly +2 test functions in
 `packages/hive-conductor/backend/tests` (2423 → 2425); core `durable_runs`
 unchanged at 435.
+
+## Independent verifier re-validation (head `5f397289d`)
+
+This pass re-proved the branch at the assigned repair head (docs-only delta
+over `c85177741`; the driver again produced no check-*.log files, and the
+prior result artifact was not trusted). `ruff check` + `ruff format --check`
+clean on all six changed sources; 32/32 door+timeout tests; 505 passed /
+21 skipped in `maistro-core` durable_runs; mypy clean over the 17
+`durable_runs` sources; the `check-public-routes`, `check_enumerations`,
+`check-enumerations-provenance`, `check-suite-inventory`,
+`check-security-inventory`, `check-owned-store-access`, and
+`check-agent-store-writes` gates green; full hive-conductor backend suite
+2669 passed / 1 skipped. The mutation check was re-executed live with a new,
+sharper result: (1) no-op `_require_project_access` (authentication intact)
+fails `test_project_reviewer_isolated_from_sibling_hitl_work` (the
+Workspace-scoped test still passes because a separate membership check
+guards it — defense in depth, by design); (2) replacing `/pending`'s
+authorized-scope walk with a single global store query alone does NOT leak
+(the #364 per-record `authorization.permits` disclosure recheck still
+filters), but with that recheck also removed both
+`test_hitl_routes_are_scoped_to_the_callers_workspaces` and
+`test_pending_rechecks_membership_before_disclosing_payload` fail — the
+suite binds to the composition of the two layers; (3) removing only the
+disclosure recheck fails
+`test_pending_rechecks_membership_before_disclosing_payload`. All mutation
+edits were restored byte-exact from a pre-mutation copy; `git status` and
+`git diff` clean before committing this note.
