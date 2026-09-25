@@ -228,6 +228,34 @@ def test_requested_identity_persistence_failure_aborts_before_creating_accounts(
     assert "user" not in fresh_users
 
 
+def test_identity_provision_returns_persisted_root_when_vault_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The success arc of _maybe_generate_identity: when the vault reports the
+    encrypted seed persisted, the generated DID and once-shown mnemonic reach
+    the caller (and only then the setup response). CI's coverage job has no
+    age binary, so the real-vault end-to-end test skips there; this pins the
+    arc deterministically — a successfully persisted root must be returned,
+    never silently dropped."""
+    try:
+        from maistro.identity import ConductorSeed
+
+        probe = ConductorSeed.generate()
+        probe.zero()
+    except ImportError:
+        pytest.skip("identity extra (bip_utils/pynacl) not installed")
+
+    from routes.setup import _maybe_generate_identity
+
+    monkeypatch.setattr("routes.setup._persist_identity_root", lambda words: True)
+
+    user_did, mnemonic_words, persisted = _maybe_generate_identity(["crypto_identity"])
+
+    assert persisted is True
+    assert isinstance(user_did, str) and user_did.startswith("did:key:z")
+    assert isinstance(mnemonic_words, list) and len(mnemonic_words) >= 12
+
+
 def test_first_run_provisions_vault_and_persists_seed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:

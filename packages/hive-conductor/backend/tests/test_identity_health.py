@@ -163,6 +163,72 @@ def test_identity_health_distinguishes_missing_runtime(monkeypatch) -> None:
     assert identity_health() == {"status": "unavailable", "reason": "identity_runtime_missing"}
 
 
+def test_identity_health_reports_unexpected_vault_failure_as_unavailable(
+    monkeypatch,
+) -> None:
+    """A vault failure of an unexpected shape collapses to the same stable
+    public reason as a typed VaultUnavailableError: health output is API
+    surface, so neither age stderr nor a traceback may leak through it, and
+    an unhandled exception here would turn the probe itself into a 500."""
+    import stores
+    from services.identity_health import identity_health
+
+    did, _ = _identity_fixture()
+    _patch_identity_vault(monkeypatch, error=RuntimeError("age crashed unexpectedly"))
+    monkeypatch.setattr(
+        stores.sessions,
+        "get",
+        lambda key, default=None: _setup_config(
+            modules=["crypto_identity"], did=did, persisted=True
+        ),
+    )
+
+    assert identity_health() == {
+        "status": "misconfigured",
+        "reason": "identity_vault_unavailable",
+    }
+
+
+def test_identity_health_reports_unreadable_setup_state(monkeypatch) -> None:
+    """Setup state that cannot be read at all is `misconfigured`, not a crash:
+    the health endpoint must keep answering while the session store is broken,
+    with a reason distinct from both `unavailable` and a merely incomplete
+    setup."""
+    import stores
+    from services.identity_health import identity_health
+
+    def _unreadable(key: str, default: object = None) -> object:
+        raise RuntimeError("session store unreadable")
+
+    monkeypatch.setattr(stores.sessions, "get", _unreadable)
+
+    assert identity_health() == {
+        "status": "misconfigured",
+        "reason": "setup_state_unreadable",
+    }
+
+
+def test_identity_health_reports_invalid_provisioned_did(monkeypatch) -> None:
+    """A persisted record whose DID no longer parses is misconfigured: a
+    corrupted identity must never be reported as operational just because a
+    record with the right shape happens to exist."""
+    import stores
+    from services.identity_health import identity_health
+
+    monkeypatch.setattr(
+        stores.sessions,
+        "get",
+        lambda key, default=None: _setup_config(
+            modules=["crypto_identity"], did="did:key:not-a-valid-key", persisted=True
+        ),
+    )
+
+    assert identity_health() == {
+        "status": "misconfigured",
+        "reason": "invalid_provisioned_did",
+    }
+
+
 def test_identity_health_reports_selected_but_unprovisioned(monkeypatch) -> None:
     import stores
     from services.identity_health import identity_health

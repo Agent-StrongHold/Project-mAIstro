@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +9
+  packages/hive-conductor/backend/tests: +15
 ---
 # Auto 291 Conductor identity contract
 
@@ -486,3 +486,49 @@ landed mid-verify; this round re-derives the evidence at the exact final head):
   setup_incomplete}`, `identity_required: false` — the documented pre-setup
   behavior (distinct reason; not a failed optional capability until setup
   selects crypto identity).
+
+CI-repair round at merge base b906cc577 (origin/develop merged; HEAD 71c035690)
+— repairs the only red gate at fea36940a, Coverage gate (publish-set floor +
+diff coverage), job 108240720900 of run 36185841162:
+
+- Failure triaged from the CI log: the publish-set floor passed; the FAIL was
+  `scripts/check-diff-coverage.py` per-file floors on three identity files —
+  health.py 58.3% (lines 122/125/126 liveness probe-failure fallback,
+  189/190 readiness fallback), setup.py partial branch arc at the persisted
+  guard (success arc only exercised by the real-vault test, which skips on
+  CI's coverage runner: no `age` binary), identity_health.py 89.5% (lines
+  52/53 unexpected-vault-failure collapse, 78/79 setup_state_unreadable,
+  94/95 invalid_provisioned_did).
+- Six deterministic tests added (no age/bip-utils skips on the covered arcs):
+  test_identity_health.py gains unexpected-vault-failure, unreadable-setup-
+  state and invalid-provisioned-DID cases; test_api.py gains liveness and
+  readiness probe-failure cases (probe raises → 200 ok with
+  health_probe_failed + identity_required=true; checks["identity"]=false);
+  test_setup_guard.py gains _maybe_generate_identity success-arc (persist
+  reports success → did:key:z DID + ≥12 mnemonic words + persisted=True
+  returned, pinning that a persisted root reaches the response in CI too).
+- Local gate replication at this tree, base b906cc577: the CI conductor
+  producer re-run (`coverage run --branch --source=packages/hive-conductor/
+  backend -m pytest packages/hive-conductor/backend/tests`) = 2775 passed,
+  5 skipped; combined with the scripts producer (tests/ 3613 passed, 100
+  skipped) and core producer (packages/maistro-core/tests 10289 passed, 693
+  skipped, 1 xfailed, 1 environmental failure — see residuals);
+  `check-diff-coverage.py --base b906cc577` → "ok: every measured file this
+  change touches is at or above 90% lines / 80% branch arcs" (exit 0).
+- Other gates at this tree: ruff check clean, ruff format --check 2557 files;
+  vulture per-identity ledger rc=0 (base b906cc577, candidate 71c035690,
+  1414 reviewed identities → 1414 findings, unclassified 0, never_allowlist
+  0) — no ledger amendment needed or made; check-suite-inventory ok
+  (hive-conductor/backend/tests 2780 after this note's +6 delta).
+- Residuals: (1) the publish-set 87% floor is proven green by CI at
+  fea36940a and by develop's own merge-queue runs; this merge adds no
+  publish-set statements (test files + non-publish-set sources only), so the
+  floor arithmetic is unchanged — the definitive re-proof lands with the next
+  CI run of this branch. (2) The full maistro-core producer run shows one
+  ordering-dependent failure (test_container_postgres::
+  test_an_unreachable_server_is_an_error_not_a_fallback) that passes
+  standalone in this tree and on pristine b906cc577 alike; this branch
+  touches nothing that test imports. (3) test_api.py run standalone (bare,
+  outside the full suite) fails 14 auth-flow cases identically on pristine
+  b906cc577 — pre-existing upstream ordering debt, invisible to CI which
+  runs the whole directory.
