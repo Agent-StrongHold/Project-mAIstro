@@ -10,10 +10,12 @@ each tier, against real stores.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import aiosqlite
@@ -53,7 +55,9 @@ class _Clock:
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     fake = _Clock()
-    monkeypatch.setattr(idem.time, "monotonic", fake)
+    # The module's own `time` binding, not the global module: asyncio's loop
+    # clock reads `time.monotonic` too and must keep running.
+    monkeypatch.setattr(idem, "time", SimpleNamespace(monotonic=fake))
     return fake
 
 
@@ -213,3 +217,87 @@ async def test_post_tasks_admission_bounds_the_table(clock: _Clock) -> None:
 
     # The queue claims at the wall clock, years past the seeded window.
     assert await _surviving(store, stale) == []
+
+
+async def test_a_full_batch_keeps_purging_until_the_backlog_drains(
+    store: Any, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch that hits its limit means a backlog: the next claim sweeps again
+    instead of waiting out the interval, so deletion outpaces insertion."""
+    monkeypatch.setattr(idem, "IDEMPOTENCY_PURGE_LIMIT", 2)
+    old = await _seed_expired(store, 5)
+    clock.value += idem.IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+
+    await store.claim(_scope("a"), fingerprint="fp", request="{}", now=_EXPIRED)
+    assert len(await _surviving(store, old)) == 3
+    await store.claim(_scope("b"), fingerprint="fp", request="{}", now=_EXPIRED)
+    assert len(await _surviving(store, old)) == 1
+    await store.claim(_scope("c"), fingerprint="fp", request="{}", now=_EXPIRED)
+    assert await _surviving(store, old) == []
+
+    # The last batch came up short, so the throttle is back in force.
+    newer = _scope("newer")
+    await store.complete(_scope("c"), task_id="t-c", run_id=None)
+    later = _EXPIRED + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)
+    await store.claim(newer, fingerprint="fp", request="{}", now=later)
+    assert await store.get(_scope("c")) is not None
+
+
+async def test_a_cancelled_purge_strands_no_claim(clock: _Clock) -> None:
+    """A request cancelled while its purge runs must not leave behind a pending
+    claim nobody owns, which would stall the retry for a whole lease."""
+    store = InMemoryTaskIdempotencyStore()
+    started = asyncio.Event()
+
+    async def hanging(*, now: datetime, limit: int = IDEMPOTENCY_PURGE_LIMIT) -> int:
+        started.set()
+        await asyncio.Event().wait()
+        return 0
+
+    store.purge_expired = hanging  # type: ignore[method-assign]
+    clock.value += idem.IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+    claim = asyncio.create_task(store.claim(_scope("k"), fingerprint="fp", request="{}", now=_NOW))
+    await started.wait()
+    claim.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await claim
+
+    assert await store.get(_scope("k")) is None
+
+
+async def test_pg_purge_spares_a_claim_renewed_under_it(pg_pool: Any, clock: _Clock) -> None:
+    """Replicas race: one takes over an expired claim while another's purge has
+    already selected it. The purge must re-check expiry on the row it deletes."""
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    async with pg_pool.acquire() as conn:
+        await conn.execute("DELETE FROM task_idempotency")
+    store = PgTaskIdempotencyStore(pg_pool)
+    (scope,) = await _seed_expired(store, 1)
+    renewed_until = idem._to_us(_EXPIRED + DEFAULT_REPLAY_WINDOW)
+
+    async with pg_pool.acquire() as taker:
+        renewal = taker.transaction()
+        await renewal.start()
+        await taker.execute(
+            "UPDATE task_idempotency SET expires_at = $2, task_id = NULL WHERE scope_key = $1",
+            scope,
+            renewed_until,
+        )
+        purge = asyncio.create_task(store.purge_expired(now=_EXPIRED))
+        for _ in range(200):
+            blocked = await pg_pool.fetchval(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE wait_event_type = 'Lock' AND query LIKE '%DELETE FROM task_idempotency%'"
+            )
+            if blocked:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("the purge never blocked on the renewed row")
+        await renewal.commit()
+
+    assert await purge == 0
+    record = await store.get(scope)
+    assert record is not None
+    assert record.expires_at_us == renewed_until

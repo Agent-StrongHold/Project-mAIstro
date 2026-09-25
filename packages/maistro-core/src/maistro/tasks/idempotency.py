@@ -397,6 +397,7 @@ class _ClaimFlow:
         # The first purge comes one interval after construction, not on the
         # first claim: a fresh process's first admission stays one INSERT.
         self._last_purge = time.monotonic()
+        self._purge_backlog = False
         self.purge_failures = 0
 
     async def claim(
@@ -408,41 +409,50 @@ class _ClaimFlow:
         now: datetime,
         replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
     ) -> Claimed | Replayed | Pending:
-        outcome = await self._claim(
+        # Before the claim, not after: a request cancelled mid-purge must not
+        # leave behind a pending claim it already won and nobody will release.
+        await self._maybe_purge(now)
+        return await self._claim(
             scope_key,
             fingerprint=fingerprint,
             request=request,
             now=now,
             replay_window=replay_window,
         )
-        await self._maybe_purge(now)
-        return outcome
 
     def _purge_due(self) -> bool:
-        return time.monotonic() - self._last_purge >= IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+        return (
+            self._purge_backlog
+            or time.monotonic() - self._last_purge >= IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+        )
 
     async def _maybe_purge(self, now: datetime) -> None:
         """Drive ``purge_expired`` from admission, the one path every claim takes.
 
-        At most one purge per store per interval, and never queued behind one in
-        flight. A failure is logged and counted, not raised: the claim already
-        resolved, and housekeeping must not turn into a refused submission.
+        At most one purge per store per interval, unless the last one filled its
+        batch, and never queued behind one in flight. A failure is logged and
+        counted, not raised: housekeeping must not turn into a refused
+        submission.
         """
         if not self._purge_due() or self._purge_lock.locked():
             return
         async with self._purge_lock:
-            if not self._purge_due():
-                return
             # Stamped before the attempt, so a failing database is retried once
             # per interval rather than once per admission.
             self._last_purge = time.monotonic()
+            self._purge_backlog = False
             try:
-                await self.purge_expired(now=now, limit=IDEMPOTENCY_PURGE_LIMIT)
+                purged = await self.purge_expired(now=now, limit=IDEMPOTENCY_PURGE_LIMIT)
             except Exception:
                 self.purge_failures += 1
                 logger.warning(
                     "task_idempotency purge failed; retrying next interval", exc_info=True
                 )
+                return
+            # A full batch means a backlog: the next claim purges again rather
+            # than waiting out the interval. Each claim adds at most one row, so
+            # while a backlog stands deletion outpaces insertion.
+            self._purge_backlog = purged >= IDEMPOTENCY_PURGE_LIMIT
 
     async def _claim(
         self,

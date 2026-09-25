@@ -526,13 +526,16 @@ or placeholder-only section.
 - **Expired task idempotency claims are now purged (#325, partial).**
   `purge_expired` existed on every `task_idempotency` backend, but nothing in
   production called it, so every `POST /tasks` left a row behind forever. The
-  claim path shared by all three backends now runs the purge itself: at most
-  once every 300 s per store (monotonic clock, the first run one interval after
-  the store is built), never while another purge is running, and at most 500
-  rows per run. A failed purge is logged and counted on the store; it never
+  claim path shared by all three backends now runs the purge itself, just
+  before claiming. It runs at most once every 300 s per store (monotonic
+  clock; the first run comes one interval after the store is built), deletes
+  at most 500 rows per run, and never waits for a purge already running. A run
+  that deletes a full 500 rows means a backlog, so the next claim purges again
+  without waiting. A failed purge is logged and counted on the store; it never
   fails the admission. The PostgreSQL purge now re-checks `expires_at` on each
-  row it deletes, so a claim another replica just renewed is not deleted. The
-  retention inventory lists `task_idempotency` as `ttl_purge`.
+  row it deletes, so a claim another replica just renewed survives. A
+  PostgreSQL test covers that race. The retention inventory lists
+  `task_idempotency` as `ttl_purge`.
 
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**
