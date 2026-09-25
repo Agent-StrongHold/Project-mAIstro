@@ -52,7 +52,28 @@ later oracle+implementation co-change exit 1, oracle-only change exit 0.
 (`.github/branch-protection.json`); the develop base `8bb344e` carries no
 oracle, so this PR legitimately takes the checker's bootstrap path.
 
-Independent verifier pass at head `b7356d5` (this lane's review head; worktree
+Independent verifier pass at head `c317e7f8d` (repair round 4; worktree
+unmodified — mutations via in-memory `-p` plugins under `/tmp/verify341`, gate
+scenarios in a scratch clone): `uv run ruff check .` +
+`uv run ruff format --check .` clean; targeted
+`pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0` → **256
+passed**; `tests/test_check_formal_oracle_independence.py` → 3 passed; full
+required-CI equivalent `MAISTRO_TEST_PG_DSN/…DATABASE_URL=…@127.0.0.1:5435/
+maistro_test pytest formal/models/ -q --hypothesis-seed=0` against a fresh
+dedicated `pgvector/pgvector:pg18` container (CI-identical env; `alembic
+upgrade head` applied) → **664 passed**. Mutations, all on the exact required
+command: 21-of-22 deletion → **189 failed**; `rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/`
+weakening → **6 failed** incl.
+`test_enforcement_path_refuses_oracle_commands[remove-home]`; safe-prefix
+shadow short-circuit → **95 failed**; `MicroVMSandbox.exec` deny-check removal
+(unreachable) → **41 failed**. Gate end-to-end in scratch clone: bootstrap vs
+develop base exit 0 (oracle absent at base, `git cat-file` verified); oracle +
+implementation co-change → **exit 1**; oracle-only → exit 0; unresolvable base
+fails closed (test 3). Retired artifacts confirmed absent: `formal/generated/`,
+`formal/extractors/`, nightly extraction step deleted; no live references.
+`formal-conformance` required per `.github/branch-protection.json`.
+
+Prior independent verifier pass at head `b7356d5` (this lane's review head; worktree
 unmodified — all mutations sandboxed outside it): targeted
 `pytest formal/models/test_dangerous_tools.py -q --hypothesis-seed=0` →
 **256 passed**; full required-CI equivalent `pytest formal/models/ -q
