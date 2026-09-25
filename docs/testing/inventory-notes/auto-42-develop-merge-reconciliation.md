@@ -1,11 +1,16 @@
----
-inventory-delta:
-  packages/maistro-core/tests: +473 -76
-  packages/maistro-server/tests: +0
-  packages/hive-conductor/backend/tests: +0
----
-
 # auto-42 develop merge reconciliation (L42 repair)
+
+## Inventory: the reconciliation moved no count against the shared ledger
+
+Measured collected node IDs, merge base ba2f1f077 vs HEAD: core tests
+10556 → 10562 (+6), server tests 362 → 363 (+1), conductor backend tests
+2482 → 2482 (0). The base tree is exactly ledger-green, and every surviving
+addition is already recorded by the surviving branch-side notes (guard +1,
+effect-scope +1, #1194 contract +4 core +1 server). This round therefore
+records no `inventory-delta:` of its own: an earlier draft of this block
+claimed +897/+12/+212, but those were 00cdd9ab5→HEAD line-stat pairs that
+double-counted develop-side tests the shared ledger already reflects, and the
+original `+473 -76` line was unreadable to the gate.
 
 Reconciled the in-progress (crashed) merge of develop ba2f1f077 into auto-42.
 The branch had implemented #1169/#1170 in parallel with develop's #1320/#1219;

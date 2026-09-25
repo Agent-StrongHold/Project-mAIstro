@@ -1,6 +1,3 @@
----
-inventory-delta: {}
----
 # auto-42 independent verification (L42 verify, head d646cee4)
 
 Read-only acceptance verification of PR 1326 against issue #42 at head
@@ -157,3 +154,57 @@ Findings re-verification at this head:
   OPEN. Verdict stands at NEEDS-DEEP-REVIEW: no in-tree defect found; the
   remaining acceptance item (dependent-issue closure) and the ledger grant
   are orchestrator actions.
+
+---
+
+# auto-42 repair re-validation round 2 (L42 repair, head 04b437c23 + surface fix)
+
+Repair-phase validation. One in-tree defect found and fixed; everything else
+re-confirmed with executed evidence.
+
+Defect found and fixed this round:
+
+- `scripts/check-shipped-surface-truth.py` **failed** at head 04b437c23:
+  `unclassified backend surface:
+  packages/maistro-server/src/maistro_server/api/a2a.py:POST:/tasks/create:create_a2a_task`,
+  and two tests in `tests/test_shipped_surface_truth.py` failed for the same
+  reason. The A2A admission route shipped by this branch was missing from the
+  truth matrix. Fixed by classifying it `canonical` in
+  `quality/shipped-surface-truth.json` (effect owner
+  `maistro.runs.store.RunStore.claim_run_by_effect`, ADR-058/SPEC-182). Gate
+  now prints "Shipped-surface truth matrix is complete." and all 45 matrix
+  tests pass.
+
+Executed at this head (all pass):
+
+- `uv run ruff check .` and `uv run ruff format --check .` clean.
+- `check-execution-lifecycles` PASS (19 classified, 0 violations);
+  `check-lifecycle-provenance` PASS; `check-ratchet-provenance` PASS
+  (33 consumers); `check-shipped-surface-truth` PASS after the fix above.
+- pytest: durable_runs+nodes **713 passed** (21 skipped); runs +
+  `runtime/test_execution.py` **856 passed** (196 skipped; the 10
+  cancel/deadline tests of #1169 among them); capabilities+a2a **423 passed**;
+  maistro-server **363 passed** (includes `test_a2a_api.py`);
+  `test_node_retry_attempts.py` + `test_attempt_executor.py` +
+  `test_a2a_api.py` re-run verbosely: **22 passed**.
+- Real-Postgres evidence (throwaway `pgvector/pgvector:pg18` container, removed
+  afterwards): `tests/migrations` **93 passed, 0 skipped** — the linearized
+  034 canonical-run-effect-claim → 034 hitl-deadline-index → 035
+  capability-invocations chain applies on an empty database, creates every
+  expected table and round-trips; `packages/maistro-core/tests/events`
+  **382 passed** against the same server (durable-events conformance is in
+  this branch's CI scope).
+- CI-scope clarification: the exact-debt-ledger workflow invokes
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`. Under that exact invocation the gate fails on **exactly
+  one** identity — `create_a2a_task` (60% confidence route-handler false
+  positive), reported once against the trusted baseline and once as candidate
+  bookkeeping. The ~1400-identity delta described above appears only under the
+  script's default `packages tests` invocation and is not what CI runs.
+  `object_storage` is **not** in this branch's changed-path scope
+  (`ci_merge_group_scope.py` over 5eeac073...HEAD returns
+  `object_storage: false`), so the old-head MinIO CI failures do not apply to
+  the current path set.
+- Upstream re-checked read-only: #1169 CLOSED, #1170 CLOSED, **#1194 still
+  OPEN** (code shipped and regression-locked in-tree; administrative closure
+  remains an orchestrator action), PR 1326 still draft.
