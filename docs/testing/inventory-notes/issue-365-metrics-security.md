@@ -120,3 +120,46 @@ Third independent pass; all evidence re-executed fresh, not restated:
   this branch's diff arrives via merges of origin/develop commits
   (`8bb344e32`, `ba2f1f077`; both `git branch -r --contains` on
   origin/develop), not lane-authored edits.
+
+## Re-verification record (repair lane, head ada7be0f)
+
+Fourth independent pass; evidence re-executed fresh, over a transport path
+the earlier records did not use — a real uvicorn server on 127.0.0.1
+probed with curl over TCP, not TestClient:
+
+- Focused pytest (core test_metrics.py + resilience/test_slo.py +
+  security/test_resource_policy.py; server test_metrics.py, test_health.py,
+  test_rate_limit.py, test_resource_policy_health.py,
+  test_strike_tracker_health.py): **131 + 41 = 172 passed**.
+- Live probes (uvicorn + curl, full `maistro_server.main.app`): anonymous
+  `/metrics` → 401 `Metrics authentication required`, zero Prometheus text;
+  arbitrary user Bearer → 401; valid service key without `admin:metrics`
+  → 403 `Metrics scope required`, no families; `X-Forwarded-*` headers do
+  not authenticate (401); scoped scraper → 200 exposition via both
+  `Authorization: Bearer sk-svc-…` and `X-Service-Key`, and the scraped
+  payload contains no key material.
+- Runtime registry audit from the scraped payload: 22 families; observed
+  label keys `dependency`, `method`, `outcome` (plus `route`/`status` on
+  traffic series) — no tenant/user/prompt/model/credential/path keys.
+- Public health over real HTTP: `/health` and `/health/live` exactly
+  `{"status":"ok"}`; `/health/ready` (deps down in the probe env) exactly
+  `{"status":"not_ready"}` with no dependency detail; `/health/startup`
+  only `{"status":"ok","startup_complete":true}`.
+- #818 adversarial cardinality on the live server: 300 distinct random
+  attacker paths (with the per-IP rate limiter engaging mid-run) grew
+  `http_requests_total` to exactly 4 series — `route="/metrics"` (200/429)
+  plus collapsed `route="unrouted"` × status 404 (29) / 429 (271); zero
+  attacker-controlled text in any label value.
+- Registry family backstop re-proven first-hand:
+  `MetricsRegistry(max_series_per_metric=10, max_metrics_per_registry=50)`
+  minted 200 dynamic families, stored 50, `metrics_registry_overflow_total
+  150.0`.
+- Validation battery: `ruff check packages/ docs/ scripts/ tests/` and
+  `ruff format --check .` pass (2527 files formatted; the only failures are
+  in the untracked scratch probe `repro_metrics.py`, preserved uncommitted
+  salvage that does not ship); canonical mypy all six package srcs:
+  **Success, 712 source files**; `scripts/check-doc-links.py`,
+  `check-security-inventory.py`, `check-suite-inventory.py` all exit 0;
+  Alembic script directory resolves 43 revisions to the single head
+  `036_audit_log_org_scope` with `033_project_membership_unique_per_principal.py`
+  present (CI `KeyError: '033'` again not reproducible in-tree).
