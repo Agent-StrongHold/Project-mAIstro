@@ -212,3 +212,32 @@ startup, the integration-scope aggregator's evidence wait on it, and the
 gates-ran rollup) remain infrastructure downstream of a service container,
 not this branch's surfaces. Remote CI completion on the PR rollup remains the
 only unverified item from this environment.
+
+Eleventh round (independent verification at 992019302, zero production delta
+since the tenth-round anchor 27f4fa266 — `git diff --stat` shows only this
+note grew). Re-executed from scratch rather than trusting prior rounds:
+`ruff check .` clean; `ruff format --check .` clean (2534 files); focused
+idle-policy suite 17/17; full backend suite 2685 passed; suite-inventory gate
+ok (13 suites); check-adr-index and check-adr-status-language ok. Re-derived
+acceptance at this exact head: ADR-077 records the governed decision
+(30-minute sliding idle + seven-day absolute, server-authoritative);
+`_resolve_session` evaluates `min(absolute, idle)` under `_SESSION_LOCK`,
+pops expired/revoked/deactivated session-shaped records, never deletes
+non-session store records, and refreshes only monotonically with the absolute
+cap anchored to creation; the HTTP middleware touches only after
+authentication AND authorization pass, the WS routes order resolve ->
+authorize -> serialized fail-closed touch, and `whoami` is observational
+(grep confirmed the only `refresh_activity=True` paths are the middleware's
+post-authorization `refresh_session_activity` and the WS post-authorization
+resolve; every other `get_current_user` caller uses the non-refreshing
+default). #1050 re-verified: `AuthGuard` restoration uses the observational
+whoami call (pinned by
+`test_whoami_is_observational_and_cannot_keep_an_idle_session_alive`); the
+session TTLs are module constants with no settings/preference route able to
+write them; `lib/uiState.ts` localStorage conveniences carry no authority.
+The stop condition holds: idle expiry is enforced in `routes/auth.py` +
+middleware + `routes/ws.py`, not frontend storage/navigation. CI-infra
+attribution re-checked at this head: zero workflow/compose/docker/MinIO delta
+vs 60862b6c5, so the prior MinIO service-container startup failures and their
+gates-ran rollup remain environmental. Remote CI completion on the PR rollup
+remains the only unverified item from this environment.
