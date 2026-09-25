@@ -9,6 +9,7 @@ connections that never contend with the writer.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import queue
 import random
@@ -28,6 +29,22 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="BaseModel")
 
 logger = logging.getLogger(__name__)
+
+
+def _claim_has_owner(
+    conn: sqlite3.Connection, store_name: str, key: str, expected_user_id: str
+) -> bool:
+    row = conn.execute(
+        "SELECT value FROM kv_store WHERE store_name = ? AND key = ?",
+        (store_name, key),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        claim = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(claim, dict) and claim.get("user_id") == expected_user_id
 
 
 class MigrationFailedError(Exception):
@@ -455,7 +472,7 @@ class PersistedStore:
         self._enforce_username_uniqueness_at_db_boundary()
 
     def _warn_about_unclaimed_duplicate_usernames(self) -> None:
-        """Surface pre-existing duplicate usernames the backfill couldn't claim.
+        """Surface usernames no durable uniqueness layer claims.
 
         `kv_unique_fields_001`'s `INSERT OR IGNORE` claims a `unique_fields`
         row for only the first `users` record it sees per normalized
@@ -470,6 +487,22 @@ class PersistedStore:
         runs on every `initialize()`, not just when the migration first
         applies, so the warning does not go away on its own — only resolving
         the duplicates does.
+
+        Two layers count as a durable uniqueness claim here: the
+        `unique_fields` row above, and the canonical username-claim index
+        account allocation writes in the same transaction as the user row
+        (#1061 — `username_claims` in `kv_store`, whose active record must
+        name this exact row). The canonical layer decides: a record whose
+        claim is quarantined, corrupt, or points at another key is still
+        flagged, and an active claim can name only one row, so of a
+        duplicated pair exactly the loser stays loud. Without the second
+        clause, every account created through the atomic allocation seam —
+        which writes the claim and the row together and bypasses
+        `put_model_unique` — would raise this false alarm on every restart
+        until its first password rehash happened to heal the
+        `unique_fields` row. `lower()` matches the normalization the DB-level
+        username index uses (the same lower-vs-casefold Unicode divergence,
+        warning-only here).
         """
         reader = self._state.open_reader()
         try:
@@ -482,6 +515,13 @@ class PersistedStore:
                 "  SELECT 1 FROM unique_fields u "
                 "  WHERE u.store_name = 'users' AND u.field_name = 'username' "
                 "  AND u.record_key = k.key"
+                ")"
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM kv_store c "
+                "  WHERE c.store_name = 'username_claims' "
+                "  AND c.key = 'username:' || lower(json_extract(k.value, '$.username')) "
+                "  AND json_extract(c.value, '$.status') = 'active' "
+                "  AND json_extract(c.value, '$.user_id') = k.key"
                 ")"
             ).fetchall()
         finally:
@@ -773,6 +813,116 @@ class PersistedStore:
         if errors:
             raise RuntimeError("conflict-safe state insert failed") from errors[0]
         return inserted == [True]
+
+    def put_raw_with_unique_claims(
+        self,
+        claims: list[tuple[str, str, str]],
+        records: list[tuple[str, str, str]],
+        *,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Insert claims and records in one durable SQLite transaction.
+
+        Claims are primary-key inserts and therefore decide the winner at the
+        storage layer. If any claim already exists, or any record cannot be
+        inserted, the whole transaction rolls back. This is the seam used by
+        account allocation to prevent a username reservation from splitting
+        from its user row on process death.
+        """
+        if not claims or not records:
+            raise ValueError("an atomic claim transaction needs claims and records")
+        completed = threading.Event()
+        inserted: list[bool] = []
+        errors: list[Exception] = []
+        now = datetime.now(UTC).isoformat()
+
+        def _insert_claims_and_records(conn: sqlite3.Connection) -> None:
+            try:
+                for store_name, key, value in claims:
+                    cursor = conn.execute(
+                        "INSERT INTO kv_store (store_name, key, value, updated_at) "
+                        "VALUES (?, ?, ?, ?) ON CONFLICT(store_name, key) DO NOTHING",
+                        (store_name, key, value, now),
+                    )
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        inserted.append(False)
+                        return
+                for store_name, key, value in records:
+                    conn.execute(
+                        "INSERT INTO kv_store (store_name, key, value, updated_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (store_name, key, value, now),
+                    )
+                conn.commit()
+                inserted.append(True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_insert_claims_and_records)
+        if not completed.wait(timeout=timeout):
+            raise TimeoutError("timed out waiting for atomic username allocation")
+        if errors:
+            raise RuntimeError("atomic username allocation failed") from errors[0]
+        return inserted == [True]
+
+    def delete_raw_with_unique_claims(
+        self,
+        claims: list[tuple[str, str, str]],
+        records: list[tuple[str, str]],
+        *,
+        timeout: float = 30.0,
+    ) -> bool:
+        """Delete an account row and its matching username claim atomically.
+
+        This is intentionally restricted to a claim that still names the
+        expected user id. It is a rollback primitive for setup failures, not a
+        general delete path that could silently release another account's name.
+        """
+        if not claims or not records:
+            raise ValueError("an atomic claim rollback needs claims and records")
+        completed = threading.Event()
+        removed: list[bool] = []
+        errors: list[Exception] = []
+
+        def _delete_claims_and_records(conn: sqlite3.Connection) -> None:
+            try:
+                if not all(_claim_has_owner(conn, *claim) for claim in claims):
+                    conn.rollback()
+                    removed.append(False)
+                    return
+                before = conn.total_changes
+                conn.executemany(
+                    "DELETE FROM kv_store WHERE store_name = ? AND key = ?",
+                    [(store_name, key) for store_name, key, _ in claims],
+                )
+                conn.executemany(
+                    "DELETE FROM kv_store WHERE store_name = ? AND key = ?",
+                    records,
+                )
+                if conn.total_changes - before != len(claims) + len(records):
+                    conn.rollback()
+                    removed.append(False)
+                    return
+                conn.commit()
+                removed.append(True)
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                errors.append(exc)
+            finally:
+                completed.set()
+
+        self._state.submit(_delete_claims_and_records)
+        if not completed.wait(timeout=timeout):
+            raise TimeoutError("timed out waiting for atomic username rollback")
+        if errors:
+            raise RuntimeError("atomic username rollback failed") from errors[0]
+        return removed == [True]
 
     def get_raw(self, store_name: str, key: str) -> str | None:
         reader = self._state.open_reader()
