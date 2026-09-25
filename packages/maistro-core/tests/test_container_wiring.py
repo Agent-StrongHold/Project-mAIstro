@@ -414,9 +414,52 @@ async def test_issue_and_verify_capability_token_via_container() -> None:
 
     from maistro.identity.lifecycle import TokenRevokedError
 
+    assert container.token_store is not None
     await container.token_store.revoke(token)
     with pytest.raises(TokenRevokedError):
         await container.verify_capability_token(token)
+
+
+class _BlockBipUtils:
+    """Meta-path finder that makes `bip_utils` absent, as on the Python 3.14 Hive image."""
+
+    def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
+        if fullname.split(".")[0] == "bip_utils":
+            raise ModuleNotFoundError("No module named 'bip_utils'", name="bip_utils")
+        return None
+
+
+async def test_container_starts_without_the_identity_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#37: the Hive image cannot install the extra, and still needs a Container.
+
+    The stores stay unwired, and asking for an identity still raises the
+    ImportError that names the extra instead of failing somewhere quieter.
+    """
+    import sys
+
+    for name in list(sys.modules):
+        if name.split(".")[0] == "bip_utils" or name.startswith("maistro.identity"):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_BlockBipUtils(), *sys.meta_path])
+
+    container = await _container()
+
+    assert container.identity_store is None
+    assert container.token_store is None
+    assert container.secret_store is None
+    assert container.workspace_store is not None
+    with pytest.raises(ImportError, match=r"maistro-core\[identity\]"):
+        await container.create_agent_identity("agent-a")
+
+
+async def test_identity_calls_on_a_container_without_stores_fail_loudly() -> None:
+    container = await _container()
+    container.token_store = None
+
+    with pytest.raises(RuntimeError, match="identity lifecycle stores are not wired"):
+        await container.issue_capability_token("agent-a", "agent-b", "read")
 
 
 # --- A2A broker (ADR-058): retired from the Container (#225) -------------------
