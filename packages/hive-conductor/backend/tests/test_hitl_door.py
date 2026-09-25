@@ -365,6 +365,7 @@ async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, m
     client, store, seed = seeded
     import routes.hitl as hitl_routes
 
+    real_is_member = hitl_routes.is_member
     for run_id, action in (("hitl-answer-revoked", "answer"), ("hitl-cancel-revoked", "cancel")):
         await seed(run_id)
         checks: list[bool] = []
@@ -377,16 +378,22 @@ async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, m
             return membership_revoked
 
         monkeypatch.setattr(hitl_routes, "is_member", membership_revoked_factory(checks))
-        if action == "answer":
-            response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
-        else:
-            response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
+        try:
+            if action == "answer":
+                response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
+            else:
+                response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
+        finally:
+            # Restore only this loop's patch. A blanket `monkeypatch.undo()`
+            # would also drop the `seeded` fixture's `get_run_store` injection,
+            # and since #1113 removed the process-local fallback store the
+            # route would answer the next request with the no-spine 503
+            # instead of its own membership verdict.
+            monkeypatch.setattr(hitl_routes, "is_member", real_is_member)
         assert response.status_code == 404
         assert len(checks) == 2
         record = await store.get(run_id)
         assert record is not None and record.run.status is RunStatus.PAUSED
-
-        monkeypatch.undo()
 
 
 async def test_pending_rechecks_membership_before_disclosing_payload(seeded, monkeypatch) -> None:
@@ -799,3 +806,42 @@ async def test_a_stale_pause_entry_for_a_resumed_node_is_not_offered(seeded) -> 
     assert response.json()["node_id"] == "ask"
     # ...while the stale entry is refused with the same detail as a missing Run.
     assert client.get("/v1/hitl/hitl-stale-pause/review").status_code == 404
+
+
+async def test_no_spine_hitl_surfaces_report_unavailable(admin_client) -> None:
+    """With no canonical spine, the HITL door reports the outage (#1113).
+
+    The `seeded` fixture injects a durable store; this test deliberately does
+    not, so the routes run against the honest test-process state: no
+    Container, hence no canonical Run/graph-continuation store. Since #1113
+    removed the process-local fallback, every surface that settles Graph work
+    must answer the documented 503 -- not a 500 from an unhandled refusal,
+    and never a success minted by a private lifecycle.
+    """
+    from services.workspace_authority import create_workspace
+
+    # `/pending` filters by the caller's Workspaces before it reaches the
+    # store; give admin one so the request actually reaches the outage rather
+    # than answering an empty list from an empty membership set.
+    await create_workspace(
+        creator_user_id="admin",
+        name="No-spine HITL",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+
+    response = admin_client.get("/v1/hitl/pending")
+    assert response.status_code == 503
+    assert "unavailable" in response.json()["detail"]
+
+    for method, url, kwargs in (
+        ("get", "/v1/hitl/some-run/ask", {}),
+        ("post", "/v1/hitl/some-run/ask/cancel", {}),
+        ("post", "/v1/hitl/some-run/ask/answer", {"json": {"answer": "yes"}}),
+        ("post", "/v1/hitl/expire", {}),
+    ):
+        response = getattr(admin_client, method)(url, **kwargs)
+        assert response.status_code == 503, url
+        assert "unavailable" in response.json()["detail"], url

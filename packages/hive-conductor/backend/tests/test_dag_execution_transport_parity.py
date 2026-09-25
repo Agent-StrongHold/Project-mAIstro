@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,6 +19,32 @@ from starlette.websockets import WebSocketDisconnect
 
 POLICY_VIOLATION = 1008
 _SECRET = "postgres://svc:hunter2@db.internal/prod"
+
+
+@pytest.fixture
+def canonical_spine():
+    """Bind a real canonical Container to the engine for the execution tests.
+
+    #1113 retired the no-spine fallback: a shipped Graph surface without the
+    core bridge answers ``unavailable`` instead of completing. These tests
+    prove the two transports agree on *canonical* outcomes, so they drive a
+    real local Container (``create_container``, in-memory spine -- no
+    PostgreSQL) bound through the same ``_agent_port`` seam ``EngineService``
+    binds, the way the configured product is wired.
+    """
+    import services.engine as engine_mod
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    container = asyncio.run(create_container(AgentConfig(router_api_key="test-key")))
+    service = engine_mod.get_engine()
+    previous = service._agent_port
+    service._agent_port = SimpleNamespace(container=container)
+    try:
+        yield container
+    finally:
+        service._agent_port = previous
 
 
 def _fake_llm_builder(*, fail_prompt: str | None = None):
@@ -88,7 +115,7 @@ def _canonical_record(run_id: str) -> Any:
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 def test_ws_runs_in_two_workspaces_are_distinct_canonical_runs_with_projections(
-    admin_client: TestClient, stored_dag: str
+    admin_client: TestClient, stored_dag: str, canonical_spine
 ) -> None:
     from services.dag_run_store import get_dag_run_store
 
@@ -124,7 +151,7 @@ def test_ws_runs_in_two_workspaces_are_distinct_canonical_runs_with_projections(
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 def test_http_runs_in_two_workspaces_are_distinct_canonical_runs_with_projections(
-    admin_client: TestClient, stored_dag: str
+    admin_client: TestClient, stored_dag: str, canonical_spine
 ) -> None:
     from services.dag_run_store import get_dag_run_store
 
@@ -148,7 +175,7 @@ def test_http_runs_in_two_workspaces_are_distinct_canonical_runs_with_projection
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 def test_ws_run_is_interactive_and_audited_like_http(
-    admin_client: TestClient, stored_dag: str
+    admin_client: TestClient, stored_dag: str, canonical_spine
 ) -> None:
     import stores
 
@@ -181,6 +208,7 @@ def test_ws_run_is_interactive_and_audited_like_http(
 @pytest.mark.asyncio
 async def test_stream_hands_over_the_canonical_result_before_any_node_frame(
     stored_dag: str,
+    canonical_spine,
 ) -> None:
     """A socket whose client left fails on the first NodeRun frame it sends;
     the result must already be with ``on_result`` by then."""
@@ -210,7 +238,7 @@ async def test_stream_hands_over_the_canonical_result_before_any_node_frame(
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 def test_ws_failed_node_projects_the_canonical_run_like_http(
-    admin_client: TestClient, stored_dag: str
+    admin_client: TestClient, stored_dag: str, canonical_spine
 ) -> None:
     import stores
     from services.dag_run_store import get_dag_run_store
@@ -260,7 +288,10 @@ def test_ws_malformed_dag_failure_frame_names_only_the_exception_kind(
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 def test_ws_unexpected_failure_frame_names_only_the_exception_kind(
-    admin_client: TestClient, stored_dag: str, monkeypatch: pytest.MonkeyPatch
+    admin_client: TestClient,
+    stored_dag: str,
+    monkeypatch: pytest.MonkeyPatch,
+    canonical_spine,
 ) -> None:
     import services.canonical_dag_runner as canonical_dag_runner
 
@@ -280,17 +311,15 @@ def test_ws_unexpected_failure_frame_names_only_the_exception_kind(
     }
 
 
-def _run_ids() -> set[str]:
-    from services.dag_agents import get_run_store
-
-    store = get_run_store()
-    return set(store._rows)
+def _run_ids(canonical_spine) -> set[str]:
+    """Canonical Run ids admitted so far, read from the spine's Run store."""
+    return set(canonical_spine.run_store._runs)
 
 
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 def test_http_run_in_foreign_workspace_is_refused_before_execution(
-    admin_client: TestClient, stored_dag: str
+    admin_client: TestClient, stored_dag: str, canonical_spine
 ) -> None:
     from services.workspace_authority import canonical_store_for_tests
 
@@ -299,7 +328,7 @@ def test_http_run_in_foreign_workspace_is_refused_before_execution(
             creator_user_id="someone-else", workspace_id="parity-foreign", name="Foreign"
         )
     )
-    before = _run_ids()
+    before = _run_ids(canonical_spine)
 
     response = admin_client.post(
         f"/v1/dags/{stored_dag}/run", json={"workspace_id": "parity-foreign"}
@@ -311,7 +340,7 @@ def test_http_run_in_foreign_workspace_is_refused_before_execution(
         f"/v1/dags/{stored_dag}/run", json={"workspace_id": "parity-no-such-workspace"}
     )
     assert unknown.status_code == 403
-    assert _run_ids() == before
+    assert _run_ids(canonical_spine) == before
 
 
 @pytest.fixture
@@ -352,6 +381,7 @@ def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both
     admin_client: TestClient,
     stored_dag: str,
     sqlite_member_root_project: str,
+    canonical_spine,
 ) -> None:
     import stores
     from services.dag_run_store import get_dag_run_store
@@ -359,17 +389,37 @@ def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both
     assert "sqlite-member" not in stores.workspaces
     assert "sqlite-foreign" not in stores.workspaces
 
+    # The spine's Run admission validates Project scope against the same
+    # authority this test installed for Workspace resolution: rewire the
+    # Container's canonical stores over the installed SQLite project scope so
+    # one scope authority answers both, as the configured product's shared
+    # store does (#1113 — admission without a known Project is refused).
+    from services import workspace_authority as workspace_authority
+
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.runs import InMemoryRunStore
+
+    canonical_spine.run_store = InMemoryRunStore(
+        project_store=workspace_authority._engine_workspace_store().project_store
+    )
+    canonical_spine.graph_run_store = CanonicalDurableRunStore(
+        canonical_spine.run_store, InMemoryGraphContinuationStore()
+    )
+
     member = admin_client.post(f"/v1/dags/{stored_dag}/run", json={"workspace_id": "sqlite-member"})
     assert member.status_code == 200, member.text
     assert member.json()["status"] == "completed"
     assert member.json()["result"]["project_id"] == sqlite_member_root_project
 
-    before = _run_ids()
+    before = _run_ids(canonical_spine)
     outsider = admin_client.post(
         f"/v1/dags/{stored_dag}/run", json={"workspace_id": "sqlite-foreign"}
     )
     assert outsider.status_code == 403
-    assert _run_ids() == before
+    assert _run_ids(canonical_spine) == before
 
     terminal = _run_over_socket(admin_client, stored_dag, "sqlite-member")[-1]
     assert terminal["status"] == "completed"
@@ -379,11 +429,11 @@ def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both
     assert projection["workspace_id"] == "sqlite-member"
     assert projection["project_id"] == sqlite_member_root_project
 
-    before = _run_ids()
+    before = _run_ids(canonical_spine)
     with (
         pytest.raises(WebSocketDisconnect) as refused,
         admin_client.websocket_connect(f"/v1/ws/dags/{stored_dag}/run?workspace_id=sqlite-foreign"),
     ):
         pass
     assert refused.value.code == POLICY_VIOLATION
-    assert _run_ids() == before
+    assert _run_ids(canonical_spine) == before
