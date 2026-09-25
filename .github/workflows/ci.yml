@@ -202,9 +202,10 @@ jobs:
       # string in one tuple and it reads exactly like the `/health` above it.
       # Adding a public route costs one line; reviewing it costs reading
       # everything behind it, so quality/public-routes.json is where that
-      # asymmetry gets an owner, a risk, and an expiry.
-      - name: Every unauthenticated path is declared and justified
-        run: python3 scripts/check-public-routes.py
+      # asymmetry gets an owner, a risk, and an expiry. The same step imports
+      # and audits both the Conductor and Turing application route tables.
+      - name: Every HTTP route is declared and justified
+        run: uv run python3 scripts/check-public-routes.py
       # `LocalRsiLoop._run_tests` carried the comment "the test command is
       # operator-supplied config, not agent input" while POST /v1/rsi/runs
       # accepted that command over HTTP (#305). The comment was true when it

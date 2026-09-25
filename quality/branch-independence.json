@@ -8,7 +8,6 @@
     "quality/citation-baseline.json",
     "quality/contract-markers-baseline.json",
     "quality/direct-effect-call-sites.json",
-    "quality/enumeration-baseline.json",
     "quality/execution-lifecycles.json",
     "quality/image-inventory.json",
     "quality/lifecycle-baseline.json",
@@ -63,6 +62,14 @@
         "quality/compatibility-contracts.json"
       ],
       "reason": "Reviewed compatibility-window specification: canonical-surface pins and alias dispositions are policy whose change is the substantive change; the fitness suite reads its trusted base through ratchet_provenance, so the candidate copy is not its own oracle."
+    },
+    {
+      "id": "route-permissions",
+      "kind": "specification",
+      "paths": [
+        "quality/route-permissions.json"
+      ],
+      "reason": "Security-sensitive HTTP route declarations are reviewed policy consumed by both live applications."
     },
     {
       "id": "direct-dependency-exceptions",
@@ -154,15 +161,6 @@
       ],
       "target_kind": "per_identity_policy",
       "reason": "One tracked aggregate mixes discovered call-site metadata with durable per-site disposition, owner, and rationale policy."
-    },
-    {
-      "id": "enumeration-baseline",
-      "kind": "legacy_shared_aggregate",
-      "paths": [
-        "quality/enumeration-baseline.json"
-      ],
-      "target_kind": "base_derived",
-      "reason": "One tracked aggregate records tolerated enumeration findings."
     },
     {
       "id": "execution-lifecycles",

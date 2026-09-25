@@ -16,9 +16,11 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date
+from importlib import import_module
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -26,10 +28,18 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 MIDDLEWARE = ROOT / "packages" / "hive-conductor" / "backend" / "middleware" / "auth.py"
 REGISTRY = ROOT / "quality" / "public-routes.json"
+ROUTE_REGISTRY = ROOT / "quality" / "route-permissions.json"
+_TURING_MIDDLEWARE = ROOT / "packages" / "maistro-turing" / "backend" / "middleware" / "auth.py"
+_ROUTE_POLICY_SOURCE = (
+    ROOT / "packages" / "maistro-core" / "src" / "maistro" / "security" / "http_routes.py"
+)
 _PROVENANCE_SOURCE = ROOT / "scripts" / "ratchet_provenance.py"
 RATCHET = "public-routes"
 METRIC_DEFINITION_VERSION = "2"
 _GIT_TIMEOUT_SECONDS = 60
+_APPLICATIONS = ("conductor", "turing")
+_ROUTE_KINDS = frozenset({"exact", "prefix", "template"})
+_PERMISSION_RE = re.compile(r"^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$")
 
 DECLARATIONS: dict[str, str] = {
     "_PUBLIC_PREFIXES": "prefix",
@@ -40,6 +50,18 @@ REQUIRED = ("kind", "owner", "risk", "disposition", "reason")
 REQUIRED_TEMPORARY = ("issue", "expires")
 RISKS = frozenset({"low", "medium", "high"})
 DISPOSITIONS = frozenset({"permanent", "temporary"})
+
+
+def _route_policy_matcher() -> Any:
+    spec = importlib.util.spec_from_file_location("_http_route_policy", _ROUTE_POLICY_SOURCE)
+    if spec is None or spec.loader is None:  # pragma: no cover - packaging accident
+        raise RuntimeError(f"cannot load {_ROUTE_POLICY_SOURCE}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.route_policy
+
+
+route_policy = _route_policy_matcher()
 
 
 def _provenance() -> ModuleType:
@@ -223,12 +245,106 @@ def _registry(loaded: object) -> dict[str, Any]:
     return dict(routes) if isinstance(routes, dict) else {}
 
 
+def _application_registry(loaded: object, application: str) -> dict[str, Any]:
+    """Read one public-route declaration without changing the legacy shape."""
+    if not isinstance(loaded, dict):
+        return {}
+    applications = loaded.get("applications")
+    if not isinstance(applications, dict):
+        return {}
+    selected = applications.get(application)
+    if not isinstance(selected, dict):
+        return {}
+    routes = selected.get("routes")
+    return dict(routes) if isinstance(routes, dict) else {}
+
+
 def _registry_identities(registry: dict[str, Any]) -> set[tuple[str, str]]:
     return {
         (path, str(entry.get("kind")))
         for path, entry in registry.items()
         if isinstance(entry, dict) and entry.get("kind")
     }
+
+
+def _route_policy_map(loaded: object) -> dict[tuple[str, str, str, str], tuple[str, str]]:
+    """Flatten route policy decisions for trusted-base policy comparisons."""
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("routes"), dict):
+        return {}
+    result: dict[tuple[str, str, str, str], tuple[str, str]] = {}
+    for application, entries in loaded["routes"].items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            kind = entry.get("kind")
+            methods = entry.get("methods")
+            access = entry.get("access")
+            if (
+                not isinstance(path, str)
+                or not isinstance(kind, str)
+                or not isinstance(methods, list)
+            ):
+                continue
+            if not isinstance(access, str):
+                continue
+            permission = entry.get("permission", "")
+            permission = permission if isinstance(permission, str) else ""
+            for method in methods:
+                if isinstance(method, str):
+                    result[(str(application), method.upper(), path, kind)] = (access, permission)
+    return result
+
+
+def _route_policy_failures(
+    base: dict[tuple[str, str, str, str], tuple[str, str]],
+    current: dict[tuple[str, str, str, str], tuple[str, str]],
+    authorized: dict[str, str],
+) -> list[str]:
+    """Permit policy additions while ratcheting existing public/exempt state."""
+    failures: list[str] = []
+    for key in sorted(set(base) & set(current)):
+        if base[key] == current[key]:
+            continue
+        application, method, path, _kind = key
+        grant = f"{application}:{method}:{path}"
+        if grant not in authorized:
+            failures.append(
+                f"  {grant}: route policy changed from {base[key]!r} to {current[key]!r} "
+                "without trusted authorization"
+            )
+    for key in sorted(set(current) - set(base)):
+        if current[key][0] not in {"public", "exempt"}:
+            continue
+        application, method, path, _kind = key
+        grant = f"{application}:{method}:{path}"
+        if grant not in authorized:
+            failures.append(
+                f"  {grant}: new {current[key][0]} route policy needs already-landed authorization"
+            )
+    return failures
+
+
+def _public_identities_by_application(loaded: object) -> dict[str, set[tuple[str, str]]]:
+    """Return public route identities from the trusted legacy registry.
+
+    The application split is important during the first Turing inventory: its
+    current declarations are audited now, while later changes are ratcheted
+    once the Turing section exists at the trusted base.
+    """
+    if not isinstance(loaded, dict):
+        return {}
+    result: dict[str, set[tuple[str, str]]] = {}
+    result["conductor"] = _registry_identities(loaded.get("routes", {}))
+    applications = loaded.get("applications")
+    if isinstance(applications, dict):
+        for application in applications:
+            result[str(application)] = _registry_identities(
+                _application_registry(loaded, str(application))
+            )
+    return result
 
 
 def audit_registry(
@@ -261,35 +377,333 @@ def audit(today: date | None = None) -> list[str]:
     return audit_registry(declared, registry, today)
 
 
+def audit_turing_public(today: date | None = None) -> list[str]:
+    """Audit Turing's public declarations with the same registry rules."""
+    declared = declared_paths(_TURING_MIDDLEWARE.read_text(encoding="utf-8"))
+    loaded = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    return audit_registry(declared, _application_registry(loaded, "turing"), today)
+
+
+def _route_matches(path: str, declared: str, kind: str) -> bool:
+    if kind == "exact":
+        return path == declared
+    if kind == "prefix":
+        boundary = declared.rstrip("/")
+        return path == boundary or path.startswith(boundary + "/")
+    if kind == "template":
+        pattern = re.sub(r"\{[^/{}]+\}", r"[^/]+", declared)
+        return re.fullmatch(pattern.rstrip("/"), path.rstrip("/")) is not None
+    return False
+
+
+def _route_identities(route: Any) -> list[tuple[str, str]]:
+    """Read one concrete route or FastAPI's flattened included-route context."""
+    path = getattr(route, "path", None)
+    if not path:
+        path = getattr(route, "path_format", None)
+    if not path:
+        path = getattr(getattr(route, "starlette_route", None), "path", None)
+    methods = getattr(route, "methods", ())
+    if not isinstance(path, str):
+        return []
+    method_names = {str(method).upper() for method in (methods or ())}
+    if "GET" in method_names:
+        # FastAPI registers HEAD as an implementation detail of GET. The route
+        # policy declares the application method, not that implicit duplicate.
+        method_names.discard("HEAD")
+    route_kind = getattr(route, "original_route", route)
+    if not method_names and route_kind.__class__.__name__.endswith("WebSocketRoute"):
+        method_names = {"WEBSOCKET"}
+    return [(method, path) for method in sorted(method_names)]
+
+
+def registered_routes(app: Any) -> list[tuple[str, str]]:
+    """Return concrete identities from the live FastAPI application route tree.
+
+    FastAPI 0.141 keeps included routers as lazy ``_IncludedRouter`` entries in
+    ``app.routes``. Its effective contexts are the actual prefixed routes used
+    by dispatch; inspecting only the top-level entries would silently reduce
+    both applications to their four documentation routes.
+    """
+    found: list[tuple[str, str]] = []
+    for route in getattr(app, "routes", ()):
+        contexts = getattr(route, "effective_route_contexts", None)
+        if callable(contexts):
+            found.extend(
+                identity for context in contexts() for identity in _route_identities(context)
+            )
+            continue
+        found.extend(_route_identities(route))
+    return sorted(set(found))
+
+
+def _load_application(application: str) -> Any:
+    """Import a production app for route discovery, failing rather than skipping it."""
+    if application == "conductor":
+        paths = [
+            ROOT / "packages" / "hive-conductor" / "backend",
+            ROOT / "packages" / "maistro-design" / "src",
+            ROOT / "packages" / "maistro-core" / "src",
+        ]
+        module_name = "main"
+    elif application == "turing":
+        # Route discovery must not need a deployer's secret, but it must still
+        # import the real app. A placeholder is scoped to this checker process.
+        os.environ.setdefault("TURING_SERVICE_KEY", "route-discovery-placeholder")
+        paths = [
+            ROOT / "packages" / "maistro-turing",
+            ROOT / "packages" / "maistro-turing" / "src",
+            ROOT / "packages" / "maistro-core" / "src",
+        ]
+        module_name = "backend.main"
+    else:  # pragma: no cover - callers use the fixed application tuple
+        raise ValueError(f"unknown application {application!r}")
+
+    for path in reversed(paths):
+        sys.path.insert(0, str(path))
+    try:
+        module = import_module(module_name)
+        app = getattr(module, "app", None)
+        if app is None:
+            factory = getattr(module, "create_app", None)
+            app = factory() if callable(factory) else None
+        if app is None or not hasattr(app, "routes"):
+            raise RuntimeError(f"{application} module {module_name!r} did not expose a FastAPI app")
+        return app
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not import {application} backend for route discovery: {exc}"
+        ) from exc
+
+
+def _route_entry_failures(  # noqa: C901
+    application: str, discovered: list[tuple[str, str]], entries: list[Any], today: date
+) -> list[str]:
+    failures: list[str] = []
+    usable: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            failures.append(f"  {application}[{index}]: route declaration is not an object")
+            continue
+        path = entry.get("path")
+        kind = entry.get("kind")
+        if not isinstance(path, str) or not path.startswith("/"):
+            failures.append(f"  {application}[{index}]: route declaration needs an absolute path")
+        if kind not in _ROUTE_KINDS:
+            failures.append(f"  {application}[{index}]: unknown route matching kind {kind!r}")
+        methods = entry.get("methods", ["*"])
+        if (
+            not isinstance(methods, list)
+            or not methods
+            or any(not isinstance(method, str) for method in methods)
+        ):
+            failures.append(f"  {application}[{index}]: methods must be a non-empty list")
+        usable.append(entry)
+
+    for method, path in discovered:
+        matches = [
+            entry
+            for entry in usable
+            if method in entry.get("methods", ["*"]) or "*" in entry.get("methods", ["*"])
+            if _route_matches(path, str(entry.get("path", "")), str(entry.get("kind", "")))
+        ]
+        if not matches:
+            failures.append(f"  {application} {method} {path}: registered route has no declaration")
+            continue
+        # Use the same matcher as both runtime middlewares. Invalid entries
+        # were already reported above and are excluded from selection so a
+        # malformed policy cannot turn the gate itself into an exception.
+        valid_entries = [
+            entry
+            for entry in usable
+            if entry.get("kind") in _ROUTE_KINDS
+            and isinstance(entry.get("path"), str)
+            and isinstance(entry.get("methods", ["*"]), list)
+        ]
+        selected = route_policy(tuple(valid_entries), method, path)
+        if selected is None:
+            failures.append(f"  {application} {method} {path}: route declarations are ambiguous")
+            continue
+        failures.extend(_route_entry_problems(f"{application} {method} {path}", selected, today))
+
+    # A declaration that matches no live route is stale. Stale approvals are
+    # dangerous because a later route can accidentally inherit their intent.
+    for index, entry in enumerate(usable):
+        if not any(
+            (method in entry.get("methods", ["*"]) or "*" in entry.get("methods", ["*"]))
+            and _route_matches(path, str(entry.get("path", "")), str(entry.get("kind", "")))
+            for method, path in discovered
+        ):
+            failures.append(
+                f"  {application}[{index}]: route declaration matches no registered route"
+            )
+    return failures
+
+
+def _route_entry_problems(path: str, entry: dict[str, Any], today: date) -> list[str]:
+    access = entry.get("access")
+    if access == "permission":
+        permission = entry.get("permission")
+        if not isinstance(permission, str) or _PERMISSION_RE.fullmatch(permission) is None:
+            return [f"  {path}: permission must use canonical scope.verb vocabulary"]
+        return []
+    if access == "public":
+        return _entry_problems(path, entry, str(entry.get("kind")), today)
+    if access == "exempt":
+        missing = [
+            f"  {path}: an exemption must name {field!r}"
+            for field in ("owner", "reason", "expires")
+            if not entry.get(field)
+        ]
+        if missing:
+            return missing
+        try:
+            expires = date.fromisoformat(str(entry["expires"]))
+        except ValueError:
+            return [f"  {path}: exemption expires is not a YYYY-MM-DD date"]
+        if expires < today:
+            return [f"  {path}: exemption expired on {expires.isoformat()}"]
+        return []
+    return [f"  {path}: access must be permission, public, or exempt"]
+
+
+def audit_registered_routes(today: date | None = None) -> list[str]:
+    """Discover both live apps and audit them against the one route registry."""
+    today = today or date.today()
+    loaded = json.loads(ROUTE_REGISTRY.read_text(encoding="utf-8"))
+    routes = loaded.get("routes") if isinstance(loaded, dict) else None
+    if not isinstance(routes, dict):
+        return [f"  {ROUTE_REGISTRY.name}: routes must contain both applications"]
+    failures: list[str] = []
+    for application in _APPLICATIONS:
+        entries = routes.get(application)
+        if not isinstance(entries, list):
+            failures.append(f"  {application}: route registry section is missing")
+            continue
+        app = _load_application(application)
+        failures.extend(_route_entry_failures(application, registered_routes(app), entries, today))
+    return failures
+
+
 def main() -> int:
-    for required in (MIDDLEWARE, REGISTRY):
+    for required in (MIDDLEWARE, REGISTRY, ROUTE_REGISTRY, _TURING_MIDDLEWARE):
         if not required.is_file():
             print(f"FAIL: {required} does not exist", file=sys.stderr)
             return 1
 
-    declared = declared_paths(MIDDLEWARE.read_text(encoding="utf-8"))
-    candidate = _registry(json.loads(REGISTRY.read_text(encoding="utf-8")))
-    candidate_failures = audit_registry(declared, candidate)
+    declared_by_application = {
+        "conductor": declared_paths(MIDDLEWARE.read_text(encoding="utf-8")),
+        "turing": declared_paths(_TURING_MIDDLEWARE.read_text(encoding="utf-8")),
+    }
+    declared = {
+        f"{application}:{path}:{kind}"
+        for application, paths in declared_by_application.items()
+        for path, kind in paths.items()
+    }
+    loaded_public = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    candidate = _registry(loaded_public)
+    candidate_failures = audit_registry(declared_by_application["conductor"], candidate)
+    candidate_failures.extend(
+        audit_registry(
+            declared_by_application["turing"],
+            _application_registry(loaded_public, "turing"),
+        )
+    )
+    try:
+        candidate_failures.extend(audit_registered_routes())
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        candidate_failures.append(f"  route discovery failed closed: {exc}")
 
     prov = _provenance()
+    route_policy_failures: list[str] = []
+    route_base_ref = None
     try:
         _materialize_ci_history(prov)
         base_ref = prov.resolve_baseline(REGISTRY, root=ROOT)
-        base_registry = _registry(base_ref.loads(default={"routes": {}}))
+        base_loaded = base_ref.loads(default={"routes": {}})
+        base_registries = _public_identities_by_application(base_loaded)
         prov.require_measurement(declared, ratchet=RATCHET, what="public routes")
         authorized = prov.load_authorizations(RATCHET, base=base_ref.base_sha)
+        # Permission policy is also trusted-base state. Public-surface growth
+        # uses the public-routes ratchet above; this second comparison prevents
+        # a candidate from weakening an existing protected/exempt declaration
+        # by editing the route table and its consumer together.
+        route_base_ref = prov.resolve_baseline(ROUTE_REGISTRY, root=ROOT)
+        # Keep the checker compatible with lightweight provenance adapters used
+        # by the ratchet regression tests; a resolved baseline is present unless
+        # an adapter explicitly marks it absent.
+        if not getattr(route_base_ref, "absent_at_base", False):
+            route_authorized = prov.load_authorizations(
+                "route-permissions", base=route_base_ref.base_sha
+            )
+            route_policy_failures.extend(
+                _route_policy_failures(
+                    _route_policy_map(route_base_ref.loads(default={})),
+                    _route_policy_map(json.loads(ROUTE_REGISTRY.read_text(encoding="utf-8"))),
+                    route_authorized,
+                )
+            )
     except (RuntimeError, prov.RatchetProvenanceError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
-    current_identities = set(declared.items())
-    base_identities = _registry_identities(base_registry)
+    # The Turing public table is bootstrapped by this issue. Once it exists at
+    # the trusted base, the same identity ratchet applies to it automatically.
+    current_identities = {
+        (application, path, kind)
+        for application, paths in declared_by_application.items()
+        if application in base_registries
+        for path, kind in paths.items()
+    }
+    base_identities = {
+        (application, path, kind)
+        for application, identities in base_registries.items()
+        for path, kind in identities
+    }
     added_identities = sorted(current_identities - base_identities)
-    affected_paths = sorted({path for path, _kind in added_identities})
+    # Tightening FastAPI's historical loose /openapi matcher to its one
+    # registered schema route is a narrowing, not a newly public surface.
+    added_identities = [
+        identity
+        for identity in added_identities
+        if not (
+            (
+                identity[0] == "conductor"
+                and identity[1] == "/openapi.json"
+                and identity[2] == "exact"
+                and ("/openapi", "loose-prefix") in base_registries.get("conductor", set())
+            )
+            or (
+                identity[0] == "conductor"
+                and identity[2] == "prefix"
+                and identity[1] in {"/docs", "/redoc"}
+                and (identity[1], "loose-prefix") in base_registries.get("conductor", set())
+            )
+        )
+    ]
+    affected_paths = sorted(
+        {f"{application}:{path}" for application, path, _kind in added_identities}
+    )
     unauthorized = [path for path in affected_paths if path not in authorized]
     unbanked_authorized = [
-        path for path in affected_paths if path in authorized and path not in candidate
+        path
+        for path in affected_paths
+        if path in authorized
+        and not any(candidate_path == path.partition(":")[2] for candidate_path in candidate)
     ]
+
+    if route_base_ref is not None and not getattr(route_base_ref, "absent_at_base", False):
+        print(
+            prov.Provenance(
+                ratchet="route-permissions",
+                baseline=route_base_ref,
+                tool="shared route policy",
+                metric_definition_version=METRIC_DEFINITION_VERSION,
+                old_value="trusted route policy",
+                new_value="candidate route policy",
+                candidate_sha=prov.head_sha(ROOT),
+            ).render()
+        )
 
     print(
         prov.Provenance(
@@ -306,10 +720,14 @@ def main() -> int:
         ).render()
     )
 
-    failures = list(candidate_failures)
+    failures = [*candidate_failures, *route_policy_failures]
     for path in unauthorized:
-        base_entry = base_registry.get(path)
-        old_kind = base_entry.get("kind") if isinstance(base_entry, dict) else None
+        application, _, route_path = path.partition(":")
+        base_entry = base_registries.get(application, set())
+        old_kind = next(
+            (kind for candidate_path, kind in base_entry if candidate_path == route_path),
+            None,
+        )
         if old_kind is None:
             failures.append(
                 f"  {path}: NEW unauthenticated path is absent from the trusted base and has no "
@@ -318,7 +736,8 @@ def main() -> int:
         else:
             failures.append(
                 f"  {path}: unauthenticated matching kind changed from {old_kind!r} to "
-                f"{declared[path]!r} without already-landed authorization"
+                f"{next((kind for candidate_path, kind in declared_by_application[application].items() if candidate_path == route_path), None)!r} "
+                "without already-landed authorization"
             )
     failures.extend(
         f"  {path}: authorized public-surface expansion is not recorded in the candidate registry"
@@ -326,7 +745,7 @@ def main() -> int:
     )
 
     if failures:
-        print(f"FAIL: {len(failures)} problem(s) with the unauthenticated route surface:\n")
+        print(f"FAIL: {len(failures)} problem(s) with the HTTP route authorization surface:\n")
         print("\n".join(failures))
         print(
             "\nA new public route or matching-kind expansion requires its registry entry plus a "
@@ -335,7 +754,10 @@ def main() -> int:
         )
         return 1
 
-    print(f"ok: all {len(declared)} unauthenticated path(s) are declared and base-authorized")
+    print(
+        f"ok: all {len(declared)} unauthenticated path(s) are declared and base-authorized; "
+        "both live route tables are declared and authorized"
+    )
     return 0
 
 

@@ -179,15 +179,21 @@ class Gap:
         return f"{self.check}::{self.item}"
 
 
-# --- check A: mutating routes must carry a scope ---------------------------
+# --- check A: no mutating /v1/ route may be anonymously reachable ----------
 
 
 def check_routes() -> tuple[list[Gap], str | None]:
-    """Every mutating /v1/ route must resolve to a permission in _PROTECTED_OPS.
+    """Model the live middleware and refuse anonymous state changes.
 
-    Introspects the real FastAPI app rather than parsing decorators: the app is
-    the authority on what is actually mounted, including routers mounted
-    conditionally behind feature flags, and it reports the true method set.
+    Since #1140 the Conductor middleware enforces quality/route-permissions.json
+    through the shared matcher (maistro.security.http_routes): every registered
+    route carries a ``permission``, a reviewed ``public`` declaration, or a
+    reviewed ``exempt`` entry, and an undeclared /v1/ path is default-denied.
+    This check keeps the anonymous surface empty of state changes even if that
+    gate is ever bypassed, by evaluating exactly the decision the middleware
+    makes: a request is anonymous only when the middleware's public tables admit
+    it AND the registry classifies it ``public``. A mutating route may not sit
+    in that set.
     """
     backend = REPO / "packages" / "hive-conductor" / "backend"
     if not backend.is_dir():
@@ -202,46 +208,48 @@ def check_routes() -> tuple[list[Gap], str | None]:
     os.environ.setdefault("CONDUCTOR_DATA_DIR", "/tmp/enum-check-data")
     try:
         from main import app  # type: ignore[import-not-found]
-        from middleware.auth import (  # type: ignore[import-not-found]
-            _PROTECTED_OPS,
-            _PUBLIC_EXACT,
-            _PUBLIC_PREFIXES,
-            _matches_public_prefix,
+        from middleware import auth as auth_middleware  # type: ignore[import-not-found]
+
+        from maistro.security.http_routes import (  # type: ignore[import-not-found]
+            load_route_policy,
+            locate_route_registry,
+            route_policy,
         )
     except Exception as exc:  # pragma: no cover - reported, never swallowed
         # Deliberately not a silent skip: if this check cannot run, the build
         # should say so rather than print a green tick it has not earned.
         return [], f"could not import the app ({type(exc).__name__}: {exc})"
 
+    try:
+        # The same file, located the same way, that the middleware enforces.
+        entries = load_route_policy(
+            locate_route_registry(Path(auth_middleware.__file__)), "conductor"
+        )
+    except Exception as exc:  # pragma: no cover - reported, never swallowed
+        return [], f"could not load the route registry ({type(exc).__name__}: {exc})"
+
     def _is_public(path: str) -> bool:
-        return path in _PUBLIC_EXACT or any(
-            _matches_public_prefix(path, p) for p in _PUBLIC_PREFIXES
+        return path in auth_middleware._PUBLIC_EXACT or any(
+            auth_middleware._matches_public_prefix(path, p)
+            for p in auth_middleware._PUBLIC_PREFIXES
         )
 
-    # A _PROTECTED_OPS entry on a path the middleware returns from EARLY as
-    # public never executes: dispatch checks the public tables before the
-    # permission table, so a "scoped" public route is unauthenticated in
-    # practice (Codex P2 on #263: POST /v1/voice/intent). Model the bypass
-    # instead of trusting the scope entry.
     gaps: dict[str, str] = {}
     for path, method in _mutating_v1_routes(app.routes):
         if _route_is_exempt(path):
             # Documented intentionally-public/unscoped prefixes (auth, setup).
             continue
-        public = _is_public(path)
-        scoped = _route_is_scoped(path, method, _PROTECTED_OPS)
-        if public and scoped:
-            gaps[f"{method} {path}"] = (
-                "scope entry is INEFFECTIVE — middleware treats this path as "
-                "public and never consults _PROTECTED_OPS"
-            )
-        elif public:
+        policy = route_policy(entries, method, path)
+        # The middleware only admits a public-table path anonymously when the
+        # registry itself declares it public; a permission or reviewed exempt
+        # declaration there means authentication (at least) is required, and a
+        # missing declaration is default-denied outright.
+        anonymous = _is_public(path) and policy is not None and policy.get("access") == "public"
+        if anonymous:
             gaps[f"{method} {path}"] = (
                 "public mutating route — reachable without authentication "
-                "(dispatch bypasses auth before the scope table)"
+                "(registry declares it public and the middleware honours that)"
             )
-        elif not scoped:
-            gaps[f"{method} {path}"] = "mutating route with no _PROTECTED_OPS entry"
     return [Gap("routes", item, detail) for item, detail in sorted(gaps.items())], None
 
 
@@ -275,20 +283,6 @@ def _route_is_exempt(path: str) -> bool:
     that merely shares its spelling.
     """
     return any(path == prefix or path.startswith(prefix + "/") for prefix in ROUTE_EXEMPT)
-
-
-def _route_is_scoped(path: str, method: str, protected: dict[str, dict[str, str]]) -> bool:
-    """True if this route needs no scope entry, or already resolves to one.
-
-    The _PROTECTED_OPS match stays raw startswith ON PURPOSE: that is exactly
-    how middleware._required_permission matches at runtime, and this checker
-    must model enforcement as it is, not as it ought to be.
-    """
-    if path.endswith("/invoke"):
-        return True  # documented exemption in _required_permission
-    if _route_is_exempt(path):
-        return True
-    return any(path.startswith(prefix) for prefix in protected.get(method, {}))
 
 
 # --- check B: the sensitive-path list must cover the sensitive dirs --------

@@ -47,7 +47,7 @@ def _config_writer(task_id: str) -> TestClient:
 
 
 def test_list_capabilities_shows_canonical_slots() -> None:
-    c = _login()
+    c = _config_writer("cap-route-list")
     r = c.get("/v1/capabilities")
     assert r.status_code == 200, r.text
     slots = {s["slot"]: s for s in r.json()["slots"]}
@@ -101,7 +101,7 @@ def test_discover_returns_registered_count() -> None:
 
 
 def test_list_approvals_empty_by_default() -> None:
-    c = _login()
+    c = _config_writer("cap-route-approvals")
     r = c.get("/v1/capabilities/approvals")
     assert r.status_code == 200
     assert r.json()["pending"] == []

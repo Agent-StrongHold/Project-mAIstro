@@ -92,12 +92,24 @@ def _broken_provenance() -> SimpleNamespace:
 
 def _load_script(relative: str, name: str) -> ModuleType:
     path = ROOT / relative
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    # Emulate `python scripts/<script>.py` semantics: a script run directly has
+    # its own directory as sys.path[0], so sibling imports such as
+    # check-model-egress.py's `import check_direct_effects` resolve. Loading
+    # via spec alone skips that, and the sibling import fails.
+    scripts_dir = str(path.parent)
+    added = scripts_dir not in sys.path
+    if added:
+        sys.path.insert(0, scripts_dir)
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        if added:
+            sys.path.remove(scripts_dir)
 
 
 def _exercise_loader(module: ModuleType, target: Path, name: str) -> None:
@@ -526,27 +538,39 @@ def test_public_routes_main_covers_missing_success_and_new_surface_paths(
     module = _load_script("scripts/check-public-routes.py", "_coverage_public_routes")
     _exercise_direct_provenance_loader(module)
     middleware = tmp_path / "auth.py"
+    turing_middleware = tmp_path / "turing-auth.py"
     registry = tmp_path / "public-routes.json"
+    route_registry = tmp_path / "route-permissions.json"
     monkeypatch.setattr(module, "MIDDLEWARE", middleware)
+    monkeypatch.setattr(module, "_TURING_MIDDLEWARE", turing_middleware)
     monkeypatch.setattr(module, "REGISTRY", registry)
+    monkeypatch.setattr(module, "ROUTE_REGISTRY", route_registry)
+    # Live route discovery imports both production applications and is covered
+    # against the real registries by tests/test_route_permission_gate.py; this
+    # test pins the provenance/ratchet flow of main() itself.
+    monkeypatch.setattr(module, "audit_registered_routes", lambda: [])
     assert module.main() == 1
 
+    health_entry = {
+        "kind": "exact",
+        "owner": "@owner",
+        "risk": "low",
+        "disposition": "permanent",
+        "reason": "health",
+    }
     middleware.write_text('_PUBLIC_EXACT = ("/health",)\n', encoding="utf-8")
+    turing_middleware.write_text('_PUBLIC_EXACT = ("/health",)\n', encoding="utf-8")
     registry.write_text(
         json.dumps(
             {
-                "routes": {
-                    "/health": {
-                        "kind": "exact",
-                        "owner": "@owner",
-                        "risk": "low",
-                        "disposition": "permanent",
-                        "reason": "health",
-                    }
-                }
+                "routes": {"/health": dict(health_entry)},
+                "applications": {"turing": {"routes": {"/health": dict(health_entry)}}},
             }
         ),
         encoding="utf-8",
+    )
+    route_registry.write_text(
+        json.dumps({"routes": {"conductor": [], "turing": []}}), encoding="utf-8"
     )
     monkeypatch.setattr(module, "_materialize_ci_history", lambda _prov: None)
     monkeypatch.setattr(
@@ -554,15 +578,8 @@ def test_public_routes_main_covers_missing_success_and_new_surface_paths(
         "_provenance",
         lambda: _provenance(
             {
-                "routes": {
-                    "/health": {
-                        "kind": "exact",
-                        "owner": "@owner",
-                        "risk": "low",
-                        "disposition": "permanent",
-                        "reason": "health",
-                    }
-                }
+                "routes": {"/health": dict(health_entry)},
+                "applications": {"turing": {"routes": {"/health": dict(health_entry)}}},
             }
         ),
     )

@@ -8,11 +8,10 @@ Two sibling-prefix-confusion bugs were found and fixed here:
    ``"/v1/auth/login-history"``) would silently bypass authentication
    entirely. Fixed via ``_matches_public_prefix`` (mirrors the analogous
    fix already applied to ``tools/sandbox/workspace.py``).
-2. ``_required_permission`` used ``"/invoke" in path`` (substring anywhere)
-   to exempt the autonomous agent-invoke action from permission gating.
-   Any future route merely containing "/invoke" as a substring — not just
-   the real trailing ``/{id}/invoke`` segment — would also lose its
-   permission gate. Fixed to ``path.endswith("/invoke")``.
+2. ``_required_permission`` used a trailing ``/invoke`` or ``/feedback``
+   suffix to exempt any matching future route from permission gating. The
+   shared route declaration is now the default-deny boundary and no suffix
+   can create an authenticated-only exception.
 
 These tests drive the real ``main:app`` + ``AuthMiddleware`` stack via
 ``TestClient``, matching this file's established convention (see
@@ -58,6 +57,8 @@ def temp_route() -> Iterator[object]:
             return {"reached": True}
 
         app.add_api_route(path, _handler, methods=["GET"])
+        # Insert before the SPA catch-all, just as production API routers are.
+        app.router.routes.insert(0, app.router.routes.pop())
         added.append(path)
 
     yield _add
@@ -172,27 +173,30 @@ class TestUnauthenticatedProtectedPaths:
         r = c.get("/v1/tasks")
         assert r.status_code == 401
 
-    def test_non_v1_unregistered_path_is_not_auth_gated(self, temp_route) -> None:
-        """Paths outside /v1/ are never auth-gated by this middleware at
-        all (by design — only /v1/* is gated), regression-locking that
-        scope so a future change to the gating condition is caught."""
+    def test_non_v1_undeclared_handler_cannot_borrow_spa_exemption(self, temp_route) -> None:
         temp_route("/not-versioned-at-all")
         c = TestClient(app)
         r = c.get("/not-versioned-at-all")
-        assert r.status_code == 200
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Route authorization declaration required"
 
 
 class TestInvokeSubstringCarveOutBoundary:
     """Regression lock for the "/invoke" substring -> endswith fix."""
 
-    def test_real_agent_invoke_path_still_exempted_from_permission(self) -> None:
+    def test_real_agent_invoke_path_uses_the_declared_permission(self) -> None:
         c = _login()
-        # No agents.write permission, no elevation — would 403 under
-        # _PROTECTED_OPS POST "/v1/agents" if not exempted; the route itself
-        # may 404 (PM POC mode) or 200, but it must not be a 403 from the
-        # permission gate.
+        # The route is inside the reviewed /v1/agents permission boundary; a
+        # suffix must not turn it into an authenticated-only island.
         r = c.post("/v1/agents/some-agent/invoke", json={})
-        assert r.status_code != 403
+        assert r.status_code == 403
+        assert "agents.write" in r.json()["detail"]
+
+    def test_hypothetical_feedback_suffix_sibling_is_not_exempted(self, temp_route) -> None:
+        temp_route("/v1/agents/feedback-history")
+        c = _login()
+        r = c.post("/v1/agents/feedback-history")
+        assert r.status_code == 403
 
     def test_hypothetical_invoke_substring_sibling_is_not_exempted(self, temp_route) -> None:
         """A path that merely *contains* "/invoke" but doesn't end with it
@@ -238,6 +242,45 @@ class TestProtectedOpsPermissionMatrix:
         r = c.post("/v1/auth/login", json={"username": uid, "password": "pw"})
         assert r.status_code == 200, r.text
         return c
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/v1/settings",
+            "/v1/audit",
+            "/v1/providers",
+            "/v1/skills",
+            "/v1/schedules",
+            "/v1/dags",
+            "/v1/optimizer/proposals",
+        ],
+    )
+    def test_existing_reads_need_a_session_not_write_elevation(self, path: str) -> None:
+        assert TestClient(app).get(path).status_code == 401
+        c = self._writer("read-" + path.rsplit("/", 1)[-1], perms=[])
+        r = c.get(path)
+        assert r.status_code == 200, r.text
+        assert isinstance(r.json(), (dict, list))
+
+    @pytest.mark.parametrize(
+        ("method", "path", "permission"),
+        [
+            ("PUT", "/v1/settings", "config.write"),
+            ("POST", "/v1/audit", "audit.write"),
+            ("POST", "/v1/providers/example/activate", "config.write"),
+            ("POST", "/v1/skills", "skills.write"),
+            ("POST", "/v1/schedules", "schedules.write"),
+            ("POST", "/v1/dags", "dags.write"),
+            ("POST", "/v1/optimizer/proposals/example/accept", "dags.write"),
+        ],
+    )
+    def test_read_exemptions_do_not_authorize_writes(
+        self, method: str, path: str, permission: str
+    ) -> None:
+        c = self._writer("write-" + permission, perms=[])
+        r = c.request(method, path, json={})
+        assert r.status_code == 403
+        assert permission in r.json()["detail"]
 
     def test_delete_agents_without_permission_is_403(self) -> None:
         c = self._writer("del-agents-1", perms=[])
@@ -288,10 +331,13 @@ class TestAdminBlockedFromChat:
         r2 = c.post("/v1/chat/message", json={"message": "hi"})
         assert r2.status_code == 403
 
-    def test_regular_user_not_blocked_from_chat_path(self) -> None:
+    def test_regular_user_chat_preserves_existing_product_authorization(self) -> None:
         c = _login()
-        r = c.post("/v1/chat/message", json={"message": "hi"})
-        assert r.status_code != 403
+        r = c.post(
+            "/v1/chat/complete",
+            json={"messages": [{"role": "user", "content": "ping"}]},
+        )
+        assert r.status_code == 200
 
 
 class TestMalformedAuthHeaders:
@@ -313,7 +359,8 @@ class TestMalformedAuthHeaders:
     def test_cookie_session_overrides_absent_header(self) -> None:
         c = _login()
         r = c.get("/v1/tasks", headers={"Authorization": "Bearer not-a-real-session"})
-        # Cookie wins (checked first in _get_user); request still succeeds.
+        # Cookie wins (checked first in _get_user). The task route is an
+        # explicit exemption because its handler applies resource ownership.
         assert r.status_code == 200
 
     def test_unknown_session_id_in_cookie_is_401(self) -> None:
@@ -378,4 +425,5 @@ class TestInstallPreSetupWindow:
         temp_route("/v1/installers-catalog")
         c = TestClient(app)
         r = c.get("/v1/installers-catalog")
-        assert r.status_code == 401
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Route authorization declaration required"
