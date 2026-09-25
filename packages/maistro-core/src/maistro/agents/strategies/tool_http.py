@@ -3,9 +3,30 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from maistro.http import shared_client
+
+_SAFE_COMMAND_PATH = re.compile(r"^[A-Za-z0-9_./*?-]+$")
+
+
+def _validate_command_args(tool_name: str, args: dict[str, Any]) -> str | None:
+    """Reject shell syntax before a command-capable HTTP backend sees it."""
+    if tool_name not in {
+        "run_pytest",
+        "run_ruff_check",
+        "run_mypy",
+        "run_bandit",
+        "run_ruff_format",
+    }:
+        return None
+    path = args.get("path", "src/")
+    if not isinstance(path, str) or not _SAFE_COMMAND_PATH.fullmatch(path):
+        return "path is not in the approved command-path grammar"
+    if path.startswith("-"):
+        return "path cannot start with '-'"
+    return None
 
 
 class HTTPToolExecutor:
@@ -15,6 +36,8 @@ class HTTPToolExecutor:
         self._base_url = base_url.rstrip("/")
 
     async def call(self, tool_name: str, args: dict[str, Any]) -> str:
+        if error := _validate_command_args(tool_name, args):
+            return f"Error: invalid arguments for tool '{tool_name}': {error}"
         url = f"{self._base_url}/tools/{tool_name}"
         try:
             async with shared_client(timeout=120.0) as client:

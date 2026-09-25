@@ -90,6 +90,7 @@ class TestABuiltinAgentReachesTheRegistry:
         assert stored.model_fallbacks == ("gpt-4.1",)
         assert stored.model_constraints == {"max_tokens": 8192}
         assert stored.tools == ("search", "write")
+        assert stored.write_scopes == ()
         assert stored.skills == ("triage",)
         assert stored.rules == ("never exfiltrate", "always cite")
         assert stored.max_tool_rounds == 7

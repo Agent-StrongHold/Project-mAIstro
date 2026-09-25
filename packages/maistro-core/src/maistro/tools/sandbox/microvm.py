@@ -14,12 +14,13 @@ change — just a different backend. Network is default-deny; memory/vCPU are ca
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 from maistro.config.settings import SandboxSettings
 from maistro.security.dangerous_tools import is_dangerous_command
+from maistro.tools.sandbox.docker import CommandContractError, parse_command
 from maistro.tools.sandbox.env_sanitize import sanitize_env
 
 NetworkMode = Literal["none", "restricted"]
@@ -66,7 +67,7 @@ class MicroVMConfig:
 class MicroVMRunSpec:
     """Everything a launcher needs to boot a VM, run one command, and tear down."""
 
-    command: str
+    command: tuple[str, ...]
     workspace: str
     timeout: int
     config: MicroVMConfig
@@ -130,13 +131,17 @@ class MicroVMSandbox:
     def config(self) -> MicroVMConfig:
         return self._config
 
-    async def exec(self, command: str, timeout: int = 60) -> tuple[int, str]:
-        """Run ``command`` in a fresh microVM. Refuses obviously-dangerous commands."""
-        dangers = is_dangerous_command(command)
+    async def exec(self, command: str | Sequence[str], timeout: int = 60) -> tuple[int, str]:
+        """Run validated argv in a fresh microVM, never a shell command string."""
+        try:
+            argv = tuple(parse_command(command))
+        except CommandContractError as exc:
+            return _BLOCKED_EXIT_CODE, f"blocked command contract: {exc}"
+        dangers = is_dangerous_command(" ".join(argv))
         if dangers:
             return _BLOCKED_EXIT_CODE, f"blocked dangerous command: {', '.join(dangers)}"
         spec = MicroVMRunSpec(
-            command=command,
+            command=argv,
             workspace=self._workspace,
             timeout=min(timeout, self._config.timeout),
             config=self._config,
