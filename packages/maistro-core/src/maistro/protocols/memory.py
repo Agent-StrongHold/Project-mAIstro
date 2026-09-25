@@ -420,8 +420,8 @@ class UserModelStore(Protocol):
         """Append the next revision; it must directly follow the current one."""
         ...
 
-    async def current(self, lineage_id: str) -> UserModelFact | None:
-        """The latest revision of a lineage, if any."""
+    async def current(self, lineage_or_fact_key: str) -> UserModelFact | None:
+        """The latest revision of a lineage, found by its id or any statement key it held."""
         ...
 
     async def history(self, lineage_id: str) -> list[UserModelFact]:
@@ -438,6 +438,6 @@ class UserModelStore(Protocol):
         """Delete a lineage's content for good, keeping who deleted it and why."""
         ...
 
-    async def is_tombstoned(self, lineage_id: str) -> bool:
-        """Whether the lineage was tombstoned and must not be recreated."""
+    async def is_tombstoned(self, lineage_or_fact_key: str) -> bool:
+        """Whether the lineage (by id or any statement key it held) was tombstoned."""
         ...

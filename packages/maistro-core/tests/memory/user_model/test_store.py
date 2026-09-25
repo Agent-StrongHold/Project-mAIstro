@@ -19,7 +19,7 @@ from maistro.protocols.memory import UserModelStore
 
 
 def _fact(owner: str, statement: str, **overrides: object) -> UserModelFact:
-    lineage = fact_key(owner, "preference", statement)
+    lineage = fact_key(owner, statement)
     base = UserModelFact(
         lineage_id=lineage,
         revision=1,
@@ -36,12 +36,8 @@ def test_store_satisfies_protocol() -> None:
 
 
 def test_fact_key_is_owner_bound_and_normalized() -> None:
-    assert fact_key("u1", "preference", "Likes  Cameras") == fact_key(
-        "u1", "preference", "likes cameras"
-    )
-    assert fact_key("u1", "preference", "likes cameras") != fact_key(
-        "u2", "preference", "likes cameras"
-    )
+    assert fact_key("u1", "Likes  Cameras") == fact_key("u1", "likes cameras")
+    assert fact_key("u1", "likes cameras") != fact_key("u2", "likes cameras")
 
 
 def test_fact_rejects_malformed_values() -> None:
@@ -126,6 +122,34 @@ async def test_tombstone_unknown_or_foreign_lineage_is_refused() -> None:
     await store.append_revision(fact)
     with pytest.raises(KeyError):
         await store.tombstone("missing", acting_user_id="u1", reason="x")
-    with pytest.raises(PermissionError):
+    with pytest.raises(KeyError):
         await store.tombstone(fact.lineage_id, acting_user_id="u2", reason="x")
     assert not await store.is_tombstoned(fact.lineage_id)
+
+
+async def test_tombstone_blocks_every_statement_the_lineage_held() -> None:
+    store = InMemoryUserModelStore()
+    first = _fact("u1", "likes cats")
+    await store.append_revision(first)
+    await store.append_revision(
+        dataclasses.replace(
+            first, fact_id="f2", revision=2, supersedes=first.fact_id, statement="likes dogs"
+        )
+    )
+    assert (await store.current(fact_key("u1", "likes cats"))) == (
+        await store.current(fact_key("u1", "likes dogs"))
+    )
+
+    await store.tombstone(first.lineage_id, acting_user_id="u1", reason="forget")
+
+    assert await store.is_tombstoned(fact_key("u1", "likes dogs"))
+    assert await store.is_tombstoned(fact_key("u1", "likes cats"))
+    with pytest.raises(TombstonedLineageError):
+        await store.append_revision(_fact("u1", "likes dogs", lineage_id="fresh"))
+
+
+async def test_a_statement_belongs_to_one_lineage() -> None:
+    store = InMemoryUserModelStore()
+    await store.append_revision(_fact("u1", "likes cats"))
+    with pytest.raises(RevisionConflictError):
+        await store.append_revision(_fact("u1", "Likes cats", lineage_id="other"))

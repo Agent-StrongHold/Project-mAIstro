@@ -89,9 +89,13 @@ def normalize_statement(statement: str) -> str:
     return " ".join(statement.split()).casefold()
 
 
-def fact_key(owner_user_id: str, kind: str, statement: str) -> str:
-    """Deterministic lineage id, so re-promoted evidence finds its tombstone."""
-    raw = "\x1f".join((owner_user_id, kind, normalize_statement(statement)))
+def fact_key(owner_user_id: str, statement: str) -> str:
+    """Owner-bound statement identity, so re-promoted evidence finds its lineage.
+
+    ``kind`` is deliberately not part of it: a producer relabelling a fact must
+    not be able to step around the owner's tombstone.
+    """
+    raw = "\x1f".join((owner_user_id, normalize_statement(statement)))
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
