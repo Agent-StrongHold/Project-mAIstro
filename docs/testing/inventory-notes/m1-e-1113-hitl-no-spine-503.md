@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +2/-1
+  packages/hive-conductor/backend/tests: +1
 ---
 # M1-E #1113 HITL no-spine truth and transport-parity spine
 
