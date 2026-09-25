@@ -512,3 +512,36 @@ ran via in-memory pytest plugins on `PYTHONPATH=/tmp/mutations`).
   `opencode.py:112` (production `MicroVMSandbox` construction);
   `formal-conformance` remains a required status check on develop+main
   (`branch-protection.json:50,112`).
+
+## Independent verifier pass — d9ece4b04 (2025-09-24)
+
+Re-derived from the issue text at head `d9ece4b04f527c6f3547cf39a85285c9a8944c50`; all
+commands executed fresh in the lane worktree (tree untouched except this note).
+
+- Targeted: `pytest formal/models/test_dangerous_tools.py
+  formal/models/test_external_content.py tests/test_check_formal_oracle_independence.py
+  -q --hypothesis-seed=0` → **274 passed**.
+- Full required-CI equivalent: no local 5432; reused healthy shared `pgvector:pg18`
+  instance (`maistro-postgres`, `127.0.0.1:5433`) with a dedicated throwaway database
+  (`maistro_formal_341v`), fresh `alembic upgrade head`, installed `-e
+  packages/maistro-evolve` (the driver `uv sync` had uninstalled it; CI installs it
+  explicitly), both DSN env vars set, `pytest formal/models/ -q --timeout=300
+  --hypothesis-seed=0` → **664 passed in 58.28s**.
+- Demonstrated 21-of-22 deletion (in-memory plugin keeping only `sudo\s+`) under the
+  exact full required command with PG → **193 failed, 471 passed**.
+- Mutation battery (targeted file, seam-precise plugins in /tmp, no tree edits):
+  weaken `rm\s+-rf\s+[/~]` → `rm\s+-rf\s+/` → **6 failed**; benign-prefix shadow
+  (predicate + executor binding) → **95 failed**; executor deny-check dropped only
+  (`microvm.is_dangerous_command = λ: []`, predicate left intact — the precise
+  "unreachable from production" mutation) → **41 failed**. All four classes fail.
+- Gate (real script, true exit codes): `--base 60862b6c` → **exit 0** (bootstrap);
+  unresolvable base → **exit 2**; isolated /tmp mini-repo with a copy of the script:
+  oracle+`packages/maistro-core/src/maistro/security/` co-change → **exit 1**;
+  oracle-only → **exit 0**. First harness attempt used a non-protected impl path and
+  was discarded; recorded numbers above are from the corrected protected-path fixture.
+- `uv run ruff check .` → clean. Live PR #1452 body/head refreshed read-only: only
+  `Refs #341`, no closure keywords; zero closure keywords in any commit body on the
+  branch. Required contexts confirmed at `.github/branch-protection.json:50,112`.
+- Residuals: live CI status on this exact head not independently observed (draft PR;
+  push prohibited) — local full required-command run at this head is the operative
+  evidence; org rulesets still require 0 approvals (prior finding, org-side).
