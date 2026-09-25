@@ -200,3 +200,42 @@ restored byte-identical (`cmp` vs backups, `git status --porcelain` empty)
 and all 26 runner+resume tests green post-restore. Push-blocking note: the
 earlier non-fast-forward is resolved locally — `origin/auto-1138` (`8b7c8fb16`)
 is an ancestor of this head, so a future push is a fast-forward.
+
+Revalidation at merge head `9d943a8a9` (develop base `2c8022fe8`, no source
+delta vs prior revalidation — `git diff` between this head and the prior
+round's checked tree is confined to the merge/docs). Independent verifier
+round: driver checks (uv sync, ruff check, ruff format --check, 166 targeted
+rsi tests, suite inventory) all green per job logs; the 166 targeted tests
+re-executed locally by this round also pass (19.2s). Out-of-tree adversarial
+probes re-executed at this head, all passing: (1) one payload relocated across
+plain text / nested structured value / attacker-controlled key / filename /
+commit-message / diff-hunk text is blocked in every shape by the canonical
+Warden and `admit()` raises; (2) `Warden=None` fails closed with truthful
+`warden_unavailable`, correlated (workspace/project/run/attempt/campaign/
+candidate/base/head/policy_version) and credential-redacted audit record;
+(3) the REAL `proxy_swebench` seam behind the cycle-installed
+`guarded_async_call` wrapper refuses a malicious candidate system prompt —
+inner model callable never invoked, score 0.0; (4) a hostile tool-schema
+description in call kwargs is refused before the model. Seam re-enumeration at
+this head confirms every model/context seam guarded: gateway.py (scan before
+HTTP I/O), runner.py (injected llm_call wrapped), local_loop.py (builder
+system prompt + WardenGuardedCallable transcript scan, saved-patch resume
+admission before `git apply`, hyper-mutation prompt, scout caller,
+regression-judge diff), autorun.py proposer, `__main__.py` hyper-mutator,
+scout.py (both calls), swebench_pro.py (guarded model call + genome fields).
+`free_router.py` (literal ping) and `harvest.py` (promotion-side grouping,
+#302) confirmed non-seams. Quarantine independence re-pinned:
+`selfbranch.py` gates PR creation on an affirmative `quarantine_verdict.cleared`
+(a missing check is DENY), unaffected by any Warden verdict. Closure-keyword
+review: PR #1446 body says "Refs #1138" and no commit in
+`2c8022fe8..9d943a8a9` contains fixes/closes/resolves — no premature issue
+closure. Residual observation (non-blocking): the defense-in-depth boundary
+inside `benchmarks/swebench_pro.py` carries only `candidate_id` correlation
+and no durable sink; refusals at that secondary layer surface in the
+EvalResult metadata (`warden_admission`) and structured logs, while the
+primary RsiCycle/gateway layer persists correlated Jsonl audit — acceptable
+because content admission still fails closed and the truthful outcome is
+recorded, but a future pass could thread `audit_sink`/`correlation` through
+that layer too. Push-block resolution verified locally: `origin/auto-1138`
+(`8b7c8fb16`) is an ancestor of this head (fast-forward when pushed; pushing
+remains a writer/driver action).
