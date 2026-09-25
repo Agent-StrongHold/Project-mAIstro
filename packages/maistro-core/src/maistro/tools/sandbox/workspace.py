@@ -1,17 +1,16 @@
-"""Workspace mount management for sandbox containers."""
+"""Workspace mount management for sandbox containers.
+
+The legacy launcher's ``ensure_workspace``/``CONTAINER_WORKSPACE`` were retired
+with it (#18): workspace authorization and creation live in
+``maistro.sandbox.paths`` (``validate_host_root``/``write_beneath``). This
+module keeps the path *validation* the harness API and RSI runner consume.
+"""
 
 from __future__ import annotations
 
 import os
 import tempfile
 from pathlib import Path
-
-import structlog
-
-logger = structlog.get_logger()
-
-# Base directory for workspaces inside containers
-CONTAINER_WORKSPACE = "/workspace"
 
 # Allowed host paths that can be mounted into containers.
 # Include `/private/tmp/...` because macOS resolves `/tmp` → `/private/tmp`.
@@ -54,11 +53,4 @@ def validate_workspace_path(path: str) -> Path:
             f"Workspace path {path} is not in an allowed location. Allowed roots: {allowed}"
         )
 
-    return resolved
-
-
-def ensure_workspace(path: str) -> Path:
-    """Validate workspace path and create directory if needed."""
-    resolved = validate_workspace_path(path)
-    resolved.mkdir(parents=True, exist_ok=True)
     return resolved

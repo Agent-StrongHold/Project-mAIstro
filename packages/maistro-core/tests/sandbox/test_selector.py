@@ -8,6 +8,8 @@ from maistro.sandbox.policy import (
     DEV_ONLY,
     TRUSTED_TOOL,
     UNTRUSTED_CODE,
+    ExecutionMode,
+    WorkloadPolicy,
     tier_satisfies,
 )
 from maistro.sandbox.protocol import SandboxProtocol
@@ -164,3 +166,38 @@ class TestBuildConfigClamping:
         assert cfg.timeout_s == BENCHMARK_EVAL.max_timeout_s
         assert cfg.egress.grants_network is False
         assert cfg.min_isolation == BENCHMARK_EVAL.min_tier
+
+
+class TestPolicyEgressConsistency:
+    """`network_allowed` is a consistency mirror of the egress grant, not a
+    second authority: a policy that claims networking is allowed while its
+    grant denies — or the reverse — is rejected at construction (#18)."""
+
+    def test_allowed_flag_with_deny_grant_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="contradicts its egress grant"):
+            WorkloadPolicy(min_tier="container", network_allowed=True)
+
+    def test_disallowed_flag_with_host_grant_is_rejected(self) -> None:
+        from maistro.sandbox.network import EgressGrant, EgressMode
+
+        with pytest.raises(ValueError, match="contradicts its egress grant"):
+            WorkloadPolicy(
+                min_tier="container",
+                network_allowed=False,
+                egress=EgressGrant(mode=EgressMode.HOST, reason="test"),
+            )
+
+    def test_standard_policies_are_self_consistent(self) -> None:
+        for policy in (UNTRUSTED_CODE, TRUSTED_TOOL, BENCHMARK_EVAL, DEV_ONLY):
+            assert policy.network_allowed == policy.egress.grants_network
+
+    def test_consistent_policy_constructs(self) -> None:
+        from maistro.sandbox.network import DENY_ALL
+
+        policy = WorkloadPolicy(
+            min_tier="vm",
+            network_allowed=False,
+            mode=ExecutionMode.AUTONOMOUS,
+            egress=DENY_ALL,
+        )
+        assert policy.effective_min_tier == "vm"

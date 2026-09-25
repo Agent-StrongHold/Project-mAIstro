@@ -221,3 +221,82 @@ inventing one from `attempt_id` alone would be a lie, (3) child-issue closure
 states (#76–#81, #811, #1197, #1198) are GitHub state, unverifiable and
 untouchable from this worktree. These go to deep review / owner coordination,
 not back to this repair lane.
+
+## Convergence repair, round 2 (2026-09-25, same branch)
+
+This round was sent back to resolve exactly those residuals, and the two
+code-level ones are now closed:
+
+**The legacy launcher is retired; `tools/sandbox/docker.py` is the facade.**
+The module kept its `create_sandbox(workspace, settings, env)` signature and
+`SandboxContainer` handle shape, but every policy-shaped decision moved behind
+`maistro.sandbox`: selection is `build_selector().select(policy)`; the policy
+is honest about trust class (`min_tier="vm"`, AUTONOMOUS, untrusted — the
+workloads reaching this seam are evolve candidates and RSI dev cycles, ADR-093
+decision 6); egress is `DENY_ALL` unless the operator explicitly sets
+`SandboxSettings.network_disabled=False`, which becomes an audited HOST grant
+(same mapping as the conductor adapter); env is the caller's explicit dict;
+there are no per-call launcher knobs (`SandboxSettings.image` no longer
+crosses). Consequence, consistent with the conductor path: on a
+container-only host `create_sandbox` raises `NoSuitableBackendError` — the
+honest downgrade, not a regression, because the retired launcher "succeeded"
+there by running a container it called a VM boundary. The evolve benchmark
+returns a failed check (never a host fallback — its contract already said so);
+RSI's dev sandbox refuses at `create_microvm_sandbox`, which is M5 #552's
+territory for a real Tier-2 backend.
+
+**The convergence gate now sees the container-launcher vocabulary and the
+seams.** `scripts/check-sandbox-authority.py` rules 3/5 extended: `--cap-add`,
+`--cap-drop`, `--security-opt`, `--tmpfs`, `--pids-limit`, `--read-only`,
+`--network=none`, `--network=host`, `--privileged`, `--userns` may appear only
+inside `maistro.sandbox`; the facade must keep importing `maistro.sandbox`
+(facade-not-behind-authority); and AUTHORIZED_SEAM_POSTURE pins the posture of
+files authorized to carry the vocabulary. Negative-tested: a synthetic
+launcher, a regressed seam posture, and a drifted facade each fail the gate.
+
+**A third invisible consumer surfaced and is dispositioned, not hidden:**
+`maistro_bootstrap/builders/container_sandbox.py` hand-assembles its own
+`docker run` argv. It is a *data-plane* sandbox — its bulk repo seed/sync
+travels as tar over stdin/stdout pipes, which cannot fit the bounded
+`SandboxProtocol.exec` capture (#1197), and maistro-bootstrap deliberately
+does not depend on maistro-core, so it cannot import the authority. It is
+registered as an authorized seam with posture pins (default-deny egress,
+cap-drop, no-new-privileges, non-root uid 65532) — if its documented
+containment regresses, CI fails. Its full convergence onto the selector
+authority remains an owner decision (#18 follow-up), recorded here because
+that is a protocol-capability gap, not a mechanical rewrite.
+
+**`WorkloadPolicy.network_allowed` is no longer a dead parallel knob.** It is
+now a consistency mirror: `__post_init__` rejects a policy whose flag
+contradicts its `EgressGrant` — the same "mechanically rejected" disposition
+the issue applies to `SandboxConfig.network`, applied to the policy layer's
+duplicate. All shipped policies and both adapters already agreed; now the
+constructor enforces it.
+
+**The previous round's "vulture all green" claim was false at this head** —
+re-run evidence: exit 1 at `32a1f1043` with three unbanked identities plus a
+stale ledger entry. Fixed rather than banked (grants load from the base
+revision, so a same-change grant cannot authorize anything):
+`network_allowed` (fixed by the consistency check above),
+`ExecResult.output_truncated` (dead convenience property, deleted; the fake-
+backend overflow test pins the per-stream flags directly), `ensure_workspace`/
+`CONTAINER_WORKSPACE` (dead with the retired launcher, deleted from
+`tools/sandbox/workspace.py`; `validate_workspace_path` and its tests remain),
+and the stale `selector.build_config` ledger entry pruned — it has callers in
+product code since the server facade and this facade. The vulture gate now
+exits 0 at this head.
+
+Tests: `test_docker.py` rebased to facade translation (8 tests, real
+`SandboxSelector` + stub vm backend, no daemon); `test_swebench.py` re-based
+off live-Docker execution (stub vm-tier backend for the scoring plumbing; new
+`test_host_without_vm_tier_fails_closed` pins the container-only-host
+refusal); `test_sandbox_paths.py` re-pins `_safe_path`'s properties against
+the canonical `_relative_parts`/`read_beneath`/`write_beneath`; selector
+consistency tests added. Suites re-run green: core sandbox 143 passed /
+36 skipped, core tools 393, evolve 646, RSI 721, conductor
+gating/executor/injection/security 34, bootstrap 231; ruff, ruff format,
+mypy --strict (631 files), check-sandbox-authority, check-suite-inventory
+(14 suites), and the vulture ledger all pass at this head.
+
+Remaining open, unchanged: #79 lease threading (runner-side, above this lane)
+and GitHub closure states for the child issues.

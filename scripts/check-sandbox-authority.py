@@ -22,20 +22,38 @@ What this gate enforces, mechanically, on every non-test Python file under
 3. **No hand-built sandbox launchers** — the bwrap/gVisor/Firecracker flag
    vocabulary (`--unshare-all`, `--share-net`, `--die-with-parent`,
    `--clearenv`, `--new-session`, `--runtime=runsc`, `firecracker-containerd`)
-   may appear only inside `maistro.sandbox`. Those flags *are* the security
-   content of a Tier-2/3 backend; a second place that assembles them is a
-   second backend, unreviewed by the conformance suite (#80).
+   *and* the container-run vocabulary (`--cap-add`, `--cap-drop`,
+   `--security-opt`, `--tmpfs`, `--pids-limit`, `--read-only`,
+   `--network=none`, `--network=host`, `--privileged`, `--userns`) may appear
+   only inside `maistro.sandbox`. Those flags *are* the security content of a
+   Tier-2/3 backend; a second place that assembles them is a second backend,
+   unreviewed by the conformance suite (#80).
 4. **No speculative microVM imports** — `import hyperlight` / `import
    firecracker` nowhere in product code: no Tier-1/2 backend ships, and the
    retired executor's `_has_hyperlight()` import probe is exactly how a false
    capability claim got built. When a real VM backend lands behind the
    protocol it will live in `maistro.sandbox.backends`, and this rule is the
    one to relax.
-5. **The legacy adapter stays behind the authority** —
-   `services/hyperlight_executor.py` must import from `maistro.sandbox`. The
-   module is retained only as the dict-shaped compatibility seam that
-   `legacy_dag_node` and the injection tests consume; if it ever stops naming
-   the canonical authority it has silently become a second one again.
+5. **The documented seams stay behind the authority.** Product modules that
+   carry launcher vocabulary by documented decision are pinned individually:
+
+   - `services/hyperlight_executor.py` must import from `maistro.sandbox`.
+     The module is retained only as the dict-shaped compatibility seam that
+     `legacy_dag_node` and the injection tests consume; if it ever stops
+     naming the canonical authority it has silently become a second one
+     again.
+   - `tools/sandbox/docker.py` must import from `maistro.sandbox`: it was
+     retired from being a second launcher and rewritten as the legacy
+     call-signature facade over the selector/policy authority (#18).
+   - `builders/container_sandbox.py` (maistro-bootstrap) is a data-plane
+     sandbox: its bulk repo seed/sync travels as tar over stdin/stdout
+     pipes, which cannot fit the bounded `SandboxProtocol.exec` capture
+     (#1197), and maistro-bootstrap deliberately does not depend on
+     maistro-core. It is registered in AUTHORIZED_SEAM_POSTURE instead: the
+     gate fails if its default-deny egress, cap-drop, no-new-privileges or
+     non-root-uid posture ever regresses. Its full convergence onto the
+     selector authority is recorded in
+     `docs/testing/inventory-notes/18-sandbox-authority.md`.
 
 Usage::
 
@@ -62,6 +80,35 @@ ADAPTER = (
     REPO_ROOT / "packages" / "hive-conductor" / "backend" / "services" / "hyperlight_executor.py"
 )
 
+#: The retired second launcher, now the legacy call-signature facade over the
+#: selector/policy authority. The gate pins that it keeps naming the authority.
+FACADE = (
+    REPO_ROOT / "packages" / "maistro-core" / "src" / "maistro" / "tools" / "sandbox" / "docker.py"
+)
+
+#: The builders data-plane sandbox (see rule 5): authorized to carry launcher
+#: vocabulary because its bulk seed/sync cannot fit the bounded protocol exec,
+#: but its documented #77/#78 posture is pinned here and must not regress.
+BOOTSTRAP_BUILDER = (
+    REPO_ROOT
+    / "packages"
+    / "maistro-bootstrap"
+    / "src"
+    / "maistro_bootstrap"
+    / "builders"
+    / "container_sandbox.py"
+)
+
+#: Posture every authorized-seam file must keep, as (needle, what it pins).
+AUTHORIZED_SEAM_POSTURE: dict[Path, tuple[tuple[str, str], ...]] = {
+    BOOTSTRAP_BUILDER: (
+        ("--network=none", "default-deny egress (#77)"),
+        ("--cap-drop=ALL", "no capability survives the drop"),
+        ("--security-opt=no-new-privileges", "no setuid escape inside the sandbox"),
+        ("65532:65532", "candidate code never runs as container root (#77)"),
+    ),
+}
+
 BACKEND_CLASSES = frozenset(
     {
         "BubblewrapSandboxBackend",
@@ -78,6 +125,17 @@ LAUNCHER_FLAGS = (
     "--new-session",
     "--runtime=runsc",
     "firecracker-containerd",
+    # Container-run vocabulary: the security content of a Tier-3 launcher.
+    "--cap-add",
+    "--cap-drop",
+    "--security-opt",
+    "--tmpfs",
+    "--pids-limit",
+    "--read-only",
+    "--network=none",
+    "--network=host",
+    "--privileged",
+    "--userns",
 )
 
 MICROVM_MODULES = frozenset({"hyperlight", "firecracker"})
@@ -165,7 +223,9 @@ def _check_imports(path: Path, tree: ast.AST) -> Iterator[Violation]:
             )
 
 
-def _check_constructs_and_flags(path: Path, tree: ast.AST) -> Iterator[Violation]:
+def _check_constructs_and_flags(
+    path: Path, tree: ast.AST, *, launcher_vocabulary: bool = True
+) -> Iterator[Violation]:
     for lineno, name in _iter_names(tree):
         if name in BACKEND_CLASSES:
             yield Violation(
@@ -174,6 +234,10 @@ def _check_constructs_and_flags(path: Path, tree: ast.AST) -> Iterator[Violation
                 "direct-backend-construction",
                 f"{name!r} may only be constructed by maistro.sandbox.wiring",
             )
+    if not launcher_vocabulary:
+        # A registered authorized seam may carry launcher flags (rule 5); its
+        # containment posture is pinned by check_authorized_seam_posture.
+        return
     for lineno, literal in _iter_strings(tree):
         for flag in LAUNCHER_FLAGS:
             if flag in literal:
@@ -192,7 +256,58 @@ def check_file(path: Path, tree: ast.AST) -> Iterator[Violation]:
     if in_authority:
         return
     yield from _check_imports(path, tree)
-    yield from _check_constructs_and_flags(path, tree)
+    yield from _check_constructs_and_flags(
+        path, tree, launcher_vocabulary=path not in AUTHORIZED_SEAM_POSTURE
+    )
+
+
+def check_facade() -> Iterator[Violation]:
+    if not FACADE.is_file():
+        yield Violation(
+            FACADE,
+            0,
+            "facade-missing",
+            "tools/sandbox/docker.py is gone: update this gate — the module is "
+            "the legacy call-signature seam for the evolve benchmark and RSI's "
+            "development sandbox",
+        )
+        return
+    tree = ast.parse(FACADE.read_text(encoding="utf-8"))
+    modules = [module for _, module in _iter_import_modules(tree)]
+    if not any(
+        module == "maistro.sandbox" or module.startswith("maistro.sandbox.") for module in modules
+    ):
+        yield Violation(
+            FACADE,
+            1,
+            "facade-not-behind-authority",
+            "the legacy docker-sandbox seam no longer imports maistro.sandbox; "
+            "it has become a second sandbox authority again",
+        )
+
+
+def check_authorized_seam_posture() -> Iterator[Violation]:
+    for seam, needles in AUTHORIZED_SEAM_POSTURE.items():
+        if not seam.is_file():
+            yield Violation(
+                seam,
+                0,
+                "authorized-seam-missing",
+                "a registered authorized seam disappeared: update "
+                "AUTHORIZED_SEAM_POSTURE deliberately, not incidentally",
+            )
+            continue
+        source = seam.read_text(encoding="utf-8")
+        for needle, what in needles:
+            if needle not in source:
+                yield Violation(
+                    seam,
+                    0,
+                    "authorized-seam-posture-regressed",
+                    f"{what} is no longer pinned in this authorized seam "
+                    f"({needle!r} not found): it has silently weakened below "
+                    "its documented containment",
+                )
 
 
 def check_adapter() -> Iterator[Violation]:
@@ -236,6 +351,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         violations.extend(check_file(path, tree))
     violations.extend(check_adapter())
+    violations.extend(check_facade())
+    violations.extend(check_authorized_seam_posture())
 
     if args.verbose:
         print(f"checked {scanned} product files under packages/")

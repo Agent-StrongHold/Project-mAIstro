@@ -143,11 +143,6 @@ class ExecResult:
     stderr_bytes_retained: int = 0
 
     @property
-    def output_truncated(self) -> bool:
-        """Whether either output stream was truncated."""
-        return self.stdout_truncated or self.stderr_truncated
-
-    @property
     def stdout_bytes(self) -> int:
         """Compatibility shorthand for the retained stdout byte count."""
         return self.stdout_bytes_retained

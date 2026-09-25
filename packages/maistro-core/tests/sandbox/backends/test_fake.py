@@ -82,10 +82,9 @@ class TestExec:
 
         assert result.exit_code == 125
         assert result.output_limit_exceeded is True
-        assert result.output_truncated is True
+        assert result.stdout_truncated or result.stderr_truncated
         assert result.stdout_bytes_retained <= config.max_stdout_bytes
         assert result.stderr_bytes_retained <= config.max_stderr_bytes
-        assert result.stdout_truncated or result.stderr_truncated
         assert len(result.stdout.encode()) == result.stdout_bytes_retained
         assert len(result.stderr.encode()) == result.stderr_bytes_retained
 
