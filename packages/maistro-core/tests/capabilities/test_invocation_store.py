@@ -160,3 +160,12 @@ async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen
     assert persisted.binding.provider_trust_tier == "trusted"
     assert persisted.binding.config == {"region": "us"}
     assert persisted.result == {"written": {"value": 1}}
+
+
+# Coverage for `maistro.capabilities.pg_invocation_store.PgInvocationStore` --
+# the actual PostgreSQL store the container wires (#1079 Finding 3) -- lives
+# in `test_pg_invocation_store.py`. This module used to also define and test
+# a duplicate `PgInvocationStore` here; it wrote columns (`payload_json`, a
+# `datetime` timestamp) that never matched Alembic revision 035's real DDL
+# (`payload` JSONB, `created_at` a float) and nothing in production wired it,
+# so it was removed rather than fixed.

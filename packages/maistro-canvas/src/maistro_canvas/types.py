@@ -296,6 +296,12 @@ class GenerationJobRecord:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat(),
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "leased_by": self.leased_by,
+            "lease_expires_at": (
+                self.lease_expires_at.isoformat() if self.lease_expires_at else None
+            ),
             "org_id": self.org_id,
         }
 
@@ -365,6 +371,20 @@ class JobNotDoneError(CanvasError):
 
 class JobAlreadyTerminalError(CanvasError):
     code = "JOB_ALREADY_TERMINAL"
+
+
+class JobLeaseLostError(CanvasError):
+    """A fenced job write lost the race to a newer writer.
+
+    Raised by ``CanvasStore.update_job`` when a given ``expected_leased_by`` /
+    ``expected_attempts`` / ``expected_status`` no longer matches the row: the
+    lease expired and the job was reclaimed (possibly under the same worker
+    id, as a new claim generation), or a concurrent terminal write such as a
+    user cancellation landed first. The caller's result is stale and must be
+    discarded rather than persisted over the newer state.
+    """
+
+    code = "JOB_LEASE_LOST"
 
 
 class TextLayerNoGenError(CanvasError):

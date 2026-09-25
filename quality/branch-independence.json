@@ -41,6 +41,22 @@
       "reason": "This registry is the explicit policy that classifies collaboration-state representations."
     },
     {
+      "id": "compliance-registry",
+      "kind": "specification",
+      "paths": [
+        "quality/compliance-registry.json"
+      ],
+      "reason": "The compliance registry is the reviewed status and evidence specification; changing a claim or evidence record is the substantive compliance change."
+    },
+    {
+      "id": "credential-authority",
+      "kind": "specification",
+      "paths": [
+        "quality/credential-authority.json"
+      ],
+      "reason": "Reviewed credential-authority classification: which credential implementation is canonical, reachable, or retired is policy whose change is the substantive change, not a repository-wide measurement that unrelated branches must rewrite."
+    },
+    {
       "id": "compatibility-contracts",
       "kind": "specification",
       "paths": [
@@ -95,6 +111,14 @@
         "quality/shared-interop-ontology-v1.json"
       ],
       "reason": "Versioned interoperability ontology is a reviewed specification."
+    },
+    {
+      "id": "durable-table-retention",
+      "kind": "specification",
+      "paths": [
+        "quality/durable-table-retention.json"
+      ],
+      "reason": "Reviewed per-table retention specification; changing a table's retention claim is the substantive change."
     },
     {
       "id": "shipped-surface-truth",

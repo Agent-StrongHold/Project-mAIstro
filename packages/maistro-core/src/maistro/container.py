@@ -351,9 +351,10 @@ class Container:
     record_store: RecordStore = None  # type: ignore[assignment]
     pii_detector: PIIDetector = None  # type: ignore[assignment]
     # Identity lifecycle (ADR-084).
-    identity_store: IdentityStore = None  # type: ignore[assignment]
-    token_store: TokenStore = None  # type: ignore[assignment]
-    secret_store: SecretStore = None  # type: ignore[assignment]
+    # None when the `identity` extra is not installed (see create_container).
+    identity_store: IdentityStore | None = None
+    token_store: TokenStore | None = None
+    secret_store: SecretStore | None = None
     # Hierarchical orchestration across foreign harnesses (ADR-101).
     harness_registry: HarnessRegistry = None  # type: ignore[assignment]
     hierarchy: HierarchicalOrchestrator = None  # type: ignore[assignment]
@@ -895,6 +896,8 @@ class Container:
             run_store=self.run_store,
             effect_context=self.capability_effects,
             graph_run_store=self.graph_run_store,
+            provider_registry=self.provider_registry,
+            llm_router=self.llm_router,
         )
 
     async def recover_abandoned_attempts(
@@ -1360,10 +1363,11 @@ class Container:
         """Bootstrap a did:key identity for an agent (ADR-084)."""
         from maistro.identity.lifecycle import create_agent_identity
 
+        identity_store, _, secret_store = self._identity_lifecycle_stores()
         return await create_agent_identity(
             agent_id,
-            identity_store=self.identity_store,
-            secret_store=self.secret_store,
+            identity_store=identity_store,
+            secret_store=secret_store,
             seed=seed,
         )
 
@@ -1377,21 +1381,35 @@ class Container:
         """Issue a signed, expiring capability token via the wired stores."""
         from maistro.identity.lifecycle import issue_capability_token
 
+        identity_store, token_store, secret_store = self._identity_lifecycle_stores()
         return await issue_capability_token(
             agent_id,
             target_agent_id,
             capability,
             ttl_seconds,
-            identity_store=self.identity_store,
-            token_store=self.token_store,
-            secret_store=self.secret_store,
+            identity_store=identity_store,
+            token_store=token_store,
+            secret_store=secret_store,
         )
 
     async def verify_capability_token(self, token: CapabilityToken) -> bool:
         """Verify signature, expiry, and revocation against the wired store."""
         from maistro.identity.lifecycle import verify_capability_token
 
-        return await verify_capability_token(token, token_store=self.token_store)
+        _, token_store, _ = self._identity_lifecycle_stores()
+        return await verify_capability_token(token, token_store=token_store)
+
+    def _identity_lifecycle_stores(self) -> tuple[IdentityStore, TokenStore, SecretStore]:
+        """The wired identity stores, or a loud error naming what is missing.
+
+        Callers import maistro.identity.lifecycle first, so a missing `identity`
+        extra has already raised the ImportError that names it; reaching the
+        check below means the extra is present and the Container was simply
+        built without the stores.
+        """
+        if self.identity_store is None or self.token_store is None or self.secret_store is None:
+            raise RuntimeError("identity lifecycle stores are not wired on this Container")
+        return self.identity_store, self.token_store, self.secret_store
 
     async def import_skill(self, request: SkillImportRequest, **kwargs: Any) -> SkillImportVerdict:
         """Run the fail-closed skill import pipeline against the wired stores."""
@@ -1474,6 +1492,30 @@ def _wire_schedule_admission(
     if template_store is None:
         return None
     return ScheduleRunAdmitter(run_store, template_store, schedule_store)
+
+
+def _identity_lifecycle_stores() -> tuple[
+    IdentityStore | None, TokenStore | None, SecretStore | None
+]:
+    """In-memory identity lifecycle stores, or none when the extra is missing.
+
+    maistro.identity is the `identity` extra, which cannot install on every
+    image this Container runs in (coincurve has no cp314 wheel; the Hive image
+    is Python 3.14). A missing extra leaves the three stores unwired rather
+    than refusing the whole Container: the identity methods import
+    maistro.identity.lifecycle themselves, so a caller that actually needs an
+    identity still gets the ImportError that names the extra.
+    """
+    try:
+        from maistro.identity.lifecycle import (
+            InMemoryIdentityStore,
+            InMemorySecretStore,
+            InMemoryTokenStore,
+        )
+    except ImportError as exc:
+        logger.warning("Identity lifecycle stores not wired: %s", exc)
+        return None, None, None
+    return InMemoryIdentityStore(), InMemoryTokenStore(), InMemorySecretStore()
 
 
 async def create_container(
@@ -1794,15 +1836,7 @@ async def create_container(
     pii_detector = PIIDetector(mode="prod")
 
     # --- Identity lifecycle (ADR-084) -------------------------------------
-    from maistro.identity.lifecycle import (
-        InMemoryIdentityStore,
-        InMemorySecretStore,
-        InMemoryTokenStore,
-    )
-
-    identity_store = InMemoryIdentityStore()
-    token_store = InMemoryTokenStore()
-    secret_store = InMemorySecretStore()
+    identity_store, token_store, secret_store = _identity_lifecycle_stores()
 
     # --- Skill registry + import pipeline (ADR-083) ----------------------
     from maistro.skills.import_pipeline import InMemoryPolicyAttachmentStore
@@ -1824,6 +1858,9 @@ async def create_container(
         pg_pool=pg_pool, db_pool=db_pool
     )
     capability_effects = new_effect_context(invocation_store=capability_invocation_store)
+    from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
+
+    await bootstrap_model_bindings(config, capability_effects)
     spawn_harness_node = AgentSpawnHarnessNode(
         adapters=wired_harness_adapters, effect_context=capability_effects
     )
@@ -2638,6 +2675,8 @@ def build_node_resolver(
     guest_peers: Any = None,
     run_store: RunStore | None = None,
     effect_context: CapabilityEffectContext | None = None,
+    provider_registry: LLMProviderRegistry | None = None,
+    llm_router: LLMRouter | None = None,
     graph_run_store: DurableRunStore | None = None,
 ) -> Callable[[str, Any], Any]:
     """Build the production durable-executor node resolver.
@@ -2674,9 +2713,9 @@ def build_node_resolver(
     resolved_adapters = harness_adapters if harness_adapters is not None else {}
     resolved_usage_log = usage_log if usage_log is not None else get_default_usage_log()
     # The container passes its own capability_effects so resolver-built
-    # spawn_harness nodes resolve the same Binding/Invocation authorities the
-    # container's own node does (#55). Bare callers keep the process default,
-    # which registers no Bindings and therefore authorizes nothing.
+    # effect nodes resolve the same Binding/Invocation authorities the
+    # container's own node does (#55). Bare callers keep no populated model
+    # collaborators and therefore authorize/route nothing implicitly.
     resolved_effect_context = effect_context
 
     def _resolver(node_id: str, graph: Any) -> Any:
@@ -2709,6 +2748,12 @@ def build_node_resolver(
         "run_store": run_store,
         "graph_run_store": graph_run_store,
         "effect_context": resolved_effect_context,
+        # The Container's populated model authorities (#1079): a resolver-built
+        # `llm.summarize` routes through the same registry/cost-aware router
+        # the rest of the deployment uses, instead of a private empty registry
+        # that can only ever gateway-passthrough a named alias.
+        "provider_registry": provider_registry,
+        "llm_router": llm_router,
         "node_resolver": _resolver,
     }
     return _resolver

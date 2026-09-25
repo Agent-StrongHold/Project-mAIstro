@@ -12,13 +12,15 @@ safe, actionable message.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, TypeVar
 
+from maistro.runs.store import RunIntegrityError
 from maistro_canvas.canvas.canonical_execution import (
     CanvasCanonicalExecution,
     canonical_run_id,
@@ -51,6 +53,9 @@ _ACTIVE_STATUSES = frozenset({JobStatus.PENDING, JobStatus.RUNNING})
 _TERMINAL_STATUSES = frozenset({JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED})
 _T = TypeVar("_T")
 
+#: Monotonic deadline of the runner-claimed job currently executing, if bounded.
+_JOB_DEADLINE: ContextVar[float | None] = ContextVar("canvas_job_deadline", default=None)
+
 
 class _WardenProtocol:
     async def scan_prompt(self, prompt: str) -> str:
@@ -65,8 +70,79 @@ class _ModelRegistryProtocol:
         raise NotImplementedError
 
 
+def _admission_fingerprint(
+    *,
+    action: str,
+    model_id: str,
+    prompt: str,
+    canvas_id: str,
+    layer_id: str,
+    count: int,
+    seed: int | None,
+    negative_prompt: str,
+    region: str,
+    strength: float,
+) -> tuple[object, ...]:
+    """The comparable identity of one generation request's client-meaningful inputs.
+
+    Used at every point an idempotency key can resolve to an existing job
+    instead of admitting a new one: an in-flight (active) job returned early
+    before canonical admission is even attempted, and a durable terminal
+    receipt read back after it. Both must reject a same-key retry whose
+    inputs changed rather than silently answering it with someone else's
+    result -- the same requirement, so one fingerprint shape answers both.
+    """
+    return (
+        action,
+        model_id,
+        prompt,
+        canvas_id,
+        layer_id,
+        count,
+        seed,
+        negative_prompt,
+        region,
+        strength,
+    )
+
+
+def _job_fingerprint(job: GenerationJobRecord) -> tuple[object, ...]:
+    """The same fingerprint shape, read back off an already-admitted job."""
+    params = job.params
+    return _admission_fingerprint(
+        action=job.action,
+        model_id=job.model_id,
+        prompt=job.prompt,
+        canvas_id=job.canvas_id,
+        layer_id=job.layer_id,
+        count=params.get("count", 1),
+        seed=params.get("seed"),
+        negative_prompt=params.get("negative_prompt", ""),
+        region=params.get("region", "full"),
+        strength=params.get("strength", 0.6),
+    )
+
+
+class PreclassifiedJobFailure(RuntimeError):
+    """A job failure whose message was written by Canvas itself and is user-safe.
+
+    ``_sanitise_error`` exists to strip raw provider bodies; a failure Canvas
+    raises about its *own* machinery (a worker lease that expired, an
+    execution that ran past its bound) carries no provider text, and folding
+    it into the generic "provider error" message would misreport worker loss
+    as a provider fault (Codex #1535). Only construct this with a fixed,
+    caller-authored message -- never with provider or user data.
+    """
+
+
 def _sanitise_error(exc: Exception) -> str:
     """Return a safe error message — strips stack traces and raw provider bodies."""
+    if isinstance(exc, PreclassifiedJobFailure):
+        return str(exc)
+    if isinstance(exc, TimeoutError):
+        # Includes the canonical Runtime's RuntimeDeadlineExceeded, whose text
+        # is an execution id rather than anything the keyword match can see.
+        return "Generation failed: provider request timed out."
     raw = str(exc)
     lower = raw.lower()
     if "429" in raw or "rate_limit" in lower or "too many" in lower or "ratelimit" in lower:
@@ -97,12 +173,16 @@ class CanvasExecutor:
         model_registry: _ModelRegistryProtocol,
         warden: _WardenProtocol,
         canonical_execution: CanvasCanonicalExecution | None = None,
+        execution_timeout_s: float | None = None,
     ) -> None:
+        if execution_timeout_s is not None and execution_timeout_s <= 0:
+            raise ValueError("execution_timeout_s must be positive")
         self._store = store
         self._image_client = image_client
         self._model_registry = model_registry
         self._warden = warden
         self._canonical_execution = canonical_execution
+        self._execution_timeout_s = execution_timeout_s
         self._layer_locks: dict[str, asyncio.Lock] = {}
 
     @property
@@ -130,6 +210,7 @@ class CanvasExecutor:
         region: str = "full",
         strength: float = 0.6,
         actor_principal_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> GenerationJobRecord:
         """Validate preconditions and enqueue a Canvas-domain generation receipt.
 
@@ -155,9 +236,10 @@ class CanvasExecutor:
                 region=region,
                 strength=strength,
                 actor_principal_id=actor_principal_id,
+                idempotency_key=idempotency_key,
             )
 
-    async def _start_job_locked(
+    async def _start_job_locked(  # noqa: C901 - admission preconditions are intentionally explicit
         self,
         *,
         canvas_id: str,
@@ -172,6 +254,7 @@ class CanvasExecutor:
         region: str,
         strength: float,
         actor_principal_id: str | None,
+        idempotency_key: str | None,
     ) -> GenerationJobRecord:
         layer = await self._store.get_layer(layer_id, org_id=org_id)
         if layer is None:
@@ -194,14 +277,49 @@ class CanvasExecutor:
         if action == JobAction.REFINE and not layer.image_path:
             raise RefineNoSourceError(f"layer {layer_id!r} has no image_path; cannot refine")
 
+        # An idempotency key gives a retry a durable operation identity. Without
+        # one, each request intentionally remains a new generation.
+        operation_id = idempotency_key.strip() if idempotency_key is not None else None
+        if operation_id == "":
+            operation_id = None
+        requested_fingerprint = _admission_fingerprint(
+            action=action,
+            model_id=resolved_model,
+            prompt=prompt,
+            canvas_id=canvas_id,
+            layer_id=layer_id,
+            count=count,
+            seed=seed,
+            negative_prompt=negative_prompt,
+            region=region,
+            strength=strength,
+        )
         active = await self._store.active_job_for_layer(layer_id, org_id=org_id)
         if active is not None:
+            if (
+                operation_id is not None
+                and active.params.get("canvas_operation_id") == operation_id
+            ):
+                # A same-key retry of a still-pending/running operation must be
+                # rejected the same way a terminal retry with changed inputs
+                # already is -- otherwise whether a payload mismatch is caught
+                # depends on how fast the first attempt finishes.
+                if _job_fingerprint(active) != requested_fingerprint:
+                    raise RunIntegrityError(
+                        f"Canvas operation {operation_id!r} was retried with different inputs"
+                    )
+                return active
             raise JobInProgressError(
                 f"layer {layer_id!r} already has an active job ({active.id!r})"
             )
 
+        job_id = (
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"maistro-canvas:{org_id}:{operation_id}"))
+            if operation_id is not None
+            else str(uuid.uuid4())
+        )
         job = GenerationJobRecord(
-            id=str(uuid.uuid4()),
+            id=job_id,
             layer_id=layer_id,
             canvas_id=canvas_id,
             action=action,
@@ -217,24 +335,59 @@ class CanvasExecutor:
             },
             org_id=org_id,
         )
+        if operation_id is not None:
+            job.params["canvas_operation_id"] = operation_id
 
         if self._canonical_execution is None:
             return await self._store.create_job(job, org_id=org_id)
 
+        # A deterministic job_id names an idempotent retry before canonical
+        # admission is even attempted: if the durable receipt already exists
+        # (the common terminal-retry case, or a concurrent admitter that won
+        # the race between this lookup and admission), validate and return it
+        # directly rather than admitting a Run that would then be orphaned --
+        # correlated to nothing, while the returned receipt still names the
+        # original Run.
+        if operation_id is not None:
+            existing = await self._store.get_job(job.id, org_id=org_id)
+            if existing is not None:
+                if _job_fingerprint(existing) != requested_fingerprint:
+                    raise RunIntegrityError(
+                        f"Canvas operation {operation_id!r} was retried with different inputs"
+                    )
+                return existing
+
+        receipt = {
+            "action": job.action,
+            "model_id": job.model_id,
+            "prompt": job.prompt,
+            "params": dict(job.params),
+            "canvas_id": canvas_id,
+            "layer_id": layer_id,
+            "org_id": org_id,
+        }
         run_id = await self._canonical_execution.admit(
             job_id=job.id,
             canvas_id=canvas_id,
             layer_id=layer_id,
             action=action,
             actor_principal_id=actor_principal_id,
+            operation_id=operation_id,
+            receipt=receipt,
         )
         correlate_run(job.params, run_id)
-        try:
-            return await self._store.create_job(job, org_id=org_id)
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._canonical_execution.cancel(run_id)
-            raise
+        # A retry after process death may have a receipt already. Returning that
+        # durable projection is idempotent and avoids a second insert.
+        existing = await self._store.get_job(job.id, org_id=org_id)
+        if existing is not None:
+            return existing
+        return await self._store.create_job(job, org_id=org_id)
+
+    async def reconcile_admissions(self) -> list[GenerationJobRecord]:
+        """Repair missing/lagging receipt projections from canonical Runs."""
+        if self._canonical_execution is None:
+            return []
+        return await self._canonical_execution.reconcile_admissions(self._store)
 
     async def run_job(self, job_id: str, *, org_id: str) -> GenerationJobRecord:
         """Execute a pending job synchronously (compatibility path for tests/CLI)."""
@@ -271,7 +424,24 @@ class CanvasExecutor:
         authority — and every store read below predicates on it. A claimed
         receipt carrying no scope (a legacy row) is refused rather than
         executed globally.
+
+        ``execution_timeout_s`` bounds the whole claimed job: every provider
+        stage runs under the time left, enforced where the work runs (the
+        canonical Runtime, or ``asyncio.timeout`` on the compatibility path),
+        so a stalled call ends as a retryable timeout.
         """
+        deadline = (
+            time.monotonic() + self._execution_timeout_s
+            if self._execution_timeout_s is not None
+            else None
+        )
+        token = _JOB_DEADLINE.set(deadline)
+        try:
+            await self._execute_claimed_within_deadline(job)
+        finally:
+            _JOB_DEADLINE.reset(token)
+
+    async def _execute_claimed_within_deadline(self, job: GenerationJobRecord) -> None:
         if not job.org_id:
             raise RuntimeError(
                 f"Canvas job {job.id!r} was claimed with no org scope; refusing to execute globally"
@@ -329,6 +499,12 @@ class CanvasExecutor:
         operation: Callable[[], Awaitable[_T]],
     ) -> _T:
         run_id = canonical_run_id(job.params)
+        deadline = _JOB_DEADLINE.get()
+        timeout_s: float | None = None
+        if deadline is not None:
+            timeout_s = deadline - time.monotonic()
+            if timeout_s <= 0:
+                raise TimeoutError(f"Canvas job {job.id!r} exhausted its execution time limit")
         if run_id is None:
             if self._canonical_execution is not None:
                 raise RuntimeError(
@@ -337,7 +513,8 @@ class CanvasExecutor:
             # Compatibility-only direct path. CanvasJobRunner checks
             # canonical_enabled before claim, so shipped background execution
             # cannot silently bypass canonical evidence.
-            return await operation()
+            async with asyncio.timeout(timeout_s):
+                return await operation()
         if self._canonical_execution is None:
             raise RuntimeError(
                 f"Canvas job {job.id!r} names canonical Run {run_id!r} but no adapter is bound"
@@ -351,7 +528,9 @@ class CanvasExecutor:
                 # must receive the same safe provider message as the receipt.
                 raise RuntimeError(_sanitise_error(exc)) from None
 
-        return await self._canonical_execution.execute_stage(run_id, stage, _sanitised_operation)
+        return await self._canonical_execution.execute_stage(
+            run_id, stage, _sanitised_operation, timeout_s=timeout_s
+        )
 
     async def _execute_generate(self, job: GenerationJobRecord, canvas: CanvasRecord) -> list[str]:
         params = job.params

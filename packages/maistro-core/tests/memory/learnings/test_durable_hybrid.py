@@ -73,9 +73,22 @@ class _Store:
         return [_learning(11)]
 
     async def get_promoted(
-        self, task_type: str | None = None, *, org_id: str = ""
+        self,
+        task_type: str | None = None,
+        *,
+        org_id: str = "",
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        self._record("get_promoted", task_type, org_id=org_id)
+        self._record(
+            "get_promoted",
+            task_type,
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+        )
         return [_learning(12)]
 
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
@@ -134,7 +147,13 @@ async def test_get_promoted_forwards_and_returns(wrapped) -> None:
 
     promoted = await hybrid.get_promoted("build", org_id="org-1")
 
-    assert store.calls == [("get_promoted", ("build",), {"org_id": "org-1"})]
+    assert store.calls == [
+        (
+            "get_promoted",
+            ("build",),
+            {"org_id": "org-1", "team_id": None, "user_id": None, "agent_id": None},
+        )
+    ]
     assert [item.id for item in promoted] == [12]
 
 

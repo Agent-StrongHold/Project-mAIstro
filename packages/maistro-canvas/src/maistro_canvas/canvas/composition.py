@@ -9,8 +9,8 @@ Run -> NodeRun -> Attempt adapter.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import importlib
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -23,6 +23,18 @@ if TYPE_CHECKING:
     from fastapi import APIRouter
 
     from maistro_canvas.protocols import CompositorService
+
+logger = logging.getLogger("maistro.canvas.composition")
+
+_DEFAULT_SHUTDOWN_GRACE_SECONDS = 10.0
+"""How long ``stop_runner`` waits for an in-flight ``tick_once`` to finish on
+its own before cancelling it outright. ``CanvasJobRunner.stop()`` only flips
+the poll-loop flag; it cannot interrupt a `tick_once` blocked inside a
+provider call, so an unbounded ``await`` here would let a stalled provider
+block FastAPI shutdown indefinitely. Bounded well under typical graceful
+shutdown windows (Uvicorn/K8s default to ~30s) so the process still exits in
+time even when the bound is hit.
+"""
 
 
 class CanvasModelRegistry(Protocol):
@@ -70,6 +82,7 @@ def build_canvas_runtime(
     lease_seconds: int = 300,
     poll_interval: float = 1.0,
     reap_interval: float = 30.0,
+    max_execution_seconds: float = 1800.0,
 ) -> CanvasRuntime:
     """Build the canonical Canvas executor and its durable worker.
 
@@ -91,6 +104,7 @@ def build_canvas_runtime(
         model_registry=cast(Any, model_registry),
         warden=cast(Any, warden),
         canonical_execution=canonical,
+        execution_timeout_s=max_execution_seconds,
     )
     # Keep the worker import at the composition boundary: the package's
     # reachability gate treats the runner as a lifecycle-loaded component.
@@ -102,6 +116,7 @@ def build_canvas_runtime(
         lease_seconds=lease_seconds,
         poll_interval=poll_interval,
         reap_interval=reap_interval,
+        max_execution_seconds=max_execution_seconds,
     )
     return CanvasRuntime(
         store=store,
@@ -125,6 +140,7 @@ def build_canvas_router(
     lease_seconds: int = 300,
     poll_interval: float = 1.0,
     reap_interval: float = 30.0,
+    max_execution_seconds: float = 1800.0,
 ) -> APIRouter:
     """Build the HTTP boundary from the canonical Canvas runtime.
 
@@ -145,19 +161,39 @@ def build_canvas_router(
         lease_seconds=lease_seconds,
         poll_interval=poll_interval,
         reap_interval=reap_interval,
+        max_execution_seconds=max_execution_seconds,
     )
     from maistro_canvas.canvas.routes import make_canvas_router
 
     return make_canvas_router(runtime=runtime, compositor=compositor)
 
 
-def bind_canvas_runner_lifecycle(*, router: APIRouter, runtime: CanvasRuntime) -> None:
+def bind_canvas_runner_lifecycle(
+    *,
+    router: APIRouter,
+    runtime: CanvasRuntime,
+    shutdown_timeout: float = _DEFAULT_SHUTDOWN_GRACE_SECONDS,
+) -> None:
     """Tie one Canvas worker to the FastAPI application's lifecycle.
 
     ``APIRouter`` copies startup/shutdown handlers when mounted, keeping the
     worker on the same production boundary as canonical Run admission. This
     binds lifecycle ownership only; queue claims and execution authority stay
     with ``CanvasJobRunner`` and the canonical Run adapter.
+
+    ``stop_runner`` gives the poll loop ``shutdown_timeout`` seconds to notice
+    ``stop()`` and return on its own — enough for an idle loop's next
+    ``poll_interval`` sleep to elapse — before cancelling the task outright.
+    ``stop()`` alone cannot interrupt a `tick_once` blocked inside a
+    provider call, so without this bound a stalled provider would block
+    application shutdown indefinitely.
+
+    The deadline is a non-cancelling wait (``asyncio.wait``), not
+    ``asyncio.wait_for``: the latter cancels at the deadline and then keeps
+    waiting until the task actually finishes, so a provider coroutine that
+    swallows ``CancelledError`` would still hang shutdown (Codex #1535). After
+    cancelling, the task gets one more bounded grace window and is then
+    abandoned with an error log.
     """
 
     task: asyncio.Task[None] | None = None
@@ -173,12 +209,32 @@ def bind_canvas_runner_lifecycle(*, router: APIRouter, runtime: CanvasRuntime) -
         runtime.runner.stop()
         if task is None:
             return
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        task = None
+        current, task = task, None
+        done, _pending = await asyncio.wait({current}, timeout=shutdown_timeout)
+        if not done:
+            logger.warning(
+                "canvas_runner_shutdown_timeout timeout=%s; cancelling stuck tick",
+                shutdown_timeout,
+            )
+            current.cancel()
+            done, _pending = await asyncio.wait({current}, timeout=shutdown_timeout)
+            if not done:
+                logger.error("canvas_runner_shutdown_abandoned; runner task ignored cancellation")
+                current.add_done_callback(_consume_runner_outcome)
+                return
+        _consume_runner_outcome(current)
 
     router.add_event_handler("startup", start_runner)
     router.add_event_handler("shutdown", stop_runner)
+
+
+def _consume_runner_outcome(task: asyncio.Task[None]) -> None:
+    """Retrieve a finished runner task's outcome, logging an unexpected error."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("canvas_runner_exited_with_error", exc_info=exc)
 
 
 __all__ = [
