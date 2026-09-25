@@ -18,6 +18,7 @@ from maistro.types.memory import Learning
 
 if TYPE_CHECKING:
     import asyncpg
+    import asyncpg.pool
 
 logger = logging.getLogger("maistro.persistence.learnings")
 
@@ -143,28 +144,9 @@ class PgLearningStore:
             attempt_id=learning.attempt_id,
         )
         async with self._pool.acquire() as conn:
-            existing = await conn.fetch(
-                """SELECT id, trigger_keys FROM learnings
-                   WHERE tool_name = $1 AND org_id = $2
-                     AND team_id = $3 AND user_id IS NOT DISTINCT FROM $4
-                     AND agent_id = $5 AND status = 'active'""",
-                learning.tool_name,
-                learning.org_id or "",
-                learning.team_id or "",
-                learning.user_id,
-                learning.agent_id or "",
-            )
-            for row in existing:
-                existing_keys = set(_load_keys(row["trigger_keys"]))
-                new_keys = set(learning.trigger_keys)
-                if new_keys and existing_keys:
-                    overlap = len(new_keys & existing_keys) / len(new_keys)
-                    if overlap >= 0.5:
-                        await conn.execute(
-                            "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
-                            row["id"],
-                        )
-                        return int(row["id"])
+            dedup_id = await self._bump_dedup_hit(conn, learning)
+            if dedup_id is not None:
+                return dedup_id
 
             row = await conn.fetchrow(
                 # source_query, team_id and hit_count are written, not
@@ -203,6 +185,44 @@ class PgLearningStore:
                 *provenance.as_columns(),
             )
             return int(row["id"]) if row else 0
+
+    async def _bump_dedup_hit(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy,
+        learning: Learning,
+    ) -> int | None:
+        """Return the id of the same-scope active row this learning dedupes into.
+
+        The probe half of `store`: tool name, org, team, user, agent and
+        `active` status must all match (scoped so storing for org A cannot bump
+        org B's hit_count or hand back B's id), and at least half of the new
+        trigger keys must already be present. A match has its `hit_count`
+        bumped here — where the row is in hand — so `store` stays a straight
+        probe-then-insert.
+        """
+        existing = await conn.fetch(
+            """SELECT id, trigger_keys FROM learnings
+               WHERE tool_name = $1 AND org_id = $2
+                 AND team_id = $3 AND user_id IS NOT DISTINCT FROM $4
+                 AND agent_id = $5 AND status = 'active'""",
+            learning.tool_name,
+            learning.org_id or "",
+            learning.team_id or "",
+            learning.user_id,
+            learning.agent_id or "",
+        )
+        new_keys = set(learning.trigger_keys)
+        for row in existing:
+            existing_keys = set(_load_keys(row["trigger_keys"]))
+            if new_keys and existing_keys:
+                overlap = len(new_keys & existing_keys) / len(new_keys)
+                if overlap >= 0.5:
+                    await conn.execute(
+                        "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
+                        row["id"],
+                    )
+                    return int(row["id"])
+        return None
 
     async def text_of(self, learning_id: int) -> str:
         """The learning text as it is actually stored.

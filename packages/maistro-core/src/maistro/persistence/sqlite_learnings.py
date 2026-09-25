@@ -140,35 +140,9 @@ class SqliteLearningStore:
             node_run_id=learning.node_run_id,
             attempt_id=learning.attempt_id,
         )
-        # Scope the dedup probe too. Without `org_id` here, storing a learning
-        # for org A could match org B's row, bump B's hit_count and return B's
-        # id to A — a cross-scope write and an id leak, not merely a missed
-        # insert.
-        cursor = await self._conn.execute(
-            "SELECT id, trigger_keys FROM learnings "
-            "WHERE tool_name = ? AND org_id = ? AND team_id IS ? "
-            "AND user_id IS ? AND agent_id IS ? AND status = 'active'",
-            (
-                learning.tool_name,
-                learning.org_id or "",
-                learning.team_id or "",
-                learning.user_id,
-                learning.agent_id or "",
-            ),
-        )
-        existing = await cursor.fetchall()
-        new_keys = set(learning.trigger_keys)
-        for row in existing:
-            existing_keys = set(json.loads(row[1]))
-            if new_keys and existing_keys:
-                overlap = len(new_keys & existing_keys) / len(new_keys)
-                if overlap >= 0.5:
-                    await self._conn.execute(
-                        "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = ?",
-                        (row[0],),
-                    )
-                    await self._conn.commit()
-                    return int(row[0])
+        dedup_id = await self._bump_dedup_hit(learning)
+        if dedup_id is not None:
+            return dedup_id
 
         insert_cursor = await self._conn.execute(
             """INSERT INTO learnings
@@ -200,6 +174,44 @@ class SqliteLearningStore:
         )
         await self._conn.commit()
         return insert_cursor.lastrowid or 0
+
+    async def _bump_dedup_hit(self, learning: Learning) -> int | None:
+        """Return the id of the same-scope active row this learning dedupes into.
+
+        The probe half of `store`: tool name, org, team, user, agent and
+        `active` status must all match. The probe is scoped like the
+        PostgreSQL twin's — without `org_id` here, storing a learning for org A
+        could match org B's row, bump B's hit_count and return B's id to A — a
+        cross-scope write and an id leak, not merely a missed insert. A match
+        has its `hit_count` bumped here, where the row is in hand, so `store`
+        stays a straight probe-then-insert.
+        """
+        cursor = await self._conn.execute(
+            "SELECT id, trigger_keys FROM learnings "
+            "WHERE tool_name = ? AND org_id = ? AND team_id IS ? "
+            "AND user_id IS ? AND agent_id IS ? AND status = 'active'",
+            (
+                learning.tool_name,
+                learning.org_id or "",
+                learning.team_id or "",
+                learning.user_id,
+                learning.agent_id or "",
+            ),
+        )
+        existing = await cursor.fetchall()
+        new_keys = set(learning.trigger_keys)
+        for row in existing:
+            existing_keys = set(json.loads(row[1]))
+            if new_keys and existing_keys:
+                overlap = len(new_keys & existing_keys) / len(new_keys)
+                if overlap >= 0.5:
+                    await self._conn.execute(
+                        "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = ?",
+                        (row[0],),
+                    )
+                    await self._conn.commit()
+                    return int(row[0])
+        return None
 
     async def find_relevant(
         self,

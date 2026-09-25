@@ -45,6 +45,45 @@ class InMemoryLearningStore:
         learning.run_id = provenance.run_id
         learning.node_run_id = provenance.node_run_id
         learning.attempt_id = provenance.attempt_id
+        match = self._find_dedup_match(learning)
+        if match is not None:
+            existing, overlap = match
+            logger.info(
+                "Learning dedup overwrite: id=%s, old_keys=%s, new_keys=%s, overlap=%.2f",
+                existing.id,
+                existing.trigger_keys,
+                learning.trigger_keys,
+                overlap,
+            )
+            existing.learning = learning.learning
+            existing.trigger_keys = learning.trigger_keys
+            # The producer moves with the content it produced. Dedup
+            # replaces what the row says, so leaving the old ids in place
+            # would attribute the surviving text to the Run that no longer
+            # wrote it, and `produced_by` would return nothing for the Run
+            # that did (Codex, #709).
+            existing.run_id = learning.run_id
+            existing.node_run_id = learning.node_run_id
+            existing.attempt_id = learning.attempt_id
+            return existing.id or 0
+
+        if len(self._learnings) >= self._max:
+            self._learnings.pop(0)
+
+        learning.id = self._next_id
+        self._next_id += 1
+        self._learnings.append(learning)
+        return learning.id
+
+    def _find_dedup_match(self, learning: Learning) -> tuple[Learning, float] | None:
+        """The active same-scope learning this one overlaps, with its overlap.
+
+        The dedup probe shared by `store`'s early return: same tool name, org,
+        team, user and agent (the same axes the SQL twins' SQL probe binds),
+        `active` status, and at least half of the union of both trigger-key
+        sets in common. Split out so `store` reads as probe-then-insert and
+        this stays the one place the threshold and axes live.
+        """
         new_keys = set(learning.trigger_keys)
         for existing in self._learnings:
             if existing.tool_name != learning.tool_name:
@@ -60,32 +99,8 @@ class InMemoryLearningStore:
             existing_keys = set(existing.trigger_keys)
             overlap = len(existing_keys & new_keys) / max(len(existing_keys | new_keys), 1)
             if overlap >= 0.5:
-                logger.info(
-                    "Learning dedup overwrite: id=%s, old_keys=%s, new_keys=%s, overlap=%.2f",
-                    existing.id,
-                    existing.trigger_keys,
-                    learning.trigger_keys,
-                    overlap,
-                )
-                existing.learning = learning.learning
-                existing.trigger_keys = learning.trigger_keys
-                # The producer moves with the content it produced. Dedup
-                # replaces what the row says, so leaving the old ids in place
-                # would attribute the surviving text to the Run that no longer
-                # wrote it, and `produced_by` would return nothing for the Run
-                # that did (Codex, #709).
-                existing.run_id = learning.run_id
-                existing.node_run_id = learning.node_run_id
-                existing.attempt_id = learning.attempt_id
-                return existing.id or 0
-
-        if len(self._learnings) >= self._max:
-            self._learnings.pop(0)
-
-        learning.id = self._next_id
-        self._next_id += 1
-        self._learnings.append(learning)
-        return learning.id
+                return existing, overlap
+        return None
 
     async def find_relevant(
         self,
