@@ -39,8 +39,10 @@ from .base import (
     PAUSE_AWAITING_REMOTE_DELEGATION,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     now_utc,
     pause_until,
+    replay_effect_key,
 )
 
 if TYPE_CHECKING:
@@ -173,7 +175,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
     output_schema: ClassVar[type[BaseModel]] = DelegateRemoteOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: delegate to remote session"
     description: ClassVar[str] = (
@@ -210,8 +212,16 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
 
+    def logical_effect_key(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        return self._effect_key(inputs, ctx)
+
+    @staticmethod
+    def _effect_key(inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        return replay_effect_key(ctx, "agent.delegate_remote", inputs.model_dump(mode="json"))
+
     def _delegation_key(self, _inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
         """Stable identity for one parent NodeRun's logical delegation.
+
 
         The request is not part of the key. A retry may deserialize equivalent
         inputs differently, or receive a changed payload after a crash, but it
@@ -272,6 +282,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if self._run_store is None:
             return True
         return await self._run_store.claim_delegation_transport_attempt(run_id)
+
 
     async def _resume(self, resumed: dict[str, Any]) -> DelegateRemoteOut:
         """Settle the child Run, then report what the delegate answered.
@@ -591,6 +602,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._recover_in_process(inputs, key, child_id)
 
         try:
+            # This local admission is synchronous and deduplicates by effect
+            # key itself, so validating it before claiming the canonical child
+            # cannot create an ambiguous external effect.
             task_id = self._a2a_delegator.delegate_task(
                 inputs.from_agent,
                 inputs.task,
@@ -671,6 +685,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         task_id: str,
         mode: str,
         target: str,
+        effect_key: str = "",
     ) -> str:
         """File the delegated work as a child Run of the delegating NodeRun.
 
@@ -717,6 +732,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 "delegating_agent": inputs.from_agent,
                 "target_agent": target,
                 "peer_name": inputs.peer_name,
+                "effect_key": effect_key,
             },
         )
         return child.run_id

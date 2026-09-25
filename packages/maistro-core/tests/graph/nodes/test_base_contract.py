@@ -194,6 +194,7 @@ def test_catalog_json_includes_test_kinds_with_required_fields() -> None:
     assert entry["display_name"] == "Echo"
     assert entry["description"] == "Returns input as-is"
     assert entry["cost_hint"] == 0.0
+    assert entry["replay_semantics"] == "pure"
     assert entry["idempotent"] is True
     assert entry["external_io"] is False
     # Schema summary is the minimum the UI uses for edge validation.

@@ -119,6 +119,12 @@ class A2ADelegator:
                 if existing.metadata.get("delegation_key") == delegation_key:
                     return existing.id
 
+        effect_key = str((metadata or {}).get("effect_key") or "")
+        if effect_key:
+            for existing in self._tasks.values():
+                if existing.metadata.get("effect_key") == effect_key:
+                    return existing.id
+
         task_id = str(uuid.uuid4())
 
         task_obj = A2ATask(

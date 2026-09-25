@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class AliasKeysIn(BaseModel):
@@ -54,7 +54,7 @@ class TransformAliasKeysNode(BaseNode[AliasKeysIn, AliasKeysOut]):
     input_schema: ClassVar[type[BaseModel]] = AliasKeysIn
     output_schema: ClassVar[type[BaseModel]] = AliasKeysOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Rename keys"
     description: ClassVar[str] = (
