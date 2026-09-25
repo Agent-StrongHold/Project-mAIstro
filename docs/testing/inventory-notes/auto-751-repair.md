@@ -43,3 +43,46 @@ run is superseded by `scripts/check_compliance.py`; kept out of the commit (it a
 fails ruff), preserved at /tmp/salvage-check_evidence_shas.py. No new tests; deltas
 unchanged. No CI topology change.
 
+## Repair round 2026-09-25 (head 60d382c07, final validation)
+
+Re-validated at the exact assigned head, after the digest-refresh commit:
+
+- `uv run python scripts/check_compliance.py` OK, byte-identical across two
+  consecutive runs (registry `as_of` snapshot, no wall clock).
+- `--as-of 2028-01-01T00:00:00Z` -> 134 findings, exit 1 (staleness semantics
+  exercised end to end).
+- `uv run pytest tests/test_check_compliance.py -q` 28 passed (inventory deltas
+  +21 +3 +1 +2 +1 = 28 collected).
+- `uv run python scripts/check-suite-inventory.py --suite tests/` OK (3644,
+  recorded inventory matches).
+- `uv run ruff check` over every tracked .py changed by the branch: all checks
+  passed. The two findings under a bare `ruff check .` come only from the
+  untracked scratch `check_evidence_shas.py` (kept out of the commit; the
+  identical copy at /tmp/salvage-check_evidence_shas.py remains the salvage
+  record).
+- `scripts/check-doc-links.py` OK; `git diff develop...HEAD -- .github/` is
+  empty (no CI-topology change); no closure keywords in branch commit
+  messages; PR #1459 is OPEN and DRAFT.
+
+Integration seam left to the parent (#362): two red gates remain at this
+head, both caused solely by registering the deliberately-unwired validator
+as honest debt —
+
+- `scripts/check-reachability-provenance.py`: "@tool/check_compliance: NEW
+  unreachable module absent from trusted base and not previously authorized".
+- `scripts/check-reachability-dispositions-provenance.py`:
+  "@tool/check_compliance: NEW disposition absent from trusted ledger and not
+  covered by an already-landed reachability authorization".
+
+The baseline and disposition rows are already in this branch. The
+authorization half cannot come from this child: `load_authorizations` reads
+`quality/ratchet-authorizations.json` from the trusted base revision by
+design (`scripts/ratchet_provenance.py` — "a new grant does not take effect
+in the change that introduces it"), so a grant landed here could never turn
+these gates green in the same merge, and shared ratchet grants are outside
+this child's declared bounds. Handoff to #362: land a `reachability`
+authorization grant for `@tool/check_compliance` (owner, issue, reason per
+the grant schema) in a ledger-owners merge on the trusted base; this
+branch's baseline + disposition rows then complete the debt transaction once
+its base contains the grant. No new tests; deltas unchanged.
+
