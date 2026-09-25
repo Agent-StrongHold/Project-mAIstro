@@ -14,6 +14,7 @@ from services.chat_gate import (
     REFUSAL_TEXT,
     gate_untrusted,
 )
+from services.chat_runs import admit_turn, execute_turn
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,9 @@ class VoiceIntentResponse(BaseModel):
     understood: bool
     intent: Literal["conversation", "unknown"]
     reply: str
+    #: The canonical Run the answered turn executed under (#1037). Absent on a
+    #: Warden refusal, which never reached admission.
+    run_id: str | None = None
 
 
 @router.post("/intent", response_model=VoiceIntentResponse)
@@ -111,8 +115,12 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
     req = conversation_only(
         ChatCompletionRequest(messages=[{"role": "user", "content": utterance}])
     )
+    turn = await admit_turn(request, req.messages)
 
-    result = await build_llm_port().complete(req)
+    async def call_model() -> dict:
+        return await build_llm_port().complete(req)
+
+    result = await execute_turn(turn, req.messages, call_model)
 
     reply = ""
     for choice in result.get("choices", []):
@@ -127,4 +135,6 @@ async def voice_intent(body: VoiceIntentBody, request: Request) -> VoiceIntentRe
         intent,
     )
 
-    return VoiceIntentResponse(understood=bool(reply), intent=intent, reply=reply)
+    return VoiceIntentResponse(
+        understood=bool(reply), intent=intent, reply=reply, run_id=turn.run.run_id
+    )
