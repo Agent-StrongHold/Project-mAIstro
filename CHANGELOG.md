@@ -443,6 +443,28 @@ or placeholder-only section.
 
 ### Changed
 
+- **Hive and maistro-server now share one durable Workspace owner (#37,
+  ADR-092326-97c4).** The shipped `docker-compose.yml` gives `hive-conductor`
+  the same `DATABASE_URL`/`DB_*` as `maistro-engine` and starts it only after
+  PostgreSQL and the (self-migrating) engine are healthy, so Hive's embedded
+  Container uses the `canonical_workspaces` tables maistro-server serves. On
+  that durable path Hive's `stores.workspaces` mirror is imported once
+  (journal-idempotent, never resurrecting a Workspace or membership deleted or
+  revoked canonically) and is no longer written or replayed; a configured
+  database whose Container failed to start now fails Workspace authorization
+  closed instead of reviving the mirror. The no-database dev path is unchanged.
+  Hive's whole embedded Container (Runs, sessions, learnings, schedules) now
+  uses that shared database too, not only its Workspace store.
+  Hive's `/health/ready` now counts that store: with a database configured
+  and no Container it answers 503 with `ready: false`, so Compose stops
+  reporting an instance whose Workspace API only fails. The Hive image now
+  ships the agent roster (`agents/` → `/app/backend/agents`), which the
+  embedded bridge requires to start at all. `create_container()` no longer
+  refuses to build when the `identity` extra is missing (the Python 3.14 Hive
+  image cannot install it): it leaves the identity lifecycle stores unwired,
+  and the Container's identity methods still raise the ImportError that names
+  the extra.
+
 - **A declared correlation field must have a production producer (#63).** A
   fitness test scans production code (`packages/*/src` and the hive, turing
   and canvas backends) for `bind_execution_context(...)` keywords. It fails
