@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from maistro.quota.billing import cycle_key as _canonical_cycle_key
 
@@ -78,6 +78,105 @@ class PgQuotaTracker:
             "request_count": row["request_count"] if row else 0,
         }
 
+    async def record_unreported(self, provider: str, billing_cycle: str) -> dict[str, object]:
+        """Project a completed call with missing usage into the aggregate."""
+        ck = cycle_key(billing_cycle)
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO quota_usage
+                   (provider, cycle_key, input_tokens, output_tokens, total_tokens,
+                    request_count, unreported_count)
+                   VALUES ($1, $2, 0, 0, 0, 1, 1)
+                   ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                     request_count = quota_usage.request_count + 1,
+                     unreported_count = quota_usage.unreported_count + 1
+                   RETURNING *""",
+                provider,
+                ck,
+            )
+        return self._usage_result(provider, ck, row)
+
+    async def record_invocation(
+        self,
+        invocation_id: str,
+        provider: str,
+        billing_cycle: str,
+        input_tokens: int,
+        output_tokens: int,
+        usage_reported: bool,
+    ) -> dict[str, object]:
+        """Record one canonical Invocation at most once in PostgreSQL."""
+        ck = cycle_key(billing_cycle)
+        async with self._pool.acquire() as conn, conn.transaction():
+            inserted = await conn.fetchval(
+                """INSERT INTO quota_invocation_evidence
+                   (invocation_id, provider, cycle_key, input_tokens,
+                    output_tokens, usage_reported)
+                   VALUES ($1, $2, $3, $4, $5, $6)
+                   ON CONFLICT (invocation_id) DO NOTHING
+                   RETURNING invocation_id""",
+                invocation_id,
+                provider,
+                ck,
+                input_tokens,
+                output_tokens,
+                usage_reported,
+            )
+            if inserted is not None:
+                if usage_reported:
+                    row = await conn.fetchrow(
+                        """INSERT INTO quota_usage
+                               (provider, cycle_key, input_tokens, output_tokens,
+                                total_tokens, request_count, unreported_count)
+                               VALUES ($1, $2, $3, $4, $5, 1, 0)
+                               ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                                 input_tokens = quota_usage.input_tokens + $3,
+                                 output_tokens = quota_usage.output_tokens + $4,
+                                 total_tokens = quota_usage.total_tokens + $5,
+                                 request_count = quota_usage.request_count + 1
+                               RETURNING *""",
+                        provider,
+                        ck,
+                        input_tokens,
+                        output_tokens,
+                        input_tokens + output_tokens,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        """INSERT INTO quota_usage
+                               (provider, cycle_key, input_tokens, output_tokens,
+                                total_tokens, request_count, unreported_count)
+                               VALUES ($1, $2, 0, 0, 0, 1, 1)
+                               ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                                 request_count = quota_usage.request_count + 1,
+                                 unreported_count = quota_usage.unreported_count + 1
+                               RETURNING *""",
+                        provider,
+                        ck,
+                    )
+            else:
+                row = await conn.fetchrow(
+                    "SELECT * FROM quota_usage WHERE provider = $1 AND cycle_key = $2",
+                    provider,
+                    ck,
+                )
+        return self._usage_result(provider, ck, row)
+
+    @staticmethod
+    def _usage_result(provider: str, ck: str, row: Any) -> dict[str, object]:
+        result: dict[str, object] = {
+            "provider": provider,
+            "cycle_key": ck,
+            "input_tokens": row["input_tokens"] if row else 0,
+            "output_tokens": row["output_tokens"] if row else 0,
+            "total_tokens": row["total_tokens"] if row else 0,
+            "request_count": row["request_count"] if row else 0,
+        }
+        if row and row.get("unreported_count", 0):
+            result["unreported_count"] = row["unreported_count"]
+            result["usage_complete"] = False
+        return result
+
     async def get_usage_pct(
         self,
         provider: str,
@@ -103,14 +202,18 @@ class PgQuotaTracker:
             rows = await conn.fetch(
                 "SELECT * FROM quota_usage ORDER BY provider, cycle_key",
             )
-        return [
-            {
-                "provider": r["provider"],
-                "cycle_key": r["cycle_key"],
-                "input_tokens": r["input_tokens"],
-                "output_tokens": r["output_tokens"],
-                "total_tokens": r["total_tokens"],
-                "request_count": r["request_count"],
+        result = []
+        for row in rows:
+            item: dict[str, object] = {
+                "provider": row["provider"],
+                "cycle_key": row["cycle_key"],
+                "input_tokens": row["input_tokens"],
+                "output_tokens": row["output_tokens"],
+                "total_tokens": row["total_tokens"],
+                "request_count": row["request_count"],
             }
-            for r in rows
-        ]
+            if row.get("unreported_count", 0):
+                item["unreported_count"] = row["unreported_count"]
+                item["usage_complete"] = False
+            result.append(item)
+        return result

@@ -374,8 +374,8 @@ class Agent:
             auth, trace, status_callback, classified_task_type
         )
 
-        result = await self._run_strategy(
-            context_messages, model, tool_defs, strategy_kwargs, trace
+        result = await self._run_strategy_for_turn(
+            context_messages, model, tool_defs, strategy_kwargs, trace, turn_id
         )
         if result is None:
             # `_run_strategy` already caught and logged; mark it failed so this
@@ -659,6 +659,28 @@ class Agent:
                 }
             )
         return context_messages, injected_learning_ids
+
+    async def _run_strategy_for_turn(
+        self,
+        context_messages: list[dict[str, Any]],
+        model: str,
+        tool_defs: list[dict[str, Any]] | None,
+        strategy_kwargs: dict[str, Any],
+        trace: Any,
+        turn_id: str | None,
+    ) -> Any:
+        """Set canonical LLM correlation for one turn, then clear it."""
+        set_turn = getattr(self._llm, "set_turn", None)
+        clear_turn = getattr(self._llm, "clear_turn", None)
+        if callable(set_turn):
+            set_turn(turn_id, agent_name=self.identity.name)
+        try:
+            return await self._run_strategy(
+                context_messages, model, tool_defs, strategy_kwargs, trace
+            )
+        finally:
+            if callable(clear_turn):
+                clear_turn()
 
     async def _run_strategy(
         self,

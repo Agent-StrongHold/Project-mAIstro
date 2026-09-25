@@ -33,6 +33,12 @@ class UsageEvent:
     output_tokens: int = 0
     images: int = 0
     cost_usd: float = 0.0
+    # Provenance is populated by the canonical Invocation recorder. Legacy
+    # callback recording leaves these absent, but never invents identity.
+    invocation_id: str | None = None
+    provider: str | None = None
+    billing_cycle: str | None = None
+    usage_reported: bool | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -76,6 +82,10 @@ class InMemoryUsageLog:
         output_tokens: int = 0,
         images: int = 0,
         cost_usd: float = 0.0,
+        invocation_id: str | None = None,
+        provider: str | None = None,
+        billing_cycle: str | None = None,
+        usage_reported: bool | None = None,
         now: float | None = None,
     ) -> None:
         now = now if now is not None else time.time()
@@ -87,6 +97,10 @@ class InMemoryUsageLog:
                 output_tokens=output_tokens,
                 images=images,
                 cost_usd=cost_usd,
+                invocation_id=invocation_id,
+                provider=provider,
+                billing_cycle=billing_cycle,
+                usage_reported=usage_reported,
             )
         )
         self._prune(log, now)

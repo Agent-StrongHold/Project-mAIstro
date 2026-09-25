@@ -87,11 +87,13 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # 036 already existed on the historical 035 branch when the consumer and
     # task migrations landed, and develop's chain kept growing while this
     # branch was open (039 for #1531, then 040 for #1079, each taking the
-    # parent this revision had claimed). It therefore follows the current
-    # develop chain tip (040, the tip of 035 -> ... -> 038 -> 039 -> 040) so
-    # every deployment's ordinary ``upgrade head`` applies the audit scope
+    # parent this revision had claimed; finally the quota-evidence migration
+    # was re-ID'd to 041 after its own numeric slots collided twice). It
+    # therefore follows the current chain tip (041_quota_invocation_evidence,
+    # the tip of 035 -> ... -> 038 -> 039 -> 040 -> 041) so every
+    # deployment's ordinary ``upgrade head`` applies the audit scope
     # migration rather than leaving it on a competing branch.
-    assert revision.down_revision == "040"
+    assert revision.down_revision == "041_quota_invocation_evidence"
     assert directory.get_heads() == ["036_audit_log_org_scope"]
     walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
     assert revision.revision in walked

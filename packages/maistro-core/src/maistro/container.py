@@ -1832,7 +1832,14 @@ async def create_container(
     capability_invocation_store = await _wire_capability_invocations(
         pg_pool=pg_pool, db_pool=db_pool
     )
-    capability_effects = new_effect_context(invocation_store=capability_invocation_store)
+    # The container's own canonical recording path (#718): every governed
+    # effect dispatched through this context records quota evidence through
+    # the Invocation authority, on the same durable ledger selected above.
+    capability_effects = new_effect_context(
+        invocation_store=capability_invocation_store,
+        usage_log=get_default_usage_log(),
+        quota_tracker=quota_tracker,
+    )
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
@@ -2121,6 +2128,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_invocation_evidence",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
     # for the same reason as `prompt_labels`: without it a database migrated

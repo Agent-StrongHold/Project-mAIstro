@@ -489,6 +489,40 @@ async def _seed_agent_directory(
     )
 
 
+def _governed_llm_client(
+    capability_effects: Any,
+    provider_registry: Any,
+    llm_router: Any,
+    model_endpoint: Any,
+    workspace_id: str,
+    project_id: str,
+) -> Any | None:
+    """The canonical model client for every strategy, or None.
+
+    One wrapper at the factory boundary keeps all Agent strategies on their
+    existing LLMClient protocol while routing production model effects through
+    the canonical Binding -> Invocation path (#718). Tests and legacy callers
+    that do not supply the full effect authority set retain their injected
+    client: any absent authority means the governed path cannot be composed
+    fail-closed, so nothing is wrapped rather than half of it.
+    """
+    if any(
+        value is None
+        for value in (capability_effects, provider_registry, llm_router, model_endpoint)
+    ):
+        return None
+    from maistro.capabilities.model_chat import GovernedLLMClient
+
+    return GovernedLLMClient(
+        capability_effects,
+        registry=provider_registry,
+        router=llm_router,
+        endpoint=model_endpoint,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+
+
 async def create_agents(
     *,
     agents_dir: str | Path,
@@ -511,8 +545,25 @@ async def create_agents(
     learning_promoter: Any = None,
     tool_registry: Any = None,
     require_agents: bool = False,
+    capability_effects: Any = None,
+    provider_registry: Any = None,
+    llm_router: Any = None,
+    model_endpoint: Any = None,
+    workspace_id: str = "default",
+    project_id: str = "agent-runtime",
 ) -> dict[str, Agent]:
     _register_custom_strategies()
+
+    governed = _governed_llm_client(
+        capability_effects,
+        provider_registry,
+        llm_router,
+        model_endpoint,
+        workspace_id,
+        project_id,
+    )
+    if governed is not None:
+        llm = governed
 
     deps = {
         "llm": llm,

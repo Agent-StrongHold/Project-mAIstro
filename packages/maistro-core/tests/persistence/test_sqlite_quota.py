@@ -49,6 +49,35 @@ async def test_record_usage_accumulates_on_conflict(tracker: SqliteQuotaTracker)
 
 
 @pytest.mark.asyncio
+async def test_record_invocation_is_idempotent_and_marks_missing_usage(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    first = await tracker.record_invocation("inv-1", "openai", "monthly", 0, 0, False)
+    second = await tracker.record_invocation("inv-1", "openai", "monthly", 99, 1, False)
+
+    assert first["request_count"] == 1
+    assert first["unreported_count"] == 1
+    assert first["usage_complete"] is False
+    assert second == first
+    row = (await tracker.get_all_usage())[0]
+    assert row["unreported_count"] == 1
+    assert row["usage_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_record_invocation_keeps_reported_usage_provenance_idempotent(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    await tracker.record_invocation("inv-2", "openai", "monthly", 10, 5, True)
+    row = await tracker.record_invocation("inv-2", "openai", "monthly", 100, 100, True)
+
+    assert row["input_tokens"] == 10
+    assert row["output_tokens"] == 5
+    assert row["total_tokens"] == 15
+    assert row["request_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_get_usage_pct_zero_free_tokens_returns_zero(
     tracker: SqliteQuotaTracker,
 ) -> None:

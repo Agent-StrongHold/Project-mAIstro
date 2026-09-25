@@ -646,6 +646,19 @@
       "notes": "One row per provider per billing cycle; raw-vs-aggregate retention is still open on #325."
     },
     {
+      "table": "quota_invocation_evidence",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/persistence/sqlite_quota.py",
+      "data_class": "accounting",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "One immutable evidence row per canonical physical Invocation (#718): invocation identity, provider, cycle, tokens, usage_reported. Projected into quota_usage aggregates; raw-vs-aggregate retention is the same open question as quota_usage on #325."
+    },
+    {
       "table": "reactor_log",
       "backends": [
         "sqlite"

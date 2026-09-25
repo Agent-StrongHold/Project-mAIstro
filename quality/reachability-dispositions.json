@@ -277,12 +277,9 @@
       "id": "quota-verification",
       "subsystem": "Quota and billing",
       "disposition": "CONNECT",
-      "rationale": "ADR-085 provider-side quota verification and reconciliation. #56 attaches token and cost metadata to the Invocation, which is where these belong.",
+      "rationale": "ADR-085 provider-side quota verification. #718 wired the recording half (maistro.quota.recorder, and the ambient/reconciliation modules it composes) into the canonical Invocation terminalization, so those left this disposition; the explicit verifier half (verify.py + the per-provider verifiers and the SQLite usage-log snapshot) still has no production caller and remains owed.",
       "root": "the Invocation cost path (#56)",
       "modules": [
-        "maistro.quota.ambient",
-        "maistro.quota.reconciliation",
-        "maistro.quota.recorder",
         "maistro.quota.sqlite_usage_log",
         "maistro.quota.verifiers",
         "maistro.quota.verifiers.mistral",

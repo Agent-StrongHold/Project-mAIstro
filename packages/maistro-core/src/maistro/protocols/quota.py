@@ -19,6 +19,23 @@ class QuotaTracker(Protocol):
         """Record token usage. Returns updated totals."""
         ...
 
+    async def record_invocation(
+        self,
+        invocation_id: str,
+        provider: str,
+        billing_cycle: str,
+        input_tokens: int,
+        output_tokens: int,
+        usage_reported: bool,
+    ) -> dict[str, object]:
+        """Record one canonical physical Invocation at most once.
+
+        ``usage_reported=False`` is evidence that the provider call happened
+        without token accounting; it must remain visible as unreported rather
+        than becoming a measured zero.
+        """
+        ...
+
     async def get_usage_pct(
         self,
         provider: str,
@@ -29,5 +46,10 @@ class QuotaTracker(Protocol):
         ...
 
     async def get_all_usage(self) -> list[dict[str, object]]:
-        """Get all usage records for dashboard."""
+        """Get usage records for dashboards, including incomplete evidence.
+
+        Rows with ``usage_complete=False`` contain at least one provider call
+        whose token report was unavailable; their percentage must not be
+        presented as a complete accounting of provider spend.
+        """
         ...

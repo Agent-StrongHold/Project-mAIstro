@@ -24,6 +24,12 @@ def _fake_container() -> SimpleNamespace:
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        # Governed-egress seams the #718 cutover reads off the Container and
+        # hands to the agent factory (create_agents wires GovernedLLMClient
+        # when all four effect/model authorities are present).
+        capability_effects=object(),
+        provider_registry=object(),
+        llm_router=object(),
         agents={},
     )
 
@@ -61,6 +67,9 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        capability_effects=object(),
+        provider_registry=object(),
+        llm_router=object(),
     )
     captured: dict[str, object] = {}
     # The real Container always initializes `agents` to an empty dict and
@@ -186,6 +195,9 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         outcome_store=object(),
         session_store=object(),
         quota_tracker=object(),
+        capability_effects=object(),
+        provider_registry=object(),
+        llm_router=object(),
         agents=wired_agents,
     )
 
