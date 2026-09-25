@@ -356,6 +356,13 @@ async def list_pending_human_work(
     """
     user_id = _request_user_id(request)
 
+    # The canonical spine is resolved before any authorization-derived empty
+    # answer: a degraded spine is an unavailable capability, not an empty
+    # pending queue, so the fail-closed 503 must not depend on the caller's
+    # Workspace set. Resolving the handle touches no data — disclosure below
+    # is still bounded by Workspace membership and Project authority.
+    store = _store()
+
     # Workspace membership is the canonical visibility boundary for Run data,
     # not the coarse `dags.write` route permission. Resolve every Workspace the
     # principal may see; selecting one default Workspace would hide legitimate
@@ -372,7 +379,6 @@ async def list_pending_human_work(
         return []
 
     bounded_limit = max(1, min(limit, 200))
-    store = _store()
     items: list[PendingHumanWork] = []
     # Three bounds compose here, and none subsumes another. Workspace
     # membership is the security boundary for Run data and is applied by the

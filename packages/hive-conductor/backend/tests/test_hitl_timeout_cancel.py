@@ -229,15 +229,21 @@ async def test_expiry_endpoint_reports_an_empty_tick(seeded: _Seeded) -> None:
 
 
 async def test_expiry_endpoint_only_settles_authorized_workspace_projects(
-    reviewer_client: Any, admin_client: Any
+    reviewer_client: Any, admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A user-triggered expiry tick cannot settle another principal's pause."""
-    from services.dag_agents import get_run_store
+    from services import dag_agents
     from services.workspace_authority import canonical_store_for_tests, set_member
 
     from maistro.projects.scope import ProjectMembership
 
-    store = get_run_store()
+    # This test seeds the legacy document-shaped store directly. Bind it to the
+    # route only as an explicit test seam; production `_store()` refuses this
+    # store and requires the Container's canonical projection.
+    store = dag_agents.get_run_store()
+    assert isinstance(store, InMemoryDurableRunStore)
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
+
     deadline = datetime.now(UTC) - timedelta(minutes=1)
     reviewer_workspace = await create_workspace(
         creator_user_id="admin",
