@@ -97,7 +97,7 @@ Scope comparison uses the existing ordering `global > org > team > user > agent 
 [ADR-092526-4391](../adr/ADR-092526-4391-same-user-user-model-promotion-is-self-consented.md)
 proposes one case where this flow is not used. Promoting a fact scoped to a Workspace, Project or
 AGENT into the **same authenticated user's** `UserModelFact` user model is automatic self-consent.
-It writes an audit entry in the same transaction and creates no `ConsentTask`. Widening to another
+It writes an audit entry and creates no `ConsentTask`. Widening to another
 user, or to TEAM, ORGANIZATION or GLOBAL scope, still requires the
 `propose_widen -> resolve_consent -> apply_widen` flow above.
 
