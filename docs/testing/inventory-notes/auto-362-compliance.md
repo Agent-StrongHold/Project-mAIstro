@@ -51,3 +51,37 @@ Verified at branch head `53d61585d135859edbe1d8069ce28ce3a3529314` (develop base
 - Note: `uv run mypy scripts/check-compliance.py` (not a project gate — CI mypy
   targets `packages/*` only) reports 2 strict-mode errors (lines 408, 878);
   recorded, not blocking.
+
+## Repair-phase re-validation (2026-09-25, head `357fcbc7fae46842a468d148d510475259315bc6`)
+
+No source edits; validation-only round recorded in this note.
+
+- `uv run python scripts/check-compliance.py` exit 0 at rest.
+- Release mode `--require-release-evidence --release-digest <HEAD>` exit 1 with
+  79 problems (all 26 `release_required` controls fail closed; ART-15/17
+  `unverified` blocks release).
+- `uv run pytest tests/test_check_compliance.py -q`: 97 passed (12.7s).
+  `uv run ruff check .` and `uv run ruff format --check .` clean.
+  `check-branch-protection.py`, `check-ratchet-provenance.py`,
+  `check-branch-independence.py` all exit 0.
+- String-level probes via the checker module (files copied, no tracked-file
+  edits): dropped Status cell → rejected (8 vs 9 cells); forged `implemented`
+  ART-15 document row → rejected (registry drift + implemented-without-
+  evidence); registry-side forged `implemented` ART-15 → rejected (no release
+  digest, no immutable evidence); `_workflow_state` on the live
+  `compliance-evidence.yml` → `(enabled=True, manual_only=False)`.
+- Wiring: ci.yml `compliance` job runs on push (main/integration/develop), all
+  PRs, and merge_group; "Compliance registry" is a required check for develop
+  and main in `.github/branch-protection.json`; release.yml `guard` job runs
+  the fail-closed check before `wheels`/`pypi`/`images`/`github-release`
+  (all `needs: guard`) and attaches the validated `release-compliance.json`
+  to the GitHub release with SHA256SUMS.
+- Prior CI findings at this head re-examined: `wheel-imports` reproduced
+  locally — `uv build` of all 10 package wheels plus
+  `scripts/verify-wheel-imports.py --dist ... --python 3.12` exit 0 (all bare
+  and extras import checks pass), and the lane diff touches no `packages/*`;
+  `integration-scope` is an aggregate that includes `wheel-imports`, so both
+  failures are transient/aggregate CI noise, not acceptance failures.
+- Residual UNVERIFIED (unchanged, requires GitHub mutations outside this
+  lane): first production `compliance-evidence.yml` push run on main/develop,
+  and the first real tag resolving evidence at that exact SHA.
