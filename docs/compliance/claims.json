@@ -680,11 +680,11 @@
       "id": "ev-map-2",
       "kind": "repository_artifact",
       "path": "COMPLIANCE.md",
-      "sha256": "bb7d7a2f00fd7fdc8b456809e2a7209f9f43389e5782dc992350d68e1a6c098b",
+      "sha256": "6dcdccf0f66a46a473f5fd605a9502ec02853d35ce264fdf27ea4cf4019642a4",
       "state": "current",
       "mode": "manual",
       "result": "observed",
-      "observed_at": "2026-09-22T12:00:00Z"
+      "observed_at": "2026-09-25T12:00:00Z"
     },
     {
       "id": "ev-map-3",
@@ -780,7 +780,7 @@
       "id": "ev-manage-3",
       "kind": "repository_artifact",
       "path": ".github/workflows/ci.yml",
-      "sha256": "40003173abb4394225d0307bfa817bf8eab10ab5e49ccb19b61a12a6f06c82ca",
+      "sha256": "f13469576a7aa5f793dfba4fe606c416eb7d18fb8c5f6d1f4ac37d40b0fb5d1b",
       "state": "current",
       "mode": "automated",
       "result": "passed",
@@ -870,7 +870,7 @@
       "id": "ev-eu-art-17",
       "kind": "repository_artifact",
       "path": ".github/workflows/quality.yml",
-      "sha256": "b92c54b559dbfe14a322b30038e613ce3c7cb3040854736388ac3b72a829c229",
+      "sha256": "2745109b0df2eb6dce8052fdc8fdd715fe183f806cc1a0dc72ee64e6b44b614c",
       "state": "current",
       "mode": "automated",
       "result": "passed",

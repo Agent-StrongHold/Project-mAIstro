@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import threading
 import time as _time
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -19,7 +18,7 @@ from config import get_settings, is_valid_oauth_provider_name
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from models.schemas import HiveUser
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from services import registration_policy
+from services import registration_policy, username_registry
 from services.human_auth_mode import HumanAuthModePolicy
 from services.oauth_login import (
     OAUTH_MAX_PENDING_STATES,
@@ -57,10 +56,7 @@ router = APIRouter(tags=["auth"])
 _STRICTER = StricterLimits()
 _LOGIN_THROTTLE = AuthThrottle()
 _REGISTER_THROTTLE = AuthThrottle(_STRICTER.register)
-# The username check and UUID-keyed write must be one critical section. A
-# UUID is unique even when two requests claim the same username, so relying on
-# the store's key uniqueness would still admit duplicate identities (#1248).
-_REGISTRATION_LOCK = threading.Lock()
+
 _ELEVATE_THROTTLE = AuthThrottle(_STRICTER.elevate)
 # In one state lifetime, anonymous starts cannot fill the bounded state store
 # even when distributed across client addresses.
@@ -286,7 +282,10 @@ def _users() -> list[HiveUser]:
 
 
 def _username_taken(username: str) -> bool:
-    return any(user.username.lower() == username.lower() for user in _users())
+    # This is an indexed lookup, retained as the policy-facing availability
+    # helper. It is only advisory: the atomic account allocation below is the
+    # authority under concurrency.
+    return username_registry.is_claimed(username)
 
 
 def _issue_session(user: Any, response: Response) -> dict[str, Any]:
@@ -696,56 +695,44 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
         if body.invitation_token:
             raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
         raise HTTPException(status_code=403, detail="Registration is closed on this hive.")
-    # The store key is a UUID, not the username. Keep the availability check,
-    # invitation spend, and UUID write together so no concurrent request can
-    # pass the check before this request publishes its identity (#1248).
-    with _REGISTRATION_LOCK:
-        if _username_taken(body.username):
-            # Charged as a failure: "is this name taken?" is itself an enumeration
-            # primitive, and an unbudgeted one would let someone walk the user list
-            # for free.
-            _REGISTER_THROTTLE.record_failure(
-                client_key=_client_key(request), account=body.username
-            )
-            raise HTTPException(status_code=409, detail="Username is already taken.")
-        if (
-            body.invitation_token is not None
-            and decision.reason == "invitation"
-            and not registration_policy.redeem_invitation(
-                body.invitation_token, username=body.username
-            )
-        ):
-            # The invitation lost a redemption race (or expired between the check
-            # and the spend). Anything that fails after a successful spend leaves
-            # the token spent — fail-closed; an operator reissues.
-            log_audit(
-                "register_blocked",
-                body.username,
-                detail={"reason": "invitation_race"},
-                severity="warning",
-            )
-            raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
-
-        user_id = str(uuid4())
-        password_hash = hash_password(body.password)
-        now_ts = datetime.now(UTC)
-        user = HiveUser(
-            id=user_id,
-            username=body.username,
-            password_hash=password_hash,
-            role="user",
-            is_active=True,
-            permissions=[],
-            did=None,
-            created_at=now_ts,
+    # Handle invitation redemption before password hashing to avoid wasted work
+    # on invalid invitations. The redemption is atomic via JsonStore.put_if_absent.
+    if (
+        body.invitation_token is not None
+        and decision.reason == "invitation"
+        and not registration_policy.redeem_invitation(body.invitation_token, username=body.username)
+    ):
+        log_audit(
+            "register_blocked",
+            body.username,
+            detail={"reason": "invitation_race"},
+            severity="warning",
         )
-        if not stores.users.put_if_unique(user_id, user, "username"):
-            # Another process may have claimed the name after this process's
-            # in-memory availability check. The durable claim is authoritative.
-            _REGISTER_THROTTLE.record_failure(
-                client_key=_client_key(request), account=body.username
-            )
-            raise HTTPException(status_code=409, detail="Username is already taken.")
+        raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
+    # Allocate username and create user atomically.
+    user_id = str(uuid4())
+    password_hash = hash_password(body.password)
+    now_ts = datetime.now(UTC)
+    user = HiveUser(
+        id=user_id,
+        username=body.username,
+        password_hash=password_hash,
+        role="user",
+        is_active=True,
+        permissions=[],
+        did=None,
+        created_at=now_ts,
+    )
+    try:
+        username_registry.create_users([user])
+    except username_registry.UsernameTakenError as exc:
+        _REGISTER_THROTTLE.record_failure(client_key=_client_key(request), account=body.username)
+        raise HTTPException(status_code=409, detail="Username is already taken.") from exc
+    except username_registry.UsernameAllocationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Account could not be durably allocated; please retry.",
+        ) from exc
     if decision.reason == "invitation":
         log_audit(
             "registration_invitation_redeemed",
@@ -781,7 +768,10 @@ def login(body: LoginBody, request: Request, response: Response) -> dict[str, An
     # and `and` short-circuits, so an unknown username never reached Argon2.
     # Measured: 87.6 ms for a known username with the wrong password, ~0 ms for
     # an unknown one. Four orders of magnitude, readable from one request.
-    match = next((user for user in _users() if user.username == body.username), None)
+    # Username identity is resolved through the canonical claim index. A
+    # quarantined historical duplicate therefore fails closed rather than
+    # selecting whichever user a storage iteration happens to return.
+    match = username_registry.resolve(body.username)
     verified = equal_cost_verify(body.password, match.password_hash if match else None)
 
     if match is not None and verified:

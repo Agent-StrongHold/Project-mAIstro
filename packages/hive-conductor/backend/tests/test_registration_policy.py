@@ -552,20 +552,26 @@ class TestInvitations:
     def test_durable_claim_loses_after_the_in_memory_check_passes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`put_if_unique` is authoritative even when `_username_taken` said yes (#1248).
+        """The atomic allocation is authoritative even when `_username_taken` said yes (#1248).
 
-        `_username_taken` reads the in-memory dict; `put_if_unique` makes the
-        durable claim. A process that lost the durable race after its own
-        in-memory check passed (e.g. it was serving a stale snapshot, or
-        another writer's row landed between the two calls) must still be
-        refused — the route falls through to the `put_if_unique` branch's own
-        409, not the earlier `_username_taken` one, and the throttle still
-        charges the failure.
+        `_username_taken` is only an advisory indexed read; the durable
+        claim+row transaction in ``username_registry.create_users`` decides.
+        A writer that lost the durable race after its own availability check
+        passed (another writer's claim landed between the two steps) must
+        still be refused — the route maps the allocation-stage
+        ``UsernameTakenError`` to its own 409, not the earlier
+        `_username_taken` one, and the throttle still charges the failure.
+        Reconciled onto #1061's canonical allocator: the loser is refused by
+        the real atomic allocation logic, not a stubbed seam.
         """
+        from uuid import uuid4
+
         import stores
         from main import app
+        from models.schemas import HiveUser
         from routes import auth as auth_routes
         from services import registration_policy as rp
+        from services import username_registry
 
         from maistro.security.auth_throttle import AuthThrottle
 
@@ -573,17 +579,38 @@ class TestInvitations:
         monkeypatch.setattr(
             auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
         )
-        real_put_if_unique = stores.users.put_if_unique
-        calls: list[tuple[str, str]] = []
+        real_create_users = username_registry.create_users
+        calls: list[str] = []
 
-        def losing_put_if_unique(key: str, value: Any, field_name: str) -> bool:
-            # `_username_taken` has already returned False for this name (it's
-            # not in the dict yet) by the time this runs — this simulates the
-            # durable backend discovering the claim is not actually free.
-            calls.append((key, field_name))
-            return False
+        def winning_then_losing_create_users(users: Any) -> None:
+            # `_username_taken` has already returned False for this name by
+            # the time this runs. Simulate the other replica winning the
+            # durable race in that window: allocate a complete account under
+            # the same normalized username first, then let this request's own
+            # allocation run and observe the claim is no longer free.
+            calls.append(users[0].username)
+            other_id = str(uuid4())
+            real_create_users(
+                [
+                    HiveUser(
+                        id=other_id,
+                        username=users[0].username,
+                        password_hash="sha256$reconciled$other",
+                        role="user",
+                        is_active=True,
+                        permissions=[],
+                        did=None,
+                        created_at=datetime.now(UTC),
+                    )
+                ]
+            )
+            real_create_users(users)
 
-        monkeypatch.setattr(stores.users, "put_if_unique", losing_put_if_unique)
+        monkeypatch.setattr(
+            auth_routes.username_registry,
+            "create_users",
+            winning_then_losing_create_users,
+        )
         before = len(stores.users)
         before_failures = {
             key: len(times)
@@ -595,16 +622,57 @@ class TestInvitations:
 
         assert response.status_code == 409
         assert response.json()["detail"] == "Username is already taken."
-        assert calls, "put_if_unique must have been reached"
-        assert len(stores.users) == before
-        assert "durable-race-loser" not in [u.username for u in stores.users.values()]
+        assert calls, "the atomic allocation must have been reached"
+        assert len(stores.users) == before + 1, "only the race winner gets a row"
+        # Exactly one canonical identity holds the name, and login resolves
+        # to the winner through the claim index — including across casing.
+        resolved = username_registry.resolve("DURABLE-RACE-LOSER")
+        assert resolved is not None
+        matching = [
+            u
+            for u in stores.users.values()
+            if username_registry.normalize_username(u.username) == "durable-race-loser"
+        ]
+        assert len(matching) == 1 and resolved.id == matching[0].id
         after_failures = {
             key: len(times)
             for key, times in auth_routes._REGISTER_THROTTLE._store._failures.items()
         }
         assert after_failures != before_failures
 
-        monkeypatch.setattr(stores.users, "put_if_unique", real_put_if_unique)
+    def test_allocation_outage_answers_503_with_a_retry_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A persistence outage during allocation is 503, not a half-made user.
+
+        When the durable claim transaction cannot complete (a storage outage,
+        not a name conflict), the route must answer 503 with a retry hint and
+        leave no account row behind.
+        """
+        import stores
+        from main import app
+        from routes import auth as auth_routes
+        from services import registration_policy as rp
+        from services import username_registry
+
+        from maistro.security.auth_throttle import AuthThrottle
+
+        rp.set_mode("open", actor="admin:test")
+        monkeypatch.setattr(
+            auth_routes, "_REGISTER_THROTTLE", AuthThrottle(auth_routes._STRICTER.register)
+        )
+
+        def _outage(_users: Any) -> None:
+            raise username_registry.UsernameAllocationError("durable store offline")
+
+        monkeypatch.setattr(username_registry, "create_users", _outage)
+        before = len(stores.users)
+
+        response = TestClient(app).post("/v1/auth/register", json=_register_body("outage-user"))
+
+        assert response.status_code == 503
+        assert "durably allocated" in response.json()["detail"]
+        assert len(stores.users) == before
 
     def test_independent_process_writers_publish_one_username(self, tmp_path: pathlib.Path) -> None:
         """The SQLite uniqueness claim survives separate application processes (#1248)."""
@@ -810,9 +878,14 @@ class TestFirstSetupIsOneShot:
         import stores
         from models.schemas import HiveUser
         from routes import setup as setup_routes
-        from services.model_store import ModelStore
+        from services.model_store import JsonStore, ModelStore
 
         monkeypatch.setattr(stores, "users", ModelStore("users", HiveUser))
+        # The claim index is process-global like the users store; isolate it
+        # with the same lifetime as the users store so this class's usernames
+        # (firstadmin, racer-*, ...) cannot leave active claims that a later
+        # persisted-mode test would read as stale claims needing repair.
+        monkeypatch.setattr(stores, "username_claims", JsonStore("username_claims"))
         monkeypatch.setattr(setup_routes, "_get_kv", lambda: None)
 
     def test_first_setup_creates_the_owner_and_closes_registration(
@@ -1007,6 +1080,97 @@ class TestSetupGuardEdges:
 
         assert exc_info.value.status_code == 409
         assert "Setup already complete" in exc_info.value.detail
+        assert len(stores.users) == 0
+
+    def test_settings_failure_releases_accounts_and_username_claims(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A post-allocation setup failure must not make retry report a taken name."""
+        import stores
+        from routes.setup import complete_setup
+        from services import settings_store
+
+        self._retryable_instance(monkeypatch)
+
+        real_save = settings_store.save
+
+        def _lost(_settings: object) -> None:
+            raise settings_store.SettingsPersistenceError("simulated write loss")
+
+        monkeypatch.setattr(settings_store, "save", _lost)
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 503
+        assert len(stores.users) == 0
+        assert "username:guardadmin" not in stores.username_claims
+        assert "username:guarduser" not in stores.username_claims
+        assert "__hive_setup_claim__" not in stores.sessions
+
+        # The same names are available after the failed account transaction.
+        monkeypatch.setattr(settings_store, "save", real_save)
+        retry = complete_setup(self._full_body())
+        assert retry["setup_complete"] is True
+        for user_id in ("admin", "user"):
+            stores.users.pop(user_id, None)
+        for username in ("guardadmin", "guarduser"):
+            stores.username_claims.pop(f"username:{username}", None)
+
+    def test_rollback_failure_demands_operator_reconciliation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rollback that cannot prove the pair is its own fails closed."""
+        from routes.setup import SetupRollbackError, _rollback_setup_accounts
+        from services import username_registry
+
+        def _refuses(_accounts: list[Any]) -> None:
+            raise username_registry.UsernameAllocationError("backend refused the rollback")
+
+        monkeypatch.setattr(username_registry, "rollback_users", _refuses)
+
+        with pytest.raises(SetupRollbackError, match="operator reconciliation"):
+            _rollback_setup_accounts([object()])
+
+    def test_setup_that_loses_the_username_race_is_refused_409(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Another writer claimed a setup name first: bootstrap refuses cleanly."""
+        import stores
+        from routes.setup import complete_setup
+        from services import username_registry
+
+        self._retryable_instance(monkeypatch)
+
+        def _taken(_users: Any) -> None:
+            raise username_registry.UsernameTakenError("username is already claimed")
+
+        monkeypatch.setattr(username_registry, "create_users", _taken)
+
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "Username is already taken."
+        assert len(stores.users) == 0
+
+    def test_setup_allocation_outage_answers_503(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A storage outage during bootstrap allocation is a retryable 503."""
+        import stores
+        from routes.setup import complete_setup
+        from services import username_registry
+
+        self._retryable_instance(monkeypatch)
+
+        def _outage(_users: Any) -> None:
+            raise username_registry.UsernameAllocationError("durable store offline")
+
+        monkeypatch.setattr(username_registry, "create_users", _outage)
+
+        with pytest.raises(HTTPException) as exc_info:
+            complete_setup(self._full_body())
+
+        assert exc_info.value.status_code == 503
+        assert "could not durably allocate" in exc_info.value.detail
         assert len(stores.users) == 0
 
     def test_setup_completed_between_check_and_lock_is_refused(

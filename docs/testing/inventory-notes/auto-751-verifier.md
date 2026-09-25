@@ -5,6 +5,9 @@ inventory-delta:
 
 # Issue #751 independent verification (review head 0577de92f)
 
+> 2026-09-25 addendum: after the b906cc577 develop sync, the 28-test evidence-validator suite
+> moved verbatim to `tests/test_check_compliance_claims.py`; see auto-751-develop-sync.md.
+
 Executed at the exact review head (merge of develop 60862b6c5 into auto-751). Two gates are red;
 everything else required by the child issue passes.
 
