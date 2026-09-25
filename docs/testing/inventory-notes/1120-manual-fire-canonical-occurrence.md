@@ -378,3 +378,27 @@ independent re-execution at the exact head.
   check-convergence-matrix.py EXIT=0.
 
 No new defects. No tree edits beyond this note.
+
+## Independent re-verification at merged head 143ea2714c21 (auto-1120, base 55c5ad892e68)
+
+Re-executed at the merge of develop 55c5ad892 into auto-1120:
+
+- `uv run ruff check .` clean; `uv run mypy` (6 packages) Success, 713 files.
+- `scripts/check-radon-baseline.py` EXIT=0 at this head — the earlier
+  `_admit_manual` C(14) unbaselined finding is resolved at the merged tree.
+- `scripts/check-vulture-baseline.py` EXIT=1, re-proven inherited: raw vulture
+  multiset over `packages tests` is IDENTICAL between base 55c5ad892 and head
+  143ea2714 (1453 == 1453, zero diff on `(path::message)` keys; scratch tree
+  via `git archive`), and `quality/` is unchanged base..head. The branch adds
+  no vulture identities; the ledger staleness is develop's own.
+- `scripts/check-convergence-matrix.py` EXIT=0; both
+  `check-suite-inventory.py` suites ok (hive 2739, core 10940).
+- Core runs+scheduling on a fresh disposable pgvector:pg18 (port 55434,
+  isolated; the `postgresql://` DSN form `MAISTRO_TEST_PG_DSN` expects):
+  `alembic upgrade head` -> head 042 applied cleanly; **568 passed, 0 skipped**.
+- Lane Hive suites re-run: 100 passed. SQLite-only pass: 179+245 passed.
+- Closure-keyword review: no fixes/closes/resolves in any commit message
+  55c5ad892..HEAD; live `gh pr view 1315` body is the claim-stake text
+  ("Refs #1120"), head SHA matches, still draft.
+
+No new defects. No tree edits beyond this note.
