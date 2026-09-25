@@ -261,6 +261,15 @@ or placeholder-only section.
 
 ### Added
 
+- **Proposed ADR for the durable cross-Workspace user model (#1047, partial).**
+  ADR-092526-4391 records the owner's decisions on #1047. The user model is a
+  separate `UserModelFact` record that does not decay. It has revision lineage,
+  sensitivity and shareability, a validity window, and tombstones that block
+  re-promotion. Promoting a Workspace-, Project- or Agent-scoped fact into the
+  same user's model is automatic self-consent with an audit entry, which amends
+  SPEC-242; cross-user and team/org/global widening still need a `ConsentTask`.
+  Decision only: no store, migration or runtime behaviour changes yet.
+
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
   `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap
