@@ -49,6 +49,14 @@
       "reason": "The compliance registry is the reviewed status and evidence specification; changing a claim or evidence record is the substantive compliance change."
     },
     {
+      "id": "credential-authority",
+      "kind": "specification",
+      "paths": [
+        "quality/credential-authority.json"
+      ],
+      "reason": "Reviewed credential-authority classification: which credential implementation is canonical, reachable, or retired is policy whose change is the substantive change, not a repository-wide measurement that unrelated branches must rewrite."
+    },
+    {
       "id": "compatibility-contracts",
       "kind": "specification",
       "paths": [
