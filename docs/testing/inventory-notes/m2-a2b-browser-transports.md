@@ -681,3 +681,54 @@ the two-and-one banked rows and the `Counter` remainder reads as new debt.
   quality job's `alembic upgrade head` step is unaffected by it.
 - `check-ratchet-provenance.py` and `check-shipped-surface-truth.py`
   (the other two exact-debt-ledger steps) rc=0 at this head.
+
+## L155 independent verifier round at 734649f45 (2026-09-25)
+
+Re-derived the #155 acceptance from the reopened issue text; head checked
+out exactly (`git rev-parse HEAD` = 734649f45e46fd84d1bb3dd847e79af0bfd349b4,
+tree clean, no closure keywords — `fixes/closes/resolves #N` count 0 across
+all commit bodies on the branch; PR 1451 body says "Refs #155" only).
+
+Executed at this head:
+- Driver deterministic checks 0–6 all rc=0 (`uv sync --locked --extra dev`,
+  `ruff check .`, `ruff format --check .`, core browser suites 136 passed,
+  Conductor `test_browser_network_policy.py` + `test_engine_service.py`
+  41 passed, both `check-suite-inventory.py` suites ok).
+- Verifier re-run: `uv run pytest packages/maistro-core/tests/tools/browser/
+  packages/maistro-core/tests/security/test_outbound_policy.py
+  packages/maistro-core/tests/security/test_transport.py -q` →
+  223 passed, 4 skipped.
+- Verifier re-run: Conductor 41 passed (as above).
+- `scripts/check-vulture-baseline.py` rc=0 and
+  `scripts/check_direct_effects.py` rc=0 (50 direct-effect sites, all
+  dispositioned) — the local equivalents of the exact-debt-ledger CI step
+  that failed at 8ba601d6a now pass at this head after 9971edda4 banked
+  the reviewed browser-guard identities.
+- Boundary spot-checks: guard enforces at `context.route("**/*")` +
+  `route_web_socket` (the real Playwright seam, not an HTTP wrapper);
+  redirect hops are re-validated per hop via `route.fetch(max_redirects=0)`;
+  browser-use builds that cannot accept a guarded context are refused
+  (`_wrap_for_browser_use` fail-closed); service workers blocked; sync
+  transports (`run_hill_climb.py`, `hill-climb-ui.sh`, `ui_auto_climb.py`,
+  `widgets.py`) each attach `SyncBrowserNetworkGuard`/`BrowserNetworkGuard`
+  before any page exists.
+- Enumeration sweep: repo-wide grep for playwright/browser_use outside
+  `tools/browser` surfaces only the guarded Conductor call sites;
+  `ui_climb_vm.py` mentions playwright in comments only (it dispatches to
+  the guarded `hill-climb-ui.sh` inside the microVM); `tool_executor.py`
+  reaches Chromium solely through `BrowserClient`. SECURITY.md enumerates
+  exactly these, with the explicit "not shared-client coverage" statement.
+- The four issue-mandated navigation cases are covered by passing tests:
+  explicit browse early-refusal/allowance (`TestBrowseSSRFGuard`), search
+  result navigation (`test_search_web_denies_a_destination_the_model_invented`),
+  model-directed navigation (`test_a_navigation_the_model_invented_is_
+  governed_too`, `TestModelDirectedNavigation`), redirect-to-private
+  (async `test_a_redirect_hop_from_public_to_private_is_denied_at_that_
+  hop`, sync `test_sync_guard_denies_private_redirect_before_the_second_
+  fetch`, client `test_browse_denies_a_redirect_hop_into_a_private_target`).
+
+Still UNVERIFIED here: CI at the current head 734649f45. The prior failures
+were recorded against 8ba601d6a; local equivalents pass, but per contract a
+green claim requires the actual CI run, not this note. The DNS-rebinding
+window remains open and is documented as such at both seams (stated
+limitation, unchanged by this branch).
