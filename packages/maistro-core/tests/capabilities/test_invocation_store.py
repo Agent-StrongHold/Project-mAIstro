@@ -5,8 +5,9 @@ import asyncio
 import aiosqlite
 import pytest
 
-from maistro.capabilities.binding import Binding
+from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import (
+    Invocation,
     InvocationExecutionService,
     InvocationStatus,
     UnsafeEffectRetry,
@@ -23,6 +24,10 @@ class _Provider:
 
 async def _resolver(_binding: Binding) -> _Provider:
     return _Provider()
+
+
+async def _executor(_provider: _Provider, _request: object) -> str:
+    return "committed"
 
 
 @pytest.mark.asyncio
@@ -169,3 +174,102 @@ async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen
 # `datetime` timestamp) that never matched Alembic revision 035's real DDL
 # (`payload` JSONB, `created_at` a float) and nothing in production wired it,
 # so it was removed rather than fixed.
+
+
+@pytest.mark.asyncio
+async def test_sqlite_list_effect_without_node_run_id_spans_node_runs(tmp_path) -> None:
+    """``node_run_id=None`` is the logical-effect identity (#1194): one
+    history per (run, binding, effect_key) across every physical NodeRun,
+    while a concrete ``node_run_id`` still scopes to one physical visit."""
+    db_path = tmp_path / "invocations.db"
+    async with aiosqlite.connect(db_path) as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        binding = Binding(
+            binding_id="binding-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+            capability="external_write",
+        )
+        resolved = ResolvedBinding.from_provider(binding, _Provider())
+        await store.create(
+            Invocation(
+                invocation_id="inv-1",
+                run_id="run-1",
+                node_run_id="node-run-1",
+                attempt_id="attempt-1",
+                binding=resolved,
+                effect_key="write:logical",
+            )
+        )
+        await store.create(
+            Invocation(
+                invocation_id="inv-2",
+                run_id="run-1",
+                node_run_id="node-run-2",
+                attempt_id="attempt-2",
+                binding=resolved,
+                effect_key="write:logical",
+            )
+        )
+
+        logical = await store.list_effect(
+            run_id="run-1",
+            node_run_id=None,
+            binding_id="binding-1",
+            effect_key="write:logical",
+        )
+        visit = await store.list_effect(
+            run_id="run-1",
+            node_run_id="node-run-2",
+            binding_id="binding-1",
+            effect_key="write:logical",
+        )
+
+    assert [item.invocation_id for item in logical] == ["inv-1", "inv-2"]
+    assert [item.invocation_id for item in visit] == ["inv-2"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_race_reread_without_a_completed_winner_re_raises() -> None:
+    """A stale admission is only replayable when the winner is provably done.
+
+    When the canonical re-read finds no COMPLETED Invocation -- the winner is
+    still RUNNING, or never landed at all -- the original ``UnsafeEffectRetry``
+    stands: swallowing it would report an outcome nobody recorded.
+    """
+
+    class _RacyStore:
+        def __init__(self) -> None:
+            self.create_calls = 0
+
+        async def list_effect(
+            self, *, run_id: str, node_run_id: str | None, binding_id: str, effect_key: str
+        ) -> list[Invocation]:
+            return []
+
+        async def create(self, invocation: Invocation) -> Invocation:
+            self.create_calls += 1
+            raise UnsafeEffectRetry("effect 'write:race' already has an active Invocation")
+
+    store = _RacyStore()
+    service = InvocationExecutionService(store=store)  # type: ignore[arg-type]
+
+    with pytest.raises(UnsafeEffectRetry, match="active Invocation"):
+        await service.invoke(
+            binding=Binding(
+                binding_id="binding-1",
+                workspace_id="ws-1",
+                project_id="project-1",
+                capability="external_write",
+            ),
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            effect_key="write:race",
+            request={"value": 1},
+            resolver=_resolver,
+            executor=_executor,
+        )
+
+    assert store.create_calls == 1

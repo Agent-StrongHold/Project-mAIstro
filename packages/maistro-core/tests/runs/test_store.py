@@ -209,3 +209,96 @@ async def test_parent_node_run_must_belong_to_declared_parent_run() -> None:
             parent_run_id=first_parent.run_id,
             parent_node_run_id=second_parent_node.node_run_id,
         )
+
+
+# --- logical effect claims (#1194) ------------------------------------------
+
+
+async def test_effect_claim_admits_once_then_replays_the_same_run() -> None:
+    """One canonical Run per logical effect: the replay is the claim, not a twin."""
+    store, _, project = await _store_with_project()
+    graph = _graph(workspace_id=project.workspace_id, project_id=project.project_id)
+
+    first = await store.claim_run_by_effect(graph, effect_key="agent.delegate_remote:k1")
+    second = await store.claim_run_by_effect(graph, effect_key="agent.delegate_remote:k1")
+
+    assert first.claimed is True
+    assert second.claimed is False
+    assert second.run.run_id == first.run.run_id
+    assert await store.find_run_by_effect("agent.delegate_remote:k1") is not None
+
+
+async def test_effect_claim_refuses_an_empty_effect_key() -> None:
+    store, _, project = await _store_with_project()
+    graph = _graph(workspace_id=project.workspace_id, project_id=project.project_id)
+
+    with pytest.raises(ValueError, match="effect_key must be non-empty"):
+        await store.claim_run_by_effect(graph, effect_key="")
+
+
+async def test_find_run_by_effect_returns_none_for_an_unclaimed_key() -> None:
+    store, _, _project = await _store_with_project()
+
+    assert await store.find_run_by_effect("never-claimed") is None
+
+
+async def test_effect_claim_binds_the_child_to_a_declared_parent_chain() -> None:
+    """The parent guards create_run enforces are the same ones a claim walks."""
+    store, _, project = await _store_with_project()
+    graph = _graph(workspace_id=project.workspace_id, project_id=project.project_id)
+    parent = await store.create_run(graph)
+    parent_node = await store.create_node_run(parent.run_id, node_id="first")
+
+    claim = await store.claim_run_by_effect(
+        graph,
+        effect_key="delegate:with-parent",
+        parent_run_id=parent.run_id,
+        parent_node_run_id=parent_node.node_run_id,
+    )
+
+    assert claim.claimed is True
+    child = await store.get_run(claim.run.run_id)
+    assert child is not None
+    assert child.parent_run_id == parent.run_id
+    assert child.parent_node_run_id == parent_node.node_run_id
+
+
+async def test_effect_claim_allows_no_parent_chain_at_all() -> None:
+    """Receiver-side admission (the A2A endpoint) claims without a parent."""
+    store, _, project = await _store_with_project()
+    graph = _graph(workspace_id=project.workspace_id, project_id=project.project_id)
+
+    claim = await store.claim_run_by_effect(graph, effect_key="delegate:no-parent")
+
+    assert claim.claimed is True
+    child = await store.get_run(claim.run.run_id)
+    assert child is not None
+    assert child.parent_run_id is None
+
+
+async def test_effect_claim_refuses_a_parent_node_run_without_a_parent_run() -> None:
+    store, _, project = await _store_with_project()
+    graph = _graph(workspace_id=project.workspace_id, project_id=project.project_id)
+
+    with pytest.raises(RunIntegrityError, match="parent_node_run_id requires parent_run_id"):
+        await store.claim_run_by_effect(
+            graph,
+            effect_key="delegate:orphan-node",
+            parent_node_run_id="node-run-nowhere",
+        )
+
+
+async def test_effect_claim_refuses_a_foreign_parent_node_run() -> None:
+    store, _, project = await _store_with_project()
+    graph = _graph(workspace_id=project.workspace_id, project_id=project.project_id)
+    first_parent = await store.create_run(graph)
+    second_parent = await store.create_run(graph)
+    second_parent_node = await store.create_node_run(second_parent.run_id, node_id="first")
+
+    with pytest.raises(RunIntegrityError, match="does not belong"):
+        await store.claim_run_by_effect(
+            graph,
+            effect_key="delegate:foreign-node",
+            parent_run_id=first_parent.run_id,
+            parent_node_run_id=second_parent_node.node_run_id,
+        )

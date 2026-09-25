@@ -27,6 +27,7 @@ from maistro.capabilities.invocation import (
     UnsafeEffectRetry,
 )
 from maistro.capabilities.pg_invocation_store import PgInvocationStore
+from maistro.container import _wire_capability_invocations
 
 
 class _Provider:
@@ -395,3 +396,46 @@ async def test_pg_invocation_store_logical_invoke_blocks_running_effect_from_ano
             executor=execute,
             logical_effect=True,
         )
+
+
+async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired() -> None:
+    """The container's durable-backend precedence picks the canonical ledger.
+
+    With a PostgreSQL pool wired, capability Invocations must live in
+    ``PgInvocationStore`` (schema ensured), not the SQLite or in-memory
+    fallback -- the ledger the replay contract reconciles against.
+    """
+
+    class _Transaction:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class _SchemaConnection:
+        async def execute(self, query: str, *args: Any) -> str:
+            assert "capability_invocations" in query
+            return "OK"
+
+        def transaction(self) -> _Transaction:
+            return _Transaction()
+
+    class _Acquire:
+        def __init__(self) -> None:
+            self._conn = _SchemaConnection()
+
+        async def __aenter__(self) -> _SchemaConnection:
+            return self._conn
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class _SchemaPool(_FakePgInvocationPool):
+        def acquire(self) -> _Acquire:
+            return _Acquire()
+
+    store = await _wire_capability_invocations(pg_pool=_SchemaPool(), db_pool=None)
+
+    assert isinstance(store, PgInvocationStore)
+    assert await store.get("inv-absent") is None

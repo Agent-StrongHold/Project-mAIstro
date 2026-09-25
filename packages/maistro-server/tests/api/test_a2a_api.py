@@ -54,3 +54,23 @@ async def test_replayed_a2a_create_returns_one_canonical_run(client: TestClient)
         assert unknown.status_code == 404
     finally:
         a2a.configure_a2a_admission(None, None)
+
+
+def test_unconfigured_admission_is_a_503_never_a_false_admission(client: TestClient) -> None:
+    """Without wired canonical stores the endpoint refuses, it does not guess."""
+    a2a.configure_a2a_admission(None, None)
+    try:
+        refused = client.post(
+            "/a2a/tasks/create",
+            json={
+                "agent_id": "researcher",
+                "messages": [{"role": "user", "content": "research X"}],
+                "idempotency_key": "agent.delegate_remote:unconfigured",
+            },
+        )
+        assert refused.status_code == 503
+
+        receipt = client.get("/a2a/tasks/by-idempotency-key/agent.delegate_remote:unconfigured")
+        assert receipt.status_code == 503
+    finally:
+        a2a.configure_a2a_admission(None, None)

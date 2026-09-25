@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import BaseModel
 
-from maistro.graph.definitions import Graph
+from maistro.graph.definitions import Graph, Node
 from maistro.graph.durable_runs import InMemoryDurableRunStore, RunStatus
 from maistro.graph.durable_runs.attempt_executor import _walk
 from maistro.graph.durable_runs.executor import (
@@ -16,11 +16,13 @@ from maistro.graph.durable_runs.executor import (
     _entry_node,
     _mark_completed,
     _mark_failed,
+    _may_revisit_after,
     _next_node,
     _node_spec,
     resume_durable_graph,
 )
-from maistro.graph.nodes import BaseNode, NodeContext
+from maistro.graph.execution_state import GraphExecutionState
+from maistro.graph.nodes import BaseNode, NodeContext, ReplaySemantics
 from maistro.graph.nodes.base import NodeResult
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import Attempt, NodeRun
@@ -380,3 +382,57 @@ class TestCheckpointVersionAndErrors:
             store=store,
         )
         assert result.run.error == "X: short"
+
+
+def test_effect_key_retry_requires_a_logical_node_identity() -> None:
+    """``EFFECT_KEY`` is a contract, not a label (#1194): without a logical
+    Run/node identity the effect key could never be stable, so the node is
+    not safe to revisit -- even with a retry budget left."""
+
+    class _Effect(BaseNode[BaseModel, BaseModel]):
+        kind: ClassVar[str] = "test.gaps.unbounded"
+        kind_category: ClassVar[str] = "sync.transform"
+        input_schema: ClassVar[type[BaseModel]] = BaseModel
+        output_schema: ClassVar[type[BaseModel]] = BaseModel
+        replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
+
+        async def _execute(self, inputs: BaseModel, ctx: NodeContext) -> BaseModel:
+            raise NotImplementedError
+
+    graph = Graph(
+        graph_id="gaps-graph",
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Effect identity",
+        nodes=[Node(node_id="effect-1", node_type=_Effect.kind, policies={"max_attempts": 3})],
+    )
+    failed = NodeResult(success=False, error_code="RuntimeException", error_message="boom")
+    failed = failed.model_copy(update={"metadata": {"replay_effect_key": "k:1"}})
+
+    unbound = _FrontierItem_for(
+        graph=graph,
+        ctx=NodeContext(run_id="", dag_id="gaps-graph", node_id=""),
+        result=failed,
+    )
+    assert _may_revisit_after(GraphExecutionState(run_id="run-1"), unbound) is False
+
+    bound = _FrontierItem_for(
+        graph=graph,
+        ctx=NodeContext(run_id="run-1", dag_id="gaps-graph", node_id="effect-1"),
+        result=failed,
+    )
+    assert _may_revisit_after(GraphExecutionState(run_id="run-1"), bound) is True
+
+
+def _FrontierItem_for(*, graph: Graph, ctx: NodeContext, result: NodeResult) -> Any:
+    from maistro.graph.durable_runs.executor import _FrontierItem
+    from maistro.runs.model import NodeRun as _NodeRun
+
+    return _FrontierItem(
+        node_id=ctx.node_id or "effect-1",
+        spec=graph.nodes[0],
+        node_run=_NodeRun(run_id="run-1", node_id=ctx.node_id or "effect-1", ordinal=1),
+        ctx=ctx,
+        result=result,
+        replay_semantics=ReplaySemantics.EFFECT_KEY,
+    )

@@ -748,3 +748,187 @@ async def test_a_raised_conflict_releases_the_loser_write_lock(tmp_path: Path) -
     await loser_conn.close()
     await winner_conn.close()
     await third_conn.close()
+
+
+# --- logical effect claims (#1194) ------------------------------------------
+
+
+class _RaceLosingClaimConnection:
+    """A connection whose canonical-run INSERT is rejected mid-claim.
+
+    `claim_run_by_effect` reads, then writes, inside one `BEGIN IMMEDIATE`, so
+    a competing claimant is serialized by the write lock rather than admitted
+    between the two statements. This stands in for the writer that beat us
+    anyway (the shape the PostgreSQL store reaches through row-level
+    uniqueness) and commits the winning row once our rollback drops the lock.
+    """
+
+    def __init__(self, conn, *, error, after_rollback=None) -> None:
+        self._conn = conn
+        self._error = error
+        self._after_rollback = after_rollback
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    async def execute(self, sql, parameters=()):
+        if "INSERT INTO canonical_runs" in sql:
+            raise self._error
+        return await self._conn.execute(sql, parameters)
+
+    async def rollback(self) -> None:
+        await self._conn.rollback()
+        if self._after_rollback is not None:
+            hook, self._after_rollback = self._after_rollback, None
+            await hook()
+
+
+@pytest.mark.asyncio
+async def test_effect_claim_binds_a_declared_parent_chain(tmp_path: Path) -> None:
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "effects.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    parent = await store.create_run(_graph(project_id))
+    parent_node = await store.create_node_run(parent.run_id, node_id="node-1")
+
+    claim = await store.claim_run_by_effect(
+        _graph(project_id),
+        effect_key="delegate:with-parent",
+        parent_run_id=parent.run_id,
+        parent_node_run_id=parent_node.node_run_id,
+    )
+
+    assert claim.claimed is True
+    child = await store.get_run(claim.run.run_id)
+    assert child is not None
+    assert child.parent_run_id == parent.run_id
+    assert child.parent_node_run_id == parent_node.node_run_id
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_effect_claim_refuses_a_parent_node_run_from_another_run(
+    tmp_path: Path,
+) -> None:
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "effects.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    first_parent = await store.create_run(_graph(project_id))
+    second_parent = await store.create_run(_graph(project_id))
+    second_node = await store.create_node_run(second_parent.run_id, node_id="node-1")
+
+    with pytest.raises(RunIntegrityError, match="does not belong"):
+        await store.claim_run_by_effect(
+            _graph(project_id),
+            effect_key="delegate:foreign-node",
+            parent_run_id=first_parent.run_id,
+            parent_node_run_id=second_node.node_run_id,
+        )
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_effect_claim_refuses_a_parent_node_run_without_a_parent_run(
+    tmp_path: Path,
+) -> None:
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "effects.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+
+    with pytest.raises(RunIntegrityError, match="parent_node_run_id requires parent_run_id"):
+        await store.claim_run_by_effect(
+            _graph(project_id),
+            effect_key="delegate:orphan-node",
+            parent_node_run_id="node-run-nowhere",
+        )
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_find_run_by_effect_returns_none_for_an_unclaimed_key(tmp_path: Path) -> None:
+    project_store, _project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "effects.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+
+    assert await store.find_run_by_effect("never-claimed") is None
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_claim_racing_a_committed_winner_adopts_the_winner(tmp_path: Path) -> None:
+    """The unique index, not the read, is what makes one effect one Run."""
+    project_store, project_id = await _project_store()
+    db_path = tmp_path / "effects.db"
+    conn = await aiosqlite.connect(db_path)
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+
+    async def _winner_commits() -> None:
+        winner_conn = await aiosqlite.connect(db_path)
+        winner = SqliteRunStore(winner_conn, project_store=project_store)
+        await winner.ensure_schema()
+        claim = await winner.claim_run_by_effect(_graph(project_id), effect_key="delegate:race")
+        assert claim.claimed is True
+        await winner_conn.close()
+
+    racing = SqliteRunStore(
+        _RaceLosingClaimConnection(
+            conn,
+            error=sqlite3.IntegrityError(
+                "UNIQUE constraint failed: index 'idx_canonical_runs_effect'"
+            ),
+            after_rollback=_winner_commits,
+        ),
+        project_store=project_store,
+    )
+
+    adopted = await racing.claim_run_by_effect(_graph(project_id), effect_key="delegate:race")
+    assert adopted.claimed is False
+    assert conn.in_transaction is False
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_claim_rejected_by_another_constraint_is_raised(tmp_path: Path) -> None:
+    """An integrity failure unrelated to the effect index is not a replay."""
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "effects.db")
+    racing = SqliteRunStore(
+        _RaceLosingClaimConnection(
+            conn,
+            error=sqlite3.IntegrityError("UNIQUE constraint failed: canonical_runs.run_id"),
+        ),
+        project_store=project_store,
+    )
+    await racing.ensure_schema()
+
+    with pytest.raises(sqlite3.IntegrityError, match=r"canonical_runs\.run_id"):
+        await racing.claim_run_by_effect(_graph(project_id), effect_key="delegate:other")
+    assert conn.in_transaction is False
+    await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_claim_racing_with_no_winner_is_an_integrity_failure(tmp_path: Path) -> None:
+    """Naming the effect index without a winner to adopt is a broken state."""
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "effects.db")
+    racing = SqliteRunStore(
+        _RaceLosingClaimConnection(
+            conn,
+            error=sqlite3.IntegrityError(
+                "UNIQUE constraint failed: index 'idx_canonical_runs_effect'"
+            ),
+        ),
+        project_store=project_store,
+    )
+    await racing.ensure_schema()
+
+    with pytest.raises(sqlite3.IntegrityError, match="idx_canonical_runs_effect"):
+        await racing.claim_run_by_effect(_graph(project_id), effect_key="delegate:nowhere")
+    assert conn.in_transaction is False
+    await conn.close()

@@ -21,7 +21,7 @@ from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import transition_run
-from maistro.runs.model import GraphSnapshot, Run, RunStatus
+from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
 from maistro.runs.pg_store import OCCURRENCE_INDEX, PgRunStore, _integrity_failure
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
@@ -279,3 +279,249 @@ class _PoolRaising:
 
     async def execute(self, *_args: object) -> None:
         raise self._exc
+
+
+# --- logical effect claims (#1194), no server involved ----------------------
+
+
+class _Row(dict):
+    """asyncpg rows are mapping-like; a plain dict subclass is enough."""
+
+
+class _Transaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+class _ClaimConnection:
+    """The two statements `claim_run_by_effect` and `find_run_by_effect` make.
+
+    The effect SELECT reads the committed rows; the INSERT honours the partial
+    unique index the way PostgreSQL does -- a committed winner makes it return
+    no row. The race injection covers the window the pre-INSERT SELECT cannot
+    see: another worker committing between that SELECT and the INSERT.
+    """
+
+    def __init__(self, pool: _ClaimPool) -> None:
+        self._pool = pool
+
+    def transaction(self) -> _Transaction:
+        return _Transaction()
+
+    async def fetchval(self, query: str, *args: object) -> object:
+        if "canonical_runs" in query and "effect_key" in query:
+            return self._pool.payload_for_effect(str(args[0]))
+        raise AssertionError(f"unexpected fetchval query: {query!r}")
+
+    async def fetchrow(self, query: str, *args: object) -> object:
+        if "INSERT INTO canonical_runs" in query:
+            return self._pool.insert_claim(*args)
+        if "canonical_runs" in query and "effect_key" in query:
+            payload = self._pool.payload_for_effect(str(args[0]))
+            return _Row(run_id="claimed", payload=payload, archive_key=None) if payload else None
+        if "FOR UPDATE" in query and "FROM canonical_runs" in query:
+            payload = self._pool.rows.get(str(args[0]))
+            return _Row(run_id=args[0], payload=payload, archive_key=None) if payload else None
+        if "FOR UPDATE" in query and "FROM canonical_node_runs" in query:
+            payload = self._pool.node_run_rows.get(str(args[0]))
+            return _Row(node_run_id=args[0], payload=payload, archive_key=None) if payload else None
+        raise AssertionError(f"unexpected fetchrow query: {query!r}")
+
+
+class _ClaimPool:
+    def __init__(self) -> None:
+        self.rows: dict[str, str] = {}  # run_id -> payload JSON
+        self.node_run_rows: dict[str, str] = {}  # node_run_id -> payload JSON
+        self._conn = _ClaimConnection(self)
+        #: Set by a test to inject the concurrent winner at INSERT time.
+        self.race_winner: Run | None = None
+        #: Set by a test to refuse the INSERT without any winner to adopt.
+        self.reject_insert: bool = False
+
+    def acquire(self) -> _ClaimPool:
+        return self
+
+    async def __aenter__(self) -> _ClaimConnection:
+        return self._conn
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+    def payload_for_effect(self, effect_key: str) -> str | None:
+        for payload in self.rows.values():
+            run = Run.model_validate_json(payload)
+            if run.provenance.get("effect_key") == effect_key:
+                return payload
+        return None
+
+    def insert_claim(self, *args: object) -> object:
+        (
+            run_id,
+            _ws,
+            _proj,
+            _parent_run,
+            _parent_node,
+            _status,
+            payload,
+            _retention,
+        ) = args
+        if self.reject_insert:
+            return None
+        if self.race_winner is not None:
+            # The concurrent committer lands between our SELECT and this
+            # INSERT, so the index refuses our row and keeps theirs.
+            self.rows[self.race_winner.run_id] = self.race_winner.model_dump_json()
+            self.race_winner = None
+            return None
+        if run_id in self.rows:
+            return None
+        self.rows[str(run_id)] = str(payload)
+        return _Row(run_id=run_id)
+
+
+async def _claim_store() -> tuple[PgRunStore, _ClaimPool, Graph]:
+    from maistro.projects.scope_store import InMemoryProjectScopeStore as _Store
+
+    projects = _Store()
+    root = await projects.create_root("workspace-1")
+    project = await projects.create(
+        workspace_id="workspace-1",
+        parent_project_id=root.project_id,
+        name="Effect claims",
+    )
+    graph = Graph(
+        workspace_id="workspace-1",
+        project_id=project.project_id,
+        name="Effect claim graph",
+        nodes=[Node(node_id="n1", node_type="agent")],
+    )
+    pool = _ClaimPool()
+    return PgRunStore(pool, project_store=projects), pool, graph
+
+
+@pytest.mark.asyncio
+async def test_pg_claim_admits_a_new_logical_effect_and_finds_it() -> None:
+    store, _pool, graph = await _claim_store()
+
+    claim = await store.claim_run_by_effect(graph, effect_key="delegate:pg-new")
+
+    assert claim.claimed is True
+    found = await store.find_run_by_effect("delegate:pg-new")
+    assert found is not None
+    assert found.run_id == claim.run.run_id
+    assert await store.find_run_by_effect("delegate:never") is None
+
+
+@pytest.mark.asyncio
+async def test_pg_claim_replays_a_committed_winner() -> None:
+    store, pool, graph = await _claim_store()
+
+    first = await store.claim_run_by_effect(graph, effect_key="delegate:pg-replay")
+    second = await store.claim_run_by_effect(graph, effect_key="delegate:pg-replay")
+
+    assert first.claimed is True
+    assert second.claimed is False
+    assert second.run.run_id == first.run.run_id
+    assert len(pool.rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_pg_claim_adopts_the_winner_that_committed_mid_claim() -> None:
+    """The unique index refuses our INSERT; the re-read adopts their Run."""
+    store, pool, graph = await _claim_store()
+    winner = Run(
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+        provenance={"effect_key": "delegate:pg-race"},
+    )
+    pool.race_winner = winner
+
+    claim = await store.claim_run_by_effect(graph, effect_key="delegate:pg-race")
+
+    assert claim.claimed is False
+    assert claim.run.run_id == winner.run_id
+
+
+@pytest.mark.asyncio
+async def test_pg_claim_refuses_an_empty_effect_key() -> None:
+    store, _pool, graph = await _claim_store()
+
+    with pytest.raises(ValueError, match="effect_key must be non-empty"):
+        await store.claim_run_by_effect(graph, effect_key="")
+
+
+@pytest.mark.asyncio
+async def test_pg_claim_refuses_a_parent_node_run_without_a_parent_run() -> None:
+    store, _pool, graph = await _claim_store()
+
+    with pytest.raises(RunIntegrityError, match="parent_node_run_id requires parent_run_id"):
+        await store.claim_run_by_effect(
+            graph,
+            effect_key="delegate:pg-orphan-node",
+            parent_node_run_id="node-run-nowhere",
+        )
+
+
+@pytest.mark.asyncio
+async def test_pg_claim_binds_a_declared_parent_chain() -> None:
+    """The locked parent validation walks the same chain create_run does."""
+    store, pool, graph = await _claim_store()
+    parent = Run(
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+    )
+    parent_node = NodeRun(run_id=parent.run_id, node_id="n1", ordinal=1)
+    pool.rows[parent.run_id] = json_of(parent)
+    pool.node_run_rows[parent_node.node_run_id] = json_of(parent_node)
+
+    claim = await store.claim_run_by_effect(
+        graph,
+        effect_key="delegate:pg-with-parent",
+        parent_run_id=parent.run_id,
+        parent_node_run_id=parent_node.node_run_id,
+    )
+
+    assert claim.claimed is True
+    assert claim.run.parent_run_id == parent.run_id
+    assert claim.run.parent_node_run_id == parent_node.node_run_id
+
+
+@pytest.mark.asyncio
+async def test_pg_claim_refuses_a_foreign_parent_node_run() -> None:
+    store, pool, graph = await _claim_store()
+    parent = Run(
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+    )
+    other_parent = Run(
+        workspace_id=graph.workspace_id,
+        project_id=graph.project_id,
+        graph=GraphSnapshot.from_graph(graph),
+    )
+    foreign_node = NodeRun(run_id=other_parent.run_id, node_id="n1", ordinal=1)
+    pool.rows[parent.run_id] = json_of(parent)
+    pool.node_run_rows[foreign_node.node_run_id] = json_of(foreign_node)
+
+    with pytest.raises(RunIntegrityError, match="does not belong"):
+        await store.claim_run_by_effect(
+            graph,
+            effect_key="delegate:pg-foreign-node",
+            parent_run_id=parent.run_id,
+            parent_node_run_id=foreign_node.node_run_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_pg_claim_conflict_with_no_winner_is_an_integrity_failure() -> None:
+    """An INSERT the index refused without a winner to adopt is a broken state."""
+    store, pool, graph = await _claim_store()
+    pool.reject_insert = True
+
+    with pytest.raises(RunIntegrityError, match="conflicted with another constraint"):
+        await store.claim_run_by_effect(graph, effect_key="delegate:pg-nowhere")
