@@ -278,3 +278,45 @@ setup.spec.ts are all absent from the 183ac8fb..HEAD diff):
   record. frontend/e2e still has no CI owner (compose e2e runs tests/e2e
   only); no #291 criterion requires it, and the spec was executed live at
   183ac8fb with the frontend byte-identical since.
+
+Repair-writer re-verification at final head 8bfef0c8f (this round; driver
+produced no check-*.log files, all evidence below is independently executed in
+this worktree):
+
+- Prior CI findings at this head root-caused (read-only `gh run view`):
+  "object storage (MinIO)" (run 36066572512) and "coverage (MinIO)" (run
+  36066572584) both died in their "Start MinIO" step with "could not pull
+  quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z after 4 attempts" — a
+  transient registry pull failure, not a code or contract regression; every
+  other job in both workflows was green (test, postgres pg17/pg18,
+  docker-build, hive-conductor-e2e, wheel-imports, security, lint/type,
+  quality gate, coverage PostgreSQL/no-services). integration-scope (run
+  36066572640) failed solely as its aggregator ("object storage (MinIO) is
+  required by integration scope but concluded failure"), and gates-ran (run
+  36068515405) failed solely as the evidence aggregator over the same MinIO
+  pull ("Required execution evidence is missing or non-executed"). All four
+  findings share one infra root cause; no #291 surface is implicated.
+- Vulture per-identity ledger (CI argv): `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` ->
+  1415 reviewed identities = 1415 findings, unclassified 0, never_allowlist 0;
+  ratchet balanced against base 60862b6c5. No ledger amendment required.
+- Gates re-run green at this head: ruff check + ruff format --check (2535
+  files); engine identity 69 passed; conductor test_identity_health +
+  test_setup_guard + test_api 55 passed; extra_guard + prepull 31 passed;
+  check-deployment-claims, check-image-inventory, check-doc-links,
+  check-suite-inventory (13 suites match) all PASS.
+- All issue-#291 acceptance surfaces re-inspected in-tree at this head:
+  pinned CPython 3.13.15 + wheel pins (bip-utils 2.12.1 / coincurve 21.0.0 /
+  pynacl 1.6.2) with in-build import+derive smoke test (Dockerfile);
+  in-image verification steps for both profiles in security.yml `containers`
+  job; identity_health distinguishes unavailable/misconfigured/operational/
+  disabled; setup returns 503 before account creation on missing runtime or
+  failed persistence; Setup.tsx disables the Crypto Identity toggle under
+  checking/unavailable/misconfigured(except setup_incomplete); e2e asserts
+  toBeDisabled() for unavailable and misconfigured health.
+- Documentation consistency repair this round: the conditional-marker comment
+  in backend/requirements.txt still claimed "the shipped Python 3.14 image
+  intentionally omits it" — contradicting the support matrix (shipped image
+  is 3.13.15 *with* the pinned wheel set). Comment rewritten to state the
+  shipped contract and the enforced Python-3.14 boundary; no behavioral
+  change (marker itself unchanged).

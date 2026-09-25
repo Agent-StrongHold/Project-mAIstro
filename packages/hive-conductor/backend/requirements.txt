@@ -53,8 +53,10 @@ regex>=2024.5.15,<2027
 # The scheduler's configured Container imports maistro.identity during startup;
 # this backend installs maistro-core through sys.path rather than its identity
 # extra, so keep the identity runtime dependency explicit for Python 3.12 CI.
-# The shipped Python 3.14 image intentionally omits it: coincurve has no cp314
-# wheel and its source build is not currently compatible with that image.
+# The shipped Conductor image is CPython 3.13.15 with the pinned wheel set
+# above; Python 3.14 remains unsupported (no cp314 coincurve wheel), and this
+# marker keeps that boundary enforced outside the image too. See
+# docs/security/CONDUCTOR-IDENTITY-SUPPORT-MATRIX.md.
 bip-utils>=2.9,<3; python_version < "3.14"
 # maistro-core's `sqlite` extra, and its hard `asyncpg` dependency, restated
 # for the same sys.path reason: a `sqlite:` DATABASE_URL (the homelab
