@@ -570,3 +570,59 @@ this head, before this note was committed.
 
 No production or test file changed this round (fresh validation evidence
 only); no new tests added, so no inventory-delta change.
+
+## Independent verification round 12 (auto-817 @ 15355a0702c2, verifier+writer lane)
+
+Executed fresh at this job's exact starting head `15355a0702c2a0bd6b49d6aa5b9368f863ae6eb6`
+(develop base `b906cc577fbb`), clean worktree before and after; resolves the prior
+"verification worktree changed; evidence rejected" block. Round-11's driver checks
+(job 11e37477) all passed at this head but the agent died on a provider timeout, so
+every gate below was re-executed by this round, not carried over.
+
+- **Lane gates re-executed:** driver set (check-0..7 logs, job
+  8508e3700a524843bc7749dc355ba132) all rc=0; independently re-run: warden
+  detector + vocabulary + design test_design/test_scan/test_trust_prescan →
+  **217 passed**; `hive-conductor/backend/tests/test_design_renderers.py` →
+  **7 passed**; `ruff check .` clean; `ruff format --check .` 2556 files;
+  suite inventory → hive backend / maistro-core / maistro-design all match;
+  mypy AGENTS.md battery + `packages/maistro-design/src` → **733 files, no
+  issues**.
+- **SAST gate re-executed CI-exact** (security.yml command: custom
+  `tools/semgrep/maistro-rules.yaml` + p/security-audit + p/owasp-top-ten +
+  p/secrets, eval/cage excluded) → **rc=0, 364 rules / 1895 files / 0
+  findings**; the reviewed-sink `nosemgrep` annotation holds (round-2 finding
+  closed).
+- **Vulture gate re-executed CI-exact** (`scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) → **rc=0,
+  1414 → 1414**; neither prior #817 debt identity appears (round-2 finding
+  closed).
+- **Pre-scan/output parity re-probed at this head** via
+  `scan_and_record` + review-queue records vs `scan_design_text`: MathML,
+  annotation-xml, event-handler attr, onbegin SVG, `javascript:` img,
+  `data:text/html` iframe, CSS `url()`/`@import`/`expression()`,
+  `<script>`, and prompt injection → all `skull / banish / conf 0.9` with
+  explicit shared flags and `render_passed=False`; clean brief →
+  `t3 / upgrade / conf 0.0 / passed`. `upgrade` iff the shared boundary
+  passes on every probe (AC-2/AC-4). `<style>`-element and `<a>`-tag
+  over-blocking is consistent on both sides (browser allowlist also drops
+  them as `active-element`), i.e. conservative parity, not drift.
+- **Browser corpus re-executed in real Chromium** (pre-built
+  `auto817-playwright` image, live worktree sources copied to /live,
+  image node_modules, `--network none`, output to /tmp; zero writes to the
+  worktree): `deck-sanitization.spec.ts` → **8/8 passed (2.8s)**, including
+  the MathML `active-element` scan-reason assertion,
+  `recommend('<math><mi>x</mi></math>') → "review"`, the `\75rl(` and
+  `\6a` escape families, srcdoc/meta-refresh/image-set payloads, and zero
+  attacker-server requests / zero script executions.
+- **Stop condition re-checked:** `maistro_design/scan.py` consumes
+  `maistro.security.warden.patterns` only (no private vocabulary);
+  `deckSanitizer.ts` is compatibility re-exports of
+  `visualArtifactRenderer.tsx`; importer and `design_render.py` call the
+  shared `scan_blocking_patterns`/`scan_design_text`.
+- **Closure-keyword review re-executed:** `git log b906cc577..15355a070`
+  bodies/subjects contain no `fixes/closes/resolves #N` for #817; PR #1389
+  body says "Refs #817" only (draft). CI on the PR remains UNVERIFIED
+  (snapshot carries no status claim).
+
+No production or test file changed this round (fresh validation evidence
+only); no new tests added, so no inventory-delta change.
