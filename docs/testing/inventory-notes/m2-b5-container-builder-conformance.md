@@ -58,3 +58,28 @@ pass locally at this head both bare and under the CI job env
 not caused by this branch. Core Tier-3 lane on this host: 4 passed, 24 skipped
 ("this host cannot build a bubblewrap sandbox"), the documented fail-closed
 skip CI works around. GitHub CI green remains UNVERIFIED from this lane.
+
+Repair-round record (lane auto-80, head 596dcf80f; the prior worker round
+committed nothing — this round re-proves the head and commits the record):
+re-built `maistro-builders:latest` from the committed
+`packages/maistro-bootstrap/tests/Dockerfile.sandbox` (Docker 29.7.2) so the
+image under test provably matches the tree, then ran the live lane:
+`uv run pytest packages/maistro-bootstrap/tests/test_container_sandbox.py -v`
+= 11 passed (33.7s, real `ContainerBuilderSandbox` containers). Full
+`uv run pytest packages/maistro-bootstrap/tests -q` = 245 passed, 1 skipped.
+The previously-red PR #1450 required-job evidence was re-run in full, not spot
+checked: `REQUIRE_AUTH=false MAISTRO_DRY_RUN=1 uv run pytest
+packages/maistro-core/tests -q` = 10218 passed, 673 skipped, 1 xfailed —
+including the two tests the prior rollup reported red, which pass at this head.
+Gates re-run at this head: `uv run ruff check .` and `ruff format --check .`
+clean; `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` = 1415 reviewed identities, unclassified 0,
+never_allowlist 0; `scripts/check-integration-scope.py` (pull_request scope via
+`ci_merge_group_scope.py --json`) ok. Production wiring confirmed: the RSI loop
+(`packages/maistro-rsi/src/maistro_rsi/local_loop.py`) and
+`contained_validation.py` instantiate this exact class, so the conformance lane
+exercises the supported backend production uses. Gate C's canonical clean
+install (`./install.sh` + compose bring-up) is a GitHub-runner aggregate and was
+not reproduced locally this round. Local Core Tier-3 bwrap lane still fails-closed:
+4 passed, 24 skipped, detection reporting `bwrap: Creating new namespace failed:
+Resource temporarily unavailable` on this host; CI remains the designated lane.
