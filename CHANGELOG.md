@@ -261,6 +261,22 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace Attention read: `GET /v1/workspaces/{workspace_id}/attention`
+  (#1049, partial).** Computes the Workspace's Attention items on every read
+  from canonical sources — human-paused NodeRuns in the durable run store and
+  failed Runs behind the scoped Run-inspection door — and persists nothing.
+  Each item carries its source id, class, rank, a human-readable reason, the
+  evidence behind it, and the existing HITL answer route. A persisted HITL
+  deadline within 24 hours makes an item `time_sensitive`; every other human
+  pause and failed Run is `queued`, and age alone never raises a class. A
+  pause whose deadline has already passed stays `queued` without an answer
+  link, since the store refuses late answers. A summary (`counts_by_class`,
+  `highest_class`, `rising`, `truncated`) lets a UI show what is waiting
+  without inventing importance. Items are capped at 200 after ordering. Failed
+  Runs come from the bounded Recent Runs projection window. Non-members get the same 404 a missing
+  Workspace gets; reading requires `dags.write`, the scope `/v1/hitl/pending`
+  takes, since items carry the paused node's question.
+
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
   `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap
