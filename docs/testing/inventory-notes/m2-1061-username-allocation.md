@@ -251,3 +251,52 @@ append by this record).
   none (`Refs #1061` only). Prior round's push-rejection block is obsolete:
   `origin/auto-1061` already resolves to `e41ebb2f0` (same as PR head) and
   `origin/develop` is an ancestor of this head.
+
+## Independent verification 2026-09-25 (head `d7990f94c`, this round)
+
+Re-derived all nine acceptance criteria from the issue text and re-executed
+them at this exact head; tree clean before and after this docs-only append.
+
+- Driver determinstic checks all green (job logs): sync, ruff check, ruff
+  format --check, core 51 passed, hive targeted 121 passed, both
+  check-suite-inventory runs ok. Verifier re-executed with the same results:
+  core claim/persisted-store suites `51 passed`; registry +
+  registration-policy + voice-auth + auth-throttle `121 passed`; `ruff check`
+  clean; `ruff format --check` clean (2548 files); `check-suite-inventory`
+  ok for both suites; `check-agent-store-writes`, `check-owned-store-access`,
+  `check-durable-table-inventory` (63 tables) all ok.
+- Multi-PROCESS race executed by the verifier outside the test suite: 7 OS
+  processes racing 7 case variants of `Alice` through
+  `UsernameRegistry.create_users` on one shared SQLite file, 3 rounds — each
+  round exactly 1 winner and 6 `UsernameTakenError`; direct `kv_store`
+  inspection after every round showed exactly one `users` row and one active
+  `username_claims` row whose `user_id` equals the winning process.
+- Route-shape mutation sensitivity re-confirmed in memory (no tree edit): the
+  shipped register source satisfies
+  `test_registration_route_uses_atomic_allocator_not_scan_then_write` and the
+  throttle-ordering assertions; the issue's literal mutation
+  (`_username_taken()` + `stores.users[user_id] = user`) fails both.
+- `check-vulture-baseline` **rc=1 at this head AND at the develop base**
+  `2c8022fe` (reproduced in a throwaway worktree: 1451 vs 1447 findings).
+  The failure is pre-existing repo-wide ledger drift (identities in files
+  this branch never touched; `quality/` is byte-identical base↔head); the
+  branch's net contribution is +4 findings (its new pytest fixtures/tests and
+  one route-handler line shift), and `core-public-api-surface` is unchanged
+  at 103 — the `_vulture_whitelist.py` grant for the atomic seam works.
+  CORRECTION to the 2026-09-25 `e41ebb2f0` entry above: its
+  "check-vulture-baseline rc 0" claim did not reproduce and cannot be correct
+  (the base commit itself fails with an identical ledger). The rc=1 gate
+  requires the separately reviewed ledger grant already flagged as
+  OUTSTANDING at `a8e3695ba`; it is unattributable to this lane.
+- Boundary re-checked at this head: `services/registration_policy.py` is not
+  in the branch diff (#313 untouched); `username_claims` is a `JsonStore` of
+  plain dicts (no second User model); the claim key is the request's
+  normalized username, never the invitation token; no rename surface exists;
+  `services/oauth_login.py` links existing accounts only (creates none); the
+  only remaining direct `stores.users[...] =` writes are field updates to
+  already-claimed accounts (login rehash, permission assignment) — noted:
+  `_username_taken` is now a definition-only advisory helper (no production
+  caller), intentionally retained and vulture-flagged.
+- PR #1453 body ("Refs #1061") and all branch commit messages scanned: no
+  fixes/closes/resolves closure keywords. The prior round's push
+  non-fast-forward block is driver-scope (this verifier never pushes).
