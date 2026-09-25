@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Security
 
+- **Tool-result governance is pinned across real Agent strategies (#1202,
+  partial).** A regression suite drives the shipped ReAct, Artificer and
+  BuildersLearning strategies through `Agent.handle` with a real Warden and
+  Sentinel. It checks that a PII-bearing or prompt-injection tool result
+  reaches the model as the same redacted text or Sentinel refusal, and never
+  raw, for every strategy. Test-only; no runtime behavior changes.
+
 - **Hive schedules are bound to their owner's Workspace (#1201, partial).**
   `POST /v1/schedules` now requires a `workspace_id` selection (optional
   `project_id`), admits it through the same canonical Workspace/Project
