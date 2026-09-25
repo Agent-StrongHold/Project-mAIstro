@@ -261,6 +261,22 @@ or placeholder-only section.
 
 ### Added
 
+- **Canonical Goal store, `maistro.goals` (#1572, partial).** The owner the
+  interop ontology already named for Goal now exists: `Goal`, append-only
+  `GoalRevision`, and `GoalState` (`active`, then one of the final states
+  `satisfied`, `cancelled`, `failed` or `superseded`). There are in-memory,
+  SQLite and PostgreSQL stores, one conformance suite covers all three, and
+  migration `041_goals` adds the `goals` and `goal_revisions` tables.
+  Revisions and state transitions are compare-and-set, so a stale or
+  concurrent writer is refused and exactly one wins. A Subgoal's parent must
+  be in the same Project, and the database's foreign key enforces this too.
+  Reassigning the owning Agent appends a revision, which keeps the previous
+  owner in the history. `GoalService` reads with Workspace VIEW and writes
+  with ADMINISTER, and treats a Goal in a foreign Workspace exactly like a
+  missing one. `create_container()` wires `goal_store` and `goal_service` on
+  the Project store's backend. Still open: binding a Run to
+  `goal_id`/`goal_revision` at admission.
+
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
   `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap

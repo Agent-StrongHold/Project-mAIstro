@@ -85,6 +85,10 @@
     "models.schemas::MissionStep.status": {
       "classification": "DOMAIN",
       "rationale": "Mission-step progress is a Hive product-domain projection; it does not replace canonical Run/NodeRun/Attempt state."
+    },
+    "maistro.goals.types::GoalState": {
+      "classification": "DOMAIN",
+      "rationale": "The canonical Goal's own lifecycle (#1572), owned by maistro.goals as INTEROP_ONTOLOGY_V1 names it. A Goal is the durable statement of what a Project is trying to reach, not a unit of execution: it has no worker, lease or attempt, and a Run's outcome never sets it (transitions are explicit compare-and-set calls). Runs stay the one execution identity; a Run will carry goal_id/goal_revision only as provenance."
     }
   }
 }

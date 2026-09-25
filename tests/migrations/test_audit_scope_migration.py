@@ -75,7 +75,7 @@ class _Operations:
         return None
 
 
-def test_audit_scope_migration_is_the_single_head() -> None:
+def test_audit_scope_migration_is_on_the_single_head_chain() -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -92,8 +92,10 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # every deployment's ordinary ``upgrade head`` applies the audit scope
     # migration rather than leaving it on a competing branch.
     assert revision.down_revision == "040"
-    assert directory.get_heads() == ["036_audit_log_org_scope"]
-    walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
+    # 041 (#1572, canonical Goals) now follows it; the chain stays linear, so
+    # the audit scope migration is on every path to the single head.
+    (head,) = directory.get_heads()
+    walked = {item.revision for item in directory.walk_revisions("base", head)}
     assert revision.revision in walked
 
 

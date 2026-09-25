@@ -31,6 +31,9 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.service import GoalService
+from maistro.goals.store import GoalStore
+from maistro.goals.wiring import wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -82,6 +85,7 @@ from maistro.tasks.admission import WorkspaceRoutingAdmitter
 from maistro.tasks.idempotency import TaskIdempotencyStore, wire_task_idempotency
 from maistro.types.config import AgentConfig
 from maistro.types.errors import AgentError, ConfigError
+from maistro.workspaces.authorization import WorkspaceAuthorizer
 from maistro.workspaces.store import WorkspaceStore
 from maistro.workspaces.wiring import WORKSPACE_PG_TABLES, wire_workspace_store
 
@@ -196,6 +200,10 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: Canonical Goals (#1572), on the Project scope store's backend, and the
+    #: Workspace-authorized surface callers acting for a principal go through.
+    goal_store: GoalStore = None  # type: ignore[assignment]
+    goal_service: GoalService = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
@@ -1610,6 +1618,7 @@ async def create_container(
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
+    goal_store = await wire_goal_store(db_pool, project_store=project_scope_store, pg_pool=pg_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
     # reconcile, or the tiers cannot answer a restart the same way.
@@ -1847,6 +1856,8 @@ async def create_container(
         project_store=project_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
+        goal_store=goal_store,
+        goal_service=GoalService(goal_store, WorkspaceAuthorizer(workspace_store)),
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
