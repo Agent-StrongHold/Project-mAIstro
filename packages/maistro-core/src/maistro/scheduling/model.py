@@ -224,8 +224,8 @@ class Schedule(BaseModel):
         """
         if self.max_runs is None:
             return False
-        held = sum(marker.fires for marker in self.pending_fires)
-        return self.runs_so_far + held >= self.max_runs
+        pending_holds = sum(marker.fires for marker in self.pending_fires)
+        return self.runs_so_far + pending_holds >= self.max_runs
 
     @property
     def runs_remaining(self) -> int | None:
@@ -236,8 +236,8 @@ class Schedule(BaseModel):
         """
         if self.max_runs is None:
             return None
-        held = sum(marker.fires for marker in self.pending_fires)
-        return max(0, self.max_runs - self.runs_so_far - held)
+        pending_holds = sum(marker.fires for marker in self.pending_fires)
+        return max(0, self.max_runs - self.runs_so_far - pending_holds)
 
     def minimum_gap(self) -> timedelta:
         """Shortest interval this recurrence can produce.

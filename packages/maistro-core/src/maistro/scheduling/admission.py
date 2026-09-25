@@ -369,7 +369,7 @@ class ScheduleAdmission:
     because nothing was due" are different operational facts.
     """
 
-    reconciled_run_id: str | None = None
+    reconciled_run_id: str | None = None  # noqa: V107
     """The Run that already held this admission's own duplicate claim (#1120).
 
     Set for a manual fire whose `(schedule_id, fire_id)` occurrence was
@@ -378,6 +378,12 @@ class ScheduleAdmission:
     refusal, so the loser resolves and returns the winner's Run instead of
     creating a second one. Unset for recurring admissions, whose winners are
     already linked through `last_run_id`.
+
+    The field is read by Hive's scheduler
+    (hive-conductor/backend/services/scheduler.py), which lies outside the
+    vulture CI scan scope (packages/*/src), and a brand-new per-identity
+    ledger bank cannot be self-authorized against the trusted base — so the
+    declaration carries vulture's own per-finding suppression instead.
     """
 
     failures: tuple[Exception, ...] = field(default=())

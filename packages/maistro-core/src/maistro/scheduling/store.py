@@ -181,8 +181,11 @@ def _reserve(schedule: Schedule, *, fires: int, fire_id: str) -> Schedule:
     what makes check-and-hold one step. Spends nothing — `runs_so_far`,
     `enabled`, and the cursors stay exactly as they are (#1120).
     """
-    held = sum(marker.fires for marker in schedule.pending_fires)
-    if schedule.max_runs is not None and schedule.runs_so_far + held + fires > schedule.max_runs:
+    pending_holds = sum(marker.fires for marker in schedule.pending_fires)
+    if (
+        schedule.max_runs is not None
+        and schedule.runs_so_far + pending_holds + fires > schedule.max_runs
+    ):
         raise ScheduleExhausted(
             f"schedule {schedule.schedule_id} has used all {schedule.max_runs} of its runs"
         )
