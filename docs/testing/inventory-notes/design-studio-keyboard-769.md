@@ -13,6 +13,48 @@ collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
 API tests).
 
+## Executed evidence (repair round 8, independent re-admission validation at ad7245a78)
+
+Re-derived every acceptance criterion at the merged head (clean tree,
+`ad7245a78`) without trusting prior rounds' claims:
+
+- `scripts/check-suite-inventory.py` → exit 0, 13 suites match (the note front
+  matter parses; the round-0 "malformed inventory-delta" finding is stale).
+- `uv run ruff check .` + `uv run ruff format --check .` → clean (2533 files).
+- `uv run pytest packages/hive-conductor/backend/tests -q -k design` →
+  **82 passed**; `scripts/check-frontend-api-routes.py` → exit 0 (216 routes
+  across 61 call-site files); `npm run build` (tsc + vite) → clean.
+- Live e2e, executed this round: `uvicorn main:app` from
+  `packages/hive-conductor/backend` serving the freshly rebuilt
+  `frontend/dist` on 127.0.0.1:8102 (`GET /v1/setup/status` →
+  `setup_complete: true`, `GET /cli/canvas` → 200).
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts` →
+  **7/7 passed (10.9s)**, including the all-9-modes tab-order journey with
+  `aria-pressed` selection state, the fixed-page add-layer/move-right journey,
+  and the Deck editor → presentation → Exit journey. `deck-sanitization.spec.ts`
+  → **7/7 passed (2.6s)** via the `tests/Dockerfile.playwright`-shaped staging
+  (`E2E_SRC_ROOT` + e2e standalone `E2E_NODE_PATHS`).
+- Source re-inspection of the round-0 findings, all stale at this head:
+  the editor entry is `disabled={!canOpenEditor}` (DesignStudio.tsx:245,
+  brief-gated — enabled by typing, with `role="status"` announcement); the
+  Availability card reports editing/presentation/export as available;
+  `App.tsx:195` routes `/decks` (containment lifted, comment cites #752/#769);
+  the keyboard spec's axe scans (`:150` scoped to `main`, `:166`/`:177`
+  full-page inside the editors) carry **no `disableRules`** — color-contrast
+  is included; `packages/hive-conductor/Dockerfile:58-63` documents the
+  coincurve cp314 wheel gap loudly (upstream, SPEC-072726-3439), so the
+  compose-build failure is not a #769 regression.
+- Keyboard-equivalents re-verified in source: DeckBuilder ordered-page
+  listbox (`role="option"` + `aria-selected`, Move earlier/later,
+  "no drag operation is required" help), presentation Arrow keys with
+  `presentationReturnRef` focus restore, Export HTML/Print as native buttons;
+  FixedPageEditor nudge + X/Y/W/H property inputs and Move earlier/later with
+  "dragging is never required" copy; visible focus ships from the shell's
+  `button:focus-visible` outline (`frontend/src/index.css:600-604`).
+- Lane boundary: `git diff --stat 60862b6c5..HEAD` touches only the 10 lane
+  files (Design Studio/Deck editors, e2e specs, e2e package files, this note);
+  `AppShell.tsx` and global shell CSS are untouched.
+
 ## Executed evidence (repair round 7, merge reconciliation of develop base 60862b6c5)
 
 The assigned develop base was merged into this lane. It carried #1486 (M1-C4
