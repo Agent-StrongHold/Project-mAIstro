@@ -767,7 +767,7 @@
       "retention": "ttl_purge",
       "deletion_path": "maistro.tasks.idempotency:_ClaimFlow.claim",
       "issue": "#325",
-      "notes": "Claims expire DEFAULT_REPLAY_WINDOW (24h) after creation. Every claim (POST /tasks via TaskQueue) drives purge_expired on the store it was made on, at most once per IDEMPOTENCY_PURGE_INTERVAL_SECONDS per store, and again on the next claim while a sweep fills its IDEMPOTENCY_PURGE_LIMIT batch; a failed purge is logged and counted, never raised into admission."
+      "notes": "Claims expire DEFAULT_REPLAY_WINDOW (24h) after creation. Every claim (POST /tasks via TaskQueue) drives purge_expired on the store it was made on, at most once per IDEMPOTENCY_PURGE_INTERVAL_SECONDS per store, and again on the next claim while a sweep fills its IDEMPOTENCY_PURGE_LIMIT batch; a failed purge is logged and counted in maistro_task_idempotency_purge_failures_total, never raised into admission."
     },
     {
       "table": "tasks",

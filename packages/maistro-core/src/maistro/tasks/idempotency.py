@@ -81,12 +81,18 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from maistro.observability.metrics import registry
 from maistro.tasks.models import TaskCreate
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import asyncpg
 
 logger = logging.getLogger(__name__)
+
+task_idempotency_purge_failures_total = registry.counter(
+    "maistro_task_idempotency_purge_failures_total",
+    "Claim-driven task_idempotency purges that raised; each is retried next interval (#325)",
+)
 
 #: Domain separation for the scope digest. Versioned: a change to the scope
 #: tuple's meaning must not silently reinterpret claims recorded before it.
@@ -398,7 +404,6 @@ class _ClaimFlow:
         # first claim: a fresh process's first admission stays one INSERT.
         self._last_purge = time.monotonic()
         self._purge_backlog = False
-        self.purge_failures = 0
 
     async def claim(
         self,
@@ -431,8 +436,8 @@ class _ClaimFlow:
 
         At most one purge per store per interval, unless the last one filled its
         batch, and never queued behind one in flight. A failure is logged and
-        counted, not raised: housekeeping must not turn into a refused
-        submission.
+        counted (``maistro_task_idempotency_purge_failures_total``), not
+        raised: housekeeping must not turn into a refused submission.
         """
         if not self._purge_due() or self._purge_lock.locked():
             return
@@ -444,7 +449,7 @@ class _ClaimFlow:
             try:
                 purged = await self.purge_expired(now=now, limit=IDEMPOTENCY_PURGE_LIMIT)
             except Exception:
-                self.purge_failures += 1
+                task_idempotency_purge_failures_total.inc()
                 logger.warning(
                     "task_idempotency purge failed; retrying next interval", exc_info=True
                 )

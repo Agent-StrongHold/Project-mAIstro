@@ -531,8 +531,9 @@ or placeholder-only section.
   clock; the first run comes one interval after the store is built), deletes
   at most 500 rows per run, and never waits for a purge already running. A run
   that deletes a full 500 rows means a backlog, so the next claim purges again
-  without waiting. A failed purge is logged and counted on the store; it never
-  fails the admission. The PostgreSQL purge now re-checks `expires_at` on each
+  without waiting. A failed purge is logged and counted in
+  `maistro_task_idempotency_purge_failures_total`; it never fails the
+  admission. The PostgreSQL purge now re-checks `expires_at` on each
   row it deletes, so a claim another replica just renewed survives. A
   PostgreSQL test covers that race. The retention inventory lists
   `task_idempotency` as `ttl_purge`.

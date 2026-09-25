@@ -98,6 +98,10 @@ async def _seed_expired(store: Any, count: int) -> list[str]:
     return scopes
 
 
+def _purge_failures() -> float:
+    return sum(sample["value"] for sample in idem.task_idempotency_purge_failures_total.collect())
+
+
 async def _surviving(store: Any, scopes: list[str]) -> list[str]:
     return [scope for scope in scopes if await store.get(scope) is not None]
 
@@ -159,6 +163,7 @@ async def test_a_failing_purge_never_fails_the_claim(
 
     monkeypatch.setattr(store, "purge_expired", broken)
     clock.value += idem.IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+    failures_before = _purge_failures()
 
     with caplog.at_level(logging.WARNING, logger=idem.__name__):
         outcome = await store.claim(_scope("k"), fingerprint="fp", request="{}", now=_NOW)
@@ -166,7 +171,7 @@ async def test_a_failing_purge_never_fails_the_claim(
     assert isinstance(outcome, Claimed)
     assert await store.get(_scope("k")) is not None
     assert calls == 1
-    assert store.purge_failures == 1
+    assert _purge_failures() == failures_before + 1
     assert "task_idempotency purge failed" in caplog.text
 
     # The failed attempt still spends the interval: a sick database is not
