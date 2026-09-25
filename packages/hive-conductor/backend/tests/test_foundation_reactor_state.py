@@ -21,9 +21,11 @@ from pydantic import BaseModel
 @pytest.fixture(autouse=True)
 def _restore_store_bindings():
     import stores
-    from services import profile_store, registration_policy, settings_store
+    from services import dag_run_store, profile_store, registration_policy, settings_store
 
     prev_persisted = stores._persisted
+    prev_dag_runs = dag_run_store._global_store
+    prev_data = [(store, store._data) for store in stores._all_model_stores]
     prev_users = stores.users
     prev_initialize_stores = stores.initialize_stores
     user_snapshot = dict(stores.users._data)
@@ -31,6 +33,9 @@ def _restore_store_bindings():
     stores._persisted = prev_persisted
     for store in (*stores._all_model_stores, *stores._all_json_stores):
         store._persisted = prev_persisted
+    for model_store, data in prev_data:
+        model_store._data = data
+    dag_run_store._global_store = prev_dag_runs
     stores.users = prev_users
     stores.initialize_stores = prev_initialize_stores
     stores.users._data.clear()
@@ -99,8 +104,9 @@ async def test_reactor_writes_land_in_configured_state_db_only(tmp_path: Path) -
     assert not (data_dir / "state.db").exists()
 
 
+@pytest.mark.parametrize("configured_path", [True, False], ids=["custom-db", "default-db"])
 async def test_reactor_and_persisted_store_writes_interleave_without_lock_errors(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, configured_path: bool
 ) -> None:
     import stores
 
@@ -108,8 +114,14 @@ async def test_reactor_and_persisted_store_writes_interleave_without_lock_errors
         n: int
 
     iterations = 200
-    state_db = tmp_path / "conductor.db"
-    fnd = await _start(_settings(tmp_path / "data", state_db))
+    data_dir = tmp_path / "data"
+    # The default path is where develop's Reactor opened a second raw writer
+    # on the very file State was writing.
+    state_db = tmp_path / "conductor.db" if configured_path else data_dir / "state.db"
+    settings = _settings(data_dir, state_db)
+    if not configured_path:
+        settings.conductor_state_db = ""
+    fnd = await _start(settings)
     errors: list[Exception] = []
 
     def put_all() -> None:

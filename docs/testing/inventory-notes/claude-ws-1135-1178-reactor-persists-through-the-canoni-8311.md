@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +3
+  packages/hive-conductor/backend/tests: +4
   packages/maistro-core/tests: +8
 ---
 # claude-ws-1135-1178-reactor-persists-through-the-canoni-8311
@@ -16,7 +16,8 @@ inventory-delta:
   `state=` + `state_db_path=` combination is refused; the deprecated
   `state_db_path=` owns one State and releases it on stop, survives a
   stop/start restart, and a failed migration leaves the reactor stopped.
-- `packages/hive-conductor/backend/tests` (+3): new
+- `packages/hive-conductor/backend/tests` (+4): new
   `test_foundation_reactor_state.py` starts a real Foundation with a custom
   `CONDUCTOR_STATE_DB` and checks rows land there (no `data_dir/state.db`),
-  interleaved Reactor + PersistedStore writes, and restart read-back.
+  interleaved Reactor + PersistedStore writes (parametrized over a custom
+  and the default state path), and restart read-back.
