@@ -248,8 +248,9 @@ class TestSynthDepth:
             {"objective": "nested work"},
             _build_ctx(updated, "n1"),
         )
-        assert nested.output.success is False
-        assert "recursion depth cap reached" in nested.output.error
+        assert nested.status == "failed"
+        assert nested.error_code == "SynthDagFailed"
+        assert "recursion depth cap reached" in (nested.error_message or "")
 
     def test_refused_synth_does_not_count_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=False))

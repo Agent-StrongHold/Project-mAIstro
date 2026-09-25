@@ -523,6 +523,18 @@ or placeholder-only section.
 
 ### Fixed
 
+- **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
+  The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
+  with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,
+  when the recursion depth cap is hit, shape review does not approve, the
+  synthesized config cannot be dispatched (unregistered, disallowed or
+  duplicated kinds, an unusable entry, no Workspace/Project scope), or the
+  child Run ends FAILED, CANCELLED or TIMED_OUT — the last naming the child
+  Run. It used to complete with `success=False` (or, for an undispatchable
+  config, `success=True` and "not executed") inside its output, letting the
+  parent Run report success for work that never happened. A child that
+  COMPLETED, or is parked WAITING/PAUSED, still completes the node.
+
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**
   A run started over `/v1/ws/dags/{id}/run` now records the same Recent Runs
