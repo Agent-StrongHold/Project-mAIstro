@@ -31,7 +31,7 @@ tasks.run_id, session_turns.run_id                none — logical (004/028)    
 learnings/outcomes/design_outputs/episodic_memories .run_id, .node_run_id, .attempt_id   none — logical (026/028/031)   Preserve. Producer provenance (#709, #64): "this execution produced this learning/outcome/design output/memory" is attribution history exactly like a task receipt — it names an execution that did happen. The purge never touches these tables; the reference resolving to a purged Run is the same residue an Event reference is, and the same policy — observable, not destroyed — applies.
 capability_invocations .run_id, .node_run_id, .attempt_id   none — logical (035)   Preserve. The capability-invocation ledger is an effect receipt ("this Attempt invoked this binding with this effect key"): attribution history, the same class as a task receipt, and it outlives the execution identity it names.
 capability_approvals.run_id (+ node_run_id)       none — logical (runtime DDL)  Preserve. A durable approval request for one effect of one execution is receipt history like the invocation ledger and is never selected by the purge.
-task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key. It is bounded by its own replay window (`PgTaskIdempotencyStore.purge_expired`), not by the Run's retention, so the purge leaves it to that TTL.
+task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key, bounded by its own replay window rather than by the Run's retention. The window's deletion (`purge_expired` on the PostgreSQL and SQLite stores) exists but nothing in production drives it yet, so its retention is `undecided` in `quality/durable-table-retention.json`; the purge does not stand in for it.
 durable_graph_runs.run_id                         PK only, separate store       Not touched, and not yet decided. `SqliteDurableRunStore`'s checkpoint table belongs to a store the canonical purge does not reach; its retention is recorded as `undecided` in `quality/durable-table-retention.json` rather than claimed here.
 ================================================  ============================  ====================================================
 
@@ -41,8 +41,9 @@ task receipts, session turns, effect receipts) outlives it and is left
 inspectable rather than silently destroyed.
 
 `RUN_REFERENCING_TABLES` is this table as data: every table named in it. A test
-scans the migrations and runtime DDL for tables with a ``run_id`` column and
-fails on any not listed, so a new one cannot join the schema unaccounted for.
+scans the migrations, runtime DDL and ORM models for tables with a ``run_id``
+column and fails on any not listed, so a new one cannot join the schema
+unaccounted for.
 """
 
 from __future__ import annotations
