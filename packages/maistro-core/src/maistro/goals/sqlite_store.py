@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS goals (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (goal_id, project_id),
-    FOREIGN KEY (project_id) REFERENCES canonical_projects(project_id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES canonical_projects(project_id) ON DELETE RESTRICT,
     FOREIGN KEY (parent_goal_id, project_id)
         REFERENCES goals(goal_id, project_id) ON DELETE CASCADE
 );

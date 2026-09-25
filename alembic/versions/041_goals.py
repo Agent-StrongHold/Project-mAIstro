@@ -7,8 +7,11 @@ Create Date: 2026-09-25
 Follows `036_audit_log_org_scope`, the current single head (itself parented
 on 040), so the chain stays linear.
 
-A Goal belongs to one Project and goes with it: `project_id` cascades from
-`canonical_projects`, and revisions cascade from their Goal. A Subgoal's
+A Goal belongs to one Project, and `project_id` is `ON DELETE RESTRICT` like
+every other child of `canonical_projects`: a Project delete can never take a
+Goal's append-only history with it, however it races a Goal insert. Goals go
+with their Workspace instead, deleted explicitly by the Project stores'
+`purge_workspace_in` before the Projects; revisions cascade from their Goal. A Subgoal's
 parent is held to the same Project by the composite foreign key on
 `(parent_goal_id, project_id)` against the `(goal_id, project_id)` unique
 constraint, so the database refuses a cross-Project parent on its own.
@@ -46,7 +49,7 @@ def upgrade() -> None:
             ["project_id"],
             ["canonical_projects.project_id"],
             name="fk_goals_project",
-            ondelete="CASCADE",
+            ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
             ["parent_goal_id", "project_id"],

@@ -28,7 +28,12 @@ class GoalState(StrEnum):
 
     @property
     def is_terminal(self) -> bool:
-        return self is not GoalState.ACTIVE
+        return self in TERMINAL_GOAL_STATES
+
+
+TERMINAL_GOAL_STATES = frozenset(
+    {GoalState.SATISFIED, GoalState.CANCELLED, GoalState.FAILED, GoalState.SUPERSEDED}
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,7 @@ class GoalLineageError(ValueError):
 
 
 __all__ = [
+    "TERMINAL_GOAL_STATES",
     "Goal",
     "GoalLineageError",
     "GoalNotFound",

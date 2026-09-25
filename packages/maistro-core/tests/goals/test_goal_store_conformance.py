@@ -548,3 +548,33 @@ async def test_a_durable_project_with_goals_is_not_deleted_but_its_workspace_pur
 
     assert await store.get(goal.goal_id) is None
     assert await store.list_revisions(goal.goal_id) == []
+
+
+async def test_concurrent_transitions_have_exactly_one_winner(backend) -> None:
+    project = await _root(backend)
+    goal, _ = await _create(await backend.store(), project)
+    writers = [await backend.store() for _ in range(4)]
+    targets = [GoalState.SATISFIED, GoalState.CANCELLED, GoalState.FAILED, GoalState.SUPERSEDED]
+
+    results = await asyncio.gather(
+        *(
+            writer.transition(
+                goal.goal_id,
+                expected_state=GoalState.ACTIVE,
+                expected_revision=1,
+                to_state=target,
+            )
+            for writer, target in zip(writers, targets, strict=True)
+        ),
+        return_exceptions=True,
+    )
+
+    winners = [item for item in results if not isinstance(item, BaseException)]
+    assert len(winners) == 1
+    assert all(
+        isinstance(item, GoalTransitionRefused | GoalRevisionConflict)
+        for item in results
+        if isinstance(item, BaseException)
+    )
+    final = await writers[0].get(goal.goal_id)
+    assert final is not None and final.state is winners[0].state

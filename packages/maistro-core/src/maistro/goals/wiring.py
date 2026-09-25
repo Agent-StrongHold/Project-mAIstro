@@ -36,8 +36,8 @@ async def wire_goal_store(
 ) -> GoalStore:
     backend = _backend_of(project_store)
     if backend == "postgres":
-        missing = await _missing_goal_tables(pg_pool) if pg_pool is not None else ["a pool"]
-        if missing:
+        missing = ["a pool"] if pg_pool is None else await _missing_goal_tables(pg_pool)
+        if pg_pool is None or missing:
             msg = (
                 "Projects are stored in PostgreSQL but the Goal store is missing "
                 f"{', '.join(missing)}, so Goals would be in-process and lost on restart. "

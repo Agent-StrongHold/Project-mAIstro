@@ -223,6 +223,14 @@ class SqliteProjectScopeStore:
             "DELETE FROM canonical_project_memberships WHERE workspace_id = ?",
             (workspace_id,),
         )
+        # Goals hold their Project with RESTRICT, so they go first (#1572).
+        # The table is the Goal store's and exists only once it is wired here.
+        async with conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goals'"
+        ) as cursor:
+            has_goals = await cursor.fetchone() is not None
+        if has_goals:
+            await conn.execute("DELETE FROM goals WHERE workspace_id = ?", (workspace_id,))
         for _ in range(_MAX_PURGE_PASSES):
             cursor = await conn.execute(
                 """DELETE FROM canonical_projects
@@ -431,9 +439,11 @@ class SqliteProjectScopeStore:
         # PostgreSQL expresses the same rule as a foreign key.
         if self._owns_runs is not None and await self._owns_runs(project_id):
             raise ProjectNotEmpty("Project has canonical Runs")
-        # Goals cascade with their Workspace, not with an explicit Project
-        # delete: their revision history is append-only (#1572). The table is
-        # the Goal store's, so it exists only once that store is wired here.
+        # Goals go with their Workspace, not an explicit Project delete: their
+        # revision history is append-only (#1572). The RESTRICT key on
+        # `goals.project_id` is what stops a racing insert; this names the rule.
+        # The table is the Goal store's, so it exists only once that store is
+        # wired here.
         if await self._exists(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goals'", ()
         ) and await self._exists(

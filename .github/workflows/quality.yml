@@ -365,7 +365,8 @@ jobs:
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
-            packages/maistro-core/tests/scheduling -v --tb=short
+            packages/maistro-core/tests/scheduling \
+            packages/maistro-core/tests/goals -v --tb=short
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in

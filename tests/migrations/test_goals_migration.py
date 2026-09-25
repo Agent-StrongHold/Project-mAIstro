@@ -98,10 +98,14 @@ def test_upgrade_enforces_the_goal_rules_and_downgrade_removes_them(
             "INSERT INTO goal_revisions VALUES ('g1', 1, 'agent', 'd', '[]', '[]', 'u', "
             "'2026-09-25T00:00:00+00:00')"
         )
-    with engine.begin() as conn:
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
         conn.exec_driver_sql("DELETE FROM canonical_projects WHERE project_id = 'p1'")
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM goals WHERE goal_id = 'g1'")
         remaining = conn.exec_driver_sql("SELECT count(*) FROM goals").scalar()
         revisions = conn.exec_driver_sql("SELECT count(*) FROM goal_revisions").scalar()
+        conn.exec_driver_sql("DELETE FROM canonical_projects WHERE project_id = 'p1'")
+    # The Subgoal and the revision went with their parent Goal.
     assert (remaining, revisions) == (0, 0)
 
     _run(migration, engine, "downgrade", monkeypatch)

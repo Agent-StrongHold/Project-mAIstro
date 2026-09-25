@@ -33,7 +33,7 @@ from maistro.events.consumer_cursor import (
 )
 from maistro.goals.service import GoalService
 from maistro.goals.store import GoalStore
-from maistro.goals.wiring import wire_goal_store
+from maistro.goals.wiring import GOAL_PG_TABLES, wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -2120,6 +2120,9 @@ _REQUIRED_PG_TABLES: Final = (
     # probes the same set for a caller-supplied pool, which reaches it without
     # passing through this preflight.
     *SPINE_PG_TABLES,
+    # Goals (041, #1572): `wire_goal_store` refuses without them, so name them
+    # here too, in the one startup report of everything missing.
+    *GOAL_PG_TABLES,
     # The strike ladder's three (#134). `pg_strikes._SCHEMA` still creates them
     # for the standalone caller that opens its own pool, but a tracker handed
     # the container's pool does not run it — migration

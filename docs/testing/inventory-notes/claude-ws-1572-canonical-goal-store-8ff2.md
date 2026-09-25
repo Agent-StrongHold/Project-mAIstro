@@ -1,14 +1,14 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +87
+  packages/maistro-core/tests: +90
   tests/: +2
 ---
 # claude-ws-1572-canonical-goal-store-8ff2
 
-**+87 `packages/maistro-core/tests`**, all in the new `tests/goals/`
+**+90 `packages/maistro-core/tests`**, all in the new `tests/goals/`
 directory. No existing test was removed or renamed.
 
-- `test_goal_store_conformance.py` (66): 22 test cases (18 functions, one
+- `test_goal_store_conformance.py` (69): 23 test cases (19 functions, one
   parametrized over five malformed inputs), each run against the memory,
   sqlite and postgres Goal stores. They cover:
   - create/get round trip of the Goal and revision 1, and absent reads;
@@ -16,7 +16,8 @@ directory. No existing test was removed or renamed.
     malformed content are refused (a bare string is not accepted as a
     conditions tuple);
   - revisions are append-only, a stale expected_revision is refused, and two
-    concurrent revises produce exactly one winner;
+    concurrent revises, like four concurrent transitions, produce exactly
+    one winner;
   - a terminal transition is final, transitions are compare-and-set on state
     and revision, and a terminal Goal takes no Subgoals;
   - Subgoal lineage stays in its Project, and a cross-Project or missing

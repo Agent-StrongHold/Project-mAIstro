@@ -113,7 +113,6 @@ class PgGoalStore:
             parent_goal_id=parent_goal_id,
             first=revision,
         )
-        conn: asyncpg.Connection
         async with self._pool.acquire() as conn, conn.transaction():
             await self._check_lineage(conn, goal)
             inserted = await conn.fetchval(
@@ -170,7 +169,6 @@ class PgGoalStore:
         stop_conditions: tuple[str, ...],
         author_principal_id: str,
     ) -> GoalRevision:
-        conn: asyncpg.Connection
         async with self._pool.acquire() as conn, conn.transaction():
             goal = await self._lock(conn, goal_id)
             check_revisable(goal, expected_revision)
@@ -196,7 +194,6 @@ class PgGoalStore:
         owner_agent_id: str,
         author_principal_id: str,
     ) -> GoalRevision:
-        conn: asyncpg.Connection
         async with self._pool.acquire() as conn, conn.transaction():
             goal = await self._lock(conn, goal_id)
             check_reassign(goal, expected_revision, owner_agent_id)
@@ -224,7 +221,6 @@ class PgGoalStore:
         expected_revision: int,
         to_state: GoalState,
     ) -> Goal:
-        conn: asyncpg.Connection
         async with self._pool.acquire() as conn, conn.transaction():
             goal = await self._lock(conn, goal_id)
             check_transition(

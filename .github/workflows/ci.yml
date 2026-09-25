@@ -278,6 +278,12 @@ jobs:
         env:
           MAISTRO_REQUIRE_PG_LEGS: "1"
         run: uv run pytest packages/maistro-core/tests/workspaces -v --tb=short
+      # The canonical Goal store (#1572), on the same terms as Workspaces: its
+      # conformance suite is the only thing that exercises `goals/pg_store.py`.
+      - name: Goal stores conform across memory, SQLite and PostgreSQL
+        env:
+          MAISTRO_REQUIRE_PG_LEGS: "1"
+        run: uv run pytest packages/maistro-core/tests/goals -v --tb=short
 
   object-storage:
     needs: workflow-lint
