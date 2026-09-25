@@ -479,6 +479,62 @@ async def test_post_call_real_warden_windows_large_fallback_input(monkeypatch):
     assert max(lengths) <= detector._SCAN_WINDOW_CHARS
 
 
+async def test_post_call_real_warden_windows_semantic_fallback_input(monkeypatch):
+    """Layer 2.5 gets the same one-window bound on the stdlib fallback.
+
+    The semantic patterns also compile through `_regex.compile_pattern`, so
+    with RE2 unavailable the `capture`-verb search over an unwindowed body is
+    the same unbounded-fallback hazard the heuristic tier covers above. The
+    filler repeats capture verbs with no full-conversation suffix: benign
+    enough to keep Layers 1-2 quiet, but it makes the semantic phase run its
+    searches to completion over every window.
+    """
+    import re
+
+    import maistro.security.warden._regex as regex_module
+    import maistro.security.warden.detector as detector
+    import maistro.security.warden.semantic as semantic
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(regex_module, "_RE2_AVAILABLE", False)
+    for name in (
+        "_DANGEROUS_ACTIONS",
+        "_SENSITIVE_OBJECTS",
+        "_CAPTURE_ACTIONS",
+        "_FULL_CONVERSATION_OBJECTS",
+        "_PRESCRIPTIVE_PATTERNS",
+    ):
+        monkeypatch.setattr(
+            semantic,
+            name,
+            [regex_module.compile_pattern(p.pattern, re.IGNORECASE) for p in getattr(semantic, name)],
+        )
+
+    lengths: list[int] = []
+
+    def record_window(fn):
+        def wrapper(text: str):
+            lengths.append(len(text))
+            return fn(text)
+
+        return wrapper
+
+    monkeypatch.setattr(
+        detector, "semantic_tool_poisoning_signals", record_window(semantic.semantic_tool_poisoning_signals)
+    )
+    monkeypatch.setattr(
+        detector,
+        "semantic_tool_poisoning_capture_signals",
+        record_window(semantic.semantic_tool_poisoning_capture_signals),
+    )
+    text = "capture export include report " * 2_500
+    result = await _sentinel(warden=Warden()).post_call("tool", text, _auth())
+
+    assert result.endswith("[... truncated, full result available in trace]")
+    assert len(lengths) > 1
+    assert max(lengths) <= detector._SCAN_WINDOW_CHARS
+
+
 async def test_post_call_real_warden_preserves_padded_semantic_signal():
     """Product output scanning must not lose a semantic action across windows."""
     from maistro.security.warden.detector import Warden
