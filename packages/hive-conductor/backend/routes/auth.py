@@ -697,15 +697,18 @@ def register(body: RegisterBody, request: Request, response: Response) -> dict[s
         raise HTTPException(status_code=403, detail="Registration is closed on this hive.")
     # Handle invitation redemption before password hashing to avoid wasted work
     # on invalid invitations. The redemption is atomic via JsonStore.put_if_absent.
-    if body.invitation_token is not None and decision.reason == "invitation":
-        if not registration_policy.redeem_invitation(body.invitation_token, username=body.username):
-            log_audit(
-                "register_blocked",
-                body.username,
-                detail={"reason": "invitation_race"},
-                severity="warning",
-            )
-            raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
+    if (
+        body.invitation_token is not None
+        and decision.reason == "invitation"
+        and not registration_policy.redeem_invitation(body.invitation_token, username=body.username)
+    ):
+        log_audit(
+            "register_blocked",
+            body.username,
+            detail={"reason": "invitation_race"},
+            severity="warning",
+        )
+        raise HTTPException(status_code=403, detail="Invalid or expired invitation.")
     # Allocate username and create user atomically.
     user_id = str(uuid4())
     password_hash = hash_password(body.password)
