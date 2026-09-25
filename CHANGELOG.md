@@ -468,6 +468,22 @@ or placeholder-only section.
 
 ### Changed
 
+- **Hive conversation-only chat and voice turns run as canonical chat Runs
+  (#1037).**
+  `/v1/chat/complete`, `/v1/chat/stream` and `/v1/voice/intent` now admit
+  every model-reaching turn as a Run over the one-node chat Graph in the
+  turn's Workspace (the named one when the caller can see it, else the
+  caller's default Workspace), call the conversation-only model from inside
+  that Run's Attempt stamped with the Workspace Agent, and close the Run
+  through the Container (FAILED on a model error). Responses carry `run_id`
+  and the Workspace Agent id under `agent` additively (`run_id` on the
+  stream's `done` event for `/stream`). A turn that cannot be admitted is
+  refused with `503` and `Retry-After` before the model is called -- which
+  includes a Hive running on the stub engine with no maistro-core runtime
+  (`MAISTRO_ROUTER_API_KEY` unset or the bridge failed to start): chat and
+  voice now need the runtime. Tools stay disabled; session ids are recorded
+  as Run provenance only.
+
 - **Hive and maistro-server now share one durable Workspace owner (#37,
   ADR-092326-97c4).** The shipped `docker-compose.yml` gives `hive-conductor`
   the same `DATABASE_URL`/`DB_*` as `maistro-engine` and starts it only after
