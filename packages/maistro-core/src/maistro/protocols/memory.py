@@ -34,6 +34,8 @@ class LearningStore(Protocol):
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
@@ -68,9 +70,15 @@ class LearningStore(Protocol):
         ...
 
     async def get_promoted(
-        self, task_type: str | None = None, *, org_id: str = ""
+        self,
+        task_type: str | None = None,
+        *,
+        org_id: str = "",
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings for system prompt injection."""
+        """Get promoted learnings for system prompt injection within scope."""
         ...
 
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
