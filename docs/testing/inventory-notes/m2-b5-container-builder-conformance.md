@@ -42,3 +42,19 @@ packages/maistro-bootstrap/tests/test_container_sandbox.py -v` = 11 passed;
 `uv run pytest packages/maistro-bootstrap/tests -q` = 245 passed, 1 skipped;
 `uv run ruff check .` and `ruff format --check .` clean;
 `scripts/check-suite-inventory.py --suite packages/maistro-bootstrap/tests` ok.
+
+Verifier record (lane auto-80, head 739b9e5d7): executed `uv run pytest
+packages/maistro-bootstrap/tests/test_container_sandbox.py
+packages/maistro-bootstrap/tests/test_container_sandbox_hardening.py -q`
+= 25 passed (43.2s, live Docker 29.7.2 against maistro-builders:latest);
+full `uv run pytest packages/maistro-bootstrap/tests -q` = 245 passed,
+1 skipped; `uv run ruff check .` clean;
+`scripts/check-suite-inventory.py --suite packages/maistro-bootstrap/tests`
+ok (246). The two maistro-core tests reported red in PR #1450 CI
+(`runs/test_chat_execution.py::TestAPostDispatchRecordingFailureIsNeverRedispatched`,
+`test_container_security_wiring.py::test_route_request_without_auth_is_evaluated_as_the_anonymous_principal`)
+pass locally at this head both bare and under the CI job env
+(`REQUIRE_AUTH=false MAISTRO_DRY_RUN=1`, 19 passed) — flaky or develop-wide,
+not caused by this branch. Core Tier-3 lane on this host: 4 passed, 24 skipped
+("this host cannot build a bubblewrap sandbox"), the documented fail-closed
+skip CI works around. GitHub CI green remains UNVERIFIED from this lane.
