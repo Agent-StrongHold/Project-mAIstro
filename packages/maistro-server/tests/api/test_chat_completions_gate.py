@@ -17,6 +17,7 @@ Gate, and `run_task` is patched where `ConductorAgent` imports it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch
@@ -27,8 +28,13 @@ from fastapi.testclient import TestClient
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import CHAT_SOURCE, UPSTREAM_FAILURE, ChatRunAdmitter
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    CHAT_SOURCE,
+    UPSTREAM_FAILURE,
+    ChatRunAdmitter,
+)
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import InMemoryRunStore
 from maistro.security._types import GateResult
 from maistro.types.config import AgentConfig
@@ -621,3 +627,78 @@ async def test_a_failed_turn_never_echoes_the_provider_detail(
     assert len(runs) == 1
     assert runs[0].error == UPSTREAM_FAILURE
     assert "sk-secret" not in (runs[0].error or "")
+
+
+# --- admission vs. the disconnecting client -------------------------------
+
+
+class _CancelOnRunning:
+    """A store whose QUEUED -> RUNNING hop is interrupted, as if the request
+    task died between the two persistence writes."""
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self.admitted_run_id: str | None = None
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def transition_run(self, run_id: str, target: RunStatus, **kwargs: object) -> object:
+        if target is RunStatus.RUNNING:
+            # CREATED and QUEUED are durable by now, so a cancellation raised
+            # here is exactly a client vanishing after `admit()` returned.
+            self.admitted_run_id = run_id
+            raise asyncio.CancelledError
+        return await self._inner.transition_run(run_id, target, **kwargs)  # type: ignore[arg-type]
+
+
+async def test_a_disconnect_mid_admission_compensates_and_propagates(
+    container: object,
+) -> None:
+    """The endpoint admits before `route_request` can adopt the Run, so a
+    disconnect landing between the admission hops is this module's to clean
+    up: the compensating cancel is shielded from the very cancellation that
+    triggered it, and the cancellation still reaches the request."""
+    store = _CancelOnRunning(container.run_store)  # type: ignore[attr-defined]
+    container.run_store = store  # type: ignore[attr-defined]
+    request = chat_api.ChatCompletionRequest(
+        messages=[chat_api.ChatMessage(role="user", content="hi")],
+        session_id="sess-1",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await chat_api._admit_turn(request, None, request_id="req-1")
+
+    # The shield detaches the compensating write from the cancelled request,
+    # so the QUEUED Run this module admitted is not stranded by the disconnect.
+    assert store.admitted_run_id is not None
+    run = await store._inner.get_run(store.admitted_run_id)
+    assert run is not None
+    assert run.status is RunStatus.CANCELLED
+    assert run.error == ADMISSION_INCOMPLETE
+
+
+async def test_a_disconnect_before_any_persistence_propagates_without_compensation(
+    container: object,
+) -> None:
+    """The other arc of the guard: with no Run persisted there is nothing to
+    compensate, so the cancellation propagates untouched rather than being
+    swallowed into an endpoint error or a store write."""
+
+    async def _cancelled(*args: object, **kwargs: object) -> Run:
+        raise asyncio.CancelledError
+
+    container.chat_admitter.admit = _cancelled  # type: ignore[method-assign]
+    request = chat_api.ChatCompletionRequest(
+        messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await chat_api._admit_turn(request, None, request_id="req-2")
+
+    wired_store = container.run_store  # type: ignore[attr-defined]
+    assert not [
+        r
+        for r in wired_store._runs.values()  # type: ignore[attr-defined]
+        if r.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    ]

@@ -835,3 +835,41 @@ async def test_a_run_deleted_mid_tick_does_not_abort_the_rest_of_the_sweep(
     still_there = await container.run_store.get_run(vanished.run_id)
     assert still_there is not None
     assert still_there.status is RunStatus.RUNNING
+
+
+async def test_sweep_without_an_admitter_is_a_no_op() -> None:
+    """Retention rides on the admitter. A Container wired without one (the
+    minimal deployment that still closes chat Runs) reaches this guard on
+    every closure, and must pass through it without touching a store that is
+    not there."""
+    container = await _container()
+    container.chat_admitter = None  # type: ignore[assignment]
+
+    await container._sweep_chat_runs()
+
+
+async def test_a_failing_sweep_does_not_replace_the_turns_answer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Retention is housekeeping that runs after the Run is already terminal:
+    a sweep that raises must not fail a turn that was answered, and must be
+    logged so the missed trim is visible rather than silent."""
+    container = await _container()
+    container.conduit = _Conduit()
+
+    async def _explodes() -> int:
+        raise RuntimeError("retention exploded")
+
+    # The public `sweep()` hook is exactly what `_sweep_chat_runs` calls after
+    # terminalization; admission's internal `_sweep()` is a different method,
+    # so the turn itself is unaffected by this stub.
+    container.chat_admitter.sweep = _explodes  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="maistro.container"):
+        result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert result["choices"][0]["message"]["content"] == "hi"
+    run = await container.run_store.get_run(result["run_id"])
+    assert run is not None
+    assert run.status is RunStatus.COMPLETED
+    assert "chat Run retention sweep failed" in caplog.text
