@@ -25,6 +25,8 @@ from maistro.testing.postgres import postgres_dsn
 
 
 class _MemoryBackend:
+    durable = False
+
     def __init__(self) -> None:
         from maistro.goals.store import InMemoryGoalStore
         from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -40,6 +42,8 @@ class _MemoryBackend:
 
 
 class _SqliteBackend:
+    durable = True
+
     def __init__(self, tmp_path) -> None:
         self._path = tmp_path / "goals.db"
         self._connections: list = []
@@ -67,6 +71,8 @@ class _SqliteBackend:
 
 
 class _PostgresBackend:
+    durable = True
+
     def __init__(self, pool) -> None:
         from maistro.projects.pg_scope_store import PgProjectScopeStore
 
@@ -452,3 +458,93 @@ async def test_reassign_owner_is_recorded_and_visible(backend) -> None:
             owner_agent_id=first_owner,
             author_principal_id="user-admin",
         )
+
+
+async def test_a_terminal_goal_takes_no_subgoals(backend) -> None:
+    store = await backend.store()
+    project = await _root(backend)
+    parent, _ = await _create(store, project)
+    await store.transition(
+        parent.goal_id,
+        expected_state=GoalState.ACTIVE,
+        expected_revision=1,
+        to_state=GoalState.CANCELLED,
+    )
+
+    with pytest.raises(GoalTransitionRefused):
+        await _create(store, project, parent_goal_id=parent.goal_id)
+    assert [
+        g.goal_id for g in await store.list_for_project(project.workspace_id, project.project_id)
+    ] == [parent.goal_id]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"owner_agent_id": " "},
+        {"desired_state": ""},
+        {"author_principal_id": ""},
+        {"success_conditions": "tests green"},
+        {"stop_conditions": ("",)},
+    ],
+)
+async def test_blank_or_malformed_content_is_refused(backend, overrides) -> None:
+    store = await backend.store()
+    project = await _root(backend)
+
+    with pytest.raises(ValueError):
+        await _create(store, project, **overrides)
+    assert await store.list_for_project(project.workspace_id, project.project_id) == []
+
+
+async def test_reassigning_to_the_current_owner_is_refused(backend) -> None:
+    store = await backend.store()
+    project = await _root(backend)
+    goal, _ = await _create(store, project)
+
+    with pytest.raises(GoalTransitionRefused):
+        await store.reassign_owner(
+            goal.goal_id,
+            expected_revision=1,
+            owner_agent_id=goal.owner_agent_id,
+            author_principal_id="user-a",
+        )
+    with pytest.raises(ValueError):
+        await store.revise(
+            goal.goal_id,
+            expected_revision=1,
+            desired_state=" ",
+            success_conditions=(),
+            stop_conditions=(),
+            author_principal_id="user-a",
+        )
+    assert len(await store.list_revisions(goal.goal_id)) == 1
+
+
+async def test_a_durable_project_with_goals_is_not_deleted_but_its_workspace_purge_takes_them(
+    backend,
+) -> None:
+    """Explicit Project delete refuses to take append-only history with it.
+
+    The in-memory Project store cannot see Goals, so there a delete leaves them
+    readable rather than destroying them; the durable stores refuse.
+    """
+    from maistro.projects.scope import ProjectNotEmpty
+
+    if not backend.durable:
+        pytest.skip("the in-memory Project store has no view of Goals")
+    store = await backend.store()
+    root = await _root(backend)
+    child = await backend.project_store.create(
+        workspace_id=root.workspace_id, name="child", parent_project_id=root.project_id
+    )
+    goal, _ = await _create(store, child)
+
+    with pytest.raises(ProjectNotEmpty, match="Goals"):
+        await backend.project_store.delete(child.project_id)
+    assert await store.get(goal.goal_id) == goal
+
+    await backend.project_store.purge_workspace(root.workspace_id)
+
+    assert await store.get(goal.goal_id) is None
+    assert await store.list_revisions(goal.goal_id) == []

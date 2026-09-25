@@ -1,23 +1,32 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +63
+  packages/maistro-core/tests: +87
   tests/: +2
 ---
 # claude-ws-1572-canonical-goal-store-8ff2
 
-**+63 `packages/maistro-core/tests`**, all in the new `tests/goals/`
+**+87 `packages/maistro-core/tests`**, all in the new `tests/goals/`
 directory. No existing test was removed or renamed.
 
-- `test_goal_store_conformance.py` (42): 14 tests, each run against the
-  memory, sqlite and postgres Goal stores. They cover: create/get round
-  trip of the Goal and revision 1, and absent reads; a Project outside the
-  Workspace and a duplicate goal_id are refused; revisions are append-only,
-  a stale expected_revision is refused, and two concurrent revises produce
-  exactly one winner; a terminal transition is final, and transitions are
-  compare-and-set on state and revision; Subgoal lineage stays in its
-  Project, and a cross-Project or missing parent is refused;
-  `list_owned_by_agent` returns only ACTIVE Goals; `reassign_owner` is
-  recorded in the revision history.
+- `test_goal_store_conformance.py` (66): 22 test cases (18 functions, one
+  parametrized over five malformed inputs), each run against the memory,
+  sqlite and postgres Goal stores. They cover:
+  - create/get round trip of the Goal and revision 1, and absent reads;
+  - a Project outside the Workspace, a duplicate goal_id, and blank or
+    malformed content are refused (a bare string is not accepted as a
+    conditions tuple);
+  - revisions are append-only, a stale expected_revision is refused, and two
+    concurrent revises produce exactly one winner;
+  - a terminal transition is final, transitions are compare-and-set on state
+    and revision, and a terminal Goal takes no Subgoals;
+  - Subgoal lineage stays in its Project, and a cross-Project or missing
+    parent is refused;
+  - `list_owned_by_agent` returns only ACTIVE Goals;
+  - `reassign_owner` is recorded in the revision history and refuses the
+    current owner;
+  - on the durable legs, a Project with Goals is not deleted, while the
+    Workspace purge removes them. The memory leg skips this one: the
+    in-memory Project store cannot see Goals.
 - `test_goal_service.py` (15): 5 tests, each run against the memory,
   sqlite and postgres URLs through `create_container()`. They cover: the
   Container exposes the expected `goal_store` class and a working

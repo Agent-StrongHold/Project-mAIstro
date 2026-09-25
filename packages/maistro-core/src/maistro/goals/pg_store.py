@@ -20,16 +20,18 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.goals.store import (
-    PARENT_NOT_IN_PROJECT,
-    PROJECT_NOT_IN_WORKSPACE,
+    check_parent,
+    check_reassign,
     check_revisable,
     check_transition,
+    new_goal,
     new_goal_id,
+    new_revision,
     now,
+    project_not_in_workspace,
 )
 from maistro.goals.types import (
     Goal,
-    GoalLineageError,
     GoalNotFound,
     GoalRevision,
     GoalState,
@@ -94,27 +96,22 @@ class PgGoalStore:
         parent_goal_id: str | None = None,
         goal_id: str | None = None,
     ) -> tuple[Goal, GoalRevision]:
-        stamp = now()
-        goal = Goal(
-            goal_id=goal_id or new_goal_id(),
-            workspace_id=workspace_id,
-            project_id=project_id,
-            owner_agent_id=owner_agent_id,
-            parent_goal_id=parent_goal_id,
-            state=GoalState.ACTIVE,
-            current_revision=1,
-            created_at=stamp,
-            updated_at=stamp,
-        )
-        revision = GoalRevision(
-            goal_id=goal.goal_id,
-            revision=1,
+        revision = new_revision(
+            goal_id or new_goal_id(),
+            1,
             owner_agent_id=owner_agent_id,
             desired_state=desired_state,
-            success_conditions=tuple(success_conditions),
-            stop_conditions=tuple(stop_conditions),
+            success_conditions=success_conditions,
+            stop_conditions=stop_conditions,
             author_principal_id=author_principal_id,
-            created_at=stamp,
+            created_at=now(),
+        )
+        goal = new_goal(
+            goal_id=revision.goal_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            parent_goal_id=parent_goal_id,
+            first=revision,
         )
         conn: asyncpg.Connection
         async with self._pool.acquire() as conn, conn.transaction():
@@ -146,7 +143,7 @@ class PgGoalStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT {_GOAL_COLUMNS} FROM goals "  # nosec B608
-                "WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at, goal_id",
+                'WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at, goal_id COLLATE "C"',
                 workspace_id,
                 project_id,
             )
@@ -157,7 +154,7 @@ class PgGoalStore:
             rows = await conn.fetch(
                 f"SELECT {_GOAL_COLUMNS} FROM goals "  # nosec B608
                 "WHERE workspace_id = $1 AND owner_agent_id = $2 AND state = 'active' "
-                "ORDER BY created_at, goal_id",
+                'ORDER BY created_at, goal_id COLLATE "C"',
                 workspace_id,
                 agent_id,
             )
@@ -179,13 +176,13 @@ class PgGoalStore:
             check_revisable(goal, expected_revision)
             return await self._append(
                 conn,
-                GoalRevision(
-                    goal_id=goal_id,
-                    revision=goal.current_revision + 1,
+                new_revision(
+                    goal_id,
+                    goal.current_revision + 1,
                     owner_agent_id=goal.owner_agent_id,
                     desired_state=desired_state,
-                    success_conditions=tuple(success_conditions),
-                    stop_conditions=tuple(stop_conditions),
+                    success_conditions=success_conditions,
+                    stop_conditions=stop_conditions,
                     author_principal_id=author_principal_id,
                     created_at=now(),
                 ),
@@ -202,15 +199,18 @@ class PgGoalStore:
         conn: asyncpg.Connection
         async with self._pool.acquire() as conn, conn.transaction():
             goal = await self._lock(conn, goal_id)
-            check_revisable(goal, expected_revision)
+            check_reassign(goal, expected_revision, owner_agent_id)
             latest = await self._read_revision(conn, goal_id, goal.current_revision)
             assert latest is not None  # nosec B101 - the pointer's row is written with it
             return await self._append(
                 conn,
-                replace(
-                    latest,
-                    revision=goal.current_revision + 1,
+                new_revision(
+                    goal_id,
+                    goal.current_revision + 1,
                     owner_agent_id=owner_agent_id,
+                    desired_state=latest.desired_state,
+                    success_conditions=latest.success_conditions,
+                    stop_conditions=latest.stop_conditions,
                     author_principal_id=author_principal_id,
                     created_at=now(),
                 ),
@@ -262,22 +262,18 @@ class PgGoalStore:
             goal.project_id,
         )
         if project_workspace != goal.workspace_id:
-            raise GoalLineageError(
-                PROJECT_NOT_IN_WORKSPACE.format(
-                    project_id=goal.project_id, workspace_id=goal.workspace_id
-                )
+            raise project_not_in_workspace(goal.project_id, goal.workspace_id)
+        if goal.parent_goal_id is not None:
+            # FOR SHARE holds the parent's state until commit, so a concurrent
+            # terminal transition cannot slip in between the check and the insert.
+            parent = await conn.fetchrow(
+                f"SELECT {_GOAL_COLUMNS} FROM goals WHERE goal_id = $1 FOR SHARE",  # nosec B608
+                goal.parent_goal_id,
             )
-        if goal.parent_goal_id is None:
-            return
-        parent_project = await conn.fetchval(
-            "SELECT project_id FROM goals WHERE goal_id = $1 FOR SHARE",
-            goal.parent_goal_id,
-        )
-        if parent_project != goal.project_id:
-            raise GoalLineageError(
-                PARENT_NOT_IN_PROJECT.format(
-                    parent_goal_id=goal.parent_goal_id, project_id=goal.project_id
-                )
+            check_parent(
+                _goal(parent) if parent is not None else None,
+                parent_goal_id=goal.parent_goal_id,
+                project_id=goal.project_id,
             )
 
     async def _append(self, conn: Any, revision: GoalRevision) -> GoalRevision:

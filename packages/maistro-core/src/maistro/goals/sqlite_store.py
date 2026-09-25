@@ -22,16 +22,18 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from maistro.goals.store import (
-    PARENT_NOT_IN_PROJECT,
-    PROJECT_NOT_IN_WORKSPACE,
+    check_parent,
+    check_reassign,
     check_revisable,
     check_transition,
+    new_goal,
     new_goal_id,
+    new_revision,
     now,
+    project_not_in_workspace,
 )
 from maistro.goals.types import (
     Goal,
-    GoalLineageError,
     GoalNotFound,
     GoalRevision,
     GoalState,
@@ -154,33 +156,27 @@ class SqliteGoalStore:
         parent_goal_id: str | None = None,
         goal_id: str | None = None,
     ) -> tuple[Goal, GoalRevision]:
-        goal_id = goal_id or new_goal_id()
-        stamp = now()
-        goal = Goal(
-            goal_id=goal_id,
-            workspace_id=workspace_id,
-            project_id=project_id,
-            owner_agent_id=owner_agent_id,
-            parent_goal_id=parent_goal_id,
-            state=GoalState.ACTIVE,
-            current_revision=1,
-            created_at=stamp,
-            updated_at=stamp,
-        )
-        revision = GoalRevision(
-            goal_id=goal_id,
-            revision=1,
+        revision = new_revision(
+            goal_id or new_goal_id(),
+            1,
             owner_agent_id=owner_agent_id,
             desired_state=desired_state,
-            success_conditions=tuple(success_conditions),
-            stop_conditions=tuple(stop_conditions),
+            success_conditions=success_conditions,
+            stop_conditions=stop_conditions,
             author_principal_id=author_principal_id,
-            created_at=stamp,
+            created_at=now(),
+        )
+        goal = new_goal(
+            goal_id=revision.goal_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            parent_goal_id=parent_goal_id,
+            first=revision,
         )
         async with self._project_store.transaction() as conn:
             await self._check_lineage(conn, goal)
-            if await self._read_goal(conn, goal_id) is not None:
-                raise ValueError(f"Goal {goal_id!r} already exists")
+            if await self._read_goal(conn, goal.goal_id) is not None:
+                raise ValueError(f"Goal {goal.goal_id!r} already exists")
             await conn.execute(
                 f"INSERT INTO goals ({_GOAL_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",  # nosec B608
                 (
@@ -191,8 +187,8 @@ class SqliteGoalStore:
                     goal.parent_goal_id,
                     goal.state.value,
                     goal.current_revision,
-                    stamp.isoformat(),
-                    stamp.isoformat(),
+                    goal.created_at.isoformat(),
+                    goal.updated_at.isoformat(),
                 ),
             )
             await self._insert_revision(conn, revision)
@@ -234,13 +230,13 @@ class SqliteGoalStore:
             return await self._append(
                 conn,
                 goal,
-                GoalRevision(
-                    goal_id=goal_id,
-                    revision=goal.current_revision + 1,
+                new_revision(
+                    goal_id,
+                    goal.current_revision + 1,
                     owner_agent_id=goal.owner_agent_id,
                     desired_state=desired_state,
-                    success_conditions=tuple(success_conditions),
-                    stop_conditions=tuple(stop_conditions),
+                    success_conditions=success_conditions,
+                    stop_conditions=stop_conditions,
                     author_principal_id=author_principal_id,
                     created_at=now(),
                 ),
@@ -256,15 +252,15 @@ class SqliteGoalStore:
     ) -> GoalRevision:
         async with self._project_store.transaction() as conn:
             goal = await self._require(conn, goal_id)
-            check_revisable(goal, expected_revision)
+            check_reassign(goal, expected_revision, owner_agent_id)
             latest = await self._read_revision(conn, goal_id, goal.current_revision)
             assert latest is not None  # nosec B101 - the pointer's row is written with it
             return await self._append(
                 conn,
                 goal,
-                GoalRevision(
-                    goal_id=goal_id,
-                    revision=goal.current_revision + 1,
+                new_revision(
+                    goal_id,
+                    goal.current_revision + 1,
                     owner_agent_id=owner_agent_id,
                     desired_state=latest.desired_state,
                     success_conditions=latest.success_conditions,
@@ -315,19 +311,12 @@ class SqliteGoalStore:
         ) as cursor:
             project = await cursor.fetchone()
         if project is None or project[0] != goal.workspace_id:
-            raise GoalLineageError(
-                PROJECT_NOT_IN_WORKSPACE.format(
-                    project_id=goal.project_id, workspace_id=goal.workspace_id
-                )
-            )
-        if goal.parent_goal_id is None:
-            return
-        parent = await self._read_goal(conn, goal.parent_goal_id)
-        if parent is None or parent.project_id != goal.project_id:
-            raise GoalLineageError(
-                PARENT_NOT_IN_PROJECT.format(
-                    parent_goal_id=goal.parent_goal_id, project_id=goal.project_id
-                )
+            raise project_not_in_workspace(goal.project_id, goal.workspace_id)
+        if goal.parent_goal_id is not None:
+            check_parent(
+                await self._read_goal(conn, goal.parent_goal_id),
+                parent_goal_id=goal.parent_goal_id,
+                project_id=goal.project_id,
             )
 
     async def _append(self, conn: Any, goal: Goal, revision: GoalRevision) -> GoalRevision:

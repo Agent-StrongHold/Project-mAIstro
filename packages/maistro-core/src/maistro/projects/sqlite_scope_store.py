@@ -431,6 +431,16 @@ class SqliteProjectScopeStore:
         # PostgreSQL expresses the same rule as a foreign key.
         if self._owns_runs is not None and await self._owns_runs(project_id):
             raise ProjectNotEmpty("Project has canonical Runs")
+        # Goals cascade with their Workspace, not with an explicit Project
+        # delete: their revision history is append-only (#1572). The table is
+        # the Goal store's, so it exists only once that store is wired here.
+        if await self._exists(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goals'", ()
+        ) and await self._exists(
+            "SELECT 1 FROM goals WHERE project_id = ? LIMIT 1",
+            (project_id,),
+        ):
+            raise ProjectNotEmpty("Project has Goals")
         async with self._serialized_write():
             await self._conn.execute(
                 "DELETE FROM canonical_projects WHERE project_id = ?",

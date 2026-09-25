@@ -270,6 +270,10 @@ or placeholder-only section.
   Revisions and state transitions are compare-and-set, so a stale or
   concurrent writer is refused and exactly one wins. A Subgoal's parent must
   be in the same Project, and the database's foreign key enforces this too.
+  A terminal Goal accepts no new Subgoals. Goals are deleted with their
+  Workspace; the durable Project stores refuse an explicit Project delete
+  while the Project still has Goals, so a Project delete never drops a
+  Goal's revision history.
   Reassigning the owning Agent appends a revision, which keeps the previous
   owner in the history. `GoalService` reads with Workspace VIEW and writes
   with ADMINISTER, and treats a Goal in a foreign Workspace exactly like a

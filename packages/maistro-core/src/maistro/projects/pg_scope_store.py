@@ -317,6 +317,12 @@ class PgProjectScopeStore:
                 "SELECT 1 FROM canonical_runs WHERE project_id = $1 LIMIT 1",
                 "Project has canonical Runs",
             ),
+            # Goals cascade with their Workspace, not with an explicit Project
+            # delete: their revision history is append-only (#1572).
+            (
+                "SELECT 1 FROM goals WHERE project_id = $1 LIMIT 1",
+                "Project has Goals",
+            ),
         )
         async with self._pool.acquire() as conn, conn.transaction():
             for sql, message in checks:
