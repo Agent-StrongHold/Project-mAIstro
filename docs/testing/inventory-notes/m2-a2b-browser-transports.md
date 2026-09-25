@@ -557,3 +557,66 @@ not carried forward from the b8ecf38a8 record:
 - No premature closure keywords: PR 1451 body says "Refs #155" only; no
   branch commit message contains a `Fixes/Closes/Resolves #N` trailer (the
   `dc3df6b63` subject uses "close" as a verb, which auto-closes nothing).
+
+## L155 repair-phase re-verification at the final head 68bdbf915 (2026-09-24)
+
+Re-derived against the current develop base `03c8ba83a` (#1582); the prior
+finding set (unguarded hill-climb-ui.sh contexts, its Hyperlight dispatch,
+SECURITY.md enumeration, plus the two gate failures) was re-checked from
+scratch — no driver check logs existed for this run, so every check below was
+executed directly at this head:
+
+- Findings 1–3 do not reproduce: the fix landed in `5b3cac761`, an ancestor
+  of every head since. Re-proofs: `hill-climb-ui.sh` creates both contexts via
+  `guarded_context()` (`service_workers="block"` +
+  `SyncBrowserNetworkGuard...attach`) and no unguarded `browser.new_page(`
+  exists; `test_hyperlight_hill_climb_guards_each_sync_browser_context`
+  passes (1 passed); `ui_climb_vm.py` posts to the broker through guarded
+  `shared_client` and dispatches the now-governed script; SECURITY.md rows
+  167–168 enumerate all five Playwright transports (client.py,
+  ui_auto_climb.py, widgets.py, run_hill_climb.py, hill-climb-ui.sh — "the
+  script the Hyperlight UI-climb workload dispatches") with the honest
+  `partial`/"not shared-client coverage" wording.
+- Batteries at this head (playwright 1.63.0 present in the venv): core
+  browser suite `pytest packages/maistro-core/tests/tools/browser/` →
+  **131 passed**, all four real-Chromium proofs PASSED by name —
+  `test_real_chromium_rechecks_a_redirect_before_the_private_connection`
+  asserts the private server received **zero requests** after a public 302
+  into it, with guard events `[ALLOWED, DENIED]`. Conductor
+  `test_browser_network_policy.py` + `test_engine_service.py` → 38 passed.
+  Ordinary-HTTP seam `test_ssrf.py` + `test_outbound_policy.py` +
+  `test_transport.py` → 173 passed.
+- Gates green: `ruff check .`, `ruff format --check .` (2534 files),
+  canonical mypy (713 files, 0 issues), `check-security-inventory.py`
+  (63 paths / 23 rows), `check-model-egress.py` + `check_direct_effects.py`
+  (50 sites, all dispositioned), `check-suite-inventory.py` (13 suites),
+  `verify-monorepo-layout.sh`.
+- Finding 4 (`check-vulture-baseline.py` rc=1) re-derived as **inherited**
+  with a live base run: a detached `03c8ba83a` worktree
+  (`~/Git/worktrees/base-03c8ba8-verify`, `uv sync --locked --all-extras`)
+  with `RATCHET_BASE_REV=60862b6c5` fails rc=1 with far larger drift than
+  head (fastapi-route-handler 207 NEW, pydantic-declarative-field 122 NEW,
+  pytest surface 462 vs 448 — head 1431 findings vs base 1447), against a
+  `quality/vulture-baseline.json` byte-identical across `60862b6c5`,
+  `03c8ba83a` and HEAD. Head's only NEW identities
+  (`dags/__init__.py:48`, `dags/author_selector.py:204`) live in files
+  byte-identical base↔head; zero branch files in any drift. Clearing it
+  needs a reviewed ledger grant — out of scope for an ordinary repair.
+- Finding 5 (`check-ac-state.py --run-tests --ratchet --mandate 3e9f7525…`
+  rc=1) re-derived as **inherited** with a live base run: the exact command
+  at the detached base worktree (`RATCHET_BASE_REV=60862b6c5`) fails with
+  the identical floor line — `design coverage: 33.0728% over 156 taken
+  decisions` below the same 33.9095 floor (develop added one decision after
+  the merge point; head measures 33.0281 over 155, byte-equal to the
+  committed `quality/ac-state.json`). The per-change mandate at head stays
+  green (22 criteria claimed, 0 unproven; chain mandate zero absent links);
+  the base additionally fails its own mandate while head passes. Banking
+  the fall would be a ledger edit — out of scope.
+- Transport census re-swept at this head: production Playwright entry
+  points are exactly `tools/browser/client.py` (the only `browser_use`
+  importer; tool_executor's agent tools reach Chromium only through it),
+  `backend/services/ui_auto_climb.py`, `backend/routes/widgets.py`,
+  `run_hill_climb.py` and `hill-climb-ui.sh` — each attaching the sync or
+  async guard before its first page; no aiohttp/requests/urllib.request/raw
+  outbound socket in production code.
+- No closure keywords in any branch commit message (`60862b6c5..HEAD`).
