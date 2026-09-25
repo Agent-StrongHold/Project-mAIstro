@@ -86,3 +86,38 @@ the grant schema) in a ledger-owners merge on the trusted base; this
 branch's baseline + disposition rows then complete the debt transaction once
 its base contains the grant. No new tests; deltas unchanged.
 
+## Independent re-verification 2026-09-25 (head 1511eb381, salvage resolved)
+
+Re-checked every acceptance criterion against production behavior at the assigned
+head, without trusting the earlier rounds' claims:
+
+- `uv run python scripts/check_compliance.py` OK, byte-identical across two
+  consecutive runs; `--as-of 2027-06-01T00:00:00Z` still OK (inside the
+  registry's 365-day windows) and `--as-of 2027-10-01T00:00:00Z` -> 134 stale
+  findings, exit 1, proving staleness semantics on the live registry.
+- All eight cited test artifacts executed at this head (`uv run pytest
+  formal/models/test_{composite_auth,dangerous_tools,flag_response,jwt_auth,
+  memory_scopes,pii_filter,sentinel_policy,sentinel_validator}.py -q`):
+  113 passed. The registry carries only `repository_artifact` records (66;
+  zero self-authored execution receipts) and zero `implemented` claims, so no
+  row outruns its evidence.
+- `uv run pytest tests/test_check_compliance.py -q` 28 passed; note deltas
+  +21 +3 +1 +2 +1 +0 = 28 collected, matching the file exactly.
+- `scripts/check-suite-inventory.py --suite tests/` OK (3644);
+  `check-reachability-dispositions.py` OK; `check-doc-links.py` OK;
+  `ruff check .` and `ruff format --check .` clean.
+- Re-ran both provenance gates: still exit 1 on `@tool/check_compliance`
+  exactly as documented above; the grant belongs to a ledger-owners merge on
+  the trusted base (#362), which this child may not author.
+- Salvage resolved: the untracked scratch `check_evidence_shas.py` from the
+  timed-out prior run duplicated the digest checking already committed in
+  `scripts/check_compliance.py` (its purpose — locating the stale digests —
+  was completed by 60d382c07). Copies preserved at
+  `/tmp/salvage-check_evidence_shas.py` and
+  `jobs/75c8e46a296542ec97dd83c15bbf16e4/salvage/`; removed from the worktree
+  so `ruff check .` passes tree-wide. Precision fix to the 60d382c07 entry
+  above: the empty `.github/` diff is against `origin/develop...HEAD`; against
+  the stale local `develop` ref, topic-merge workflow deltas appear. This
+  child's own commits touch no `.github` paths (verified per-commit). No new
+  tests; deltas unchanged.
+
