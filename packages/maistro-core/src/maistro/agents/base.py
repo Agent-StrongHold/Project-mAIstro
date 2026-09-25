@@ -356,11 +356,12 @@ class Agent:
 
         messages, session_history_count = await self._inject_session_history(messages, session_id)
 
+        user_id = getattr(auth, "user_id", "")
         org_id = getattr(auth, "org_id", "")
         team_id = getattr(auth, "team_id", "")
 
         context_messages, injected_learning_ids = await self._build_context(
-            messages, org_id, team_id, trace, session_id
+            messages, user_id, org_id, team_id, trace, session_id
         )
 
         tool_defs: list[dict[str, Any]] | None = None
@@ -423,9 +424,9 @@ class Agent:
             )
         )
         if tool_had_failures:
-            await self._extract_rca(result, user_text, org_id, team_id, trace)
+            await self._extract_rca(result, user_text, user_id, org_id, team_id, trace)
 
-        await self._extract_learnings(result, user_text, org_id, team_id, trace)
+        await self._extract_learnings(result, user_text, user_id, org_id, team_id, trace)
 
         if self._learning_promoter and injected_learning_ids:
             await self._learning_promoter.check_and_promote(org_id=org_id)
@@ -624,6 +625,7 @@ class Agent:
     async def _build_context(
         self,
         messages: list[dict[str, Any]],
+        user_id: str,
         org_id: str,
         team_id: str,
         trace: Any,
@@ -641,6 +643,7 @@ class Agent:
             "learning_store": self._learning_store,
             "context_assembly_policy": self._context_assembly_policy,
             "agent_id": self.identity.name,
+            "user_id": user_id,
             "org_id": org_id,
             "team_id": team_id,
             "project_id": project_id,
@@ -789,6 +792,7 @@ class Agent:
         self,
         result: Any,
         user_text: str,
+        user_id: str,
         org_id: str,
         team_id: str,
         trace: Any,
@@ -801,6 +805,7 @@ class Agent:
                 rca = await self._rca_extractor.extract_rca(user_text, result.tool_history)
                 if rca:
                     rca.agent_id = self.identity.name
+                    rca.user_id = user_id
                     rca.org_id = org_id
                     rca.team_id = team_id
                     await self._learning_store.store(rca)
@@ -811,6 +816,7 @@ class Agent:
             rca = await self._rca_extractor.extract_rca(user_text, result.tool_history)
             if rca:
                 rca.agent_id = self.identity.name
+                rca.user_id = user_id
                 # Scope exactly as the traced branch does. Omitting these left
                 # the RCA at its default `org_id=""` whenever tracing was off,
                 # so an analysis derived from one org's tool failures was
@@ -823,6 +829,7 @@ class Agent:
         self,
         result: Any,
         user_text: str,
+        user_id: str,
         org_id: str,
         team_id: str,
         trace: Any,
@@ -840,6 +847,7 @@ class Agent:
                 )
                 for learning in corrections + positives:
                     learning.agent_id = self.identity.name
+                    learning.user_id = user_id
                     learning.org_id = org_id
                     learning.team_id = team_id
                     await self._learning_store.store(learning)
@@ -855,6 +863,7 @@ class Agent:
             )
             for learning in corrections:
                 learning.agent_id = self.identity.name
+                learning.user_id = user_id
                 learning.org_id = org_id
                 learning.team_id = team_id
                 await self._learning_store.store(learning)
