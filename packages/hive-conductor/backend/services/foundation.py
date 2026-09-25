@@ -63,7 +63,7 @@ class Foundation:
         self._init_credentials(data_dir)
         self._init_state(settings, data_dir)
         self._init_privilege(settings, data_dir)
-        await self._init_reactor(settings, data_dir)
+        await self._init_reactor()
 
     def _init_vault(self, settings: Settings, data_dir: Path) -> None:
         vault_path = settings.conductor_vault_path or str(data_dir / "secrets.age")
@@ -177,14 +177,11 @@ class Foundation:
         except Exception as exc:
             logger.warning("Privilege unavailable (%s)", exc)
 
-    async def _init_reactor(self, settings: Settings, data_dir: Path) -> None:
+    async def _init_reactor(self) -> None:
         try:
             from maistro.reactor import Reactor
 
-            state_db = str(data_dir / "state.db") if self.state_available else None
-            self.reactor = Reactor(
-                state_db_path=state_db,
-            )
+            self.reactor = Reactor(state=self.state if self.state_available else None)
             await self.reactor.start()
             self.reactor_available = True
             logger.info("Reactor started")

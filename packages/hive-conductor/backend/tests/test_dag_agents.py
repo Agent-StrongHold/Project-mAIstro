@@ -273,6 +273,9 @@ def test_without_a_bridge_graph_nodes_are_unavailable(monkeypatch) -> None:
 
 @pytest.mark.ac("M1-E-1113/AC-3")
 def test_an_unavailable_engine_does_not_select_a_private_graph_store(monkeypatch) -> None:
+    # Supersedes ADR-082526-3ca6/AC-5's no-bridge fallback: #1113 retires the
+    # second execution universe, so an engine failure fails closed before any
+    # Graph work instead of silently resolving a private lifecycle.
     import services.dag_agents as dag_agents
     import services.engine as engine_module
 

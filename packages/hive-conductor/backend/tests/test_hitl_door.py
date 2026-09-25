@@ -1,8 +1,11 @@
 """The HITL door: pending human work can be seen and answered (#244).
 
-Driven over HTTP against the real durable store the app uses, not a mock: the
+Driven over HTTP against the store interface, not a mocked method: the
 issue's acceptance asks for the answer to be asserted end to end, and a mocked
 store would prove only that the route calls the method the test told it to.
+The production route is bound to the canonical graph store; these compatibility
+fixtures bind their legacy store explicitly because the suite boots without a
+Container.
 """
 
 from __future__ import annotations
@@ -18,6 +21,24 @@ from maistro.graph.definitions import Graph, Node
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+
+
+@pytest.fixture(autouse=True)
+def _bind_compatibility_store_to_explicit_hitl_test_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these legacy route fixtures isolated from the canonical spine.
+
+    The route resolves the graph store through ``services.dag_agents.get_run_store``,
+    which #1113 made refuse any process without the Container's canonical
+    projection. These tests seed a document-shaped in-memory store directly,
+    so bind it to that one seam explicitly rather than resurrecting a shipped
+    fallback store for them.
+    """
+    from services import dag_agents
+
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(dag_agents, "get_run_store", lambda: store)
 
 
 def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
@@ -808,7 +829,7 @@ async def test_a_stale_pause_entry_for_a_resumed_node_is_not_offered(seeded) -> 
     assert client.get("/v1/hitl/hitl-stale-pause/review").status_code == 404
 
 
-async def test_no_spine_hitl_surfaces_report_unavailable(admin_client) -> None:
+async def test_no_spine_hitl_surfaces_report_unavailable(admin_client, monkeypatch) -> None:
     """With no canonical spine, the HITL door reports the outage (#1113).
 
     The `seeded` fixture injects a durable store; this test deliberately does
@@ -818,6 +839,7 @@ async def test_no_spine_hitl_surfaces_report_unavailable(admin_client) -> None:
     must answer the documented 503 -- not a 500 from an unhandled refusal,
     and never a success minted by a private lifecycle.
     """
+    from services import dag_agents
     from services.workspace_authority import create_workspace
 
     # `/pending` filters by the caller's Workspaces before it reaches the
@@ -831,6 +853,16 @@ async def test_no_spine_hitl_surfaces_report_unavailable(admin_client) -> None:
         theme_id="default",
         voice_tone_override=None,
     )
+
+    # The module's autouse fixture binds a test store to the route seam for
+    # the legacy document-store fixtures; this test is about the opposite —
+    # the honest no-spine resolution. Re-bind the seam to the production
+    # refusal: without a Container `get_run_store` raises
+    # GraphExecutionUnavailableError, which the route maps to the 503 (#1113).
+    def _no_spine() -> Any:
+        raise dag_agents.GraphExecutionUnavailableError()
+
+    monkeypatch.setattr(dag_agents, "get_run_store", _no_spine)
 
     response = admin_client.get("/v1/hitl/pending")
     assert response.status_code == 503

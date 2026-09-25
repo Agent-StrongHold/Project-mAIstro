@@ -1441,8 +1441,9 @@ def test_manual_canonical_fire_refuses_each_non_run_outcome(
                     return SimpleNamespace(
                         already_fired=[datetime(2026, 8, 21, 12, tzinfo=UTC)],
                         run_ids=["not-created"],
+                        reconciled_run_id=None,
                     )
-                return SimpleNamespace(already_fired=[], run_ids=[])
+                return SimpleNamespace(already_fired=[], run_ids=[], reconciled_run_id=None)
 
         monkeypatch.setattr(runner, "_canonical_scope", scope)
         monkeypatch.setattr(runner, "_definition_for", definition)
@@ -1460,6 +1461,7 @@ def test_manual_canonical_fire_refuses_each_non_run_outcome(
                 schedule,
                 container=container,
                 admitter=admitter,
+                fire_id="fire-token",
             )
         assert failures == (
             ["template_not_found"]

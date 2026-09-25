@@ -18,7 +18,8 @@ not a preference: nothing wires a `DurableRunStore` outside this package.
 the pending work actually is. When that store converges onto the canonical
 spine (#44 / ADR-082826-d9f5), this module keeps working unchanged — it is
 written against the `DurableRunStore` interface, which that convergence
-preserves.
+preserves. The route refuses the standalone compatibility store rather than
+letting a human decision disappear on restart.
 """
 
 from __future__ import annotations

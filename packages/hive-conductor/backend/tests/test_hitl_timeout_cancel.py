@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -100,6 +101,39 @@ def seeded(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Seed
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-6")
+def test_hitl_endpoint_fails_closed_without_canonical_spine(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A degraded Conductor must not present ephemeral human work as durable."""
+    from services.workspace_authority import create_workspace
+
+    # `/pending` filters by the caller's Workspaces before it reaches the
+    # store; give admin one so the request reaches the outage instead of
+    # answering an empty list from an empty membership set.
+    asyncio.run(
+        create_workspace(
+            creator_user_id="admin",
+            name="No-spine HITL timeout-cancel",
+            persona_template_id="default",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+    )
+
+    from services import dag_agents
+
+    def _unavailable() -> Any:
+        raise dag_agents.GraphExecutionUnavailableError("canonical Graph execution is unavailable")
+
+    monkeypatch.setattr(dag_agents, "get_run_store", _unavailable)
+
+    response = admin_client.get("/v1/hitl/pending")
+
+    assert response.status_code == 503
+    assert "unavailable" in response.json()["detail"]
+
+
 async def test_cancel_endpoint_requests_canonical_settlement(seeded: _Seeded) -> None:
     client, store, seed = seeded
     await seed("hitl-api-cancel", deadline=datetime.now(UTC) + timedelta(hours=1))
