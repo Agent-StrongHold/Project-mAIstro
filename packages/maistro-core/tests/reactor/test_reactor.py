@@ -372,9 +372,42 @@ class TestStateSubmitIntegration:
             assert rows == [("test-event",)]
         finally:
             await reactor.stop()
-        # stop() closed the State it owned, so nothing is left writing.
-        with pytest.raises(RuntimeError, match="not open"):
-            reactor.state_submit(lambda conn: conn.execute("SELECT 1"))
+        # stop() released the State it owned, so nothing is left writing.
+        assert reactor.state_query("SELECT * FROM reactor_log") == []
+
+    @pytest.mark.asyncio()
+    async def test_deprecated_state_db_path_survives_restart(self, tmp_path: Path) -> None:
+        from maistro.reactor import Reactor
+
+        with pytest.warns(DeprecationWarning):
+            reactor = Reactor(state_db_path=str(tmp_path / "state.db"))
+        reactor.register_source("log-event", self._log_handler(reactor))
+        for name in ("first", "second"):
+            await reactor.start()
+            try:
+                await reactor.emit("log-event", {"name": name})
+                await asyncio.sleep(0.2)
+            finally:
+                await reactor.stop()
+        await reactor.start()
+        try:
+            rows = reactor.state_query("SELECT event_name FROM reactor_log ORDER BY rowid")
+        finally:
+            await reactor.stop()
+        assert rows == [("first",), ("second",)]
+
+    @pytest.mark.asyncio()
+    async def test_failed_migration_leaves_reactor_stopped(self, tmp_path: Path) -> None:
+        from maistro.reactor import Reactor
+
+        unopenable = tmp_path / "is-a-directory"
+        unopenable.mkdir()
+        with pytest.warns(DeprecationWarning):
+            reactor = Reactor(state_db_path=str(unopenable))
+        with pytest.raises(Exception):  # noqa: B017 — sqlite3's refusal type is incidental
+            await reactor.start()
+        assert reactor.is_running is False
+        assert reactor.state_query("SELECT 1") == []
 
 
 class TestHandlerTimeout:

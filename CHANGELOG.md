@@ -532,6 +532,11 @@ or placeholder-only section.
   `data_dir/state.db`, so the Reactor no longer opens a second raw SQLite
   writer or writes to a different file than the rest of the Conductor.
   `state_db_path=` is deprecated and refused alongside `state=`.
+  `state_submit` is now fire-and-forget like `State.submit` (a failing write
+  is logged by the writer, not raised into the handler, and is visible to
+  `state_query` once committed). Deployments that set a non-default
+  `CONDUCTOR_STATE_DB` previously left `reactor_log` rows in a separate
+  `data_dir/state.db`; those rows are not migrated.
 
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**

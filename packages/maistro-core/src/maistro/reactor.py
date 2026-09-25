@@ -49,14 +49,15 @@ class Reactor:
         self._alerts: list[str] = []
         self._cpu_samples: list[float] = []
         self._last_cpu_sample: tuple[float, float] = (0.0, 0.0)
-        self._state, self._owns_state = self._resolve_state(state, state_db_path)
+        self._state = state
+        self._owned_state_path = self._deprecated_state_path(state, state_db_path)
         self._intervals: dict[str, asyncio.Task[None]] = {}
         self._tick_count = 0
 
     @staticmethod
-    def _resolve_state(state: State | None, state_db_path: str | None) -> tuple[State | None, bool]:
+    def _deprecated_state_path(state: State | None, state_db_path: str | None) -> str | None:
         if state_db_path is None:
-            return state, False
+            return None
         if state is not None:
             raise ValueError(
                 "Reactor takes either state= or the deprecated state_db_path=, not both: "
@@ -67,7 +68,7 @@ class Reactor:
             DeprecationWarning,
             stacklevel=3,
         )
-        return State(db_path=state_db_path), True
+        return state_db_path
 
     @property
     def is_running(self) -> bool:
@@ -82,10 +83,17 @@ class Reactor:
     async def start(self) -> None:
         if self._running:
             return
+        if self._owned_state_path is not None:
+            # A closed State cannot reopen its writer, so each start owns a fresh one.
+            self._state = State(db_path=self._owned_state_path)
+        if self._state is not None:
+            try:
+                self._state.run_migration("reactor_log_001", _REACTOR_LOG_MIGRATION)
+            except Exception:
+                self._release_owned_state()
+                raise
         self._event_queue = asyncio.Queue(maxsize=self._max_queue_depth)
         self._running = True
-        if self._state is not None:
-            self._state.run_migration("reactor_log_001", _REACTOR_LOG_MIGRATION)
         self._last_cpu_sample = time.monotonic(), os.times().user
         self._loop_task = asyncio.create_task(self._loop())
 
@@ -96,8 +104,12 @@ class Reactor:
         await self._cancel_intervals()
         await self._drain_in_flight()
         await self._cancel_loop()
-        if self._owns_state and self._state is not None:
+        self._release_owned_state()
+
+    def _release_owned_state(self) -> None:
+        if self._owned_state_path is not None and self._state is not None:
             self._state.close()
+            self._state = None
 
     async def _cancel_intervals(self) -> None:
         for task in self._intervals.values():
