@@ -51,6 +51,24 @@ def test_run_registered_dag_unknown_id_raises_key_error() -> None:
         asyncio.run(run_registered_dag("no-such-dag", workspace_id="w1", project_id="p1"))
 
 
+def test_standalone_registered_human_work_is_refused() -> None:
+    registry = get_registry()
+    registry.register(
+        {
+            "id": "synth-human",
+            "name": "Synth Human",
+            "entry_node": "ask",
+            "nodes": [{"id": "ask", "kind": "human.ask_question", "config": {}}],
+            "edges": [],
+        }
+    )
+    try:
+        with pytest.raises(RuntimeError, match="canonical graph execution spine"):
+            asyncio.run(run_registered_dag("synth-human", workspace_id="w1", project_id="p1"))
+    finally:
+        registry.deregister("synth-human")
+
+
 def test_run_registered_dag_produces_provenanced_completed_run(synth_dag_id: str) -> None:
     graph, record = asyncio.run(
         run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id="u1")
@@ -230,6 +248,20 @@ def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
     assert resolver is dag_agents._fallback_node_resolver
     node = resolver("d", _DELEGATE_DAG)
     assert node._a2a_delegator is None
+
+
+def test_hitl_store_requires_the_canonical_graph_spine(monkeypatch) -> None:
+    """HITL must not expose the standalone process-local compatibility store."""
+    import services.dag_agents as dag_agents
+    import services.engine as engine_module
+
+    port = type("_Port", (), {"container": None})()
+    monkeypatch.setattr(
+        engine_module, "get_engine", lambda: type("_Engine", (), {"_agent_port": port})()
+    )
+
+    with pytest.raises(RuntimeError, match="canonical graph execution spine"):
+        dag_agents.get_canonical_run_store()
 
 
 @pytest.mark.ac("ADR-082526-3ca6/AC-5")

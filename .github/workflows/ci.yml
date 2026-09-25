@@ -29,8 +29,29 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  compliance:
+    name: Compliance registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # This job intentionally uses the system interpreter; provision the YAML
+      # parser it imports instead of relying on an unrelated workspace install.
+      - name: Install compliance checker dependencies
+        run: python -m pip install --disable-pip-version-check "PyYAML>=6.0,<7"
+      - name: Validate control registry and claims
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/check-compliance.py
+
   # #383: the PR template used to tell every author to target `main`, which
   # contradicted CONTRIBUTING, ADR-095 and the actual branch flow — and the
   # base decides which checks can even report (base-coupled gates run on
@@ -777,7 +798,7 @@ jobs:
       # one Dockerfile's cache cannot evict another's, and security.yml's
       # `containers` job uses the SAME scope names so a main-targeted PR can
       # warm-start from whatever a develop-targeted run already built.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # `docker/build-push-action` exposes GitHub's runtime cache-auth
       # variables (ACTIONS_RUNTIME_TOKEN, ACTIONS_CACHE_URL) internally
