@@ -456,3 +456,33 @@ into auto-291; this round's driver checks all green, re-derived independently):
 - Closure-keyword audit: PR #1465 body says "Refs #291" only (live refresh);
   no fixes/closes/resolves in any of the 25 branch-only commits
   (origin/develop..auto-291). No issue-closure actions taken.
+
+Repair-round re-anchoring at final head fca357192 (prior verify evidence at
+80e615561 was rejected as "worktree changed" because this docs-only commit
+landed mid-verify; this round re-derives the evidence at the exact final head):
+
+- Rejected-evidence delta proven harmless: `80e615561..fca357192` touches ONLY
+  this inventory note (50 insertions, no source/test/workflow/Dockerfile
+  change), so the deep image verification recorded above at 80e615561 carries
+  over; everything below was nevertheless re-executed at fca357192.
+- Gates re-executed at fca357192: ruff check clean; ruff format --check 2552
+  files; engine identity suite 69 passed; driver files extra_guard 6 +
+  conductor test_api/test_identity_health/test_setup_guard 55 passed;
+  check-suite-inventory ok for hive-conductor/backend/tests (2733) and
+  maistro-core/tests (10931); vulture per-identity ledger gate rc=0
+  (1414 reviewed identities -> 1414 findings, unclassified 0, never_allowlist
+  0) — no ledger amendment required.
+- Image provenance re-proven at this head: identity_health.py, health.py,
+  setup.py, backend/requirements.txt and the installed
+  maistro/identity/__init__.py inside hive-conductor:l291-verify2 md5-match
+  this worktree.
+- Verbatim security.yml in-image verification re-executed against both
+  l291-verify2 profiles at this head: default → `identity=operational
+  python=3.13.15 bip-utils=2.12.1 coincurve=21.0.0 pynacl=1.6.2` (msgpack/
+  setuptools floors held); observability → `observability=importable
+  identity=operational python=3.13.15`.
+- Live fresh-boot contract re-observed on a fresh l291-verify2 container at
+  this head: `/health` → `identity: {status: misconfigured, reason:
+  setup_incomplete}`, `identity_required: false` — the documented pre-setup
+  behavior (distinct reason; not a failed optional capability until setup
+  selects crypto identity).
