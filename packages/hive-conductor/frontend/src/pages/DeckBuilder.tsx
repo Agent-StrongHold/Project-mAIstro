@@ -150,7 +150,7 @@ export default function DeckBuilder() {
   }, [active, updateSlide]);
 
   const handlePreviewBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
-    const safeHtml = sanitizeDeckMarkup(event.currentTarget.innerHTML);
+    const safeHtml = sanitizeVisualArtifactMarkup(event.currentTarget.innerHTML);
     // Do not leave an edited DOM value live in the browser between blur and
     // React's state commit. The same boundary protects both the DOM and state.
     event.currentTarget.innerHTML = safeHtml;
@@ -261,15 +261,9 @@ ${slides.map(s => `<div class="slide">${sanitizeVisualArtifactMarkup(s.html)}</d
             onPaste={handlePreviewPaste}
             onDragOver={e => e.preventDefault()}
             onDrop={handlePreviewDrop}
-<<<<<<< HEAD
-            onBlur={e => updateSlide(active, e.currentTarget.innerHTML)}
-            markup={slides[active]?.html || ""}
-            style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "0.7rem" }} />
-=======
             onBlur={handlePreviewBlur}
-            dangerouslySetInnerHTML={{ __html: sanitizeDeckMarkup(slides[active]?.html || "") }}
+            markup={slides[active]?.html || ""}
             style={{ aspectRatio: "16/9", background: "#0a0914", border: `1px solid ${C.border}`, borderRadius: 12, padding: 0, overflow: "hidden", outline: "none", fontSize: "var(--text-floor)" }} />
->>>>>>> 60862b6c5eb199d5830fbd04880380fe45aa08db
           <textarea value={slides[active]?.notes || ""} onChange={e => setSlides(s => s.map((sl, i) => i === active ? { ...sl, notes: e.target.value } : sl))}
             placeholder="Speaker notes..."
             style={{ width: "100%", marginTop: 8, minHeight: 60, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px", color: C.muted, fontSize: "var(--text-floor)", resize: "vertical", outline: "none", fontFamily: "inherit" }} />

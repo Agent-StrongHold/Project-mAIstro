@@ -221,7 +221,11 @@ const STYLE_PROPERTIES = new Set([
 ]);
 
 const NETWORK_OR_CODE_CSS = /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()/i;
-const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|javascript\s*:|vbscript\s*:|data\s*:|https?\s*:|\/\/)/i;
+// Every scheme that can name a fetchable/executable resource, not just the
+// HTTP pair: SVG paint/transform attributes are the only non-style values
+// this check guards, and Deck/Design content never legitimately carries any
+// of them (defense in depth over the absent href/src allowlist).
+const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|(?:javascript|vbscript|data|blob|file|filesystem|ftp|https?|ws|wss|about|mailto|tel|cid)\s*:|\/\/)/i;
 
 // Keep this list in lockstep with Warden's VISUAL_ARTIFACT_BLOCK_REASONS.
 // Unsupported inert markup is removed, but it is not a security block.
@@ -245,6 +249,15 @@ export type VisualArtifactTrustRecommendation = "upgrade" | "review";
 type SanitizationContext = { reasons: Set<VisualArtifactBlockReason> };
 
 function sanitizeStyle(styleText: string, context: SanitizationContext): string {
+  // CSS escapes and comments can hide a blocked function from the CSSOM
+  // normalization below (a browser parser reads `\\75rl(` as `url(`), and no
+  // supported template needs either. Fail closed on the whole declaration
+  // block before parsing rather than trying to out-parse the CSS grammar.
+  if (/\\|\/\*/.test(styleText)) {
+    context.reasons.add("css-network-or-code");
+    return "";
+  }
+
   const source = document.createElement("div");
   source.setAttribute("style", styleText);
   const target = document.createElement("div");

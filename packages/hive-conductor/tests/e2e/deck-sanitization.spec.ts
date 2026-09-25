@@ -358,11 +358,8 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     '<svg><g/onload=window.__deckPwned=10//<p>safe</p></svg>',
     '<math><mtext><img src=x onerror=window.__deckPwned=11></mtext></math><strong>safe</strong>',
     '<a href="jav&#x61;script:window.__deckPwned=12">bad</a><em>safe</em>',
-<<<<<<< HEAD
     '<svg><use href="http://attacker.invalid/icon#x"></use><image href="data:text/html,<script>alert(1)</script>"></image><circle cx="5" cy="5" r="4"></circle></svg>',
-=======
     '<svg><use href="http://attacker.invalid/icon#x"></use><circle cx="5" cy="5" r="4" fill="blob:http://attacker.invalid/id" stroke="ftp://attacker.invalid/line"></circle></svg>',
->>>>>>> 60862b6c5eb199d5830fbd04880380fe45aa08db
     '<div style="background:url(\\6a avascript:alert(1));color:#fff">safe</div>',
     // Leading-escape spelling of the CSS url() primitive: a CSS parser reads
     // `\\75rl(` as `url(` even though the literal token never appears (#817).
