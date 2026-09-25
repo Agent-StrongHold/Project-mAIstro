@@ -13,6 +13,55 @@ collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
 API tests).
 
+## Executed evidence (verification round 10, independent revalidation at merged head 1dfccece)
+
+Round 9's agent run died on the wall-clock deadline before reporting; this
+round re-derived every acceptance criterion at the new head — the merge of
+develop base `55c5ad892` into `auto-769` (`1dfccece8`, clean tree) — without
+trusting any prior round's claims:
+
+- Round-0 driver findings re-checked in source, all still stale at this head:
+  the note front matter parses (`check-suite-inventory.py` exit 0, 13 suites);
+  the editor entry is `disabled={!canOpenEditor}` (DesignStudio.tsx:245,
+  brief-gated, Availability card reports editing/presentation/export
+  available); `App.tsx` routes `/decks` under the containment-lifted comment;
+  the keyboard spec's three axe scans (`:150` scoped to `main`, `:166`/`:177`
+  full-page inside the fixed-page editor and the Deck presentation dialog)
+  carry no `disableRules`.
+- Executed this round: `uv run ruff check .` clean; `npm run build` (tsc +
+  vite) clean; `uv run pytest packages/hive-conductor/backend/tests -q -k
+  design` → **82 passed** (5.6s); `scripts/check-suite-inventory.py` → exit 0
+  (13 suites); `scripts/check-frontend-api-routes.py` → exit 0 (217 routes
+  across 61 call-site files).
+- Live e2e, executed this round: `uv run --no-project uvicorn main:app` from
+  `packages/hive-conductor/backend` serving the freshly rebuilt
+  `frontend/dist` on 127.0.0.1:8102 (`GET /v1/setup/status` →
+  `setup_complete: true`; `GET /cli/canvas` → 200).
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts` →
+  **7/7 passed (11.7s)**; `deck-sanitization.spec.ts` → **7/7 passed (3.1s)**.
+  Server stopped after the run; tree left clean.
+- Local-staging correction for `deck-sanitization.spec.ts`: pointing
+  `E2E_SRC_ROOT` at the real worktree fails with a blank harness page because
+  `frontend/node_modules` (react 19.2.6) shadows the standalone copy
+  (react 19.2.0) for DeckBuilder's own imports while the temp entry resolves
+  react via `E2E_NODE_PATHS` — two React copies, "Invalid hook call". This is
+  a staging mistake, not a product or spec defect: CI's
+  `tests/Dockerfile.playwright` copies the sources next to a single
+  `node_modules`, and the round's green run used exactly that shape (staging
+  dir with the Dockerfile's copy set + the e2e standalone `node_modules`
+  symlinked as its `node_modules`, `E2E_SRC_ROOT`/`E2E_NODE_PATHS` pointing
+  there). Use the Dockerfile-shaped staging dir, never the worktree, as
+  `E2E_SRC_ROOT`.
+- The compose-build failure in the round-0 findings remains the documented
+  upstream coincurve cp314 gap (`packages/hive-conductor/Dockerfile:58-63`,
+  SPEC-072726-3439), not a #769 regression; this round's e2e evidence was
+  produced by running the stack directly.
+- Lane boundary and closure hygiene: `git diff --name-only
+  55c5ad892..1dfccece8` touches only the 10 lane files (Design Studio/Deck
+  editors, e2e specs, e2e package files, this note); `AppShell.tsx` and global
+  shell CSS are untouched, and neither the PR body ("Refs #769") nor any lane
+  commit message carries fixes/closes/resolves keywords.
+
 ## Executed evidence (repair round 9, independent revalidation at 9841ae58f)
 
 Re-ran the whole battery at the current head (`9841ae58f`, clean tree, no tree
