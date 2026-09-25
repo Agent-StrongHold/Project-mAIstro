@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +36
+  packages/maistro-turing/tests: +4
 ---
 # #1158 Warden normalization and bounded context
 
@@ -257,3 +258,41 @@ test body, so the second `install_log_redaction` wraps those two handlers;
 direct execution of the production function is idempotent (second call
 returns 0). Fixture-local interaction with pytest's logging plugin, not a
 #1158 regression; the file is untouched since the initial release.
+
+## Repair pass 7 (2026-09-25): Turing chat session carries the bounded context
+
+The prior pass left the Turing-boundary piece of #1158 uncommitted (the
+worker run died before committing). Salvaged and completed at head
+`31f679ab`: `TuringChatSession.handle_message` now scans each user turn with
+`context_from_messages(self._history)` — the bounded ordered prior turns
+(user and assistant alike, labelled untrusted) — instead of one string at a
+time, and `TuringSecurity.scan_user_input`/`TuringSecurityBridge` gain the
+optional `context` kwarg, forwarded to the canonical Warden only when
+non-empty so pre-#1158 warden seams keep working on first turns.
+
+New regressions (+4, recorded in the delta above):
+
+- `test_runtime.py::…::test_first_turn_forwards_no_analysis_context` — a
+  fresh session forwards no context (the seam does not invent history).
+- `test_runtime.py::…::test_prior_history_forwarded_as_untrusted_context_on_next_turn`
+  — the second turn's scan carries the prior user turn and the assistant
+  reply as untrusted `WardenContext` items with their conversation roles as
+  boundaries.
+- `test_runtime.py::…::test_split_override_across_turns_is_refused_at_completing_turn`
+  — end-to-end with the real `TuringSecurityBridge` and the real `Warden`:
+  a fragment carried by the (untrusted) assistant reply and a completing
+  user turn that scans clean on its own reconstruct
+  `ignore all previous instructions` across the turn join; the completing
+  turn is refused before the provider is called, never enters the session
+  history, and the audit hook records the reject-family flag, proving the
+  refusal came from the aggregation rather than the turn's own text.
+- `test_bridge.py::…::test_scan_user_input_forwards_context_to_warden` —
+  the bridge forwards a caller-supplied context to the Warden unchanged and
+  keeps an absent context absent.
+
+Executed probe at this head (production `Warden`): plain, spaced-letter,
+full spaced-letter, leetspeak, composed spaced-leet, zero-width, Cyrillic
+homoglyph, dot-separated, and hyphen-joined overrides all `blocked=True`;
+cross-turn direct and mid-word joins blocked at the completing turn;
+trusted-labelled override context does not contaminate a benign scan;
+200×10KB context collapses to 2 items / 16384 bytes.
