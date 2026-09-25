@@ -57,9 +57,9 @@ async def _owned_workspace() -> Any:
     )
 
 
-async def _long_running_canonical_run() -> tuple[
-    Any, str, asyncio.Task[Any], asyncio.Event, list[str]
-]:
+async def _long_running_canonical_run(
+    *, workspace_id: str = "ws-cancel"
+) -> tuple[Any, str, asyncio.Task[Any], asyncio.Event, list[str]]:
     """A canonical Run whose single Attempt's provider is parked mid-flight.
 
     The provider sleeps on `release` — an event nothing in the product ever
@@ -73,15 +73,15 @@ async def _long_running_canonical_run() -> tuple[
     from maistro.runtime import PythonExecutionRuntime
 
     project_store = InMemoryProjectScopeStore()
-    root = await project_store.create_root("ws-cancel")
+    root = await project_store.create_root(workspace_id)
     project = await project_store.create(
-        workspace_id="ws-cancel",
+        workspace_id=workspace_id,
         parent_project_id=root.project_id,
         name="Long-running DAG",
     )
     store = InMemoryRunStore(project_store=project_store)
     graph = Graph(
-        workspace_id="ws-cancel",
+        workspace_id=workspace_id,
         project_id=project.project_id,
         name="Long-running DAG",
         nodes=[Node(node_id="node-1", node_type="agent")],
@@ -139,7 +139,9 @@ async def test_cancel_route_terminates_a_long_running_canonical_run(
     from maistro.runs import AttemptStatus, RunStatus
 
     view = await _owned_workspace()
-    store, run_id, worker, release, provider_exits = await _long_running_canonical_run()
+    store, run_id, worker, release, provider_exits = await _long_running_canonical_run(
+        workspace_id=view.id
+    )
     monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=store))
 
     await get_dag_run_store().start_run(

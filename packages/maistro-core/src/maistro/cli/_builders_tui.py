@@ -14,6 +14,8 @@ from __future__ import annotations
 
 # mypy: disable-error-code="misc,untyped-decorator,unused-ignore"
 import subprocess
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +34,11 @@ from textual.widgets import (  # type: ignore[import-not-found]
     Static,
 )
 
+from maistro.builders.session_composition import (
+    SessionSpine,
+    build_session_pipeline,
+    open_session_spine,
+)
 from maistro.cli._builders_sessions import (
     BuilderSessionEntry,
     get_session,
@@ -117,6 +124,25 @@ class CodingScreen(Vertical):
         self.session_id = session_id
         self.repo_url = repo_url
         self.work_dir = work_dir
+        self._turn_number = 0
+
+    @asynccontextmanager
+    async def _open_turn_spine(self) -> AsyncIterator[SessionSpine]:
+        """Yield the durable spine for one turn, closing its connection after.
+
+        A turn is the unit of work that owns the connection: the pipeline
+        completes (or fails) within the turn, SQLite durability makes the
+        canonical Run evidence survive the close, and there is no long-lived
+        resource whose cleanup would depend on a lifecycle hook nothing else
+        can call.
+        """
+        import aiosqlite
+
+        workspace_id = f"builders-{self.session_id}"
+        db_path = Path.home() / ".maistro" / "builders" / "runs.sqlite3"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(db_path) as connection:
+            yield await open_session_spine(connection, workspace_id=workspace_id)
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
@@ -165,14 +191,22 @@ class CodingScreen(Vertical):
             session = BuilderSession(sandbox=LocalWorktreeSandbox(self.work_dir))
             runner = TurnRunner(session=session, config=AgentLoopConfig())
             runner.set_llm(ResponsesAPICallable())  # type: ignore[arg-type]
-
-            messages = [
-                {"role": "system", "content": "You are a coding assistant."},
-                {"role": "user", "content": text},
-            ]
-            result = await runner.execute_turn(messages=messages)
-
-            chat.write(f"\n[bold green]agent:[/bold green] {result.get('content', 'done')}")
+            self._turn_number += 1
+            async with self._open_turn_spine() as spine:
+                pipeline = build_session_pipeline(runner, spine=spine)
+                product_run = await pipeline.execute(
+                    issue_number=self._turn_number,
+                    title=text,
+                    repo=str(self.work_dir),
+                    skip_decompose=False,
+                )
+            if product_run.status != "completed":
+                chat.write(f"[red]Builder run failed: {product_run.failed_stage_error}[/red]")
+            else:
+                chat.write(
+                    f"\n[bold green]agent:[/bold green] "
+                    f"{product_run.context.get('chat_turn', 'done')}"
+                )
         except ImportError:
             chat.write("[yellow]Agent not available (maistro-bootstrap not installed).[/yellow]")
             chat.write(f"[dim]You said: {text}[/dim]")

@@ -1177,12 +1177,19 @@ async def _canonical_manual_fixture(*, template: bool = True) -> tuple[Any, Any]
     run_store = InMemoryRunStore(project_store=projects)
     template_store = InMemoryGraphTemplateStore()
     schedule_store = InMemoryScheduleStore()
+
+    async def _consume_admitted_runs() -> int:
+        return 0
+
     container = SimpleNamespace(
         run_store=run_store,
         template_store=template_store,
         schedule_store=schedule_store,
         schedule_admitter=ScheduleRunAdmitter(run_store, template_store, schedule_store),
         project_scope_store=projects,
+        # Manual admission depends on the scheduler-owned consumer being
+        # configured, even though this fixture asserts admission only.
+        execute_admitted_runs=_consume_admitted_runs,
     )
     if template:
         await container.template_store.put(

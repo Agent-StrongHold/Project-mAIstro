@@ -469,6 +469,15 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
+      # M1 closeout must execute every named producer/observer scenario. Keep
+      # this invocation separate so a normal parity development blocker cannot
+      # silently become green closeout evidence (#446/#459).
+      - name: M1 strict cross-product parity closeout
+        run: uv run pytest tests/cross_product_parity -q
+        env:
+          M1_STRICT_CLOSEOUT: "1"
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
       - run: uv run pytest packages/maistro-rsi/tests packages/maistro-evolve/tests -v --tb=short
         env:
           REQUIRE_AUTH: "false"

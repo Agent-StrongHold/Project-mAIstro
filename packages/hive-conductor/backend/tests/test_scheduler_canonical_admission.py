@@ -317,6 +317,42 @@ def test_scheduler_tick_skips_missing_or_empty_consumer(
     asyncio.run(scenario())
 
 
+def test_scheduler_refuses_admission_when_container_lacks_consumer_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No schedule producer may create work a half-wired process cannot consume.
+
+    Regression for the previous late check: ``run_once`` first admitted this
+    due row and only then noticed that the configured Container had no
+    consumer, leaving a persisted QUEUED Run.  Manual fire is the same
+    producer boundary and must refuse before it changes either canonical or
+    product-projection state too.
+    """
+    from services.scheduler import ScheduleAdmissionUnavailable, _ScheduleRunner, fire_now
+
+    async def scenario() -> None:
+        container, row, _root = await _fixture()
+        _install_row(row)
+        monkeypatch.setattr(
+            _ScheduleRunner, "_canonical_container", staticmethod(lambda: container)
+        )
+        before = row.last_run
+        try:
+            with pytest.raises(ScheduleAdmissionUnavailable, match="execute_admitted_runs"):
+                await _ScheduleRunner().run_once(now=datetime(2026, 8, 21, 12, 5, tzinfo=UTC))
+            with pytest.raises(ScheduleAdmissionUnavailable, match="execute_admitted_runs"):
+                await fire_now("s-1")
+
+            assert len(container.run_store._runs) == 0  # type: ignore[attr-defined]
+            assert await container.schedule_store.get("s-1") is None
+            assert row.last_run_id is None
+            assert row.last_run == before
+        finally:
+            _remove_row(row)
+
+    asyncio.run(scenario())
+
+
 def test_persisted_template_survives_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.scheduler import _ScheduleRunner
 

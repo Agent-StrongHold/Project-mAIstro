@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +9
+  tests/: +10
 ---
 
 # #459 cross-product parity harness
@@ -10,9 +10,9 @@ Base recovered from zero diff and fast-forwarded to `develop@93401f3485ebb815ded
 
 ## Scope
 
-This branch owns the cross-product parity **test harness only**. It does not implement missing product convergence and does not close #459.
+This branch owns the cross-product parity **test harness and the #446 repair seams**. It does not close #459.
 
-The diff is limited to `tests/cross_product_parity/**` plus this #459-specific evidence note. No Builders, Evolve, scheduler, Canvas/Turing, Conductor product implementation, canonical Run/Graph store, migration, workflow, quality gate, or ontology implementation is changed.
+The repair is limited to canonical inspection authorization, the BuilderPipeline canonical composition, public scheduler/Evolve invocation entry points, the Hive engine chat composition, and their parity evidence. It does not change the canonical Run/Graph store, migration, workflow, quality gate, or ontology.
 
 ## Ownership audit
 
@@ -32,7 +32,11 @@ Relevant active dependencies observed during the audit:
 
 A branch discovered from CI, `chatgpt/issue-736-canonical-dag-run-route`, was also audited. Issue #736 and its closed draft PR #743 document the shipped DAG Run-button convergence attempt, but that lane stopped at the missing authorized Workspace/Project selection seam and carried no production route change. It is therefore a dependency-history signal, not a competing #459 implementation owner.
 
-The current `GET /v1/dag-runs/{run_id}` route still resolves `services.dag_run_store.get_dag_run_store`, so the shared Conductor inspection plane required for scenarios 1-3 is genuinely unavailable on this base. The harness records that as a source-level dependency on #65 rather than constructing a test-only substitute.
+The repair for #446 wires the DAG-run route through the inspection service rather than importing
+`services.dag_run_store` directly. When the Engine has a canonical Run store, inspection
+lists and resolves canonical Runs first; the projection remains an event/detail receipt and
+standalone compatibility path. Control continues to dispatch through the canonical Run
+service, so projection terminal state cannot replace canonical lifecycle truth.
 
 ## Harness architecture
 
@@ -48,21 +52,33 @@ No `skip`, `importorskip`, expected-failure marker, or other test suppression is
 
 ## Collected parity contracts
 
-The named suite currently contributes nine integration tests:
+The named suite currently contributes eleven integration tests:
 
 1. The supported SQLite execution spine persists the identical canonical Run, Graph, Workspace, Project and admission provenance across connection close/reopen.
 2. An identical cross-product identity projection is accepted.
 3. A deliberately introduced second Run ID mapping and a product-private terminal state both fail the parity contract.
-4. Builders -> Conductor scenario 1 asserts its exact active dependencies; when both public seams are present, the same test activates rather than using a substitute runtime.
-5. Scheduler -> shared inspection scenario 2 follows the same dependency contract.
-6. Evolve -> shared inspection scenario 3 follows the same dependency contract.
-7. Scenario 4 consumes the #458 executable identity ontology once it lands.
-8. Scenario 6 consumes #463's independent golden fixture/matcher once it lands.
-9. A harness-integrity test rejects test-suppression escape hatches in this suite.
+4. Builders -> Conductor scenario 1 runs the shipped BuilderPipeline canonical composition rather than constructing its executor directly.
+5. Scheduler -> shared inspection scenario 2 runs the live cadence entry point and observes through Conductor inspection.
+6. Evolve -> shared inspection scenario 3 runs the public EvolutionService cycle and observes through Conductor inspection.
+7. The Hive chat scenario runs the shipped engine chat door
+   (`EngineService.route_request` -> `MaistroCoreBridge` -> `Container.route_request`)
+   over the durable SQLite spine: one ordinary conversation-only turn admits a
+   canonical Run with `chat` admission provenance and session correlation,
+   executes exactly one NodeRun/Attempt, resolves its agent from the boot-
+   materialized workspace roster (`agents/` shipped manifests, fail-closed), and
+   the Conductor inspection seam resolves the same Run through the canonical
+   store.
+8. Scenario 4 consumes the #458 executable identity ontology once it lands.
+9. Scenario 6 consumes #463's independent golden fixture/matcher once it lands.
+10. Strict closeout rejects blocker-only producer passes.
+11. A harness-integrity test rejects test-suppression escape hatches in this suite.
 
 ## Acceptance status
 
-This commit is scaffold/evidence, not completion evidence for #459.
+The original #459 commit was scaffold/evidence, not completion evidence. The #446 repair
+adds executable Builders, scheduler, and Evolve producer scenarios over durable canonical
+Run/NodeRun/Attempt state and registers a strict CI invocation. The remaining statements
+below describe the original scaffold's independent guarantees, not a current blocker.
 
 Already proven independently by this branch:
 
@@ -72,12 +88,16 @@ Already proven independently by this branch:
 - unavailable product scenarios are explicitly tied to named source-level dependency evidence without skips/suppressions;
 - #458 and #463 are consumed as external authorities rather than recreated.
 
-Still required before #459 can close:
-
-- execute actual Builders-created canonical work and observe the same canonical IDs through landed Conductor inspection;
-- fire an actual schedule and observe its canonical Run through that same inspection plane;
-- execute actual Evolve work and observe its canonical Run through that same inspection plane;
-- exercise all applicable Workspace/Project/Graph/Run/NodeRun/Attempt/Event/Invocation/artifact/provenance identities exposed by those real product flows;
-- feed real converged product observations, not only oracle-wiring examples, through the #463 matcher.
-
-Until those dependencies land and the product scenarios execute, #459 must remain open.
+The strict closeout suite now executes the four producer scenarios — Builders,
+scheduler, Evolve, and Hive ordinary conversation chat — against the canonical
+spine and fails closed in CI when any scenario cannot run. Each producer uses a
+shipped composition entry point (Builders session pipeline, live scheduler
+cadence, EvolutionService cycle, the Hive engine chat door with its boot-
+materialized workspace roster) and the Conductor inspection seam where the
+product exposes one. The Hive chat scenario has no dependency gate: it always
+executes, so the strict-closeout CI step cannot pass while Hive's ordinary chat
+is off the canonical spine. Broader identity coverage and #459's own closeout
+acceptance remain governed by #459 and its downstream dependencies; the four
+executed producer scenarios are this branch's contribution, and the gap between
+them and #459's full scenario set stays visible as unexecuted #459 work rather
+than as a green strict-closeout step.

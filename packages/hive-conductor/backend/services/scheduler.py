@@ -39,7 +39,7 @@ def start_scheduler() -> None:
     global _runner
     if _runner is not None:
         return
-    _runner = _ScheduleRunner()
+    _runner = ScheduleRunner()
     _runner.task = asyncio.ensure_future(_runner.run())
 
 
@@ -55,7 +55,7 @@ class ScheduleNotFireable(Exception):
 
 
 class ScheduleAdmissionUnavailable(RuntimeError):
-    """A configured Container cannot admit schedule fires.
+    """A configured Container cannot admit -- or consume -- schedule fires.
 
     This is a configuration failure, not a schedule property: the core bridge
     is present but a collaborator it owes the scheduler (run, template, or
@@ -63,6 +63,12 @@ class ScheduleAdmissionUnavailable(RuntimeError):
     degrade to the compatibility path, because firing through the in-process
     registry while a Container exists would make the same persisted schedule
     reachable through two execution authorities.
+
+    The consumer seam fails the same way. A configured Container without
+    ``execute_admitted_runs`` admits Runs no configured process ever executes
+    -- the exact "admitted work nobody executes" state #251 exists to remove --
+    so the tick raises instead of swallowing the missing-method failure behind
+    a warning while admitted Runs sit QUEUED forever.
     """
 
 
@@ -84,8 +90,16 @@ async def fire_now(sid: str) -> str:
     if schedule is None:
         raise ScheduleNotFireable(f"schedule {sid} does not exist")
 
-    runner = _runner or _ScheduleRunner()
+    runner = _runner or ScheduleRunner()
     container = runner._canonical_container()
+    # Manual admission is still a producer of canonical work.  Refuse before
+    # it mutates the cursor or creates a Run when this process has no consumer
+    # that could execute the work on its configured cadence.
+    if container is not None and runner._canonical_consumer(container) is None:
+        raise ScheduleAdmissionUnavailable(
+            "configured Container is missing the canonical consumer seam "
+            "(execute_admitted_runs); admitted schedule Runs would never execute"
+        )
     admitter = runner._canonical_admitter(container)
     if admitter is not None:
         return await runner._fire_manual_canonical(
@@ -134,7 +148,7 @@ async def fire_now(sid: str) -> str:
     return run_id
 
 
-class _ScheduleRunner:
+class ScheduleRunner:
     def __init__(self) -> None:
         self._running = True
         self._last_check: datetime | None = None
@@ -178,31 +192,50 @@ class _ScheduleRunner:
         registry = get_engine().capabilities
         await run_self_repair_once(registry)
 
-    async def _tick(self) -> None:
+    async def run_once(self, *, now: datetime | None = None) -> None:
+        """Run one scheduler cadence through the configured production seam.
+
+        The background loop and deterministic operator/test invocations share
+        this entry point; neither needs to call the private per-row adapter.
+        """
         import stores
 
-        now = datetime.now(UTC)
+        effective_now = now or datetime.now(UTC)
+        container = self._canonical_container()
+        # This must happen *before* evaluating any schedule.  Admission writes
+        # a QUEUED Run in the same transaction as its occurrence claim, so
+        # checking after the loop would already have stranded work if the
+        # configured process lacks the only consumer able to execute it.
+        consumer = self._canonical_consumer(container)
+        if container is not None and consumer is None:
+            raise ScheduleAdmissionUnavailable(
+                "configured Container is missing the canonical consumer seam "
+                "(execute_admitted_runs); admitted schedule Runs would never execute"
+            )
+
         for sid, schedule in list(stores.schedules.items()):
             if not getattr(schedule, "enabled", False):
                 continue
             try:
-                await self._evaluate_schedule(sid, schedule, now=now)
+                await self._evaluate_schedule(sid, schedule, now=effective_now)
             except Exception as exc:
                 logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
 
         # Admission is the submission for schedule work. The same configured
         # process owns the bounded canonical consumer tick, so a Run admitted
         # above cannot remain QUEUED merely because no task receipt exists.
-        container = self._canonical_container()
-        if container is not None:
+        if consumer is not None:
             try:
-                executed = await container.execute_admitted_runs()
+                executed = await consumer()
                 if executed:
                     logger.info("Consumed %d admitted canonical Run(s)", executed)
             except Exception as exc:
                 logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
-        self._last_check = now
+        self._last_check = effective_now
+
+    async def _tick(self) -> None:
+        await self.run_once()
 
     def _as_definition(self, sid: str, schedule: Any) -> Schedule | None:
         """Project the live ``/v1/schedules`` row onto the canonical definition.
@@ -245,8 +278,14 @@ class _ScheduleRunner:
     @staticmethod
     def _canonical_store() -> Any:
         """The Container's ScheduleStore, or None when there is no bridge."""
-        container = _ScheduleRunner._canonical_container()
+        container = ScheduleRunner._canonical_container()
         return getattr(container, "schedule_store", None) if container is not None else None
+
+    @staticmethod
+    def _canonical_consumer(container: Any) -> Any:
+        """Return the configured canonical consumer only when it is callable."""
+        consumer = getattr(container, "execute_admitted_runs", None) if container else None
+        return consumer if callable(consumer) else None
 
     @staticmethod
     def _canonical_admitter(container: Any) -> ScheduleRunAdmitter | None:
@@ -772,3 +811,17 @@ class _ScheduleRunner:
             },
         )
         return str(record.run.run_id)
+
+
+# Preserve the historical private import while exposing the shipped scheduler
+# composition for direct cadence invocations.
+_ScheduleRunner = ScheduleRunner
+
+__all__ = [
+    "ScheduleAdmissionUnavailable",
+    "ScheduleNotFireable",
+    "ScheduleRunner",
+    "fire_now",
+    "start_scheduler",
+    "stop_scheduler",
+]

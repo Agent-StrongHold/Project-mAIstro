@@ -620,6 +620,46 @@ def test_chat_workflow_tool_opens_the_projection_with_resolved_scope(
 # ── authorization tracks the canonical grant ──────────────────────────
 
 
+async def test_projection_scope_cannot_authorize_a_foreign_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical Run scope wins when a stale projection carries caller scope."""
+    import services.engine as engine_mod
+    from services import dag_run_inspection as inspection
+
+    from maistro.graph.definitions import Graph, Node
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    foreign_project = await projects.create_root("foreign-workspace")
+    runs = InMemoryRunStore(project_store=projects)
+    run = await runs.create_run(
+        Graph(
+            graph_id="foreign-graph",
+            workspace_id="foreign-workspace",
+            project_id=foreign_project.project_id,
+            name="Foreign graph",
+            nodes=[Node(node_id="only", node_type="probe", name="Only")],
+        )
+    )
+    await _seed_run_async(run.run_id, workspace_id="caller-workspace")
+
+    monkeypatch.setattr(
+        engine_mod,
+        "_singleton",
+        SimpleNamespace(run_store=runs),
+    )
+
+    async def _caller_views(_user_id: str) -> list[SimpleNamespace]:
+        return [SimpleNamespace(id="caller-workspace")]
+
+    monkeypatch.setattr(inspection, "list_views_for_user", _caller_views)
+    assert await inspection.can_inspect_run(_AUTHED_USER_ID, run.run_id) is False
+    assert await inspection.visible_run_detail(_AUTHED_USER_ID, run.run_id) is None
+    assert await inspection.visible_run_ids(_AUTHED_USER_ID, [run.run_id]) == set()
+
+
 def test_revoking_workspace_membership_revokes_run_visibility(
     authed_client: Any, admin_client: Any
 ) -> None:
