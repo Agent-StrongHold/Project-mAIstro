@@ -43,12 +43,42 @@ class _FakeLearningStore:
     promoted_calls: list[dict[str, Any]] = field(default_factory=list)
     relevant_calls: list[dict[str, Any]] = field(default_factory=list)
 
-    async def get_promoted(self, *, org_id: str) -> list[_Learning]:
-        self.promoted_calls.append({"org_id": org_id})
+    async def get_promoted(
+        self,
+        *,
+        org_id: str,
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> list[_Learning]:
+        self.promoted_calls.append(
+            {
+                "org_id": org_id,
+                "team_id": team_id,
+                "user_id": user_id,
+                "agent_id": agent_id,
+            }
+        )
         return self.promoted
 
-    async def find_relevant(self, text: str, *, agent_id: str, org_id: str) -> list[_Learning]:
-        self.relevant_calls.append({"text": text, "agent_id": agent_id, "org_id": org_id})
+    async def find_relevant(
+        self,
+        text: str,
+        *,
+        agent_id: str,
+        user_id: str | None = None,
+        team_id: str | None = None,
+        org_id: str,
+    ) -> list[_Learning]:
+        self.relevant_calls.append(
+            {
+                "text": text,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "team_id": team_id,
+                "org_id": org_id,
+            }
+        )
         return self.relevant
 
 
@@ -135,13 +165,23 @@ async def test_build_promoted_learnings_included_when_enabled(builder: ContextBu
         prompt_manager=pm,
         learning_store=store,
         org_id="org-1",
+        team_id="team-1",
+        user_id="user-1",
+        agent_id="agent-1",
     )
 
     assert kept_ids == [1]
     content = result_messages[0]["content"]
     assert '<maistro:corrections type="promoted">' in content
     assert "[tone] be nice" in content
-    assert store.promoted_calls == [{"org_id": "org-1"}]
+    assert store.promoted_calls == [
+        {
+            "org_id": "org-1",
+            "team_id": "team-1",
+            "user_id": "user-1",
+            "agent_id": "agent-1",
+        }
+    ]
 
 
 async def test_build_skips_promoted_learnings_when_memory_config_disabled(
@@ -175,11 +215,21 @@ async def test_build_matched_learnings_use_latest_user_message(builder: ContextB
         prompt_manager=pm,
         learning_store=store,
         agent_id="agent-1",
+        user_id="user-1",
+        team_id="team-1",
         org_id="org-1",
     )
 
     assert kept_ids == [2]
-    assert store.relevant_calls == [{"text": "second", "agent_id": "agent-1", "org_id": "org-1"}]
+    assert store.relevant_calls == [
+        {
+            "text": "second",
+            "agent_id": "agent-1",
+            "user_id": "user-1",
+            "team_id": "team-1",
+            "org_id": "org-1",
+        }
+    ]
     content = result_messages[0]["content"]
     assert '<maistro:corrections type="matched">' in content
     assert "- matched fact" in content
