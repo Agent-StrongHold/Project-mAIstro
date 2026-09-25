@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
-from datetime import datetime
+from collections.abc import Callable, Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from maistro.runs.aggregation import terminal_run_payload
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
     settle_open_node_run,
@@ -24,16 +25,32 @@ from maistro.runs.lifecycle import (
     transition_run,
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
-from maistro.runs.store import RunIntegrityError, RunStore
+from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
 
 from .continuation import GraphContinuation, GraphContinuationStore
-from .fair_scan import DEFAULT_MAX_INSPECTED, ScanPage, cursor_time
-from .hitl import earliest_hitl_deadline, settlement_time
+from .fair_scan import (
+    DEFAULT_MAX_INSPECTED,
+    ScanContinuation,
+    ScanPage,
+    cursor_time,
+    fair_page_scan,
+)
+from .hitl import (
+    HitlAuthorization,
+    earliest_hitl_deadline,
+    require_hitl_authorization,
+    settlement_time,
+)
 from .spine import mirror_lifecycle
 from .stores import answer_record, settle_hitl_record
 from .types import DurableRunRecord
 
 _RECOVERY_VISIBLE_STATUSES = frozenset({RunStatus.WAITING, RunStatus.PAUSED, RunStatus.RUNNING})
+_GRAPH_TERMINAL_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
+#: How long a Run's spine must have been quiet before a terminal continuation
+#: over it is treated as crash residue rather than a walker mid-mirror. The
+#: same span as a Graph recovery claim: past it, no live walker is assumed.
+TERMINAL_SETTLE_QUIET_PERIOD = timedelta(seconds=60)
 #: How many times `list_hitl_due` widens its candidate page when the indexed
 #: prefix is occupied by projections the canonical Run disqualifies. Six
 #: doublings read at most 64x the requested work before giving up on a tick.
@@ -137,10 +154,17 @@ class CanonicalDurableRunStore:
         self,
         run_store: RunStore,
         continuations: GraphContinuationStore,
+        *,
+        terminal_settle_quiet_period: timedelta = TERMINAL_SETTLE_QUIET_PERIOD,
     ) -> None:
         self._run_store = run_store
         self._continuations = continuations
+        self._terminal_quiet_period = terminal_settle_quiet_period
         self._lock = asyncio.Lock()
+        self._running_scan: ScanContinuation[RunCursor] = ScanContinuation()
+        # run_id -> (continuation version, when this instance first saw it
+        # terminal over a RUNNING Run). See `_reconcile_terminal_graph`.
+        self._terminal_first_seen: dict[str, tuple[int, datetime]] = {}
 
     async def create(self, record: DurableRunRecord) -> DurableRunRecord:
         if await self._run_store.get_run(record.run_id) is None:
@@ -181,13 +205,25 @@ class CanonicalDurableRunStore:
             await mirror_lifecycle(record, run_store=self._run_store)
             return await self._require(record.run_id)
 
-    async def reconcile_persistence(self, *, limit: int = 100) -> int:
-        """Boundedly repair cross-store crash residue and purge true orphans."""
+    async def reconcile_persistence(
+        self,
+        *,
+        limit: int = 100,
+        now: datetime | None = None,
+    ) -> int:
+        """Boundedly repair cross-store crash residue and purge true orphans.
+
+        ``now`` is the tick's evaluation time, so the time-dependent repairs
+        (an elapsed resume claim, a quiet spine) agree with the due scan that
+        follows them; it defaults to the wall clock.
+        """
         if limit <= 0:
             return 0
 
-        changed = 0
+        moment = now if now is not None else datetime.now(UTC)
         seen: set[str] = set()
+        changed = await self._reconcile_running_page(limit, seen, moment)
+        swept = len(seen)
         # Terminal settlement residue first, and from the side that shrinks. A
         # crash between the continuation write and the spine mirror leaves the
         # canonical Run PAUSED while its continuation is already CANCELLED or
@@ -195,29 +231,72 @@ class CanonicalDurableRunStore:
         # COMPLETED bucket in front of those statuses only ever grows, so such
         # residue behind a full prefix would never be reached. PAUSED canonical
         # Runs are few and transient: a scan over them always reaches its end.
-        for run in await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit):
-            if run.run_id in seen:
-                continue
-            seen.add(run.run_id)
-            if await self._reconcile_run(run.run_id):
-                changed += 1
+        paused = await self._run_store.list_by_status(RunStatus.PAUSED, limit=limit)
+        changed += await self._reconcile_unseen((run.run_id for run in paused), seen, moment)
         for status in RunStatus:
-            remaining = limit - len(seen)
+            remaining = limit - (len(seen) - swept)
             if remaining <= 0:
                 break
             run_ids = await self._continuations.list_run_ids_by_status(
                 status,
                 limit=remaining,
             )
-            for run_id in run_ids:
-                if run_id in seen:
-                    continue
-                seen.add(run_id)
-                if await self._reconcile_run(run_id):
-                    changed += 1
+            changed += await self._reconcile_unseen(run_ids, seen, moment)
         return changed
 
-    async def _reconcile_run(self, run_id: str) -> bool:
+    async def _reconcile_unseen(
+        self, run_ids: Iterable[str], seen: set[str], moment: datetime
+    ) -> int:
+        """Reconcile each Run not already visited this tick; count the repairs."""
+        changed = 0
+        for run_id in run_ids:
+            if run_id in seen:
+                continue
+            seen.add(run_id)
+            if await self._reconcile_isolated(run_id, moment):
+                changed += 1
+        return changed
+
+    async def _reconcile_running_page(self, limit: int, seen: set[str], moment: datetime) -> int:
+        """Reconcile one cursor-advancing page of canonical RUNNING Runs.
+
+        A crash between the continuation write and the spine mirror strands a
+        RUNNING Run under a terminal or QUEUED continuation, neither of which
+        the due index sees. The continuation-status buckets the loop below
+        reads only grow, so the canonical RUNNING set -- transient by
+        construction -- is where such a Run is reliably found. The cursor
+        outlives the call, so non-Graph RUNNING Runs ahead of it are paged
+        past on later ticks rather than re-read forever.
+        """
+
+        async def page(cursor: RunCursor | None, size: int) -> list[Run]:
+            return await self._run_store.list_by_status(RunStatus.RUNNING, limit=size, after=cursor)
+
+        runs = await fair_page_scan(
+            fetch_page=page,
+            cursor_of=run_cursor_key,
+            eligible=lambda _run: True,
+            limit=limit,
+            page_size=limit,
+            max_inspected=limit,
+            continuation=self._running_scan,
+        )
+        return await self._reconcile_unseen((run.run_id for run in runs), seen, moment)
+
+    async def _reconcile_isolated(self, run_id: str, moment: datetime) -> bool:
+        """Reconcile one Run without letting its lifecycle refusal stop the sweep.
+
+        The sweep runs at the head of every due and queued tick, so a refusal
+        raised by one Run's repair would otherwise abort recovery for all of
+        them on every tick. Store failures still propagate (#1143).
+        """
+        try:
+            return await self._reconcile_run(run_id, moment)
+        except InvalidLifecycleTransition as exc:
+            logger.warning("cannot reconcile Graph Run %s: %s", run_id, exc)
+            return False
+
+    async def _reconcile_run(self, run_id: str, moment: datetime) -> bool:
         """Repair one run's cross-store residue; report whether state changed."""
         continuation = await self._continuations.get(run_id)
         if continuation is None:
@@ -237,6 +316,10 @@ class CanonicalDurableRunStore:
             )
             return await self._continuations.delete(run_id)
         if await self._reconcile_terminal_hitl(continuation, canonical):
+            return True
+        if await self._reconcile_terminal_graph(continuation, canonical, moment):
+            return True
+        if await self._reconcile_unstarted_claim(continuation, canonical, moment):
             return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
@@ -296,6 +379,114 @@ class CanonicalDurableRunStore:
         desired_run = transition_run(record.run, target, at=moment, error=reason)
         desired = record.model_copy(update={"run": desired_run, "node_runs": node_runs})
         return await self._mirror_terminal_hitl(desired, continuation.run_id, target)
+
+    async def _reconcile_terminal_graph(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+        moment: datetime,
+    ) -> bool:
+        """Settle a Run whose Graph continuation was persisted terminal first.
+
+        The terminal record itself was lost with the crash; what survives is
+        its status and whatever NodeRun evidence was mirrored before it. Only
+        a COMPLETED result is re-derived from that evidence: `_mark_completed`
+        is the one path that completes a Run, and it derives the result the
+        same way. A FAILED or CANCELLED Run may have been terminalized for a
+        Run-level cause (a halt, an exhausted step budget, a cancellation)
+        that was written only on the Run, while its open NodeRuns got cascade
+        errors -- and `mirror_lifecycle` writes those NodeRuns before the Run.
+        So its error says the original was not persisted rather than passing
+        a NodeRun's error off as the Run's. Open NodeRuns are settled by the
+        spine's own terminal cascade.
+        """
+        target = continuation.status
+        run_id = canonical.run_id
+        if target not in _GRAPH_TERMINAL_STATUSES or canonical.status is not RunStatus.RUNNING:
+            self._terminal_first_seen.pop(run_id, None)
+            return False
+        if target is RunStatus.CANCELLED and _matching_hitl_settlement(continuation, target):
+            return False
+        if not self._terminal_long_observed(continuation, moment):
+            return False
+        record = await self.get(run_id)
+        if record is None or not self._spine_is_quiet(record, moment):
+            return False
+        if target is RunStatus.COMPLETED:
+            result, error = terminal_run_payload(record.node_runs, target)
+        else:
+            result = None
+            error = (
+                f"Graph continuation settled {target.value} before canonical settlement; "
+                "original error not persisted"
+            )
+        desired_run = transition_run(record.run, target, result=result, error=error)
+        desired = record.model_copy(update={"run": desired_run})
+        settled = await self._mirror_terminal_hitl(desired, run_id, target)
+        self._terminal_first_seen.pop(run_id, None)
+        return settled
+
+    def _terminal_long_observed(self, continuation: GraphContinuation, moment: datetime) -> bool:
+        """Whether this terminal continuation version has been seen for the quiet period.
+
+        The continuation carries no write time, and the spine's timestamps can
+        be older than the quiet period for a walker that has only just written
+        it -- a node that ran past the period and then raised leaves nothing on
+        the spine newer than its Attempt's start. The first sighting of a
+        version is no earlier than its write, so a version seen unchanged for
+        the whole period has outlived any walker between that write and its
+        mirror. A restarted replica waits the period again; that only delays.
+        """
+        run_id = continuation.run_id
+        seen = self._terminal_first_seen.get(run_id)
+        if seen is None or seen[0] != continuation.version:
+            seen = (continuation.version, moment)
+            self._terminal_first_seen[run_id] = seen
+        return moment - seen[1] >= self._terminal_quiet_period
+
+    def _spine_is_quiet(self, record: DurableRunRecord, moment: datetime) -> bool:
+        """Whether nothing on the Run's spine moved within the quiet period.
+
+        A walker writes its terminal continuation and mirrors it moments
+        later; settling in between would overwrite the error it is about to
+        mirror and cascade the NodeRun it is about to fail.
+        """
+        moments = [record.run.updated_at]
+        moments.extend(node_run.updated_at for node_run in record.node_runs)
+        moments.extend(
+            attempt.finished_at or attempt.started_at or attempt.created_at
+            for attempt in record.attempts
+        )
+        return moment - max(moments) >= self._terminal_quiet_period
+
+    async def _reconcile_unstarted_claim(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+        moment: datetime,
+    ) -> bool:
+        """Make an expired resume claim visible to the due index again.
+
+        The resume claim is checkpointed while the continuation still reads
+        QUEUED, and only then is the spine stepped to RUNNING. A crash between
+        the two leaves a claim the due index never lists, because it excludes
+        QUEUED continuations. Once the claim has elapsed no walker holds it,
+        so the continuation is rewritten to mirror RUNNING under the same
+        claim, and the next due tick resumes it. A live claim is left alone.
+        """
+        if continuation.status is not RunStatus.QUEUED or canonical.status is not RunStatus.RUNNING:
+            return False
+        if continuation.resume_at is None or continuation.resume_at > moment:
+            return False
+        visible = continuation.model_copy(
+            update={"status": RunStatus.RUNNING, "version": continuation.version + 1}
+        )
+        try:
+            await self._continuations.update(visible)
+        except ValueError:
+            # Another writer advanced the continuation first; it owns the Run.
+            return False
+        return True
 
     @staticmethod
     def _has_terminal_hitl_node(
@@ -444,6 +635,7 @@ class CanonicalDurableRunStore:
     async def list_hitl_due(
         self,
         *,
+        authorization: HitlAuthorization,
         now: datetime,
         limit: int = 100,
     ) -> list[DurableRunRecord]:
@@ -457,12 +649,23 @@ class CanonicalDurableRunStore:
         runs, and the page is widened past any candidate that still does not
         qualify, rather than re-reading one permanent prefix forever.
         """
+        require_hitl_authorization(authorization)
+        if limit <= 0:
+            return []
         requested = limit
         due: list[DurableRunRecord] = []
         for _ in range(_CANDIDATE_PAGES):
             run_ids = await self._continuations.list_hitl_due_run_ids(now=now, limit=requested)
             due = []
             for record in await self._assemble_all(run_ids):
+                workspace_id = record.run.workspace_id
+                if workspace_id not in authorization.workspace_ids:
+                    continue
+                if not await authorization.permits(
+                    workspace_id,
+                    consume_evidence=False,
+                ):
+                    continue
                 candidate = await self._reconcile_hitl_due_candidate(record, now)
                 if candidate is not None:
                     due.append(candidate)
@@ -477,7 +680,7 @@ class CanonicalDurableRunStore:
         now: datetime,
     ) -> DurableRunRecord | None:
         if record.run.status is not RunStatus.PAUSED:
-            repaired = await self._reconcile_run(record.run_id)
+            repaired = await self._reconcile_run(record.run_id, now)
             if repaired:
                 refreshed = await self.get(record.run_id)
                 if refreshed is not None:
@@ -507,7 +710,9 @@ class CanonicalDurableRunStore:
         node_id: str,
         answer: dict[str, Any],
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist an answer and queue only valid verdicts for resume.
 
@@ -519,6 +724,8 @@ class CanonicalDurableRunStore:
         return await self._mutate_hitl(
             run_id,
             lambda current: answer_record(current, node_id, answer, at=at),
+            workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def timeout_hitl(
@@ -526,12 +733,16 @@ class CanonicalDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist an elapsed HITL deadline and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "timed_out", at=at),
+            workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def cancel_hitl(
@@ -539,23 +750,37 @@ class CanonicalDurableRunStore:
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         """Persist explicit HITL cancellation and mirror its terminal lifecycle."""
         return await self._mutate_hitl(
             run_id,
             lambda current: settle_hitl_record(current, node_id, "cancelled", at=at),
+            workspace_id=workspace_id,
+            authorization=authorization,
         )
 
     async def _mutate_hitl(
         self,
         run_id: str,
         mutate: Callable[[DurableRunRecord], DurableRunRecord],
+        authorization: HitlAuthorization,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
-        async with self._lock:
+        require_hitl_authorization(authorization)
+        async with authorization.hold_membership_mutation(), self._lock:
             current = await self.get(run_id)
             if current is None:
                 raise KeyError(f"no such run: {run_id!r}")
+            if workspace_id is not None and current.run.workspace_id != workspace_id:
+                raise KeyError(f"run {run_id!r} is outside the requested Workspace")
+            if not await authorization.permits(
+                current.run.workspace_id,
+                consume_evidence=True,
+            ):
+                raise KeyError(f"run {run_id!r} is outside the authorized Workspace")
             updated = mutate(current)
             await self._continuations.update(GraphContinuation.of(updated))
             await mirror_lifecycle(updated, run_store=self._run_store)

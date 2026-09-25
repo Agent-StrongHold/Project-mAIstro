@@ -60,6 +60,21 @@ def _init_engine() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_credential_store(tmp_path: Path):
+    """Give each backend test a fresh encrypted store.
+
+    The application store is a module-level dependency, so a credential saved
+    by one route test must not alter another user's assertions in a later test.
+    """
+    from services import user_credentials as cred_svc
+
+    previous = cred_svc._store
+    cred_svc.init_credential_store(tmp_path / "credentials")
+    yield
+    cred_svc._store = previous
+
+
+@pytest.fixture(autouse=True)
 def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Redirect wizard-authored persona templates to tmp_path."""
     import services.persona_authoring as persona_authoring
@@ -82,6 +97,18 @@ def _isolate_dashboard_layouts():
         stores.dashboard_layouts.pop(key)
     for key, value in snapshot.items():
         stores.dashboard_layouts[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_database(monkeypatch: pytest.MonkeyPatch):
+    """The session engine is a stub, i.e. Hive with no database.
+
+    A CI job that exports DATABASE_URL/DB_* for other suites would otherwise
+    make the Workspace authority refuse its no-database fallback (#37).
+    Tests that want a database set one themselves.
+    """
+    for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -196,6 +223,43 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
         yield
     finally:
         registration_policy.reset()
+
+
+@pytest.fixture(scope="session")
+def _chat_spine_container():
+    from maistro.container import create_container
+    from maistro.types import AgentConfig
+
+    return asyncio.run(
+        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+    )
+
+
+@pytest.fixture
+def chat_run_spine(_chat_spine_container, monkeypatch: pytest.MonkeyPatch):
+    """Give the engine a canonical Run spine, so model-reaching chat and voice
+    turns are admitted as Runs rather than refused with a 503 (#1037).
+
+    Only the spine is exposed: the Container's Workspace store stays unbound so
+    Workspace authority keeps its per-test canonical fallback.
+    """
+    from types import SimpleNamespace
+
+    from services import chat_runs
+    from services.engine import get_engine
+
+    c = _chat_spine_container
+    spine = SimpleNamespace(
+        run_store=c.run_store,
+        project_scope_store=c.project_scope_store,
+        intent_registry=c.intent_registry,
+        _close_chat_run=c._close_chat_run,
+        _cancel_incomplete_admission=c._cancel_incomplete_admission,
+    )
+    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
+    chat_runs.reset_for_tests()
+    yield c
+    chat_runs.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
