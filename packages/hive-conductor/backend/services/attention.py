@@ -201,7 +201,11 @@ def _summary(items: list[_Item], *, truncated: bool) -> dict[str, Any]:
     return {
         "counts_by_class": {name: counts[name] for name in ATTENTION_CLASSES if counts[name]},
         "highest_class": items[0].attention_class if items else None,
-        "rising": [item.source_id for item in items if item.attention_class == "time_sensitive"],
+        "rising": [
+            item.source_id
+            for item in items[:_MAX_ITEMS]
+            if item.attention_class == "time_sensitive"
+        ],
         "truncated": truncated,
     }
 
@@ -229,9 +233,9 @@ async def list_attention(
     """The caller's Attention items in one Workspace, or None when not a member.
 
     None is also the answer for a Workspace that does not exist, so a caller
-    cannot tell the two apart. The summary covers everything scanned, and
-    `truncated` says when that is not everything canonical state holds or
-    when `items` was cut to the page ceiling.
+    cannot tell the two apart. Counts cover everything scanned; `rising`
+    names only returned items. `truncated` means the result may be partial:
+    the record ceiling stopped the walk, or `items` was cut to the page cap.
     """
     now = settlement_time(now)
     if not await is_member(user_id, workspace_id):

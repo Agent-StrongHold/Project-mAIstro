@@ -243,6 +243,36 @@ async def test_an_overdue_pause_offers_no_answer(run_store) -> None:
     assert body["summary"]["rising"] == []
 
 
+async def test_membership_revoked_mid_scan_withholds_payloads(
+    run_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The up-front check is not the disclosure decision; each record is rechecked."""
+    import services.attention as attention_mod
+    from services import workspace_authority
+
+    ws = await _workspace("user", "Attention revoked")
+    await workspace_authority.set_member(ws, user_id="admin", role="editor")
+    await run_store.create(_paused_record("att-revoked", workspace_id=ws))
+    real_is_member = workspace_authority.is_member
+    calls = 0
+
+    async def revoke_after_admission(user_id: str, workspace_id: str | None) -> bool:
+        nonlocal calls
+        calls += 1
+        allowed = await real_is_member(user_id, workspace_id)
+        if calls == 1:
+            await workspace_authority.remove_member(ws, user_id="admin")
+        return allowed
+
+    monkeypatch.setattr(attention_mod, "is_member", revoke_after_admission)
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert body["items"] == []
+    assert calls >= 2
+
+
 async def test_a_naive_clock_is_refused(run_store) -> None:
     ws = await _workspace("admin", "Attention naive clock")
     with pytest.raises(ValueError, match="timezone"):
@@ -359,3 +389,7 @@ async def test_route_scopes_attention_to_members(admin_client, authed_client, ru
     # takes the scope `/v1/hitl/pending` takes, even for the owner.
     unscoped = authed_client.get(f"/v1/workspaces/{ws_user}/attention")
     assert unscoped.status_code == 403
+    # Scope is checked before membership, so an unscoped caller cannot probe
+    # which Workspaces exist.
+    unscoped_missing = authed_client.get("/v1/workspaces/ws-no-such-thing/attention")
+    assert unscoped_missing.status_code == 403
