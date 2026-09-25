@@ -32,6 +32,7 @@ from maistro.runs.chat_execution import (
     ChatDispatchUnrecorded,
     attempt_result,
 )
+from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -261,26 +262,24 @@ class TestAFailureIsRecordedAndKeepsTravelling:
             await container.route_request(MESSAGES)
 
 
-class TestATurnIsNeverRefusedForWantOfARecord:
-    async def test_a_turn_with_no_run_is_still_answered(self) -> None:
-        """The existing rule, unchanged. Without a chat admitter there is no
-        Run to hang a NodeRun on — and the chat path has no receipt to fall
-        back on, so refusing would turn "cannot record" into "cannot answer"."""
+class TestATurnWithoutARecordIsRefused:
+    """Owner decision on #1108 (amends ADR-082326-c126): no Run, no answer."""
+
+    async def test_a_turn_with_no_run_is_refused_and_never_dispatched(self) -> None:
         container = await _container()
         conduit = _Conduit(content="42")
         container.conduit = conduit
         container.chat_admitter = None  # type: ignore[assignment]
 
-        result = await container.route_request(MESSAGES)
+        with pytest.raises(ChatTurnRefused):
+            await container.route_request(MESSAGES)
 
-        assert result["choices"][0]["message"]["content"] == "42"
-        assert conduit.calls == 1
+        assert conduit.calls == 0
 
-    async def test_a_broken_spine_is_not_a_broken_turn(self) -> None:
-        """Same rule one layer down. `RunIntegrityError` means this process
-        could not write the spine — a Run deleted underneath the turn, or a
-        Graph that is not the one node a turn admits. The answer still goes
-        out; it is the record that is missing, and it was missing before."""
+    async def test_a_broken_spine_refuses_the_turn_before_the_model(self) -> None:
+        """`RunIntegrityError` before the dispatch -- here a Run deleted
+        underneath the turn -- proves nothing reached the model, so the turn is
+        refused retryably rather than answered outside the record."""
         container = await _container()
         conduit = _Conduit(content="42")
         container.conduit = conduit
@@ -290,10 +289,11 @@ class TestATurnIsNeverRefusedForWantOfARecord:
 
         container.run_store.get_run = _vanished  # type: ignore[method-assign]
 
-        result = await container.route_request(MESSAGES)
+        with pytest.raises(ChatTurnRefused) as refused:
+            await container.route_request(MESSAGES)
 
-        assert result["choices"][0]["message"]["content"] == "42"
-        assert conduit.calls == 1
+        assert isinstance(refused.value.__cause__, RunIntegrityError)
+        assert conduit.calls == 0
 
 
 class _RecordingVeto:
@@ -499,24 +499,24 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         assert isinstance(unrecorded.value.__cause__, RunIntegrityError)
         assert conduit.calls == 1
 
-    async def test_a_spine_refusal_before_the_dispatch_still_falls_back_to_answering(
+    async def test_a_spine_refusal_before_the_dispatch_refuses_the_turn(
         self,
     ) -> None:
         """The pre-dispatch rule, exercised where the spine itself refuses
         mid-flight rather than before the executor starts: the Attempt's
         RUNNING write fails, the model has not been called, so the plain
-        `RunIntegrityError` reaches the container and the turn is answered
-        once through the fallback."""
+        `RunIntegrityError` reaches the container and the turn is refused
+        (#1108) -- never answered through a fallback dispatch."""
         container = await _container()
         container.conduit = conduit = _Conduit(content="42")
         container.run_store = _RecordingVeto(  # type: ignore[assignment]
             container.run_store, method="transition_attempt", target=AttemptStatus.RUNNING
         )
 
-        result = await container.route_request(MESSAGES)
+        with pytest.raises(ChatTurnRefused):
+            await container.route_request(MESSAGES)
 
-        assert result["choices"][0]["message"]["content"] == "42"
-        assert conduit.calls == 1
+        assert conduit.calls == 0
 
     async def test_a_deadline_that_cuts_the_dispatch_off_still_arrives_as_a_deadline(
         self,
@@ -821,16 +821,17 @@ class TestTheTurnNamesItselfToTheSessionStore:
 
         assert conduit.turn_ids == [run.run_id]
 
-    async def test_a_turn_with_no_run_names_no_identity(self) -> None:
-        """A container with no chat admitter has no Run, so it has no identity
-        to give — and an append with none is the unchanged one."""
+    async def test_a_turn_with_no_run_reaches_no_session_store(self) -> None:
+        """A container with no chat admitter has no Run and no identity to
+        give, so the turn is refused before it could append anything (#1108)."""
         container = await _container()
         container.chat_admitter = None
         container.conduit = conduit = _Conduit()
 
-        await container.route_request(MESSAGES)
+        with pytest.raises(ChatTurnRefused):
+            await container.route_request(MESSAGES)
 
-        assert conduit.turn_ids == [None]
+        assert conduit.turn_ids == []
 
 
 class TestTheAttemptResult:
