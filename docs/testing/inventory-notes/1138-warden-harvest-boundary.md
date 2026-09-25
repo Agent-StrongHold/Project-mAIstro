@@ -146,3 +146,30 @@ Known residual (unchanged, non-blocking): a bare `WardenHarvestBoundary()`
 with no sink (tests and the `swebench_pro` proxy path) records audit via
 logging only; every production composition root wires `JsonlAuditSink` or
 an event-store sink, and the missing-sink path still fails closed on scan.
+
+Repair revalidation at merge head `9bb626b178` (develop base `03c8ba83a`,
+prior repair head `8adc2cacc` is an ancestor; `git diff 8adc2cacc..HEAD --
+packages/maistro-rsi packages/maistro-core/src/maistro/security` is empty —
+the merge touched only graph/durable-runs, reactor, and chat-execution
+surfaces). No test delta. Independently re-derived the seam sweep at this
+head: `gateway.py` (scan before HTTP I/O), `runner.py` (injected `llm_call`
+wrapped), `local_loop.py` (builder prompt, saved-patch resume, hyper-mutation
+prompt, regression-judge boundary), `autorun.py` (proposer scan precedes the
+direct `httpx.post`, prompt executor, ledger-at-use), `__main__.py` (mutator
+goal/target/prompt + harvest manifest), `scout.py` (both calls),
+`regression_judge.py`, `benchmarks/swebench_pro.py` (genome fields before
+system prompt); `free_router.py` (literal ping) and `quota_burn.py` (model
+listing GET) carry no harvest content. Executed: ruff check/format repo-wide
+clean; 756 rsi tests pass; 13 non-production-reachability node IDs pass;
+58 conductor containment tests pass; 66 `ac`-marked #1138 tests pass; all
+four reachability gates + `check-security-inventory.py` +
+`check-suite-inventory.py` (13 suites) pass. Mutation evidence re-executed
+independently at this head with byte backups: replacing `llm_call =
+guarded_llm_call` with the raw injected call fails
+`test_injected_llm_call_is_guarded_for_both_genome_evals` +
+`test_llm_call_reaches_evaluate_genome` (2 failed); gating the resume
+admission off in `_load_saved_patches` fails
+`test_hostile_resumed_patch_is_refused_before_apply` +
+`test_unavailable_warden_refuses_resumed_patch` (2 failed); both files
+restored byte-identical (`cmp` vs backups, `git status --porcelain` empty)
+and the 4 adversarial tests pass again post-restore.
