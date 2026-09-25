@@ -244,3 +244,64 @@ tracked change in this round is this note.
   output-boundary verdict. Both files were preserved (not deleted) by moving
   them to the job directory's `salvaged-scratch/`, matching the round-4
   precedent; no production or test file changed this round.
+
+## Independent verification round 6 (auto-817 @ a0709b0f, verifier lane)
+
+Re-executed at the lane's exact head `a0709b0f8a8a23fac47218e583476f1123914202`
+(unchanged since round 5). All evidence below executed fresh in this round;
+read-only probes plus this note.
+
+- **Lane pytest re-executed:** `uv run pytest
+  packages/maistro-core/tests/security/warden/test_detector.py
+  packages/maistro-core/tests/security/warden/test_visual_artifact_vocabulary.py
+  packages/maistro-design/tests/test_design.py
+  packages/maistro-design/tests/test_scan.py
+  packages/maistro-design/tests/test_trust_prescan.py -q` → 217 passed.
+  `packages/hive-conductor/backend/tests/test_design_renderers.py` → 7 passed.
+- **Pre-scan probes re-executed** (`scan_and_record`, review-queue records
+  inspected): `<math><mi>x</mi></math>` → `tier=skull, rec=banish, conf=0.9,
+  flags=("content: visual artifact active-element",)` — the round-1 parity
+  break does not reproduce. script, handler attr, `data:text/html` href,
+  CSS `url()`, leading-escape `\75rl(`, SVG script, `@import`, `behavior:` →
+  all `skull/banish/0.9` with flags **exactly equal** to
+  `scan_blocking_patterns(..., visual_artifact=True)` on the same content.
+  Clean brief → `t3/upgrade/()`.
+- **Output-boundary probes re-executed** (`scan_design_text`): 15 hostile
+  AC-3 families blocked (handler attrs incl. `<body onload>`, script SVG,
+  `use`/`img` data URLs, `data:text/html` iframe, CSS `url()`/`@import`/
+  `image-set`/`behavior:`/`-moz-binding:`/`expression(`, both hex-escape
+  spellings, MathML); clean HTML and clean CSS pass.
+- **Vocabulary parity (AC-4) inspected:** `VISUAL_ARTIFACT_PATTERNS` reasons
+  are unpacked from `VISUAL_ARTIFACT_BLOCK_REASONS`
+  (`patterns.py:81-100`); the TSX boundary declares the identical 4-name
+  tuple (`visualArtifactRenderer.tsx:232-238`); the
+  `test_visual_artifact_vocabulary.py` tests pin the derivation and that the
+  scanner emits only declared reasons. No second scanner exists in Design —
+  `scan.py` imports the Warden pattern tables (#817 stop condition holds).
+- **Chromium corpus re-executed against live sources:** `deck-sanitization.spec.ts`
+  via local esbuild harness (`E2E_SRC_ROOT`/`NODE_PATH` at this worktree, no
+  image rebuild) → **8/8 passed**, including payload families, CSS
+  obfuscation/active-SVG fail-closed, and the `recommendVisualArtifactTrust`
+  parity block (MathML → `review`).
+- **SAST gate re-executed CI-exact** (`uvx semgrep --metrics off --config
+  tools/semgrep/maistro-rules.yaml --config p/security-audit --config
+  p/owasp-top-ten --config p/secrets --exclude eval --exclude cage --error
+  packages/ tests/`, semgrep 1.178.0) → **rc=0, 364 rules / 1892 files /
+  0 findings**. Reviewed-sink annotation holds at
+  `visualArtifactRenderer.tsx:394`.
+- **Vulture gate re-executed CI-exact** (`scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) →
+  **rc=0, 1415 reviewed identities → 1415 findings** vs base `03c8ba83a`.
+  Neither prior #817 debt identity (`patterns.py`
+  `VISUAL_ARTIFACT_BLOCK_REASONS`, `container.py:415`) appears in the scan.
+  Residual, non-#817, recorded not repaired: a bare-scope invocation
+  (`packages tests`, wider than CI) exits 1 with 1445 findings vs the same
+  1415-identity ledger; the identical scan at base `03c8ba83a` reports 1447
+  (temp worktree probe, removed after measurement), so the drift is
+  pre-existing ledger/environment churn in categories dominated by files this
+  branch never touched — the branch is net-negative (1447 → 1445).
+- **Static gates re-executed:** `uv run ruff check .` → clean;
+  `uv run ruff format --check .` → 2543 files already formatted.
+- **Closure-keyword review re-executed:** `git log 03c8ba83..HEAD` subjects
+  and bodies contain no `fixes/closes/resolves #N`; PR #1389 body says only
+  "Refs #817" and remains draft — no premature issue-closure action.
