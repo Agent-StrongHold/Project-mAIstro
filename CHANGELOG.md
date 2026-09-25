@@ -290,8 +290,8 @@ or placeholder-only section.
   entry, an entry names a table nothing creates, a deletion path does not
   import, or `security_violations` or `usage_events` is dropped. A table with
   no production-driven purge is recorded as `undecided` against #325. This
-  includes `security_violations`, `usage_events`, `task_idempotency`,
-  `security_rate_limits` and PostgreSQL `sessions`. Nothing is written down
+  includes `security_violations`, `usage_events`, `task_idempotency` and
+  `security_rate_limits`. Nothing is written down
   as retained forever unless someone decided it.
 - **Stable Workspace Agent identity and per-user default Workspace
   ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
@@ -443,6 +443,15 @@ or placeholder-only section.
 
 ### Changed
 
+- **`sessions` and `session_turns` are recorded as TTL-purged on both
+  backends (#325).**
+  The retention inventory said PostgreSQL session rows accumulate, but
+  `PgSessionStore.append_messages` (the store the PostgreSQL container wires)
+  already deletes expired messages and turn markers inside every append
+  transaction, as `SqliteSessionStore` does after commit. Both entries are now
+  `ttl_purge` with the append path as their deletion path, backed by a SQLite
+  and PostgreSQL-gated regression that ages real rows past the TTL and proves
+  the next append removes them from both tables.
 - **A declared correlation field must have a production producer (#63).** A
   fitness test scans production code (`packages/*/src` and the hive, turing
   and canvas backends) for `bind_execution_context(...)` keywords. It fails
