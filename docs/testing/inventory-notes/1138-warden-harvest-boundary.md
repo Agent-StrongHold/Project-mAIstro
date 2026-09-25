@@ -102,3 +102,25 @@ with a pass-through of the injected call fails
 `_load_saved_patches` fails `test_hostile_resumed_patch_is_refused_before_apply`
 + `test_unavailable_warden_refuses_resumed_patch`; both restored from byte
 backups with `git status --porcelain` empty and `git diff` empty afterwards.
+
+Revalidated at merge head `04d33d5c3` (merge of develop `60862b6c5` into the
+branch; no test delta, `git diff 369279ab6..HEAD -- packages/maistro-rsi` is
+empty). The merge's only security-surface change is additive: `maistro.security`
+gains a `WARDEN_POLICY_VERSION = "warden-code-v1"` class attribute on the
+canonical `Warden` detector plus a canonical `composition.py` — detection
+behavior is unchanged and the rsi-harvest boundary keeps its own audit-only
+`warden-rsi-harvest-v1` identifier (detector mechanism stays code-owned). This
+round re-derived the seam inventory at this head (all seams listed above
+re-read, plus `autorun.py`'s direct `httpx.post` confirmed behind the proposer
+`scan_sync` admission and `code_fixer.py` confirmed to reach models only via
+the guarded `make_builders_apply_patch` builder path). Executed evidence:
+756 rsi + 645 evolve + 58 conductor `test_rsi_execution_containment.py` tests
+pass, 66 `ac`-marked #1138 tests pass, all 13 non-production-reachability node
+IDs pass, ruff check/format clean, suite-inventory / security-inventory /
+reachability (+dispositions, provenance) gates pass. Mutation evidence
+re-executed at this head: disabling the runner guard fails
+`test_injected_llm_call_is_guarded_for_both_genome_evals` +
+`test_llm_call_reaches_evaluate_genome`; gating the resume admission off fails
+`test_hostile_resumed_patch_is_refused_before_apply` +
+`test_unavailable_warden_refuses_resumed_patch`; both files restored from byte
+backups, `git status --porcelain` empty and both files `cmp`-identical to HEAD.
