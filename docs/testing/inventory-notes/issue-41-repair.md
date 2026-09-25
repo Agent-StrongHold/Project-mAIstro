@@ -127,3 +127,41 @@ core tasks 333 passed / 1 skipped; `test_tasks_idempotency.py` 13 passed;
 `test_engine_service.py` 35 passed; `ruff check`, `ruff format --check`, mypy
 on `maistro/tasks/idempotency.py`, `check-suite-inventory.py`,
 `check-doc-links.py`, `check-durable-table-inventory.py` all clean.
+
+## Round 6 — independent verification at 955050394 (develop merged in)
+
+Head under review: `9550503945ea97db479816b35293275fcb9abe2c` (merge of
+develop `55c5ad892e68bdd015db00ebe034ea6818a8c1f5` into auto-41). All checks
+below were executed this round by the verifier against the dedicated pg18
+container at `127.0.0.1:5591` (`auto-41-repair-pg`), from a dotenv-free CWD
+because the untracked root `.env` (non-JSON `API_KEYS=test`) still breaks any
+`Settings`-importing suite started at the repo root — environment, not tree.
+
+Executed battery (all green):
+- `test_idempotency_durable.py` + `test_tasks_idempotency.py` live-PG:
+  40 passed / 0 skipped (driver's check-3 ran them DSN-less: 91 passed /
+  1 skipped — the durable tier only runs with `MAISTRO_TEST_PG_DSN`).
+- Acceptance battery: `tasks/test_admission.py`, `runs/test_chat_admission.py`,
+  `runs/test_execution_is_correlated.py`, `integration/test_chat_to_graph_e2e.py`:
+  67 passed. `hive-conductor test_chat_run_admission.py`: 20 passed.
+- `packages/maistro-core/tests/runs` (migrated chain, live PG):
+  1063 passed / 3 skipped. Procedural note: one intermediate run showed
+  4 failed / 567 errors solely because `test_migration_chain.py`'s
+  `empty_database` fixture leaves the shared database downgraded to `base`;
+  after `alembic upgrade head` the same suite is fully green. Re-migrated and
+  re-run before recording.
+- `tests/migrations/test_migration_chain.py` live: 15 passed.
+- `ruff check .`: clean (driver check-1; re-run confirmed). Driver also ran
+  `ruff format --check .`, `test_engine_service.py` (35 passed) and the three
+  `check-suite-inventory.py` gates (2725 / 10927 / 375) — all ok.
+
+Governance checks: PR #1325 body contains no closure keywords ("Refs #41"
+only); commit messages 55c5ad892..HEAD scanned — none. Issue #1176 re-checked
+read-only: state CLOSED (prior finding stands resolved). Issue #41 OPEN.
+
+Open items (not acceptance-blocking, for the driver/human): PR #1325 is a
+draft claim-stake; its CI at this head shows "Quality gate (Pillars 1–4, 7, 8)"
+FAILURE with the run still in progress (logs unavailable) and several checks
+pending — CI state is UNVERIFIED and was not inferred green. The previous
+round's push rejection (non-fast-forward) remains a driver-level action;
+workers are prohibited from pushing.
