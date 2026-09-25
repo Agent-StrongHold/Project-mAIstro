@@ -201,6 +201,37 @@ async def test_a_pre_dispatch_integrity_failure_is_refused_not_redispatched() ->
     assert run.status in TERMINAL_RUN_STATUSES
 
 
+async def test_a_pre_dispatch_driver_failure_is_refused_too() -> None:
+    """A store outage before the Attempt is not a RunIntegrityError, and no
+    less pre-dispatch: refused retryably, not a 500."""
+    container = await _container()
+    conduit = _Conduit()
+    container.conduit = conduit
+
+    async def _connection_lost(*_args, **_kwargs):
+        raise ConnectionError("database went away")
+
+    container.run_store.create_attempt = _connection_lost  # type: ignore[method-assign]
+
+    with pytest.raises(ChatTurnRefused):
+        await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert conduit.calls == []
+
+
+async def test_an_integrity_error_raised_by_the_dispatch_is_not_a_retryable_refusal() -> None:
+    """The model was reached, so telling the caller to retry would dispatch twice."""
+    container = await _container()
+    conduit = _Conduit(raises=RunIntegrityError("stale fence inside the agent"))
+    container.conduit = conduit
+
+    with pytest.raises(RunIntegrityError) as raised:
+        await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert not isinstance(raised.value, ChatTurnRefused)
+    assert len(conduit.calls) == 1
+
+
 async def test_the_chat_admitter_is_wired_by_the_container() -> None:
     container = await _container()
 

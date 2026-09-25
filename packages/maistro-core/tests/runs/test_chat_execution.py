@@ -683,7 +683,8 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
     ) -> None:
         """A driver error before the dispatch is not dressed as one after it
         either: nothing physical happened, so there is no answer to hand back
-        and the store's own exception travels to the caller unchanged."""
+        -- the turn is refused retryably (#1108), the store's own exception
+        chained behind the refusal."""
         container = await _container()
         container.conduit = conduit = _Conduit(content="42")
 
@@ -692,16 +693,16 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
 
         container.run_store.get_run = _unreachable  # type: ignore[method-assign]
 
-        with pytest.raises(OSError, match="store unreachable") as refused:
+        with pytest.raises(ChatTurnRefused) as refused:
             await container.route_request(MESSAGES)
 
-        assert not isinstance(refused.value, ChatDispatchUnrecorded)
+        assert isinstance(refused.value.__cause__, OSError)
         assert conduit.calls == 0
 
     async def test_a_failure_before_the_dispatch_is_not_dressed_as_one_after_it(self) -> None:
         """The other half of the same signal. Nothing physical happened, so
         the plain `RunIntegrityError` still reaches the caller and its
-        pre-dispatch rule — answer anyway — still applies."""
+        pre-dispatch rule — refuse, retryably (#1108) — applies."""
         container = await _container()
         conduit = _Conduit(content="42")
 

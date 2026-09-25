@@ -595,11 +595,11 @@ class Container:
 
         A turn with no Run, or no store to record its Attempt in, is refused
         with `ChatTurnRefused` rather than dispatched ungoverned (#1108 owner
-        decision, amending ADR-082326-c126). So is a `RunIntegrityError` the
-        executor re-raises as it is: it only does that for a failure *before*
-        the dispatch -- a Run deleted underneath the turn, or a Graph that is
-        not the one node a turn admits -- so nothing reached the model and the
-        caller can retry. `route_request` closes the Run on the way out.
+        decision, amending ADR-082326-c126). So is any spine failure before
+        the dispatch started -- a Run deleted underneath the turn, a Graph
+        that is not the one node a turn admits, or the store being down --
+        because nothing reached the model and the caller can retry.
+        `route_request` closes the Run on the way out.
 
         The executor raises `ChatDispatchUnrecorded` when the spine failed
         *after* the model answered, carrying that answer; it travels through
@@ -609,11 +609,24 @@ class Container:
         if run is None or self.run_store is None:
             raise ChatTurnRefused("chat turn has no canonical Run to execute under")
         executor = ChatAttemptExecutor(self.run_store)
+        dispatched = False
+
+        async def _tracked() -> dict[str, Any]:
+            nonlocal dispatched
+            dispatched = True
+            return await dispatch()
+
         try:
-            return await executor.execute(run.run_id, messages, dispatch)
+            return await executor.execute(run.run_id, messages, _tracked)
         except ChatDispatchUnrecorded:
             raise
-        except RunIntegrityError as exc:
+        except Exception as exc:
+            # Decided by whether the dispatch started, not by the exception
+            # class. The dispatch itself can raise a `RunIntegrityError` (a
+            # stale fence inside the agent), and a driver error before the
+            # Attempt is no less pre-dispatch for being unwrapped.
+            if dispatched:
+                raise
             raise ChatTurnRefused("chat turn could not be recorded as an Attempt") from exc
 
     async def _admit_chat_turn(

@@ -448,8 +448,10 @@ or placeholder-only section.
   Owner decision 2026-09-23, amending ADR-082326-c126 and superseding #223 AC4.
   `Container.route_request` raises the new `maistro.runs.chat_refusal.ChatTurnRefused`
   when no chat admitter is wired, admission fails (after compensating any Run it
-  persisted), there is no Run store, or the spine fails before the dispatch —
-  the `except RunIntegrityError: return await dispatch()` fallback is gone, so
+  persisted), there is no Run store, or the spine fails (with any error) before
+  the dispatch started — the `except RunIntegrityError: return await dispatch()`
+  fallback is gone, and an error the dispatch itself raised is never turned
+  into a retryable refusal, so
   nothing reaches the model outside a Run/NodeRun/Attempt. maistro-server
   `/v1/chat/completions` maps it to `503` + `Retry-After` for both
   `stream=false` and `stream=true` (admission is refused before the
