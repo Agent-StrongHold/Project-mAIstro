@@ -328,3 +328,53 @@ this round.
   Gate C, integration-scope, MinIO, hive-conductor-e2e-ui and docker-build
   were still IN_PROGRESS with `gates-ran` PENDING — **CI green on the exact
   head remains UNVERIFIED until the rollup settles**.
+
+## Independent verification at exact head c74d5709 (2026-09-25)
+
+Resolves the prior round's "CI green on the exact head remains UNVERIFIED"
+and re-proves the line-89 retention stability at the current merge head.
+
+- Driver checks (all exit 0): `uv sync --locked --extra dev`; `ruff check .`
+  clean; `ruff format --check .` clean (2551 files); focused trio
+  (config, test_pg_sessions.py, test_requested_cancellation.py) →
+  **21 passed**; `scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` → ok (10943 recorded, +2 delta).
+- Own run: `uv run pytest
+  packages/maistro-core/tests/tasks/test_requested_cancellation.py -q` →
+  **10 passed** (2.81 s).
+- Bite check re-derived in a throwaway dir (no worktree mutation):
+  `git archive 55f59f334^` (1e52dc174) sources + head's test file →
+  **10 failed / 0 passed**; at head the same file is 10/10 green. The suite
+  discriminates receipt-only terminalization from the fix.
+- Real-Postgres leg: `aud6-v1242-pg` (127.0.0.1:5599, pg18, migrated),
+  `MAISTRO_TEST_PG_DSN` set: `test_pg_sessions_concurrency.py` green
+  **6× back-to-back** — the line-89 retention race did not recur;
+  `packages/maistro-core/tests` → **10826 passed / 116 skipped / 1 xfailed**
+  (273 s); `packages/hive-conductor/backend/tests` → **2718 passed /
+  6 skipped** (85 s).
+- Closure keywords: `git log 8440274..c74d5709 --format='%s|%b'` grep for
+  fixes/closes/resolves → no matches. Live read-only
+  `gh pr view 1265 --json number,body,headRefOid,isDraft,statusCheckRollup`:
+  body "Refs #1242. Draft claim-stake…", draft, headRefOid = this head.
+- **CI green on the exact head VERIFIED**: statusCheckRollup all SUCCESS —
+  CI `test`, `lint-and-type-check`, quality `coverage` ×3 + Quality gate +
+  Coverage gate, Gate C, integration-scope, postgres pg17/pg18,
+  durable-events, strike-ladder, hive-conductor-e2e(-ui), docker-build,
+  formal-conformance, Compliance registry, exact-debt-ledger, DevSkim, SAST,
+  pip-audit, workflow-lint, pr-base, `gates-ran` SUCCESS; only the
+  conditional "Container scan + SBOM + cosign" is SKIPPED.
+- Residual, not a regression of this branch: one full-repo combined
+  `uv run pytest -x -q` run (all testpaths, single process) hit
+  `hive-conductor/backend/tests/test_auth_throttle_routes.py::
+  TestTheClientKeyCannotBeSpoofed::test_a_forwarded_header_from_a_trusted_proxy_is_used`.
+  The same file passes alone and the whole hive-conductor suite passes alone;
+  `packages/hive-conductor/` has zero diff at this head. Mechanism: multiple
+  top-level `config` modules across packages
+  (hive-conductor/backend/config.py, maistro-turing/backend/config.py,
+  maistro-core/tests/config) share one `sys.modules['config']` slot in a
+  combined run, so a `get_settings` cache cleared against one module object
+  is not the one `routes.auth` read. CI deliberately runs one pytest
+  invocation per package (`quality.yml` "pytest with coverage" step, comment
+  at lines 128-134), so no CI lane exercises that combination. Recorded so
+  future combined-run flakes here are not misattributed to task/persistence
+  changes.
