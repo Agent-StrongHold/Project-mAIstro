@@ -160,6 +160,7 @@ async def test_a_near_deadline_outranks_an_older_undated_question(run_store) -> 
         "counts_by_class": {"time_sensitive": 1, "queued": 2},
         "highest_class": "time_sensitive",
         "rising": ["att-due/ask"],
+        "truncated": False,
     }
 
     # The horizon is configurable, and widening it is the only thing that
@@ -195,6 +196,59 @@ async def test_an_approval_pause_is_a_decision_naming_the_blocked_run(run_store)
     assert item["evidence"]["payload"]["approval_request_id"] == "apr-1"
 
 
+async def test_a_long_old_backlog_cannot_push_out_a_near_deadline(run_store) -> None:
+    """The page ceiling applies after ordering, never to the oldest records first."""
+    ws = await _workspace("admin", "Attention backlog")
+    for index in range(205):
+        await run_store.create(
+            _paused_record(
+                f"att-old-{index:03d}",
+                workspace_id=ws,
+                created_at=_NOW - timedelta(days=300, minutes=index),
+            )
+        )
+    await run_store.create(
+        _paused_record("att-urgent", workspace_id=ws, deadline=_NOW + timedelta(hours=1))
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    assert len(body["items"]) == 200
+    assert body["items"][0]["source_id"] == "att-urgent/ask"
+    assert body["summary"] == {
+        "counts_by_class": {"time_sensitive": 1, "queued": 205},
+        "highest_class": "time_sensitive",
+        "rising": ["att-urgent/ask"],
+        "truncated": True,
+    }
+
+
+async def test_an_overdue_pause_offers_no_answer(run_store) -> None:
+    """The store refuses answers past the deadline; Attention must not offer one."""
+    ws = await _workspace("admin", "Attention overdue")
+    await run_store.create(
+        _paused_record("att-overdue", workspace_id=ws, deadline=_NOW - timedelta(minutes=5))
+    )
+
+    body = await list_attention("admin", ws, now=_NOW)
+
+    assert body is not None
+    (item,) = body["items"]
+    assert item["attention_class"] == "queued"
+    assert item["answer_href"] is None
+    assert item["reason"].startswith(
+        "Answer deadline passed at 2026-09-25T11:55:00+00:00; awaiting expiry."
+    )
+    assert body["summary"]["rising"] == []
+
+
+async def test_a_naive_clock_is_refused(run_store) -> None:
+    ws = await _workspace("admin", "Attention naive clock")
+    with pytest.raises(ValueError, match="timezone"):
+        await list_attention("admin", ws, now=datetime(2026, 9, 25, 12, 0))
+
+
 async def test_a_machine_wait_is_not_attention(run_store) -> None:
     ws = await _workspace("admin", "Attention machine")
     await run_store.create(
@@ -207,7 +261,12 @@ async def test_a_machine_wait_is_not_attention(run_store) -> None:
 
     assert body is not None
     assert body["items"] == []
-    assert body["summary"] == {"counts_by_class": {}, "highest_class": None, "rising": []}
+    assert body["summary"] == {
+        "counts_by_class": {},
+        "highest_class": None,
+        "rising": [],
+        "truncated": False,
+    }
 
 
 async def test_listing_attention_writes_nothing(run_store) -> None:
@@ -251,14 +310,16 @@ async def test_a_failed_run_is_queued_with_its_error(monkeypatch: pytest.MonkeyP
         run.run_id, RunStatus.FAILED, error="upstream tool refused the request"
     )
     projection = get_dag_run_store()
-    await projection.start_run(run_id=run.run_id, canonical_run_id=run.run_id, workspace_id=ws)
-    await projection.finish_run(run.run_id, status="failed")
-    await projection.start_run(run_id="att-other-failed", workspace_id=other)
-    await projection.finish_run("att-other-failed", status="failed")
-    await projection.start_run(run_id="att-completed", workspace_id=ws)
-    await projection.finish_run("att-completed", status="completed")
-
-    body = await list_attention("admin", ws, now=_NOW)
+    seeded = [run.run_id, "att-other-failed", "att-completed"]
+    try:
+        await _seed_projection(projection, run.run_id, ws, other)
+        body = await list_attention("admin", ws, now=_NOW)
+    finally:
+        for run_id in seeded:
+            projection._runs.pop(run_id, None)
+            projection._forget(run_id)
+            if run_id in projection._order:
+                projection._order.remove(run_id)
 
     assert body is not None
     (item,) = [i for i in body["items"] if i["source_kind"] == "failed_run"]
@@ -268,6 +329,15 @@ async def test_a_failed_run_is_queued_with_its_error(monkeypatch: pytest.MonkeyP
     assert item["evidence"]["error"] == "upstream tool refused the request"
     assert item["reason"] == f"Run {run.run_id} failed: upstream tool refused the request"
     assert item["answer_href"] is None
+
+
+async def _seed_projection(projection: Any, run_id: str, ws: str, other: str) -> None:
+    await projection.start_run(run_id=run_id, canonical_run_id=run_id, workspace_id=ws)
+    await projection.finish_run(run_id, status="failed")
+    await projection.start_run(run_id="att-other-failed", workspace_id=other)
+    await projection.finish_run("att-other-failed", status="failed")
+    await projection.start_run(run_id="att-completed", workspace_id=ws)
+    await projection.finish_run("att-completed", status="completed")
 
 
 async def test_route_scopes_attention_to_members(admin_client, authed_client, run_store) -> None:

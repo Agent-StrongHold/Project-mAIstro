@@ -29,7 +29,7 @@ from routes.hitl import (
 )
 
 from maistro.graph.durable_runs import HitlAuthorization, HitlSettlementError, cursor_time
-from maistro.graph.durable_runs.hitl import hitl_deadline
+from maistro.graph.durable_runs.hitl import hitl_deadline, settlement_time
 from maistro.graph.nodes.base import PAUSE_AWAITING_HUMAN_APPROVAL, PAUSE_AWAITING_HUMAN_REVIEW
 from maistro.runs.model import RunStatus
 from services.dag_run_inspection import list_visible_runs
@@ -51,8 +51,10 @@ ATTENTION_CLASSES: tuple[str, ...] = (
 #: How close a persisted deadline must be before it raises its item.
 DEFAULT_TIME_SENSITIVE_HORIZON = timedelta(hours=24)
 
-#: Pending human items one read will classify; the `/v1/hitl/pending` ceiling.
-_MAX_HUMAN_ITEMS = 200
+#: Items one response returns, after ordering; the `/v1/hitl/pending` ceiling.
+#: Applied only once everything scanned is classified and sorted, so a long
+#: backlog of old pauses cannot push a near deadline out of the page.
+_MAX_ITEMS = 200
 
 _DECISION_REASONS = {
     PAUSE_AWAITING_HUMAN_APPROVAL: "approval",
@@ -79,11 +81,14 @@ class _Item:
         )
 
 
-async def _paused_records(user_id: str, workspace_id: str) -> list[tuple[Any, PendingHumanWork]]:
+async def _paused_records(
+    user_id: str, workspace_id: str
+) -> tuple[list[tuple[Any, PendingHumanWork]], bool]:
     """Human pauses in one Workspace, walked the way `/v1/hitl/pending` walks them.
 
     Same keyset cursor, page size, and record ceiling, and the same per-record
-    revalidation against live membership before a payload is disclosed.
+    revalidation against live membership before a payload is disclosed. The
+    second value says whether the record ceiling stopped the walk early.
     """
     from services.dag_agents import get_run_store
 
@@ -97,7 +102,7 @@ async def _paused_records(user_id: str, workspace_id: str) -> list[tuple[Any, Pe
     found: list[tuple[Any, PendingHumanWork]] = []
     cursor: tuple[str, str] | None = None
     inspected = 0
-    while len(found) < _MAX_HUMAN_ITEMS and inspected < _MAX_PENDING_SCAN_RECORDS:
+    while inspected < _MAX_PENDING_SCAN_RECORDS:
         records = await store.list_by_status(
             RunStatus.PAUSED,
             limit=min(_PENDING_SCAN_PAGE_SIZE, _MAX_PENDING_SCAN_RECORDS - inspected),
@@ -105,14 +110,14 @@ async def _paused_records(user_id: str, workspace_id: str) -> list[tuple[Any, Pe
             after=cursor,
         )
         if not records:
-            break
+            return found, False
         inspected += len(records)
         for record in records:
             pending = _pending_items(record)
             if pending and await authorization.permits(record.run.workspace_id):
                 found.extend((record, item) for item in pending)
         cursor = (cursor_time(records[-1].run.created_at), records[-1].run_id)
-    return found[:_MAX_HUMAN_ITEMS]
+    return found, True
 
 
 def _deadline(record: Any, node_id: str) -> datetime | None:
@@ -133,10 +138,17 @@ def _human_item(
     else:
         base = f"Run {pending.run_id} is waiting on your answer at node {pending.node_id}"
     deadline = _deadline(record, pending.node_id)
-    time_sensitive = deadline is not None and deadline - now <= horizon
-    reason = (
-        f"Answer due by {deadline.isoformat()}; {base}" if time_sensitive and deadline else base
-    )
+    answer_href: str | None = f"/v1/hitl/{pending.run_id}/{pending.node_id}/answer"
+    time_sensitive = False
+    reason = base
+    if deadline is not None and deadline <= now:
+        # The store refuses answers at or after the deadline, so offering one
+        # would point the user at a door that is already shut.
+        reason = f"Answer deadline passed at {deadline.isoformat()}; awaiting expiry. {base}"
+        answer_href = None
+    elif deadline is not None and deadline - now <= horizon:
+        time_sensitive = True
+        reason = f"Answer due by {deadline.isoformat()}; {base}"
     return _Item(
         source_kind="hitl_node_run",
         source_id=f"{pending.run_id}/{pending.node_id}",
@@ -149,7 +161,7 @@ def _human_item(
             "paused_at": pending.paused_at,
             "payload": pending.payload,
         },
-        answer_href=f"/v1/hitl/{pending.run_id}/{pending.node_id}/answer",
+        answer_href=answer_href,
         deadline=deadline,
     )
 
@@ -157,7 +169,7 @@ def _human_item(
 def _failed_item(summary: dict[str, Any]) -> _Item:
     run_id = str(summary.get("id") or "")
     error = summary.get("error")
-    failed_nodes = sorted(
+    failed_node_keys = sorted(
         str(node) for node, state in (summary.get("node_states") or {}).items() if state == "failed"
     )
     return _Item(
@@ -168,7 +180,7 @@ def _failed_item(summary: dict[str, Any]) -> _Item:
         reason=f"Run {run_id} failed: {error}" if error else f"Run {run_id} failed",
         evidence={
             "error": error,
-            "failed_nodes": failed_nodes,
+            "failed_node_keys": failed_node_keys,
             "dag_id": summary.get("dag_id") or None,
             "finished_at": summary.get("finished_at"),
         },
@@ -184,12 +196,13 @@ async def _failed_runs(user_id: str, workspace_id: str) -> list[_Item]:
     ]
 
 
-def _summary(items: list[_Item]) -> dict[str, Any]:
+def _summary(items: list[_Item], *, truncated: bool) -> dict[str, Any]:
     counts = Counter(item.attention_class for item in items)
     return {
         "counts_by_class": {name: counts[name] for name in ATTENTION_CLASSES if counts[name]},
         "highest_class": items[0].attention_class if items else None,
         "rising": [item.source_id for item in items if item.attention_class == "time_sensitive"],
+        "truncated": truncated,
     }
 
 
@@ -216,18 +229,20 @@ async def list_attention(
     """The caller's Attention items in one Workspace, or None when not a member.
 
     None is also the answer for a Workspace that does not exist, so a caller
-    cannot tell the two apart.
+    cannot tell the two apart. The summary covers everything scanned, and
+    `truncated` says when that is not everything canonical state holds or
+    when `items` was cut to the page ceiling.
     """
+    now = settlement_time(now)
     if not await is_member(user_id, workspace_id):
         return None
-    items = [
-        _human_item(record, pending, now=now, horizon=horizon)
-        for record, pending in await _paused_records(user_id, workspace_id)
-    ]
+    paused, scan_capped = await _paused_records(user_id, workspace_id)
+    items = [_human_item(record, pending, now=now, horizon=horizon) for record, pending in paused]
     items.extend(await _failed_runs(user_id, workspace_id))
     items.sort(key=_Item.sort_key)
+    truncated = scan_capped or len(items) > _MAX_ITEMS
     return {
         "workspace_id": workspace_id,
-        "items": [_public(item, rank) for rank, item in enumerate(items, start=1)],
-        "summary": _summary(items),
+        "items": [_public(item, rank) for rank, item in enumerate(items[:_MAX_ITEMS], start=1)],
+        "summary": _summary(items, truncated=truncated),
     }
