@@ -20,9 +20,7 @@ related:
 supersedes: []
 blocks: []
 blocked-by: []
-contracts:
-  - boundary
-  - behavioral
+contracts: []
 tests: []
 layer: Memory
 owners:
