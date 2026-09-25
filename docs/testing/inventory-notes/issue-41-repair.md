@@ -165,3 +165,62 @@ FAILURE with the run still in progress (logs unavailable) and several checks
 pending — CI state is UNVERIFIED and was not inferred green. The previous
 round's push rejection (non-fast-forward) remains a driver-level action;
 workers are prohibited from pushing.
+
+## Round 7 — independent verification at 77d18bdf (develop merged in)
+
+Head under review: `77d18bdf750cdb21046d8fde89aa90185d38c8d3` (merge of develop
+`84402748f4ac3df538b0fa85beb33bc991013bb6` into auto-41; the merge touches only
+M2-A7 learnings-persistence files, not the #41 admission surfaces — confirmed by
+`git diff --stat 4c573dee8..77d18bd`). All checks below were executed this round
+by the verifier against the pg18 container at `127.0.0.1:5591`
+(`auto-41-repair-pg`), from a dotenv-free CWD where needed because the untracked
+root `.env` (non-JSON `API_KEYS`) still breaks any `Settings`-importing suite
+started at the repo root — environment, not tree.
+
+Executed battery (all green, this round, this head):
+- `tests/migrations/test_migration_chain.py` live PG: **15 passed** (53s) —
+  prior finding 1 (EXPECTED_TABLES vs live catalog) stands resolved.
+- `alembic upgrade head` on the same DB: chain reaches `036_audit_log_org_scope`
+  via 037 -> 038 -> 039 -> 040 -> 036_audit_log_org_scope.
+- Idempotency trio with `MAISTRO_TEST_PG_DSN` (`test_idempotency.py`,
+  `test_idempotency_durable.py`, server `test_tasks_idempotency.py`):
+  **92 passed / 0 skipped** — the durable tier genuinely ran, unlike the
+  driver's DSN-less check-3 (91 passed / 1 skipped).
+- Acceptance battery `tasks/test_admission.py`, `runs/test_chat_admission.py`,
+  `runs/test_execution_is_correlated.py`, `integration/test_chat_to_graph_e2e.py`:
+  **67 passed**. Conductor `test_chat_run_admission.py` +
+  `test_engine_service.py`: **55 passed**.
+- `packages/maistro-core/tests/runs` (migrated chain, live PG):
+  **1063 passed / 3 skipped** (61s).
+- `packages/maistro-server/tests`: **375 passed** (16s).
+- `packages/hive-conductor/backend/tests`: **2719 passed / 6 skipped** (97s).
+- `ruff check .` re-run from a dotenv-free CWD: clean. Driver's own checks 0–7
+  all green this round (uv sync, ruff check, ruff format --check 2550 files,
+  DSN-less idempotency trio 91/1s, engine service 35, inventory gates
+  2725/10956/375).
+- Production-wiring spot-check at this head: `engine.py:233-235` passes
+  `admitter=self.task_admitter, run_store=self.run_store,
+  idempotency_store=self.task_idempotency` into `LocalTaskBackend`;
+  `maistro_server/main.py:334` wires `idempotency_store=container.task_idempotency`;
+  `tasks/queue.py` mints receipts and admits via `TaskRunAdmitter.admit() ->
+  run_id` without fabricating Runs when no admitter is wired;
+  `runs/admission.py:direct_work_graph` is the one-node Graph seam.
+
+Governance: `gh issue view 1176` read-only = **CLOSED** (finding 4 resolved);
+#41 itself OPEN. Closure-keyword scan of the PR body ("Refs #41" only) and all
+27 commits in `84402748..77d18bd`: none. PR #1325 `headRefOid` confirmed equal
+to the reviewed head via read-only refresh.
+
+Previous block resolved: the round-6 push rejection (non-fast-forward) no longer
+stands — after `git fetch origin auto-41`, `git rev-list --left-right --count
+auto-41...origin/auto-41` is `0 0`: the remote branch already points at this
+head. No push was performed (prohibited).
+
+Outstanding (driver/human, not acceptance-blocking): PR CI at this head has
+**Quality gate (Pillars 1–4, 7, 8) = FAILURE** (run 36180011060, job
+108219796165) — the same gate that was failing in round 6; its logs are
+unavailable while the run is still in progress (Coverage gate job pending), so
+the cause is UNVERIFIED and was not inferred either way. 26 other checks are
+SUCCESS (incl. postgres pg17/pg18, coverage PostgreSQL, lint-and-type-check,
+hive-conductor-e2e); `integration-scope`, `test`, and the Coverage gate were
+still in progress at review time.
