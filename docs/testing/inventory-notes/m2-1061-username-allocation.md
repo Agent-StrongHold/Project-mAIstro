@@ -210,3 +210,44 @@ end-to-end diff-coverage pass recorded above carries over:
   (barrier-timeout window); it then passed 5/5 alone and the full file
   passed 3/3, and the same 4-file combination passed on rerun. No code
   change made; noted as a load-sensitive concurrency test.
+
+## Independent verification 2026-09-25 (head `e41ebb2f0`)
+
+Re-derived all nine acceptance criteria from the issue text and re-executed
+them on this exact head; working tree was clean before and after (doc-only
+append by this record).
+
+- Full suites on this head: hive-conductor backend `2741 passed, 6 skipped`;
+  maistro-core `10233 passed, 673 skipped, 1 xfailed`.
+- Named acceptance tests re-run individually, all PASSED:
+  `test_many_case_variants_have_one_winner_on_shared_persistence` (32
+  threads / 2 replicas / shared SQLite → 1 winner, 1 row, 1 claim),
+  `test_scan_then_write_mutation_loses_the_race` (executed mutant: 8/8
+  winners — harness proves it detects the duplication),
+  `test_allocator_calls_storage_atomic_claim_seam`,
+  `test_historical_duplicate_is_quarantined_not_winner_selected`,
+  `TestPutRawWithUniqueClaims::test_lost_claim_race_refuses_and_writes_no_record`,
+  `TestPutRawWithUniqueClaims::test_failed_record_insert_rolls_back_the_claim`,
+  `TestInvitations::test_durable_claim_loses_after_the_in_memory_check_passes`.
+- Mutation sensitivity of the route-shape assertion independently confirmed
+  in memory (no tree edit): real `register` source passes
+  `test_registration_route_uses_atomic_allocator_not_scan_then_write`'s
+  assertions; the same source with `username_registry.create_users([user])`
+  replaced by `_username_taken()` + `stores.users[user_id] = user` fails them.
+- Gates re-run on this head: `ruff check .` clean, `ruff format --check .`
+  clean (2548 files), `check-suite-inventory` ok for both suites (2747 /
+  10907 recorded), `check-vulture-baseline` rc 0, `mypy` clean (713 files).
+- Surfaces re-checked in source: register (open + invitation)
+  `routes/auth.py` and setup `_provision_first_run` both allocate via
+  `username_registry.create_users`; `services/oauth_login.py` creates no
+  users (link-only); no rename surface exists (grep: none); the only
+  remaining direct `stores.users[...] =` writes are field updates to
+  already-claimed accounts (login rehash, permissions).
+- Boundary re-checked: `username_claims` is a `JsonStore` index of plain
+  dicts (no second User model); claim key is the normalized username from
+  the request, not the invitation token; `registration_policy` (#313) is
+  untouched by the branch diff.
+- PR #1453 body and all 19 branch commits scanned for closure keywords:
+  none (`Refs #1061` only). Prior round's push-rejection block is obsolete:
+  `origin/auto-1061` already resolves to `e41ebb2f0` (same as PR head) and
+  `origin/develop` is an ancestor of this head.
