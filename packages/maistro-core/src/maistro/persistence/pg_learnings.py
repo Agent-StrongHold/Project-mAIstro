@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.learnings.scope import learning_scope_predicate
 from maistro.memory.vectors import EMBEDDING_DIMENSIONS, to_pgvector_literal
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.learning_contract import (
+    LEARNING_GENERATED_FIELDS,
+    LEARNING_PERSISTED_FIELDS,
+)
 from maistro.types.memory import Learning
 
 if TYPE_CHECKING:
@@ -20,8 +26,36 @@ logger = logging.getLogger("maistro.persistence.learnings")
 #: in the query that uses it.
 _ITERATIVE_SCAN = "relaxed_order"
 
+# Kept next to the INSERT contract so the conformance test can detect a new
+# Learning field that is not represented by both persistence twins.
+_PG_PERSISTED_FIELDS = LEARNING_PERSISTED_FIELDS
+_PG_GENERATED_FIELDS = LEARNING_GENERATED_FIELDS
+_PG_INSERT_FIELDS = (
+    "category",
+    "trigger_keys",
+    "learning",
+    "tool_name",
+    "source_query",
+    "agent_id",
+    "user_id",
+    "org_id",
+    "team_id",
+    "scope",
+    "hit_count",
+    "status",
+    "rca_category",
+    "rca_prevention",
+    "success_after_use",
+    "failure_after_use",
+    "run_id",
+    "node_run_id",
+    "attempt_id",
+)
 
-def similarity_query(*, scoped_to_agent: bool) -> str:
+
+def similarity_query(
+    *, scoped_to_agent: bool, scoped_to_user: bool = False, scoped_to_team: bool = False
+) -> str:
     """The SQL `find_similar` runs, built in one place.
 
     A module function rather than an inline string so a test can `EXPLAIN` the
@@ -29,16 +63,30 @@ def similarity_query(*, scoped_to_agent: bool) -> str:
     filter, rather than Python applying it after an unscoped fetch -- is only
     visible in the plan, and a plan check against a hand-copied query proves
     nothing about the query that actually runs.
+
+    Each requested axis admits its shared bucket: a row whose value on that
+    axis is the empty string belongs to the whole org, so an agent- or
+    team-scoped read must still see it (the migration suite pins this for the
+    agent axis). `org_id` stays exact -- it is a scope, not a wildcard.
     """
-    agent_clause = " AND (agent_id = $3 OR agent_id = '')" if scoped_to_agent else ""
-    limit_placeholder = 4 if scoped_to_agent else 3
+    clauses = [
+        "status = 'active'",
+        "org_id = $2",
+        "embedding IS NOT NULL",
+    ]
+    next_placeholder = 3
+    for enabled, column in (
+        (scoped_to_team, "team_id"),
+        (scoped_to_user, "user_id"),
+        (scoped_to_agent, "agent_id"),
+    ):
+        if enabled:
+            clauses.append(f"({column} = ${next_placeholder} OR {column} = '')")
+            next_placeholder += 1
     return (
-        "SELECT * FROM learnings"
-        " WHERE status = 'active'"
-        " AND org_id = $2"
-        " AND embedding IS NOT NULL"
-        f"{agent_clause}"
-        f" ORDER BY embedding <=> $1::vector LIMIT ${limit_placeholder}"
+        "SELECT * FROM learnings WHERE "
+        + " AND ".join(clauses)
+        + f" ORDER BY embedding <=> $1::vector LIMIT ${next_placeholder}"
     )
 
 
@@ -72,6 +120,10 @@ class PgLearningStore:
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope "
                 "ON learnings (org_id, agent_id, status)"
             )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_scope_axes "
+                "ON learnings (org_id, team_id, user_id, agent_id, status)"
+            )
 
     async def store(self, learning: Learning) -> int:
         """Store a learning, naming the execution that produced it.
@@ -86,23 +138,9 @@ class PgLearningStore:
             attempt_id=learning.attempt_id,
         )
         async with self._pool.acquire() as conn:
-            existing = await conn.fetch(
-                """SELECT id, trigger_keys FROM learnings
-                   WHERE tool_name = $1 AND org_id = $2 AND status = 'active'""",
-                learning.tool_name,
-                learning.org_id or "",
-            )
-            for row in existing:
-                existing_keys = set(_load_keys(row["trigger_keys"]))
-                new_keys = set(learning.trigger_keys)
-                if new_keys and existing_keys:
-                    overlap = len(new_keys & existing_keys) / len(new_keys)
-                    if overlap >= 0.5:
-                        await conn.execute(
-                            "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
-                            row["id"],
-                        )
-                        return int(row["id"])
+            duplicate_id = await self._duplicate_id(conn, learning)
+            if duplicate_id is not None:
+                return duplicate_id
 
             row = await conn.fetchrow(
                 # source_query, team_id and hit_count are written, not
@@ -141,6 +179,42 @@ class PgLearningStore:
                 *provenance.as_columns(),
             )
             return int(row["id"]) if row else 0
+
+    async def _duplicate_id(
+        self,
+        conn: asyncpg.Connection,
+        learning: Learning,
+    ) -> int | None:
+        """Return the id of the active same-scope row sharing enough keys.
+
+        Resolved before the insert so the probe and the write cannot disagree
+        about what counts as a duplicate; the overlap rule matches the SQLite
+        twin (`>= 0.5` containment, not the in-memory store's Jaccard) because
+        the two probes answer the same product question.
+        """
+        existing = await conn.fetch(
+            """SELECT id, trigger_keys FROM learnings
+               WHERE tool_name = $1 AND org_id = $2
+                 AND team_id = $3 AND user_id IS NOT DISTINCT FROM $4
+                 AND agent_id = $5 AND status = 'active'""",
+            learning.tool_name,
+            learning.org_id or "",
+            learning.team_id or "",
+            learning.user_id,
+            learning.agent_id or "",
+        )
+        new_keys = set(learning.trigger_keys)
+        for row in existing:
+            existing_keys = set(_load_keys(row["trigger_keys"]))
+            if new_keys and existing_keys:
+                overlap = len(new_keys & existing_keys) / len(new_keys)
+                if overlap >= 0.5:
+                    await conn.execute(
+                        "UPDATE learnings SET hit_count = hit_count + 1 WHERE id = $1",
+                        row["id"],
+                    )
+                    return int(row["id"])
+        return None
 
     async def text_of(self, learning_id: int) -> str:
         """The learning text as it is actually stored.
@@ -186,6 +260,8 @@ class PgLearningStore:
         *,
         org_id: str = "",
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         max_results: int = 10,
     ) -> list[Learning]:
         """Scope-filtered, similarity-ranked learnings, in one query.
@@ -216,9 +292,17 @@ class PgLearningStore:
             raise ValueError(msg)
 
         params: list[Any] = [to_pgvector_literal(query_embedding), org_id]
+        if team_id:
+            params.append(team_id)
+        if user_id:
+            params.append(user_id)
         if agent_id:
             params.append(agent_id)
-        query = similarity_query(scoped_to_agent=bool(agent_id))
+        query = similarity_query(
+            scoped_to_team=bool(team_id),
+            scoped_to_user=bool(user_id),
+            scoped_to_agent=bool(agent_id),
+        )
         params.append(max_results)
 
         # HNSW searches approximately and *then* applies the scope predicate, so
@@ -244,31 +328,34 @@ class PgLearningStore:
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
-        """Find relevant learnings by keyword match, within `org_id`'s scope.
+        """Find relevant learnings by keyword match within the requested scope.
 
-        Same defect and same rule as `SqliteLearningStore.find_relevant`:
-        `org_id` was accepted and never used, while the results are
-        interpolated into the agent's system prompt. Org matching is exact —
-        an empty `org_id` matches only rows that have none, and there is no
-        global bucket that every org can read. See that method's docstring for
-        why `org_id = ''` is not analogous to the `agent_id = ''` widening
-        still used below.
+        The org predicate is always exact, including for an empty `org_id`.
+        Optional team, user and agent predicates each admit the org's shared
+        bucket: a row whose value on the requested axis is empty belongs to
+        the whole org, so narrowing to one agent must not hide shared
+        learnings. All predicates run in PostgreSQL before keyword scoring:
+        these results are interpolated into the agent's system prompt, so
+        scope filtering is an authorization boundary rather than a
+        presentation filter.
         """
+        scope_sql, scope_params = learning_scope_predicate(
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            placeholders=(f"${n}" for n in itertools.count(1)),
+        )
         async with self._pool.acquire() as conn:
-            query = """
-                SELECT * FROM learnings
-                WHERE status = 'active'
-                  AND org_id = $1
-            """
-            params: list[Any] = [org_id]
-            if agent_id:
-                query += " AND (agent_id = $2 OR agent_id = '')"
-                params.append(agent_id)
-
-            rows = await conn.fetch(query, *params)
+            rows = await conn.fetch(
+                f"SELECT * FROM learnings WHERE status = 'active' AND {scope_sql}",
+                *scope_params,
+            )
 
         text_lower = user_text.lower()
         scored: list[tuple[float, Learning]] = []
@@ -357,14 +444,25 @@ class PgLearningStore:
         self,
         task_type: str | None = None,
         org_id: str = "",
+        *,
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings."""
+        """Get promoted learnings within the requested scope."""
+        scope_sql, scope_params = learning_scope_predicate(
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            placeholders=(f"${n}" for n in itertools.count(1)),
+        )
+        query = f"SELECT * FROM learnings WHERE status = 'promoted' AND {scope_sql}"
+        params: list[Any] = scope_params
+        if task_type:
+            query += f" AND category = ${len(params) + 1}"
+            params.append(task_type)
         async with self._pool.acquire() as conn:
-            query = "SELECT * FROM learnings WHERE status = 'promoted' AND org_id = $1"
-            params: list[Any] = [org_id]
-            if task_type:
-                query += " AND category = $2"
-                params.append(task_type)
             rows = await conn.fetch(query, *params)
             return [_row_to_learning(r) for r in rows]
 

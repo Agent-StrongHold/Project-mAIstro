@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from typing import TYPE_CHECKING, Any
 
+from maistro.memory.learnings.scope import learning_scope_predicate
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.learning_contract import (
+    LEARNING_GENERATED_FIELDS,
+    LEARNING_PERSISTED_FIELDS,
+)
 from maistro.sqlite_schema import serialized_schema_upgrade
 from maistro.types.memory import Learning, MemoryScope
 
@@ -19,9 +25,11 @@ CREATE TABLE IF NOT EXISTS learnings (
     trigger_keys TEXT NOT NULL DEFAULT '[]',
     learning TEXT NOT NULL DEFAULT '',
     tool_name TEXT NOT NULL DEFAULT '',
+    source_query TEXT NOT NULL DEFAULT '',
     agent_id TEXT NOT NULL DEFAULT '',
     user_id TEXT,
     org_id TEXT NOT NULL DEFAULT '',
+    team_id TEXT NOT NULL DEFAULT '',
     scope TEXT NOT NULL DEFAULT 'agent',
     hit_count INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
@@ -35,10 +43,44 @@ CREATE TABLE IF NOT EXISTS learnings (
 )
 """
 
+#: Columns added to existing SQLite files without a default. NULL preserves the
+#: fact that an older row never recorded a scope/provenance value; the mapper
+#: exposes that absence as the dataclass's empty-string shape.
+_LEGACY_UPGRADE_COLUMNS = {
+    "source_query": "TEXT",
+    "team_id": "TEXT",
+}
+
 #: The producer columns, nullable for the same reason migration 026 makes them
 #: nullable in PostgreSQL: a row written with no execution in scope names none,
 #: and `''` would name a Run whose id is empty (#709).
 _PROVENANCE_COLUMNS = ("run_id", "node_run_id", "attempt_id")
+
+# Kept next to the SQL so the conformance test can detect a new Learning field
+# that is not represented by both persistence twins.
+_SQLITE_PERSISTED_FIELDS = LEARNING_PERSISTED_FIELDS
+_SQLITE_GENERATED_FIELDS = LEARNING_GENERATED_FIELDS
+_SQLITE_INSERT_FIELDS = (
+    "category",
+    "trigger_keys",
+    "learning",
+    "tool_name",
+    "source_query",
+    "agent_id",
+    "user_id",
+    "org_id",
+    "team_id",
+    "scope",
+    "hit_count",
+    "status",
+    "rca_category",
+    "rca_prevention",
+    "success_after_use",
+    "failure_after_use",
+    "run_id",
+    "node_run_id",
+    "attempt_id",
+)
 
 
 class SqliteLearningStore:
@@ -50,12 +92,12 @@ class SqliteLearningStore:
     async def ensure_schema(self) -> None:
         """Create the learnings table, and upgrade one created before its columns.
 
-        `org_id` was in the `Learning` dataclass and in every store method's
-        signature long before it was a column, so a database created by an
-        earlier version has rows the scope filter cannot see. SQLite has no
-        `ADD COLUMN IF NOT EXISTS`, so the column list is inspected first;
-        `ALTER TABLE ... ADD COLUMN` with a constant default is a metadata-only
-        operation, so this is cheap even on a large table.
+        `org_id`, `team_id` and `source_query` were in the `Learning` dataclass
+        long before the SQLite twin stored all of them, so a database created by
+        an earlier version needs an in-place upgrade. SQLite has no
+        `ADD COLUMN IF NOT EXISTS`, so the column list is inspected first.
+        The late fields are added without a default: existing rows have unknown
+        scope or provenance and must not be silently fabricated.
         """
         async with serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
@@ -74,8 +116,17 @@ class SqliteLearningStore:
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_run_id ON learnings (run_id)"
             )
+            for column, column_type in _LEGACY_UPGRADE_COLUMNS.items():
+                if column not in columns:
+                    await self._conn.execute(
+                        f"ALTER TABLE learnings ADD COLUMN {column} {column_type}"
+                    )
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_scope ON learnings (org_id, agent_id, status)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_scope_axes "
+                "ON learnings (org_id, team_id, user_id, agent_id, status)"
             )
 
     async def store(self, learning: Learning) -> int:
@@ -93,10 +144,60 @@ class SqliteLearningStore:
         # for org A could match org B's row, bump B's hit_count and return B's
         # id to A — a cross-scope write and an id leak, not merely a missed
         # insert.
+        duplicate_id = await self._duplicate_id(learning)
+        if duplicate_id is not None:
+            return duplicate_id
+
+        insert_cursor = await self._conn.execute(
+            """INSERT INTO learnings
+               (category, trigger_keys, learning, tool_name, source_query,
+                agent_id, user_id, org_id, team_id, scope, hit_count, status,
+                rca_category, rca_prevention,
+                success_after_use, failure_after_use,
+                run_id, node_run_id, attempt_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                learning.category,
+                json.dumps(list(learning.trigger_keys)),
+                learning.learning,
+                learning.tool_name,
+                learning.source_query,
+                learning.agent_id or "",
+                learning.user_id,
+                learning.org_id or "",
+                learning.team_id or "",
+                learning.scope,
+                learning.hit_count,
+                learning.status,
+                learning.rca_category,
+                learning.rca_prevention,
+                learning.success_after_use,
+                learning.failure_after_use,
+                *provenance.as_columns(),
+            ),
+        )
+        await self._conn.commit()
+        return insert_cursor.lastrowid or 0
+
+    async def _duplicate_id(self, learning: Learning) -> int | None:
+        """Return the id of the active same-scope row sharing enough keys.
+
+        Resolved before the insert path so the probe and the write cannot
+        disagree about what counts as a duplicate; the overlap rule matches the
+        PostgreSQL twin (`>= 0.5` containment, not the in-memory store's
+        Jaccard) because the two probes answer the same product question.
+        """
         cursor = await self._conn.execute(
             "SELECT id, trigger_keys FROM learnings "
-            "WHERE tool_name = ? AND org_id = ? AND status = 'active'",
-            (learning.tool_name, learning.org_id or ""),
+            "WHERE tool_name = ? AND org_id = ? AND team_id IS ? "
+            "AND user_id IS ? AND agent_id IS ? AND status = 'active'",
+            (
+                learning.tool_name,
+                learning.org_id or "",
+                learning.team_id or "",
+                learning.user_id,
+                learning.agent_id or "",
+            ),
         )
         existing = await cursor.fetchall()
         new_keys = set(learning.trigger_keys)
@@ -111,74 +212,40 @@ class SqliteLearningStore:
                     )
                     await self._conn.commit()
                     return int(row[0])
-
-        insert_cursor = await self._conn.execute(
-            """INSERT INTO learnings
-               (category, trigger_keys, learning, tool_name,
-                agent_id, user_id, org_id, scope, status,
-                rca_category, rca_prevention,
-                success_after_use, failure_after_use,
-                run_id, node_run_id, attempt_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                learning.category,
-                json.dumps(list(learning.trigger_keys)),
-                learning.learning,
-                learning.tool_name,
-                learning.agent_id or "",
-                learning.user_id,
-                learning.org_id or "",
-                learning.scope,
-                learning.status,
-                learning.rca_category,
-                learning.rca_prevention,
-                learning.success_after_use,
-                learning.failure_after_use,
-                *provenance.as_columns(),
-            ),
-        )
-        await self._conn.commit()
-        return insert_cursor.lastrowid or 0
+        return None
 
     async def find_relevant(
         self,
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
-        """Find relevant learnings by keyword match, within `org_id`'s scope.
+        """Find relevant learnings by keyword match within the requested scope.
 
-        `org_id` was accepted and ignored: the query was
-        `SELECT * FROM learnings WHERE status = 'active'` with no scope
-        predicate at all, and the results are interpolated into the agent's
-        *system* prompt. Filtering matters here more than in a normal read path
-        because a learning is an instruction, not a datum.
+        The org predicate is always exact, including for an empty `org_id`, so
+        an unscoped caller cannot read another org's instruction. Optional
+        team, user and agent predicates each admit the org's shared bucket — a
+        row whose value on the requested axis is empty belongs to the whole
+        org — and are applied in SQL before keyword scoring. This matters
+        because a learning is an instruction interpolated into the agent's
+        *system* prompt, not a datum.
 
-        Org matching is exact: `org_id` matches only rows carrying that same
-        `org_id`, and an empty `org_id` matches only rows that have none. There
-        is deliberately no global bucket. An earlier form of this predicate
-        also admitted `org_id = ''` rows to every caller, mirroring the
-        `agent_id = ''` convention on the line below, but the two are not
-        analogous — `agent_id = ''` widens within one org, while `org_id = ''`
-        crosses the tenancy boundary that SPEC-216 names a non-goal ("cross-org
-        learning sharing of any kind"). Any write path that failed to set
-        `org_id` silently published into that bucket, and a learning is an
-        instruction interpolated into the system prompt, not a datum.
-
-        This matches `InMemoryLearningStore`, the reference implementation the
-        spec describes; the SQL stores had drifted from it.
+        The predicate is shared with `InMemoryLearningStore`; keeping one
+        visibility rule prevents the backends from drifting again.
         """
-        query = "SELECT * FROM learnings WHERE status = 'active'"
-        params: list[Any] = []
-        query += " AND org_id = ?"
-        params.append(org_id)
-        if agent_id:
-            query += " AND (agent_id = ? OR agent_id = '')"
-            params.append(agent_id)
-
-        cursor = await self._conn.execute(query, params)
+        scope_sql, scope_params = learning_scope_predicate(
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            placeholders=itertools.repeat("?"),
+        )
+        query = f"SELECT * FROM learnings WHERE status = 'active' AND {scope_sql}"
+        cursor = await self._conn.execute(query, scope_params)
         columns = [d[0] for d in cursor.description]
         rows = await cursor.fetchall()
 
@@ -274,10 +341,21 @@ class SqliteLearningStore:
         self,
         task_type: str | None = None,
         org_id: str = "",
+        *,
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings."""
-        query = "SELECT * FROM learnings WHERE status = 'promoted' AND org_id = ?"
-        params: list[Any] = [org_id]
+        """Get promoted learnings within the requested scope."""
+        scope_sql, scope_params = learning_scope_predicate(
+            org_id=org_id,
+            team_id=team_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            placeholders=itertools.repeat("?"),
+        )
+        query = f"SELECT * FROM learnings WHERE status = 'promoted' AND {scope_sql}"
+        params: list[Any] = scope_params
         if task_type:
             query += " AND category = ?"
             params.append(task_type)
@@ -314,9 +392,11 @@ def _row_to_learning(row: dict[str, Any]) -> Learning:
         trigger_keys=json.loads(row.get("trigger_keys") or "[]"),
         learning=row["learning"],
         tool_name=row.get("tool_name") or "",
+        source_query=_text(row, "source_query"),
         agent_id=row.get("agent_id") or None,
         user_id=row.get("user_id"),
         org_id=row.get("org_id") or "",
+        team_id=_text(row, "team_id"),
         scope=MemoryScope(row.get("scope") or "agent"),
         hit_count=row.get("hit_count", 0),
         status=row.get("status") or "active",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from maistro.memory.learnings.scope import matches_learning_scope
 from maistro.memory.types import Learning
 from maistro.observability.correlation import observed_provenance
 
@@ -44,6 +45,25 @@ class InMemoryLearningStore:
         learning.run_id = provenance.run_id
         learning.node_run_id = provenance.node_run_id
         learning.attempt_id = provenance.attempt_id
+        duplicate = self._duplicate_of(learning)
+        if duplicate is not None:
+            return duplicate.id or 0
+
+        if len(self._learnings) >= self._max:
+            self._learnings.pop(0)
+
+        learning.id = self._next_id
+        self._next_id += 1
+        self._learnings.append(learning)
+        return learning.id
+
+    def _duplicate_of(self, learning: Learning) -> Learning | None:
+        """Return the active same-scope learning whose keys overlap enough.
+
+        The caller supplies the mutation: the overwrite that dedup means here
+        replaces the surviving row's text, keys and producer in one move, so
+        this scan only decides *which* row wins (Codex, #709).
+        """
         new_keys = set(learning.trigger_keys)
         for existing in self._learnings:
             if existing.tool_name != learning.tool_name:
@@ -51,6 +71,8 @@ class InMemoryLearningStore:
             if existing.agent_id != learning.agent_id:
                 continue
             if existing.org_id != learning.org_id:
+                continue
+            if existing.team_id != learning.team_id or existing.user_id != learning.user_id:
                 continue
             if existing.status != "active":
                 continue
@@ -74,39 +96,36 @@ class InMemoryLearningStore:
                 existing.run_id = learning.run_id
                 existing.node_run_id = learning.node_run_id
                 existing.attempt_id = learning.attempt_id
-                return existing.id or 0
-
-        if len(self._learnings) >= self._max:
-            self._learnings.pop(0)
-
-        learning.id = self._next_id
-        self._next_id += 1
-        self._learnings.append(learning)
-        return learning.id
+                return existing
+        return None
 
     async def find_relevant(
         self,
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
-        """Find learnings relevant to user text, scoped by org."""
+        """Find learnings by keyword, applying the requested scope axes."""
         text_lower = user_text.lower()
         scored: list[tuple[float, Learning]] = []
 
         for learning in self._learnings:
             if learning.status != "active":
                 continue
-            if agent_id and learning.agent_id != agent_id:
-                continue
-            if org_id and learning.org_id != org_id:
-                continue
-            if not org_id and learning.org_id:
+            if not matches_learning_scope(
+                learning,
+                org_id=org_id,
+                team_id=team_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            ):
                 continue
 
-            score = sum(1 for k in learning.trigger_keys if k and k in text_lower)
+            score = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
             if score > 0:
                 scored.append((score, learning))
 
@@ -174,18 +193,25 @@ class InMemoryLearningStore:
         self,
         task_type: str | None = None,
         org_id: str = "",
+        *,
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings, scoped by org."""
-        results: list[Learning] = []
-        for lr in self._learnings:
-            if lr.status != "promoted":
-                continue
-            if org_id and lr.org_id != org_id:
-                continue
-            if not org_id and lr.org_id:
-                continue
-            results.append(lr)
-        return results
+        """Get promoted learnings within the requested scope."""
+        return [
+            lr
+            for lr in self._learnings
+            if lr.status == "promoted"
+            and (task_type is None or lr.category == task_type)
+            and matches_learning_scope(
+                lr,
+                org_id=org_id,
+                team_id=team_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            )
+        ]
 
     async def list_ineffective(self, min_uses: int) -> list[Learning]:
         """Return learnings whose failure count strictly exceeds successes.
