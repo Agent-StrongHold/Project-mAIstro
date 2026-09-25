@@ -474,3 +474,41 @@ plugins on `PYTHONPATH=/tmp/maistro-muts`, so the worktree stayed pristine).
   `integration-scope`/`gates-ran`/MinIO jobs failing, `test`/`docker-build`
   in progress — none touch this change's 16-file surface; PR remains a draft
   claim-stake.
+
+Repair-lane validation at head `e5b013697` (this lane's final SHA; driver
+check logs covered only uv-sync/ruff/format, so every number below was
+executed fresh in this pass; worktree unmodified except this note — mutations
+ran via in-memory pytest plugins on `PYTHONPATH=/tmp/mutations`).
+
+- `uv run ruff check .` clean; `uv run ruff format --check .` → 2533 files
+  already formatted.
+- Targeted: `pytest formal/models/test_dangerous_tools.py -q
+  --hypothesis-seed=0` → **256 passed**; `pytest
+  tests/test_check_formal_oracle_independence.py formal/models/test_external_content.py -q`
+  → **18 passed**.
+- Full required-CI equivalent: dedicated `pgvector:pg18` container on
+  `127.0.0.1:5432` (CI-shaped creds), `alembic upgrade head`, both DSN env
+  vars set, `pytest formal/models/ -q --hypothesis-seed=0` → **664 passed in
+  58.35s**.
+- 21-of-22 deletion under the **exact full required command** (same PG setup,
+  in-memory plugin keeping only `sudo\s+`) → **193 failed, 471 passed** —
+  the demonstrated mutation fails required CI, not just the targeted file.
+- Mutation battery (targeted file, this head): weaken `rm\s+-rf\s+[/~]` →
+  `rm\s+-rf\s+/` → **6 failed**; delete-21 → **193 failed**; benign-prefix
+  shadow → **95 failed**; deny check dropped (plugin patched both
+  `microvm.is_dangerous_command` and the direct predicate, stricter than the
+  prior 41-failure seam-only variant) → **206 failed**. All four fail.
+- Gate (real script): `--base 60862b6c` → **exit 0** (bootstrap: oracle
+  absent at base); unresolvable base → **exit 2** (fails closed); scratch
+  worktree co-change vs `e5b013697` (oracle already governed at base) →
+  **exit 1**; oracle-only change → **exit 0**. The bootstrap exception only
+  applies when the oracle is absent at the base, so post-landing co-changes
+  are rejected.
+- `formal/extractors`/`formal/generated` absent from the tree; grep finds
+  zero live references (only inventory-note history). ADR-072, ADR-073,
+  SPEC-190 all exist under `docs/`; `formal/SECURITY-CONFORMANCE.md` maps 6
+  claims to named tests that all resolve to defs in `test_dangerous_tools.py`.
+- Production reachability: `microvm.py:22,135` (deny check in `exec`),
+  `opencode.py:112` (production `MicroVMSandbox` construction);
+  `formal-conformance` remains a required status check on develop+main
+  (`branch-protection.json:50,112`).
