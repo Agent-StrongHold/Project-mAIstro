@@ -300,3 +300,61 @@ them at this exact head; tree clean before and after this docs-only append.
 - PR #1453 body ("Refs #1061") and all branch commit messages scanned: no
   fixes/closes/resolves closure keywords. The prior round's push
   non-fast-forward block is driver-scope (this verifier never pushes).
+
+## Independent verification (2026-09-25, head a9d3302e, lane L1061)
+
+Fresh validation at the exact PR head (`a9d3302e1`), not trusting any claim
+above. All commands executed in this worktree; tree left clean except this note.
+
+- Driver checks reproduced: `uv sync --locked --extra dev` ok; `ruff check .`
+  ok; core state suites 51 passed; hive targeted suites (conftest,
+  auth-throttle, registration-policy, username-registry, voice-auth)
+  121 passed; both `check-suite-inventory` runs ok (the `e41ebb2f0`
+  inventory-delta repair holds).
+- Additional gates executed: mypy (713 files, 0 errors); FULL hive backend
+  suite 2716 passed / 6 skipped; `check-agent-store-writes`,
+  `check-owned-store-access`, `check-durable-table-inventory`,
+  `check-doc-links` all rc 0.
+- CORRECTION to the 2026-09-25 correction above: `check-vulture-baseline`
+  PASSES at this head when invoked exactly as
+  `.github/workflows/quality.yml` does —
+  `RATCHET_BASE_REV=origin/develop uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` → rc 0, "1415 reviewed identities -> 1415
+  findings", base `2c8022fe81c4`. The earlier rc=1 reproductions (including
+  this lane's own) ran the script with no scope arguments, which scans
+  `hive-conductor/backend`, `maistro-canvas/frontend`, `dags/`, `eval/` etc.
+  — out of the gate's CI scope. No ledger grant is outstanding for this
+  branch in the CI invocation shape.
+- Diff-coverage gate reproduced locally with a full-suite producer
+  (`coverage run --branch` over `packages/hive-conductor/backend/tests` +
+  `packages/maistro-core/tests/state`, 2855 passed) and
+  `scripts/check-diff-coverage.py --base 2c8022fe81c4`: "ok: every measured
+  file this change touches is at or above 90% lines / 80% branch arcs"
+  (tests exempt by declaration; `_vulture_whitelist.py` has no producer).
+- Mutation criterion executed independently, outside the tree: the backend
+  was copied to /tmp and `_write_batch`'s durable branch was replaced with
+  the historical `_username_taken`-style scan plus non-atomic `put_raw`
+  upserts. Under that mutation the targeted suites fail 3 tests:
+  `test_allocator_calls_storage_atomic_claim_seam`,
+  `test_durable_loser_at_the_atomic_layer_is_refused`,
+  `test_persistence_without_atomic_claims_refuses_allocation`. Nuance
+  recorded: the 32-thread race test itself survived this particular mutant
+  because losers die with `RuntimeError` (the mutated upsert path) instead of
+  `UsernameTakenError`, leaving one outcome entry; the mutation is caught by
+  the seam-spy and window-loser tests, and the in-tree
+  `test_scan_then_write_mutation_loses_the_race` demonstrates the duplicate
+  identity the same shape produces without a storage constraint. Copy
+  deleted; real tree byte-identical (`git status` clean before this note).
+- Acceptance re-derived from the issue: atomic durable claim (single SQLite
+  txn, primary-key `ON CONFLICT DO NOTHING` claims decide the winner),
+  Alice/alice two-writer and two-OS-process races (32 case variants → one
+  row/one claim; spawn'd processes → exactly [200, 409]), admin-open,
+  invitation, and setup/bootstrap allocation with rollback and
+  lost-marker fail-closed retention, login and voice resolution through the
+  canonical index only, legacy-duplicate quarantine at `initialize_stores`,
+  and crash-safe claim+row atomicity — all observed in this session's runs.
+  No rename surface exists and OAuth creates no accounts (links only), so
+  those two "where applicable" clauses are vacuously satisfied, re-confirmed
+  at this head. Live GitHub CI on draft PR #1453 remains UNVERIFIED from
+  here (no CI run is claimed by any artifact in this lane).
