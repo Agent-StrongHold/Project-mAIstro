@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Security
 
+- **Retired the process-local Home Assistant confirmation store and
+  `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
+  /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer
+  mounted (404). The respond route needed only authentication and wrote Home
+  Assistant state; its in-memory store (`_PENDING_CONFIRMS`) had no production
+  producer, so it could never hold a real confirmation. The `ha_confirm` tool
+  definition and `send_confirm` are gone with it. Human approval has one model:
+  a waiting human NodeRun answered through `/v1/hitl`; any future HA push
+  confirmation must be a notification transport for that NodeRun.
 - **Hive schedules are bound to their owner's Workspace (#1201, partial).**
   `POST /v1/schedules` now requires a `workspace_id` selection (optional
   `project_id`), admits it through the same canonical Workspace/Project

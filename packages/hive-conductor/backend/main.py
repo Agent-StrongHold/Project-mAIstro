@@ -11,7 +11,7 @@ from importlib import import_module
 from pathlib import Path
 
 from config import get_settings
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from logging_setup import configure_logging
@@ -19,7 +19,6 @@ from middleware.auth import AuthMiddleware
 from middleware.privilege import PrivilegeMiddleware
 from middleware.request_log import RequestLogMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
-from pydantic import BaseModel, ConfigDict
 from routes import (
     agents,
     audit,
@@ -62,7 +61,6 @@ from routes import optimizer as optimizer_r
 from routes import settings as settings_r
 from services import engine as engine_service
 from services import foundation as foundation_service
-from services.ha_tools import get_all_confirms, get_pending_confirms, respond_confirm
 from services.oauth_login import close_oauth_login_service
 from services.settings_store import SettingsPersistenceError
 
@@ -110,29 +108,6 @@ def _include_optional_router(
     else:
         state[module_name] = None
     app.state.optional_routers = state
-
-
-class ConfirmResponseBody(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    response: str
-
-
-_confirms_router = APIRouter(tags=["confirms"])
-
-
-@_confirms_router.get("")
-def list_confirms():
-    return get_all_confirms()
-
-
-@_confirms_router.get("/pending")
-def list_pending():
-    return get_pending_confirms()
-
-
-@_confirms_router.post("/{confirm_id}/respond")
-async def respond_to_confirm(confirm_id: str, body: ConfirmResponseBody):
-    return await respond_confirm(confirm_id, body.response)
 
 
 async def _shutdown_background_services() -> None:
@@ -385,7 +360,6 @@ def create_app() -> FastAPI:
     app.include_router(messages.router, prefix="/v1/messages")
     app.include_router(audit.router, prefix="/v1/audit")
     app.include_router(quotas.router, prefix="/v1/quotas")
-    app.include_router(_confirms_router, prefix="/v1/confirms")
     # Optional feature slices degrade explicitly: a missing dependency may keep
     # the base API available, but it must never make an entire route family
     # disappear without an actionable startup log.
