@@ -5,7 +5,6 @@
       "source": "packages/maistro-core/src/maistro/container.py",
       "unread": {
         "elevation_store": "Consumed by injection — passed to Sentinel at construction. The field is an unread second reference.",
-        "goal_service": "The Workspace-authorized surface over goal_store (#1572): what a caller acting for a principal goes through. Same readers as goal_store (#805, #806, #773/#774), none yet landed.",
         "goal_store": "The canonical Goal store (#1572), wired on the Project store's backend so every deployment has one. Its readers are the Goal consumers that issue names -- reconciliation (#805), durable wakeups (#806), Design Studio (#773/#774) -- and Run goal binding at admission, each a separate item. Exposed now because they consume it and none defines it.",
         "golden_record_store": "InMemoryGoldenRecordStore is constructed and only stored. No production reader.",
         "harness_registry": "Returned by _wire_hierarchy alongside `hierarchy` and only stored. No production reader; the orchestrator surface is reached through maistro.orchestrator directly.",

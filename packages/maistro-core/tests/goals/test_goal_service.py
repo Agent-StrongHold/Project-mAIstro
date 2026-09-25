@@ -15,7 +15,7 @@ from maistro.goals import GoalNotFound, GoalService, GoalState, GoalStore
 from maistro.persistence import close_pool
 from maistro.testing.postgres import postgres_dsn
 from maistro.types import AgentConfig
-from maistro.workspaces import WorkspaceAuthorizationDenied, WorkspaceRole
+from maistro.workspaces import WorkspaceAuthorizationDenied, WorkspaceAuthorizer, WorkspaceRole
 
 _EXPECTED_STORE = {
     "memory": "InMemoryGoalStore",
@@ -49,6 +49,11 @@ async def container(request, tmp_path):
         await close_pool()
 
 
+def _service(container: Container) -> GoalService:
+    """How a principal-carrying caller composes the service from the shipped Container."""
+    return GoalService(container.goal_store, WorkspaceAuthorizer(container.workspace_store))
+
+
 async def _workspace(container: Container, owner: str):
     workspace = await container.workspace_store.create(creator_user_id=owner, name=owner)
     root = await container.project_scope_store.root_for_workspace(workspace.workspace_id)
@@ -72,15 +77,15 @@ async def test_container_exposes_a_working_goal_store_and_service(container) -> 
     assert isinstance(container.goal_store, GoalStore)
     _, root = await _workspace(container, "alice")
 
-    goal, revision = await _goal(container.goal_service, "alice", root)
+    goal, revision = await _goal(_service(container), "alice", root)
 
     assert await container.goal_store.get(goal.goal_id) == goal
     assert revision.author_principal_id == "alice"
-    assert await container.goal_service.get("alice", goal.goal_id) == goal
+    assert await _service(container).get("alice", goal.goal_id) == goal
 
 
 async def test_foreign_goal_is_indistinguishable_from_a_missing_one(container) -> None:
-    service = container.goal_service
+    service = _service(container)
     _, alice_root = await _workspace(container, "alice")
     await _workspace(container, "bob")
     goal, _ = await _goal(service, "alice", alice_root)
@@ -122,7 +127,7 @@ async def test_foreign_goal_is_indistinguishable_from_a_missing_one(container) -
 
 
 async def test_foreign_workspace_listing_and_creation_are_refused(container) -> None:
-    service = container.goal_service
+    service = _service(container)
     _, alice_root = await _workspace(container, "alice")
     await _workspace(container, "bob")
     await _goal(service, "alice", alice_root)
@@ -136,7 +141,7 @@ async def test_foreign_workspace_listing_and_creation_are_refused(container) -> 
 
 
 async def test_a_member_can_read_but_not_mutate(container) -> None:
-    service = container.goal_service
+    service = _service(container)
     workspace, root = await _workspace(container, "alice")
     await container.workspace_store.set_membership(
         workspace.workspace_id, user_id="carol", role=WorkspaceRole.CONTRIBUTOR
@@ -180,7 +185,7 @@ async def test_a_member_can_read_but_not_mutate(container) -> None:
 
 
 async def test_an_administrator_mutates_with_their_identity_recorded(container) -> None:
-    service = container.goal_service
+    service = _service(container)
     _, root = await _workspace(container, "alice")
     goal, _ = await _goal(service, "alice", root)
 

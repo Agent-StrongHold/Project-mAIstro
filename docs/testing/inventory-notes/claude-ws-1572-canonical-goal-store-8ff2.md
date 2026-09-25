@@ -30,8 +30,8 @@ directory. No existing test was removed or renamed.
     in-memory Project store cannot see Goals.
 - `test_goal_service.py` (15): 5 tests, each run against the memory,
   sqlite and postgres URLs through `create_container()`. They cover: the
-  Container exposes the expected `goal_store` class and a working
-  `goal_service`; a foreign Goal and a missing Goal raise the identical
+  Container exposes the expected `goal_store` class, and a
+  `GoalService` composed over it works; a foreign Goal and a missing Goal raise the identical
   `GoalNotFound` with no cause or context; a foreign Workspace cannot list
   or create; a CONTRIBUTOR member can read but not mutate; an OWNER's
   mutations record their principal.

@@ -277,8 +277,8 @@ or placeholder-only section.
   Reassigning the owning Agent appends a revision, which keeps the previous
   owner in the history. `GoalService` reads with Workspace VIEW and writes
   with ADMINISTER, and treats a Goal in a foreign Workspace exactly like a
-  missing one. `create_container()` wires `goal_store` and `goal_service` on
-  the Project store's backend. Still open: binding a Run to
+  missing one; it composes over `goal_store` and `WorkspaceAuthorizer`.
+  `create_container()` wires `goal_store` on the Project store's backend. Still open: binding a Run to
   `goal_id`/`goal_revision` at admission.
 
 - **Every parked Graph pause reason must name a reachable production waker
