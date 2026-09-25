@@ -14,10 +14,13 @@ that does not exist.
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
+from typing import Any
 
 import aiosqlite
 import pytest
 
+from maistro.persistence.pg_sessions import PgSessionStore
 from maistro.persistence.sqlite_sessions import SqliteSessionStore
 
 
@@ -102,3 +105,68 @@ async def test_purge_respects_an_explicit_ttl(store: SqliteSessionStore) -> None
 
     assert await store.purge_expired(ttl_seconds=1_000) == 0
     assert await store.purge_expired(ttl_seconds=10) == 1
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def turn_store(request: pytest.FixtureRequest, pg_pool: Any) -> AsyncIterator[Any]:
+    if request.param == "sqlite":
+        conn = await aiosqlite.connect(":memory:")
+        st = SqliteSessionStore(conn, ttl_seconds=3600)
+        await st.ensure_schema()
+        try:
+            yield st
+        finally:
+            await conn.close()
+        return
+    if pg_pool is None:
+        pytest.skip("MAISTRO_TEST_PG_DSN is not set")
+    yield PgSessionStore(pg_pool, ttl_seconds=3600)
+
+
+async def _age_session(store: Any, session_id: str, seconds: float) -> None:
+    if isinstance(store, PgSessionStore):
+        async with store._pool.acquire() as conn:
+            for table in ("sessions", "session_turns"):
+                await conn.execute(
+                    f"UPDATE {table} SET timestamp = timestamp - make_interval(secs => $2) "
+                    "WHERE session_id = $1",
+                    session_id,
+                    seconds,
+                )
+        return
+    for table in ("sessions", "session_turns"):
+        await store._conn.execute(
+            f"UPDATE {table} SET timestamp = timestamp - ? WHERE session_id = ?",
+            (seconds, session_id),
+        )
+    await store._conn.commit()
+
+
+async def _session_ids(store: Any, table: str) -> set[str]:
+    query = f"SELECT session_id FROM {table}"
+    if isinstance(store, PgSessionStore):
+        async with store._pool.acquire() as conn:
+            return {r["session_id"] for r in await conn.fetch(query)}
+    cursor = await store._conn.execute(query)
+    return {r[0] for r in await cursor.fetchall()}
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+async def test_append_past_the_ttl_deletes_expired_messages_and_turn_markers(
+    turn_store: Any,
+) -> None:
+    """The retention inventory records sessions and session_turns as ttl_purge
+    driven by append_messages (#325). This is the evidence for that entry, on
+    the SQLite twin and on PgSessionStore, the store the PostgreSQL container
+    wires: an ordinary append removes rows past the TTL from both tables.
+    """
+    await turn_store.append_messages("old", [{"role": "user", "content": "hi"}], turn_id="t-old")
+    await _age_session(turn_store, "old", 7200)
+    assert await _session_ids(turn_store, "sessions") == {"old"}
+    assert await _session_ids(turn_store, "session_turns") == {"old"}
+
+    await turn_store.append_messages("new", [{"role": "user", "content": "yo"}], turn_id="t-new")
+
+    assert await _session_ids(turn_store, "sessions") == {"new"}
+    assert await _session_ids(turn_store, "session_turns") == {"new"}

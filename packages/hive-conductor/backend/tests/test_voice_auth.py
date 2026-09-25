@@ -22,6 +22,9 @@ if str(_BACKEND) not in sys.path:
 import stores  # noqa: E402
 from main import app  # noqa: E402
 
+# Model-reaching turns are admitted as canonical chat Runs (#1037).
+pytestmark = pytest.mark.usefixtures("chat_run_spine")
+
 # Assembled from pieces so no single line reads as `KEY = "<secret>"`.
 # `.gitleaks.toml` deliberately refuses allowlists for findings in code — the
 # repository's rule is to split the literal — and a fake credential that trips
@@ -214,6 +217,44 @@ class TestTheCredentialResolvesToARealAccount:
         stores.users[SATELLITE_ID] = stored.model_copy(update={"is_active": False})
 
         assert principal_for(f"Bearer {configured}") is None
+
+    def test_historical_duplicate_account_is_not_selected(self, configured: str, monkeypatch):
+        """Voice must fail closed on the same quarantined duplicate as login."""
+        from config import get_settings
+        from services.voice_identity import principal_for
+
+        duplicate_ids = ("voice-duplicate-a", "voice-duplicate-b")
+        for user_id, username in zip(duplicate_ids, ("VoiceAlice", "voicealice"), strict=True):
+            # Historical duplicates predate the users-store unique constraint
+            # (#1248): they exist at rest in the durable DB and are loaded by
+            # ModelStore.initialize without ever passing through __setitem__,
+            # which now refuses NEW duplicate writes by design. Plant them at
+            # rest the same way so quarantine still has a legacy state to
+            # fail closed on.
+            stores.users._data[user_id] = stores.users._model_class(
+                id=user_id,
+                username=username,
+                password_hash="",
+                role="user",
+                is_active=True,
+                permissions=[],
+                created_at=datetime.now(UTC),
+            )
+        stores.username_claims["username:voicealice"] = {
+            "schema_version": 1,
+            "status": "quarantined",
+            "normalized_username": "voicealice",
+            "candidate_user_ids": list(duplicate_ids),
+            "reason": "duplicate historical username",
+        }
+        monkeypatch.setenv("VOICE_SERVICE_ACCOUNT", "VoiceAlice")
+        get_settings.cache_clear()
+        try:
+            assert principal_for(f"Bearer {configured}") is None
+        finally:
+            for user_id in duplicate_ids:
+                stores.users.pop(user_id, None)
+            stores.username_claims.pop("username:voicealice", None)
 
     def test_the_device_carries_no_task_elevation(self, configured: str) -> None:
         """The key is an identity, not a permission: everything behind

@@ -140,3 +140,66 @@ async def test_stop_runner_before_start_is_a_noop() -> None:
     stop_runner = router.on_shutdown[0]
 
     await asyncio.wait_for(stop_runner(), timeout=1.0)
+
+
+class _CancellationResistantRunner:
+    """A runner whose in-flight provider coroutine swallows ``CancelledError``
+    (cancellation-resistant cleanup). ``asyncio.wait_for`` would cancel it at
+    the deadline and then wait for it to finish anyway -- forever."""
+
+    def __init__(self) -> None:
+        self.cancel_requests = 0
+        self.release = asyncio.Event()
+
+    async def start(self) -> None:
+        while not self.release.is_set():
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancel_requests += 1
+
+    def stop(self) -> None:
+        pass
+
+
+async def test_shutdown_is_bounded_even_when_the_task_ignores_cancellation() -> None:
+    router = APIRouter()
+    runner = _CancellationResistantRunner()
+    bind_canvas_runner_lifecycle(
+        router=router,
+        runtime=_Runtime(runner),
+        shutdown_timeout=0.2,  # type: ignore[arg-type]
+    )
+    await router.on_startup[0]()
+    await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(router.on_shutdown[0](), timeout=2.0)
+    finally:
+        runner.release.set()
+        await asyncio.sleep(0)
+
+    assert runner.cancel_requests >= 1
+
+
+async def test_shutdown_logs_a_runner_that_crashed_on_its_own(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _CrashingRunner:
+        async def start(self) -> None:
+            raise RuntimeError("runner loop crashed")
+
+        def stop(self) -> None:
+            pass
+
+    router = APIRouter()
+    bind_canvas_runner_lifecycle(
+        router=router,
+        runtime=_Runtime(_CrashingRunner()),
+        shutdown_timeout=1.0,  # type: ignore[arg-type]
+    )
+    await router.on_startup[0]()
+    await asyncio.sleep(0)
+    with caplog.at_level("ERROR", logger="maistro.canvas.composition"):
+        await asyncio.wait_for(router.on_shutdown[0](), timeout=2.0)
+    assert any("canvas_runner_exited_with_error" in r.getMessage() for r in caplog.records)
