@@ -42,9 +42,11 @@ owners:
 
 ## Context
 
-ADR-049 requires every agent edit during a task to land in an isolated shadow git workspace —
+ADR-049 proposed that every agent edit during a task land in an isolated shadow git workspace —
 per-edit commits for atomic rollback, with a single squashed diff produced at task completion so
 the consumer sees one reviewable change instead of the agent's intermediate experimentation.
+ADR-049 is Deprecated and is retained as design context only; it is not shipped authority for
+this SPEC — the operative authority is this SPEC under its Accepted substrate (ADR-018, ADR-037).
 `maistro/tools/git/` exists today as scaffolding only with no shadow-workspace primitive. This
 SPEC implements the workspace lifecycle end-to-end against the real `git` CLI (not mocked) since
 the operations are local filesystem + subprocess calls that are cheap and deterministic to test

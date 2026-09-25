@@ -498,43 +498,62 @@ def test_updating_the_ledger_rewrites_it(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 @pytest.mark.parametrize(
-    ("spec_name", "adr_id", "in_related"),
+    ("spec_name", "target_id", "in_related", "status_note"),
     [
-        ("SPEC-070226-af02-p1-resilience-control.md", "ADR-066", False),
-        ("SPEC-070226-2b70-observability-replay-pii-tiers.md", "ADR-055", True),
-        ("SPEC-062126-d421-medley-import-sanitization-pipeline.md", "ADR-083", True),
-        ("SPEC-070226-6489-identity-lifecycle.md", "ADR-084", True),
-        ("SPEC-070226-82ea-builders-dag.md", "ADR-099", True),
-        ("SPEC-070226-b234-events-triggers-reactor.md", "ADR-086", True),
-        ("SPEC-070226-b624-orchestrator-waves.md", "ADR-071", True),
-        ("SPEC-070226-c4f8-hierarchical-orchestration.md", "ADR-101", True),
-        ("SPEC-070226-cb8d-llm-provider-registry.md", "ADR-079", True),
-        ("SPEC-070226-fbe3-deployment-topology.md", "ADR-081", True),
+        ("SPEC-070226-af02-p1-resilience-control.md", "ADR-066", False, "remains Proposed"),
+        ("SPEC-070226-2b70-observability-replay-pii-tiers.md", "ADR-055", True, "remains Proposed"),
+        (
+            "SPEC-062126-d421-medley-import-sanitization-pipeline.md",
+            "ADR-083",
+            True,
+            "remains Proposed",
+        ),
+        ("SPEC-070226-6489-identity-lifecycle.md", "ADR-084", True, "remains Proposed"),
+        ("SPEC-070226-82ea-builders-dag.md", "ADR-099", True, "remains Proposed"),
+        ("SPEC-070226-b234-events-triggers-reactor.md", "ADR-086", True, "remains Proposed"),
+        ("SPEC-070226-b624-orchestrator-waves.md", "ADR-071", True, "remains Proposed"),
+        ("SPEC-070226-c4f8-hierarchical-orchestration.md", "ADR-101", True, "remains Proposed"),
+        ("SPEC-070226-cb8d-llm-provider-registry.md", "ADR-079", True, "remains Proposed"),
+        ("SPEC-070226-fbe3-deployment-topology.md", "ADR-081", True, "remains Proposed"),
+        # Fourth wave: the same laundering shape with Deprecated ADR and Proposed
+        # SPEC targets — the front-matter move silenced the gate, the prose had
+        # to carry the status honestly too.
+        ("SPEC-254-shadow-git-workspace.md", "ADR-049", True, "is Deprecated"),
+        ("SPEC-255-parallel-wave-fan-in.md", "ADR-052", True, "is Deprecated"),
+        (
+            "SPEC-062126-d421-medley-import-sanitization-pipeline.md",
+            "SPEC-005",
+            True,
+            "remains Proposed",
+        ),
+        ("SPEC-182-a2a-delegation-implementation.md", "ADR-058", True, "remains Proposed"),
     ],
 )
 def test_proposed_related_design_is_marked_historical_not_governing(
-    spec_name: str, adr_id: str, in_related: bool
+    spec_name: str, target_id: str, in_related: bool, status_note: str
 ) -> None:
-    """A related link cannot smuggle a Proposed decision into shipped prose.
+    """A related link cannot smuggle a non-active decision into shipped prose.
 
     Moving a governing citation to `related` silences the front-matter check,
     so the prose has to carry the status honestly: the citation stays (history
     remains citable) but the body must say the authority is not live. Each
-    entry here is a document where an active spec treated a Proposed ADR as
-    realised, governing fact — the exact laundering #374 names.
+    entry here is a document where an active spec treated a Proposed or
+    Deprecated decision as realised, governing fact — the exact laundering
+    #374 names. The status language must name the target's actual state
+    (`status_note`), and no present-tense governing verb may attach to it.
     """
     path = ROOT / "docs" / "specs" / spec_name
     result = validate_file(path)
 
     assert result.front_matter is not None
-    assert (_ref(adr_id) in result.front_matter.related) is in_related
+    assert (_ref(target_id) in result.front_matter.related) is in_related
 
     body = " ".join(path.read_text().split("\n---", 2)[-1].split())
-    assert f"{adr_id} remains Proposed" in body
+    assert f"{target_id} {status_note}" in body
     assert "design context only" in body
     assert "not shipped authority" in body
-    for normative in ("says", "specifies", "mandates"):
-        assert f"{adr_id} {normative}" not in body
+    for normative in ("says", "specifies", "mandates", "requires", "defines", "governs"):
+        assert f"{target_id} {normative}" not in body
 
 
 def test_the_committed_baseline_records_a_reason_for_every_entry() -> None:

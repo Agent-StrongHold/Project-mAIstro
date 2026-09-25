@@ -31,7 +31,7 @@ history:
 
 # SPEC-182: A2A delegation broker — implementation
 
-Relates to [ADR-058](../adr/ADR-058-a2a-delegation-protocol.md), which remains Proposed; this spec does not treat that draft decision as shipped authority. Builds on the delegation execution-bridge fix in PR #39 (`fix/agents-delegation`).
+Relates to [ADR-058](../adr/ADR-058-a2a-delegation-protocol.md). ADR-058 remains Proposed and is retained as design context only; it is not shipped authority for this SPEC. Builds on the delegation execution-bridge fix in PR #39 (`fix/agents-delegation`).
 
 > **Implementation status (2026-07-02):** Phases 1-2 are implemented
 > (`a2a/__init__.py` export surface, lifecycle/log/metadata fixes,
@@ -42,7 +42,7 @@ Relates to [ADR-058](../adr/ADR-058-a2a-delegation-protocol.md), which remains P
 
 ## Context
 
-The `maistro.a2a` scaffold exists but is unexported and unwired (empty `__init__.py`), and delegation intent (`ReasoningResult.delegate_to`) dead-ends. ADR-058 defines one protocol with two transports (local, federated) behind an `A2ABroker`, with a `DelegationBudget` loop-guard and SSRF-safe egress.
+The `maistro.a2a` scaffold exists but is unexported and unwired (empty `__init__.py`), and delegation intent (`ReasoningResult.delegate_to`) dead-ends. ADR-058 sketches one protocol with two transports (local, federated) behind an `A2ABroker`, with a `DelegationBudget` loop-guard and SSRF-safe egress; the operative authority for shipped delegation behavior is this SPEC.
 
 ## Decision (target)
 

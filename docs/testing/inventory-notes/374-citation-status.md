@@ -129,3 +129,22 @@ docstring names. Repair: apply the established prose-disclaimer pattern to the f
 (two unmarked, two partial), extend the existing parametrization over the new pairs, and widen
 the recorded sweep pattern to include `requires|defines` and `SPEC-*` targets; run
 `check-suite-inventory.py --update` rather than estimating the node delta.
+
+## Resolution (wave 4, this branch)
+
+Applied on this branch: all four documents now mark their non-active authority as retained
+design context, not shipped authority (SPEC-254/ADR-049 and SPEC-255/ADR-052 are `Deprecated`
+and assert `is Deprecated`; SPEC-062126-d421/SPEC-005 and SPEC-182/ADR-058 are `Proposed`), the
+normative verbs are gone (`requires` → `proposed that`, `defines` → `sketches`, `specifies` →
+lineage framing), and the parametrization was extended from 10 to 14 documents with a
+`status_note` column and a forbidden-verb list widened to
+`says|specifies|mandates|requires|defines|governs` (68 tests, all passing). The widened corpus
+sweep now returns only the repaired documents; two residual candidates were inspected and
+rejected as non-violations, with reasoning recorded in `auto-374-wave4.md`.
+Re-validation at this head: `tests/test_check_citation_status.py` 68 passed;
+`tests/test_check_reachability.py` + `tests/test_m1_542_policy_coverage.py` included in the
+same run, 108 passed total; `check-citation-status.py` OK (0 exceptions);
+`check-citation-status-provenance.py` OK (46 reviewed → 0 current); `check-suite-inventory.py`
+OK (13 suites, +4 recorded by `--update`); `check-convergence-matrix.py`, `check-adr-index.py`,
+`check-adr-status-language.py`, `check-model-egress.py` all OK; `registry lint . --strict`
+407 files clean; `ruff check`/`format --check` clean; mypy `maistro-registry` clean.
