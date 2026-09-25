@@ -25,6 +25,39 @@ or placeholder-only section.
 
 ### Security
 
+- **Hive schedules are bound to their owner's Workspace (#1201, partial).**
+  `POST /v1/schedules` now requires a `workspace_id` selection (optional
+  `project_id`), admits it through the same canonical Workspace/Project
+  authorization as `POST /v1/dags/{id}/run` (403 when absent or not a
+  membership), and stamps `user_id`, `workspace_id` and `project_id` from the
+  authenticated session; a client-sent `user_id` is ignored and `PUT` cannot
+  change owner or scope. List returns only schedules in the caller's
+  Workspaces, and get/update/delete/manual run answer the same 404 for a
+  missing, foreign, or ownerless (pre-existing) schedule. Only a Workspace
+  owner or editor may create, change, delete or manually run a schedule
+  (viewers read); an archived Workspace refuses edits and manual runs.
+  Removing a member removes their API access; it does not yet stop automatic
+  fires of schedules that member owns (tracked in #1201).
+  With a configured Container, fires of a bound schedule create their Run in
+  the bound Workspace/Project instead of the configured default. Operators:
+  schedules created before this change (including the seeded `sch-1`) have no
+  Workspace, are no longer visible over the API, and still fire automatically
+  in the default Workspace until the automatic-fire half of #1201 lands;
+  remove them from the schedule store directly before recreating them from a
+  Workspace, or both copies will fire.
+
+- **Canvas visual evaluation no longer reveals whether a Run id exists (#1152,
+  partial).** `POST /v1/canvas/eval` now authorizes the selected canonical Run
+  against the caller's canonical Workspace universe, the same one DAG-run
+  inspection uses, resolved before the Run lookup so a missing and a foreign
+  id do the same work. Any member of the Run's Workspace may evaluate it, including a Run another
+  member started. A Run in a Workspace the caller does not belong to, a Run with
+  no execution principal and a missing Run all get the same 503
+  `visual quality evaluation is unavailable`. Previously a foreign Run returned
+  403 `Canvas Run is not owned by this principal`. The admin bypass is removed:
+  an admin who is not a member of the Run's Workspace is refused like anyone
+  else. Hive still has no Project-level check on this route.
+
 - **Workspace access decisions now live in one core seam (#1150, partial).**
   `maistro.workspaces.WorkspaceAuthorizer` answers "may this principal VIEW or
   ADMINISTER this Workspace?" from the Workspace store, with one
@@ -228,6 +261,38 @@ or placeholder-only section.
 
 ### Added
 
+- **Every parked Graph pause reason must name a reachable production waker
+  (#1192, partial).** A new architecture test maps each
+  `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap
+  ledger. For each waker it checks that the entrypoint exists, has a non-test
+  production caller (called or handed off by name, one hop), calls the
+  canonical API it names, and that the API accepts the status the reason
+  actually parks in. It also checks that whatever runs the Run again can
+  select a Run holding the reason: a tick filtered to one admission source owns
+  only the node kinds that source builds, and one of them must emit the reason.
+  A reason parked beside a human pause parks PAUSED with it, so the pair must
+  still be released. Every declared accepted status is pinned by equality
+  against the shipped API. The human reasons are woken by the Hive HITL answer
+  and cancel routes, and the two elapsed-timer reasons by #837's
+  registered-DAG due tick. The legacy-DAG and Evolve ticks are shown not to
+  qualify, because their Runs never pause. `awaiting_remote_delegation` and
+  `awaiting_harness` park WAITING while the only answer path accepts PAUSED,
+  so they are ledgered against #1192. HITL deadline expiry is not counted as
+  a waker, because only a manual `POST /v1/hitl/expire` triggers it.
+
+- **Every durable table declares its retention, and CI checks it against the
+  schema (#325).** `quality/durable-table-retention.json` lists all 63 tables
+  in the schema built by Alembic and `.sql` migrations (later drops applied),
+  runtime `CREATE TABLE` or ORM `__tablename__`, with backend, owner, data
+  class, retention and deletion path. Six tables
+  whose DDL lives outside this repository are listed separately.
+  `scripts/check-durable-table-inventory.py` fails CI when a table has no
+  entry, an entry names a table nothing creates, a deletion path does not
+  import, or `security_violations` or `usage_events` is dropped. A table with
+  no production-driven purge is recorded as `undecided` against #325. This
+  includes `security_violations`, `usage_events`, `task_idempotency`,
+  `security_rate_limits` and PostgreSQL `sessions`. Nothing is written down
+  as retained forever unless someone decided it.
 - **Stable Workspace Agent identity and per-user default Workspace
   ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
   ADR-092326-7ed7).** Hive's `services/workspace_agent.py`
@@ -378,6 +443,17 @@ or placeholder-only section.
 
 ### Changed
 
+- **A declared correlation field must have a production producer (#63).** A
+  fitness test scans production code (`packages/*/src` and the hive, turing
+  and canvas backends) for `bind_execution_context(...)` keywords. It fails
+  when no production call binds a `FIELD_NAMES` entry into the execution
+  context that log lines, spans and events read, so a newly declared field
+  cannot ship without a producer. Nothing binds `invocation_id` or
+  `session_id` into that context yet. Both sit on a reviewed allowlist that
+  names the owning #63 slice. The test also fails once
+  an allowlisted field gains a producer, which keeps the allowlist from going
+  stale.
+
 - **The Conductor frontend renders on the Workspace design system (#1046,
   #1048, #65; ADR-091626-ba4f).** `frontend/src/themes/workspace-tokens.css`
   is a byte-for-byte copy of the bundled `workspace` tokens, held identical by
@@ -446,6 +522,18 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
+  (#766).**
+  A run started over `/v1/ws/dags/{id}/run` now records the same Recent Runs
+  (`DagRunStore`) projection as the HTTP route, keyed by the canonical `run_id`.
+  The projection is written as soon as the Run settles, so it is recorded even
+  if the client disconnects mid-stream. Like HTTP, the socket runs in
+  `interactive` mode and writes a `dag_run` audit entry. A failure that is not
+  a Run outcome now shows only `<ExcType>: execution failed; see server logs`,
+  never the raw exception message, and the traceback goes to the server log.
+  The shipped-surface ledger now lists the socket as `canonical` instead of
+  `unresolved`.
 
 - **Hive now ticks the Container's canonical recovery seams (#62).**
   `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
