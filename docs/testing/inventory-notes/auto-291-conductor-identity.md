@@ -406,3 +406,53 @@ develop 55c5ad892; all driver checks green, re-executed locally this round):
   verbatim local in-image replication recorded at 78325c061.
 - Closure-keyword audit repeated at this head: PR body says "Refs #291" only;
   no fixes/closes/resolves in any commit message on the branch.
+
+Final-head verification at merge commit 80e615561 (develop 84402748f merged
+into auto-291; this round's driver checks all green, re-derived independently):
+
+- Merge-impact scoping (own diffs): `0371b1ddf..80e615561` touches no
+  identity-relevant path (packages/hive-conductor, docs/security,
+  .github/workflows, packages/maistro-core/tests/identity all empty), but the
+  develop merge DOES change `packages/maistro-core/src` (learnings/persistence
+  for #1156/#1445), which is an image COPY input — so image provenance was
+  re-established rather than inherited. Identity-relevant image inputs
+  (maistro-core/src/maistro/identity, pyproject.toml, uv.lock,
+  backend/requirements.txt, routes/health.py, routes/setup.py,
+  services/identity_health.py, Setup.tsx, frontend/e2e) are byte-unchanged in
+  the merge.
+- In-image verification re-executed by this lane against the provenance-matched
+  l291-verify2 profiles: default → `identity=operational python=3.13.15
+  bip-utils=2.12.1 coincurve=21.0.0 pynacl=1.6.2` (msgpack/setuptools floors
+  held); observability → `observability=importable identity=operational`. Image
+  provenance re-proven: identity_health.py, health.py, setup.py and
+  requirements.txt inside hive-conductor:l291-verify2 md5-match this worktree.
+- Gates re-executed at this head: ruff check clean; check-suite-inventory
+  (conductor backend) ok; engine identity suite 69 passed;
+  test_identity_health+test_setup_guard 25 passed (driver logs additionally:
+  uv sync ok, ruff format --check 2552 files, extra_guard 6, conductor
+  api+identity_health+setup_guard 55, both suite inventories ok).
+- Acceptance surfaces re-read in-tree at this head (not inherited): support
+  matrix outcome 1 (supported, 3.13.15, 3.14 declared unsupported); Dockerfile
+  exact-base + wheel-pin ARGs + build-time import/derive/version-assertion
+  smoke test (+ opentelemetry imports under INSTALL_OBSERVABILITY=1);
+  identity_health unavailable/misconfigured/disabled/operational with distinct
+  reasons; setup 503-before-accounts on missing runtime and vault persist
+  failure; Setup.tsx toggle disabled under checking/unavailable/misconfigured
+  (except pre-setup setup_incomplete); setup.spec.ts asserts toBeDisabled()
+  under unavailable and misconfigured health.
+- CI at this exact head (read-only gh pr view, two polls): 0 failures;
+  hive-conductor-e2e and hive-conductor-e2e-ui SUCCESS at this head (UI gating
+  spec green in GitHub CI); wheel-imports, lint-and-type-check, security,
+  SAST, supply-chain, formal-conformance, Gate C, Compliance registry,
+  postgres pg17/pg18, coverage (no-services/MinIO/PostgreSQL), object storage
+  (MinIO), strike-ladder, durable-events SUCCESS — the prior MinIO transient
+  pull failures did not recur. docker-build (which executes the Dockerfile
+  build-time identity smoke test at this tree), integration-scope, test,
+  Coverage gate were still in progress and gates-ran PENDING at the final
+  poll — not claimed green; the in-image identity evidence of record for this
+  head is the local verbatim replication above, plus GitHub docker-build
+  SUCCESS at the two prior heads (78325c061, d68cd1ceb) whose
+  identity-relevant inputs are byte-identical to this head.
+- Closure-keyword audit: PR #1465 body says "Refs #291" only (live refresh);
+  no fixes/closes/resolves in any of the 25 branch-only commits
+  (origin/develop..auto-291). No issue-closure actions taken.
