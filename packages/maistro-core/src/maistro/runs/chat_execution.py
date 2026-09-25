@@ -152,13 +152,20 @@ class _TurnDispatch:
 
 def _deadline_behind(exc: BaseException) -> RuntimeDeadlineExceeded | None:
     """The runtime deadline `exc` is, or was raised while handling, if any."""
+    # Both links, not `__cause__ or __context__`: a store error raised `from`
+    # its driver error still carries the deadline it interrupted as context.
     seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
         if isinstance(current, RuntimeDeadlineExceeded):
             return current
         seen.add(id(current))
-        current = current.__cause__ or current.__context__
+        pending.extend(
+            link for link in (current.__context__, current.__cause__) if link is not None
+        )
     return None
 
 
@@ -304,7 +311,10 @@ class ChatAttemptExecutor:
             # store's error, with the deadline behind it). A late answer is not
             # an unrecorded one, and substituting the `CancelledError` the
             # dispatch saw would disguise a timeout as a client disconnect.
-            raise deadline
+            # A fresh deadline, so the recording failure is its explicit cause:
+            # the runtime's own deadline already has one (`from` the
+            # cancellation), and tracebacks hide a context behind a cause.
+            raise RuntimeDeadlineExceeded(deadline.execution_id) from exc
         if turn.error is not None:
             # The dispatch failed, or was cancelled, and then the spine could
             # not record that it did. The failure the caller can act on is the
