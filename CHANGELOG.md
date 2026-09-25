@@ -543,6 +543,21 @@ or placeholder-only section.
 
 ### Fixed
 
+- **develop CI is green again: MinIO without registry auth, and the
+  credential-authority self-checks judge against a real base.** MinIO archived
+  its community server, so `quay.io/minio/minio` now answers 401 and dl.min.io
+  answers 410 for every release binary; the `object storage (MinIO)` and
+  `coverage (MinIO)` jobs now build the same pinned
+  `RELEASE.2025-04-22T22-12-26Z` from source through the Go module proxy
+  (checksum-verified against sum.golang.org, no secret) and run the binary on
+  the runner. Separately, the three `tests/test_credential_authority.py`
+  checks that audit the real repository (#1470) did not request the
+  `real_repository_ratchet_base` fixture, so on every push to `develop` their
+  baseline resolved to HEAD and `SelfReferentialBaseline` failed them (and the
+  quality coverage gate that reruns the suite). They now opt in like the other
+  shipped-state gate self-checks and compare against the revision the push
+  replaces.
+
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**
   A run started over `/v1/ws/dags/{id}/run` now records the same Recent Runs
