@@ -380,6 +380,22 @@ async def test_no_chat_admitter_is_a_retryable_503_that_never_dispatches(
     _assert_refused(response, run_task)
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_no_container_is_a_retryable_503_that_never_dispatches(
+    client: TestClient, stream: bool
+) -> None:
+    """Before the lifespan wires a Container there is no Run to govern a turn."""
+    chat_api.configure_container(None)
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"stream": stream, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    _assert_refused(response, run_task)
+
+
 async def test_a_failed_queued_transition_is_compensated_and_refused(
     container: object, wired: InMemoryRunStore, client: TestClient
 ) -> None:
