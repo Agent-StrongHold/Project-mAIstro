@@ -61,12 +61,19 @@ class JsonlAuditSink:
             handle.flush()
 
 
-def event_store_audit_sink(event_store: Any) -> AuditSink:
-    """Adapt the canonical EventStore without creating a second event authority."""
+def event_store_audit_sink(event_store: Any, envelope_factory: Any) -> AuditSink:
+    """Adapt the canonical EventStore without creating a second event authority.
+
+    The envelope constructor is injected instead of imported: a static import
+    of ``maistro.events`` here would put the whole canonical events package
+    inside the promotion-path import closure that the containment gate
+    (scripts/check-promotion-surface.py) walks, forcing every events module
+    onto the RSI containment surface. The canonical composition root sits
+    outside that closure and passes ``EventEnvelope`` freely; the boundary
+    stays events-agnostic and the store keeps its single event authority.
+    """
 
     async def record(admission: dict[str, object]) -> None:
-        from maistro.events import EventEnvelope
-
         workspace_id = str(admission.get("workspace_id") or "")
         stream_scope = (
             ""
@@ -80,7 +87,7 @@ def event_store_audit_sink(event_store: Any) -> AuditSink:
             else str(admission.get("event") or "rsi.harvest.warden_admission")
         )
         await event_store.append(
-            EventEnvelope(
+            envelope_factory(
                 type=event_type,
                 payload=dict(admission),
                 workspace_id=workspace_id,
@@ -224,14 +231,22 @@ class WardenHarvestBoundary:
         correlation: HarvestCorrelation | None = None,
         audit_sink: AuditSink | None = None,
         event_store: Any | None = None,
+        envelope_factory: Any | None = None,
         policy_version: str = WARDEN_POLICY_VERSION,
     ) -> None:
         if audit_sink is not None and event_store is not None:
             raise ValueError("provide audit_sink or event_store, not both")
+        if event_store is not None and envelope_factory is None:
+            # Fail closed rather than silently dropping durable admission
+            # evidence: an event store without its envelope constructor cannot
+            # record anything.
+            raise ValueError("event_store requires the envelope_factory that builds its events")
         self._warden = Warden() if warden is _UNSET_WARDEN else cast(Warden | None, warden)
         self._correlation = correlation or HarvestCorrelation()
         self._audit_sink = audit_sink or (
-            event_store_audit_sink(event_store) if event_store is not None else None
+            event_store_audit_sink(event_store, envelope_factory)
+            if event_store is not None
+            else None
         )
         self._policy_version = policy_version
 

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +35
+  packages/maistro-rsi/tests: +36
 ---
 # Issue #1138 Warden harvest boundary
 
@@ -352,3 +352,40 @@ the bare no-sink `WardenHarvestBoundary()` defense-in-depth paths
 (e.g. `swebench_pro.py` secondary layer) audit via logging only, still fail
 closed independently of audit, and every production composition root wires a
 durable `JsonlAuditSink`.
+
+CI-repair round at `e639df8c9` (develop base `84402748f4`; three CI root
+causes reproduced locally and fixed in-source -- no ledger/grant edits were
+needed or made). (1) `exact-debt-ledger`: the harvest-boundary work left
+`harvest.load_manifest` with no production caller (`_harvest` in
+`__main__.py` deliberately reads+Warden-scans the manifest once and projects
+the admitted value through `manifest_records`; a `load_manifest` re-read would
+reopen the scan/use TOCTOU gap), and the vulture provenance mechanism reads
+grants at the base revision (`ratchet_provenance.load_authorizations`), so a
+new grant cannot authorize in-branch -- the genuinely-dead helper was removed
+and its roundtrip coverage migrated to `manifest_records`
+(`test_manifest_records_roundtrip`, same count); the vulture ratchet passes
+1414->1414 with zero ledger edits. (2) `lint-and-type-check`: `runner.py`
+imported `Warden` through `harvest_boundary` (not re-exported, so mypy
+attr-defined) -- now imported from the canonical
+`maistro.security.warden.detector`; `guarded_llm_call` gained real annotations
+(`no-untyped-def` fixed). mypy clean on all 9 package src trees (835 files);
+ruff check/format clean; every other static gate in that CI job executed green
+(merge-markers, cross-package-imports, frontend-api-routes,
+deployment-claims, secret-field-labels, retired-guidance, compose-secrets,
+durable-table-inventory, connection-credentials, owned-store-access,
+public-routes, shell-execution). (3) Quality-gate `promotion-surface`
+provenance FAIL (24->33 unprotected promotion-path modules):
+`event_store_audit_sink`'s function-local `from maistro.events import
+EventEnvelope` pulled the canonical events package + `sqlite_schema` into the
+promotion-path import closure. Fixed by dependency inversion -- the adapter now
+takes the store's `envelope_factory` (canonical composition roots sit outside
+the closure and pass `EventEnvelope` freely), the constructor fails closed on
+`event_store` without its factory (new +1 test
+`test_event_store_without_envelope_factory_is_refused`, delta +35->+36), and
+`harvest_boundary.py` again imports nothing from `maistro.events`; the
+gate passes (170 promotion-path modules, no tolerance expansion) and all 37
+provenance consumers pass. Full battery re-executed at the post-repair tree:
+757 rsi tests pass (756 + the new guard test), suite-inventory OK,
+`check-ratchet-provenance.py` exit 0, `check-vulture-baseline.py` exit 0.
+The boundary's admission semantics are untouched by this round: same scan
+order, same fail-closed outcomes, same audit record shape.

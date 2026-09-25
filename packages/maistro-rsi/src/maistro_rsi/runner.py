@@ -20,9 +20,11 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path as _Path
+from typing import Any
 
 import structlog
 
+from maistro.security.warden.detector import Warden
 from maistro_evolve.harness import BenchmarkFidelity, EvalHarness
 from maistro_evolve.tournament import EloTournament, GenomeBattle
 from maistro_evolve.types import EvalResult, PipelineGenome
@@ -31,7 +33,6 @@ from maistro_rsi.gateway import LlmCall, make_gateway_llm_call
 from maistro_rsi.harvest_boundary import (
     HarvestCorrelation,
     JsonlAuditSink,
-    Warden,
     WardenHarvestBoundary,
     guarded_async_call,
 )
@@ -228,8 +229,8 @@ class RsiCycle:
             )
             inner_llm_call = llm_call
 
-            async def guarded_llm_call(messages, **kwargs):
-                result = await guarded_async_call(inner_llm_call, messages, boundary, **kwargs)
+            async def guarded_llm_call(messages: object, **kwargs: Any) -> str:
+                result: str = await guarded_async_call(inner_llm_call, messages, boundary, **kwargs)
                 for attr in ("usage_input", "usage_output"):
                     setattr(guarded_llm_call, attr, getattr(inner_llm_call, attr, 0))
                 return result

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from maistro.events import InMemoryEventStore
+from maistro.events import EventEnvelope, InMemoryEventStore
 from maistro.security._types import WardenVerdict
 from maistro.security.warden.detector import Warden
 from maistro_rsi.harvest_boundary import (
@@ -135,6 +135,7 @@ async def test_canonical_event_store_sink_persists_correlated_admission() -> Non
             workspace_id="workspace-1", project_id="project-1", run_id="run-1"
         ),
         event_store=store,
+        envelope_factory=EventEnvelope,
     )
 
     result = await boundary.scan({"path": "src/example.py"})
@@ -147,6 +148,14 @@ async def test_canonical_event_store_sink_persists_correlated_admission() -> Non
     assert events[0].project_id == "project-1"
     assert events[0].run_id == "run-1"
     assert events[0].payload["content_digest"] == result.digest
+
+
+def test_event_store_without_envelope_factory_is_refused() -> None:
+    # Fail closed on miswiring: an event store without the envelope constructor
+    # that builds its events cannot record admission evidence, so the boundary
+    # refuses the combination instead of silently auditing to nowhere.
+    with pytest.raises(ValueError, match="envelope_factory"):
+        WardenHarvestBoundary(StubWarden(), event_store=InMemoryEventStore())
 
 
 @pytest.mark.asyncio
