@@ -372,3 +372,43 @@ Criteria re-derived from source at this head, not from summaries:
    canonical_warden` — one Warden object, exactly 4 scans (user_input ×3 +
    tool_result), blocked chat never reaches the model, harness 400, flagged
    agent scan, zero HTTP after a blocked escalation preview.
+
+## Independent verification round 10 (job 2b39cd0f, head af7c84288) — no code change
+
+Verify-phase re-derivation at the exact PR head af7c842881e8002d3befbf230c7723da
+83ac73c5 (worktree clean at start; diff vs round-9 head 44105bc7 is the round-9
+notes commit only, so round 9's full-suite 2677 passed / 1 skipped transfers).
+Driver checks check-0..check-6 all returncode 0. First-hand re-execution:
+
+- Core issue suites: **133 passed** (2.05 s). Conductor issue suites: **80
+  passed** (2.77 s). `uv run ruff check .`: all checks passed.
+- `check-suite-inventory` conductor (2678) and core (10825): both ok.
+- `uv run mypy` (six packages): success, no issues in 713 source files.
+- `scripts/check-reachability.py`: exit 0 (1117 modules, 187 unreachable).
+- Named acceptance nodes re-run by name, 44 passed: L3+event-reentry container
+  wiring test, full test_handlers suite (38), equivalence + 5 fail-closed
+  nodes (6).
+- PR-body/commit closure-keyword sweep: snapshot body says "Refs #1171" only;
+  commit range base..head has no fixes/closes/resolves + issue-number match
+  (sole "closes" hit is prose "fail-closes").
+
+New evidence re-derived this round:
+
+1. `routes/agents.py` imports `AgentScannerUnavailable` from
+   `services.agent_materialization` (lines 26-28) — the earlier truncated grep
+   suggested a missing import; full grep disproves it.
+2. Reachability-baseline ratchet prune is legitimate: `maistro.events.handlers`
+   left the unreachable list because `container.py::_wire_event_handlers`
+   (lines 1445-1450, 1767-1769) now imports `handlers_for_warden`, making the
+   module reachable; the ratchet gate passes at exit 0. Not gate-weakening.
+3. No bare `Warden()` remains under `packages/hive-conductor/backend` outside
+   tests (grep); remaining core/RSI `Warden()` defaults are library fallbacks
+   behind injected `warden=` parameters (e.g. agent_synth_dag.py:307,
+   output_security.py:85), pre-existing, outside this issue's surviving-Conductor
+   -route scope, and unchanged by the branch.
+4. `conductor_chat_action` scans the exact labelled string it POSTs
+   (handlers.py:135-143: scanned `message` == `messages[0]["content"]`).
+5. `security_event_escalation` recipe (recipes.py:115) interpolates `{preview}`
+   into a `conductor_chat` message, which the handler scans (incl. L3 judge)
+   before any HTTP — the blocked-preview→unscanned-instruction channel stays
+   closed (`event_client.calls == []` in the equivalence test).
