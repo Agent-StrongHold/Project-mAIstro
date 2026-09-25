@@ -1,8 +1,18 @@
 FROM python:3.12-slim
 
+# Security hardening for ADR-093 compliance
+# These are security measures that will be enforced at container creation time
+# The image itself should be minimal and secure
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git procps util-linux \
     && rm -rf /var/lib/apt/lists/*
 
+# Create non-root user for container operations
+RUN useradd -m -u 65532 -s /bin/false appuser
+
 WORKDIR /workspace
+
+# Security directive - will be overridden by container creation flags
+# The actual security enforcement happens at container creation time in ContainerBuilderSandbox
 CMD ["sleep", "infinity"]
