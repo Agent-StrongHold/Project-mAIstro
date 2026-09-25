@@ -80,3 +80,55 @@ driven, none cosmetic:
   replay test now asserts the child Run through `find_run_by_effect` and adds
   the parent-scope binding assertions, so the replay proof is unchanged in
   strength.
+
+## Re-validation round at `b548bfa75` (post-merge head; no suite delta)
+
+Every previously failing gate was re-run locally at the merged head, with CI's
+own invocation shapes:
+
+- Coverage gate: full producer battery (core, canvas, evolve, rsi, bootstrap,
+  server, turing src+backend, design, hive-conductor backend, root `tests/`)
+  under `coverage run --branch`, then `scripts/check-diff-coverage.py
+  coverage.xml --base 03c8ba83a711` -> ok, per-file floors 90% lines / 80%
+  branches hold.
+- SAST: bandit Medium+ = 0 on `packages/maistro-core/src`,
+  `packages/hive-conductor/backend`, `packages/maistro-server/src`; semgrep
+  0 findings for the custom ruleset AND for `p/security-audit` +
+  `p/owasp-top-ten` + `p/secrets` (361 rules); gitleaks clean over
+  `03c8ba83a711..HEAD`.
+- Quality gate scripts: radon ratchet, reachability, credential-authority,
+  wiring-reads, agent-store-writes, contract-markers, convergence-matrix,
+  reachability-dispositions, security-inventory, image-inventory,
+  backlog-consistency, enumerations, doc-links, version/release consistency —
+  all pass. `mypy --strict packages/maistro-core/src` clean (629 files) once
+  the `bootstrap` extra is installed as CI does.
+- acceptance-state ratchet + mandate against a real pg18 (pgvector compose
+  image): `alembic upgrade head` walks the branch's 041/042 revisions (and the
+  re-parented 036) cleanly; `check-ac-state.py --run-tests --ratchet --mandate
+  03c8ba83a711` reports every declared criterion proven and no new unlinked
+  chain documents.
+- pyright: 22 errors at head vs 26 at the merge base under the same pyright
+  (1.1.414) — the branch strictly reduces findings; the checked-in baseline of
+  21 is stale against current pyright for every branch, including the base.
+  Left untouched: adjusting it is a gate-policy change for maintainers.
+- exact-debt-ledger: still failing for the documented structural reason above —
+  the candidate ledger banks both identities (re-running `--update` produces a
+  byte-identical file), and the authorization grant must pre-exist on the
+  integration base, which no branch edit can provide.
+
+The last residual of the dead descriptive flag itself: three BaseNode
+subclasses outside maistro-core still carried `idempotent: ClassVar[bool] =
+False` while inheriting `ReplaySemantics.PURE` — a contract-contradicting
+second source of truth nothing read. Removed from
+`hive_conductor/backend/services/legacy_dag_node.py` (`LegacyConductorNode`),
+`maistro_turing/backend/execution.py` (`_ChatNode`) and
+`maistro_design/nodes.py` (the orchestrate node); the executable contract is
+now the only replay declaration on every node class in the repo. The full
+vulture scan reports no `idempotent` identities, so no ledger row is affected.
+All three packages' suites pass unchanged (hive-conductor backend 2715,
+design 264, turing 255).
+
+Local-only note: a stale gitignored `quality/ac-state.json` left in a worktree
+by an earlier test run makes `tests/test_branch_independence_repository.py`
+fail locally (`discover_quality_json` rglobs untracked JSON). It passes on a
+fresh checkout; CI never co-locates the generator and that check.
