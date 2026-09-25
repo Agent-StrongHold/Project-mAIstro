@@ -320,7 +320,10 @@ async def test_reason_pii_filter_import_error_blocks_unredacted_result() -> None
     finally:
         del sys.modules[modname]
 
-    assert result.tool_history[0]["result"] == "[BLOCKED: output sanitization unavailable]"
+    blocked = result.tool_history[0]["result"]
+    assert blocked == "Error: [BLOCKED: output sanitization unavailable]"
+    # Must satisfy BaseAgent failure predicates so RCA/Outcome treat it as failed.
+    assert blocked.startswith("Error") or "error" in blocked[:50].lower()
 
 
 async def test_reason_warden_blocks_tool_result_without_sentinel() -> None:

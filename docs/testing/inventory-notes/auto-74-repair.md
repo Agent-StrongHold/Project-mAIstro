@@ -159,3 +159,42 @@ the battery was re-executed from scratch at head `f153133ac` (develop
   production runs. `pii_filter.py` `scan_for_pii` and `redact` both operate on
   the same `normalize_for_scan` view, matching the offset-consistency
   regression tests.
+
+## Fourth pass at head `0d6e45f9f` (driver log absent — battery re-run; salvaged hot-path repair)
+
+The assigned driver again produced no `check-*.log` files, so the battery was
+re-executed at head `0d6e45f9f` (develop `60862b6c5` merged). One new
+salvaged repair from the previous worker session is included (no new test
+nodes; `test_react.py` assertions strengthened in place):
+
+- **PIIMatch/security-review hot-path finding — security block misrecorded as
+  success.** `ReactStrategy._reason` returned
+  `[BLOCKED: output sanitization unavailable]` when the PII filter import
+  fails, but `BaseAgent`'s `tool_had_failures` predicate
+  (`agents/base.py`, `startswith("Error")` or `"error" in result[:50].lower()`)
+  matches neither branch on that string, so a fail-closed security block was
+  persisted as a successful tool Outcome (skipping RCA and poisoning
+  success-count traces). Fix prefixes `Error: `; the updated
+  `test_reason_pii_filter_import_error_blocks_unredacted_result` asserts both
+  the exact string and the predicate shape. Evidence that the old string
+  failed the predicate: it contains no `Error` prefix and no `error` in the
+  first 50 chars, so both disjuncts are false.
+- COMPLIANCE.md AT-01 row now also cites the decay/promoter-gate test paths;
+  both exist and pass (`tests/memory/episodic/test_decay.py` +
+  `tests/memory/learnings/test_promoter_gate.py` → 24 passed).
+- Battery at this head: `ruff check .` + `ruff format --check .` clean;
+  full AGENTS.md mypy command → 713 source files, no issues;
+  `pytest tests/security` → 1269 passed / 19 skipped / 1 failed (only the
+  documented pre-existing `test_install_is_idempotent` pytest-9 red);
+  `test_warden_regex_equivalence.py -rs` → 7 passed, none skipped (`import
+  re2` verified under `uv run`); window/timeout + PII-bypass product-path
+  nodes → 18 passed; strategies → 66 passed;
+  `formal/models/test_warden_semantic.py --hypothesis-seed=0` → 12 passed.
+- Gates: `check-security-inventory.py` exit 0 (65 paths, 23 rows);
+  `check-vulture-baseline.py` (CI args) exit 0, 1415/1415, candidate head
+  `0d6e45f9ff30` vs base `60862b6c5eb1`; `check-doc-links.py` exit 0;
+  `check-suite-inventory.py` 13/13.
+- Alembic re-checked: `alembic heads` → single head
+  `036_audit_log_org_scope`, `alembic branches` → empty, exactly one file each
+  for 033/034 — the prior duplicate-revision conformance failure stays
+  resolved.

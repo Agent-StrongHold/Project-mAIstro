@@ -243,7 +243,9 @@ class ReactStrategy:
             # This is a security dependency, not an optional convenience. Never
             # put an unsanitized tool result back into the model context.
             logger.error("PII filter unavailable; blocking tool result")
-            return "[BLOCKED: output sanitization unavailable]"
+            # "Error: " prefix so BaseAgent failure predicates (tool_had_failures,
+            # trace/Outcome success counts) treat this as a failed tool call.
+            return "Error: [BLOCKED: output sanitization unavailable]"
         return tool_result_str
 
     async def _execute_one_tool_call(
