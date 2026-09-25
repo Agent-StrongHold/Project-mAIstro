@@ -46,6 +46,7 @@ on remains protected by its owning ratchet.
 
 | Checker | File | Decision |
 | --- | --- | --- |
+| `check-compliance.py` | `compliance-registry.json` | candidate-authored specification: changing a status or evidence record is the reviewed compliance change itself |
 | `check-retired-guidance.py` | `retired-guidance.json` | candidate-authored specification: retiring or restoring guidance is the reviewed change itself |
 | `check-image-inventory.py` | `image-inventory.json` | candidate-authored current-tree specification: every Dockerfile must have a reviewed disposition and shipped images must name live build/scan jobs; this checker does not compare against tolerated prior state |
 | `ac_state_notes.py` / AC-state fold | per-branch AC notes and bounds | already base-folded through `ratchet_provenance`; candidate note is explicit branch evidence, not the comparison oracle |
