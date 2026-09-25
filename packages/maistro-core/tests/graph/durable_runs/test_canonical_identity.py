@@ -29,7 +29,7 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
 
-from .._canonical_helpers import durable_record
+from .._canonical_helpers import durable_record, hitl_authorization
 
 
 class _StepIn(BaseModel):
@@ -374,7 +374,9 @@ async def test_a_node_answered_out_of_a_pause_walks_the_statuses_it_must() -> No
     canonical = await run_store.get_run(paused.run_id)
     assert canonical is not None and canonical.status is RunStatus.PAUSED
 
-    await store.submit_hitl_answer(paused.run_id, "ask", {"answer": "yes"})
+    await store.submit_hitl_answer(
+        paused.run_id, "ask", {"answer": "yes"}, authorization=hitl_authorization()
+    )
     resumed = await resume_durable_graph(
         paused.run_id,
         store=store,
@@ -408,7 +410,9 @@ async def test_resuming_a_pre_convergence_record_takes_the_old_path() -> None:
         store=store,
         node_resolver=lambda node_id, _graph: _Ask(),
     )
-    await store.submit_hitl_answer(paused.run_id, "ask", {"answer": "yes"})
+    await store.submit_hitl_answer(
+        paused.run_id, "ask", {"answer": "yes"}, authorization=hitl_authorization()
+    )
 
     resumed = await resume_durable_graph(
         paused.run_id,

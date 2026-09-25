@@ -510,13 +510,20 @@ def _request_with_state(
 def _seed_canonical_workspace(workspace_id: str, *, member: str) -> None:
     """Admit `member` to a canonical Workspace; Canvas eval authorizes by membership."""
     import asyncio
+    from datetime import UTC, datetime
 
+    from models.workspace import WorkspacePresentation
     from services import workspace_authority
 
     asyncio.run(
         workspace_authority.canonical_store_for_tests().create(
             creator_user_id=member, name=workspace_id, workspace_id=workspace_id
         )
+    )
+    workspace_authority.presentation_store()[workspace_id] = WorkspacePresentation(
+        workspace_id=workspace_id,
+        persona_template_id="test-persona",
+        updated_at=datetime.now(UTC),
     )
 
 
@@ -620,10 +627,10 @@ def test_canvas_route_answers_foreign_run_like_missing_when_membership_store_fai
     run, attempt = _foreign_workspace_run(components, actor_principal_id="user")
     monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
 
-    async def _unavailable(_user_id: str, _workspace_id: str | None) -> bool:
+    async def _unavailable(_user_id: str) -> set[str]:
         raise ConnectionError("workspace store unreachable")
 
-    monkeypatch.setattr(canvas_route, "is_member", _unavailable)
+    monkeypatch.setattr(canvas_route, "authorized_workspace_ids", _unavailable)
 
     foreign = _eval_as("testuser", "testpass", run.run_id)
     missing = _eval_as("testuser", "testpass", "run-that-does-not-exist")
@@ -633,6 +640,33 @@ def test_canvas_route_answers_foreign_run_like_missing_when_membership_store_fai
     import asyncio
 
     assert asyncio.run(components.run_store.get_attempt(attempt.attempt_id)) == attempt
+
+
+def test_canvas_route_does_the_same_membership_work_for_missing_and_foreign_runs(
+    canvas_egress: tuple[CanvasModelEgress, Any, dict[str, str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Membership is resolved whether or not the Run exists, so latency is no oracle."""
+    import routes.canvas as canvas_route
+
+    egress, _effects, _context, components = canvas_egress
+    run, _attempt = _foreign_workspace_run(components, actor_principal_id="user")
+    monkeypatch.setattr(app.state, "canvas_model_egress", egress, raising=False)
+    resolved = canvas_route.authorized_workspace_ids
+    lookups: list[str] = []
+
+    async def _recording(user_id: str) -> set[str]:
+        lookups.append(user_id)
+        return await resolved(user_id)
+
+    monkeypatch.setattr(canvas_route, "authorized_workspace_ids", _recording)
+
+    _eval_as("testuser", "testpass", "run-that-does-not-exist")
+    missing_lookups = list(lookups)
+    lookups.clear()
+    _eval_as("testuser", "testpass", run.run_id)
+
+    assert missing_lookups == lookups == ["user"]
 
 
 def test_canvas_route_gives_admin_no_bypass_of_workspace_membership(
