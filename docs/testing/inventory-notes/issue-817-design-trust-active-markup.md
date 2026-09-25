@@ -448,3 +448,73 @@ was executed fresh in this round, before this note was committed.
   time → hosted CI UNVERIFIED per contract (local evidence stands on its own);
   one empty-workflow `devskim` FAILURE coexists with a successful DevSkim
   workflow run (draft-PR noise, no local correlate).
+
+## Independent verification round 10 (auto-817 @ 0c843db29, verifier+writer lane)
+
+Re-executed at the lane's exact head `0c843db29b8b9daab673512b1bcba04c55e875a4`
+(the manifest/job head; this resolves the prior "verification worktree changed;
+evidence rejected" block — round-9 evidence had been minted at `c23e4ddaaf`,
+and the only delta is this lane's own docs commit). `git diff c23e4ddaaf..HEAD`
+touches only this note. All evidence below was executed fresh in this round,
+before this note was committed. The prior run's job directory contains no
+check-*.log artifacts (driver died on a provider timeout with `checks: []`),
+so every deterministic check was re-executed here.
+
+- **Lane pytest:** `uv run pytest packages/maistro-design/tests
+  packages/maistro-core/tests/security/warden -q` → **386 passed**.
+  `packages/hive-conductor/backend/tests/test_design_renderers.py` → 7 passed.
+  Full `packages/maistro-core/tests/security` → 1277 passed, 19 skipped,
+  1 failed — `test_log_redaction.py::test_install_is_idempotent`, proven
+  pre-existing and out-of-lane this round by diff evidence, not assumption:
+  the test, `log_redaction.py`, both conftests, `pyproject.toml`, and
+  `uv.lock` are byte-identical between `origin/develop` and HEAD (empty
+  `git diff`), and an instrumented run traced the mechanism — pytest 9's
+  logging plugin attaches two `LogCaptureHandler`s to the non-propagating
+  `maistro.test.redaction` logger between fixture install and test body, so
+  the second `install_log_redaction` call wraps them and returns 2 ≠ 0 while
+  the production function returns 0 in a bare interpreter.
+- **Pre-scan probes re-executed via `scan_and_record` + review-queue records:**
+  `<math><mi>x</mi></math>` → `tier=skull, rec=banish, conf=0.9,
+  flags=("content: visual artifact active-element",)` (round-1 parity break
+  stays fixed); `<div onclick=…>` → active-markup event-handler +
+  `visual artifact event-handler`; `<a href="data:text/html,…">` →
+  dangerous-resource/data-URL + `active-element`/`dangerous-url`;
+  CSS `url()` → `css-network-or-code`; prompt injection →
+  instruction-override + heuristic flag. Clean brief and inert
+  `class="marketing-copy"` prose → `t3/upgrade/()`.
+- **Output-boundary probes re-executed via `scan_design_text` (AC-3):** 8/8
+  hostile families blocked — handler attr, script SVG, `onerror`,
+  `data:text/html` iframe, CSS `url()`, leading-escape `\75rl(`, MathML,
+  `@import` stylesheet.
+- **Chromium corpus re-executed by this round** (local esbuild harness, no
+  image rebuild: `E2E_SRC_ROOT=<worktree>/packages/hive-conductor`,
+  `E2E_NODE_PATHS=<worktree>/packages/hive-conductor/frontend/node_modules`,
+  `NODE_PATH` same, @playwright/test 1.60.0, cached Chromium):
+  `deck-sanitization.spec.ts` → **8/8 passed (3.1s)**, including the MathML
+  `active-element` scan-reason assertions, `recommend('<math><mi>x</mi></math>')
+  → `"review"` parity block, the `\75rl(` fail-closed assertions, and
+  zero attacker-server requests.
+- **SAST gate re-executed CI-exact** (`uvx semgrep --metrics off --config
+  tools/semgrep/maistro-rules.yaml --config p/security-audit --config
+  p/owasp-top-ten --config p/secrets --exclude eval --exclude cage --error
+  packages/ tests/`, semgrep 1.178.0) → **rc=0, 364 rules / 1892 files /
+  0 findings**. A targeted run (custom + p/security-audit) over the four
+  surface frontend files also returned 0 findings; the reviewed-sink
+  `nosemgrep` annotation at `visualArtifactRenderer.tsx:394` holds.
+- **Vulture gate re-executed CI-exact** (`scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) →
+  **rc=0, 1415 reviewed identities → 1415 findings**, candidate `0c843db29b8b`
+  vs base `2c8022fe81c4`. Neither prior #817 debt identity appears.
+- **Static gates re-executed:** `uv run ruff check .` → clean;
+  `uv run ruff format --check .` → 2546 files already formatted;
+  `scripts/check-suite-inventory.py` → 13/13 suites match (hive-conductor
+  e2e 23 included); **mypy AGENTS.md battery extended with
+  `packages/maistro-design/src` → `Success: no issues found in 731 source
+  files`** (round-7's seven pre-existing environmental errors are gone at
+  this head). Workspace `uv sync --locked --extra dev` re-ran clean in the
+  fresh worktree venv before any probe.
+- **Closure-keyword review re-executed:** `git log 2c8022fe8..HEAD` contains
+  no `fixes/closes/resolves #N` — no premature issue-closure action.
+
+No production or test file changed this round (fresh validation evidence
+only); no new tests added, so no inventory-delta change.
