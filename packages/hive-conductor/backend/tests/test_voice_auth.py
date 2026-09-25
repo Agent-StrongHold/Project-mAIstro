@@ -22,6 +22,9 @@ if str(_BACKEND) not in sys.path:
 import stores  # noqa: E402
 from main import app  # noqa: E402
 
+# Model-reaching turns are admitted as canonical chat Runs (#1037).
+pytestmark = pytest.mark.usefixtures("chat_run_spine")
+
 # Assembled from pieces so no single line reads as `KEY = "<secret>"`.
 # `.gitleaks.toml` deliberately refuses allowlists for findings in code — the
 # repository's rule is to split the literal — and a fake credential that trips
