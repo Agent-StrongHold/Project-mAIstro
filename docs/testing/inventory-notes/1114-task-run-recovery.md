@@ -116,3 +116,41 @@ subjects and bodies; PR #1488 body (snapshot) says only "Refs #1114".
 zero findings touch this branch's changed surfaces (`maistro/tasks`,
 `maistro/runs/admission`, server main) — the pre-existing develop-side drift
 documented above, not this lane's debt.
+
+## Verification record (L1114 repair @ a994af1447, develop sync + re-validation, no code change)
+
+The previous round's evidence was rejected only because the worktree moved
+during verification (docs commit `6a2c6026c` landed on top of the reviewed
+`310078434`); no code defect was found. This round resolved the lane's
+develop drift (`origin/develop` had `5eeac0734` compliance-evidence gating +
+`2c8022fe8` buildx bump; no conflicts with lane surfaces) by merging
+`origin/develop` into `auto-1114` at `a994af1447c3`, then re-ran the full
+battery at that merged head with
+`MAISTRO_TEST_PG_DSN=postgresql://maistro:maistro@127.0.0.1:21435/maistro`
+(lane pg `auto-1114-pg2`, PG18, `alembic upgrade head` at head):
+
+- `packages/maistro-core/tests/tasks/` = **341 passed, 0 skipped, 0 failed**
+  — both crash boundaries (`test_postgres_death_after_run_admission_
+  executes_original_identity`, `test_postgres_death_after_receipt_before_
+  notification_executes_original_identity`) and the stranded-claim PG tests
+  executed for real; `-k postgres` alone = 7 passed, 0 skipped.
+- Targeted trio (`test_admission.py`, `test_issue_1114_repro.py`,
+  `test_main.py`) = 77 passed.
+- Independent standalone PG probe (driver kept outside the tree,
+  `probe_1114.py` in the job directory) replayed the prior finding's exact
+  state — task Run forced RUNNING with one NodeRun and zero Attempts — on
+  `ClaimingPgRunStore`: `TaskQueue.recover()` terminalizes it to FAILED with
+  `task_recovery_failed: ... stranded dispatch`, `recovered=0`, and a second
+  restart leaves it FAILED (idempotent, never immortal). PROBE: PASS.
+- Gates at the merged head: `ruff check .` clean; `ruff format --check .`
+  2546 files clean; `check-suite-inventory` ok for core and server;
+  `check-execution-lifecycles` OK 19/19; mypy (full six-package set from
+  AGENTS.md) Success in 713 files; `check-vulture-baseline.py` **rc=0**
+  after the develop merge (prior monorepo drift is gone upstream) with zero
+  lane-surface findings; the develop-merged `check-compliance.py` reports
+  the registry and COMPLIANCE.md valid.
+
+The prior finding remains fixed at this head (fix `71f683441`: a lone
+NodeRun is not stranded-claim evidence; Attempt presence decides). No
+source changes were needed this round; the only tree delta is this note and
+the develop merge.
