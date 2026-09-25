@@ -305,3 +305,60 @@ read-only probes plus this note.
 - **Closure-keyword review re-executed:** `git log 03c8ba83..HEAD` subjects
   and bodies contain no `fixes/closes/resolves #N`; PR #1389 body says only
   "Refs #817" and remains draft — no premature issue-closure action.
+
+## Repair round 7 (auto-817 @ 23fefb6a7, writer lane): develop-sync merge + fresh re-validation
+
+Resolved the previous block ("launch/preflight: Hosted PR snapshot incomplete
+or not the review head"): the branch was 1 commit behind `origin/develop`
+(`5eeac0734`, #1464 compliance gating — disjoint file set from every #817
+surface). Executed `git merge origin/develop` → merge commit `23fefb6a7`,
+**zero conflicts** (verified: the develop commit touches only
+`.github/`, `COMPLIANCE.md`, `docs/ci/`, `quality/`, `scripts/check-compliance.py`,
+`scripts/produce-compliance-evidence.py`, `scripts/check-ratchet-provenance.py`,
+`tests/test_check_compliance.py`, and #362 inventory notes). The branch is now
+a strict descendant of `origin/develop`.
+
+Fresh evidence executed at the merged head `23fefb6a7`:
+
+- **Pre-scan probe re-run:** `<math><mi>x</mi></math>` → `tier=skull,
+  rec=banish, conf=0.9, flags=("content: visual artifact active-element",)`;
+  script/handler/iframe/SVG-script/`data:text/html`/CSS-`url()`/prompt-injection
+  cases → all `skull/banish` with explicit shared-vocabulary flags; benign
+  paragraph → `t3/upgrade/()`. Round-1 finding 1 stays fixed at the merge head.
+- **Lane pytest:** `packages/maistro-core/tests/security` +
+  `packages/maistro-design/tests` → 1587 passed, 19 skipped, **1 failed:
+  `test_log_redaction.py::test_install_is_idempotent`** — proven pre-existing
+  and unrelated: those files have zero diff vs `origin/develop` in this branch
+  (no commit touches them), and the test fails in isolation on the canonical
+  clone at unrelated head `57ddca502`. Not an #817 regression.
+- `packages/maistro-design/tests/test_trust_prescan.py` +
+  `test_scan.py` + `packages/maistro-core/tests/security/warden` → 125 passed
+  (27 hostile/parity pre-scan cases incl. MathML and `\75rl(`; hostile
+  active-markup corpus; vocabulary-lockstep tests).
+- `packages/hive-conductor/backend/tests/test_design_renderers.py` → 7 passed.
+- **Chromium corpus re-run post-merge** (`deck-sanitization.spec.ts`, local
+  esbuild harness at worktree sources, @playwright/test 1.60.0) → **8/8
+  passed**, incl. mutation/encoded/SVG/CSS families fail-closed, block
+  reasons from the shared 4-name vocabulary, and `recommend('<math><mi>x</mi></math>')`
+  → `"review"`.
+- **SAST gate (CI-exact)** → rc=0, 364 rules / 1892 files / 0 findings at the
+  merge head; the single reviewed sink keeps its justified `nosemgrep`
+  annotation (`visualArtifactRenderer.tsx:394`).
+- **Vulture ledger gate (CI-exact)** → rc=0, 1415 reviewed identities →
+  1415 findings, candidate `23fefb6a7` vs base `5eeac0734`. No ledger edit
+  needed this round.
+- **Static gates:** `uv run ruff check .` clean; `uv run ruff format --check .`
+  → 2546 files already formatted.
+- **Post-merge develop gates:** `scripts/check-compliance.py` at rest → exit 0
+  ("compliance registry and COMPLIANCE.md are valid");
+  `scripts/check-ratchet-provenance.py` → exit 0 (37 consumers have
+  provenance, 0 lifecycle violations); `tests/test_check_compliance.py` →
+  97 passed.
+- **Frontend typecheck:** `tsc -p tsconfig.json --noEmit` → exit 0.
+- **mypy:** the AGENTS.md battery reports 7 errors, all pre-existing /
+  environmental (missing `maistro_bootstrap` editable, `maistro_canvas`
+  py.typed, unchanged `engine.py:148` unused-ignore); none in the five files
+  this lane changed, which remain mypy-clean.
+
+No production or test file changed this round (validation + merge only);
+no new tests added, so no inventory-delta change.
