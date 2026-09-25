@@ -264,3 +264,32 @@ Prior push block fully resolved: `origin/auto-1138` now equals `c15128b11`
 (non-blocking): `benchmarks/swebench_pro.py` secondary boundary keeps
 candidate_id-only correlation and no durable sink; the primary RsiCycle/
 gateway layer persists durably and that layer still fails closed.
+
+Repair-round revalidation at `c88608dd` (develop base `2c8022fe8`;
+`git diff c15128b11..c88608dd` touches only this notes file — code identical
+to the prior verified head, so the boundary code re-validated unchanged).
+Re-executed by this round: full `packages/maistro-rsi/tests` suite 756 passed
+(58.4s); `ruff check .` and `ruff format --check .` clean;
+`check-suite-inventory.py --suite packages/maistro-rsi/tests` OK (756
+recorded). Fresh out-of-tree probe set (/tmp, real `Warden`, no tree edits),
+16/16 pass: payload mobility across plain text / nested value /
+attacker-controlled mapping key / filename / commit-message / diff text all
+`blocked`; fail-closed on `Warden=None`, a raising scanner, `scan_sync` inside
+a running loop, AND a raising audit sink (`audit_unavailable`, admitted
+false); `WardenGuardedCallable` refusal raises `HarvestInputRefused` with the
+inner model callable invoked zero times, clean traffic flows, and a hostile
+tool description smuggled through call kwargs is also refused; audit record
+carries workspace/project/run/attempt/repo+base+head/campaign/candidate/
+policy_version/digest with URL credentials (`user:SECRET-TOKEN@`) stripped and
+zero payload text. Explicit re-runs: guarded/load-bearing/seam control tests
+(3 passed — the control proves the raw seam leaks the payload, so removing
+the wrapper fails the adversarial test), resume+boundary tests (19 passed),
+non-production reachability (13 passed). Seam sweep at this head: every
+model-call site in the package is boundary-guarded — including the
+`swebench_pro` cross-file judge, which receives the already-guarded
+`model_call` — and every `Warden()` construction is unconditional (no
+isolation- or environment-conditional allow-all). Residual unchanged
+(non-blocking): `swebench_pro.py:203-210` secondary boundary keeps
+candidate_id-only correlation and a logging-only sink; it fails closed
+independently of audit and the outer RsiCycle wrapper (runner.py:215-239)
+durably audits the same calls.
