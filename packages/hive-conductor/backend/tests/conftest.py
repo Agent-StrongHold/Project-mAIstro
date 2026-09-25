@@ -100,6 +100,18 @@ def _isolate_dashboard_layouts():
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_database(monkeypatch: pytest.MonkeyPatch):
+    """The session engine is a stub, i.e. Hive with no database.
+
+    A CI job that exports DATABASE_URL/DB_* for other suites would otherwise
+    make the Workspace authority refuse its no-database fallback (#37).
+    Tests that want a database set one themselves.
+    """
+    for name in ("DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_workspace_authority():
     """Do not let the canonical fallback/presentation adapter leak across tests."""
     from services.workspace_authority import reset_for_tests
