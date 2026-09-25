@@ -566,3 +566,50 @@ commands executed fresh in the lane worktree (tree untouched except this note).
 - Residuals: live CI status on this exact head not independently observed (draft PR;
   push prohibited) — local full required-command run at this head is the operative
   evidence; org rulesets still require 0 approvals (prior finding, org-side).
+
+## Independent verifier pass — 983ff08f0 (2026-09-25)
+
+Re-derived from the issue text at head `983ff08f0b6248ac49e8d3ea1e745713367effa3`
+(merge of develop `55c5ad892`); all commands executed fresh in the lane worktree
+(no tree edits except this note).
+
+- Targeted: `pytest formal/models/test_dangerous_tools.py
+  formal/models/test_external_content.py -q --hypothesis-seed=0` → **271 passed**;
+  `pytest tests/test_check_formal_oracle_independence.py -q` → **3 passed**;
+  `python scripts/check-formal-oracle-independence.py --base 55c5ad892` → **exit 0**
+  (bootstrap: oracle absent at base — this PR establishes it).
+- Full required-CI equivalent: shared `maistro-postgres` (127.0.0.1:5433), fresh
+  `maistro_test` database, `alembic upgrade head`, `PYTHONPATH=packages/maistro-evolve/src`
+  (driver `uv sync` does not install it), `MAISTRO_TEST_PG_DSN` set,
+  `pytest formal/models/ -q --hypothesis-seed=0` → **664 passed in 59.12s**.
+  Resolves the prior round's asyncpg-timeout UNVERIFIED item.
+- Mutation battery (in-memory plugins in /tmp, no tree edits, targeted file,
+  `--hypothesis-seed=0`): 21-of-22 deletion → **189 failed**; weaken
+  `rm\s+-rf\s+[/~]` → `rm\s+-rf\s+/` → **6 failed** (incl. enforcement path —
+  the earlier finding that this weakening passed is FIXED at this head);
+  benign-prefix shadow of `is_dangerous_command` → **82 failed**; executor
+  deny-check dropped (`microvm.is_dangerous_command = λ: []`) → **41 failed**.
+  All four classes fail.
+- Branch hygiene: zero closure keywords in PR body (live refresh: head matches,
+  `Refs #341` only) and in any commit message on `55c5ad892..983ff08f`; zero
+  `packages/` files in `git diff --name-only 55c5ad892...HEAD` (oracle
+  establishes without implementation co-change). `formal-conformance` is a
+  required context (`branch-protection.json`) and is **SUCCESS** on this head.
+- **BLOCKING CI failures on this head, both caused by this PR:**
+  1. CI / `test`: suite inventory drift — `python scripts/check-suite-inventory.py`
+     fails locally with `DRIFT  formal/: expected 678, collected 664` (net -14);
+     this note's front-matter delta `formal/: +256` does not match actual
+     collection at this head. Live run 36167568102 job 108178932631 FAILURE.
+     Repair: reconcile the recorded inventory (`check-suite-inventory.py --update`
+     + corrected delta) at the final head.
+  2. quality / Coverage gate: `scripts/check-formal-oracle-independence.py:
+     55.0% of 60 changed lines (need 90%)` — live run 36167567893 job
+     108181122595 FAILURE. The three unit tests cover `changed_paths`/
+     `violations`/`oracle_exists_at_base` but not the CLI/error paths
+     (`main`, subprocess-failure branches). Repair: extend
+     `tests/test_check_formal_oracle_independence.py` or declare exemption
+     per repo convention.
+- Residual (org-side, prior finding stands): live rulesets require 0 approvals;
+  the co-change gate enforces the one-PR case, but two sequential self-approved
+  PRs (oracle-only, then implementation-only) rely on CODEOWNERS that the live
+  rulesets do not enforce.
