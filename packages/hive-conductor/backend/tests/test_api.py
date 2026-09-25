@@ -4,6 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 from main import app
 
+# Model-reaching turns are admitted as canonical chat Runs (#1037).
+pytestmark = pytest.mark.usefixtures("chat_run_spine")
+
 client = TestClient(app)
 
 
