@@ -3,6 +3,8 @@
 Drives the shipped ReAct, Artificer and BuildersLearning strategies through
 ``Agent.handle`` with a real Warden and a real Sentinel, and pins that the
 tool result each strategy feeds back to the provider is the same governed text.
+``Agent.handle`` passes no ``worker``, so BuildersLearning takes its ReAct
+delegation branch here; its frank/mason branches are not reachable from it.
 """
 
 from __future__ import annotations
