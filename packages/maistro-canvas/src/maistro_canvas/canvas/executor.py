@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, TypeVar
 
@@ -50,6 +52,9 @@ logger = logging.getLogger("maistro_canvas.canvas.executor")
 _ACTIVE_STATUSES = frozenset({JobStatus.PENDING, JobStatus.RUNNING})
 _TERMINAL_STATUSES = frozenset({JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED})
 _T = TypeVar("_T")
+
+#: Monotonic deadline of the runner-claimed job currently executing, if bounded.
+_JOB_DEADLINE: ContextVar[float | None] = ContextVar("canvas_job_deadline", default=None)
 
 
 class _WardenProtocol:
@@ -118,8 +123,26 @@ def _job_fingerprint(job: GenerationJobRecord) -> tuple[object, ...]:
     )
 
 
+class PreclassifiedJobFailure(RuntimeError):
+    """A job failure whose message was written by Canvas itself and is user-safe.
+
+    ``_sanitise_error`` exists to strip raw provider bodies; a failure Canvas
+    raises about its *own* machinery (a worker lease that expired, an
+    execution that ran past its bound) carries no provider text, and folding
+    it into the generic "provider error" message would misreport worker loss
+    as a provider fault (Codex #1535). Only construct this with a fixed,
+    caller-authored message -- never with provider or user data.
+    """
+
+
 def _sanitise_error(exc: Exception) -> str:
     """Return a safe error message — strips stack traces and raw provider bodies."""
+    if isinstance(exc, PreclassifiedJobFailure):
+        return str(exc)
+    if isinstance(exc, TimeoutError):
+        # Includes the canonical Runtime's RuntimeDeadlineExceeded, whose text
+        # is an execution id rather than anything the keyword match can see.
+        return "Generation failed: provider request timed out."
     raw = str(exc)
     lower = raw.lower()
     if "429" in raw or "rate_limit" in lower or "too many" in lower or "ratelimit" in lower:
@@ -150,12 +173,16 @@ class CanvasExecutor:
         model_registry: _ModelRegistryProtocol,
         warden: _WardenProtocol,
         canonical_execution: CanvasCanonicalExecution | None = None,
+        execution_timeout_s: float | None = None,
     ) -> None:
+        if execution_timeout_s is not None and execution_timeout_s <= 0:
+            raise ValueError("execution_timeout_s must be positive")
         self._store = store
         self._image_client = image_client
         self._model_registry = model_registry
         self._warden = warden
         self._canonical_execution = canonical_execution
+        self._execution_timeout_s = execution_timeout_s
         self._layer_locks: dict[str, asyncio.Lock] = {}
 
     @property
@@ -397,7 +424,24 @@ class CanvasExecutor:
         authority — and every store read below predicates on it. A claimed
         receipt carrying no scope (a legacy row) is refused rather than
         executed globally.
+
+        ``execution_timeout_s`` bounds the whole claimed job: every provider
+        stage runs under the time left, enforced where the work runs (the
+        canonical Runtime, or ``asyncio.timeout`` on the compatibility path),
+        so a stalled call ends as a retryable timeout.
         """
+        deadline = (
+            time.monotonic() + self._execution_timeout_s
+            if self._execution_timeout_s is not None
+            else None
+        )
+        token = _JOB_DEADLINE.set(deadline)
+        try:
+            await self._execute_claimed_within_deadline(job)
+        finally:
+            _JOB_DEADLINE.reset(token)
+
+    async def _execute_claimed_within_deadline(self, job: GenerationJobRecord) -> None:
         if not job.org_id:
             raise RuntimeError(
                 f"Canvas job {job.id!r} was claimed with no org scope; refusing to execute globally"
@@ -455,6 +499,12 @@ class CanvasExecutor:
         operation: Callable[[], Awaitable[_T]],
     ) -> _T:
         run_id = canonical_run_id(job.params)
+        deadline = _JOB_DEADLINE.get()
+        timeout_s: float | None = None
+        if deadline is not None:
+            timeout_s = deadline - time.monotonic()
+            if timeout_s <= 0:
+                raise TimeoutError(f"Canvas job {job.id!r} exhausted its execution time limit")
         if run_id is None:
             if self._canonical_execution is not None:
                 raise RuntimeError(
@@ -463,7 +513,8 @@ class CanvasExecutor:
             # Compatibility-only direct path. CanvasJobRunner checks
             # canonical_enabled before claim, so shipped background execution
             # cannot silently bypass canonical evidence.
-            return await operation()
+            async with asyncio.timeout(timeout_s):
+                return await operation()
         if self._canonical_execution is None:
             raise RuntimeError(
                 f"Canvas job {job.id!r} names canonical Run {run_id!r} but no adapter is bound"
@@ -477,7 +528,9 @@ class CanvasExecutor:
                 # must receive the same safe provider message as the receipt.
                 raise RuntimeError(_sanitise_error(exc)) from None
 
-        return await self._canonical_execution.execute_stage(run_id, stage, _sanitised_operation)
+        return await self._canonical_execution.execute_stage(
+            run_id, stage, _sanitised_operation, timeout_s=timeout_s
+        )
 
     async def _execute_generate(self, job: GenerationJobRecord, canvas: CanvasRecord) -> list[str]:
         params = job.params
