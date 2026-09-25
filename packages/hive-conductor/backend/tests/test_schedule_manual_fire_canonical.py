@@ -153,7 +153,13 @@ def test_manual_fire_over_http_creates_one_canonical_run(
             assert run.workspace_id == workspace
             assert run.project_id == project, "the bound Project, not the Root"
             assert run.project_id != f"hive:schedule:{_SID}"
-            assert run.status is RunStatus.QUEUED, "admission is submission (#251)"
+            # Admission is submission (#251), and the manual route keeps its
+            # immediate UX by consuming the admitted Run promptly through the
+            # canonical consumer tick (#1120) — never by bypassing admission.
+            # The alias_keys graph is single-node, so by the time the response
+            # returns the Run has already executed to completion.
+            assert run.status is RunStatus.COMPLETED
+            assert run.provenance["schedule_trigger"] == "manual"
             assert run.actor_principal_id == "user-1"
             assert run.provenance["admission_source"] == "schedule"
             assert run.provenance["schedule_id"] == _SID
@@ -235,5 +241,66 @@ def test_manual_fire_on_a_half_wired_container_is_a_503_not_a_fallback(
         after = admin_client.get(f"/v1/schedules/{_SID}").json()
         assert after["last_run"] is None
         assert after["last_run_id"] is None
+    finally:
+        _remove()
+
+
+def _assert_no_run_factory(container: Any) -> Any:
+    """A sync-safe assertion: the Container's run store holds no Run."""
+
+    async def assert_no_run() -> None:
+        assert len(container.run_store._runs) == 0  # type: ignore[attr-defined]
+
+    return assert_no_run
+
+
+def test_a_blank_fire_id_in_the_body_is_a_422_never_a_firing(
+    admin_client: Any, _configured_container: Any
+) -> None:
+    """AC: the manual identity is non-empty. A blank token would mint
+    ``manual:`` + "" — one occurrence identity shared by every blank request,
+    the opposite of a stable per-logical-request identity — so the body is
+    refused before anything fires."""
+    _install(_row(_configured_container.bound_scope))
+    try:
+        response = admin_client.post(f"/v1/schedules/{_SID}/run", json={"fire_id": "   "})
+        assert response.status_code == 422, response.text
+        assert "fire_id" in response.text
+        asyncio.run(_assert_no_run_factory(_configured_container)())
+    finally:
+        _remove()
+
+
+def test_an_overlong_fire_id_in_the_body_is_a_422(
+    admin_client: Any, _configured_container: Any
+) -> None:
+    """AC: the manual identity is bounded — the token becomes durable Run
+    provenance and half of a unique occurrence claim, so a stray paste cannot
+    smuggle unbounded data into the spine."""
+    _install(_row(_configured_container.bound_scope))
+    try:
+        response = admin_client.post(f"/v1/schedules/{_SID}/run", json={"fire_id": "x" * 201})
+        assert response.status_code == 422, response.text
+        assert "fire_id" in response.text
+        asyncio.run(_assert_no_run_factory(_configured_container)())
+    finally:
+        _remove()
+
+
+def test_an_overlong_idempotency_key_is_a_422(
+    admin_client: Any, _configured_container: Any
+) -> None:
+    """AC: the header is held to the body's `fire_id` contract — the standard
+    retry identity goes through the same strip-and-bound check before it can
+    become an occurrence token."""
+    _install(_row(_configured_container.bound_scope))
+    try:
+        response = admin_client.post(
+            f"/v1/schedules/{_SID}/run",
+            headers={"Idempotency-Key": "k" * 201},
+        )
+        assert response.status_code == 422, response.text
+        assert "fire_id" in response.text
+        asyncio.run(_assert_no_run_factory(_configured_container)())
     finally:
         _remove()
