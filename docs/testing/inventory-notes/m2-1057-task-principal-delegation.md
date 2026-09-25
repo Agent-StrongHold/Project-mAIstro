@@ -1,8 +1,8 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +4
-  packages/maistro-server/tests: +3
-  packages/hive-conductor/backend/tests: +1
+  packages/maistro-core/tests: +21
+  packages/maistro-server/tests: +6
+  packages/hive-conductor/backend/tests: +25
   tests/: +1
 ---
 
@@ -92,3 +92,55 @@ current develop (`mergeStateStatus: DIRTY`); this worktree's head is the
 reconciled lineage (migrations renumbered to 041/042, audit-scope re-parent
 `1c1504259`), so the recorded failures do not reproduce here — the remote
 branch must be updated to this lineage before integration.
+
+Fourth repair phase (head `ced1c6080`, 44 new tests + one production-neutral
+refactor + one test-stability fix): the fail-closed side of the delegation
+envelope is now held by tests that forge envelopes directly the way a hostile
+client would — non-envelope shapes, unreadable/non-JSON payloads, missing or
+non-numeric required claims, unknown and `system`-kind-claiming-a-user
+principal kinds, wrong version/audience, inverted and over-long lifetimes,
+skew-window and signer-side refusals (empty principals, missing key,
+out-of-range ttl), plus a pinned wire header name
+(`test_http_contract.py`, +13). Queue restore coverage holds the
+restart/replay fail-closed guards: a row with an impossible actor kind or a
+blank owner is skipped rather than requeued, an in-memory-held receipt is
+never double-counted, a restore-time database outage degrades instead of
+crashing, and a corrupt durable receipt never answers an idempotent replay
+(`test_queue_persistence.py`, +4; `_admission_provenance` was extracted in
+`admission.py` so these hold provenance shape directly — no behavior change).
+The server side gains: a delegation envelope with no authenticated caller is
+refused, and every unverifiable envelope (garbage, foreign-key, expired)
+fails closed at the shared resolver with 403 (`test_task_workspace_scope.py`,
++2); rotating garbage delegation envelopes cannot mint fresh rate-limit
+budgets — they are charged to the authenticated service principal's own
+bucket (`test_rate_limit.py`, +1). Hive conductor gains principal-scoped
+cancel/delete/event-stream refusals (`test_engine_service.py`, +7),
+engine-backed mission list/detail/steps scoped to the caller with blank
+ownership failing closed and submissions carrying the authenticated user
+(`test_mission_controls.py`, +13), and local/HTTP backend delegation-key and
+scope refusals (`test_workspace_scoped_submission.py`, +4).
+
+Test-stability fix found by execution, not inspection: the new rate-limit
+test tampered with a valid envelope via `valid_alice[:-1] + "f"`, which is a
+silent no-op one time in sixteen (when the dropped hex digit was already
+`f`) — the then-valid envelope keyed to Alice's fresh delegated bucket and
+returned 200 instead of the asserted 429 (reproduced 2/30 single-file runs,
+~1/5 triple-file runs, e.g. `AssertionError: assert 200 == 429` at
+`test_rate_limit.py:270`). The mutation now deterministically flips the last
+signature digit to a different one; 30 consecutive single-file runs pass
+after the fix (previously 2/30 failed). Production code was verified
+correct — the middleware's fail-closed service-bucket fallback is exactly
+what the test claims.
+
+Fourth-phase re-validation: `uv run pytest` over the thirteen PR-relevant
+suites (Hive `test_api`/`test_engine_service`/
+`test_production_workspace_scope`/`test_workspace_scoped_submission`/
+`test_mission_controls`, core `test_http_contract`/`test_idempotency`/
+`test_queue_persistence`, server `test_rate_limit`/
+`test_task_workspace_scope`/`test_webhooks`, migrations
+`test_audit_scope_migration`/`test_migration_chain`) — 241 passed, 12
+skipped, 0 failed, repeated 4x for the flake investigation. `uv run ruff
+check .` and `uv run ruff format --check .` pass; `uv run python
+scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` passes with `unclassified: 0` and a clean
+ratchet (1415 reviewed identities → 1415 findings).

@@ -159,6 +159,55 @@ async def test_a_forged_originating_principal_is_rejected(
     assert response.status_code == 403
 
 
+def test_delegation_without_an_authenticated_principal_is_refused() -> None:
+    """A delegation envelope is only ever evidence *about* a service caller;
+    with no authenticated caller there is nothing for it to match, so the
+    shared resolver refuses rather than trusting the envelope alone."""
+    from fastapi import HTTPException
+
+    from maistro_server.api.delegation import resolve_delegated_identity
+
+    with pytest.raises(HTTPException) as excinfo:
+        resolve_delegated_identity(None, "any-envelope-at-all")
+
+    assert excinfo.value.status_code == 403
+
+
+def test_an_unverifiable_delegation_envelope_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A garbage, expired or wrong-key envelope fails closed at the shared
+    resolver: 403, not a fall-through to the service credential's identity."""
+    from fastapi import HTTPException
+
+    from maistro_server.api.delegation import resolve_delegated_identity
+    from maistro_server.api.principal import AuthenticatedPrincipal
+
+    monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
+    principal = AuthenticatedPrincipal(
+        user_id="conductor", token="service-secret", roles=frozenset({"user"})
+    )
+
+    for envelope in (
+        "not-an-envelope",
+        "eworthy.unsigned",
+        sign_delegation_context(
+            service_principal="conductor",
+            originating_principal="alice",
+            key="a-different-key",
+        ),
+        sign_delegation_context(
+            service_principal="conductor",
+            originating_principal="alice",
+            key=DELEGATION_KEY,
+            now=1_000_000,
+        ),
+    ):
+        with pytest.raises(HTTPException) as excinfo:
+            resolve_delegated_identity(principal, envelope)
+        assert excinfo.value.status_code == 403
+
+
 async def test_named_workspace_run_resolves_under_that_workspaces_root_project(
     durable_spine, client: AsyncClient
 ) -> None:

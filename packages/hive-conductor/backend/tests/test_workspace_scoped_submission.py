@@ -337,3 +337,64 @@ def test_confirm_refuses_a_non_member_before_the_pm_gate(
     r = authed_client.post(f"/v1/work-items/does-not-matter/confirm?workspace_id={ws_id}")
 
     assert r.status_code == 403
+
+
+async def test_the_http_backend_refuses_user_scoped_calls_without_a_delegation_key(
+    monkeypatch,
+) -> None:
+    """Originating-principal propagation is not optional (#1057).
+
+    A backend that cannot sign the delegation envelope must refuse loudly
+    rather than quietly sending the request as the bare service credential —
+    that is the collapse-of-users failure this issue removes.
+    """
+    import adapters.task_backend as backend_mod
+
+    monkeypatch.delenv("MAISTRO_DELEGATION_KEY", raising=False)
+    backend = backend_mod.MaistroServerTaskBackend(
+        base_url="http://tasks.invalid", api_key="k", delegation_key=None
+    )
+
+    with pytest.raises(backend_mod.DelegationNotConfigured):
+        backend._headers(user_id="alice")
+    with pytest.raises(backend_mod.DelegationNotConfigured):
+        backend._headers(user_id=backend_mod.SYSTEM_PRINCIPAL)
+
+
+def test_the_http_backend_refuses_an_empty_service_principal(monkeypatch) -> None:
+    """The service claim is half of every delegation; it cannot be blank."""
+    import adapters.task_backend as backend_mod
+
+    monkeypatch.setattr(backend_mod, "MAISTRO_SERVICE_PRINCIPAL", "conductor", raising=False)
+    monkeypatch.setenv("MAISTRO_SERVICE_PRINCIPAL", "   ")
+
+    with pytest.raises(ValueError, match="MAISTRO_SERVICE_PRINCIPAL"):
+        backend_mod.MaistroServerTaskBackend(
+            base_url="http://tasks.invalid", api_key="k", service_principal="  "
+        )
+
+
+async def test_the_local_backend_refuses_a_cancel_of_someone_elses_task() -> None:
+    """The local backend scopes cancel exactly like the HTTP one does."""
+    from adapters.task_backend import LocalTaskBackend
+
+    from maistro.tasks.models import TaskCreate
+
+    backend = LocalTaskBackend(executor=lambda task: None)
+    record = await backend.submit(TaskCreate(description="d"), user_id="alice")
+
+    assert await backend.cancel(record.id, user_id="bob") is False
+    assert await backend.cancel(record.id, user_id="alice") is True
+
+
+async def test_the_local_backend_yields_no_events_for_a_foreign_task() -> None:
+    from adapters.task_backend import LocalTaskBackend
+
+    from maistro.tasks.models import TaskCreate
+
+    backend = LocalTaskBackend(executor=lambda task: None)
+    await backend.submit(TaskCreate(description="d"), user_id="alice")
+
+    events = [event async for event in backend.iter_events("missing-task", user_id="alice")]
+
+    assert events == []

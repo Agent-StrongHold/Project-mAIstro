@@ -235,6 +235,49 @@ class TestPrincipalIdentityKeying:
         assert client.get("/thing", headers=headers("alice")).status_code == 429
         assert client.get("/thing", headers=headers("bob")).status_code == 200
 
+    def test_an_unverifiable_delegation_falls_back_to_the_service_bucket(
+        self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Garbage delegation evidence must not mint a fresh budget: the
+        request is charged to the authenticated service principal's own
+        bucket, so a hostile client cannot rotate fake envelopes to evade the
+        per-user limit behind one shared key."""
+        configure_api_keys(monkeypatch, "conductor:rl-key")
+        monkeypatch.setenv("TASK_DELEGATION_KEY", "delegation-key")
+        client = TestClient(_make_app())
+
+        def garbage_headers(envelope: str) -> dict[str, str]:
+            return {"Authorization": "Bearer rl-key", DELEGATION_HEADER: envelope}
+
+        def delegated_headers(user_id: str) -> dict[str, str]:
+            return {
+                "Authorization": "Bearer rl-key",
+                DELEGATION_HEADER: sign_delegation_context(
+                    service_principal="conductor",
+                    originating_principal=user_id,
+                    key="delegation-key",
+                ),
+            }
+
+        valid_alice = sign_delegation_context(
+            service_principal="conductor", originating_principal="alice", key="delegation-key"
+        )
+        # A guaranteed-flipped signature digit: appending a fixed char would
+        # silently no-op one time in sixteen (when the dropped char was already
+        # that char) and leave a perfectly valid envelope — the opposite of the
+        # garbage this request must present.
+        flip = "0" if valid_alice[-1] != "0" else "1"
+        tampered_alice = valid_alice[:-1] + flip
+        # Each envelope is garbage, but all are charged to the SAME service
+        # bucket: rotating fake envelopes does not rotate the budget.
+        assert client.get("/thing", headers=garbage_headers("not-an-envelope")).status_code == 200
+        assert client.get("/thing", headers=garbage_headers("a.b")).status_code == 200
+        # The service principal's own bucket is now exhausted...
+        assert client.get("/thing", headers=garbage_headers(tampered_alice)).status_code == 429
+        assert client.get("/thing", headers={"Authorization": "Bearer rl-key"}).status_code == 429
+        # ...and a valid delegated principal keeps its independent budget.
+        assert client.get("/thing", headers=delegated_headers("alice")).status_code == 200
+
     def test_anonymous_traffic_cannot_evade_the_network_floor_by_changing_headers(
         self, tight_limits: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
