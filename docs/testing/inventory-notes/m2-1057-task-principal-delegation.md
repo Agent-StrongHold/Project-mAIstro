@@ -63,3 +63,32 @@ DB_NAME/DB_USER/DB_PASSWORD` scratch-database targeting
 (`resolve_database_url` precedence), which shows up as spurious
 `UndefinedTableError` failures in the store-leg suites, not as a fixture
 guard.
+
+Second independent repair-phase validation (merge head `54498b648`, which
+merges develop's HITL workspace-authorization commit `60862b6c5`; no code or
+test changes in this phase — verification only): re-executed
+`packages/maistro-core/tests/tasks` + `tests/migrations/` 332 passed (80
+skips without `MAISTRO_TEST_DATABASE_URL`),
+`packages/maistro-server/tests/api` task-scope/rate-limit/webhooks 58 passed,
+the four Hive bridge suites (`test_api`, `test_engine_service`,
+`test_production_workspace_scope`, `test_workspace_scoped_submission`) 80
+passed, `ruff check` / `ruff format --check`, `check-suite-inventory.py`,
+`check-compose-secrets.py` and `verify-monorepo-layout.sh` all pass. The
+live-Postgres chain suite was re-run against a scratch database on the
+existing `pgvector/pgvector:pg18` container: 12 passed, including
+`test_pre_provenance_receipts_become_explicit_system_work` (re-selected
+individually for an explicit PASSED line) plus the named acceptance tests
+`TestPrincipalIdentityKeying::test_delegated_users_have_independent_budgets_behind_one_service_key`,
+`test_delegated_users_keep_distinct_task_and_run_ownership`,
+`test_shared_bridge_keeps_two_authenticated_user_tasks_isolated` and
+`test_system_delegation_has_an_explicit_system_actor`. `mypy` on
+`maistro-core`/`maistro-server` reports only the 5 pre-existing
+`import-not-found` errors for `maistro_bootstrap` stubs in `cli/` files this
+branch does not touch. Integration-layer note: PR #1394's status checks have
+now concluded — 3 failures (`test`, `quality`/Quality gate, Coverage gate) —
+but against PR head `39bdab11f`, the OLD diverged lineage of `auto-1057`
+(six linear commits based on trunk's former 038 head) that conflicts with
+current develop (`mergeStateStatus: DIRTY`); this worktree's head is the
+reconciled lineage (migrations renumbered to 041/042, audit-scope re-parent
+`1c1504259`), so the recorded failures do not reproduce here — the remote
+branch must be updated to this lineage before integration.
