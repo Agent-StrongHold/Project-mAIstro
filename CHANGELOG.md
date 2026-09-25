@@ -459,7 +459,11 @@ or placeholder-only section.
   and no Container it answers 503 with `ready: false`, so Compose stops
   reporting an instance whose Workspace API only fails. The Hive image now
   ships the agent roster (`agents/` → `/app/backend/agents`), which the
-  embedded bridge requires to start at all.
+  embedded bridge requires to start at all. `create_container()` no longer
+  refuses to build when the `identity` extra is missing (the Python 3.14 Hive
+  image cannot install it): it leaves the identity lifecycle stores unwired,
+  and the Container's identity methods still raise the ImportError that names
+  the extra.
 
 - **A declared correlation field must have a production producer (#63).** A
   fitness test scans production code (`packages/*/src` and the hive, turing

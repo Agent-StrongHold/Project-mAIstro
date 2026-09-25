@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   packages/hive-conductor/backend/tests: +18
+  packages/maistro-core/tests: +2
 ---
 # claude-ws-37-implement-the-owner-decision-shared-post-06f4
 
@@ -31,3 +32,12 @@ touching the mirror (SQLite and PostgreSQL, two node IDs).
 In `test_workspace_authority.py`, the durable-retirement test was renamed in
 place for the new contract, which leaves the mirror untouched. That rename
 changes no count.
+
+Gate C follow-up adds two node IDs to
+`packages/maistro-core/tests/test_container_wiring.py`. The Hive image runs
+Python 3.14, where the `identity` extra cannot install, so `create_container()`
+failed and Hive fell back to its stub, and with `DATABASE_URL` now set its
+readiness answered 503. One test builds a Container with `bip_utils` blocked
+and proves it starts with the identity stores unwired while
+`create_agent_identity` still raises the ImportError naming the extra. The
+other proves an identity call on a Container without its stores fails loudly.
