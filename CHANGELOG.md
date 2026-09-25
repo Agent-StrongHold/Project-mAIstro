@@ -545,6 +545,21 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Reactor persists through the Conductor's one State writer and
+  configured state database (#1135, #1178).** `maistro.reactor.Reactor` now takes the Foundation's `State`
+  (`state=`): `state_submit` goes through `State.submit`, `state_query`
+  through `State.open_reader`, and `reactor_log` is created by the
+  `reactor_log_001` State migration. Hive's Foundation passes its State
+  (built from `CONDUCTOR_STATE_DB`) instead of hard-coding
+  `data_dir/state.db`, so the Reactor no longer opens a second raw SQLite
+  writer or writes to a different file than the rest of the Conductor.
+  `state_db_path=` is deprecated and refused alongside `state=`.
+  `state_submit` is now fire-and-forget like `State.submit` (a failing write
+  is logged by the writer, not raised into the handler, and is visible to
+  `state_query` once committed). Deployments that set a non-default
+  `CONDUCTOR_STATE_DB` previously left `reactor_log` rows in a separate
+  `data_dir/state.db`; those rows are not migrated.
+
 - **develop CI is green again: MinIO without registry auth, and the
   credential-authority self-checks judge against a real base.** MinIO archived
   its community server, so `quay.io/minio/minio` now answers 401 and dl.min.io
