@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from services.canvas_dag import CANVAS_DAG, CanvasHillClimber, visual_quality_eval
-from services.workspace_authority import is_member
+from services.dag_run_inspection import authorized_workspace_ids
 
 from maistro.capabilities.binding_store import BindingResolutionError
 from maistro.capabilities.invocation import CapabilityUnavailable
@@ -72,29 +72,28 @@ def _trusted_canvas_context(request: Request) -> dict[str, str]:
 async def _canonical_canvas_run(request: Request, run_id: str) -> Any:
     """Load an existing canonical Run the caller's Workspace membership authorizes.
 
-    Visibility is canonical Workspace membership, the check HITL run
-    inspection uses (#1152, #1174): the initiating principal is provenance,
-    not a gate, and no role bypasses it. A foreign, actor-less, or missing
-    Run gets one answer so the response never confirms that a Run id exists.
+    Visibility is the caller's canonical Workspace universe, the same one
+    DAG-run inspection uses (#1152, #1174): the initiating principal is
+    provenance, not a gate, and no role bypasses it. A foreign, actor-less,
+    or missing Run gets one answer so the response never confirms that a Run
+    id exists.
     """
     user = getattr(request.state, "user", None) or {}
     principal = str(user.get("id") or user.get("username") or "").strip()
     if not principal:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    refusal = BindingResolutionError("Canvas visual evaluation requires an existing canonical Run")
-    run = await _canvas_model_egress(request).run_store.get_run(run_id)
-    if run is None or not run.actor_principal_id:
-        raise refusal
+    # The caller's Workspace universe is resolved before, and independently
+    # of, the Run lookup: a missing id and a foreign id then do the same
+    # membership work, so neither status, body nor latency confirms existence.
     try:
-        authorized = await is_member(principal, run.workspace_id)
+        allowed = await authorized_workspace_ids(principal)
     except Exception:
-        # A membership-store failure must not surface as a different status
-        # than a missing Run, or it would confirm the Run exists.
         logger.exception("Canvas Run membership lookup failed; refusing")
-        authorized = False
-    if not authorized:
-        raise refusal
+        allowed = set()
+    run = await _canvas_model_egress(request).run_store.get_run(run_id)
+    if run is None or not run.actor_principal_id or run.workspace_id not in allowed:
+        raise BindingResolutionError("Canvas visual evaluation requires an existing canonical Run")
     return run
 
 
