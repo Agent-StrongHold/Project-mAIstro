@@ -1,6 +1,9 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +0 net (1 test adapted to the merged fail-closed store seam)
+  packages/hive-conductor/backend/tests: +0
+
+Net suite delta is zero: one test was adapted in place (see below) and no test
+was added or removed.
 ---
 
 # auto-1110 HITL develop sync repair (#1110)
@@ -46,3 +49,22 @@ answer settles with 200) while middleware-scope tests still pass. The scope
 checks are load-bearing. The expiry scope test stays green under the same
 mutation because `authorized_project_ids` plus store-level membership
 revalidation cover that path independently (defense in depth).
+
+## Re-validation at the 2026-09 develop sync (this round)
+
+The front-matter delta line above previously carried prose after the count,
+which `check-suite-inventory.py` cannot parse (`cannot read ... as
+'<suite>: <±count>'`); the count is bare and the prose lives in this body.
+`origin/develop` (b906cc577, username allocation + manual-fire admission) was
+merged with no conflicts. Re-run at merge commit ffe46913:
+
+- `check-suite-inventory.py`: 13 suites match the recorded inventory
+  (hive-conductor backend: 2767 collected; the `+0` delta holds).
+- `test_hitl_door.py` + `test_hitl_timeout_cancel.py`: 33 passed; workspace
+  authority + privilege middleware: 12 passed; full backend suite: 2761
+  passed, 6 skipped; `packages/maistro-core/tests/runs`: 876 passed,
+  209 skipped.
+- The mutation experiment above was re-executed in this round: the isolation
+  test failed under the no-op mutation and passed again after revert.
+- `ruff check .` / `ruff format --check .`: clean; vulture baseline: 1414
+  reviewed identities, 0 unbanked.
