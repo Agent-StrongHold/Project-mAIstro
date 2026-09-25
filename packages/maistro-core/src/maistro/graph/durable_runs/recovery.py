@@ -164,12 +164,16 @@ def _lazy_resolver(
 
 @runtime_checkable
 class PersistenceReconciler(Protocol):
-    async def reconcile_persistence(self, *, limit: int = 100) -> int: ...
+    async def reconcile_persistence(
+        self, *, limit: int = 100, now: datetime | None = None
+    ) -> int: ...
 
 
-async def _reconcile_if_supported(store: DurableRunStore, *, limit: int) -> None:
+async def _reconcile_if_supported(
+    store: DurableRunStore, *, limit: int, now: datetime | None = None
+) -> None:
     if isinstance(store, PersistenceReconciler):
-        await store.reconcile_persistence(limit=limit)
+        await store.reconcile_persistence(limit=limit, now=now)
 
 
 @runtime_checkable
@@ -308,8 +312,10 @@ async def resume_due_graph_runs(
     _require_resolver_choice(node_resolver, node_resolver_factory)
     resolver_for = _per_run_resolver(node_resolver, node_resolver_factory)
 
-    await _reconcile_if_supported(store, limit=limit)
     moment = now if now is not None else datetime.now(UTC)
+    # The same moment as the due scan below, so a claim the scan treats as
+    # elapsed is one reconciliation has already made visible to it.
+    await _reconcile_if_supported(store, limit=limit, now=moment)
 
     def _combined_eligible(candidate: DurableRunRecord) -> bool:
         if not _is_resume_due(candidate, moment):

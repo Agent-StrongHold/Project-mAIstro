@@ -225,6 +225,43 @@ def _legacy_registration_implementation_tests(request: pytest.FixtureRequest):
         registration_policy.reset()
 
 
+@pytest.fixture(scope="session")
+def _chat_spine_container():
+    from maistro.container import create_container
+    from maistro.types import AgentConfig
+
+    return asyncio.run(
+        create_container(AgentConfig(router_api_key="test-key", database_url="memory://"))
+    )
+
+
+@pytest.fixture
+def chat_run_spine(_chat_spine_container, monkeypatch: pytest.MonkeyPatch):
+    """Give the engine a canonical Run spine, so model-reaching chat and voice
+    turns are admitted as Runs rather than refused with a 503 (#1037).
+
+    Only the spine is exposed: the Container's Workspace store stays unbound so
+    Workspace authority keeps its per-test canonical fallback.
+    """
+    from types import SimpleNamespace
+
+    from services import chat_runs
+    from services.engine import get_engine
+
+    c = _chat_spine_container
+    spine = SimpleNamespace(
+        run_store=c.run_store,
+        project_scope_store=c.project_scope_store,
+        intent_registry=c.intent_registry,
+        _close_chat_run=c._close_chat_run,
+        _cancel_incomplete_admission=c._cancel_incomplete_admission,
+    )
+    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
+    chat_runs.reset_for_tests()
+    yield c
+    chat_runs.reset_for_tests()
+
+
 @pytest.fixture(autouse=True)
 def _route_local_llm_alias_tracks_service_patch(monkeypatch: pytest.MonkeyPatch):
     """Keep older API tests' service-level LLM patches effective after #488."""
