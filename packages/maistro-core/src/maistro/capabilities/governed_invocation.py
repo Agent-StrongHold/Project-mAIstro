@@ -197,6 +197,7 @@ class GovernedInvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        logical_effect: bool = False,
     ) -> Invocation:
         context = InvocationPolicyContext(
             run_id=run_id,
@@ -244,6 +245,7 @@ class GovernedInvocationExecutionService:
                 resolver=resolver,
                 executor=executor,
                 usage_from=usage_from,
+                logical_effect=logical_effect,
             )
         except asyncio.CancelledError:
             await self._append_latest_terminal_event(

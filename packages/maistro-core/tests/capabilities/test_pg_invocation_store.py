@@ -14,13 +14,20 @@ file exists so the store the container actually uses keeps direct coverage.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
-from maistro.capabilities.invocation import Invocation, InvocationStatus
+from maistro.capabilities.invocation import (
+    Invocation,
+    InvocationExecutionService,
+    InvocationStatus,
+    UnsafeEffectRetry,
+)
 from maistro.capabilities.pg_invocation_store import PgInvocationStore
+from maistro.container import _wire_capability_invocations
 
 
 class _Provider:
@@ -121,16 +128,29 @@ class _FakePgInvocationPool:
             return "UPDATE 1"
         raise AssertionError(f"unexpected query: {query!r}")
 
-    async def fetch(self, _query: str, *args: Any) -> list[_Row]:
-        run_id, node_run_id, binding_id, effect_key = args
+    async def fetch(self, query: str, *args: Any) -> list[_Row]:
+        # ``list_effect`` issues two shapes: the physical-visit lookup filters
+        # ``node_run_id=$2`` (4 args); the logical-effect lookup issues a
+        # 3-arg query with no node filter at all. Emulate the SQL faithfully:
+        # a present filter binds its argument exactly (``node_run_id = NULL``
+        # matches nothing -- the pre-#1194 defect), an absent filter matches
+        # every NodeRun. Ordering mirrors ``ORDER BY created_at,
+        # invocation_id ASC``.
+        filters_node = "node_run_id=$2" in query
+        if filters_node:
+            run_id, node_run_id, binding_id, effect_key = args
+        else:
+            run_id, binding_id, effect_key = args
+            node_run_id = None
         matches = [
             row
             for row in self._rows.values()
             if row["run_id"] == run_id
-            and row["node_run_id"] == node_run_id
+            and (not filters_node or row["node_run_id"] == node_run_id)
             and row["binding_id"] == binding_id
             and row["effect_key"] == effect_key
         ]
+        matches.sort(key=lambda row: (row["created_at"], row["invocation_id"]))
         return [_Row(payload=row["payload"]) for row in matches]
 
     def seed(self, invocation: Invocation) -> None:
@@ -236,3 +256,186 @@ async def test_pg_invocation_store_list_effect_filters_and_orders_rows() -> None
     )
 
     assert [item.invocation_id for item in history] == ["inv-1"]
+
+
+async def test_pg_invocation_store_list_effect_without_node_run_id_spans_node_runs() -> None:
+    """``node_run_id=None`` is the logical-effect identity (#1194): one
+    history per (run, binding, effect_key) across every physical NodeRun.
+    The SQL must match rows, not bind NULL -- ``NULL = NULL`` is not true in
+    SQL, so the pre-fix query returned nothing and the completed-Invocation
+    dedup plus the ``UnsafeEffectRetry`` guard silently never fired on
+    Postgres."""
+    pool = _FakePgInvocationPool()
+    store = PgInvocationStore(pool)
+    await store.create(
+        _invocation(
+            invocation_id="inv-1",
+            node_run_id="node-run-1",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    )
+    await store.create(
+        _invocation(
+            invocation_id="inv-2",
+            node_run_id="node-run-2",
+            created_at=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+    )
+    await store.create(
+        _invocation(
+            invocation_id="inv-3",
+            node_run_id="node-run-9",
+            run_id="run-other",
+            created_at=datetime(2026, 1, 3, tzinfo=UTC),
+        )
+    )
+
+    logical = await store.list_effect(
+        run_id="run-1",
+        node_run_id=None,
+        binding_id="binding-1",
+        effect_key="test:pg-store",
+    )
+
+    assert [item.invocation_id for item in logical] == ["inv-1", "inv-2"]
+    # The physical-visit lookup is unchanged: one NodeRun's rows only.
+    visit = await store.list_effect(
+        run_id="run-1",
+        node_run_id="node-run-2",
+        binding_id="binding-1",
+        effect_key="test:pg-store",
+    )
+    assert [item.invocation_id for item in visit] == ["inv-2"]
+
+
+async def test_pg_invocation_store_logical_invoke_replays_completed_effect_across_node_runs() -> (
+    None
+):
+    """The production dedup path on Postgres (#1194): a harness retry carries
+    a new NodeRun/Attempt but ``logical_effect=True``, so the completed
+    Invocation is returned without a second provider dispatch or INSERT --
+    exactly the row the pre-fix ``node_run_id = NULL`` query could not find."""
+    pool = _FakePgInvocationPool()
+    service = InvocationExecutionService(store=PgInvocationStore(pool))
+    dispatches = 0
+
+    async def resolver(_binding: Binding) -> _Provider:
+        return _Provider()
+
+    async def execute(_provider: _Provider, _request: object) -> dict[str, str]:
+        nonlocal dispatches
+        dispatches += 1
+        return {"handle_id": "handle-1"}
+
+    first = await service.invoke(
+        binding=_resolved_binding(),
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+        effect_key="harness:dispatch",
+        request={"task": "same logical work"},
+        resolver=resolver,
+        executor=execute,
+        logical_effect=True,
+    )
+    assert dispatches == 1
+
+    replay = await service.invoke(
+        binding=_resolved_binding(),
+        run_id="run-1",
+        # Lease loss / retry: new NodeRun and Attempt, same logical effect.
+        node_run_id="node-run-2",
+        attempt_id="attempt-2",
+        effect_key="harness:dispatch",
+        request={"task": "same logical work"},
+        resolver=resolver,
+        executor=execute,
+        logical_effect=True,
+    )
+
+    assert dispatches == 1
+    assert replay.invocation_id == first.invocation_id
+    assert replay.status is InvocationStatus.COMPLETED
+    assert len(pool._rows) == 1
+
+
+async def test_pg_invocation_store_logical_invoke_blocks_running_effect_from_another_node_run() -> (
+    None
+):
+    """The ``UnsafeEffectRetry`` guard must also see across NodeRuns on
+    Postgres: a live ``RUNNING`` Invocation for the logical effect blocks a
+    second dispatch whose outcome cannot be proven absent (#1194)."""
+    pool = _FakePgInvocationPool()
+    store = PgInvocationStore(pool)
+    created = await store.create(
+        _invocation(
+            invocation_id="inv-live",
+            node_run_id="node-run-1",
+            effect_key="harness:dispatch",
+            status=InvocationStatus.RUNNING,
+        )
+    )
+    await store.save(created)
+    service = InvocationExecutionService(store=store)
+
+    async def resolver(_binding: Binding) -> _Provider:
+        return _Provider()
+
+    async def execute(_provider: _Provider, _request: object) -> dict[str, str]:
+        raise AssertionError("a live logical effect must not dispatch again")
+
+    with pytest.raises(UnsafeEffectRetry, match="has outcome 'running'"):
+        await service.invoke(
+            binding=_resolved_binding(),
+            run_id="run-1",
+            node_run_id="node-run-2",
+            attempt_id="attempt-2",
+            effect_key="harness:dispatch",
+            request={"task": "same logical work"},
+            resolver=resolver,
+            executor=execute,
+            logical_effect=True,
+        )
+
+
+async def test_container_selects_the_pg_invocation_ledger_when_a_pool_is_wired() -> None:
+    """The container's durable-backend precedence picks the canonical ledger.
+
+    With a PostgreSQL pool wired, capability Invocations must live in
+    ``PgInvocationStore`` (schema ensured), not the SQLite or in-memory
+    fallback -- the ledger the replay contract reconciles against.
+    """
+
+    class _Transaction:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class _SchemaConnection:
+        async def execute(self, query: str, *args: Any) -> str:
+            assert "capability_invocations" in query
+            return "OK"
+
+        def transaction(self) -> _Transaction:
+            return _Transaction()
+
+    class _Acquire:
+        def __init__(self) -> None:
+            self._conn = _SchemaConnection()
+
+        async def __aenter__(self) -> _SchemaConnection:
+            return self._conn
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class _SchemaPool(_FakePgInvocationPool):
+        def acquire(self) -> _Acquire:
+            return _Acquire()
+
+    store = await _wire_capability_invocations(pg_pool=_SchemaPool(), db_pool=None)
+
+    assert isinstance(store, PgInvocationStore)
+    assert await store.get("inv-absent") is None

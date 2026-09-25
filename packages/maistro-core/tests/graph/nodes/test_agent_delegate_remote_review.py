@@ -324,12 +324,22 @@ class TestAdmissionAndTransportConverge:
         assert child is not None
         assert child.provenance.get("a2a_task_id") in (None, "")
 
-        second = await node.run(
-            {**inputs, "task": "changed after retry", "to_agent": "different-target"}, ctx
-        )
+        # A retry re-reads the NodeRun's durable inputs, so it derives the same
+        # canonical effect key and adopts the reservation: same child, same
+        # task, transport still accepted exactly once (#1194).
+        second = await node.run(inputs, ctx)
         assert second.status == "paused"
         assert len(delegator._tasks) == 1
+        assert second.metadata["run_id"] == child.run_id
         assert (await store.get_run(second.metadata["run_id"])).provenance["a2a_task_id"]
+
+        # A genuinely different request at the same node is explicit new work:
+        # the input digest is part of the canonical effect key, so it files its
+        # own delegation instead of hijacking the reserved one.
+        third = await node.run({**inputs, "task": "different work"}, ctx)
+        assert third.status == "paused"
+        assert len(delegator._tasks) == 2
+        assert third.metadata["run_id"] != child.run_id
 
     async def test_pause_persistence_failure_reuses_attached_receipt(
         self, monkeypatch: pytest.MonkeyPatch

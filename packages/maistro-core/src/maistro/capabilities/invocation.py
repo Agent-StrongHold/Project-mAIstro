@@ -238,7 +238,7 @@ class InvocationStore(Protocol):
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]: ...
@@ -296,15 +296,17 @@ class InMemoryInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]:
-        identity = (run_id, node_run_id, binding_id, effect_key)
         return [
             item.model_copy(deep=True)
             for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
-            if item.effect_identity == identity
+            if item.run_id == run_id
+            and (node_run_id is None or item.node_run_id == node_run_id)
+            and item.binding.binding_id == binding_id
+            and item.effect_key == effect_key
         ]
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
@@ -394,16 +396,43 @@ class InvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        logical_effect: bool = False,
     ) -> Invocation | None:
         """Return the latest canonical Invocation for one logical effect identity."""
 
+        # Only an executable EFFECT_KEY contract may widen history across
+        # NodeRuns; ordinary capability keys remain physical-visit scoped.
         history = await self._store.list_effect(
+            run_id=run_id,
+            node_run_id=None if logical_effect else node_run_id,
+            binding_id=binding.binding_id,
+            effect_key=effect_key,
+        )
+        return history[-1] if history else None
+
+    async def _completed_replay_after_admission_race(
+        self,
+        *,
+        run_id: str,
+        node_run_id: str,
+        binding: Binding,
+        effect_key: str,
+    ) -> Invocation | None:
+        """Re-read canonical history after an admission race with another worker.
+
+        Another worker may have completed the effect between our initial
+        history read and the store-level admission guard. Returns the accepted
+        completed Invocation, or None when the race outcome is not a replay.
+        """
+        latest_history = await self._store.list_effect(
             run_id=run_id,
             node_run_id=node_run_id,
             binding_id=binding.binding_id,
             effect_key=effect_key,
         )
-        return history[-1] if history else None
+        if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
+            return latest_history[-1]
+        return None
 
     async def invoke(
         self,
@@ -417,6 +446,7 @@ class InvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        logical_effect: bool = False,
     ) -> Invocation:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
@@ -429,9 +459,11 @@ class InvocationExecutionService:
 
         _require(effect_key, "effect_key")
         async with self._effect_lock:
+            # An EFFECT_KEY node opts into a stable Run/node identity; all
+            # other capability effects stay scoped to their physical NodeRun.
             history = await self._store.list_effect(
                 run_id=run_id,
-                node_run_id=node_run_id,
+                node_run_id=None if logical_effect else node_run_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
             )
@@ -473,14 +505,14 @@ class InvocationExecutionService:
                 # initial history read. Re-read the canonical row so a stale
                 # admission returns the accepted result instead of dispatching
                 # or surfacing a misleading race error.
-                latest_history = await self._store.list_effect(
+                replay = await self._completed_replay_after_admission_race(
                     run_id=run_id,
                     node_run_id=node_run_id,
-                    binding_id=binding.binding_id,
+                    binding=binding,
                     effect_key=effect_key,
                 )
-                if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
-                    return latest_history[-1]
+                if replay is not None:
+                    return replay
                 raise
             running = invocation.model_copy(
                 update={

@@ -16,6 +16,8 @@
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'export_canvas'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'list_layer_jobs'",
         "packages/maistro-canvas/src/maistro_canvas/canvas/routes.py::unused function 'start_generate'",
+        "packages/maistro-server/src/maistro_server/api/a2a.py::unused function 'create_a2a_task'",
+        "packages/maistro-server/src/maistro_server/api/a2a.py::unused function 'get_a2a_task_by_idempotency_key'",
         "packages/maistro-server/src/maistro_server/api/canvas.py::unused function 'create_design'",
         "packages/maistro-server/src/maistro_server/api/canvas.py::unused function 'delete_design'",
         "packages/maistro-server/src/maistro_server/api/canvas.py::unused function 'export_design'",

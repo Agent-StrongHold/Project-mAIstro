@@ -2484,19 +2484,22 @@ async def _wire_capability_invocations(
     db_pool: Any,
 ) -> CapabilityInvocationStore:
     """Select the canonical effect ledger from the container's durable backend."""
-    store: CapabilityInvocationStore
+    # Each branch binds its concrete store first: ``ensure_schema`` is a
+    # wiring concern the ``InvocationStore`` protocol deliberately does not
+    # carry, so it must be called on the concrete class before returning the
+    # store as the protocol type.
     if pg_pool is not None:
         from maistro.capabilities.pg_invocation_store import PgInvocationStore
 
-        store = PgInvocationStore(pg_pool)
-        await store.ensure_schema()
-        return store
+        pg_store = PgInvocationStore(pg_pool)
+        await pg_store.ensure_schema()
+        return pg_store
     if db_pool is not None:
         from maistro.capabilities.invocation_store import SqliteInvocationStore
 
-        store = SqliteInvocationStore(db_pool)
-        await store.ensure_schema()
-        return store
+        sqlite_store = SqliteInvocationStore(db_pool)
+        await sqlite_store.ensure_schema()
+        return sqlite_store
     from maistro.capabilities.invocation import InMemoryInvocationStore
 
     return InMemoryInvocationStore()

@@ -68,12 +68,19 @@ class TestTheStoreStatesItsReachAndItsTable:
 
     @pytest.mark.ac("SPEC-083026-6cef/AC-2")
     def test_the_capability_table_has_a_migration(self) -> None:
-        creating = [
+        touching = [
             path.name
             for path in sorted(_MIGRATIONS.glob("*.py"))
             if "capability_invocations" in path.read_text()
         ]
-        assert creating == ["035_capability_invocations.py"]
+        # 035 creates the table; 042 recreates its effect index in the
+        # SQLite shape so both durable backends of the replay contract
+        # (#1194) stay aligned. Any further migration touching the table
+        # must be added here deliberately.
+        assert touching == [
+            "035_capability_invocations.py",
+            "042_capability_invocation_effect_index.py",
+        ]
 
     def test_the_migration_scan_has_a_corpus(self) -> None:
         assert len(list(_MIGRATIONS.glob("*.py"))) > 10

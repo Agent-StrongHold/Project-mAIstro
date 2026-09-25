@@ -87,12 +87,14 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # 036 already existed on the historical 035 branch when the consumer and
     # task migrations landed, and develop's chain kept growing while this
     # branch was open (039 for #1531, then 040 for #1079, each taking the
-    # parent this revision had claimed). It therefore follows the current
-    # develop chain tip (040, the tip of 035 -> ... -> 038 -> 039 -> 040) so
+    # parent this revision had claimed; 041 for #1194 after the merge). It
+    # therefore follows the then-chain tip (041, the tip of
+    # 035 -> ... -> 038 -> 039 -> 040 -> 041) so
     # every deployment's ordinary ``upgrade head`` applies the audit scope
-    # migration rather than leaving it on a competing branch.
-    assert revision.down_revision == "040"
-    assert directory.get_heads() == ["036_audit_log_org_scope"]
+    # migration rather than leaving it on a competing branch. 042 (the #1194
+    # capability Invocation effect index) now extends the chain past it.
+    assert revision.down_revision == "041"
+    assert directory.get_heads() == ["042"]
     walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
     assert revision.revision in walked
 

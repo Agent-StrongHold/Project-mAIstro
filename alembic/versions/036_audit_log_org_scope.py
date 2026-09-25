@@ -8,7 +8,7 @@ system/unscoped scope. A later contract migration may make the column
 non-nullable once old writers are retired.
 
 Revision ID: 036_audit_log_org_scope
-Revises: 040
+Revises: 041
 Create Date: 2026-09-10
 
 Re-parented twice, both times because develop took the same parent while this
@@ -16,7 +16,9 @@ branch was open: first onto 038, then onto 039 after
 `039_canvas_job_admission_key` landed (#1531); merging develop's `040`
 (`down_revision = "039"`) then restored a two-head fork that fails every
 deployment's ``upgrade head`` with "Multiple head revisions are present". This
-revision now follows the develop chain tip 040, keeping the chain linear with
+revision now follows the chain tip 041 (the #1194 canonical Run effect-claim
+migration, which took 040's child slot after this branch merged develop),
+keeping the chain linear with
 the audit scope migration as its single head — the same reconciliation revision
 040's own docstring records for its two renumberings.
 """
@@ -27,7 +29,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "036_audit_log_org_scope"
-down_revision = "040"
+down_revision = "041"
 branch_labels = None
 depends_on = None
 

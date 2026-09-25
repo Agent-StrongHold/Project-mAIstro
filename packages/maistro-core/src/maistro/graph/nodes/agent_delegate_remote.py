@@ -22,8 +22,6 @@ only path that already defines one) rather than a new one.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
@@ -39,8 +37,10 @@ from .base import (
     PAUSE_AWAITING_REMOTE_DELEGATION,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     now_utc,
     pause_until,
+    replay_effect_key,
 )
 
 if TYPE_CHECKING:
@@ -173,7 +173,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
     output_schema: ClassVar[type[BaseModel]] = DelegateRemoteOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: delegate to remote session"
     description: ClassVar[str] = (
@@ -210,23 +210,19 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
 
-    def _delegation_key(self, _inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
-        """Stable identity for one parent NodeRun's logical delegation.
+    def _delegation_key(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        """The canonical replay identity for one logical delegation.
 
-        The request is not part of the key. A retry may deserialize equivalent
-        inputs differently, or receive a changed payload after a crash, but it
-        must still adopt the child reservation already made for this parent
-        NodeRun. The request details remain durable on the child graph and
+        Bound to the executable replay contract (``replay_effect_key``) rather
+        than a node-private scheme: Run + graph node scopes the logical effect,
+        and the input digest distinguishes explicit new work at the same node.
+        Neither the Attempt nor the NodeRun visit takes part -- a lease-loss
+        retry gets new physical identities but the same durable inputs, so it
+        adopts the child reservation already made instead of filing a second
+        delegation. The request details remain durable on the child graph and
         provenance; they are not a second admission identity.
         """
-        payload = {
-            "run_id": ctx.run_id,
-            "node_run_id": ctx.node_run_id or None,
-            "node_id": ctx.node_id,
-        }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        return replay_effect_key(ctx, self.kind, inputs.model_dump(mode="json"))
 
     async def _existing_child(self, key: str) -> Run | None:
         if self._run_store is None:
@@ -712,7 +708,11 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 # The A2A task id stays a receipt of the transport rather than
                 # the work's identity, the way TaskResponse does for the queue.
                 "a2a_task_id": task_id,
+                # One canonical replay identity, recorded under both store
+                # lookups: `delegation_key` for the transport reservation and
+                # `effect_key` for the executor's effect reconciliation.
                 "delegation_key": self._delegation_key(inputs, ctx),
+                "effect_key": self._delegation_key(inputs, ctx),
                 "delegation_mode": mode,
                 "delegating_agent": inputs.from_agent,
                 "target_agent": target,

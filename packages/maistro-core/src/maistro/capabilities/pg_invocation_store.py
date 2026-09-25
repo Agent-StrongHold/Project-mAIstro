@@ -30,8 +30,14 @@ CREATE TABLE IF NOT EXISTS capability_invocations (
     created_at DOUBLE PRECISION NOT NULL,
     payload JSONB NOT NULL
 );
+-- Same shape as SqliteInvocationStore._SCHEMA: node_run_id is deliberately
+-- absent from this index so the logical-effect lookup (node_run_id IS the
+-- whole Run, i.e. the NULL argument to list_effect) and the physical-visit
+-- lookup are both served by one index. Admission uniqueness keeps
+-- node_run_id (uq_capability_invocation_active_effect below), matching the
+-- SQLite twin and Alembic revision 042.
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_effect
-    ON capability_invocations (run_id, node_run_id, binding_id, effect_key, created_at, invocation_id);
+    ON capability_invocations (run_id, binding_id, effect_key, created_at, invocation_id);
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_attempt
     ON capability_invocations (attempt_id, created_at, invocation_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_capability_invocation_active_effect
@@ -133,19 +139,34 @@ class PgInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]:
-        rows = await self._pool.fetch(
-            """SELECT payload FROM capability_invocations
-               WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
-               ORDER BY created_at ASC, invocation_id ASC""",
-            run_id,
-            node_run_id,
-            binding_id,
-            effect_key,
-        )
+        # ``node_run_id=None`` is the logical-effect identity: the whole history
+        # for (run, binding, effect_key) across every physical NodeRun. It must
+        # match rows, not bind NULL (NULL = NULL is not true in SQL), or the
+        # completed-Invocation dedup and UnsafeEffectRetry guard silently
+        # never fire on Postgres. Same contract as SqliteInvocationStore.
+        if node_run_id is None:
+            rows = await self._pool.fetch(
+                """SELECT payload FROM capability_invocations
+                   WHERE run_id=$1 AND binding_id=$2 AND effect_key=$3
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                run_id,
+                binding_id,
+                effect_key,
+            )
+        else:
+            rows = await self._pool.fetch(
+                """SELECT payload FROM capability_invocations
+                   WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                run_id,
+                node_run_id,
+                binding_id,
+                effect_key,
+            )
         return [_row_to_invocation(row) for row in rows]
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:

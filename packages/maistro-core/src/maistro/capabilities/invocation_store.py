@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS capability_invocations (
 );
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_effect
     ON capability_invocations (
-        run_id, node_run_id, binding_id, effect_key, created_at, invocation_id
+        run_id, binding_id, effect_key, created_at, invocation_id
     );
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_attempt
     ON capability_invocations (attempt_id, created_at, invocation_id);
@@ -170,16 +170,27 @@ class SqliteInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]:
-        cursor = await self._conn.execute(
-            """SELECT payload_json FROM capability_invocations
-               WHERE run_id = ? AND node_run_id = ? AND binding_id = ? AND effect_key = ?
-               ORDER BY created_at ASC, invocation_id ASC""",
-            (run_id, node_run_id, binding_id, effect_key),
-        )
+        # Fully literal statements (no string composition): the node_run_id
+        # discriminator changes the shape of the query, not interpolated text.
+        # Same contract as the PostgreSQL twin in pg_invocation_store.
+        if node_run_id is not None:
+            cursor = await self._conn.execute(
+                """SELECT payload_json FROM capability_invocations
+                   WHERE run_id = ? AND node_run_id = ? AND binding_id = ? AND effect_key = ?
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                (run_id, node_run_id, binding_id, effect_key),
+            )
+        else:
+            cursor = await self._conn.execute(
+                """SELECT payload_json FROM capability_invocations
+                   WHERE run_id = ? AND binding_id = ? AND effect_key = ?
+                   ORDER BY created_at ASC, invocation_id ASC""",
+                (run_id, binding_id, effect_key),
+            )
         rows = await cursor.fetchall()
         return [Invocation.model_validate_json(str(row[0])) for row in rows]
 
