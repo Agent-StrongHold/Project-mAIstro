@@ -76,6 +76,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -111,6 +112,16 @@ DEFAULT_REPLAY_WINDOW = timedelta(hours=24)
 #: spends on a winner that died mid-admission; admission itself is two store
 #: round trips, so anything this side of half a minute is a corpse.
 PENDING_LEASE = timedelta(seconds=30)
+
+#: Least monotonic time between two claim-driven purges on one store (#325).
+#: Expired claims are dead weight, not wrong answers (``_assess`` already
+#: ignores them), so a purge every few minutes bounds the table without adding
+#: a DELETE to every admission.
+IDEMPOTENCY_PURGE_INTERVAL_SECONDS = 300.0
+
+#: Most expired claims one claim-driven purge deletes, so the admission that
+#: happens to carry it pays for a bounded batch, never a whole backlog.
+IDEMPOTENCY_PURGE_LIMIT = 500
 
 #: How often a submitter waiting on a pending claim re-asks. One cheap
 #: primary-key read per tick; a winner completes in milliseconds, so the usual
@@ -381,6 +392,13 @@ class _ClaimFlow:
     #: Read-modify-write rounds before giving up and reporting Pending.
     _RACE_ROUNDS = 4
 
+    def __init__(self) -> None:
+        self._purge_lock = asyncio.Lock()
+        # The first purge comes one interval after construction, not on the
+        # first claim: a fresh process's first admission stays one INSERT.
+        self._last_purge = time.monotonic()
+        self.purge_failures = 0
+
     async def claim(
         self,
         scope_key: str,
@@ -389,6 +407,51 @@ class _ClaimFlow:
         request: str,
         now: datetime,
         replay_window: timedelta = DEFAULT_REPLAY_WINDOW,
+    ) -> Claimed | Replayed | Pending:
+        outcome = await self._claim(
+            scope_key,
+            fingerprint=fingerprint,
+            request=request,
+            now=now,
+            replay_window=replay_window,
+        )
+        await self._maybe_purge(now)
+        return outcome
+
+    def _purge_due(self) -> bool:
+        return time.monotonic() - self._last_purge >= IDEMPOTENCY_PURGE_INTERVAL_SECONDS
+
+    async def _maybe_purge(self, now: datetime) -> None:
+        """Drive ``purge_expired`` from admission, the one path every claim takes.
+
+        At most one purge per store per interval, and never queued behind one in
+        flight. A failure is logged and counted, not raised: the claim already
+        resolved, and housekeeping must not turn into a refused submission.
+        """
+        if not self._purge_due() or self._purge_lock.locked():
+            return
+        async with self._purge_lock:
+            if not self._purge_due():
+                return
+            # Stamped before the attempt, so a failing database is retried once
+            # per interval rather than once per admission.
+            self._last_purge = time.monotonic()
+            try:
+                await self.purge_expired(now=now, limit=IDEMPOTENCY_PURGE_LIMIT)
+            except Exception:
+                self.purge_failures += 1
+                logger.warning(
+                    "task_idempotency purge failed; retrying next interval", exc_info=True
+                )
+
+    async def _claim(
+        self,
+        scope_key: str,
+        *,
+        fingerprint: str,
+        request: str,
+        now: datetime,
+        replay_window: timedelta,
     ) -> Claimed | Replayed | Pending:
         now_us = _to_us(now)
         fresh = AdmissionRecord(
@@ -464,6 +527,7 @@ class InMemoryTaskIdempotencyStore(_ClaimFlow):
     _MAX_ENTRIES = 10_000
 
     def __init__(self) -> None:
+        super().__init__()
         self._rows: dict[str, AdmissionRecord] = {}
         # One event loop, check-then-act under one lock: the claim protocol's
         # cross-process half comes from the primary key on the durable tiers;
@@ -555,6 +619,7 @@ class SqliteTaskIdempotencyStore(_ClaimFlow):
         # `Any` rather than aiosqlite.Connection: the import is TYPE_CHECKING
         # in every store that takes a connection, and the container hands this
         # one over untyped the same way it hands `db_pool` to the spine.
+        super().__init__()
         self._conn = conn
         self._write_lock = asyncio.Lock()
 
@@ -713,6 +778,7 @@ class PgTaskIdempotencyStore(_ClaimFlow):
     answers the retry."""
 
     def __init__(self, pool: Any) -> None:
+        super().__init__()
         self._pool = pool
 
     async def _insert(self, scope_key: str, record: AdmissionRecord) -> bool:
@@ -804,13 +870,16 @@ class PgTaskIdempotencyStore(_ClaimFlow):
     async def purge_expired(self, *, now: datetime, limit: int = 500) -> int:
         conn: asyncpg.Connection
         async with self._pool.acquire() as conn:
+            # The outer `expires_at` re-check is what READ COMMITTED re-evaluates
+            # on a row another replica's claim took over after the subquery
+            # picked it: the renewed claim survives instead of being deleted.
             tag: str = await conn.execute(  # nosec B608 — literal SQL, bound params
                 """
                 DELETE FROM task_idempotency WHERE scope_key IN (
                     SELECT scope_key FROM task_idempotency WHERE expires_at <= $1
                     ORDER BY created_at
                     LIMIT $2
-                )
+                ) AND expires_at <= $1
                 """,
                 _to_us(now),
                 limit,
@@ -848,6 +917,8 @@ __all__ = [
     "DEFAULT_REPLAY_WINDOW",
     "DERIVED_KEY_PREFIX",
     "IDEMPOTENCY_KEY_PROVENANCE",
+    "IDEMPOTENCY_PURGE_INTERVAL_SECONDS",
+    "IDEMPOTENCY_PURGE_LIMIT",
     "IDEMPOTENCY_SCOPE_DOMAIN",
     "MAX_IDEMPOTENCY_KEY_LENGTH",
     "MAX_PENDING_POLLS",
