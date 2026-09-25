@@ -10,6 +10,7 @@ import logging
 
 from maistro.memory.types import Learning
 from maistro.observability.correlation import observed_provenance
+from maistro.persistence.learning_scope import matches_learning_scope
 
 logger = logging.getLogger(__name__)
 
@@ -44,37 +45,27 @@ class InMemoryLearningStore:
         learning.run_id = provenance.run_id
         learning.node_run_id = provenance.node_run_id
         learning.attempt_id = provenance.attempt_id
-        new_keys = set(learning.trigger_keys)
-        for existing in self._learnings:
-            if existing.tool_name != learning.tool_name:
-                continue
-            if existing.agent_id != learning.agent_id:
-                continue
-            if existing.org_id != learning.org_id:
-                continue
-            if existing.status != "active":
-                continue
-            existing_keys = set(existing.trigger_keys)
-            overlap = len(existing_keys & new_keys) / max(len(existing_keys | new_keys), 1)
-            if overlap >= 0.5:
-                logger.info(
-                    "Learning dedup overwrite: id=%s, old_keys=%s, new_keys=%s, overlap=%.2f",
-                    existing.id,
-                    existing.trigger_keys,
-                    learning.trigger_keys,
-                    overlap,
-                )
-                existing.learning = learning.learning
-                existing.trigger_keys = learning.trigger_keys
-                # The producer moves with the content it produced. Dedup
-                # replaces what the row says, so leaving the old ids in place
-                # would attribute the surviving text to the Run that no longer
-                # wrote it, and `produced_by` would return nothing for the Run
-                # that did (Codex, #709).
-                existing.run_id = learning.run_id
-                existing.node_run_id = learning.node_run_id
-                existing.attempt_id = learning.attempt_id
-                return existing.id or 0
+        match = self._find_dedup_match(learning)
+        if match is not None:
+            existing, overlap = match
+            logger.info(
+                "Learning dedup overwrite: id=%s, old_keys=%s, new_keys=%s, overlap=%.2f",
+                existing.id,
+                existing.trigger_keys,
+                learning.trigger_keys,
+                overlap,
+            )
+            existing.learning = learning.learning
+            existing.trigger_keys = learning.trigger_keys
+            # The producer moves with the content it produced. Dedup
+            # replaces what the row says, so leaving the old ids in place
+            # would attribute the surviving text to the Run that no longer
+            # wrote it, and `produced_by` would return nothing for the Run
+            # that did (Codex, #709).
+            existing.run_id = learning.run_id
+            existing.node_run_id = learning.node_run_id
+            existing.attempt_id = learning.attempt_id
+            return existing.id or 0
 
         if len(self._learnings) >= self._max:
             self._learnings.pop(0)
@@ -84,29 +75,60 @@ class InMemoryLearningStore:
         self._learnings.append(learning)
         return learning.id
 
+    def _find_dedup_match(self, learning: Learning) -> tuple[Learning, float] | None:
+        """The active same-scope learning this one overlaps, with its overlap.
+
+        The dedup probe shared by `store`'s early return: same tool name, org,
+        team, user and agent (the same axes the SQL twins' SQL probe binds),
+        `active` status, and at least half of the union of both trigger-key
+        sets in common. Split out so `store` reads as probe-then-insert and
+        this stays the one place the threshold and axes live.
+        """
+        new_keys = set(learning.trigger_keys)
+        for existing in self._learnings:
+            if existing.tool_name != learning.tool_name:
+                continue
+            if existing.agent_id != learning.agent_id:
+                continue
+            if existing.org_id != learning.org_id:
+                continue
+            if existing.team_id != learning.team_id or existing.user_id != learning.user_id:
+                continue
+            if existing.status != "active":
+                continue
+            existing_keys = set(existing.trigger_keys)
+            overlap = len(existing_keys & new_keys) / max(len(existing_keys | new_keys), 1)
+            if overlap >= 0.5:
+                return existing, overlap
+        return None
+
     async def find_relevant(
         self,
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
-        """Find learnings relevant to user text, scoped by org."""
+        """Find learnings by keyword, applying the requested scope axes."""
         text_lower = user_text.lower()
         scored: list[tuple[float, Learning]] = []
 
         for learning in self._learnings:
             if learning.status != "active":
                 continue
-            if agent_id and learning.agent_id != agent_id:
-                continue
-            if org_id and learning.org_id != org_id:
-                continue
-            if not org_id and learning.org_id:
+            if not matches_learning_scope(
+                learning,
+                org_id=org_id,
+                team_id=team_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            ):
                 continue
 
-            score = sum(1 for k in learning.trigger_keys if k and k in text_lower)
+            score = sum(1 for k in learning.trigger_keys if k and k.lower() in text_lower)
             if score > 0:
                 scored.append((score, learning))
 
@@ -145,7 +167,7 @@ class InMemoryLearningStore:
         for learning in self._learnings:
             if learning.id not in id_set:
                 continue
-            if org_id and learning.org_id != org_id:
+            if not matches_learning_scope(learning, org_id=org_id):
                 continue
             if success:
                 learning.success_after_use += 1
@@ -162,9 +184,7 @@ class InMemoryLearningStore:
         for learning in self._learnings:
             if learning.status != "active" or learning.hit_count < threshold:
                 continue
-            if org_id and learning.org_id != org_id:
-                continue
-            if not org_id and learning.org_id:
+            if not matches_learning_scope(learning, org_id=org_id):
                 continue
             learning.status = "promoted"
             promoted.append(learning)
@@ -174,18 +194,25 @@ class InMemoryLearningStore:
         self,
         task_type: str | None = None,
         org_id: str = "",
+        *,
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings, scoped by org."""
-        results: list[Learning] = []
-        for lr in self._learnings:
-            if lr.status != "promoted":
-                continue
-            if org_id and lr.org_id != org_id:
-                continue
-            if not org_id and lr.org_id:
-                continue
-            results.append(lr)
-        return results
+        """Get promoted learnings within the requested scope."""
+        return [
+            lr
+            for lr in self._learnings
+            if lr.status == "promoted"
+            and (task_type is None or lr.category == task_type)
+            and matches_learning_scope(
+                lr,
+                org_id=org_id,
+                team_id=team_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            )
+        ]
 
     async def list_ineffective(self, min_uses: int) -> list[Learning]:
         """Return learnings whose failure count strictly exceeds successes.
