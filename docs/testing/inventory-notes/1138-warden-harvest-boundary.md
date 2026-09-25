@@ -293,3 +293,62 @@ isolation- or environment-conditional allow-all). Residual unchanged
 candidate_id-only correlation and a logging-only sink; it fails closed
 independently of audit and the outer RsiCycle wrapper (runner.py:215-239)
 durably audits the same calls.
+
+Independent verifier round at `aa664d20` (develop base `2c8022fe8`; code
+identical to the prior verified head — `git diff c15128b11..aa664d20` touches
+only this notes file). The three originally-reported bypass seams were
+re-inspected at this head and are fixed: `runner.py:215-239` wraps every
+injected `llm_call` in `guarded_llm_call`/`guarded_async_call`;
+`local_loop.py:1641-1677` scans resumed patches (`scan_sync`) before
+`_git_apply` and skips refused patches; `harvest_boundary.py` fails closed on
+`warden_unavailable`, a raising scanner, a raising audit sink, and a
+`scan_sync` invoked inside a running event loop. Executed by this round:
+166 targeted rsi tests (20.2s), full rsi suite 756 passed (45.5s), 645 evolve
+tests (6 skipped), 58 conductor containment tests, 13 non-production-
+reachability node IDs, `ruff check .` / `ruff format --check .` clean,
+`check-suite-inventory.py` OK (756). Fresh out-of-tree probes (/tmp, real
+`Warden`, no tree edits): (1) one payload relocated across plain text / nested
+value / attacker-controlled mapping key / filename / commit-message diff hunk
+/ review comment is `blocked` in every shape; (2) `Warden=None`, a raising
+scanner, a raising audit sink (`audit_unavailable`), and in-loop `scan_sync`
+each refuse with a truthful outcome; (3) audit records carry
+workspace/run/campaign/candidate/policy_version/digest, strip URL credentials
+(`https://user:SECRET@` → host-only), and contain zero payload text;
+(4) `WardenGuardedCallable` refusal invokes the inner model callable zero
+times, clean traffic flows, and a hostile tool description in call kwargs is
+refused; (5) end-to-end: `RsiCycle.run` with an injected llm_call and a
+malicious candidate system prompt, scored through the REAL
+`maistro-evolve` `run_swebench` — score 0.0, truthful `not admitted` outcome,
+30 durable `JsonlAuditSink` records with correlation; (6) resume probe on a
+real git baseline: a saved patch whose filename AND diff carry the payload is
+refused before `_git_apply` (HEAD unchanged, no evil file/content, benign
+patch still applied, durable blocked record with campaign/repo/base/policy
+correlation). Mutation evidence independently re-executed with byte backups:
+bypassing the runner guard fails
+`test_injected_llm_call_is_guarded_for_both_genome_evals` +
+`test_llm_call_reaches_evaluate_genome`; gating the resume admission off fails
+`test_hostile_resumed_patch_is_refused_before_apply` +
+`test_unavailable_warden_refuses_resumed_patch`; both files restored
+byte-identical to HEAD (`cmp` vs backups AND `git show HEAD:`),
+`git status --porcelain` empty. Seam sweep independently re-derived at this
+head: gateway.py (scan before HTTP I/O), runner.py (injected llm_call
+wrapped), local_loop.py (builder system admission + `WardenGuardedCallable`
+transcript scan incl. tool results, saved-patch resume, hyper-mutation prompt,
+regression-judge diff), autorun.py (proposer scan precedes the direct
+`httpx.post`, prompt executor, ledger-at-use), `__main__.py` (mutator
+goal/target/prompt + harvest manifest), scout.py (both calls),
+`regression_judge.py` (target+diff), `benchmarks/swebench_pro.py` (genome
+fields before system prompt; cross-file judge receives the already-guarded
+call); `free_router.py` (literal ping + operator-controlled alias
+registration), `quota_burn.py` (models-listing GET), and `harvest.py`
+(promotion-side grouping, #302) carry no harvest content. Every `Warden()`
+construction is unconditional; `None` fails closed. Quarantine independence
+re-read at this head: `selfbranch.py:161-170` requires an affirmative
+`quarantine_verdict.cleared` (missing check = DENY) — Warden verdicts do not
+authorize merge/promotion. Closure-keyword review: PR #1446 body says
+"Refs #1138" and no commit in `2c8022fe8..aa664d20` contains
+fixes/closes/resolves. Residual unchanged (non-blocking, documented above):
+the bare no-sink `WardenHarvestBoundary()` defense-in-depth paths
+(e.g. `swebench_pro.py` secondary layer) audit via logging only, still fail
+closed independently of audit, and every production composition root wires a
+durable `JsonlAuditSink`.
