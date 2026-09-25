@@ -627,3 +627,29 @@ Re-derived from the issue text at head `983ff08f0b6248ac49e8d3ea1e745713367effa3
   the co-change gate enforces the one-PR case, but two sequential self-approved
   PRs (oracle-only, then implementation-only) rely on CODEOWNERS that the live
   rulesets do not enforce.
+
+Independent verifier pass at head `b6e7926d` (develop-merge head; worktree
+unmodified — mutations via in-memory `-p` plugins under `/tmp/verify341`, gate
+scenarios in a scratch clone under `/tmp/scratch341`): `uv run ruff check .`
+clean; targeted `pytest formal/models/test_dangerous_tools.py
+formal/models/test_external_content.py tests/test_check_formal_oracle_independence.py
+-q --hypothesis-seed=0` → **284 passed**; unmutated dangerous-tools model
+256/256. Root-suite coverage producer for the diff gate
+(`coverage run --branch --source=scripts -m pytest tests/`) → 3626 passed,
+100 skipped (no local DSN), and at that head
+`check-diff-coverage.py --base b906cc57` → **exit 0** (checker file measured
+green; the test file is exempt by declaration) and
+`check-suite-inventory.py` → **exit 0** (13 suites, formal/ = 664) — both
+previously-failing required gates reproduced green locally. Oracle-independence
+gate true exits: `--base b906cc57` (develop base, oracle absent) → 0
+(initial-landing bootstrap); scratch-repo committed oracle+implementation
+co-change → **1**; oracle-only later commit → 0; unresolvable base → **2**
+(fails closed). Mutations, all failing the required model:
+21-of-22 `DANGEROUS_COMMAND_PATTERNS` deletion (sudo retained) → **193 failed,
+63 passed**; `rm\s+-rf\s+[/~]`→`rm\s+-rf\s+/` weakening → 6 failed;
+safe-prefix `echo ` shadowing short-circuit → 48 failed;
+`MicroVMSandbox.exec` deny-check removal → 41 failed. Live statusCheckRollup
+on this exact head: `formal-conformance` **SUCCESS**; required `test` and
+`Coverage gate (publish-set floor + diff coverage)` **IN_PROGRESS** at
+observation time (pending is not green — locally both were reproduced green
+as above; org-side 0-approval ruleset residual unchanged).
