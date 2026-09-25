@@ -94,7 +94,7 @@ packages/maistro-bootstrap/tests/test_container_sandbox.py
 packages/maistro-bootstrap/tests/test_container_sandbox_hardening.py -v`
 = 25 passed (29.7s, live containers); full `uv run pytest
 packages/maistro-bootstrap/tests -q` = 245 passed, 1 skipped;
-`packages/maestro-core` bwrap Tier-3 lane still fails closed locally
+`packages/maistro-core` bwrap Tier-3 lane still fails closed locally
 (`test_escape_conformance.py` = 4 passed, 24 skipped). The two maistro-core
 tests PR #1450 CI previously reported red pass at this head
 (`runs/test_chat_execution.py::TestAPostDispatchRecordingFailureIsNeverRedispatched::test_a_spine_refusal_before_the_dispatch_still_falls_back_to_answering`,
