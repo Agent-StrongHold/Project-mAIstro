@@ -389,3 +389,46 @@ this note; probe ran entirely under /tmp.
 
 Residual UNVERIFIED (maintainer GitHub mutations prohibited in this lane):
 first production compliance-evidence Actions run; first real tag release.
+
+## Repair-phase re-validation round (job 71e5de7484874146b0eade9d0c4da27a)
+
+The driver rejected the 87146a51 round solely because the recording commit
+35d9cea7a moved the head after evidence was gathered at e926ba8e9
+(`worktree_changed; evidence rejected`). This round re-executed the battery at
+the exact recorded head 35d9cea7a7d4c2fec7b9841f45e39310b360bcc7 with a clean
+tree, gathered evidence first, and only then appended this section (the sole
+tree edit). No code, registry, document, or workflow content changed.
+
+- `uv run ruff check .` / `uv run ruff format --check .`: pass (2536 files).
+- `uv run python scripts/check-compliance.py`: exit 0 at rest.
+- Release mode at HEAD 35d9cea7a: exit 1, 79 fail-closed problems.
+- Resolve mode at HEAD 35d9cea7a: exit 1 (52 problems); the resolved output
+  file was NOT written (fail-closed confirmed, not assumed).
+- `uv run pytest tests/test_check_compliance.py -q`: 97 passed.
+- Full 7-suite battery (compliance, release guard, branch independence x3,
+  branch protection, branch policy): 205 passed in 14.22s.
+- Fresh live forged-green probe in /tmp/compliance-probe-2665391 (own git
+  repo, real checker binary, real GitHub API, no token): forged `implemented`
+  EU-AI-ACT-ART-15 citing nonexistent artifact run 9999999999 →
+  `controls[20].evidence[0] could not verify GitHub artifact 9999999999:
+  HTTP Error 404: Not Found`, exit 1. Provenance is checked against the real
+  GitHub API, not only mocks.
+- `scripts/check-branch-independence.py`: PASS; `check-ratchet-provenance.py`:
+  OK (37 quality JSON consumers).
+- Wiring re-confirmed at this head: release.yml guard step at :102-111 runs the
+  checker with `--require-release-evidence --release-digest "$GITHUB_SHA"
+  --resolve-release-evidence`; all publish jobs `needs: guard` (release.yml
+  :224,325,375,539); `if-no-files-found: error` on the release-compliance
+  upload; compliance-evidence.yml triggers only on push to
+  main/develop/integration plus workflow_dispatch (never tags);
+  branch-protection.json:44,104 require "Compliance registry"; registry holds
+  0 implemented claims with ART-15/17 unverified.
+- Closure-keyword sweep over develop..auto-362 messages: one match
+  ("Closes #1422 (partial)" in upstream-merged 6d8bd20a9, arriving via the
+  develop base, not this lane); zero references closing #362.
+
+Repair conclusion: the rejected round's content was sound; its only defect was
+evidence/head disagreement. All acceptance evidence now stands at head
+35d9cea7a plus the note-append commit recorded below. Residual UNVERIFIED
+unchanged: first production compliance-evidence Actions run and first real tag
+release require maintainer GitHub mutations prohibited in this lane.
