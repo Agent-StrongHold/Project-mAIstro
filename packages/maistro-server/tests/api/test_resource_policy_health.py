@@ -1,4 +1,4 @@
-"""Readiness diagnostics expose the effective resource/security policy."""
+"""Anonymous readiness does not expose the effective resource/security policy."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def _pristine_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.ac("SPEC-082226-2a10/AC-6")
-def test_readiness_exposes_effective_resource_policy() -> None:
+def test_readiness_hides_effective_resource_policy() -> None:
     settings = Settings(
         max_request_body_bytes=512_000,
         max_webhook_body_bytes=256_000,
@@ -45,13 +45,5 @@ def test_readiness_exposes_effective_resource_policy() -> None:
         app.dependency_overrides.pop(get_settings, None)
 
     assert response.status_code == 200
-    policy = response.json()["effective_resource_policy"]
-    assert policy == {
-        "max_request_body_bytes": 512_000,
-        "max_webhook_body_bytes": 256_000,
-        "rate_limit_per_minute": 30,
-        "rate_limit_burst": 5,
-        "circuit_breaker_failure_threshold": 3,
-        "circuit_breaker_recovery_timeout_s": 90.0,
-        "unsafe_overrides_enabled": False,
-    }
+    assert response.json() == {"status": "ok"}
+    assert "effective_resource_policy" not in response.text
