@@ -171,3 +171,42 @@ not trusting earlier entries:
   `git diff --name-only 60862b6c5..HEAD`); `quality/` is byte-identical
   between base and head. The failure is therefore unattributable to this
   lane and the reviewed-grant handoff stands.
+
+## Independent re-verification (2026-09-25, head a73d45ae6)
+
+Repair-lane re-verification against the four 2026-09-07 findings; code at
+this head is byte-identical to `a8e3695ba` (the diff is docs-only), so the
+end-to-end diff-coverage pass recorded above carries over:
+
+- Setup retry: `test_failed_first_run_releases_the_claim_so_setup_stays_retryable`
+  and `test_settings_failure_releases_accounts_and_username_claims` pass on
+  this head; the SettingsPersistenceError / SettingsSecretError /
+  RegistrationPolicyError handlers each call `_rollback_setup_accounts`.
+- Voice principal: `services/voice_identity.py` resolves through
+  `username_registry.resolve` (canonical index); no scan-then-write path
+  remains in production code.
+- Mutation criterion RE-EXECUTED live on this head, both variants restored
+  byte-identical afterwards (sha256 `718c2994…` registry / `422ff447…`
+  auth route, tree clean):
+  1. Registry `_write_batch` durable path replaced by scan + plain writes:
+     8 tests fail, including the 32-thread/2-writer race
+     `test_many_case_variants_have_one_winner_on_shared_persistence` (8
+     winners instead of 1) and `test_allocator_calls_storage_atomic_claim_seam`.
+  2. Register route allocation replaced by `_username_taken()` +
+     `stores.users[user_id] = user`: 3 tests fail (route-shape assertion,
+     `test_durable_claim_loses_after_the_in_memory_check_passes`,
+     `test_allocation_outage_answers_503_with_a_retry_hint`).
+  Suite green after restore.
+- Suites green on this head: full hive backend `2693 passed, 1 skipped`;
+  core `test_unique_claim_transactions.py` + `test_persisted_store.py`
+  `51 passed`; combined registry/registration-policy/voice/setup/
+  settings-durability `118 passed`.
+- Gates green: `ruff check` clean, `ruff format --check` clean (2536
+  files), `mypy` clean (713 files), `check-durable-table-inventory`,
+  `check-owned-store-access`, `check-agent-store-writes` all ok.
+- One transient: in a single combined run under residual load from the
+  mutation batches, `TestInvitations::
+  test_concurrent_open_registration_claims_username_once` failed once
+  (barrier-timeout window); it then passed 5/5 alone and the full file
+  passed 3/3, and the same 4-file combination passed on rerun. No code
+  change made; noted as a load-sensitive concurrency test.
