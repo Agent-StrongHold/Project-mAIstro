@@ -364,8 +364,13 @@ inventories ok for hive-conductor/backend/tests and maistro-core/tests):
   resolved — "object storage (MinIO)" and "coverage (MinIO)" now SUCCESS;
   hive-conductor-e2e / e2e-ui / wheel-imports / lint-and-type / SAST /
   postgres pg17+pg18 / coverage(no-services, MinIO, PostgreSQL) SUCCESS.
-  IN_PROGRESS at refresh time: docker-build (the containers job carrying the
-  in-image identity verification), integration-scope, CI test, coverage gate;
-  gates-ran PENDING. GitHub CI execution of the identity contract therefore
-  remains UNVERIFIED as of this refresh; the verbatim local in-image
-  replication above is the evidence of record.
+  Later refreshes: docker-build (ci.yml) and integration-scope completed
+  SUCCESS; CI test and the coverage gate were still in progress; gates-ran
+  PENDING. Correction of attribution: ci.yml's docker-build is NOT the
+  security.yml containers job — the containers job owns the in-image identity
+  verification and is gated to PRs targeting main, merge groups to main, or
+  nightly (security.yml `if:` on the containers job), so it structurally does
+  not run on this develop-targeted PR. GitHub-side execution of the identity
+  contract therefore remains UNVERIFIED by design for this PR (it fires at
+  merge-to-main/nightly); the verbatim local in-image replication above is
+  the evidence of record.
