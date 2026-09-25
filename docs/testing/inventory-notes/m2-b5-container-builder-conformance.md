@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-bootstrap/tests: +0
+  packages/maistro-bootstrap/tests: +6
 ---
 # M2-B5 Container Builder Conformance
 
@@ -28,9 +28,10 @@ without Docker or the image, local runs skip the Docker-gated module rather than
 claiming backend evidence. The timeout case also creates a detached session, proving
 that cleanup handles descendants which escape the command's process group.
 
-Repair-pass addendum (lane auto-80): `Dockerfile.sandbox` now provisions a passwd
-entry for the sandbox uid 65532 (`appuser`). This is image-level defense in depth
-only — the enforced boundary remains the container-create configuration
+Repair-pass addendum (lane auto-80, no new tests): `Dockerfile.sandbox` now
+provisions a passwd entry for the sandbox uid 65532 (`appuser`). This is
+image-level defense in depth only — the enforced boundary remains the
+container-create configuration
 (`--user 65532:65532`, `--cap-drop=ALL`, `--read-only`, `--network=none`) which
 works in any image via the numeric uid. Verified the image builds with the added
 layer and that the full live lane still passes against it.
