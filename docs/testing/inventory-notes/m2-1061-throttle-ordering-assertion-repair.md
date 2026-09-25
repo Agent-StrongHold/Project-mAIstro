@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +0 (1 test modified in place: TestRegistrationIsBoundedSeparately::test_it_is_throttled_before_the_availability_check)
+  packages/hive-conductor/backend/tests: +0
   packages/maistro-core/tests: +0
 ---
 
