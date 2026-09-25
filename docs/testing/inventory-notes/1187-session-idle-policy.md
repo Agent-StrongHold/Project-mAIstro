@@ -241,3 +241,48 @@ attribution re-checked at this head: zero workflow/compose/docker/MinIO delta
 vs 60862b6c5, so the prior MinIO service-container startup failures and their
 gates-ran rollup remain environmental. Remote CI completion on the PR rollup
 remains the only unverified item from this environment.
+
+Twelfth round (independent verification at merge head af6af1293, the auto-1187
+merge of develop 03c8ba83 — the exact PR head). Zero production delta to the
+seven session-policy surfaces since the eleventh-round anchor 992019302
+(`git diff 992019302 af6af1293` on middleware/auth.py, routes/auth.py,
+routes/ws.py, stores.py, test_session_idle_policy.py, Profile.tsx, ADR-077 is
+empty); the merge brings only develop's own changes (#1582 chat
+session-message retention, #1037, #1560, #1570, #1573, #1554, workflow/compose
+edits — develop's "sessions" there are chat session_turns/message stores, not
+the `hive_session` auth store) and zero workflow/compose delta vs the develop
+base (`git diff 03c8ba83 af6af1293 -- .github/workflows docker-compose.yml` is
+empty). Re-executed from scratch rather than trusting prior rounds: focused
+idle-policy suite 17/17; full backend suite 2733 passed / 5 skipped (2738
+collected, matching the recorded inventory); `ruff check .` clean;
+`ruff format --check .` clean (2543 files); suite-inventory gate ok (2738);
+check-adr-index OK and check-adr-status-language ok. Acceptance re-derived at
+this exact head and unchanged from the eleventh-round derivation: governed
+30-minute idle + seven-day absolute server-side expiry (ADR-077);
+`_resolve_session` evaluates `min(absolute, idle)` under `_SESSION_LOCK` with
+monotonic refresh, creation-anchored absolute cap, and deactivation-as-
+revocation; HTTP middleware and both WS routes order resolve -> authorize ->
+serialized fail-closed touch (grep: `refresh_activity=True` exists only in the
+middleware's post-authorization `refresh_session_activity` and the WS
+post-authorization resolve; request_log, oauth-link, whoami, and actor lookups
+all use the observational default); whoami observational so #1050 restoration
+cannot slide expiry; session TTLs are module constants no settings route can
+write; Profile SESSION HEALTH card renders whoami policy metadata with no
+session id. Elevation still requires the bounded password re-auth on
+`/v1/auth/elevate`. The eighth-round setup-claim finding stays fixed and
+pinned (five protection/control tests pass in this round's run). One scope
+nuance recorded: the conductor backend has no dedicated HTTP deactivation
+route yet (identity/account management is the related #291 surface); the
+server-side enforcement contract for `is_active=False` or user deletion —
+session popped at the next resolve, `user_has_permission` fails closed — is
+implemented and tested end-to-end. Live PR rollup read read-only at this
+exact head: lint-and-type-check, both postgres jobs, both e2e jobs, security
+(SAST, pip-audit), formal-conformance, exact-debt-ledger, Quality gate,
+coverage (no services / PostgreSQL / MinIO), object storage (MinIO),
+workflow-lint, pr-base, Gate C, DevSkim all SUCCESS (the MinIO jobs that
+failed at fd216cb2e now pass, confirming the infra attribution); still
+IN_PROGRESS/PENDING at verification time: CI `test` (locally corroborated by
+the 2733-pass run), integration-scope, Coverage gate, docker-build, and the
+gates-ran rollup — remote CI completion remains the only unverified item.
+Closure hygiene re-checked on the live body and all commit subjects:
+"Refs #1187" only; no fixes/closes/resolves anywhere.
