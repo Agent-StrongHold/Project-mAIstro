@@ -415,7 +415,7 @@ type SanitizedVisualArtifactProps = Omit<
  */
 export const SanitizedVisualArtifact = forwardRef<HTMLDivElement, SanitizedVisualArtifactProps>(
   function SanitizedVisualArtifact({ markup, ...props }, ref) {
-    return <div {...props} ref={ref} dangerouslySetInnerHTML={{ __html: sanitizeVisualArtifactMarkup(markup) }} />;
+    return <div {...props} ref={ref} dangerouslySetInnerHTML={{ __html: sanitizeVisualArtifactMarkup(markup) }} />; // nosemgrep: typescript.react.security.audit.react-dangerouslysetinnerhtml.react-dangerouslysetinnerhtml -- the reviewed #768 visual-artifact boundary: the only sanctioned React sink, and its input always passes sanitizeVisualArtifactMarkup (allowlist sanitizer mirror-tested against the hostile corpus)
   },
 );
 SanitizedVisualArtifact.displayName = "SanitizedVisualArtifact";

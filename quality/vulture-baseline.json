@@ -384,7 +384,6 @@
         "packages/maistro-design/src/maistro_design/trust.py::unused variable 'warden_confidence'",
         "packages/maistro-design/src/maistro_design/types.py::unused variable 'AUDIO'",
         "packages/maistro-design/src/maistro_design/types.py::unused variable 'JS'",
-        "packages/maistro-design/src/maistro_design/types.py::unused variable 'SVG'",
         "packages/maistro-design/src/maistro_design/types.py::unused variable 'family'",
         "packages/maistro-design/src/maistro_design/types.py::unused variable 'letter_spacing'",
         "packages/maistro-design/src/maistro_design/types.py::unused variable 'line_height'",

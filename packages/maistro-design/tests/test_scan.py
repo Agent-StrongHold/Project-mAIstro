@@ -219,6 +219,128 @@ class TestScanDesignOutput:
         assert any(f.startswith("page.app.js:") for f in report.blocking_flags)
 
 
+class TestMarkupScanIsFormatGated:
+    """The HTML/SVG allowlist scan is a markup boundary, not a text boundary.
+
+    Regression for the branch regression at 1be76a498: `scan_design_output`
+    routed every string leaf through `scan_visual_artifact_markup`, so the
+    engine's own MARKDOWN prompt-stack — which embeds design-system component
+    examples (`<a>`, `<input>`, `<nav>`, `<style>`) as documentation — was
+    banned as `visual artifact active-element`, and
+    `DesignEngine.generate()` failed for a built-in system
+    (hive-conductor test_design_service_startup.py [workspace]).
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_markdown_prompt_stack_with_documented_tags_passes(self):
+        from maistro_design.scan import scan_design_output
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        prompt_stack = (
+            "## Design System: Workspace\n"
+            "Components:\n\n"
+            '```html\n<a href="/settings"><input type="text"><label>Name</label></a>\n'
+            "<nav><style>:root { --bg: #fff }</style></nav>\n"
+            "```"
+        )
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="prompt-stack",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat.MARKDOWN,
+                value=prompt_stack,
+            )
+        )
+        report = scan_design_output(output)
+        assert report.passed
+        assert not any("visual artifact" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_text_patterns_still_cover_prose_leaves(self):
+        """Format-gating the markup scan must not open a text hole: a script
+        tag smuggled into markdown prose still blocks via scan_blocking_patterns."""
+        from maistro_design.scan import scan_design_output
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="prompt-stack",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat.MARKDOWN,
+                value="Example: <script>alert(1)</script>",
+            )
+        )
+        report = scan_design_output(output)
+        assert not report.passed
+        assert any("script pattern" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize("fmt", ["html", "svg"])
+    def test_visual_formats_keep_the_full_boundary(self, fmt: str):
+        from maistro_design.scan import scan_design_output
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        hostile = (
+            '<div onclick="pwn()">handler</div>'
+            if fmt == "html"
+            else '<svg><foreignObject><img src="data:text/html,<script>x()</script>"></foreignObject></svg>'
+        )
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="artifact",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat(fmt),
+                value=hostile,
+            )
+        )
+        report = scan_design_output(output)
+        assert not report.passed
+        assert any("visual artifact" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_untagged_file_leaf_fails_closed(self):
+        from maistro_design.scan import scan_design_output
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput
+
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="mystery",
+                kind=ArtifactKind.FILE,
+                format=None,
+                value='<div onclick="pwn()">handler</div>',
+            )
+        )
+        report = scan_design_output(output)
+        assert not report.passed
+        assert any("visual artifact event-handler" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("integration")
+    def test_bundled_workspace_prompt_stack_passes_the_output_scan(self):
+        """The exact first-party content that regressed: the bundled workspace
+        system's DESIGN.md travels inside the MARKDOWN prompt-stack and must
+        survive the output scan unchanged."""
+        from maistro_design.scan import scan_design_output
+        from maistro_design.systems.importer import BUNDLED_ROOT
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        design_md = (BUNDLED_ROOT / "workspace" / "DESIGN.md").read_text(encoding="utf-8")
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="prompt-stack",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat.MARKDOWN,
+                value=f"## Design System: Workspace\n{design_md}",
+            )
+        )
+        report = scan_design_output(output)
+        assert report.passed, report.blocking_flags
+
+
 class TestScanVisualArtifactMarkupVocabulary:
     """The parser-based pre-scan speaks the renderer's vocabulary (#768/#817).
 

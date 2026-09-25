@@ -478,15 +478,28 @@ def scan_design_output(
 
     Binary (BLOB) leaves are not pattern-scanned — there is no text to match against;
     binary content safety is the renderer/asset-store boundary's concern.
+
+    The HTML/SVG allowlist scan is a *markup* boundary, so it runs only on leaves
+    whose format reaches a browser markup sink. Prose leaves — the MARKDOWN
+    prompt-stack embeds design-system component examples, links, and forms as
+    documentation for the model, never as executable markup — are model input
+    and stay covered by scan_blocking_patterns() above. An untagged FILE leaf
+    fails closed and is scanned.
     """
+    # Deferred import: maistro_design.types imports trust, which imports this
+    # module, so a module-level types import would close a runtime cycle.
+    from maistro_design.types import OutputFormat
+
+    visual_markup_formats = frozenset({OutputFormat.HTML, OutputFormat.SVG})
     blocking: list[str] = []
     external_urls: set[str] = set()
 
     for address, node in output.root.walk():
         if isinstance(node.value, str):
             blocking.extend(scan_blocking_patterns(address, node.value, banish_list))
-            for reason in scan_visual_artifact_markup(node.value):
-                blocking.append(f"{address}: visual artifact {reason}")
+            if node.format is None or node.format in visual_markup_formats:
+                for reason in scan_visual_artifact_markup(node.value):
+                    blocking.append(f"{address}: visual artifact {reason}")
             external_urls.update(find_external_urls(node.value, url_allowlist))
 
     return ScanReport(
