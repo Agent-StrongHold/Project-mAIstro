@@ -85,6 +85,9 @@ EXPECTED_TABLES = frozenset(
         "design_outputs",
         "design_projects",
         "episodic_memories",
+        # Canonical Goals and their append-only revisions (041, #1572).
+        "goal_revisions",
+        "goals",
         "event_log",
         "graph_continuations",
         "graph_templates",

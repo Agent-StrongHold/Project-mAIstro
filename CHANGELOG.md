@@ -270,6 +270,26 @@ or placeholder-only section.
 
 ### Added
 
+- **Canonical Goal store, `maistro.goals` (#1572, partial).** The owner the
+  interop ontology already named for Goal now exists: `Goal`, append-only
+  `GoalRevision`, and `GoalState` (`active`, then one of the final states
+  `satisfied`, `cancelled`, `failed` or `superseded`). There are in-memory,
+  SQLite and PostgreSQL stores, one conformance suite covers all three, and
+  migration `041_goals` adds the `goals` and `goal_revisions` tables.
+  Revisions and state transitions are compare-and-set, so a stale or
+  concurrent writer is refused and exactly one wins. A Subgoal's parent must
+  be in the same Project, and the database's foreign key enforces this too.
+  A terminal Goal accepts no new Subgoals. Goals are deleted with their
+  Workspace; the durable Project stores refuse an explicit Project delete
+  while the Project still has Goals, so a Project delete never drops a
+  Goal's revision history.
+  Reassigning the owning Agent appends a revision, which keeps the previous
+  owner in the history. `GoalService` reads with Workspace VIEW and writes
+  with ADMINISTER, and treats a Goal in a foreign Workspace exactly like a
+  missing one; it composes over `goal_store` and `WorkspaceAuthorizer`.
+  `create_container()` wires `goal_store` on the Project store's backend.
+  Still open: binding a Run to `goal_id`/`goal_revision` at admission.
+
 - **Workspace Attention read: `GET /v1/workspaces/{workspace_id}/attention`
   (#1049, partial).** Computes the Workspace's Attention items on every read
   from canonical sources — human-paused NodeRuns in the durable run store and

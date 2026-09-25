@@ -97,6 +97,8 @@ class PgProjectScopeStore:
             "DELETE FROM canonical_project_memberships WHERE workspace_id = $1",
             workspace_id,
         )
+        # Goals hold their Project with RESTRICT, so they go first (#1572).
+        await conn.execute("DELETE FROM goals WHERE workspace_id = $1", workspace_id)
         for _ in range(_MAX_PURGE_PASSES):
             status = await conn.execute(
                 """DELETE FROM canonical_projects
@@ -316,6 +318,13 @@ class PgProjectScopeStore:
             (
                 "SELECT 1 FROM canonical_runs WHERE project_id = $1 LIMIT 1",
                 "Project has canonical Runs",
+            ),
+            # Goals go with their Workspace, not an explicit Project delete:
+            # their revision history is append-only (#1572). Migration 041's
+            # RESTRICT key is what stops a racing insert; this names the rule.
+            (
+                "SELECT 1 FROM goals WHERE project_id = $1 LIMIT 1",
+                "Project has Goals",
             ),
         )
         async with self._pool.acquire() as conn, conn.transaction():

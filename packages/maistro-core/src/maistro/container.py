@@ -31,6 +31,8 @@ from maistro.events.consumer_cursor import (
     DEFAULT_HOLE_GRACE_SECONDS,
     LEGACY_BRIDGE_CONSUMER_ID,
 )
+from maistro.goals.store import GoalStore
+from maistro.goals.wiring import GOAL_PG_TABLES, wire_goal_store
 from maistro.graph.durable_runs.canonical_store import CanonicalDurableRunStore
 from maistro.graph.durable_runs.protocol import DurableRunStore
 from maistro.graph.nodes.agent_spawn_harness import AgentSpawnHarnessNode
@@ -196,6 +198,10 @@ class Container:
     #: backend since #132 while the thing its `workspace_id` names had none,
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
+    #: Canonical Goals (#1572), on the Project scope store's backend. A caller
+    #: acting for a principal composes `GoalService(goal_store,
+    #: WorkspaceAuthorizer(workspace_store))` rather than reading this raw.
+    goal_store: GoalStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
@@ -1650,6 +1656,7 @@ async def create_container(
         project_store=project_scope_store,
         pg_pool=pg_pool,
     )
+    goal_store = await wire_goal_store(db_pool, project_store=project_scope_store, pg_pool=pg_pool)
     node_template_store = await wire_node_template_store(db_pool, pg_pool=pg_pool)
     # Same backend the spine just chose (#1176): claims beside the Runs they
     # reconcile, or the tiers cannot answer a restart the same way.
@@ -1879,6 +1886,7 @@ async def create_container(
         project_store=project_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
+        goal_store=goal_store,
         run_store=run_store,
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
@@ -2141,6 +2149,9 @@ _REQUIRED_PG_TABLES: Final = (
     # probes the same set for a caller-supplied pool, which reaches it without
     # passing through this preflight.
     *SPINE_PG_TABLES,
+    # Goals (041, #1572): `wire_goal_store` refuses without them, so name them
+    # here too, in the one startup report of everything missing.
+    *GOAL_PG_TABLES,
     # The strike ladder's three (#134). `pg_strikes._SCHEMA` still creates them
     # for the standalone caller that opens its own pool, but a tracker handed
     # the container's pool does not run it — migration

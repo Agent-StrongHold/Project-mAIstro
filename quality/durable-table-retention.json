@@ -455,6 +455,34 @@
       "notes": "Evolve cycles cull the bottom share of scored genomes (cycle.py), and the RSI autorun loop removes excess past max_pop (maistro_rsi/local_loop.py). Unscored genomes are not culled."
     },
     {
+      "table": "goal_revisions",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.projects.sqlite_scope_store:SqliteProjectScopeStore.purge_workspace",
+      "issue": null,
+      "parent": "goals",
+      "notes": "Append-only; deleted only with its Goal (ON DELETE CASCADE), i.e. with its Workspace."
+    },
+    {
+      "table": "goals",
+      "backends": [
+        "postgres",
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/goals/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro.projects.sqlite_scope_store:SqliteProjectScopeStore.purge_workspace",
+      "issue": null,
+      "parent": "canonical_workspaces",
+      "notes": "Deleted with its Workspace: purge_workspace (SqliteProjectScopeStore / PgProjectScopeStore) deletes the Projects and goals cascade from canonical_projects. An explicit Project delete refuses a Project that still has Goals, so revision history is never dropped with a single Project. Subgoals cascade from their parent Goal."
+    },
+    {
       "table": "graph_continuations",
       "backends": [
         "postgres",
