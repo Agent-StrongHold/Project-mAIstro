@@ -122,13 +122,3 @@ class CIWebhookIgnored(BaseModel):
 
     status: str = "ignored"
     ci_status: str = ""
-
-
-# --- Health response (Item 36) ---
-
-
-class HealthResponse(BaseModel):
-    status: str
-    uptime_seconds: float
-    service: str
-    version: str

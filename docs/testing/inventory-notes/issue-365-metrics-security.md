@@ -211,3 +211,167 @@ but not a root dependency, so a fresh worktree venv needs
   `KeyError: '033'` is an origin/infra failure outside this lane's surfaces,
   as are the `durable-events` and coincurve/Python-3.14 gate failures
   (no lane-authored code touches those paths).
+
+## Re-verification + salvage-resolution record (repair lane, head d5a3712f0)
+
+Sixth independent run. The prior lane process died on a provider timeout and
+executed **zero** deterministic checks (`checks: []` in the prior job's
+result), so every claim below is freshly executed evidence, not a restatement.
+
+### Salvage resolution (uncommitted work from the timed-out run)
+
+The only uncommitted item was the untracked scratch probe
+`repro_metrics.py` (repo root). Disposition: its full text is archived below;
+its evidentiary purpose (pre-router `scope["route"]` is unset and
+`_match_route_template` recovers the template or falls back to `unrouted`) is
+permanently superseded by the CI-enforced regression tests
+`test_rate_limit.py::_unrouted_request_uses_fallback_label`,
+`_many_unknown_paths_collapse_to_one_fallback_series`, and
+`_many_distinct_404_uuid_paths_create_no_series_per_url`. A copy is also
+preserved in the job directory (`salvaged-repro_metrics.py`). The file was
+then removed from the worktree so the tree is clean and `ruff check .` /
+`ruff format --check .` pass repo-wide (the scratch was the sole offender:
+5 auto-fixable lint errors, all unused/unsorted imports).
+
+### CI-repair round: vulture per-identity ledger (exact-debt-ledger)
+
+`uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` exited **1** at this head:
+the #365 health minimization (which removed the public
+uptime/service/version exposure) eliminated two identities but the ledger
+still recorded one of them, and orphaned the class behind the other:
+
+- FIXED genuinely dead code: `maistro_server/api/schemas.py` `HealthResponse`
+  (and its "Item 36" section) — on develop it was the response model of the
+  detailed public health payload; the branch removed its last import/use, so
+  it had zero references in maistro-server src and tests. Deleted.
+- PRUNED the two identities the fix eliminated from
+  `quality/vulture-baseline.json`: `health.py::unused variable
+  'uptime_seconds'` (already stale) and `schemas.py::unused variable
+  'uptime_seconds'` (stale after the class deletion). `health.py::startup_complete`
+  and `schemas.py::ci_status` remain (their classes still exist).
+- Re-run: exit **0**, ratchet clean — 1415 reviewed identities → 1413
+  findings, no unauthorized debt.
+
+### Acceptance validation (freshly executed)
+
+- Focused pytest (core metrics/SLO/resource-policy; server
+  metrics/health/rate-limit/resource-policy-health/strike-tracker-health):
+  **152 passed**, re-run after the dead-code removal: **152 passed**.
+- `uv run ruff check .` and `uv run ruff format --check .`: pass (tracked
+  tree; the scratch was the only failure and is resolved above).
+- Canonical mypy (`maistro-core/src` + `maistro-server/src`): only the 5
+  pre-existing `maistro_bootstrap` import-resolution notes in lane-untouched
+  `cli/_*` files; zero findings in any #365-touched module.
+- Live TCP probes against `maistro_server.main:app` under uvicorn
+  (19 checks in run 1; 16 passed, 3 investigated):
+  anonymous `/metrics` → 401 generic body, no metric families, arbitrary
+  bearer → 401, `X-Forwarded-*` → 401; wrong-scope service key → 403, no
+  families; scoped scraper → 200 `text/plain; version=0.0.4` exposition with
+  no key material; `/health` and `/health/live` exactly `{"status":"ok"}`;
+  `/health/ready` (deps down) → 503 with body exactly
+  `{"status":"not_ready"}`; `/health/startup` → `{status, startup_complete}`
+  only. Two of the three "failures" were probe-script bugs: the header dump
+  used a case-sensitive lookup, and the family-cap arithmetic forgot the
+  exempt `metrics_registry_overflow_total` counter (50 dynamic + uptime +
+  overflow = 52 HELP lines; overflow == 150 is the proof). Confirmed
+  corrected outcomes: registry backstop holds (200 dynamic names into a
+  cap-50 registry → 50 stored, 150 refusals counted, counter unlabeled).
+- #818 cardinality re-proven over real TCP: 8 distinct random attacker
+  paths produced exactly one new series
+  (`http_requests_total{method="GET",route="unrouted",status="404"}`) plus
+  `route="/metrics"` — distinct route labels: `['/metrics', 'unrouted']`.
+  No attacker-controlled text appears in any label value. (A heavier
+  140-request variant tripped the ip-bucket rate limiter before the scrape —
+  the limiter working as designed — and produced a 429 instead of the
+  exposition; lighter load was used for the proof.)
+- Alembic resolution: `uv run alembic history` exit 0 with the full chain
+  including `032 -> 033` and `033 -> 034`; branch diff vs origin/develop
+  contains no alembic/CI/packaging files, so the required-CI `KeyError:
+  '033'`, `durable-events`, and coincurve/Python-3.14 failures remain
+  origin/infrastructure findings outside this lane's surfaces.
+
+### Residual risk (recorded, not repaired this round)
+
+`main.py::http_exception_handler` builds its JSON envelope without
+`exc.headers`, so the `WWW-Authenticate: Bearer` header that
+`require_metrics_scope` attaches is dropped on the wire. This is
+app-wide pre-existing envelope behavior, leaks no operational detail, and no
+#365 acceptance criterion requires the header (RFC 6750 SHOULD-level nit);
+it affects every HTTPException, not just metrics, so fixing it belongs to a
+dedicated change with its own tests.
+
+### Archived salvage: `repro_metrics.py` (verbatim, prior run)
+
+```python
+from fastapi import FastAPI, Request
+from starlette.routing import Match, Route
+import asyncio
+from starlette.datastructures import Headers
+
+async def dummy_endpoint(request: Request):
+    return {"hello": "world"}
+
+app = FastAPI()
+app.add_route("/users/{user_id}", dummy_endpoint)
+
+def _match_route_template(request: Request) -> str:
+    from starlette.routing import Match
+    try:
+        for candidate in app.routes:
+            match, _ = candidate.matches(request.scope)
+            if match is Match.FULL:
+                path = getattr(candidate, "path", None)
+                if isinstance(path, str):
+                    return path
+    except Exception:
+        return "unrouted"
+    return "unrouted"
+
+def _route_template(request: Request) -> str:
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    if isinstance(template, str):
+        return template
+    return _match_route_template(request)
+
+async def main():
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/users/123",
+        "url": "/users/123",
+        "headers": {"host": "localhost"},
+        "client": ("127.0.0.1", 12345),
+        "server": ("localhost", 8000),
+    }
+
+    print(f"Request path: {scope['path']}")
+
+    req = Request(scope)
+
+    # Test 1: Request where route is already in scope (simulating post-router)
+    class MockRoute:
+        def __init__(self, path):
+            self.path = path
+
+    mock_route = MockRoute("/users/{user_id}")
+    req_with_route = Request({**scope, "route": mock_route})
+
+    print(f"Test 1 (_route_template with scope['route']): {_route_template(req_with_route)}")
+
+    # Test 2: Request where route is NOT in scope (simulating middleware pre-router)
+    print(f"Test 2 (_match_route_template): {_route_template(req)}")
+
+    # Test 3: Request to an unrouted path
+    scope_unrouted = scope.copy()
+    scope_unrouted["path"] = "/unknown"
+    scope_unrouted["url"] = "/unknown"
+    req_unrouted = Request(scope_unrouted)
+    print(f"Test 3 (unrouted): {_route_template(req_unrouted)}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
