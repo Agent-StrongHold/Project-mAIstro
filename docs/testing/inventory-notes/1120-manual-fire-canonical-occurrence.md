@@ -335,3 +335,46 @@ this job's directory; nothing was trusted from prior passes.
   max_runs), and the unique-occurrence index as the last word on PG.
 
 No new defects. No tree edits beyond this note.
+
+## Twelfth independent verification pass (c687a8496829, 2026-09-25)
+
+Re-derived from the issue text, not prior notes; driver logs inspected plus
+independent re-execution at the exact head.
+
+- ruff check EXIT=0, ruff format --check clean, mypy (AGENTS.md target set)
+  re-run locally: Success, no issues in 713 source files.
+- radon baseline EXIT=0 (69 -> 69, 0 new / 0 stale).
+- vulture baseline EXIT=1 re-proven upstream at this head: raw scan multisets
+  byte-identical at base 60862b6c5eb1 and head (1432 == 1432, line-normalized)
+  and `quality/` + the gate script unchanged in the branch, so the gate fails
+  identically at the develop tip; the branch banks nothing.
+- Core runs+scheduling suites on a fresh disposable pgvector:pg18 (port
+  25439, isolated): `alembic upgrade head` -> single head 042 applied cleanly;
+  **568 passed, 0 skipped** with `MAISTRO_TEST_PG_DSN` set.
+- Lane Hive suites re-run: 100 passed (manual-fire canonical, route spine E2E,
+  workspace scope, scheduler).
+- tests/migrations/test_audit_scope_migration.py: 3 passed.
+- Live CI rollup refreshed read-only at this head: lint-and-type-check,
+  postgres (pg17), postgres (pg18), hive-conductor-e2e, hive-conductor-e2e-ui,
+  coverage (no services), coverage (PostgreSQL), SAST, supply-chain all
+  SUCCESS. Failures root-caused, none branch-caused: exact-debt-ledger +
+  Quality gate = the upstream vulture staleness above; object storage (MinIO)
+  and coverage (MinIO) = `quay.io/minio` pull unauthorized after 4 attempts
+  (registry infra); integration-scope = aggregator over the MinIO leg. CI
+  "test" aggregator IN_PROGRESS at refresh -> still UNVERIFIED by itself, but
+  its pg17/pg18/hive-e2e legs are green and were re-executed locally.
+- Acceptance re-walk at this head: every criterion has executed evidence —
+  canonical admission via `admit_due(manual=True, fire_id=...)`
+  (admission.py:946), canonical scope via `_canonical_scope`
+  (scheduler.py:274), no-fabricated-scope asserted in tests, occurrence
+  identity `(schedule_id, "manual:"+fire_id)` provenance + migration-042
+  unique index, double-submit reconciliation proven at service and real-route
+  level, explicit `schedule_trigger` manual/recurring provenance, no
+  `run_registered_dag` on the configured path (monkeypatched to raise),
+  template from the canonical store, prompt consumption via
+  `execute_admitted_runs`, fail-closed `ScheduleAdmissionUnavailable` (503)
+  on a half-wired Container, standalone fallback gated to no-Container,
+  docstrings + CONVERGENCE-MATRIX.md describing both authorities,
+  check-convergence-matrix.py EXIT=0.
+
+No new defects. No tree edits beyond this note.
