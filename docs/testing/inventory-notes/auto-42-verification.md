@@ -109,3 +109,51 @@ below was executed fresh in this session:
   cannot be fully signed off from this lane because #1194 closure and the
   `create_a2a_task` ledger grant are external actions (NEEDS-DEEP-REVIEW
   handoff).
+
+## L42 re-validation at e0d8d9a9d (second pass, 2026-09-25)
+
+Fresh validation battery executed in this lane (no driver check logs were
+provided: `manifest.json` carries `checks: []`, so all evidence below is
+self-executed):
+
+- `ruff check .` PASS; `ruff format --check .` PASS (2496 files); mypy over
+  the six src trees PASS (711 files).
+- pytest: durable_runs+nodes **712 passed**; durable_runs full dir **431
+  passed** (includes the new guard test); capabilities+runs **1138 passed**;
+  core a2a+runtime+tasks **454 passed**; maistro-server **363 passed**
+  (includes the `/a2a/tasks/create` endpoint test); chat-lease recovery +
+  runtime execution **31 passed** (10 cancel/deadline tests among them);
+  migrations **14 passed**; conductor cancel routes **9 passed**.
+- Gates: `check-execution-lifecycles` PASS (19 classified, 0 violations);
+  `check-lifecycle-provenance` PASS (0 violations); `check-suite-inventory`
+  exit 0 (pre-existing non-fatal format warning on
+  `auto-42-develop-merge-reconciliation.md`, untouched).
+
+Findings re-verification at this head:
+
+- `create_a2a_task` vulture identity re-confirmed as the **only** branch-caused
+  scan delta: scanning the pristine merge-base tree (ba2f1f077, extracted via
+  `git archive`) yields 1426 findings vs 1427 at HEAD, and the set difference
+  is exactly `packages/maistro-server/src/maistro_server/api/a2a.py:: unused
+  function 'create_a2a_task'`. The ~1400 other deltas of a bare
+  `check-vulture-baseline.py` run are base-inherent (the merge-base ledger is
+  stale relative to its own tree: 0 recorded pytest-discovered entries vs 437
+  scanned), affecting any branch off ba2f1f077 and not caused by auto-42.
+  Banking the route handler still requires a develop-side reviewed grant
+  (authorizations are read from the base revision), outside lane authority.
+  The endpoint itself is live product surface (`app.include_router(a2a.router)`
+  at `main.py:492`, canonical `claim_run_by_effect` admission) and is covered
+  by `packages/maistro-server/tests/api/test_a2a_api.py`.
+- The `effect_scope` contract is now regression-locked in-tree:
+  `packages/maistro-core/tests/graph/durable_runs/test_ambiguous_effect_replay_guard.py`
+  drives the durable graph retry through `InvocationExecutionService` and
+  asserts exactly 1 physical dispatch, visits 2-3 refused with
+  `UnsafeEffectRetry`, three chronological NodeRuns (one physically complete
+  Attempt each), Run FAILED, and the UNKNOWN Invocation retaining the first
+  visit's identities. Mutation-checked: dropping the stable `effect_scope`
+  makes the test fail with three dispatches. See
+  `auto-42-ambiguous-effect-guard-test.md`.
+- Upstream unchanged: #1169 CLOSED, #1170 CLOSED, **#1194 still OPEN**, #42
+  OPEN. Verdict stands at NEEDS-DEEP-REVIEW: no in-tree defect found; the
+  remaining acceptance item (dependent-issue closure) and the ledger grant
+  are orchestrator actions.
