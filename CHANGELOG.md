@@ -447,7 +447,7 @@ or placeholder-only section.
   (#1037).**
   `/v1/chat/complete`, `/v1/chat/stream` and `/v1/voice/intent` now admit
   every model-reaching turn as a Run over the one-node chat Graph in the
-  turn's Workspace (the named one when the caller is a member, else the
+  turn's Workspace (the named one when the caller can see it, else the
   caller's default Workspace), call the conversation-only model from inside
   that Run's Attempt stamped with the Workspace Agent, and close the Run
   through the Container (FAILED on a model error). Responses carry `run_id`
@@ -458,6 +458,28 @@ or placeholder-only section.
   (`MAISTRO_ROUTER_API_KEY` unset or the bridge failed to start): chat and
   voice now need the runtime. Tools stay disabled; session ids are recorded
   as Run provenance only.
+
+- **Hive and maistro-server now share one durable Workspace owner (#37,
+  ADR-092326-97c4).** The shipped `docker-compose.yml` gives `hive-conductor`
+  the same `DATABASE_URL`/`DB_*` as `maistro-engine` and starts it only after
+  PostgreSQL and the (self-migrating) engine are healthy, so Hive's embedded
+  Container uses the `canonical_workspaces` tables maistro-server serves. On
+  that durable path Hive's `stores.workspaces` mirror is imported once
+  (journal-idempotent, never resurrecting a Workspace or membership deleted or
+  revoked canonically) and is no longer written or replayed; a configured
+  database whose Container failed to start now fails Workspace authorization
+  closed instead of reviving the mirror. The no-database dev path is unchanged.
+  Hive's whole embedded Container (Runs, sessions, learnings, schedules) now
+  uses that shared database too, not only its Workspace store.
+  Hive's `/health/ready` now counts that store: with a database configured
+  and no Container it answers 503 with `ready: false`, so Compose stops
+  reporting an instance whose Workspace API only fails. The Hive image now
+  ships the agent roster (`agents/` → `/app/backend/agents`), which the
+  embedded bridge requires to start at all. `create_container()` no longer
+  refuses to build when the `identity` extra is missing (the Python 3.14 Hive
+  image cannot install it): it leaves the identity lifecycle stores unwired,
+  and the Container's identity methods still raise the ImportError that names
+  the extra.
 
 - **A declared correlation field must have a production producer (#63).** A
   fitness test scans production code (`packages/*/src` and the hive, turing
@@ -538,6 +560,36 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **The Reactor persists through the Conductor's one State writer and
+  configured state database (#1135, #1178).** `maistro.reactor.Reactor` now takes the Foundation's `State`
+  (`state=`): `state_submit` goes through `State.submit`, `state_query`
+  through `State.open_reader`, and `reactor_log` is created by the
+  `reactor_log_001` State migration. Hive's Foundation passes its State
+  (built from `CONDUCTOR_STATE_DB`) instead of hard-coding
+  `data_dir/state.db`, so the Reactor no longer opens a second raw SQLite
+  writer or writes to a different file than the rest of the Conductor.
+  `state_db_path=` is deprecated and refused alongside `state=`.
+  `state_submit` is now fire-and-forget like `State.submit` (a failing write
+  is logged by the writer, not raised into the handler, and is visible to
+  `state_query` once committed). Deployments that set a non-default
+  `CONDUCTOR_STATE_DB` previously left `reactor_log` rows in a separate
+  `data_dir/state.db`; those rows are not migrated.
+
+- **develop CI is green again: MinIO without registry auth, and the
+  credential-authority self-checks judge against a real base.** MinIO archived
+  its community server, so `quay.io/minio/minio` now answers 401 and dl.min.io
+  answers 410 for every release binary; the `object storage (MinIO)` and
+  `coverage (MinIO)` jobs now build the same pinned
+  `RELEASE.2025-04-22T22-12-26Z` from source through the Go module proxy
+  (checksum-verified against sum.golang.org, no secret) and run the binary on
+  the runner. Separately, the three `tests/test_credential_authority.py`
+  checks that audit the real repository (#1470) did not request the
+  `real_repository_ratchet_base` fixture, so on every push to `develop` their
+  baseline resolved to HEAD and `SelfReferentialBaseline` failed them (and the
+  quality coverage gate that reruns the suite). They now opt in like the other
+  shipped-state gate self-checks and compare against the revision the push
+  replaces.
 
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**
