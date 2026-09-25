@@ -60,3 +60,9 @@ Re-verified at exact head 25fd3551c (2026-09-23): full persistence suite
 `test_pg_sessions_concurrency.py` green 5× in isolation back-to-back —
 no recurrence of the line-89 flake. See the verification record in
 `1242-requested-cancellation-stops-work.md`.
+
+Re-verified at exact head 44e21388e (2026-09-25): scratch pg18 database on
+`maistro-postgres` (:5433), `alembic upgrade head` exit 0,
+`test_pg_sessions_concurrency.py` green 5× back-to-back and the targeted
+persistence+cancellation+config run 24 passed — no recurrence of the line-89
+flake.

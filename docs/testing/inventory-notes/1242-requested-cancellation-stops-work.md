@@ -282,7 +282,49 @@ Every claim below was executed fresh in this round; nothing inherited.
   Residual: a single-process, whole-tree pytest run is not a CI shape and is
   not green on this host for reasons 2–3; every CI-shaped invocation above is
   green.
-- Prior finding "no PR body/ID supplied" remains UNVERIFIED by design: no
-  GitHub mutations are permitted from this lane, and no PR body exists for a
-  local branch; the closure-keyword scan of commit messages in prior rounds
-  found no `fixes/closes/resolves` forms.
+- Prior finding "no PR body/ID supplied" — resolved at 44e21388e: PR 1265
+  now exists (draft), its supplied body and the live read-only refresh carry
+  no closure keywords, and the branch's commit messages scan clean (see the
+  44e21388e verification record below).
+
+## Independent verification at exact head 44e21388e
+
+Job 27de3c34 (verify lane LAUD6, 2026-09-25). 44e21388e520f10c6579882e490d178a29197df3
+= merge of develop 2c8022fe into aud6; `git diff 2c8022fe..44e21388` is the same
+8-file surface as before (2 notes, queue.py, runner.py, pg_sessions.py, 3 test
+files) — the develop merge added no code to this branch and touched no gate
+(`scripts/`, `.github/`, quality) paths. Every claim below executed fresh in
+this round.
+
+- Driver checks (check-0..check-4 logs): `uv sync --locked --extra dev` ok,
+  `ruff check .` clean, `ruff format --check .` clean (2546 files), driver
+  trio (config, test_pg_sessions.py, test_requested_cancellation.py) →
+  **21 passed**, `scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` → ok (10904 recorded).
+- Own run: `uv run pytest
+  packages/maistro-core/tests/tasks/test_requested_cancellation.py -q` →
+  **10 passed** (3.01 s).
+- Bite check re-derived this round in a throwaway dir (no worktree mutation):
+  `git archive 1e52dc174` (55f59f334^) sources + head's test file →
+  **10 failed / 0 passed**; at head the same file is 10/10 green. The suite
+  fully discriminates receipt-only terminalization from the fix.
+- Real-Postgres leg: fresh scratch database on the pgvector pg18
+  `maistro-postgres` container (127.0.0.1:5433), `alembic upgrade head`
+  exit 0, `MAISTRO_TEST_PG_DSN` set: targeted persistence + cancellation +
+  config → **24 passed**; `test_pg_sessions_concurrency.py` green **5×
+  back-to-back** — the line-89 retention race did not recur at this head
+  (see `1242-exact-head-retention-clock.md`).
+- Closure keywords: `git log 2c8022fe..44e21388 --format='%s|%b'` grep for
+  `(fixes?|closes?|resolves?) #[0-9]+` → no matches. Supplied PR 1265 body
+  ("Refs #1242. Draft claim-stake for exact branch aud6; independent
+  verification and CI remain required.") carries none either, and a read-only
+  `gh pr view 1265 --json number,body,headRefOid,isDraft,statusCheckRollup`
+  confirmed the live body/head match (draft, headRefOid = this head). This
+  resolves the prior round's "no PR body" UNVERIFIED.
+- CI status at the read-only refresh: 13 checks SUCCESS (lint-and-type-check,
+  security, SAST, pip-audit, postgres pg17/pg18, durable-events,
+  strike-ladder, hive-conductor-e2e, formal-conformance, exact-debt-ledger,
+  DevSkim, workflow-lint, pr-base) but CI `test`, quality coverage ×3,
+  Gate C, integration-scope, MinIO, hive-conductor-e2e-ui and docker-build
+  were still IN_PROGRESS with `gates-ran` PENDING — **CI green on the exact
+  head remains UNVERIFIED until the rollup settles**.
