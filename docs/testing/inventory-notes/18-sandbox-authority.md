@@ -193,3 +193,31 @@ this substrate" criteria are fully satisfied; `test_docker.py` pins the legacy
 flags and must be re-based deliberately with that change. Recorded here
 because the convergence CI cannot yet fail on this pair — extending its rule
 set to the legacy launcher vocabulary is part of that same deliberate change.
+
+## Verification round (2026-09-25, head `d5e654eb7`, no code changes)
+
+Fresh independent acceptance validation of this branch. Every gate re-executed
+green at this head: `ruff check .`, `ruff format --check .`,
+`mypy --strict packages/maistro-core/src` (631 files, 0-baseline),
+`scripts/check-sandbox-authority.py`, `scripts/check-suite-inventory.py`
+(14 suites match, incl. this suite at 175), the vulture per-identity ledger,
+sandbox suite 139 passed / 36 skipped (kernel-bound bwrap skips on this
+userns-restricted host), `tools/sandbox` 69 passed, conductor
+executor/gating/injection/security 34 passed, bootstrap #811 argv 38 passed.
+The container conformance suite ran **against the live daemon**: 17/17 passed
+(argv boundary, default-deny network, env allowlist, output bounds, timeout).
+`maistro sandbox status` reports the honest ladder on this host: container
+registered, vm/gvisor/bubblewrap refused with per-tier reasons — the
+#81-aligned installer preflight (`platform_detect.SANDBOX_AUTHORITY`) consumes
+exactly this CLI.
+
+Verdict recorded for the epic: the branch is green and its claims hold, but
+three exit criteria remain open above this lane and are **not** closable by
+another in-lane mechanical pass: (1) the evolve/RSI legacy-launcher residuals
+above (a fail-closed functional decision for their owners plus a CI-gate
+extension scoped to that same change), (2) #79 fence threading into
+`legacy_dag_node` needs a real lease epoch in the runner's `NodeContext` —
+inventing one from `attempt_id` alone would be a lie, (3) child-issue closure
+states (#76–#81, #811, #1197, #1198) are GitHub state, unverifiable and
+untouchable from this worktree. These go to deep review / owner coordination,
+not back to this repair lane.
