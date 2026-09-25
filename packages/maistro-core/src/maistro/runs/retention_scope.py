@@ -24,17 +24,25 @@ canonical_node_runs.run_id                        FK ON DELETE RESTRICT (012)   
 canonical_runs.parent_run_id                      FK (012)                      Never selected — a Run with live descendants is not a candidate.
 canonical_runs.parent_node_run_id                 FK (012)                      Never selected — same rule, through a NodeRun.
 graph_continuations.run_id                        PK only, **no FK** (021)      Delete in the purge transaction. Traversal state is execution identity, not audit (ADR-062); a continuation whose Run is gone is not history, it is a recovery trap — the recovery tick reads due run_ids from this table. `CanonicalDurableRunStore.get` already refuses the dangling case outright ("purged without reconciling Graph continuation state"), and its `reconcile_persistence` remains the crash backstop.
-canonical_event_log.run_id (+ node/attempt ids)   none — logical (030)          **Preserve.** The Event log is the append-only audit trail; deleting or rewriting events to keep ids resolvable would destroy the provenance retention exists to bound. The purge counts how many events now attribute to purged Runs so the residue is observable, not silent.
-schedule occurrence claim                         unique expression index on the Run's own provenance (015)   Dies with the Run row — deleting the Run *is* releasing the claim, the same policy `InMemoryRunStore._forget_run` has always applied. Counted per purge.
+canonical_event_log.run_id (+ node/attempt ids)   none — logical (030)          **Preserve.** The Event log is the append-only audit trail; deleting or rewriting events to keep ids resolvable would destroy the provenance retention exists to bound. The residue stays inspectable in the log itself; the purge does not count it.
+schedule occurrence claim                         unique expression index on the Run's own provenance (015)   Dies with the Run row — deleting the Run *is* releasing the claim, the same policy `InMemoryRunStore._forget_run` has always applied.
 canonical_runs.archive_key                        column (017)                  Not reachable — purgable Runs carry a deadline, archived Runs carry none; the populations are disjoint by predicate (ADR-082226-f436 decision 10).
 tasks.run_id, session_turns.run_id                none — logical (004/028)      Preserve. Historical attribution owned by other modules: a task receipt or a session turn says "this happened", and it stays true after the execution identity is reclaimed. Same class as Events.
 learnings/outcomes/design_outputs/episodic_memories .run_id, .node_run_id, .attempt_id   none — logical (026/028/031)   Preserve. Producer provenance (#709, #64): "this execution produced this learning/outcome/design output/memory" is attribution history exactly like a task receipt — it names an execution that did happen. The purge never touches these tables; the reference resolving to a purged Run is the same residue an Event reference is, and the same policy — observable, not destroyed — applies.
+capability_invocations .run_id, .node_run_id, .attempt_id   none — logical (035)   Preserve. The capability-invocation ledger is an effect receipt ("this Attempt invoked this binding with this effect key"): attribution history, the same class as a task receipt, and it outlives the execution identity it names.
+capability_approvals.run_id (+ node_run_id)       none — logical (runtime DDL)  Preserve. A durable approval request for one effect of one execution is receipt history like the invocation ledger and is never selected by the purge.
+task_idempotency.run_id                           none — logical (038)          Preserve. The admitted-outcome receipt for an idempotency key. It is bounded by its own replay window (`PgTaskIdempotencyStore.purge_expired`), not by the Run's retention, so the purge leaves it to that TTL.
+durable_graph_runs.run_id                         PK only, separate store       Not touched, and not yet decided. `SqliteDurableRunStore`'s checkpoint table belongs to a store the canonical purge does not reach; its retention is recorded as `undecided` in `quality/durable-table-retention.json` rather than claimed here.
 ================================================  ============================  ====================================================
 
 The line the table draws: **execution state** (spine children, continuations,
 occurrence claims) is reclaimed with the Run; **attribution history** (events,
-task receipts, session turns) outlives it and is counted or left inspectable
-rather than silently destroyed.
+task receipts, session turns, effect receipts) outlives it and is left
+inspectable rather than silently destroyed.
+
+`RUN_REFERENCING_TABLES` is this table as data: every table named in it. A test
+scans the migrations and runtime DDL for tables with a ``run_id`` column and
+fails on any not listed, so a new one cannot join the schema unaccounted for.
 """
 
 from __future__ import annotations
@@ -46,11 +54,30 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from maistro.runs.model import Run
 
 __all__ = [
+    "RUN_REFERENCING_TABLES",
     "GlobalRetentionScope",
     "RetentionScope",
     "WorkspaceRetentionScope",
     "run_in_purge_scope",
 ]
+
+RUN_REFERENCING_TABLES: tuple[str, ...] = (
+    "canonical_attempts",
+    "canonical_node_runs",
+    "canonical_runs",
+    "graph_continuations",
+    "canonical_event_log",
+    "tasks",
+    "session_turns",
+    "learnings",
+    "outcomes",
+    "design_outputs",
+    "episodic_memories",
+    "capability_invocations",
+    "capability_approvals",
+    "task_idempotency",
+    "durable_graph_runs",
+)
 
 
 @dataclass(frozen=True)
