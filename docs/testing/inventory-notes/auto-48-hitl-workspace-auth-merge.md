@@ -41,13 +41,20 @@ the incoming side, which ships its own inventory notes (`1058-*`,
 ## Independent validation at 87f71178d (merge 678c16316 + the settlement/door fix, 2026-09-25)
 
 - `uv run pytest packages/maistro-core/tests/graph/durable_runs -q` — 515
-  passed, 21 skipped (all skips are `MAISTRO_TEST_PG_DSN` legs).
-- `uv run pytest packages/maistro-core/tests/graph -q` — 1400 passed, 79
-  skipped.
+  passed, 21 skipped (the skips are the `MAISTRO_TEST_PG_DSN` legs); the
+  full `packages/maistro-core/tests/graph` tree — 1400 passed, 79 skipped.
+- **Postgres legs executed** on a throwaway `pgvector/pgvector:pg18`
+  container (`alembic upgrade head` from empty, then `MAISTRO_TEST_PG_DSN`
+  set): full `durable_runs/` suite — **536 passed, 0 skipped**. The incoming
+  workspace-authorization store changes therefore hold on the Postgres
+  backend, not only on SQLite. Throwaway container removed afterwards.
+- Full `packages/hive-conductor/backend/tests -q` — **2670 passed,
+  1 skipped** (up from 2663 at 17ec79e7: the incoming side adds tests, all
+  green).
 - Targeted hive suites (`test_hitl_door`, `test_hitl_timeout_cancel`,
   `test_workspace_authority`, `test_registered_dag_recovery`,
   `test_dag_agents`) — 64 passed, including the previously failing
-  membership-recheck test.
+  membership-recheck test (subsumed by the full-suite run above).
 - `uv run ruff check .` / `uv run ruff format --check .` — clean (2533
   files); six-package mypy battery — clean (713 files).
 - `scripts/check-vulture-baseline.py` — PASS with the CI invocation
