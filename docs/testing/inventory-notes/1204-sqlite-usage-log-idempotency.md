@@ -98,3 +98,22 @@ pivotal quota tests (legacy backfill, same-timestamp identities, forced
 overlapping snapshots, commit-result-lost retry) and the three-backend
 conformance test were re-run by name and pass. PR body and branch commits
 carry no closure keywords; PR 1462 remains a draft.
+
+## Re-verification (lane L1204, head e2ae1c1e, job 0b8a94df)
+
+Third-party re-check of the same code; no source files changed. Fresh
+pgvector:pg18 scratch database created, `alembic upgrade head` applied the
+linear chain to the single head `039_quota_usage_event_identity`, and
+`\d quota_usage_events` confirmed `PRIMARY KEY (event_id)`. With
+`MAISTRO_TEST_PG_DSN` pointed at it: `packages/maistro-core/tests` runs
+10711 passed / 116 skipped / 1 xfailed (zero failures, PG conformance legs
+live), `packages/maistro-rsi/tests/test_runner.py` 18 passed, and
+`tests/migrations` 29 passed with `DATABASE_URL` exported. The four pivotal
+quota tests (same-timestamp identities, forced overlapping snapshots,
+commit-result-lost retry, restored-identity re-flush) and
+`test_retrying_one_event_does_not_double_count[memory|sqlite|postgres]` were
+re-run by name and pass. `ruff check` / `ruff format --check` clean;
+`check-durable-table-inventory` (64 tables) and `check-suite-inventory`
+(13 suites) pass; mypy shows only the pre-existing five `maistro_bootstrap`
+import-not-found errors under `cli/` (optional `bootstrap` extra not
+installed; files untouched by this branch).
