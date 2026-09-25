@@ -34,11 +34,3 @@ LEARNING_PERSISTED_FIELDS = frozenset(
         "attempt_id",
     }
 )
-
-# This is intentionally a complete partition rather than a list of known
-# fields: adding a Learning field without choosing a disposition fails the
-# machine-checked contract test.
-LEARNING_FIELD_DISPOSITIONS = {
-    **dict.fromkeys(LEARNING_PERSISTED_FIELDS, "persisted"),
-    **dict.fromkeys(LEARNING_GENERATED_FIELDS, "generated"),
-}
