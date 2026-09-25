@@ -402,3 +402,43 @@ Re-executed at the merge of develop 55c5ad892 into auto-1120:
   ("Refs #1120"), head SHA matches, still draft.
 
 No new defects. No tree edits beyond this note.
+
+## Independent re-verification at merged head 01012d9f3cfe (auto-1120, base 84402748f4ac)
+
+Re-executed at the merge of develop 84402748f into auto-1120 (fresh pg18 on
+port 25439, isolated container; `postgresql://` DSN form):
+
+- `uv run ruff check .` clean; `ruff format --check` clean (driver + re-run).
+- `uv run mypy` (6 packages) Success, 715 files.
+- `scripts/check-radon-baseline.py` EXIT=0 at this head (68 == 68 C-or-worse).
+- `scripts/check-vulture-baseline.py` EXIT=1, re-proven inherited at THIS
+  merge: raw vulture multiset over `packages tests` is IDENTICAL between base
+  84402748f and head 01012d9f3 (1453 == 1453, zero diff on `(path::message)`
+  keys; scratch tree via `git archive`), and `quality/` is unchanged
+  base..head. The branch adds no vulture identities; the ledger staleness is
+  develop's own.
+- `scripts/check-convergence-matrix.py` EXIT=0.
+- `alembic upgrade head` on the fresh pg18 applied the full chain through
+  042 ("Manual fires claim occurrences by their own identity").
+- Core runs+scheduling suites with `MAISTRO_TEST_PG_DSN` set: **1363 passed,
+  3 skipped** — the 3 skips are capability-conditional (archive-payload
+  conformance, retention continuation store), not availability skips.
+- Lane Hive suites re-run: **100 passed**; all 12 of
+  `test_manual_fire_canonical.py` pass by name, including the real-route E2E
+  `test_the_manual_fire_route_runs_the_canonical_spine_end_to_end`
+  (double POST with one `Idempotency-Key` -> exactly 1 canonical Run in
+  ws-route/root-project scope, `schedule_trigger=manual`,
+  `schedule_fire_id` provenance, Run->NodeRun->Attempt COMPLETED, both
+  responses one receipt, `runs_so_far == 1`) and
+  `test_the_standalone_fallback_is_gated_to_no_container`.
+- `tests/migrations/test_audit_scope_migration.py`: 3 passed.
+- Closure-keyword review: no fixes/closes/resolves tokens in any commit
+  message 84402748f..HEAD; live `gh pr view 1315`: head SHA matches this
+  worktree, still draft, body is the claim-stake text ("Refs #1120").
+- CI rollup at the same refresh: Quality gate (Pillars 1-4,7,8) now
+  COMPLETED/SUCCESS (the earlier radon failure is gone at this tree);
+  coverage (PostgreSQL), postgres pg17/pg18, hive e2e all SUCCESS;
+  `test` and `Coverage gate (publish-set floor + diff coverage)` still
+  IN_PROGRESS -> left UNVERIFIED by CI, compensated by the local runs above.
+
+No new defects. No tree edits beyond this note.
