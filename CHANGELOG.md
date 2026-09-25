@@ -261,6 +261,25 @@ or placeholder-only section.
 
 ### Added
 
+- **Every parked Graph pause reason must name a reachable production waker
+  (#1192, partial).** A new architecture test maps each
+  `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap
+  ledger. For each waker it checks that the entrypoint exists, has a non-test
+  production caller (called or handed off by name, one hop), calls the
+  canonical API it names, and that the API accepts the status the reason
+  actually parks in. It also checks that whatever runs the Run again can
+  select a Run holding the reason: a tick filtered to one admission source owns
+  only the node kinds that source builds, and one of them must emit the reason.
+  A reason parked beside a human pause parks PAUSED with it, so the pair must
+  still be released. Every declared accepted status is pinned by equality
+  against the shipped API. The human reasons are woken by the Hive HITL answer
+  and cancel routes, and the two elapsed-timer reasons by #837's
+  registered-DAG due tick. The legacy-DAG and Evolve ticks are shown not to
+  qualify, because their Runs never pause. `awaiting_remote_delegation` and
+  `awaiting_harness` park WAITING while the only answer path accepts PAUSED,
+  so they are ledgered against #1192. HITL deadline expiry is not counted as
+  a waker, because only a manual `POST /v1/hitl/expire` triggers it.
+
 - **Every durable table declares its retention, and CI checks it against the
   schema (#325).** `quality/durable-table-retention.json` lists all 63 tables
   in the schema built by Alembic and `.sql` migrations (later drops applied),
@@ -503,6 +522,21 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **develop CI is green again: MinIO without registry auth, and the
+  credential-authority self-checks judge against a real base.** MinIO archived
+  its community server, so `quay.io/minio/minio` now answers 401 and dl.min.io
+  answers 410 for every release binary; the `object storage (MinIO)` and
+  `coverage (MinIO)` jobs now build the same pinned
+  `RELEASE.2025-04-22T22-12-26Z` from source through the Go module proxy
+  (checksum-verified against sum.golang.org, no secret) and run the binary on
+  the runner. Separately, the three `tests/test_credential_authority.py`
+  checks that audit the real repository (#1470) did not request the
+  `real_repository_ratchet_base` fixture, so on every push to `develop` their
+  baseline resolved to HEAD and `SelfReferentialBaseline` failed them (and the
+  quality coverage gate that reruns the suite). They now opt in like the other
+  shipped-state gate self-checks and compare against the revision the push
+  replaces.
 
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**

@@ -14,13 +14,31 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from maistro.security.composition import build_canonical_security_dependencies
+
 from .config import build_registry, cors_origins
+from .execution import reset_execution_plane
 from .middleware.auth import TuringAuthMiddleware
 from .routes import admin, auth, chat, feed, health, state
+from .security import TuringInboundSecurity, TuringInboundSecurityMiddleware
+from .state import reset_state
 
 
-def create_app() -> FastAPI:
+def create_app(*, inbound_security: TuringInboundSecurity | None = None) -> FastAPI:
+    # The application root receives the shared canonical detector and audit
+    # sink. A missing composition is a startup failure, never an allow-all.
+    if inbound_security is None:
+        dependencies = build_canonical_security_dependencies()
+        inbound_security = TuringInboundSecurity(
+            warden=dependencies.warden,
+            audit_log=dependencies.audit_log,
+        )
+    reset_state(inbound_security=inbound_security)
+    # The execution plane is part of the same composition root as the HTTP
+    # boundary; direct service callers cannot obtain an unguarded plane.
+    reset_execution_plane(inbound_security=inbound_security)
     app = FastAPI(title="Turing Backend", version="0.9.0")
+    app.state.turing_security = inbound_security
 
     app.add_middleware(
         CORSMiddleware,
@@ -29,6 +47,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Add the boundary first so auth is the outer middleware: identity is
+    # established before protected content is scanned.
+    app.add_middleware(TuringInboundSecurityMiddleware, security=inbound_security)
     app.add_middleware(TuringAuthMiddleware, registry=build_registry())
 
     app.include_router(health.router)
