@@ -290,3 +290,51 @@ No code changes were needed in this round: every prior #74 finding is already
 fixed at this head and the full battery is green apart from the documented,
 provably pre-existing pytest-9 log-redaction red. This pass adds evidence
 only.
+
+## Pass 7: develop-sync conflict resolution + full battery re-run (head 88f6fa900)
+
+Previous block resolved: the worktree carried an in-progress
+`git merge origin/develop` (MERGE_HEAD `84402748f`) with one conflict in
+`COMPLIANCE.md`. develop (#1464) had replaced the document with the
+evidence-first registry format (`quality/compliance-registry.json` +
+`scripts/check-compliance.py`), while auto-74 had rewritten the old mapping
+table with product-path citations. Resolution (merge commit `88f6fa900`):
+
+- develop's registry-backed format wins (its checker rejects the old table);
+- the #74 "Product-path evidence for security claims" section is re-added
+  outside the registry markers, citing the executed Sentinel/Warden nodes;
+- the machine-checked registry rows for OWASP-AT-01/OWASP-AT-02 now cite the
+  product-path tests (`test_sentinel_policy.py`,
+  `test_warden_regex_equivalence.py`) in `test_refs`, with claim text synced
+  byte-exactly between registry and document.
+
+Evidence at this head:
+
+- `scripts/check-compliance.py` → exit 0 ("compliance registry and
+  COMPLIANCE.md are valid"); `tests/test_check_compliance.py` → **97 passed**.
+- Acceptance nodes: `test_sentinel_policy.py -k "post_call_real_warden or
+  pii_match"` → **8 passed** (timeout + window + padded-semantic + capture
+  ordering + PIIMatch masking on the product path);
+  `test_warden_regex_equivalence.py -rs` → **7 passed / 0 skipped** with
+  `re2_available() == True` (accelerated vs fallback equivalence exercised,
+  not skipped); `test_react.py::test_reason_pii_filter_import_error_blocks_-
+  unredacted_result` + `test_warden_pii_bypass.py` → **10 passed**.
+- `pytest packages/maistro-core/tests/security` → 1270 passed / 19 skipped /
+  1 failed; the single red remains the documented pre-existing
+  `test_log_redaction.py:82` pytest-9 interaction (file unchanged since the
+  initial release; `git diff 29b43bac3..88f6fa900` on it is empty).
+- develop-touched surfaces from the merge: persistence + learnings → **599
+  passed / 169 skipped**; hive HITL/dag tests → **46 passed**;
+  strategies + `formal/models/test_warden_semantic.py` +
+  `formal/models/test_sentinel_policy.py` → **92 passed**.
+- Gates: `ruff check .` clean; `ruff format --check .` → 2550 files clean;
+  `check-security-inventory.py` exit 0 (65 paths / 23 rows);
+  `check-doc-links.py` exit 0; `check-suite-inventory.py` exit 0;
+  `check-ratchet-provenance.py` exit 0 (all 10 ratchets, candidate
+  `88f6fa900` — includes the new compliance-registry consumer);
+  full AGENTS.md mypy command → **715 source files, no issues**.
+- CI-repair step re-run exactly as briefed: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → exit 0,
+  **1414 reviewed identities → 1414 findings, unclassified 0,
+  never_allowlist 0** (candidate `88f6fa900` vs base `84402748f`). No ledger
+  amendment needed: nothing unbanked, nothing dead found.
