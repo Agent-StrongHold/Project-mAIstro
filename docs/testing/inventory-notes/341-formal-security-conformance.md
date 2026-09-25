@@ -1,7 +1,7 @@
 ---
 inventory-delta:
-  formal/: +256
-  tests/: +3
+  formal/: +242
+  tests/: +13
 ---
 # Issue 341 formal security conformance
 
@@ -595,20 +595,34 @@ Re-derived from the issue text at head `983ff08f0b6248ac49e8d3ea1e745713367effa3
   `packages/` files in `git diff --name-only 55c5ad892...HEAD` (oracle
   establishes without implementation co-change). `formal-conformance` is a
   required context (`branch-protection.json`) and is **SUCCESS** on this head.
-- **BLOCKING CI failures on this head, both caused by this PR:**
-  1. CI / `test`: suite inventory drift — `python scripts/check-suite-inventory.py`
-     fails locally with `DRIFT  formal/: expected 678, collected 664` (net -14);
-     this note's front-matter delta `formal/: +256` does not match actual
-     collection at this head. Live run 36167568102 job 108178932631 FAILURE.
-     Repair: reconcile the recorded inventory (`check-suite-inventory.py --update`
-     + corrected delta) at the final head.
-  2. quality / Coverage gate: `scripts/check-formal-oracle-independence.py:
-     55.0% of 60 changed lines (need 90%)` — live run 36167567893 job
-     108181122595 FAILURE. The three unit tests cover `changed_paths`/
-     `violations`/`oracle_exists_at_base` but not the CLI/error paths
-     (`main`, subprocess-failure branches). Repair: extend
-     `tests/test_check_formal_oracle_independence.py` or declare exemption
-     per repo convention.
+- **Repair round at head `095b5b83b` (both blocking CI failures closed):**
+  1. CI / `test` suite-inventory drift FIXED. The front-matter delta is
+     reconciled to measured collection: `formal/: +242` (was +256) and
+     `tests/: +13` (was +3; the repair adds 10 tests, see below). Root cause of
+     the -14: this note's own recorded delta overstated the formal/ count — the
+     develop merges (`ba2f1f077`, `84402748f`) changed neither `formal/` nor the
+     ledger (`git diff` on both is empty for `formal/ docs/testing/inventory/`;
+     no merged note carries a `formal/` delta), baseline is 417, other notes'
+     formal deltas sum to +5, so the true branch delta is 664 - (417 + 5) =
+     +242. `python scripts/check-suite-inventory.py` at the repaired head: all
+     suites ok, exit 0.
+  2. quality / Coverage gate FIXED. `tests/test_check_formal_oracle_independence.py`
+     grows from 3 to 13 tests, covering the previously uncovered CLI/error
+     paths: `main()` success (separated changes, initial oracle landing),
+     violation (exit 1), unreadable diff (exit 2), missing `--base` (argparse
+     exit 2), base from `FORMAL_ORACLE_BASE`, the `git diff` failure branch of
+     `changed_paths` (both the reported message and the bare-stderr fallback),
+     `oracle_exists_at_base` against real git fixtures (present and absent),
+     `violations`' no-oracle/no-base early return, and the `__main__` guard via
+     `runpy` (CI shells out). Local gate reproduction with the CI producer
+     (`coverage run --branch --source=scripts -m pytest tests/...`):
+     `check-diff-coverage.py` now reports the file at 100% lines / 100%
+     branch arcs (was 55.0% of 60 changed lines) and exits 0.
+  3. Mutation re-proof at this head (worktree untouched; shadowed copy under
+     `/tmp` with `PYTHONPATH` precedence verified via `__file__`): unmutated
+     targeted suite 256/256 passed; deleting exactly 21 of the 22
+     `DANGEROUS_COMMAND_PATTERNS` entries (syntax-checked, 1 pattern kept) →
+     **189 failed, 67 passed**. The deletion still fails required CI.
 - Residual (org-side, prior finding stands): live rulesets require 0 approvals;
   the co-change gate enforces the one-PR case, but two sequential self-approved
   PRs (oracle-only, then implementation-only) rely on CODEOWNERS that the live
