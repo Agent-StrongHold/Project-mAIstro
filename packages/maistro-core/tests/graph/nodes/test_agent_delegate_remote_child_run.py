@@ -35,6 +35,7 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
+from maistro.graph.durable_runs.hitl import HitlAuthorization
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.agent_delegate_remote import (
     AgentDelegateRemoteNode,
@@ -85,6 +86,25 @@ def _delegator() -> A2ADelegator:
     delegator = A2ADelegator()
     delegator.register_agent_capability("planner", ["researcher"])
     return delegator
+
+
+async def _allow_test_hitl_membership(_principal: str, _workspace_id: str) -> bool:
+    return True
+
+
+def _hitl_authorization(*workspace_ids: str) -> HitlAuthorization:
+    """Answer-path evidence for this file's fixture Workspaces.
+
+    `submit_hitl_answer` requires effective-principal evidence since #364; a
+    delegated answer is the same server-owned settlement path, so the durable
+    resume test presents an explicit operator principal rather than bypassing
+    the authorization the production route carries.
+    """
+    return HitlAuthorization(
+        effective_principal="test-hitl-operator",
+        workspace_ids=frozenset(workspace_ids),
+        membership_check=_allow_test_hitl_membership,
+    )
 
 
 class TestDelegationFilesAChildRun:
@@ -851,6 +871,7 @@ class TestCrossInstanceDelegationFilesAChildRun:
             parent.run_id,
             "delegate-1",
             {"status": "completed", "task_id": pause["metadata"]["task_id"], "result": "ok"},
+            authorization=_hitl_authorization("workspace-1"),
         )
         assert answered.status is RunStatus.QUEUED
         assert answered.hitl_answers["delegate-1"]["_pause"]["metadata"]["run_id"] == child_run_id
