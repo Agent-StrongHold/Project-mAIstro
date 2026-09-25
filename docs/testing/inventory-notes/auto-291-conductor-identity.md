@@ -374,3 +374,35 @@ inventories ok for hive-conductor/backend/tests and maistro-core/tests):
   contract therefore remains UNVERIFIED by design for this PR (it fires at
   merge-to-main/nightly); the verbatim local in-image replication above is
   the evidence of record.
+
+Independent verifier pass at head d68cd1ceb (auto-291 = branch merged with
+develop 55c5ad892; all driver checks green, re-executed locally this round):
+
+- Input-identity check: `git diff 78325c061..d68cd1ceb` over every
+  identity-relevant path (Dockerfile, requirements.txt, health.py, setup.py,
+  identity_health.py, conductor identity/setup tests, maistro-core identity
+  source+tests+pyproject, support matrix, security.yml, Setup.tsx, e2e spec)
+  is EMPTY — the deep image verification recorded above at 78325c061 (both
+  profiles built, security.yml verify commands executed verbatim in-image,
+  live Playwright 8/8, live /health observation) carries over byte-for-byte
+  to this head.
+- Re-executed at d68cd1ceb: uv sync ok; ruff check + format --check clean;
+  engine identity extra_guard 6 passed; conductor test_api +
+  test_identity_health + test_setup_guard 55 passed; FULL conductor backend
+  suite 2728 passed / 5 skipped (no regressions from the develop merge);
+  suite inventory gates ok for hive-conductor/backend/tests and
+  maistro-core/tests.
+- Live CI at this exact head (read-only gh pr view): hive-conductor-e2e and
+  e2e-ui SUCCESS (updated setup.spec.ts runs green in GitHub CI);
+  coverage (MinIO) and object storage (MinIO) SUCCESS (prior findings
+  resolved by the develop merge); wheel-imports, lint-and-type-check, SAST,
+  postgres pg17/pg18, Gate C, formal-conformance, supply-chain SUCCESS;
+  docker-build and integration-scope completed SUCCESS at a later poll —
+  ci.yml docker-build at d68cd1ceb executed the Dockerfile build-time
+  identity smoke test (import + derive + version assertions) in GitHub CI.
+  security.yml containers job remains SKIPPED on this develop-targeted PR by
+  its main/merge_group/nightly `if:` — the nightly cron is the
+  update-testing loop; its last execution evidence for this content is the
+  verbatim local in-image replication recorded at 78325c061.
+- Closure-keyword audit repeated at this head: PR body says "Refs #291" only;
+  no fixes/closes/resolves in any commit message on the branch.
