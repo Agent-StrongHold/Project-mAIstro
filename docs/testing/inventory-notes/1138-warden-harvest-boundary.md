@@ -239,3 +239,28 @@ recorded, but a future pass could thread `audit_sink`/`correlation` through
 that layer too. Push-block resolution verified locally: `origin/auto-1138`
 (`8b7c8fb16`) is an ancestor of this head (fast-forward when pushed; pushing
 remains a writer/driver action).
+
+Independent verifier revalidation at `c15128b11` (develop base `2c8022fe8`;
+`git diff 9d943a8a9..HEAD` excluding this notes file is empty — docs-only
+round). Re-executed by this round: the 166 targeted rsi tests pass (19.1s);
+`ruff check .` clean; `check-suite-inventory.py --suite
+packages/maistro-rsi/tests` OK (756 recorded). Fresh out-of-tree probes
+(/tmp, real `Warden`, no tree edits), 16/16 pass: one payload relocated
+across plain text / nested value / attacker-controlled mapping key /
+filename / commit-message / diff text is `blocked` in every shape; `Warden=None`,
+a raising scanner, and `scan_sync` inside a running loop each fail closed with
+truthful `warden_unavailable`; clean content is admitted with a correlated
+audit record (workspace/project/run/attempt/source repo+base+head/campaign/
+candidate/policy_version/digest present; URL credentials stripped; no payload
+content in the audit file); `guarded_async_call` refusal invokes the inner
+model callable zero times while clean messages flow through. Resume-path
+probe on a real git baseline: a saved patch whose filename AND diff carry the
+payload is refused before `_git_apply` (`git status --porcelain` empty, no
+commit, `EVIL` absent), with a durable `admitted=false` JsonlAuditSink record.
+Quarantine independence re-read at this head: `selfbranch.py` requires an
+affirmative `quarantine_verdict.cleared` to open a PR (missing check = DENY).
+Prior push block fully resolved: `origin/auto-1138` now equals `c15128b11`
+(fast-forward; pushing remains a writer/driver action). Residual unchanged
+(non-blocking): `benchmarks/swebench_pro.py` secondary boundary keeps
+candidate_id-only correlation and no durable sink; the primary RsiCycle/
+gateway layer persists durably and that layer still fails closed.
