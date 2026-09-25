@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
+import pytest
 from pydantic import BaseModel
 
 from maistro.graph.nodes import (
@@ -406,6 +408,71 @@ async def test_a_failed_child_run_fails_the_node_naming_the_child() -> None:
     assert result.metadata == {"dispatched": True, "child_run_id": child.run_id}
 
 
+@pytest.mark.parametrize(
+    ("child_status", "fails"),
+    [
+        ("cancelled", True),
+        ("timed_out", True),
+        ("waiting", False),
+        ("paused", False),
+    ],
+)
+async def test_the_child_runs_final_status_decides_the_node(
+    monkeypatch: pytest.MonkeyPatch, child_status: str, fails: bool
+) -> None:
+    """Any settled child but COMPLETED fails the node; a child parked WAITING
+    or PAUSED is live work the sub-graph is entitled to, not a failure."""
+    import maistro.graph.durable_runs as durable_runs
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+    from maistro.runs.model import RunStatus
+
+    async def _settled_child(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(run_id="child-run-x", status=RunStatus(child_status))
+
+    monkeypatch.setattr(durable_runs, "run_durable_graph", _settled_child)
+    node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
+        synthesizer=_CountingSynthesizer([_result([_ChildStep.kind])]),
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run({"objective": "x"}, _scoped_ctx())
+
+    if fails:
+        reason = _synth_failure(result)
+        assert "child-run-x" in reason
+        assert f"sub-graph execution {child_status}" in reason
+        assert result.metadata == {"dispatched": True, "child_run_id": "child-run-x"}
+    else:
+        assert result.status == "completed"
+        assert result.output.dispatched is True
+        assert result.output.child_run_id == "child-run-x"
+
+
+async def test_non_mapping_result_metadata_on_an_exception_is_ignored() -> None:
+    """The failure hook `SynthDagFailed` uses reads any exception's
+    `result_metadata`; one that is not a mapping must still yield a failed
+    NodeResult rather than escape `BaseNode.run`."""
+
+    class _OddError(RuntimeError):
+        result_metadata = "not a mapping"
+
+    class _Raises(BaseNode[_ChildIn, _ChildOut]):
+        kind: ClassVar[str] = "test.synthchild.odd_error"
+        input_schema: ClassVar[type[BaseModel]] = _ChildIn
+        output_schema: ClassVar[type[BaseModel]] = _ChildOut
+
+        async def _execute(self, inputs: _ChildIn, ctx: NodeContext) -> _ChildOut:
+            raise _OddError("boom")
+
+    result = await _Raises().run({}, _ctx())
+
+    assert result.status == "failed"
+    assert result.error_code == "_OddError"
+    assert result.metadata == {}
+
+
 async def test_unscoped_context_fails_rather_than_inventing_scope() -> None:
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
@@ -463,8 +530,6 @@ async def test_an_entry_outside_the_synthesized_nodes_fails() -> None:
 
 
 def test_node_kind_resolves_later_nodes_and_refuses_unknown_ids() -> None:
-    import pytest
-
     from maistro.graph.definitions import Graph, Node
     from maistro.graph.nodes.agent_synth_dag import _node_kind
 

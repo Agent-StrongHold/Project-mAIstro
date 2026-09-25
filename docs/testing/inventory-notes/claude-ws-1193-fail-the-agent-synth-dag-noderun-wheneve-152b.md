@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +6
+  packages/maistro-core/tests: +11
 ---
 # claude-ws-1193-fail-the-agent-synth-dag-noderun-wheneve-152b
 
@@ -22,3 +22,7 @@ dispatches nothing or its child Run does not complete.
   it (`continue_on_failure`, successor sees depth 1).
 - `tests/graph/durable_runs/test_executor_mutants.py`: +2 — `_actually_spawned`
   counts a failed synth result with `dispatched` metadata, and not one without.
+- `tests/graph/nodes/test_agent_synth_dag.py`: +5 more — the child's final
+  status decides the node (CANCELLED and TIMED_OUT fail it, WAITING and
+  PAUSED complete it; 4 parametrized cases), and a non-mapping
+  `result_metadata` on a raised exception still yields a failed NodeResult.

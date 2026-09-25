@@ -536,7 +536,11 @@ or placeholder-only section.
   COMPLETED, or is parked WAITING/PAUSED, still completes the node. A failed
   node whose child was dispatched still spends its recursion level, so a
   `max_attempts` retry or a `continue_on_failure` successor starts one level
-  deeper rather than spawning again at the same depth.
+  deeper rather than spawning again at the same depth. Note the stricter
+  outcome for production-composed nodes: with no governed permission source
+  wired, the #1165 fail-closed Sentinel never approves a shape, so a Run
+  containing `agent.synth_dag` now fails rather than completing with a
+  refusal inside its output.
 
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**
