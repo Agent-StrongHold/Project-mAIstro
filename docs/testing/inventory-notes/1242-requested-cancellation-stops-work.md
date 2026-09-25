@@ -182,3 +182,37 @@ zero tree changes, so this record is the first verification made at this head.
 - Closure-keyword scan over every commit message in
   `8bb344e32..25fd3551c` (subject+body): no `fixes/closes/resolves #NNN`
   forms. No PR body exists for a local branch; no GitHub mutations were made.
+
+## Independent re-verification at the true exact head 9d16dec8e
+
+Job 639fdfa8 (repair lane LAUD6, 2026-09-24). 9d16dec8e is 25fd3551c plus
+inventory-note lines only (`git diff --stat 25fd3551c..9d16dec8e` touches two
+notes files), so the code under test is identical; every claim below was
+executed fresh at 9d16dec8e, not inherited.
+
+- `uv run ruff check .` → clean; `uv run ruff format --check .` → clean.
+- `uv run pytest packages/maistro-core/tests/tasks -q` → 319 passed (all ten
+  #1242 regression tests among them).
+- Bite check, re-derived against the whole pre-fix tree rather than a local
+  revert: throwaway worktree at `55f59f334^` (1e52dc174, before the execution
+  registry existed), head's `test_requested_cancellation.py` copied in →
+  **6 failed / 4 passed**; the headline regression fails with exactly
+  `AssertionError: the executor ran to completion after cancel`. The suite
+  cannot pass on the audited receipt-only terminalization.
+- `uv run pytest packages/maistro-core/tests -q` → **10094 passed, 654
+  skipped, 1 xfailed, 0 failed** (2m49s).
+- `packages/maistro-server/tests` + canvas + bootstrap + turing + evolve + rsi
+  → **2604 passed, 9 skipped, 0 failed**. `packages/hive-conductor/tests/e2e`
+  shows 17 fixture errors (`Login failed: Invalid credentials` — needs the
+  seeded reference-app stack); environment-dependent, untouched by this
+  branch's change surface (queue.py/runner.py/tests/docs).
+- Prior-finding residual closed: `test_pg_sessions_concurrency.py` against a
+  real Postgres 18 on :5433 (`alembic upgrade head` applied, `MAISTRO_TEST_PG_DSN`)
+  → green 3× back-to-back; the 23b4de340 DB-clock retention fix holds here too.
+- No gate weakening, re-proven from provenance: none of the aud6-local commits
+  (55f59f334, b93ad5925, 847e02916, 3877bcd3f, 23b4de340, 4eb2e75e8 and the
+  three notes commits) touch `scripts/`, `quality/`, `.github/` or gate
+  configs; the `check-credential-authority` deletions visible in the
+  `60862b6c..9d16dec8e` diff are upstream develop state — the file is already
+  absent from every merged develop snapshot (ba2f1f077, 71d0c1120, 551c38b5e,
+  78bb72906, aa9502100, ffd6fdb16, 8bb344e32).
