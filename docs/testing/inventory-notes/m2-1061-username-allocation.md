@@ -358,3 +358,46 @@ above. All commands executed in this worktree; tree left clean except this note.
   those two "where applicable" clauses are vacuously satisfied, re-confirmed
   at this head. Live GitHub CI on draft PR #1453 remains UNVERIFIED from
   here (no CI run is claimed by any artifact in this lane).
+
+## Independent verification (2026-09-26, head ae7dbd3a, lane L1061)
+
+Re-validation at the exact branch head (`ae7dbd3a7`) after the previous
+round's evidence was rejected because the worktree had changed underneath
+it (docs commits `d7990f94c`/`a9d3302e`/`ae7dbd3a` landed after the
+verified head). All commands executed fresh in this worktree at
+`ae7dbd3a7`; no code or test file changed in this round.
+
+- Full driver battery reproduced: `ruff check .` ok; `ruff format --check .`
+  ok (2548 files); core state suites 51 passed; hive targeted suites
+  (registration-policy, username-registry, auth-throttle, voice-auth)
+  121 passed; both `check-suite-inventory` runs ok;
+  `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` rc 0 (1415 reviewed identities -> 1415
+  findings). mypy on `packages/maistro-core/src`: 5 pre-existing
+  `maistro_bootstrap` import-stub errors in `maistro/cli/_builders_tui.py`
+  and `maistro/cli/_install.py` — files untouched by this branch (checked
+  against the branch diff stat); `state.py` itself clean.
+- Mutation criterion executed at full strength in this round: backed up
+  `services/username_registry.py` (cp), replaced `create_users`' atomic
+  block with the literal historical shape — `_username_taken()`-style scan
+  of `_legacy_candidates` plus random-id `self._users[user.id] = user`
+  writes (no claim, no transaction), with a 50 ms window between check and
+  write — ran
+  `test_many_case_variants_have_one_winner_on_shared_persistence`, and the
+  test FAILED at line 86 (`assert sum(outcomes) == 1`), i.e. the race
+  harness itself kills the scan-then-write mutant (unlike the previous
+  round's `put_raw`-upsert mutant, which only the seam-spy tests caught).
+  Restored via cp; `git diff` on the file empty; suite green again
+  (username-registry 20 passed); tree clean.
+- Allocator coverage re-derived: the only production `HiveUser(`
+  construction outside tests is `routes/auth.py:716` (register →
+  `create_users`); setup builds via `stores.users._model_class` → the same
+  allocator (`routes/setup.py:353`); remaining `stores.users[...] =`
+  writes are login password rehash and permission assignment, neither of
+  which creates or renames an identity.
+- No repair was needed this round: the sole prior validation failure
+  (`check-5.log`, unparseable `inventory-delta` in
+  `m2-1061-throttle-ordering-assertion-repair.md`) was already fixed by
+  `e41ebb2f0` and the gate passes at this head. The only edit in this
+  commit is this note; every code/test surface above was verified exactly
+  as committed at `ae7dbd3a7`.
