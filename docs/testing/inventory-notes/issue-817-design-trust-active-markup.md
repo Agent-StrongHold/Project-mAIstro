@@ -194,3 +194,53 @@ No production file changed this round; this is fresh executed evidence only.
   (`repro.py`, `repro_v2.py`, `test_scan.py`) were preserved by moving them
   out of the worktree to the job directory; their assertions are superseded
   by the committed corpora above.
+
+## Independent verification round 5 (auto-817 @ b18cd9b7, final lane head)
+
+Re-executed at the lane's exact final head `b18cd9b78f1d2952121043f2e89ee117d81f67bf`
+(f9ec5bf09 union repair + develop merge `03c8ba83a`). Read-only probes; the only
+tracked change in this round is this note.
+
+- **Lane pytest:** `uv run pytest packages/maistro-design/tests
+  packages/maistro-core/tests/security/warden
+  packages/hive-conductor/backend/tests/test_design_renderers.py -q` → 393
+  passed.
+- **Probe corpora re-executed at this head:** 14-case `scan_and_record` corpus
+  (MathML, script, handler attrs, SVG onload, `javascript:`, `data:text/html`,
+  CSS `url()`/`@import`, foreignObject script, meta refresh,
+  `annotation-xml`) → all SKULL/`banish`/0.90 with shared visual-artifact
+  flags; clean brief stays T3/`upgrade`/`()`. 16-case `scan_design_text`
+  output-boundary corpus (handlers incl. `<body onload>`, script-capable SVG,
+  `use`/`image`/iframe `data:text/html`, CSS `url()`/`@import`/`image-set`/
+  `behavior:`/`-moz-binding:`, leading- and mid-token hex escapes, prompt
+  injection, `javascript:`, MathML) → all blocked; 3 inert presentation cases
+  pass. `<style>` blocks on BOTH sides (pre-scan and Chromium allowlist), so
+  the parity direction required by AC-4 holds.
+- **SAST gate re-executed CI-exact** (`uvx semgrep --metrics off --config
+  tools/semgrep/maistro-rules.yaml --config p/security-audit --config
+  p/owasp-top-ten --config p/secrets --exclude eval --exclude cage --error
+  packages/ tests/`) → rc=0, 364 rules / 1892 files / 0 findings; the reviewed
+  sink annotation at `visualArtifactRenderer.tsx` holds.
+- **Vulture gate re-executed CI-exact** (`scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) → rc=0,
+  1415→1415 vs base `03c8ba83a`.
+- **Browser corpus re-executed in Chromium** (image `auto817-playwright-r4`,
+  live `visualArtifactRenderer.tsx`, `deckSanitizer.ts`, `DeckBuilder.tsx`,
+  `FixedPageArtifactEditor.tsx`, and the 8-test spec bind-mounted over the
+  baked copies): `deck-sanitization.spec.ts` 8/8 passed, including the
+  mutation/encoded/SVG/CSS payload families, CSS-obfuscation and active-SVG
+  fail-closed assertions, and the `recommendVisualArtifactTrust` parity block
+  (MathML → `review`).
+- **Static gates:** `ruff check .` and `ruff format --check .` clean;
+  `check-merge-markers.py` ok; suite inventory ok for maistro-design (310),
+  maistro-core, and hive-conductor backend.
+- **Scratch salvage preserved:** the failed prior run left two untracked
+  scratch files (`reproduce_issue_817.py`, `packages/maistro-design/tests/
+  test_repro_817.py`). The latter silently added +3 node IDs to the
+  maistro-design suite (313 collected vs recorded 310 → `check-suite-inventory`
+  DRIFT, and ruff I001/F401 against both files). Their assertions (MathML/
+  script/data-URL → SKULL with flags) are strictly subsumed by the committed
+  `test_trust_prescan.py` corpus, which pins flags to the exact shared
+  output-boundary verdict. Both files were preserved (not deleted) by moving
+  them to the job directory's `salvaged-scratch/`, matching the round-4
+  precedent; no production or test file changed this round.
