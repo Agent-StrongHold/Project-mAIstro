@@ -311,6 +311,8 @@ class ChatAttemptExecutor:
             # store's error, with the deadline behind it). A late answer is not
             # an unrecorded one, and substituting the `CancelledError` the
             # dispatch saw would disguise a timeout as a client disconnect.
+            if deadline is exc:
+                raise exc
             # A fresh deadline, so the recording failure is its explicit cause:
             # the runtime's own deadline already has one (`from` the
             # cancellation), and tracebacks hide a context behind a cause.

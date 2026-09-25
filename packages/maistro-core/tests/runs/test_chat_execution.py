@@ -631,10 +631,13 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
                 await asyncio.sleep(5)
             return {"choices": [{"message": {"content": "late"}, "finish_reason": "stop"}]}
 
-        with pytest.raises(RuntimeDeadlineExceeded):
+        with pytest.raises(RuntimeDeadlineExceeded) as late:
             await ChatAttemptExecutor(container.run_store, timeout_s=0.01).execute(
                 run.run_id, MESSAGES, _stubborn
             )
+
+        # Recorded, so it is the runtime's own deadline, not a copy wrapping it.
+        assert not isinstance(late.value.__cause__, RuntimeDeadlineExceeded)
 
     async def test_a_late_answer_whose_deadline_record_fails_is_still_a_deadline(
         self,
