@@ -353,3 +353,39 @@ fresh at HEAD 2cf10b731249c42a909e691b7e3a5f6445299c57.
 Verdict for this round: all acceptance evidence re-proven at the merged HEAD.
 Residual UNVERIFIED (requires maintainer GitHub mutations, prohibited here):
 first production Actions evidence run and first real tag release.
+
+## Independent verification round (job 87146a51c0e9418aa45fe5fc37b777f2)
+
+Re-executed fresh at HEAD e926ba8e907087ca8b48187487349c734d247e42
+(merge base 60862b6c5eb199d5830fbd04880380fe45aa08db); no tree edits beyond
+this note; probe ran entirely under /tmp.
+
+- `uv run python scripts/check-compliance.py`: exit 0 at rest.
+- `--require-release-evidence --release-digest e926ba8e...`: exit 1, 79
+  fail-closed problems (intended; a commit cannot contain its own digest).
+- `+ --resolve-release-evidence --resolved-output /tmp/rel-comp.json`: exit 1,
+  52 problems, resolved output NOT written (fail-closed).
+- Live forged-green probe in /tmp/probe362 (own git repo + annotated tag,
+  real checker, real GitHub API): forged `implemented` OWASP-AT-01 citing a
+  nonexistent artifact URL → `HTTP Error 404: Not Found`, digest-commit
+  binding error, exit 1.
+- `uv run pytest tests/test_check_compliance.py tests/test_release_guard.py
+  tests/test_branch_independence.py tests/test_branch_independence_repository.py
+  tests/test_check_branch_independence_base.py tests/test_check_branch_protection.py
+  tests/test_branch_policy.py -q`: 205 passed in 10.82s
+  (tests/test_check_compliance.py alone: 97 passed in 9.27s), including the
+  real-tag fixture (real git init/commit/annotated tag + real pytest
+  subprocess; only the GitHub API boundary is faked).
+- `uv run python scripts/check-branch-independence.py`: PASS.
+  `uv run python scripts/check-ratchet-provenance.py`: OK.
+- `uv run ruff check .` / `uv run ruff format --check .`: pass.
+- Wiring re-confirmed: release.yml guard resolves evidence at $GITHUB_SHA and
+  all publish jobs depend on guard; release-compliance upload is
+  `if-no-files-found: error`; "Compliance registry" required on develop+main
+  (branch-protection.json:44,104); compliance-evidence.yml never triggers on
+  tags; registry stays at 0 implemented claims, ART-15/17 unverified.
+- Closure-keyword review: 0 matches for `(fixes|closes|resolves) #N` in PR
+  body snapshot and all branch commit messages ("Refs #362" only).
+
+Residual UNVERIFIED (maintainer GitHub mutations prohibited in this lane):
+first production compliance-evidence Actions run; first real tag release.
