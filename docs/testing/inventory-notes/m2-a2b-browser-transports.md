@@ -620,3 +620,64 @@ executed directly at this head:
   async guard before its first page; no aiohttp/requests/urllib.request/raw
   outbound socket in production code.
 - No closure keywords in any branch commit message (`60862b6c5..HEAD`).
+
+CI-repair round at head 8ba601d6a (2026-09-25)
+----------------------------------------------
+
+Both red CI runs at this head (`quality` job 108023341212, step "vulture
+(dead-code; confidence ≥ 60 — per-identity ledger)"; `exact-debt-ledger`
+job 108023341469) fail on the same root cause, and it is neither a guard
+regression nor a policy gap: the browser-guard identities in
+`tools/browser/guard.py` are authorized in the trusted base's
+`quality/ratchet-authorizations.json` (all three stable keys, #855
+justifications) but under-banked in `quality/vulture-baseline.json`, whose
+`path::message` identities are line-independent, so the four `unused
+attribute 'websocket_governed'` writes (guard.py:188/210/332/349) and two
+`unused method 'denied_events'` definitions (guard.py:195/339) match only
+the two-and-one banked rows and the `Counter` remainder reads as new debt.
+
+- Repair: `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*' --update` (the CI scan arguments plus the
+  script's own ledger-rewrite path); the diff is exactly three appended
+  duplicate identity strings (2× `websocket_governed` under
+  `dataclass-declarative-field`, 1× `denied_events` under
+  `core-public-api-surface`), no other rule moves. Re-run without
+  `--update`: rc=0, the remaining stderr is the informational
+  trusted-baseline delta whose every line carries the `authorized:`
+  prefix, and the "Candidate ledger bookkeeping still needs attention"
+  block is gone. This is the ledger amendment the CI-repair round
+  authorizes; no source file was touched to silence the analyzer.
+- Full quality-job replay past the previously-skipped steps: the twelve
+  `scripts/check-*.py` gates (reachability, credential-authority,
+  wiring-reads, agent-store-writes, contract-markers,
+  convergence-matrix, reachability-dispositions, security-inventory,
+  image-inventory, backlog-consistency, execution-lifecycles,
+  model-egress) all rc=0; `mypy --strict packages/maistro-core/src` →
+  629 files clean; pyright 18 errors against the 21 baseline (ratchet
+  passes); all four `interrogate` floors pass; `check-ac-state.py`
+  (report) rc=0; `pytest formal/ --timeout=120` → 421 passed, 1 skipped;
+  `ruff check .` and `ruff format --check .` clean.
+- Browser acceptance replay at this head with playwright + Chromium in
+  the venv: core browser suites → 142 passed; all four real-Chromium
+  proofs PASSED by name (public-302-to-private denies before the private
+  server sees a request; allowed redirect followed inside the handler;
+  model-directed loopback denied before connect; only the configured
+  origin readable); Conductor `test_browser_network_policy.py` +
+  `test_engine_service.py` → 38 passed; ordinary-HTTP seam
+  `test_ssrf.py` + `test_outbound_policy.py` + `test_transport.py` +
+  `test_http_pool.py` → 187 passed; `tests/test_check_direct_effects.py`
+  included → 207 passed in the combined run.
+- `check-ac-state.py --run-tests --ratchet` rc=1 re-derived as
+  inherited with a fresh live base run at the current merge-base: a
+  detached `03c8ba83a` worktree under the identical venv measures the
+  identical `design coverage: 33.0728% over 156 taken decisions (93 at
+  zero)` below the same 33.9095 floor — zero candidate delta, so the
+  sub-floor value is an environment property of the AC measurement (the
+  prior rounds' base runs recorded 33.0281 over 155 against the older
+  base `60862b6c5`; today's numbers moved because the merge point moved
+  and Chromium was installed), not something this branch's tree changed.
+  No `--bank`: the repair brief authorizes only the vulture ledger
+  amendment. The branch diff contains no migration files, so the
+  quality job's `alembic upgrade head` step is unaffected by it.
+- `check-ratchet-provenance.py` and `check-shipped-surface-truth.py`
+  (the other two exact-debt-ledger steps) rc=0 at this head.
