@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Security
 
+- **Tool-result governance is pinned across real Agent strategies (#1202,
+  partial).** A regression suite drives the shipped ReAct, Artificer and
+  BuildersLearning strategies through `Agent.handle` with a real Warden and
+  Sentinel (BuildersLearning delegates to ReAct on that path). It checks that
+  a PII-bearing or prompt-injection tool result reaches the model as the same
+  redacted text or Sentinel refusal, and never raw, for each of them.
+  Direct and PlanExecute are not covered yet. Test-only; no runtime behavior
+  changes.
+
 - **Hive schedules are bound to their owner's Workspace (#1201, partial).**
   `POST /v1/schedules` now requires a `workspace_id` selection (optional
   `project_id`), admits it through the same canonical Workspace/Project
@@ -278,8 +287,24 @@ or placeholder-only section.
   owner in the history. `GoalService` reads with Workspace VIEW and writes
   with ADMINISTER, and treats a Goal in a foreign Workspace exactly like a
   missing one; it composes over `goal_store` and `WorkspaceAuthorizer`.
-  `create_container()` wires `goal_store` on the Project store's backend. Still open: binding a Run to
-  `goal_id`/`goal_revision` at admission.
+  `create_container()` wires `goal_store` on the Project store's backend.
+  Still open: binding a Run to `goal_id`/`goal_revision` at admission.
+
+- **Workspace Attention read: `GET /v1/workspaces/{workspace_id}/attention`
+  (#1049, partial).** Computes the Workspace's Attention items on every read
+  from canonical sources — human-paused NodeRuns in the durable run store and
+  failed Runs behind the scoped Run-inspection door — and persists nothing.
+  Each item carries its source id, class, rank, a human-readable reason, the
+  evidence behind it, and the existing HITL answer route. A persisted HITL
+  deadline within 24 hours makes an item `time_sensitive`; every other human
+  pause and failed Run is `queued`, and age alone never raises a class. A
+  pause whose deadline has already passed stays `queued` without an answer
+  link, since the store refuses late answers. A summary (`counts_by_class`,
+  `highest_class`, `rising`, `truncated`) lets a UI show what is waiting
+  without inventing importance. Items are capped at 200 after ordering. Failed
+  Runs come from the bounded Recent Runs projection window. Non-members get the same 404 a missing
+  Workspace gets; reading requires `dags.write`, the scope `/v1/hitl/pending`
+  takes, since items carry the paused node's question.
 
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
@@ -463,6 +488,28 @@ or placeholder-only section.
 
 ### Changed
 
+- **Hive and maistro-server now share one durable Workspace owner (#37,
+  ADR-092326-97c4).** The shipped `docker-compose.yml` gives `hive-conductor`
+  the same `DATABASE_URL`/`DB_*` as `maistro-engine` and starts it only after
+  PostgreSQL and the (self-migrating) engine are healthy, so Hive's embedded
+  Container uses the `canonical_workspaces` tables maistro-server serves. On
+  that durable path Hive's `stores.workspaces` mirror is imported once
+  (journal-idempotent, never resurrecting a Workspace or membership deleted or
+  revoked canonically) and is no longer written or replayed; a configured
+  database whose Container failed to start now fails Workspace authorization
+  closed instead of reviving the mirror. The no-database dev path is unchanged.
+  Hive's whole embedded Container (Runs, sessions, learnings, schedules) now
+  uses that shared database too, not only its Workspace store.
+  Hive's `/health/ready` now counts that store: with a database configured
+  and no Container it answers 503 with `ready: false`, so Compose stops
+  reporting an instance whose Workspace API only fails. The Hive image now
+  ships the agent roster (`agents/` → `/app/backend/agents`), which the
+  embedded bridge requires to start at all. `create_container()` no longer
+  refuses to build when the `identity` extra is missing (the Python 3.14 Hive
+  image cannot install it): it leaves the identity lifecycle stores unwired,
+  and the Container's identity methods still raise the ImportError that names
+  the extra.
+
 - **A declared correlation field must have a production producer (#63).** A
   fitness test scans production code (`packages/*/src` and the hive, turing
   and canvas backends) for `bind_execution_context(...)` keywords. It fails
@@ -543,6 +590,21 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Reactor persists through the Conductor's one State writer and
+  configured state database (#1135, #1178).** `maistro.reactor.Reactor` now takes the Foundation's `State`
+  (`state=`): `state_submit` goes through `State.submit`, `state_query`
+  through `State.open_reader`, and `reactor_log` is created by the
+  `reactor_log_001` State migration. Hive's Foundation passes its State
+  (built from `CONDUCTOR_STATE_DB`) instead of hard-coding
+  `data_dir/state.db`, so the Reactor no longer opens a second raw SQLite
+  writer or writes to a different file than the rest of the Conductor.
+  `state_db_path=` is deprecated and refused alongside `state=`.
+  `state_submit` is now fire-and-forget like `State.submit` (a failing write
+  is logged by the writer, not raised into the handler, and is visible to
+  `state_query` once committed). Deployments that set a non-default
+  `CONDUCTOR_STATE_DB` previously left `reactor_log` rows in a separate
+  `data_dir/state.db`; those rows are not migrated.
+
 - **develop CI is green again: MinIO without registry auth, and the
   credential-authority self-checks judge against a real base.** MinIO archived
   its community server, so `quay.io/minio/minio` now answers 401 and dl.min.io
@@ -569,6 +631,21 @@ or placeholder-only section.
   never the raw exception message, and the traceback goes to the server log.
   The shipped-surface ledger now lists the socket as `canonical` instead of
   `unresolved`.
+
+- **A Graph Run stranded RUNNING by a crash between its continuation write and
+  the canonical mirror is now settled or resumed (#1151).** The persistence
+  reconcile that starts every due and queued tick now repairs a RUNNING Run
+  whose continuation is already COMPLETED, FAILED or (non-HITL) CANCELLED. A
+  COMPLETED Run carries the completed NodeRun's result; a FAILED or CANCELLED
+  one states that its original error was not persisted rather than passing a
+  NodeRun's error off as the Run's cause. It acts only once the Run's spine has
+  been quiet and the same terminal continuation version has been observed for
+  60 seconds, so a walker between its two writes is never mistaken for a
+  crash. A continuation still QUEUED under a RUNNING Run whose resume claim has
+  elapsed (judged at the tick's own evaluation time) is rewritten to mirror
+  RUNNING, so the due tick resumes it; a live claim is left alone. Canonical RUNNING Runs are
+  swept with a cursor that advances across ticks, so a stranded Run behind any
+  number of other RUNNING Runs is reached in a bounded number of ticks.
 
 - **Hive now ticks the Container's canonical recovery seams (#62).**
   `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
@@ -1009,7 +1086,10 @@ or placeholder-only section.
   `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
   fails arrives as the cancellation, never as a bare store error the
   pre-dispatch fallback would answer again; a dispatch that caught the
-  deadline and answered late still arrives as `RuntimeDeadlineExceeded`; an
+  deadline and answered late still arrives as `RuntimeDeadlineExceeded`, even
+  when its TIMED_OUT record then fails (the deadline is found on either link
+  of the exception chain, and the store error is chained as its explicit
+  cause so it shows in the traceback); an
   answer behind a Run already fenced CANCELLED ends the turn cancelled rather
   than being handed back; and a failure before the dispatch still propagates
   unchanged without reaching the model.
