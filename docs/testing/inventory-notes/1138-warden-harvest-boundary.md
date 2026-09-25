@@ -124,3 +124,25 @@ re-executed at this head: disabling the runner guard fails
 `test_hostile_resumed_patch_is_refused_before_apply` +
 `test_unavailable_warden_refuses_resumed_patch`; both files restored from byte
 backups, `git status --porcelain` empty and both files `cmp`-identical to HEAD.
+
+Revalidated at `36d212a6c` (independent verifier round; diff vs `04d33d5c3`
+is docs-only). Re-inspected all three originally reported bypass seams at this
+head: `runner.py` wraps every injected `llm_call` in `guarded_llm_call`
+(scan precedes benchmark scoring), `local_loop.py:1665-1677` scans resumed
+patches via `scan_sync` before `_git_apply` (reached from `run():2569`), and
+`harvest_boundary.py` fails closed on both `warden_unavailable` and
+`audit_unavailable`. Seam sweep re-derived: autorun proposer `scan_sync`
+precedes the direct `httpx.post`; `free_router` sends a literal ping plus
+operator-controlled alias registration only; `quota_burn` only GETs model
+listings; `swebench_pro` scans candidate-controlled genome fields before the
+system prompt reaches the model. Executed: full `packages/maistro-rsi`
+suite (756 passed), 58 conductor containment tests, ruff check/format
+repo-wide clean, reachability + dispositions + provenance gates OK.
+Mutation evidence independently re-executed at this head with byte backups:
+runner-guard removal fails 2 adversarial tests, resume-admission removal
+fails 2 adversarial tests; both files restored byte-identical
+(`git status --porcelain` empty) and post-restore tests pass (26 passed).
+Known residual (unchanged, non-blocking): a bare `WardenHarvestBoundary()`
+with no sink (tests and the `swebench_pro` proxy path) records audit via
+logging only; every production composition root wires `JsonlAuditSink` or
+an event-store sink, and the missing-sink path still fails closed on scan.
