@@ -198,3 +198,44 @@ nodes; `test_react.py` assertions strengthened in place):
   `036_audit_log_org_scope`, `alembic branches` → empty, exactly one file each
   for 033/034 — the prior duplicate-revision conformance failure stays
   resolved.
+
+## Fifth validation pass (435c24cca + format repair, driver checks absent)
+
+The 435c24cca job manifest listed `checks: []` and shipped no `check-*.log`
+files, so every acceptance check below was re-executed locally.
+
+- **Finding (fixed here):** `ruff format --check .` failed at 435c24cca —
+  `test_sentinel_policy.py` (introduced by that commit) had two overlong lines
+  in `test_post_call_real_warden_windows_semantic_fallback_input`. This was the
+  only file in the tree flagged. Repair is `ruff format` on that file only
+  (pure whitespace/line-splitting, 7+/2−); no assertion changed.
+- Product-path window/timeout nodes:
+  `test_sentinel_policy.py` → **44 passed** at the repaired head, including
+  `test_post_call_real_warden_times_out_pathological_regex`,
+  `::test_post_call_real_warden_windows_pathological_reject_input`,
+  `::test_post_call_real_warden_windows_large_fallback_input`,
+  `::test_post_call_real_warden_windows_semantic_fallback_input`,
+  `::test_post_call_real_warden_windows_large_fallback_semantic_input`,
+  `::test_post_call_real_warden_preserves_padded_semantic_signal`,
+  `::test_post_call_real_warden_preserves_capture_ordering`, and
+  `::test_post_call_pii_match_value_is_masked_on_product_path`.
+- Engine equivalence: `uv run python -c "import re2"` OK and
+  `_regex.re2_available() is True` under `uv run`, so
+  `test_warden_regex_equivalence.py -rs` → **7 passed, 0 skipped**
+  (accelerated corpus is live, not vacuous).
+- `test_warden_pii_bypass.py` → 9 passed; strategies (`test_react.py` +
+  `test_direct.py`) → 28 passed; `formal/models/test_warden_semantic.py
+  --hypothesis-seed=0` → 12 passed.
+- Full `pytest packages/maistro-core/tests/security` → 1270 passed / 19
+  skipped / 1 failed. The single red is the documented pre-existing
+  `test_install_is_idempotent` pytest-9 red: re-verified out of scope at this
+  head — `test_log_redaction.py`, its `captured` fixture, `log_redaction.py`,
+  `uv.lock`, and both `pyproject.toml`s are byte-identical between develop base
+  `03c8ba83a`, merge base `60862b6c5`, and HEAD, so the failure exists
+  identically at base (pytest 9.1.1 in both trees).
+- Battery: `ruff check .` clean; `ruff format --check .` → 2533 files clean
+  (after the repair above); `check-security-inventory.py` exit 0 (65 paths,
+  23 rows); `check-vulture-baseline.py` exit 0 (the removed
+  `semantic_tool_poisoning_scan` stays pruned from both ledgers);
+  `check-doc-links.py` exit 0 (1161 files, 0 broken); `check-suite-inventory.py`
+  exit 0; `alembic heads` → single head `036_audit_log_org_scope`.

@@ -507,7 +507,10 @@ async def test_post_call_real_warden_windows_semantic_fallback_input(monkeypatch
         monkeypatch.setattr(
             semantic,
             name,
-            [regex_module.compile_pattern(p.pattern, re.IGNORECASE) for p in getattr(semantic, name)],
+            [
+                regex_module.compile_pattern(p.pattern, re.IGNORECASE)
+                for p in getattr(semantic, name)
+            ],
         )
 
     lengths: list[int] = []
@@ -520,7 +523,9 @@ async def test_post_call_real_warden_windows_semantic_fallback_input(monkeypatch
         return wrapper
 
     monkeypatch.setattr(
-        detector, "semantic_tool_poisoning_signals", record_window(semantic.semantic_tool_poisoning_signals)
+        detector,
+        "semantic_tool_poisoning_signals",
+        record_window(semantic.semantic_tool_poisoning_signals),
     )
     monkeypatch.setattr(
         detector,
