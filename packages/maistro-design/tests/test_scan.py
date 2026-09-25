@@ -324,6 +324,23 @@ class TestScanVisualArtifactMarkupVocabulary:
 
     @pytest.mark.contract("boundary")
     @pytest.mark.scope("unit")
+    def test_self_closing_tags_dispatch_through_the_same_start_tag_checks(self):
+        """Self-closing `<tag ... />` must hit the same allowlist walk as `<tag ...>`.
+
+        The scanner deliberately does not override HTMLParser.handle_startendtag:
+        the stdlib default already delegates to handle_starttag with the same
+        attribute list. A future re-override that dropped (or duplicated) the
+        tag/attribute checks would let hostile self-closing markup past the
+        #817 pre-scan, so both reasons here pin the single dispatch point.
+        """
+        from maistro_design.scan import scan_visual_artifact_markup
+
+        reasons = scan_visual_artifact_markup('<img src="data:text/html,x" onerror="pwn()"/>')
+        assert "event-handler" in reasons
+        assert "dangerous-url" in reasons
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
     def test_trust_prescan_uses_the_same_vocabulary_as_the_renderer(self):
         """#817: flagged renderer-hostile content is SKULL/banish, never upgrade."""
         from maistro_design.trust import InMemoryTrustReviewQueue, scan_and_record

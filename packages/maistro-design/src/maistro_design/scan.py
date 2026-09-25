@@ -290,11 +290,10 @@ class _VisualArtifactScanner(HTMLParser):
         self.reasons: set[str] = set()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._check_tag(tag)
-        for attr, value in attrs:
-            self._check_attribute(tag, attr, value)
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # Sole dispatch point: HTMLParser calls this from feed() for both
+        # `<tag ...>` and self-closing `<tag ... />` (the stdlib default
+        # handle_startendtag delegates here verbatim), so one hook sees every
+        # start tag exactly once with the same attribute list.
         self._check_tag(tag)
         for attr, value in attrs:
             self._check_attribute(tag, attr, value)
@@ -365,6 +364,14 @@ class _VisualArtifactScanner(HTMLParser):
             # Check value for network/code patterns
             if _NETWORK_OR_CODE_CSS.search(val):
                 self.reasons.add("css-network-or-code")
+
+
+# Vulture input only, mirroring packages/maistro-core/src/_vulture_whitelist.py:
+# HTMLParser dispatches handle_starttag from feed() inside the stdlib, which the
+# `packages/*/src` scan cannot see, so the parser-protocol method would be
+# misread as dead code. The scan CI gate runs on the same sources as vulture,
+# which makes this in-module reference the reviewed record of that dispatch.
+_VULTURE_WHITELIST = (_VisualArtifactScanner.handle_starttag,)
 
 
 def scan_visual_artifact_markup(content: str) -> tuple[str, ...]:
