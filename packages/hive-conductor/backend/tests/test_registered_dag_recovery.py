@@ -26,7 +26,11 @@ from services.dag_agents import get_registry, run_registered_dag
 
 from maistro.capabilities.effect_context import new_in_memory_effect_context
 from maistro.graph import Graph, Node
-from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
+from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
+    HitlAuthorization,
+    InMemoryGraphContinuationStore,
+)
 from maistro.graph.nodes import BaseNode, NodeContext, register_node
 from maistro.graph.nodes.base import (
     PAUSE_AWAITING_HUMAN_ANSWER,
@@ -119,6 +123,25 @@ def _descriptor(dag_id: str, first_kind: str, *, nodes: int = 2) -> dict[str, An
             {"from_node": source, "to_node": target} for source, target in itertools.pairwise(ids)
         ],
     }
+
+
+async def _allow_rdr_membership(_principal: str, _workspace_id: str) -> bool:
+    return True
+
+
+def _rdr_authorization() -> HitlAuthorization:
+    """Typed effective-principal evidence for the test operator.
+
+    HITL settlement is object-authorized at the canonical boundary: every
+    answer must carry :class:`HitlAuthorization`, and the store re-checks
+    Workspace membership inside the mutation. This fixture is the direct
+    store-level equivalent of what the routes build from a verified session.
+    """
+    return HitlAuthorization(
+        effective_principal="rdr-operator",
+        workspace_ids=frozenset({"ws-rdr"}),
+        membership_check=_allow_rdr_membership,
+    )
 
 
 _DAGS = {
@@ -330,7 +353,9 @@ async def test_an_answered_scheduled_hitl_pause_resumes_on_the_next_tick(
     assert await _status(container, asking.run_id) is RunStatus.PAUSED
     (paused_node,) = asking.graph_state.active_node_ids
 
-    await container.graph_run_store.submit_hitl_answer(asking.run_id, paused_node, {"ok": True})
+    await container.graph_run_store.submit_hitl_answer(
+        asking.run_id, paused_node, {"ok": True}, authorization=_rdr_authorization()
+    )
     assert await _status(container, asking.run_id) is RunStatus.QUEUED
 
     assert await recover_stranded_registered_dag_runs() == 1

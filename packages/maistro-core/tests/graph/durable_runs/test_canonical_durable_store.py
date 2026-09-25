@@ -35,6 +35,8 @@ from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
 from maistro.runs.store import RunIntegrityError
 
+from .._canonical_helpers import hitl_authorization
+
 
 class _StepIn(BaseModel):
     pass
@@ -180,7 +182,9 @@ async def _pause_answer_resume(
     assert paused.status is RunStatus.PAUSED
     assert [item.run_id for item in await store.list_by_status(RunStatus.PAUSED)] == [paused.run_id]
 
-    answered = await store.submit_hitl_answer(paused.run_id, "step", {"answer": "yes"})
+    answered = await store.submit_hitl_answer(
+        paused.run_id, "step", {"answer": "yes"}, authorization=hitl_authorization()
+    )
     assert answered.status is RunStatus.QUEUED
     assert answered.hitl_answers["step"]["answer"] == "yes"
 
@@ -220,7 +224,9 @@ async def test_an_unknown_run_is_absent_rather_than_an_empty_record() -> None:
 
     assert await store.get("no-such-run") is None
     with pytest.raises(KeyError):
-        await store.submit_hitl_answer("no-such-run", "step", {"answer": "x"})
+        await store.submit_hitl_answer(
+            "no-such-run", "step", {"answer": "x"}, authorization=hitl_authorization()
+        )
 
 
 async def _reconcile_spine() -> tuple[
