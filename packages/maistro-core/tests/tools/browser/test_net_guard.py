@@ -33,7 +33,9 @@ from maistro.tools.browser.guard import (
     ABORT_REASON,
     ALLOWED,
     DENIED,
+    MAX_REDIRECT_HOPS,
     ROUTE_PATTERN,
+    WEBSOCKET_BLOCK_REASON,
     BrowserNetworkGuard,
     SyncBrowserNetworkGuard,
 )
@@ -433,6 +435,18 @@ class _SyncRoute:
         self.action = ("abort", reason)
 
 
+class _SyncWebSocketRoute:
+    def __init__(self, url: str, *, close_raises: bool = False) -> None:
+        self.url = url
+        self.close_raises = close_raises
+        self.closed = False
+
+    def close(self) -> None:
+        if self.close_raises:
+            raise RuntimeError("socket already gone")
+        self.closed = True
+
+
 class _SyncContext:
     def __init__(self, responses: dict[str, _SyncResponse] | None = None) -> None:
         self.responses = responses or {}
@@ -450,6 +464,12 @@ class _SyncContext:
         for _pattern, handler in self.handlers:
             handler(route, route.request)  # type: ignore[operator]
         return route
+
+    def open_web_socket(self, url: str, *, close_raises: bool = False) -> _SyncWebSocketRoute:
+        ws = _SyncWebSocketRoute(url, close_raises=close_raises)
+        for _pattern, handler in self.ws_handlers:
+            handler(ws)  # type: ignore[operator]
+        return ws
 
 
 def test_sync_guard_denies_model_directed_private_navigation() -> None:
@@ -475,3 +495,157 @@ def test_sync_guard_denies_private_redirect_before_the_second_fetch() -> None:
     assert route.action == ("abort", ABORT_REASON)
     assert route.network_urls == [_PUBLIC]
     assert [event.decision for event in guard.events] == [ALLOWED, DENIED]
+
+
+# --- the sync seam answers the allow path, not only the deny path -----------
+
+
+def test_sync_guard_allows_a_public_navigation_and_fulfills_it() -> None:
+    """A permitted destination reaches the wire and the response is served."""
+    guard = SyncBrowserNetworkGuard()
+    context = _SyncContext()
+    guard.attach(context)
+
+    route = context.navigate(_PUBLIC)
+
+    assert route.action == ("continue",)
+    assert route.network_urls == [_PUBLIC]
+    assert [e.decision for e in guard.events] == [ALLOWED]
+    assert guard.policy.origins == frozenset()
+
+
+def test_sync_guard_honors_a_configured_origin_without_resolving_it() -> None:
+    """The narrow host-owned allowance works on the sync seam exactly as on
+    the async one: the configured origin is exempt from validation and every
+    other origin — other ports included — is not."""
+    configure_outbound_policy("http://10.20.30.40:8443")
+    guard = SyncBrowserNetworkGuard()
+    context = _SyncContext()
+    guard.attach(context)
+
+    allowed = context.navigate("http://10.20.30.40:8443/wiki/page")
+    other_port = context.navigate("http://10.20.30.40:8444/wiki/page")
+
+    assert allowed.action == ("continue",)
+    assert other_port.action == ("abort", ABORT_REASON)
+    assert [e.decision for e in guard.events] == [ALLOWED, DENIED]
+
+
+def test_sync_guard_follows_an_allowed_redirect_inside_the_handler() -> None:
+    """A public-to-public redirect is fetched hop by hop by the guard."""
+    context = _SyncContext({_PUBLIC: _SyncResponse(302, location="https://example.org/landed")})
+    guard = SyncBrowserNetworkGuard()
+    guard.attach(context)
+
+    route = context.navigate(_PUBLIC)
+
+    assert route.action == ("continue",)
+    assert route.network_urls == [_PUBLIC, "https://example.org/landed"]
+    assert [e.decision for e in guard.events] == [ALLOWED, ALLOWED]
+
+
+def test_sync_guard_bounds_an_endless_redirect_chain() -> None:
+    """An endless chain cannot loop the sync handler either: the bound is
+    hit, the request is aborted, and the overrun is recorded as an error."""
+    context = _SyncContext({_PUBLIC: _SyncResponse(302, location=_PUBLIC)})
+    guard = SyncBrowserNetworkGuard()
+    guard.attach(context)
+
+    route = context.navigate(_PUBLIC)
+
+    assert route.action == ("abort", ABORT_REASON)
+    decisions = [e.decision for e in guard.events]
+    assert decisions == [ALLOWED] * (MAX_REDIRECT_HOPS + 1) + [DENIED]
+    assert guard.events[-1].reason == "error"
+
+
+def test_sync_guard_denies_websocket_upgrades_to_any_destination() -> None:
+    """Sync WebSocket upgrades are refused outright, public or private."""
+    guard = SyncBrowserNetworkGuard()
+    context = _SyncContext()
+    guard.attach(context)
+
+    private = context.open_web_socket("ws://127.0.0.1:5678/socket")
+    public = context.open_web_socket("wss://example.com/live")
+
+    assert private.closed is True
+    assert public.closed is True
+    ws_events = [e for e in guard.events if e.resource_type == "websocket"]
+    assert len(ws_events) == 2
+    assert all(e.decision == DENIED for e in ws_events)
+    assert all(e.reason == WEBSOCKET_BLOCK_REASON for e in ws_events)
+
+
+def test_sync_websocket_close_failure_still_records_the_denial() -> None:
+    """A socket that is already gone must not lose the audit record."""
+    guard = SyncBrowserNetworkGuard()
+    context = _SyncContext()
+    guard.attach(context)
+
+    ws = _SyncWebSocketRoute("ws://10.0.0.9/live", close_raises=True)
+    guard.handle_web_socket(ws)
+
+    assert ws.closed is False
+    assert guard.events[-1].decision == DENIED
+    assert guard.events[-1].reason == WEBSOCKET_BLOCK_REASON
+
+
+def test_sync_attach_without_web_socket_support_still_governs_requests() -> None:
+    """No pretending a stand-in without `route_web_socket` governs them —
+    but the request route must still be attached and enforcing."""
+
+    class _NoWebSocketSyncContext(_SyncContext):
+        route_web_socket = None  # type: ignore[assignment]
+
+    guard = SyncBrowserNetworkGuard()
+    context = _NoWebSocketSyncContext()
+    guard.attach(context)
+
+    assert guard.websocket_governed is False
+    assert [p for p, _h in context.handlers] == [ROUTE_PATTERN]
+
+    route = context.navigate("http://127.0.0.1:8080/after-attach")
+    assert route.action == ("abort", ABORT_REASON)
+
+
+def test_sync_route_without_fetch_or_fulfill_fails_closed() -> None:
+    """A route API drift must not silently restore an ungoverned continue."""
+    from types import SimpleNamespace
+
+    guard = SyncBrowserNetworkGuard()
+    answered: list[str] = []
+    route = SimpleNamespace(request=FakePwRequest(_PUBLIC), fetch=None, fulfill=None)
+
+    def _abort(reason: str) -> None:
+        answered.append(reason)
+
+    route.abort = _abort  # type: ignore[method-assign]
+    guard.handle_route(route)  # type: ignore[arg-type]
+
+    assert answered == [ABORT_REASON]
+    assert guard.events[-1].decision == DENIED
+    assert guard.events[-1].reason == "error"
+
+
+def test_sync_abort_delivery_failure_still_records_the_refusal() -> None:
+    """An abort the transport cannot deliver is logged, not raised — and the
+    refusal is recorded either way."""
+    from types import SimpleNamespace
+
+    guard = SyncBrowserNetworkGuard()
+    attempts: list[str] = []
+
+    def _explode(reason: str) -> None:
+        attempts.append(reason)
+        raise RuntimeError("pipe closed")
+
+    route = SimpleNamespace(
+        request=FakePwRequest("http://127.0.0.1:9/undeliverable"),
+        fetch=lambda **_k: None,
+        fulfill=lambda **_k: None,
+        abort=_explode,
+    )
+    guard.handle_route(route)  # type: ignore[arg-type]
+
+    assert attempts == [ABORT_REASON]
+    assert guard.events[-1].decision == DENIED

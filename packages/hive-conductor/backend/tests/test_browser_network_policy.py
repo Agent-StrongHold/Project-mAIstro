@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 import types
 from typing import Any
+
+from maistro.security.outbound import configure_outbound_policy, reset_outbound_policy
 
 
 class _Request:
@@ -195,3 +198,65 @@ def test_hyperlight_hill_climb_guards_each_sync_browser_context() -> None:
     )
     assert source.count("ctx = guarded_context(browser)") == 2
     assert "browser.new_page(" not in source
+
+
+async def test_screenshot_without_playwright_is_a_refusal_not_an_unguarded_run(
+    monkeypatch: Any,
+) -> None:
+    """No Playwright runtime means no browser session at all: the caller gets
+    an empty screenshot, never an unguarded navigation fallback."""
+    from services import ui_auto_climb
+
+    monkeypatch.setitem(sys.modules, "playwright", None)
+
+    assert await ui_auto_climb.screenshot("http://127.0.0.1:5173") == ""
+
+
+async def test_a_launch_failure_leaves_nothing_to_clean_up(monkeypatch: Any) -> None:
+    """Chromium refusing to start takes the finally block down its no-context,
+    no-browser path and still reports the failure as an empty screenshot."""
+    from services import ui_auto_climb
+
+    playwright = _install_playwright(monkeypatch)
+
+    async def _no_launch(**_kwargs: Any) -> _Browser:
+        raise RuntimeError("chromium binary missing")
+
+    monkeypatch.setattr(playwright.chromium, "launch", _no_launch)
+
+    assert await ui_auto_climb.screenshot("http://127.0.0.1:5173") == ""
+    assert playwright.stopped is True
+
+
+async def test_screenshot_success_survives_cleanup_failures_and_stays_guarded(
+    monkeypatch: Any,
+) -> None:
+    """The allowed navigation returns its base64 payload even when the
+    context and browser both fail to close, and the session it used was a
+    guarded one (route attached, service workers blocked)."""
+    from services import ui_auto_climb
+
+    playwright = _install_playwright(monkeypatch)
+
+    async def _raising_close(self: _Context) -> None:
+        raise RuntimeError("context reaped early")
+
+    async def _raising_browser_close(self: _Browser) -> None:
+        raise RuntimeError("browser reaped early")
+
+    monkeypatch.setattr(_Context, "close", _raising_close)
+    monkeypatch.setattr(_Browser, "close", _raising_browser_close)
+
+    configure_outbound_policy("http://127.0.0.1:5173")
+    try:
+        result = await ui_auto_climb.screenshot("http://127.0.0.1:5173", "/chat")
+    finally:
+        reset_outbound_policy()
+
+    assert result == base64.b64encode(b"png").decode()
+    assert playwright.browser is not None and playwright.browser.context is not None
+    context = playwright.browser.context
+    assert context.service_workers == "block"
+    assert context.routes, "the guard must be attached before navigation"
+    assert context.page.last_route is not None
+    assert context.page.last_route.action == ("fulfill",)
