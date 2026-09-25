@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Security
 
+- **Tool-result governance is pinned across real Agent strategies (#1202,
+  partial).** A regression suite drives the shipped ReAct, Artificer and
+  BuildersLearning strategies through `Agent.handle` with a real Warden and
+  Sentinel (BuildersLearning delegates to ReAct on that path). It checks that
+  a PII-bearing or prompt-injection tool result reaches the model as the same
+  redacted text or Sentinel refusal, and never raw, for each of them.
+  Direct and PlanExecute are not covered yet. Test-only; no runtime behavior
+  changes.
+
 - **Hive schedules are bound to their owner's Workspace (#1201, partial).**
   `POST /v1/schedules` now requires a `workspace_id` selection (optional
   `project_id`), admits it through the same canonical Workspace/Project
@@ -260,6 +269,22 @@ or placeholder-only section.
   explicitly does not claim.
 
 ### Added
+
+- **Workspace Attention read: `GET /v1/workspaces/{workspace_id}/attention`
+  (#1049, partial).** Computes the Workspace's Attention items on every read
+  from canonical sources — human-paused NodeRuns in the durable run store and
+  failed Runs behind the scoped Run-inspection door — and persists nothing.
+  Each item carries its source id, class, rank, a human-readable reason, the
+  evidence behind it, and the existing HITL answer route. A persisted HITL
+  deadline within 24 hours makes an item `time_sensitive`; every other human
+  pause and failed Run is `queued`, and age alone never raises a class. A
+  pause whose deadline has already passed stays `queued` without an answer
+  link, since the store refuses late answers. A summary (`counts_by_class`,
+  `highest_class`, `rising`, `truncated`) lets a UI show what is waiting
+  without inventing importance. Items are capped at 200 after ordering. Failed
+  Runs come from the bounded Recent Runs projection window. Non-members get the same 404 a missing
+  Workspace gets; reading requires `dags.write`, the scope `/v1/hitl/pending`
+  takes, since items carry the paused node's question.
 
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
@@ -586,6 +611,21 @@ or placeholder-only section.
   never the raw exception message, and the traceback goes to the server log.
   The shipped-surface ledger now lists the socket as `canonical` instead of
   `unresolved`.
+
+- **A Graph Run stranded RUNNING by a crash between its continuation write and
+  the canonical mirror is now settled or resumed (#1151).** The persistence
+  reconcile that starts every due and queued tick now repairs a RUNNING Run
+  whose continuation is already COMPLETED, FAILED or (non-HITL) CANCELLED. A
+  COMPLETED Run carries the completed NodeRun's result; a FAILED or CANCELLED
+  one states that its original error was not persisted rather than passing a
+  NodeRun's error off as the Run's cause. It acts only once the Run's spine has
+  been quiet and the same terminal continuation version has been observed for
+  60 seconds, so a walker between its two writes is never mistaken for a
+  crash. A continuation still QUEUED under a RUNNING Run whose resume claim has
+  elapsed (judged at the tick's own evaluation time) is rewritten to mirror
+  RUNNING, so the due tick resumes it; a live claim is left alone. Canonical RUNNING Runs are
+  swept with a cursor that advances across ticks, so a stranded Run behind any
+  number of other RUNNING Runs is reached in a bounded number of ticks.
 
 - **Hive now ticks the Container's canonical recovery seams (#62).**
   `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
@@ -1026,7 +1066,10 @@ or placeholder-only section.
   `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
   fails arrives as the cancellation, never as a bare store error the
   pre-dispatch fallback would answer again; a dispatch that caught the
-  deadline and answered late still arrives as `RuntimeDeadlineExceeded`; an
+  deadline and answered late still arrives as `RuntimeDeadlineExceeded`, even
+  when its TIMED_OUT record then fails (the deadline is found on either link
+  of the exception chain, and the store error is chained as its explicit
+  cause so it shows in the traceback); an
   answer behind a Run already fenced CANCELLED ends the turn cancelled rather
   than being handed back; and a failure before the dispatch still propagates
   unchanged without reaching the model.
