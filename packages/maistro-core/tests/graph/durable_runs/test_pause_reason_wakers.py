@@ -90,7 +90,7 @@ from maistro.graph.nodes.base import (
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun, Run, RunStatus
 
-from .._canonical_helpers import durable_record, graph_from_dag, run_at_status
+from .._canonical_helpers import durable_record, graph_from_dag, hitl_authorization, run_at_status
 
 pytestmark = [pytest.mark.contract("behavioral")]
 
@@ -982,7 +982,9 @@ async def test_hitl_expiry_settles_exactly_its_declared_statuses() -> None:
     for status in _STATUSES:
         await store.create(_hitl_record(status, run_id=f"hitl-{status.value}"))
 
-    settled = await expire_hitl_pauses(store, now=_DEADLINE + timedelta(minutes=1))
+    settled = await expire_hitl_pauses(
+        store, now=_DEADLINE + timedelta(minutes=1), authorization=hitl_authorization()
+    )
 
     assert {r.run_id for r in settled} == {
         f"hitl-{s.value}" for s in VIA_ACCEPTS["expire_hitl_pauses"]
