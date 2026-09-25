@@ -163,3 +163,51 @@ probed with curl over TCP, not TestClient:
   Alembic script directory resolves 43 revisions to the single head
   `036_audit_log_org_scope` with `033_project_membership_unique_per_principal.py`
   present (CI `KeyError: '033'` again not reproducible in-tree).
+
+## Re-verification record (repair lane, head 501be3a92)
+
+Fifth independent pass; all evidence re-executed fresh at the current head.
+Environment note for future passes: `maistro-server` is a workspace member
+but not a root dependency, so a fresh worktree venv needs
+`uv run --package maistro-server python -m uvicorn maistro_server.main:app …`
+(plus `ROUTER_API_KEY`, `API_KEYS=["principal:secret"]`,
+`REQUIRE_WEBHOOK_SECRETS=false`) to boot the full app for live probing.
+
+- Focused pytest: **103 + 49 = 152 passed** — core `test_metrics.py`,
+  `resilience/test_slo.py`, `security/test_resource_policy.py`; server
+  `test_metrics.py`, `test_health.py`, `test_rate_limit.py`,
+  `test_resource_policy_health.py`, `test_strike_tracker_health.py`.
+- Live TCP probe of the full `maistro_server.main.app` (uvicorn on
+  127.0.0.1, urllib client): **16/16 checks passed**. Anonymous `/metrics`
+  → 401 generic body, zero Prometheus text; user-format Bearer → 401;
+  valid service key without `admin:metrics` → 403 with no metric
+  families; `X-Forwarded-*` headers do not authenticate; scoped scraper →
+  200 exposition via both `Authorization: Bearer sk-svc-…` and
+  `X-Service-Key`, payload contains no key material. `/health` and
+  `/health/live` return exactly `{"status":"ok"}`; `/health/ready` (deps
+  down) returns exactly `{"status":"not_ready"}` with no dependency
+  detail; `/health/startup` returns only `{status, startup_complete}`.
+- #818 adversarial cardinality re-proven on the live server: 300 distinct
+  random attacker paths grew `http_requests_total` route-labeled series
+  from 3 to exactly 4 (the collapsed `route="unrouted"` fallback); no
+  24-char attacker path appears in any label value; scraped label keys
+  are only `dependency`, `method`, `outcome`, `route`, `status` — no
+  tenant/user/prompt/model/credential/path keys.
+- Registry family backstop re-proven first-hand:
+  `MetricsRegistry(max_series_per_metric=10, max_metrics_per_registry=50)`
+  minted 200 dynamic families → 50 stored, `metrics_registry_overflow_total
+  == 150.0`.
+- Canonical mypy all six package srcs: **Success, 712 source files**.
+  `ruff check packages/ docs/ scripts/ tests/` clean; `ruff format --check .`
+  formats 2527 files — the sole reformat candidate remains the untracked
+  prior-run scratch probe `repro_metrics.py` (preserved salvage, untracked,
+  invisible to CI).
+- Gates: `scripts/check-doc-links.py`, `check-security-inventory.py`,
+  `check-suite-inventory.py`, `check-adr-index.py` all exit 0.
+- Alembic resolution re-proven programmatically via `ScriptDirectory`:
+  43 revisions resolve, single head `036_audit_log_org_scope`, linear chain
+  `001 → … → 033 → … → 040 → 036_audit_log_org_scope`; the branch diff vs
+  base `03c8ba83` contains no alembic-version changes, so the required-CI
+  `KeyError: '033'` is an origin/infra failure outside this lane's surfaces,
+  as are the `durable-events` and coincurve/Python-3.14 gate failures
+  (no lane-authored code touches those paths).
