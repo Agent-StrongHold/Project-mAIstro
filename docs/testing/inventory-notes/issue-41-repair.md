@@ -89,8 +89,38 @@ Addressed the recorded findings against this head:
   The durable admission-idempotency contract it owns is implemented and proven
   here.
 
-Fresh evidence at this round's head (dedicated pgvector/pg18 container, port
-55491): `test_migration_chain.py` 15 passed (live);
+## Round 5 (verification pass, head 50fa8824d, no code changed)
+
+All four prior findings re-validated against the current head and confirmed
+resolved. Finding 1 (EXPECTED_TABLES vs live catalog): fresh pgvector/pg18
+container (port 5591), `tests/migrations/test_migration_chain.py` 15 passed.
+Finding 2 (demo backend idempotency): `engine.py` passes
+`container.task_idempotency` into `LocalTaskBackend(idempotency_store=...)`;
+`test_engine_service.py` proves the store reaches `TaskQueue`; backend suite
+2716 passed / 6 skipped. Finding 3 (038 reconcile validation): full shape
+check (compiled types, nullability, zero default, PK reconstruction, expiry
+index) with loud foreign-shape refusal, all four scenarios proven live.
+Finding 4 (#1176 open): the issue is now CLOSED on GitHub (verified read-only;
+no mutation performed).
+
+Full battery at this head: `ruff check .`, `ruff format --check .` (2545
+files), six-package mypy (713 files) clean; with the chain applied and
+`MAISTRO_TEST_PG_DSN` set, `packages/maistro-core/tests/runs` + `tests/tasks`
+1397 passed / 3 skipped; `packages/maistro-server/tests` 375 passed;
+`packages/hive-conductor/backend/tests` 2716 passed / 6 skipped;
+`tests/integration` (chat→graph E2E) 5 passed. Gates exit 0:
+`check-vulture-baseline.py` (1415 reviewed = 1415 banked, unclassified 0),
+`check-durable-table-inventory.py`, `check-wiring-reads.py`,
+`check-execution-lifecycles.py`, `check-suite-inventory.py`, and
+`check-m1-convergence-freeze.py --base 55c5ad892e68bdd015db00ebe034ea6818a8c1f5`.
+Environment note (not a tree defect): an untracked root `.env` with a
+non-JSON `API_KEYS` breaks any suite/gate that imports `Settings` when run
+from the repo root (dotenv parse error); validation was run with that file
+briefly set aside (restored byte-identical) or from a dotenv-free CWD.
+
+Round 4 record (superseded in place, kept for provenance): fresh evidence at
+that round's head (dedicated pgvector/pg18 container, port 55491):
+`test_migration_chain.py` 15 passed (live);
 `test_idempotency_durable.py` 27 passed (`MAISTRO_TEST_PG_DSN`, chain at head);
 core tasks 333 passed / 1 skipped; `test_tasks_idempotency.py` 13 passed;
 `maistro-core/tests/integration` 5 passed (chat→graph E2E);
