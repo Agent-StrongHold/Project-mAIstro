@@ -296,3 +296,34 @@ homoglyph, dot-separated, and hyphen-joined overrides all `blocked=True`;
 cross-turn direct and mid-word joins blocked at the completing turn;
 trusted-labelled override context does not contaminate a benign scan;
 200×10KB context collapses to 2 items / 16384 bytes.
+
+## Repair round 3 — develop sync to `origin/develop@26707ac4c` and re-verification
+
+The lane's develop sync conflict (in-progress merge of `84402748f` with one
+unresolved conflict in `agents/base.py`) was resolved in place and committed,
+then `origin/develop@26707ac4c` (manual-fire admission spine, #1315) was
+merged on top. Resolution: the #1158 ordering (session history injected
+*before* `_prepare_user_input`, exactly once) is kept; develop's #1445
+learning-provenance `user_id` threading (`_build_context`, `_extract_rca`,
+`_extract_learnings`) is adopted after the trust gate. No test delta.
+
+Re-validated at the merge head, independent of prior claims:
+
+- `ruff check .` / `ruff format --check .` clean; canonical mypy over all six
+  `packages/*/src` trees clean (715 files).
+- pytest: security 1288 passed (the `test_log_redaction.py::
+  test_install_is_idempotent` failure is pre-existing — that test and its
+  subject module are byte-identical to the develop base and it also fails in
+  the canonical clone at an unrelated head); agents+capabilities+conduit
+  1110 passed; turing 190 passed; memory+persistence 866 passed;
+  scheduling+runs 1123 passed.
+- Gates: check-security-inventory, check-suite-inventory,
+  check-convergence-matrix, check-cross-package-imports all OK.
+- Fresh adversarial probes against production `Warden`: plain, spaced-letter,
+  dot-separated, leetspeak, spaced-leetspeak, zero-width, and
+  homoglyph+zero-width overrides all blocked; a cross-turn payload whose
+  first turn scans clean is refused at the completing turn (direct and
+  benign-first mid-word joins); ordinary prose and numeric-text controls stay
+  clean; trusted-labelled override context does not contaminate a benign
+  scan; 200×10KB untrusted context collapses at scan time to 2 items /
+  exactly 16384 analysis bytes.
