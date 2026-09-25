@@ -63,7 +63,61 @@ the incoming side, which ships its own inventory notes (`1058-*`,
   script's *default* args scan test trees the ledger was never banked for and
   fails en masse; the ledger oracle is the merge base, which only advances to
   the incoming tip once the merge is committed.
-- Also green at this head: `check-ac-state`, `check-doc-links`,
+## Later develop sync: merge of `03c8ba83a` (resolved in place)
+
+A follow-up `git merge origin/develop` (bringing `aa406b692` shared-Postgres
+workspace identity, `0b0ca1a17` attention projection, `95945b000` reactor
+canonical-state persistence, `f60938a80` terminal/QUEUED Graph reconciliation,
+`e02b64a4c` trust-pipeline equivalence, `657ef93fe`, `d015b6534`,
+`92d0d49d8`, `03c8ba83a`) was found mid-conflict with one unresolved path.
+Resolution (commit `eb977b041`):
+
+- `packages/maistro-core/src/maistro/graph/durable_runs/canonical_store.py` —
+  single conflict on the reconciliation entry points. HEAD carried this lane's
+  `reconcile_run()` wrapper (the attempt executor's crash-recovery path,
+  `attempt_executor.py:187-192`); the incoming side re-signatured
+  `_reconcile_run(run_id, moment)` and added a `now` parameter to
+  `reconcile_persistence` (required by the merged `recovery.py` tick, which
+  passes `now=` so time-dependent repairs agree with the due scan). Resolved
+  as the semantic union: `reconcile_run` kept, its call adapted to
+  `self._reconcile_run(run_id, datetime.now(UTC))`; `reconcile_persistence`
+  taken from the incoming signature. The HITL repair hooks
+  (`_reconcile_answered_hitl`, `_reconcile_terminal_hitl`) auto-merged ahead
+  of the incoming `_reconcile_terminal_graph`/`_reconcile_unstarted_claim`
+  and needed no manual merging.
+
+Re-validation at the merge commit (full battery, Postgres leg live via a
+fresh `pgvector/pgvector:pg18` container at `127.0.0.1:55601`,
+`alembic upgrade head` applied):
+
+- `packages/maistro-core/tests/graph/durable_runs` — 590 passed, **0
+  skipped** (SQLite + Postgres legs; includes `test_hitl_settlement.py`,
+  `test_cross_store_crash_reconciliation.py`, `test_hitl_door`-adjacent
+  coverage).
+- `packages/maistro-core/tests/runs` + `persistence` + `scheduling` with PG
+  DSN — 1949 passed, 3 skipped.
+- Rest of `packages/maistro-core/tests` (agents, workspaces, reactor,
+  container wiring) — 7212 passed, 1 xfailed.
+- `packages/maistro-canvas/tests` — 397 passed; full
+  `packages/hive-conductor/backend/tests` — 2718 passed, 6 skipped.
+- `uv run ruff check .` / `ruff format --check .` — clean; `mypy --strict
+  packages/maistro-core/src` — clean (629 files; needed
+  `uv sync --extra bootstrap` locally so `maistro_bootstrap` imports resolve,
+  as CI's `--all-extras` does).
+- `scripts/check-vulture-baseline.py` with the CI invocation — PASS (1414
+  findings, `unclassified: 0`, `never_allowlist: 0`, ledger banked for base
+  `03c8ba83a711`).
+- 24 `scripts/check-*` gates green, incl. `check-execution-lifecycles`,
+  `check-m1-convergence-freeze --base 2c8022fe81c4` (the lane base),
+  `check-adr-index`, `check-convergence-matrix`,
+  `check-durable-table-inventory`, `check-compose-secrets`.
+- Diff coverage: the only line this round added to a measured root
+  (`canonical_store.py:269`, the adapted `reconcile_run` body) is covered by
+  `test_attempt_executor.py` (durable_runs suite at 92.1% lines for the
+  file under branch measurement). Full CI multi-package `coverage.xml`
+  reproduction remains outside this lane, as before.
+
+Also green at this head: `check-ac-state`, `check-doc-links`,
   `check-wiring-reads`, `check-radon-baseline`, `check-ratchet-provenance`,
   `check-shipped-surface-truth`, `check-convergence-matrix`,
   `check-execution-lifecycles`, `check-agent-store-writes`,
