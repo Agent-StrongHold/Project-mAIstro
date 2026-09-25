@@ -32,7 +32,7 @@ async def test_exec_runs_command_in_microvm():
 
     assert (code, out) == (0, "hello from vm")
     spec = launcher.specs[-1]
-    assert spec.command == "echo hi"
+    assert spec.command == ("echo", "hi")
     assert spec.config.network == "none"  # default-deny
     assert spec.config.memory_mib == 256 and spec.config.vcpus == 1
     assert spec.timeout == 30  # min(call, config.timeout=300)
@@ -48,12 +48,20 @@ async def test_call_timeout_capped_by_config():
     assert launcher.specs[-1].timeout == 10  # capped by the config ceiling
 
 
-async def test_dangerous_command_is_blocked_before_launch():
+async def test_shell_command_contract_is_blocked_before_launch():
     launcher = _FakeLauncher()
     sandbox = MicroVMSandbox(launcher, workspace="/tmp/maistro-workspace/t3")
+    code, out = await sandbox.exec("echo hi; rm -rf /")
+    assert code == 126 and "shell operators" in out
+    assert launcher.specs == []  # never reached the VMM
+
+
+async def test_dangerous_command_is_blocked_before_launch():
+    launcher = _FakeLauncher()
+    sandbox = MicroVMSandbox(launcher, workspace="/tmp/maistro-workspace/t3-danger")
     code, out = await sandbox.exec("rm -rf /")
     assert code == 126 and "blocked" in out
-    assert launcher.specs == []  # never reached the VMM
+    assert launcher.specs == []
 
 
 async def test_plain_async_function_is_a_valid_launcher():

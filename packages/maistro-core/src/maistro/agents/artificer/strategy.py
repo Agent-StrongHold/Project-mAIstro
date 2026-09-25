@@ -8,6 +8,8 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from maistro.agents.strategies.react import _find_tool_schema
+from maistro.agents.tool_authority import ToolSchemaError
 from maistro.types.agent import ReasoningResult
 
 if TYPE_CHECKING:
@@ -118,6 +120,7 @@ class ArtificerStrategy:
             for tc in tool_calls:
                 tool_args, result_str = await self._handle_tool_call(
                     tc,
+                    tools=tools,
                     tool_executor=tool_executor,
                     trace=trace,
                     status=status,
@@ -240,6 +243,7 @@ class ArtificerStrategy:
         self,
         tc: dict[str, Any],
         *,
+        tools: list[dict[str, Any]] | None = None,
         tool_executor: Any,
         trace: Trace | None,
         status: Any,
@@ -252,9 +256,20 @@ class ArtificerStrategy:
         fn = tc.get("function", {})
         tool_name = fn.get("name", "")
         raw_args = fn.get("arguments", "{}")
-        tool_args = self._parse_tool_args(tool_name, raw_args)
+        tool_args, error_result = self._parse_tool_args(tool_name, raw_args)
+        if error_result is not None:
+            return tool_args, error_result
         if self._args_exceed_limit(tool_name, raw_args):
             return tool_args, f"Error: tool arguments exceed {_MAX_ARG_BYTES} byte limit"
+
+        # A strategy is not an authority.  In particular, ``tools=None`` means
+        # that no governed exposure was supplied; it must never turn into an
+        # empty schema that permits an arbitrary callback invocation.
+        schema: dict[str, Any] | None = None
+        try:
+            schema = _find_tool_schema(tools, tool_name)
+        except ToolSchemaError as exc:
+            return tool_args, f"Error: {exc}"
 
         tool_args, tool_result, tool_blocked = await self._authorize_tool_call(
             tool_name,
@@ -262,6 +277,7 @@ class ArtificerStrategy:
             sentinel=sentinel,
             auth=auth,
             security_pipeline=security_pipeline,
+            schema=schema,
         )
         await status(f"Running {tool_name}...")
         logger.info("Tool call: %s(%s)", tool_name, list(tool_args.keys()))
@@ -282,13 +298,17 @@ class ArtificerStrategy:
         return tool_args, result_str
 
     @staticmethod
-    def _parse_tool_args(tool_name: str, raw_args: str) -> dict[str, Any]:
+    def _parse_tool_args(tool_name: str, raw_args: str) -> tuple[dict[str, Any], str | None]:
+        """Parse model tool arguments, denying anything without a JSON object contract."""
         try:
             parsed = json.loads(raw_args)
         except json.JSONDecodeError:
             logger.warning("Malformed tool arguments for %s: %s", tool_name, raw_args[:200])
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
+            return {}, f"Error: malformed arguments for tool '{tool_name}'"
+        if not isinstance(parsed, dict):
+            logger.warning("Tool %s arguments are not a JSON object", tool_name)
+            return {}, f"Error: malformed arguments for tool '{tool_name}'"
+        return parsed, None
 
     @staticmethod
     def _args_exceed_limit(tool_name: str, raw_args: str) -> bool:
@@ -306,10 +326,11 @@ class ArtificerStrategy:
         sentinel: Any,
         auth: Any,
         security_pipeline: bool,
+        schema: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], Any, bool]:
         if security_pipeline or sentinel is None or auth is None:
             return tool_args, None, False
-        sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
+        sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, schema or {})
         if not sentinel_verdict.allowed:
             return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
         if sentinel_verdict.repaired_data:

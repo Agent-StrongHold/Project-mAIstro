@@ -30,6 +30,7 @@ GIT_CLONE_TIMEOUT = 300
 # hand straight to git as a flag — is rejected before the subprocess runs.
 _ALLOWED_CLONE_SCHEMES = ("https://", "git://", "ssh://")
 _BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 # In-memory dedup for PR creation, keyed by a content hash rather than a
 # model-supplied key — retries with identical args return the original
@@ -53,6 +54,18 @@ def _blocked_workspace_result(workspace: str) -> dict[str, Any]:
         error_code="blocked_workspace",
         suggested_action="Use a workspace under /tmp/maistro-workspace or /repos.",
     )
+
+
+def _validate_ref(value: str, field: str) -> str | None:
+    if value.startswith("-") or not _BRANCH_NAME_RE.fullmatch(value):
+        return f"invalid {field}"
+    return None
+
+
+def _validate_repo(repo: str) -> str | None:
+    if not _REPO_RE.fullmatch(repo) or repo.startswith("-"):
+        return "invalid repository"
+    return None
 
 
 def _pr_cache_key(repo: str, branch: str, title: str, body: str, base: str) -> str:
@@ -170,6 +183,8 @@ async def git_clone(
 @mcp.tool()
 async def git_branch(workspace: str, name: str, checkout: bool = True) -> dict[str, Any]:
     """Create a new branch, checking it out by default."""
+    if error := _validate_ref(name, "branch name"):
+        return fail(stdout=f"Blocked: {error}: {name}", error_code="invalid_branch_name")
     if checkout:
         return await _git(workspace, "checkout", "-b", name)
     return await _git(workspace, "branch", name)
@@ -218,7 +233,7 @@ async def git_push(
     workspace: str, branch: str | None = None, set_upstream: bool = True
 ) -> dict[str, Any]:
     """Push commits to remote."""
-    if branch is not None and (branch.startswith("-") or not _BRANCH_NAME_RE.match(branch)):
+    if branch is not None and _validate_ref(branch, "branch name"):
         return fail(
             stdout=f"Blocked: invalid branch name: {branch}",
             error_code="invalid_branch_name",
@@ -275,6 +290,12 @@ async def github_create_pr(
     instead of opening a duplicate PR. Use github_get_pr afterward to check
     review/merge status.
     """
+    if (error := _validate_repo(repo)) is not None:
+        return fail(stdout=f"Blocked: {error}: {repo}", error_code="invalid_repository")
+    if (error := _validate_ref(branch, "branch name")) is not None:
+        return fail(stdout=f"Blocked: {error}: {branch}", error_code="invalid_branch_name")
+    if (error := _validate_ref(base, "base ref")) is not None:
+        return fail(stdout=f"Blocked: {error}: {base}", error_code="invalid_base_ref")
     key = _pr_cache_key(repo, branch, title, body, base)
     cached = _pr_cache.get(key)
     if cached is not None and time.monotonic() - cached["cached_at"] < _PR_CACHE_TTL_S:
@@ -301,6 +322,8 @@ async def github_get_pr(repo: str, number: int) -> dict[str, Any]:
     Use github_list_issues instead for issues — issues and PRs are
     different objects even when a repo shares their numbering.
     """
+    if (error := _validate_repo(repo)) is not None:
+        return fail(stdout=f"Blocked: {error}: {repo}", error_code="invalid_repository")
     result = await get_pr(repo, number)
     if "error" in result:
         return fail(
@@ -320,6 +343,8 @@ async def github_list_issues(
 
     Use github_get_pr instead for pull requests.
     """
+    if (error := _validate_repo(repo)) is not None:
+        return fail(stdout=f"Blocked: {error}: {repo}", error_code="invalid_repository")
     issues = await list_issues(repo, limit)
     summary = f"{len(issues)} open issue(s)" if issues else "No open issues"
     return ok(stdout=summary, issues=issues, issue_count=len(issues))

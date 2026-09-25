@@ -340,7 +340,7 @@ class TestBuildToolSchema:
 
     def test_unknown_tool_gets_generic_schema(self) -> None:
         schema = _build_tool_schema("mystery_tool")
-        assert schema["function"]["description"] == "Run mystery_tool"
+        assert schema["function"]["description"] == "Unconfigured tool schema: mystery_tool"
         assert schema["function"]["parameters"] == {"type": "object", "properties": {}}
 
     def test_registry_takes_precedence(self) -> None:
