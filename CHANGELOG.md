@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Security
 
+- **Tool-result governance is pinned across real Agent strategies (#1202,
+  partial).** A regression suite drives the shipped ReAct, Artificer and
+  BuildersLearning strategies through `Agent.handle` with a real Warden and
+  Sentinel (BuildersLearning delegates to ReAct on that path). It checks that
+  a PII-bearing or prompt-injection tool result reaches the model as the same
+  redacted text or Sentinel refusal, and never raw, for each of them.
+  Direct and PlanExecute are not covered yet. Test-only; no runtime behavior
+  changes.
+
 - **Hive schedules are bound to their owner's Workspace (#1201, partial).**
   `POST /v1/schedules` now requires a `workspace_id` selection (optional
   `project_id`), admits it through the same canonical Workspace/Project
@@ -261,6 +270,22 @@ or placeholder-only section.
 
 ### Added
 
+- **Workspace Attention read: `GET /v1/workspaces/{workspace_id}/attention`
+  (#1049, partial).** Computes the Workspace's Attention items on every read
+  from canonical sources — human-paused NodeRuns in the durable run store and
+  failed Runs behind the scoped Run-inspection door — and persists nothing.
+  Each item carries its source id, class, rank, a human-readable reason, the
+  evidence behind it, and the existing HITL answer route. A persisted HITL
+  deadline within 24 hours makes an item `time_sensitive`; every other human
+  pause and failed Run is `queued`, and age alone never raises a class. A
+  pause whose deadline has already passed stays `queued` without an answer
+  link, since the store refuses late answers. A summary (`counts_by_class`,
+  `highest_class`, `rising`, `truncated`) lets a UI show what is waiting
+  without inventing importance. Items are capped at 200 after ordering. Failed
+  Runs come from the bounded Recent Runs projection window. Non-members get the same 404 a missing
+  Workspace gets; reading requires `dags.write`, the scope `/v1/hitl/pending`
+  takes, since items carry the paused node's question.
+
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
   `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap
@@ -290,8 +315,8 @@ or placeholder-only section.
   entry, an entry names a table nothing creates, a deletion path does not
   import, or `security_violations` or `usage_events` is dropped. A table with
   no production-driven purge is recorded as `undecided` against #325. This
-  includes `security_violations`, `usage_events`, `task_idempotency`,
-  `security_rate_limits` and PostgreSQL `sessions`. Nothing is written down
+  includes `security_violations`, `usage_events`, `task_idempotency` and
+  `security_rate_limits`. Nothing is written down
   as retained forever unless someone decided it.
 - **Stable Workspace Agent identity and per-user default Workspace
   ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
@@ -443,6 +468,22 @@ or placeholder-only section.
 
 ### Changed
 
+- **Hive conversation-only chat and voice turns run as canonical chat Runs
+  (#1037).**
+  `/v1/chat/complete`, `/v1/chat/stream` and `/v1/voice/intent` now admit
+  every model-reaching turn as a Run over the one-node chat Graph in the
+  turn's Workspace (the named one when the caller can see it, else the
+  caller's default Workspace), call the conversation-only model from inside
+  that Run's Attempt stamped with the Workspace Agent, and close the Run
+  through the Container (FAILED on a model error). Responses carry `run_id`
+  and the Workspace Agent id under `agent` additively (`run_id` on the
+  stream's `done` event for `/stream`). A turn that cannot be admitted is
+  refused with `503` and `Retry-After` before the model is called -- which
+  includes a Hive running on the stub engine with no maistro-core runtime
+  (`MAISTRO_ROUTER_API_KEY` unset or the bridge failed to start): chat and
+  voice now need the runtime. Tools stay disabled; session ids are recorded
+  as Run provenance only.
+
 - **Hive and maistro-server now share one durable Workspace owner (#37,
   ADR-092326-97c4).** The shipped `docker-compose.yml` gives `hive-conductor`
   the same `DATABASE_URL`/`DB_*` as `maistro-engine` and starts it only after
@@ -464,6 +505,17 @@ or placeholder-only section.
   image cannot install it): it leaves the identity lifecycle stores unwired,
   and the Container's identity methods still raise the ImportError that names
   the extra.
+
+- **`sessions` and `session_turns` are recorded as TTL-purged on both
+  backends (#325).**
+  The retention inventory said PostgreSQL session rows accumulate, but
+  `PgSessionStore.append_messages` (the store the PostgreSQL container wires)
+  already deletes expired messages and turn markers inside each writing
+  append transaction, as `SqliteSessionStore` does after commit. The purge is
+  driven by appends, so expired rows persist until the next one. Both entries are now
+  `ttl_purge` with the append path as their deletion path, backed by a SQLite
+  and PostgreSQL-gated regression that ages real rows past the TTL and proves
+  the next append removes them from both tables.
 
 - **A declared correlation field must have a production producer (#63).** A
   fitness test scans production code (`packages/*/src` and the hive, turing
@@ -563,6 +615,29 @@ or placeholder-only section.
   wired, the #1165 fail-closed Sentinel never approves a shape, so a Run
   containing `agent.synth_dag` now fails rather than completing with a
   refusal inside its output.
+- **Canvas job leases are fenced per claim, and stalled or cancelled jobs
+  settle correctly (#735, follow-up to PR #1535).** A worker's completion write
+  and lease heartbeat are now fenced on the claim's attempt number, not just
+  the worker id. Before, every instance defaulted to `canvas-worker-1`, so a
+  stale call could overwrite a newer claim of the same job. Completion and
+  reaper writes are now a compare-and-set on `running`, so a user
+  cancellation that lands mid-call or during failure reconciliation is no
+  longer overwritten as `done`/`failed`. A fenced write against another org's
+  job reports "not found", not "lease lost", so it no longer reveals that the
+  job exists. Lease expiry is reported as
+  `Generation failed: canvas worker lease expired before the job completed.`
+  instead of a generic provider error. A claimed job is bounded by the new
+  `max_execution_seconds` (default 1800, on `CanvasJobRunner`,
+  `build_canvas_runtime` and `build_canvas_router`, and as
+  `execution_timeout_s` on `CanvasExecutor`). The canonical runtime enforces
+  it as a retryable timeout, not a user cancellation, and lease renewal stops
+  once it passes. The shutdown handler no longer waits indefinitely on a
+  runner task that ignores cancellation. Admission recovery and
+  `claim_next_pending` enforce `max_attempts`, so a job whose worker keeps
+  dying before its first stage can no longer run past its retry limit. An
+  over-budget `pending` receipt is reaped and failed through canonical
+  reconciliation. Recovery writes are a compare-and-set on the state they
+  read, and a job's attempt counter never moves backwards.
 
 - **The Reactor persists through the Conductor's one State writer and
   configured state database (#1135, #1178).** `maistro.reactor.Reactor` now takes the Foundation's `State`
@@ -605,6 +680,21 @@ or placeholder-only section.
   never the raw exception message, and the traceback goes to the server log.
   The shipped-surface ledger now lists the socket as `canonical` instead of
   `unresolved`.
+
+- **A Graph Run stranded RUNNING by a crash between its continuation write and
+  the canonical mirror is now settled or resumed (#1151).** The persistence
+  reconcile that starts every due and queued tick now repairs a RUNNING Run
+  whose continuation is already COMPLETED, FAILED or (non-HITL) CANCELLED. A
+  COMPLETED Run carries the completed NodeRun's result; a FAILED or CANCELLED
+  one states that its original error was not persisted rather than passing a
+  NodeRun's error off as the Run's cause. It acts only once the Run's spine has
+  been quiet and the same terminal continuation version has been observed for
+  60 seconds, so a walker between its two writes is never mistaken for a
+  crash. A continuation still QUEUED under a RUNNING Run whose resume claim has
+  elapsed (judged at the tick's own evaluation time) is rewritten to mirror
+  RUNNING, so the due tick resumes it; a live claim is left alone. Canonical RUNNING Runs are
+  swept with a cursor that advances across ticks, so a stranded Run behind any
+  number of other RUNNING Runs is reached in a bounded number of ticks.
 
 - **Hive now ticks the Container's canonical recovery seams (#62).**
   `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
@@ -1045,7 +1135,10 @@ or placeholder-only section.
   `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
   fails arrives as the cancellation, never as a bare store error the
   pre-dispatch fallback would answer again; a dispatch that caught the
-  deadline and answered late still arrives as `RuntimeDeadlineExceeded`; an
+  deadline and answered late still arrives as `RuntimeDeadlineExceeded`, even
+  when its TIMED_OUT record then fails (the deadline is found on either link
+  of the exception chain, and the store error is chained as its explicit
+  cause so it shows in the traceback); an
   answer behind a Run already fenced CANCELLED ends the turn cancelled rather
   than being handed back; and a failure before the dispatch still propagates
   unchanged without reaching the model.
