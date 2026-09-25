@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +125
+  tests/: +0
 ---
 
 # #751 develop-sync merge resolution (auto-751)
@@ -9,7 +9,9 @@ Resolves the preserved `origin/develop` (b906cc577) merge conflicts in this work
 #1464 lane shipped a second, independent compliance stack (`scripts/check-compliance.py`,
 `quality/compliance-registry.json`, `.github/workflows/compliance-evidence.yml`); this lane owns
 the evidence-model stack (`scripts/check_compliance.py`, `docs/compliance/claims.json`). The
-resolution keeps both stacks intact and independently validated.
+resolution keeps both stacks intact and independently validated. Net test count is unchanged:
+the 97-test develop suite is already delta-recorded by the #362 notes and the 28-test #751 suite
+by the auto-751 notes; this change only moves the latter to a new path.
 
 ## Conflict resolutions
 
@@ -38,7 +40,8 @@ resolution keeps both stacks intact and independently validated.
 - `uv run python scripts/check-compliance.py` -> "compliance registry and COMPLIANCE.md are
   valid" (exit 0).
 - `uv run pytest tests/test_check_compliance.py tests/test_check_compliance_claims.py -q` ->
-  125 passed (97 develop + 28 this lane).
+  125 passed (97 develop + 28 this lane). `scripts/check-suite-inventory.py --suite tests/`
+  -> OK (expected 3741, collected 3741).
 - `uv run ruff check` on both test modules and both validators -> clean.
 - Prior recorded evidence in this directory citing
   `tests/test_check_compliance.py::test_*` now refers to
