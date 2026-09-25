@@ -57,3 +57,36 @@ Independent re-run of the full battery on a fresh empty pgvector:pg18 database
   the branch diff — confirmed pre-existing, still out of #72 scope.
 - No production code and no tests changed by this re-verification; no
   inventory delta.
+
+## CI-repair round at head 63268c635 (vulture exact-debt ledger)
+
+The only red gate left at this head was `scripts/check-vulture-baseline.py`
+(exit 1): five recorded identities no longer produce findings in the combined
+`packages/*/src` scan, and the script requires fixed debt to be pruned.
+Verified each before amending `quality/vulture-baseline.json` (5 lines removed,
+no other edits):
+
+- `maistro/quota/sqlite_usage_log.py::unused method 'restore'` — genuinely
+  fixed by #72: `Container._wire_usage_log` now calls `persistence.restore()`
+  (container.py) and the module docstring shows the production call shape.
+- four `maistro_rsi` `...::unused method 'restore'` entries — still unused
+  package-locally (standalone `uv run vulture packages/maistro-rsi/src` still
+  reports them), but eliminated from the combined scan because vulture is
+  name-based per scan and the container's `.restore()` reference now whitelists
+  every method of that name. Pruned per the ledger's per-scan-identity
+  contract; if that reference ever disappears the ratchet re-flags them.
+
+Full independent battery re-run against a fresh pgvector:pg18 (`verify72`,
+chain 001 -> 039 applied, single head `039`, both `MAISTRO_TEST_DATABASE_URL`
+and `MAISTRO_TEST_PG_DSN` exported, `DATABASE_URL` unset):
+persistence+quota+elevation+container-wiring 760 passed / 0 skipped; security
+1271 passed (PG strike legs ran, no skips; the sole failure is the documented
+pre-existing pytest-9 `test_log_redaction.py::test_install_is_idempotent`, whose
+test and module are byte-identical to origin/develop per empty `git diff`);
+tests/migrations 93 passed live; maistro-server 365 passed; ruff check/format,
+mypy (711 files), check-vulture-baseline, check-doc-links,
+check-suite-inventory, check-deployment-claims, check-compose-secrets all
+exit 0. The prior run's deterministic-check logs were absent from the job
+directory; every claim above was re-executed in this round. Scratch analysis
+file from an earlier run preserved at the job directory as
+`incoming-ISSUES_SUMMARY.md`. No test additions: no inventory delta.
