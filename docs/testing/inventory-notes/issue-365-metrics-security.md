@@ -375,3 +375,77 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+## Independent verification record (verifier lane, head 7cf1052ad)
+
+Seventh independent run — fresh evidence at the develop-merge head
+`7cf1052ad` (merge of develop base `55c5ad892` into auto-365). The prior
+"uncommitted work" block is resolved as a no-op: the worktree arrived clean at
+that exact SHA and the develop sync had already been committed as the merge.
+
+Locally re-executed (not restated):
+
+- `uv sync --locked --extra dev`; `uv run ruff check .`: pass.
+- Focused pytest (core metrics/SLO/resource-policy; server metrics/health/
+  rate-limit/resource-policy-health/strike-tracker-health): **152 passed**.
+- Canonical mypy (six package srcs): **Success, 713 source files**.
+- Alembic: `ScriptDirectory` single head `036_audit_log_org_scope`, 43
+  revisions walked, `033` resolvable — the historical `KeyError: '033'`
+  CI finding is dead at this head.
+- Live full-app probes against `maistro_server.main.app` (TestClient,
+  rate limiter raised via `ALLOW_UNSAFE_RESOURCE_OVERRIDES` in the probe
+  only): anonymous `/metrics` → 401, zero metric families; arbitrary user
+  Bearer → 401; wrong-scope service key → 403, no families; forwarded
+  headers do not bypass; scoped scraper → 200 with 22 families via both
+  `X-Service-Key` and Bearer, also through proxy headers;
+  `/health` and `/health/live` → exactly `{"status": "ok"}`;
+  `/health/ready` → 503 `{"status": "not_ready"}` with no dependency detail;
+  `/health/startup` → only `{status, startup_complete}`.
+- #818 cardinality on the full app: 300 distinct attacker paths added
+  exactly **1** new `http_requests_total` series (`route="unrouted"`); no
+  attacker URL appears in any label; distinct routes remain bounded
+  (`/metrics`, `unrouted`).
+- Registry family backstop re-proven: `MetricsRegistry(max_metrics_per_registry=50)`
+  minted 200 dynamic families, rendered 50, counted refusals in the
+  unlabeled `metrics_registry_overflow_total`.
+- Live label-key audit of the rendered registry: `dependency`, `le`,
+  `method`, `outcome`, `route`, `status` only — no user/tenant/prompt/
+  model/credential/path keys.
+
+### NEW findings this round: two lane-caused required-CI reds at this head
+
+Live `statusCheckRollup` for PR #1457 at `7cf1052ad`: the previously red
+findings (PostgreSQL coverage KeyError '033', integration-scope
+durable-events, Gate C coincurve/Python 3.14) are now **green** — those were
+stale. Still red, both reproduced locally and both caused by this branch:
+
+1. `formal-conformance` FAILURE — generated-artifact drift. The branch adds
+   the 39th scope `Scope.METRICS_READ = "admin:metrics"`
+   (`packages/maistro-core/src/maistro/auth/_types.py:67`, absent at the
+   develop base) but never regenerated
+   `formal/generated/security-constants.json` (still `scope_count: 38`).
+   Reproduced: `uv run python -m formal.extractors.extract_security_constants`
+   rewrites exactly that one line to 39, matching CI's diff. The branch diff
+   touches no `formal/` file. Repair: regenerate + commit the artifact.
+2. CI `test` FAILURE — stale root smoke tests. Repo-level
+   `tests/api/test_health.py:21-36` still asserts `service`, `version`, and
+   `uptime_seconds` on public `/health`, all deliberately removed by the #365
+   minimization (server-side `tests/api/test_health.py` was updated, this
+   twin was missed — incomplete cutover). Reproduced locally:
+   `uv run pytest tests/api/test_health.py -q` → 2 failed
+   (`KeyError: 'service'`, `KeyError: 'uptime_seconds'`); CI log shows
+   "2 failed, 3551 passed" with exactly these two. Repair: cut the root
+   smoke tests over to the minimal liveness contract (or retire the
+   superseded assertions), keeping a real probe of the public surface.
+
+These are functional-gate defects, not cosmetics: required CI cannot go green
+until both are repaired. Functional #365 acceptance itself is fully proven
+locally (all eight acceptance criteria executed this round).
+
+### Process record
+
+- PR #1457 body ("Refs #365" only, draft) and all 14 branch commit messages
+  contain no premature closure keywords (`fixes/closes/resolves #N`: 0
+  matches).
+- The extractor drift induced as finding-1 evidence was restored to committed
+  bytes before this note was written; this note is the only tree delta.
