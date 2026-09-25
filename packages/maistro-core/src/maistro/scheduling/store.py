@@ -13,7 +13,11 @@ second place that believes it knows what is running. `recovered_occurrences`
 is the one exception to "cursor, not ledger" (#1533): a small, bounded set of
 pre-horizon claims already credited toward `runs_so_far`, kept because the
 cursor's position alone stopped being proof of that once a writer's own claim
-lookup could miss one — see `_advance`.
+lookup could miss one — see `_advance`. `pending_fires` is the other, smaller
+exception (#1120): manual-fire slots held between `reserve_fire` and
+`settle_pending_fire` — state a live firing owns for the moments its Run is
+being created, spent or returned by the settle that closes it, never a
+record of anything that ran.
 
 Two cursors live on a schedule and `record_fire` is the one writer of both
 (#1199). `last_fired_at` is the *enumeration* cursor — where the next
@@ -50,11 +54,10 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from maistro.scheduling.model import Schedule
+from maistro.scheduling.model import PendingFire, Schedule
 from maistro.sqlite_schema import serialized_schema_upgrade
 
 if TYPE_CHECKING:
@@ -63,7 +66,6 @@ if TYPE_CHECKING:
     import aiosqlite
 
 __all__ = [
-    "FireReservation",
     "InMemoryScheduleStore",
     "ScheduleExhausted",
     "ScheduleStore",
@@ -73,28 +75,6 @@ __all__ = [
 
 class ScheduleExhausted(Exception):
     """`reserve_fire` found no run left to claim under `max_runs`."""
-
-
-@dataclass(frozen=True, slots=True)
-class FireReservation:
-    """One claimed run, held between `reserve_fire` and `settle_fire` (#1119).
-
-    A manual fire claims its slot *before* the Run exists, so two callers
-    racing on the last run cannot both pass an exhaustion check they each
-    read from a stale snapshot. The reservation remembers what it changed so
-    a release is a real undo: `disabled` says this reservation is what turned
-    the schedule off (a release turns it back on), `next_due_at_before` is the
-    due cursor the disable cleared, and `stamped_at` is the `updated_at` the
-    reservation wrote, so a release restores `updated_at_before` only when no
-    other writer has touched the row since.
-    """
-
-    schedule_id: str
-    fires: int
-    disabled: bool
-    next_due_at_before: datetime | None
-    updated_at_before: datetime
-    stamped_at: datetime
 
 
 @runtime_checkable
@@ -158,71 +138,106 @@ class ScheduleStore(Protocol):
         ...
 
     async def reserve_fire(
-        self, schedule_id: str, *, fires: int = 1
-    ) -> tuple[Schedule, FireReservation] | None:
-        """Atomically claim `fires` of the remaining runs, before any Run exists.
-
-        Counts the fire and disables on exhaustion, exactly as `record_fire`
-        would, but leaves `last_fired_at` and `last_run_id` alone: the
-        reservation is a quota decision, not a cursor movement. Raises
-        `ScheduleExhausted` when `max_runs` leaves no room; returns None for
-        an unknown schedule. The check and the increment happen under the
-        same lock, so concurrent callers cannot both take the last run.
-        """
-        ...
-
-    async def settle_fire(
-        self, schedule_id: str, reservation: FireReservation, *, run_id: str | None
+        self, schedule_id: str, *, fires: int = 1, fire_id: str
     ) -> Schedule | None:
-        """Close a reservation: record the Run it produced, or give it back.
+        """Hold `fires` of the remaining runs for one manual fire, durably.
 
-        With a `run_id`, the Run exists and `last_run_id` points at it; the
-        recurrence cursor (`last_fired_at`, `next_due_at`) is not moved, so an
-        occurrence the cron already owes stays owed. With `run_id=None` the
-        reservation is released: the count comes back, and a disable this
-        reservation caused is undone.
+        Writes a `PendingFire` marker naming the fire's occurrence token —
+        under the store's write lock, with every exhaustion check counting
+        the markers already held — so two callers racing on the last run
+        cannot both take it (#1119). Unlike the in-memory reservation this
+        replaces, the claim spends nothing: `runs_so_far`, `enabled`, and
+        `next_due_at` are exactly as they were, so a process that dies between
+        this and the Run insert leaves no firing behind (#1120) — only a
+        marker recovery can release (`settle_pending_fire`) once its holder
+        is provably gone. Raises `ScheduleExhausted` when the held plus
+        counted fires leave no room; returns None for an unknown schedule.
+        Returns the row as stored, marker included.
+        """
+        ...
+
+    async def settle_pending_fire(
+        self, schedule_id: str, fire_id: str, *, run_id: str | None
+    ) -> Schedule | None:
+        """Close one pending marker: spend its slot on the Run, or give it back.
+
+        With a `run_id`, the canonical Run exists: the marker goes, and the
+        same write counts its fires, links `last_run_id`, and disables on
+        exhaustion — the durable row can say "a run was spent" only once a
+        Run exists to spend it on (#1120). With `run_id=None` the marker is
+        released: the slot returns and, when no other writer has touched the
+        row since, the release leaves no trace at all. Returns None when the
+        schedule is unknown or its marker is already gone — for a caller that
+        raced recovery, both mean "nothing left to close".
         """
         ...
 
 
-def _reserve(schedule: Schedule, *, fires: int) -> tuple[Schedule, FireReservation]:
-    """The quota claim, shared by every implementation so they cannot drift."""
-    runs_so_far = schedule.runs_so_far + fires
-    if schedule.max_runs is not None and runs_so_far > schedule.max_runs:
+def _reserve(schedule: Schedule, *, fires: int, fire_id: str) -> Schedule:
+    """The held slot, shared by every implementation so they cannot drift.
+
+    Counts every marker the row already holds before deciding room: the
+    markers are the in-flight claims, and the write lock this runs under is
+    what makes check-and-hold one step. Spends nothing — `runs_so_far`,
+    `enabled`, and the cursors stay exactly as they are (#1120).
+    """
+    pending_holds = sum(marker.fires for marker in schedule.pending_fires)
+    if (
+        schedule.max_runs is not None
+        and schedule.runs_so_far + pending_holds + fires > schedule.max_runs
+    ):
         raise ScheduleExhausted(
             f"schedule {schedule.schedule_id} has used all {schedule.max_runs} of its runs"
         )
-    disable = schedule.max_runs is not None and runs_so_far >= schedule.max_runs
     stamped_at = datetime.now(UTC)
-    update: dict[str, object] = {"runs_so_far": runs_so_far, "updated_at": stamped_at}
-    if disable:
-        update["enabled"] = False
-        update["next_due_at"] = None
-    reservation = FireReservation(
-        schedule_id=schedule.schedule_id,
+    marker = PendingFire(
+        fire_id=fire_id,
         fires=fires,
-        disabled=disable and schedule.enabled,
-        next_due_at_before=schedule.next_due_at,
-        updated_at_before=schedule.updated_at,
         stamped_at=stamped_at,
+        updated_at_before=schedule.updated_at,
     )
-    return schedule.model_copy(update=update), reservation
+    return schedule.model_copy(
+        update={
+            "pending_fires": (*schedule.pending_fires, marker),
+            "updated_at": stamped_at,
+        }
+    )
 
 
-def _settle(schedule: Schedule, reservation: FireReservation, *, run_id: str | None) -> Schedule:
-    """Confirm or release a reservation, shared by every implementation."""
+def _settle_pending(schedule: Schedule, fire_id: str, *, run_id: str | None) -> Schedule | None:
+    """Close one marker, shared by every implementation so they cannot drift.
+
+    None when the row carries no marker for `fire_id` — unknown schedule and
+    already-closed marker read the same to the caller: nothing left to close.
+    A confirmation spends the marker's fires, links the Run, and disables on
+    exhaustion in this one write; a release removes the marker and restores
+    `updated_at` when nobody else has written since, so a refused or failed
+    fire leaves the row as it found it.
+    """
+    marker = next((m for m in schedule.pending_fires if m.fire_id == fire_id), None)
+    if marker is None:
+        return None
+    remaining = tuple(m for m in schedule.pending_fires if m.fire_id != fire_id)
     if run_id is not None:
-        return schedule.model_copy(update={"last_run_id": run_id, "updated_at": datetime.now(UTC)})
-    update: dict[str, object] = {
-        "runs_so_far": max(0, schedule.runs_so_far - reservation.fires),
+        runs_so_far = schedule.runs_so_far + marker.fires
+        exhausted = schedule.max_runs is not None and runs_so_far >= schedule.max_runs
+        update: dict[str, object] = {
+            "pending_fires": remaining,
+            "runs_so_far": runs_so_far,
+            "last_run_id": run_id,
+            "updated_at": datetime.now(UTC),
+        }
+        if exhausted:
+            update["enabled"] = False
+            update["next_due_at"] = None
+        return schedule.model_copy(update=update)
+    update = {
+        "pending_fires": remaining,
         "updated_at": datetime.now(UTC),
     }
-    if reservation.disabled and not schedule.enabled:
-        update["enabled"] = True
-        update["next_due_at"] = reservation.next_due_at_before
-    if schedule.updated_at == reservation.stamped_at:
+    if schedule.updated_at == marker.stamped_at:
         # Nobody wrote in between: the release leaves no trace at all.
-        update["updated_at"] = reservation.updated_at_before
+        update["updated_at"] = marker.updated_at_before
     return schedule.model_copy(update=update)
 
 
@@ -363,6 +378,7 @@ def _merged(stored: Schedule | None, definition: Schedule) -> Schedule:
             "next_due_at": None if recurrence_changed else stored.next_due_at,
             "created_at": stored.created_at,
             "recovered_occurrences": stored.recovered_occurrences,
+            "pending_fires": stored.pending_fires,
         }
     )
 
@@ -425,24 +441,26 @@ class InMemoryScheduleStore:
         return advanced
 
     async def reserve_fire(
-        self, schedule_id: str, *, fires: int = 1
-    ) -> tuple[Schedule, FireReservation] | None:
-        schedule = self._schedules.get(schedule_id)
-        if schedule is None:
-            return None
-        # No await between the read and the write: on one event loop the
-        # check and the increment are one step, which is the whole guarantee.
-        reserved, reservation = _reserve(schedule, fires=fires)
-        self._schedules[schedule_id] = reserved
-        return reserved, reservation
-
-    async def settle_fire(
-        self, schedule_id: str, reservation: FireReservation, *, run_id: str | None
+        self, schedule_id: str, *, fires: int = 1, fire_id: str
     ) -> Schedule | None:
         schedule = self._schedules.get(schedule_id)
         if schedule is None:
             return None
-        settled = _settle(schedule, reservation, run_id=run_id)
+        # No await between the read and the write: on one event loop the
+        # check and the hold are one step, which is the whole guarantee.
+        reserved = _reserve(schedule, fires=fires, fire_id=fire_id)
+        self._schedules[schedule_id] = reserved
+        return reserved
+
+    async def settle_pending_fire(
+        self, schedule_id: str, fire_id: str, *, run_id: str | None
+    ) -> Schedule | None:
+        schedule = self._schedules.get(schedule_id)
+        if schedule is None:
+            return None
+        settled = _settle_pending(schedule, fire_id, run_id=run_id)
+        if settled is None:
+            return None
         self._schedules[schedule_id] = settled
         return settled
 
@@ -653,23 +671,25 @@ class SqliteScheduleStore:
             return advanced
 
     async def reserve_fire(
-        self, schedule_id: str, *, fires: int = 1
-    ) -> tuple[Schedule, FireReservation] | None:
-        async with self._serialized_write():
-            schedule = await self.get(schedule_id)
-            if schedule is None:
-                return None
-            reserved, reservation = _reserve(schedule, fires=fires)
-            await self._upsert(reserved)
-            return reserved, reservation
-
-    async def settle_fire(
-        self, schedule_id: str, reservation: FireReservation, *, run_id: str | None
+        self, schedule_id: str, *, fires: int = 1, fire_id: str
     ) -> Schedule | None:
         async with self._serialized_write():
             schedule = await self.get(schedule_id)
             if schedule is None:
                 return None
-            settled = _settle(schedule, reservation, run_id=run_id)
+            reserved = _reserve(schedule, fires=fires, fire_id=fire_id)
+            await self._upsert(reserved)
+            return reserved
+
+    async def settle_pending_fire(
+        self, schedule_id: str, fire_id: str, *, run_id: str | None
+    ) -> Schedule | None:
+        async with self._serialized_write():
+            schedule = await self.get(schedule_id)
+            if schedule is None:
+                return None
+            settled = _settle_pending(schedule, fire_id, run_id=run_id)
+            if settled is None:
+                return None
             await self._upsert(settled)
             return settled
