@@ -47,7 +47,8 @@ def test_source_is_sent_to_the_model() -> None:
     assert "MAGIC_TOKEN_123" in seen["text"]
 
 
-@pytest.mark.ac("#1138/warden-input")
+@pytest.mark.ac("SPEC-092526-c41d/AC-1")
+@pytest.mark.ac("SPEC-092526-c41d/AC-5")
 def test_hostile_source_is_refused_before_the_model_and_audited_with_campaign() -> None:
     """#1138: harvested module/test/spec text is untrusted. A prompt-injection
     payload in the source is refused by the canonical Warden BEFORE the model

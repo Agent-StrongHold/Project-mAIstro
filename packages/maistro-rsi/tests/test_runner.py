@@ -683,3 +683,36 @@ class TestRealBenchmarkSeamIsGuardedByTheCycle:
         await run_swebench(_genome("candidate", prompt=self.MALICIOUS), raw_llm)
 
         assert seen and all(self.MALICIOUS in str(m) for m in seen)
+
+    @pytest.mark.asyncio
+    async def test_guarded_call_keeps_usage_accounting_current(
+        self, patched_sandbox, patched_self_branch
+    ):
+        """The gateway's usage counters live on the callable the boundary wraps.
+        The guard must re-copy them after every clean call, or benchmark-side
+        token accounting silently freezes at the pre-call zeros."""
+        harness = FakeHarness(
+            {"baseline": {"proxy_swebench": 0.4}, "candidate": {"proxy_swebench": 0.6}}
+        )
+
+        async def accounting_llm(messages, *, temperature=0.2, max_tokens=2048):
+            accounting_llm.usage_input = getattr(accounting_llm, "usage_input", 0) + 11
+            accounting_llm.usage_output = getattr(accounting_llm, "usage_output", 0) + 7
+            return "scored"
+
+        cycle = RsiCycle(
+            _config(benchmarks=["proxy_swebench"]),
+            harness,
+            EloTournament(),
+            FakeScheduler(),
+            _noop_patch,
+            llm_call=accounting_llm,
+        )
+        await cycle.run(_genome("baseline"), _genome("candidate"), ["m"])
+
+        guarded = harness.received_llm_calls[0]
+        assert (guarded.usage_input, guarded.usage_output) == (0, 0)
+        await guarded([{"role": "user", "content": "ordinary prompt"}])
+        assert (guarded.usage_input, guarded.usage_output) == (11, 7)
+        await guarded([{"role": "user", "content": "another ordinary prompt"}])
+        assert (guarded.usage_input, guarded.usage_output) == (22, 14)

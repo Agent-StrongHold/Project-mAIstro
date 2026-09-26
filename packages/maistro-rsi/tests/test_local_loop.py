@@ -785,7 +785,8 @@ def test_evaluate_candidate_vetoes_deleted_test_with_real_collection(
     assert gate.detail["candidate"] == 1
 
 
-@pytest.mark.ac("#1138/warden-input")
+@pytest.mark.ac("SPEC-092526-c41d/AC-1")
+@pytest.mark.ac("SPEC-092526-c41d/AC-9")
 @pytest.mark.asyncio
 async def test_hostile_builder_system_prompt_is_refused_before_the_model(tmp_path, monkeypatch):
     """#1138: the genome's evolvable strategy prompt is candidate-controlled

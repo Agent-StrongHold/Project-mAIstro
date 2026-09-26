@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +36
+  packages/maistro-rsi/tests: +55
 ---
 # Issue #1138 Warden harvest boundary
 
@@ -389,3 +389,47 @@ provenance consumers pass. Full battery re-executed at the post-repair tree:
 `check-ratchet-provenance.py` exit 0, `check-vulture-baseline.py` exit 0.
 The boundary's admission semantics are untouched by this round: same scan
 order, same fail-closed outcomes, same audit record shape.
+
+CI-repair round 2 at `63cc8b228` (PR base `b906cc577f`, develop base
+`5fff24e1d`). Two CI failures were reproduced and resolved; one predecessor
+run timed out mid-repair and its uncommitted work (+19 node IDs across
+test_harvest_boundary/test_harvest_entry_point/test_resume_commits/
+test_runner.py: non-JSON-native serialization coverage for bytes/dataclass/
+v1-`.dict()` payloads, credential-keeping URL correlation with an invalid-URL
+placeholder, both-audit-destinations and sink-failure fail-closed refusals,
+`admit()` returning exactly the scanned serialization, sync-seam-with-async-
+sink refusal, non-sequence messages scanning, real-`git am` apply-loop
+cases (clean dry-run build, stale-patch skip, doc-regression drop), the
+`evolve --mutator-model` boundary wiring (clean + hostile mutation prompts),
+dangling-export-entry resume tolerance, and guarded-call usage accounting)
+was salvaged verbatim and validated rather than rewritten. (1) Quality gate
+`acceptance-state ratchet`: `markers_without_criterion` 4 exceeded the
+ceiling of 2 — the branch's `@pytest.mark.ac("#1138/...")` markers name no
+declared criterion because `#1138` is not a document id. Fixed by declaring
+the criteria the tests already prove: new `docs/specs/
+SPEC-092526-c41d-warden-admission-of-rsi-harvested-content.md` (9 gherkin
+criteria, AC-1..AC-9 mapping the issue's acceptance list, `implements:
+ADR-073`, `related:` ADR-072/ADR-081226-034b, ac-modules anchored to
+`maistro_rsi.harvest_boundary` / `maistro_rsi.__main__` /
+`@flat/hive-conductor/services.rsi_execution_policy`, all resolvable in the
+reachability universe and none baselined unreachable), and the test markers
+retagged to `SPEC-092526-c41d/AC-N` across the six evidence files (the two
+legacy `ADR-070126-6386/persist` / `/stage3` orphans are the documented
+tolerated pair and stay untouched). Full measured replication of the CI step
+(`check-ac-state.py --run-tests --ratchet --mandate b906cc577f` against a
+fresh migrated pgvector:pg18 database): exit 0 — markers naming no criterion
+2 (on the ceiling), design coverage 38.0924 (identical to the pre-change CI
+measurement, so the 9 added criteria diluted nothing), 0 contradicted /
+unverifiable / unproven, acceptance mandate "criteria added or newly claimed:
+9; unproven: 0 — OK", chain mandate OK. (2) Coverage gate: the CI failure
+was the diff-coverage half only (publish-set floor passed at 92%);
+`check-diff-coverage.py` against the CI diff base passes at this tree — the
+salvaged tests are what close the four named files (`__main__.py` 62.9%,
+`harvest_boundary.py` 89.7%, `local_loop.py` 84.4%, `runner.py` 82.4% at the
+CI head). Supporting gates re-run green: ruff check/format, registry lint
+409/409, doc-links, compliance, citation-status (+provenance), backlog,
+adr-index, promotion-surface, execution-lifecycles, model-egress, mypy
+--strict (core), vulture per-identity ledger 1414->1414 (no ledger edits),
+776 maistro-rsi tests, 359 ac-state/gate self-tests. The retagging changes
+no production code and no assertion: same tests, same seams, now bound to
+criteria the corpus declares.

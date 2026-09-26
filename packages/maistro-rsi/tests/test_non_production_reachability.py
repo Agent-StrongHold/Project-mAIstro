@@ -179,7 +179,7 @@ def route_requires_isolation(path: Path, function_name: str = "start_run") -> bo
     return False
 
 
-@pytest.mark.ac("#1138/activation-defaults")
+@pytest.mark.ac("SPEC-092526-c41d/AC-8")
 def test_no_engine_product_package_imports_the_rsi_surface() -> None:
     """The shipped engine products cannot reach maistro_rsi at all.
 
@@ -190,7 +190,7 @@ def test_no_engine_product_package_imports_the_rsi_surface() -> None:
     assert rsi_importers(ENGINE_PACKAGE_ROOTS) == []
 
 
-@pytest.mark.ac("#1138/activation-defaults")
+@pytest.mark.ac("SPEC-092526-c41d/AC-8")
 def test_product_rsi_references_stay_confined_to_the_policy_gated_conductor() -> None:
     """Every product file that reaches RSI is one of the two known gated seams.
 
@@ -205,7 +205,7 @@ def test_product_rsi_references_stay_confined_to_the_policy_gated_conductor() ->
     assert importers == CONFINED_RSI_PRODUCT_SURFACES
 
 
-@pytest.mark.ac("#1138/activation-defaults")
+@pytest.mark.ac("SPEC-092526-c41d/AC-8")
 def test_the_http_run_gate_stays_disabled_until_containment_exists() -> None:
     """``POST /v1/rsi/runs`` must keep failing closed until #552/#509 land.
 
@@ -218,7 +218,7 @@ def test_the_http_run_gate_stays_disabled_until_containment_exists() -> None:
     assert route_requires_isolation(RUN_ROUTE)
 
 
-@pytest.mark.ac("#1138/activation-defaults")
+@pytest.mark.ac("SPEC-092526-c41d/AC-9")
 @pytest.mark.parametrize(
     ("source", "reaches_rsi"),
     [
@@ -246,7 +246,7 @@ def test_the_import_scanner_flags_every_way_to_reach_rsi(
     assert module_imports_rsi(tree) is reaches_rsi
 
 
-@pytest.mark.ac("#1138/activation-defaults")
+@pytest.mark.ac("SPEC-092526-c41d/AC-9")
 def test_the_activation_pins_flag_the_violations_they_exist_to_catch(
     tmp_path: Path,
 ) -> None:

@@ -246,7 +246,39 @@ def test_already_applied_patches_produce_no_spurious_commit(tmp_path: Path) -> N
     loop._setup_baseline()
     loop._load_saved_patches()
     after_first = _git(loop._baseline, "rev-parse", "HEAD").stdout.strip()
-
     loop._load_saved_patches()  # re-run: patch already applied, must be a no-op
     after_second = _git(loop._baseline, "rev-parse", "HEAD").stdout.strip()
     assert after_first == after_second
+
+
+def test_a_dangling_export_entry_is_skipped_not_fatal(tmp_path: Path) -> None:
+    """An export directory can hold a `*.patch` entry that no longer resolves
+    (a broken symlink left by an interrupted cleanup, a file removed between
+    glob and read). The resume must skip that entry with a warning and still
+    apply every real patch — one dangling name must not abort the restart."""
+    repo = _make_repo(tmp_path / "src")
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "0001-resume.patch").write_text(_ADD_FILE_PATCH, encoding="utf-8")
+    (export_dir / "0002-dangling.patch").symlink_to(tmp_path / "gone.patch")
+
+    config = LocalRsiConfig(
+        repo_path=str(repo),
+        test_command="exit 0",
+        work_root=str(tmp_path / "work"),
+        max_cycles=1,
+        export_patches=str(export_dir),
+    )
+    loop = LocalRsiLoop(config, apply_patch=None)
+    loop._setup_baseline()
+    loop._load_saved_patches()
+
+    # The real patch still landed as the resume commit...
+    count = _git(
+        loop._baseline,
+        "rev-list",
+        "--count",
+        f"{loop._start_ref}..{config.baseline_branch}",
+    ).stdout.strip()
+    assert int(count) == 1
+    assert (loop._baseline / "new_file.txt").read_text(encoding="utf-8") == "resumed content\n"
