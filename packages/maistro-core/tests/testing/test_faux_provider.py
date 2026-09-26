@@ -4,12 +4,7 @@ import json
 
 import pytest
 
-from maistro.graph.run import GraphRun
 from maistro.graph.types import (
-    AgentRole,
-    GraphConfig,
-    GraphEdge,
-    GraphTask,
     PlanOutput,
 )
 from maistro.testing.faux_provider import (
@@ -266,113 +261,6 @@ class TestHelperFactories:
         parsed = json.loads(fr.content)
         assert parsed["relevant_files"] == ["a.py", "b.py"]
         assert parsed["patterns"] == "MVC"
-
-
-class TestFauxProviderWithGraphExecutor:
-    async def test_full_pipeline_deterministic(self):
-        provider = FauxProvider()
-        provider.seed(
-            plan_output(
-                summary="test plan",
-                subtasks=[
-                    {"title": "do thing", "description": "implement it", "file_paths": ["main.py"]},
-                ],
-            ),
-            code_output(files_changed=["main.py"], description="implemented"),
-            review_output(approved=True, score=9.0),
-        )
-
-        task = GraphTask(description="Write a hello world function", workspace="/tmp")
-        config = GraphConfig(
-            nodes=[AgentRole.PLANNER, AgentRole.CODER, AgentRole.REVIEWER],
-            edges=[
-                GraphEdge(from_role=AgentRole.PLANNER, to_role=AgentRole.CODER),
-                GraphEdge(from_role=AgentRole.CODER, to_role=AgentRole.REVIEWER),
-            ],
-            entry=AgentRole.PLANNER,
-        )
-        graph_run = GraphRun(task=task, config=config)
-
-        result = await graph_run.start(provider, model="faux://test-model")
-
-        assert result.success is True
-        assert result.plan is not None
-        assert result.plan.summary == "test plan"
-        assert result.code is not None
-        assert "main.py" in result.code.files_changed
-        assert result.review is not None
-        assert result.review.approved is True
-        assert result.review.score == 9.0
-        assert provider.call_count == 3
-
-    async def test_pipeline_with_failure(self):
-        provider = FauxProvider()
-        provider.seed(
-            plan_output(summary="failing plan"),
-            FauxResponse(error=RuntimeError("LLM overloaded")),
-        )
-
-        task = GraphTask(description="test task", workspace="/tmp")
-        config = GraphConfig(
-            nodes=[AgentRole.PLANNER, AgentRole.CODER],
-            entry=AgentRole.PLANNER,
-        )
-        graph_run = GraphRun(task=task, config=config)
-
-        result = await graph_run.start(provider, model="faux://test-model", max_retries=0)
-
-        assert result.success is False
-
-    async def test_pipeline_with_scout(self):
-        provider = FauxProvider()
-        provider.seed(
-            scout_output(relevant_files=["app.py"], summary="found files"),
-            plan_output(summary="planned"),
-            code_output(),
-            review_output(approved=True),
-        )
-
-        task = GraphTask(description="refactor app", workspace="/src")
-        config = GraphConfig(
-            nodes=[AgentRole.PLANNER, AgentRole.CODER, AgentRole.REVIEWER],
-            edges=[
-                GraphEdge(from_role=AgentRole.PLANNER, to_role=AgentRole.CODER),
-                GraphEdge(from_role=AgentRole.CODER, to_role=AgentRole.REVIEWER),
-            ],
-            entry=AgentRole.PLANNER,
-            run_scout=True,
-        )
-        graph_run = GraphRun(task=task, config=config)
-
-        result = await graph_run.start(provider, model="faux://test-model")
-
-        assert result.success is True
-        assert result.blackboard is not None
-        assert result.blackboard.scout_context is not None
-        assert "app.py" in result.blackboard.scout_context.relevant_files
-        assert provider.call_count == 4
-
-    async def test_messages_captured_per_node(self):
-        provider = FauxProvider()
-        provider.seed(
-            plan_output(summary="test"),
-            review_output(approved=True),
-        )
-
-        task = GraphTask(description="test", workspace="/tmp")
-        config = GraphConfig(
-            nodes=[AgentRole.PLANNER, AgentRole.REVIEWER],
-            edges=[
-                GraphEdge(from_role=AgentRole.PLANNER, to_role=AgentRole.REVIEWER),
-            ],
-            entry=AgentRole.PLANNER,
-        )
-        graph_run = GraphRun(task=task, config=config)
-        await graph_run.start(provider, model="faux://test-model")
-
-        assert provider.call_count == 2
-        planner_msgs = provider.call_log[0]["messages"]
-        assert any("planner" in m.get("content", "").lower() for m in planner_msgs)
 
 
 class TestFauxProviderProtocolConformance:

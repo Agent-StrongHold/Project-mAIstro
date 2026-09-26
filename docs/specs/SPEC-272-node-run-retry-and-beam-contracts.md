@@ -24,9 +24,17 @@ owners:
 
 # SPEC-272: NodeRun Retry and Beam Contracts
 
+> **Retirement note (#1154):** The pre-durable `NodeRun` retry/beam implementation
+> and its direct execution tests were retired. Current physical work uses the
+> durable Attempt execution seam; the contract below remains historical design
+> provenance, not a supported standalone executor.
+
 ## Finding addressed
 
-`NodeRun._execute_single` and `NodeRun._execute_beam` combine retry limits, circuit/budget checks, cancellation, LLM timeout handling, parser failures, candidate scoring, and final accounting. The reviewed retry, timeout, cancellation, circuit, budget, parse-failure, provider-error, and scorer-failure paths now have exact tests and terminal-state assertions.
+The retired pre-durable `NodeRun._execute_single` and `NodeRun._execute_beam` combined retry
+limits, circuit/budget checks, cancellation, LLM timeout handling, parser failures, candidate
+scoring, and final accounting. The exact tests and terminal-state assertions are retained here
+as provenance; new execution work belongs to the durable Attempt seam.
 
 ## Design
 

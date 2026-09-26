@@ -69,31 +69,49 @@ def test_standalone_registered_human_work_is_refused() -> None:
         registry.deregister("synth-human")
 
 
-def test_run_registered_dag_produces_provenanced_completed_run(synth_dag_id: str) -> None:
+def test_run_registered_dag_produces_provenanced_completed_run(
+    synth_dag_id: str, registered_dag_spine
+) -> None:
     graph, record = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id="u1")
+        run_registered_dag(
+            synth_dag_id,
+            workspace_id="w1",
+            project_id=registered_dag_spine.project_id,
+            user_id="u1",
+        )
     )
     assert record.run.status is RunStatus.COMPLETED
     assert record.run.workspace_id == "w1"
-    assert record.run.project_id == "p1"
+    assert record.run.project_id == registered_dag_spine.project_id
     assert graph.source_template is not None
     assert graph.source_template.template_id == synth_dag_id
     # The Run's persisted Graph snapshot carries the same provenance.
     assert record.run.graph.materialize().source_template == graph.source_template
 
 
-def test_configure_hook_touches_the_instantiated_graph_only(synth_dag_id: str) -> None:
+def test_configure_hook_touches_the_instantiated_graph_only(
+    synth_dag_id: str, registered_dag_spine
+) -> None:
     def configure(graph) -> None:
         graph.nodes[0].inputs["extra"] = "value"
 
     graph, record = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", configure=configure)
+        run_registered_dag(
+            synth_dag_id,
+            workspace_id="w1",
+            project_id=registered_dag_spine.project_id,
+            configure=configure,
+        )
     )
     assert graph.nodes[0].inputs["extra"] == "value"
     assert record.run.status is RunStatus.COMPLETED
     # The registered snapshot is untouched — a later run starts clean.
     graph_again, _ = asyncio.run(
-        run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+        run_registered_dag(
+            synth_dag_id,
+            workspace_id="w1",
+            project_id=registered_dag_spine.project_id,
+        )
     )
     assert "extra" not in graph_again.nodes[0].inputs
 
@@ -307,6 +325,7 @@ def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_
     )
     from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs import InMemoryRunStore
+    from maistro.runs.model import AttemptStatus
     from maistro.runs.model import RunStatus as CanonicalRunStatus
 
     projects = InMemoryProjectScopeStore()
@@ -329,4 +348,41 @@ def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_
     assert canonical.status is CanonicalRunStatus.COMPLETED
     node_runs = asyncio.run(run_store.list_node_runs(record.run_id))
     assert [item.node_id for item in node_runs] == [item.node_id for item in record.node_runs]
-    assert asyncio.run(run_store.list_attempts(node_runs[0].node_run_id))
+    attempts = asyncio.run(run_store.list_attempts(node_runs[0].node_run_id))
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.COMPLETED
+    assert node_runs[0].accepted_outcome.attempt_result.attempt_id == attempts[0].attempt_id
+
+
+@pytest.mark.parametrize("missing", ["container", "run_store", "graph_run_store"])
+def test_registered_work_refuses_missing_spine_before_any_work(
+    monkeypatch, synth_dag_id, missing
+) -> None:
+    """Even ordinary transforms cannot silently enter the no-spine executor."""
+    from unittest.mock import AsyncMock, Mock
+
+    import services.dag_agents as dag_agents
+
+    container = _StubContainer()
+    if missing == "container":
+        container = None
+    else:
+        setattr(container, missing, None)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
+    execute = AsyncMock()
+    resolve = Mock()
+    configure = Mock()
+    monkeypatch.setattr(dag_agents, "run_durable_graph", execute)
+    monkeypatch.setattr(dag_agents, "_resolve_nodes_with", resolve)
+
+    with pytest.raises(RuntimeError, match="canonical graph execution spine"):
+        asyncio.run(
+            run_registered_dag(
+                synth_dag_id, workspace_id="w1", project_id="p1", configure=configure
+            )
+        )
+    with pytest.raises(RuntimeError, match="canonical graph execution spine"):
+        dag_agents.get_run_store()
+    execute.assert_not_called()
+    resolve.assert_not_called()
+    configure.assert_not_called()

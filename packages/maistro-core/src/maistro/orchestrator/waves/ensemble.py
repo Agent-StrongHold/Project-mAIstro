@@ -552,12 +552,10 @@ class WaveEnsembleOutput(BaseModel):
 
 
 class WaveEnsembleStrategy:
-    """NodeStrategy-compatible wrapper (see ``maistro.graph.strategy``).
+    """Strategy-shaped wrapper for use by a canonical durable Graph node.
 
-    Satisfies the structural :class:`maistro.graph.strategy.NodeStrategy`
-    protocol so wave orchestration can sit in a GraphRun as a regular node:
-    it builds the ensemble prompt, and :meth:`run_ensemble` performs the
-    actual wave orchestration, caching the winner so ``score_output`` and
+    It builds the ensemble prompt, and :meth:`run_ensemble` performs the actual
+    wave orchestration, caching the winner so ``score_output`` and
     ``update_blackboard`` reflect the ensemble outcome.
     """
 

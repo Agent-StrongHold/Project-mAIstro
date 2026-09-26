@@ -32,6 +32,11 @@ history:
 
 # SPEC-177: Hyperagent graph execution
 
+> **Retirement note (#1154):** The historical `GraphConfig`/pre-durable executor
+> described here is not a supported execution path. Current Graph work uses the
+> durable `Graph` model and `maistro.graph.durable_runs.run_durable_graph`, with
+> canonical Run/NodeRun/Attempt evidence.
+
 ## Context
 
 The **product** meta-spec for the hyperagent graph runtime (`specs/conductor/S-145-hyperagent-graph-runtime.md` in the sibling product repository — keep `Project_mAIstro` updated) names nodes, edges, and contracts at the **conductor** layer. **SPEC-177** is the **substrate** port into `packages/maistro-core`: shared types, graph executor, and task `ExecutionMode` must remain **compatible** with that contract where they overlap; extend S-145 first if the product runtime adds new primitives.

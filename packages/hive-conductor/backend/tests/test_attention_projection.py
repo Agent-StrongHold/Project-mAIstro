@@ -93,14 +93,16 @@ async def _workspace(owner: str, name: str) -> str:
 
 
 @pytest.fixture
-def run_store():
-    from services.dag_agents import get_run_store
+def run_store(monkeypatch):
+    from services import dag_agents
 
-    store = get_run_store()
-    before = set(store._rows)
-    yield store
-    for run_id in set(store._rows) - before:
-        store._rows.pop(run_id, None)
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    # Projection-only fixtures seed documents, never execute physical work.
+    # The production accessor refuses a missing canonical spine.
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
+    return store
 
 
 def _ids(body: dict[str, Any]) -> list[str]:

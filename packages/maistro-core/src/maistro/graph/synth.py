@@ -99,7 +99,7 @@ class RuleDagSynthesizer:
 
 
 class LLMDagSynthesizer:
-    """LLM-driven synthesizer. Injects an llm_call compatible with NodeRun semantics.
+    """LLM-driven synthesizer using an injected provider callable.
 
     The caller must wire in an `llm_call` and optionally a list of available
     node kinds to constrain the LLM's output.

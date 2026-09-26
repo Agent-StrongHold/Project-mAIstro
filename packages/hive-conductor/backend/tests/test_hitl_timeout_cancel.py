@@ -83,8 +83,7 @@ def seeded(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Seed
     # This fixture seeds the legacy document-shaped store directly. Bind it to
     # the route only as an explicit test seam; production `_store()` refuses
     # this store and requires the Container's canonical projection.
-    store = dag_agents.get_run_store()
-    assert isinstance(store, InMemoryDurableRunStore)
+    store = InMemoryDurableRunStore()
     monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
     created: list[str] = []
 

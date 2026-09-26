@@ -1,7 +1,8 @@
 """Boy Scout coverage: services/graph_runner.py (was 10% line/branch).
 
 Covers:
-- execute_dag with stub maistro.graph: builds GraphConfig + invokes run_graph
+- execute_dag with the canonical durable Graph seam: builds a graph and invokes
+  the durable runner
 - execute_dag entry_node fallback: when not set, uses first node's id
 - genome_to_dag: maps PipelineGenome → DAG dict with all node + edge fields
 - execute_champion: 4 branches (no svc / no population / no champion / success)
@@ -34,6 +35,22 @@ if str(_BACKEND) not in sys.path:
 def _execution_scope() -> DagExecutionScope:
     return DagExecutionScope(
         workspace_id="test-workspace", project_id="test-project", user_id="test-user"
+    )
+
+
+@pytest.fixture
+def canonical_graph_execution(registered_dag_spine, monkeypatch):
+    import services.canonical_dag_runner as runner
+
+    monkeypatch.setattr(runner, "_container", lambda: registered_dag_spine)
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_execution_scope",
+        lambda: DagExecutionScope(
+            workspace_id="w1",
+            project_id=registered_dag_spine.project_id,
+            user_id="test-user",
+        ),
     )
 
 
@@ -157,6 +174,7 @@ async def test_run_llm_node_marks_node_failed_when_llm_unconfigured(
 
 async def test_execute_dag_streaming_fails_when_llm_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
+    canonical_graph_execution,
 ) -> None:
     """A DAG stream against an unconfigured LLM ends in `failed`, not `completed`.
 
@@ -435,6 +453,7 @@ async def test_build_llm_call_no_api_key_no_auth_header(
 
 async def test_execute_dag_builds_config_and_returns_shape(
     monkeypatch: pytest.MonkeyPatch,
+    canonical_graph_execution,
 ) -> None:
     """execute_dag runs a wave executor; stub _build_llm_call and verify shape."""
     import services.graph_runner as gr
@@ -481,6 +500,7 @@ async def test_execute_dag_builds_config_and_returns_shape(
 
 async def test_execute_dag_entry_node_fallback_to_first_node(
     monkeypatch: pytest.MonkeyPatch,
+    canonical_graph_execution,
 ) -> None:
     """Single-node DAG with no entry_node runs to completion (1 wave, 1 cycle)."""
     import services.graph_runner as gr

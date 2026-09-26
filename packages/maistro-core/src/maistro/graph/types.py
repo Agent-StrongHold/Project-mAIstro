@@ -94,29 +94,11 @@ class ScoutContext(BaseModel):
     raw_findings: str = ""
 
 
-class ToolEvaluation(BaseModel):
-    tests_passed: int = 0
-    tests_failed: int = 0
-    test_output: str = ""
-    lint_errors: list[str] = Field(default_factory=list)
-    type_errors: list[str] = Field(default_factory=list)
-    evaluation_score: float = Field(default=0.0, ge=0, le=10)
-
-    @property
-    def total_tests(self) -> int:
-        return self.tests_passed + self.tests_failed
-
-    @property
-    def pass_rate(self) -> float:
-        return self.tests_passed / self.total_tests if self.total_tests else 0.0
-
-
 class GraphBlackboard(BaseModel):
     task_objective: str
     workspace: str
     iteration: int = 0
     scout_context: ScoutContext | None = None
-    tool_evaluation: ToolEvaluation | None = None
     node_annotations: dict[str, str] = Field(default_factory=dict)
     optimization_history: list[Any] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -224,13 +206,11 @@ class GraphNodeResult(BaseModel):
     success: bool = True
     output: str = ""
     tokens_used: int = 0
-    next_nodes: list[AgentRole | str] = Field(default_factory=list)
     candidates: list[str] = Field(default_factory=list)
     selected_candidate: int = 0
     parallel_group: int | None = None
-    # Per-node telemetry — populated by run_graph when available; used by the
-    # optimizer for Phase 6 signal aggregation. Defaults keep existing tests
-    # untouched.
+    # Legacy optimizer telemetry retained as data fields; canonical durable
+    # execution records physical observations on Run/NodeRun/Attempt.
     latency_ms: int = 0
     error_code: str | None = None  # http_status / exception class / "timeout"
     model_used: str | None = None

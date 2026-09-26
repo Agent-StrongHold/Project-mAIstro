@@ -511,7 +511,7 @@ _SYNTH_DAG = {
 
 
 @pytest.fixture()
-def synth_dag_id():
+def synth_dag_id(registered_dag_spine):
     from services.dag_agents import get_registry
 
     registry = get_registry()
@@ -529,7 +529,9 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
     """
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
-    async def test_a_finished_run_reaches_the_ingest(self, synth_dag_id: str) -> None:
+    async def test_a_finished_run_reaches_the_ingest(
+        self, synth_dag_id: str, registered_dag_spine
+    ) -> None:
         import services.node_metrics_store as metrics_module
         from services.dag_agents import run_registered_dag
 
@@ -539,12 +541,14 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
             patch.setattr(
                 "services.dag_agents.record_run_completion", lambda r: seen.append(r) or 1
             )
-            await run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+            await run_registered_dag(
+                synth_dag_id, workspace_id="w1", project_id=registered_dag_spine.project_id
+            )
         assert len(seen) == 1
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     async def test_a_failing_ingest_does_not_fail_the_run(
-        self, synth_dag_id: str, caplog: Any
+        self, synth_dag_id: str, caplog: Any, registered_dag_spine
     ) -> None:
         """Named rather than bare: a metrics write must not fail a run that
         already produced a result, but an operator has to be able to find out
@@ -559,14 +563,14 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
         with pytest.MonkeyPatch.context() as patch, caplog.at_level(logging.WARNING):
             patch.setattr("services.dag_agents.record_run_completion", _boom)
             _graph, record = await run_registered_dag(
-                synth_dag_id, workspace_id="w1", project_id="p1"
+                synth_dag_id, workspace_id="w1", project_id=registered_dag_spine.project_id
             )
         assert record is not None, "the run still returns its record"
         assert "node_metrics_not_recorded" in caplog.text
 
     @pytest.mark.ac("SPEC-083026-2642/AC-3")
     async def test_a_run_that_stopped_at_a_pause_is_deferred_not_ingested(
-        self, synth_dag_id: str, caplog: Any
+        self, synth_dag_id: str, caplog: Any, registered_dag_spine
     ) -> None:
         """`run_durable_graph` returns as soon as the graph stops advancing, so
         a wait or HITL node hands back a record that is not a finished run."""
@@ -585,7 +589,9 @@ class TestTheIngestDecisionDrivenThroughTheRealPath:
         with pytest.MonkeyPatch.context() as patch, caplog.at_level(logging.INFO):
             patch.setattr(dag_agents, "run_durable_graph", _paused)
             patch.setattr(dag_agents, "record_run_completion", lambda r: seen.append(r) or 1)
-            await dag_agents.run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1")
+            await dag_agents.run_registered_dag(
+                synth_dag_id, workspace_id="w1", project_id=registered_dag_spine.project_id
+            )
         assert seen == [], "a partial record must not enter the aggregate"
         assert "node_metrics_deferred" in caplog.text
 

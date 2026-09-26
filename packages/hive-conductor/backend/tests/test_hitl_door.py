@@ -33,11 +33,10 @@ def _bind_compatibility_store_to_explicit_hitl_test_seam(monkeypatch: pytest.Mon
     """
     from services import dag_agents
 
-    monkeypatch.setattr(
-        dag_agents,
-        "get_canonical_run_store",
-        lambda: dag_agents._fallback_run_store,
-    )
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
 
 
 def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:

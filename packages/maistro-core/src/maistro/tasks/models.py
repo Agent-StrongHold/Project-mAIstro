@@ -71,7 +71,6 @@ class TaskProgress(BaseModel):
 class TaskResult(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
     tests_passed: int | None = None
-    tests_failed: int | None = None
     review_score: float | None = None
     branch: str | None = None
     commit: str | None = None

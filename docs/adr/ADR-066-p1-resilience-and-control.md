@@ -72,6 +72,11 @@ history:
 
 # ADR-066: P1 Resilience and Control
 
+> **Retirement note (#1154):** References to `GraphRun` below describe the
+> superseded pre-durable control surface. These controls must be implemented at
+> the canonical durable Graph/Run/NodeRun/Attempt seams; this ADR does not keep
+> a competing executor alive.
+
 **Status:** Proposed
 **Date:** 2026-05-20
 **Tranche:** T5

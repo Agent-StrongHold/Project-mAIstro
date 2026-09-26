@@ -253,36 +253,6 @@
       "note": "graph resilience wrapper; landed via #262 merge before the checker was wired into CI"
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_beam",
-      "path": "packages/maistro-core/src/maistro/graph/node.py",
-      "line": 452,
-      "name": "_execute_beam",
-      "classname": "NodeRun",
-      "rank": "C",
-      "complexity": 16,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/node.py::NodeRun._execute_single",
-      "path": "packages/maistro-core/src/maistro/graph/node.py",
-      "line": 310,
-      "name": "_execute_single",
-      "classname": "NodeRun",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/node.py::_blackboard_prefix",
-      "path": "packages/maistro-core/src/maistro/graph/node.py",
-      "line": 119,
-      "name": "_blackboard_prefix",
-      "classname": null,
-      "rank": "C",
-      "complexity": 13,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode",
       "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
       "line": 60,
@@ -360,16 +330,6 @@
       "classname": "GraphOptimizer",
       "rank": "C",
       "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/graph/run.py::GraphRun._execute",
-      "path": "packages/maistro-core/src/maistro/graph/run.py",
-      "line": 276,
-      "name": "_execute",
-      "classname": "GraphRun",
-      "rank": "C",
-      "complexity": 20,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {

@@ -51,6 +51,29 @@ def _stored_dag(dag_id: str, *, prompt: str = "hello") -> dict[str, Any]:
     }
 
 
+@pytest.fixture(autouse=True)
+def _canonical_execution_spine(registered_dag_spine, monkeypatch):
+    from services import canonical_dag_runner, workspace_authority
+
+    # HTTP admission and execution must validate against the same Project tree.
+    _wire_projects(
+        registered_dag_spine, workspace_authority.canonical_store_for_tests().project_store
+    )
+    monkeypatch.setattr(canonical_dag_runner, "_container", lambda: registered_dag_spine)
+
+
+def _wire_projects(container, projects):
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.runs import InMemoryRunStore
+
+    runs = InMemoryRunStore(project_store=projects)
+    container.run_store = runs
+    container.graph_run_store = CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore())
+
+
 @pytest.fixture
 def stored_dag(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     import services.graph_runner as graph_runner
@@ -283,8 +306,16 @@ def test_ws_unexpected_failure_frame_names_only_the_exception_kind(
 def _run_ids() -> set[str]:
     from services.dag_agents import get_run_store
 
+    from maistro.runs.model import RunStatus
+
     store = get_run_store()
-    return set(store._rows)
+
+    async def listed():
+        return {
+            record.run_id for status in RunStatus for record in await store.list_by_status(status)
+        }
+
+    return asyncio.run(listed())
 
 
 @pytest.mark.contract("behavioral")
@@ -315,7 +346,9 @@ def test_http_run_in_foreign_workspace_is_refused_before_execution(
 
 
 @pytest.fixture
-def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+def sqlite_member_root_project(
+    monkeypatch: pytest.MonkeyPatch, registered_dag_spine
+) -> Iterator[str]:
     """Wire a SQLite canonical WorkspaceStore; yield the member Workspace's Root Project."""
     # maistro-core's optional `sqlite` extra: absent from Hive's requirements.txt
     # job, installed by the `uv sync --all-extras` coverage job that runs this suite.
@@ -341,6 +374,7 @@ def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]
     loop = asyncio.new_event_loop()
     conn, store, root_project_id = loop.run_until_complete(_open())
     monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: store)
+    _wire_projects(registered_dag_spine, store.project_store)
     yield root_project_id
     loop.run_until_complete(conn.close())
     loop.close()

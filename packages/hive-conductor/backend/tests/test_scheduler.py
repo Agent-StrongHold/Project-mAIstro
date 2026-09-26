@@ -330,6 +330,37 @@ def test_run_loop_logs_and_continues_on_tick_exception(
 # --- Schedule -> canonical Run ------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _registered_work_uses_an_explicit_spine(registered_dag_spine, monkeypatch):
+    """Exercise compatibility cursor algorithms, but execute on canonical rows.
+
+    The suite's synthetic schedule scopes predate Project admission. Translate
+    those fixture scopes into real Root Projects; production has no fallback.
+    The configured-admitter tests below keep their own Container wiring.
+    """
+    from services import dag_agents
+
+    execute = dag_agents.run_registered_dag
+
+    async def scoped(dag_id, *, workspace_id, project_id, **kwargs):
+        root = await registered_dag_spine.project_store.create_root(workspace_id)
+        return await execute(
+            dag_id, workspace_id=workspace_id, project_id=root.project_id, **kwargs
+        )
+
+    monkeypatch.setattr(dag_agents, "run_registered_dag", scoped)
+
+
+def _completed_graph_runs():
+    from services.dag_agents import get_run_store
+
+    from maistro.runs.model import RunStatus
+
+    return [
+        record.run for record in asyncio.run(get_run_store().list_by_status(RunStatus.COMPLETED))
+    ]
+
+
 def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
     """A firing whose target is a registered DAG executes through the canonical
     durable path and audits the Run identity, not just that it fired."""
@@ -406,11 +437,7 @@ def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
             )
         )
 
-        # The fallback store, because this test boots no Container: with one,
-        # the Run is a row on the canonical spine instead (#44).
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = _completed_graph_runs()
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-prov"]
         assert len(scheduled) == 1, "exactly one Run, and it names its schedule"
         provenance = scheduled[0].provenance
@@ -461,9 +488,7 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
                 _ScheduleRunner()._fire_schedule("s-reqid", stub, scheduled_for=scheduled_for)
             )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = _completed_graph_runs()
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid"]
         assert len(scheduled) == 1
         request_id = scheduled[0].provenance.get("request_id")
@@ -504,9 +529,7 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
             )
         )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = _completed_graph_runs()
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid-2"]
         assert len(scheduled) == 2
         ids = {r.provenance.get("request_id") for r in scheduled}
@@ -1056,9 +1079,9 @@ def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyP
         with bind_execution_context(request_id="http-req-42"):
             run_id = asyncio.run(fire_now("s-man-reqid"))
 
-        from services.dag_agents import _fallback_run_store
+        from services.dag_agents import get_run_store
 
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        run = asyncio.run(get_run_store().get(run_id)).run
         assert run.provenance["request_id"] == "http-req-42"
     finally:
         stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
@@ -1082,9 +1105,9 @@ def test_a_manual_run_with_no_ambient_request_mints_its_own(
     try:
         run_id = asyncio.run(fire_now("s-man-noreqid"))
 
-        from services.dag_agents import _fallback_run_store
+        from services.dag_agents import get_run_store
 
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+        run = asyncio.run(get_run_store().get(run_id)).run
         assert run.provenance.get("request_id")
     finally:
         stores.schedules._data.pop("s-man-noreqid", None)  # type: ignore[attr-defined]

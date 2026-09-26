@@ -151,8 +151,9 @@ total stage executions, so a run can never hang). Deviation: instead of raising
 `BuildersDagFailure(kind, stage, detail)` with
 `kind ∈ {invalid_graph, stage_failed, gate_exhausted, budget_exhausted}`.
 Execution goes through the SPEC-201 `GraphPipelineExecutor` (which already owns
-revision semantics); `builders_dag_to_graph` provides the ADR-062 `GraphSpec` form
-for products that want to run the same pipeline as a `GraphRun`.
+revision semantics); `builders_dag_to_graph` provides a role-level graph
+description for migration tooling. Physical execution belongs to the canonical
+ durable Graph entrypoint and records Run/NodeRun/Attempt evidence.
 
 ## Acceptance criteria
 
