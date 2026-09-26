@@ -3,16 +3,16 @@ id: SPEC-070226-b234
 title: "Events, triggers, and the reactor: durable event log with idempotent replay"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
-  - maistro-engine#ADR-086
   - maistro-engine#ADR-037
-  - maistro-engine#SPEC-013
 implements:
   - maistro-engine#ADR-086
 related:
   - maistro-engine#ADR-082
+  - maistro-engine#ADR-086
+  - maistro-engine#SPEC-013
 supersedes: []
 blocks: []
 blocked-by: []
@@ -32,15 +32,22 @@ ac-modules:
 layer: Observability
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-b234: Events, triggers, and the reactor — durable event log with idempotent replay
 
 ## Context
 
-ADR-086 specifies a durable event log (PostgreSQL table of immutable events) and trigger+handler
+ADR-086 proposes a durable event log (PostgreSQL table of immutable events) and trigger+handler
 model: operators define triggers ("on agent.delegated, run X"), the reactor processes events,
-and handlers are replayed durably (idempotent, no lost events on crash).
+and handlers are replayed durably (idempotent, no lost events on crash). ADR-086 remains Proposed
+and is retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-037).
 
 The 1kHz reactor loop (SPEC-013) currently emits events in-memory; this SPEC persists them.
 
