@@ -278,3 +278,31 @@ caught even where a second layer holds. PR #1443 body ("Refs #1110") and all
 branch commit messages re-scanned: no fixes/closes/resolves keywords. The
 prior develop-sync conflict is confirmed resolved in history (`ffe469131`);
 worktree clean at the assigned head before and after this docs-only record.
+
+## Repair-round re-validation at the unchanged head `75e847ec`
+
+The prior attempt at this head timed out after its driver checks had already
+passed; this round re-executed the battery without trusting those records.
+`ruff check .` clean; `ruff format --check .` clean (2556 files);
+33/33 `test_hitl_door.py` + `test_hitl_timeout_cancel.py`;
+`check-suite-inventory.py --suite packages/hive-conductor/backend/tests` ok
+(2767); adjacent scope suites (`test_workspace_authority`,
+`test_workspace_authority_durable`, `test_privilege_middleware_installed`,
+`test_production_workspace_scope`) 28 passed / 5 pre-existing skips; canonical
+mypy clean (715 source files). The mutation experiment was re-executed
+independently in a throwaway `git archive` copy under /tmp (assigned tree
+untouched, authentication intact), with one mutation per authorization layer:
+(1) removing the route's Workspace membership check from `_authorized_record`
+fails `test_hitl_mutation_rechecks_membership_at_the_store_boundary` (an
+unauthorized answer settles 200); (2) deleting the `authorize_project` block
+from `_require_project_access` fails
+`test_project_reviewer_isolated_from_sibling_hitl_work` (a denied-Project
+answer settles 200); (3) dropping the permission filter from
+`authorized_project_ids` fails the same isolation test via the `/pending`
+disclosure path — a denied Project's pause payload is listed. A flawed first
+attempt at mutation (2) produced an UnboundLocalError instead of a real bypass
+and was discarded before being counted as evidence. Branch commit messages
+re-scanned for `(close[sd]?|fix(e[sd])?|resolve[sd]?)[: ]*#[0-9]`: only
+Conventional-Commits `fix(hitl):` type prefixes exist, no auto-close keywords.
+Worktree clean at `75e847ec` before and after this docs-only record; no code
+change was needed this round.
