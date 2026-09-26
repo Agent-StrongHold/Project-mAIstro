@@ -245,7 +245,11 @@ def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
     )
 
     resolver = dag_agents._resolve_nodes_with()
-    assert resolver is dag_agents._fallback_node_resolver
+    # Per execution, not the import-time module-level singleton the wiring fix
+    # removed (#147): a resolver built before any Container exists would freeze
+    # process defaults (the shared usage log above all) at import time.
+    assert callable(resolver)
+    assert dag_agents._resolve_nodes_with() is not resolver
     node = resolver("d", _DELEGATE_DAG)
     assert node._a2a_delegator is None
 
@@ -274,7 +278,11 @@ def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -
         raise RuntimeError("engine unavailable")
 
     monkeypatch.setattr(engine_module, "get_engine", _boom)
-    assert dag_agents._resolve_nodes_with() is dag_agents._fallback_node_resolver
+    resolver = dag_agents._resolve_nodes_with()
+    assert callable(resolver)
+    # The fallback is a working resolver, not just a swallowed exception: a
+    # node still resolves (unwired), so DAG execution proceeds as before.
+    assert resolver("d", _DELEGATE_DAG)._a2a_delegator is None
 
 
 @pytest.mark.ac("ADR-082526-3ca6/AC-4")
