@@ -56,6 +56,26 @@ boundary) was merged on top (`3925106f2`, clean auto-merge).
   --exclude '*/third_party/*'` — rc=0, 1412 reviewed identities.
 - `scripts/verify-monorepo-layout.sh` ok; `scripts/check_enumerations.py` ok.
 
+## Behavior/-moz-binding value anchor (round-14 follow-up fix)
+
+Running the full Conductor backend suite on the merged tree exposed a
+pre-existing (present at `d0e549f72`) false positive: the shared CSS
+`network/code` primitive pattern matched bare `behavior\s*:` /
+`-moz-binding\s*:` in English prose, so `start_design_service` generation
+against the bundled `apple` system was trust-banned on its own
+"**Container behavior:**" prompt-stack heading. The properties exfiltrate only
+when the declaration names a payload, so both vocabulary copies
+(`warden/patterns.py` SCRIPT + VISUAL_ARTIFACT tables, kept in lockstep with
+`maistro_design/scan.py`'s `_css_network_or_code_is_blocking` verdict) now
+require a URL-or-function value (`url(`, `expression(`, scheme, `//`, or a
+relative path) after the colon.
+
+New pins: `test_scan.py::test_behavior_binding_value_payloads_are_blocking`
+(5 payload forms stay blocked), `test_scan.py::test_behavior_prose_is_not_a_css_primitive`
+and `test_trust_prescan.py::test_behavior_prose_gets_no_blocking_flag_and_stays_upgradeable`
+(prose stays renderable and upgradeable), plus 2 payload entries in the
+`HOSTILE_CORPUS` pre-scan parity corpus.
+
 ## Residual
 
 - Full Playwright UI suites that need the live stack

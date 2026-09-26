@@ -115,12 +115,19 @@ def _css_network_or_code_is_blocking(content: str, url_allowlist: tuple[str, ...
             return True
 
     # These primitives can execute code or trigger a request without a URL
-    # that the allowlist can meaningfully constrain.
+    # that the allowlist can meaningfully constrain. ``behavior``/
+    # ``-moz-binding`` are pinned to a URL-or-function value: the properties
+    # exfiltrate only when the declaration names a payload, and a bare
+    # ``behavior:`` otherwise false-positives on English prose such as the
+    # bundled systems' "**Container behavior:**" headings (Apple prompt-stack
+    # generation was trust-banned by exactly that before the anchor).
     return bool(
         re.search(
             r"(?:image-set\s*\(|cross-fade\s*\(|element\s*\(|"
-            r"paint\s*\(|expression\s*\(|(?:-moz-binding|behavior)\s*:|"
-            r"(?:javascript|vbscript)\s*:)",
+            r"paint\s*\(|expression\s*\(|"
+            r"(?:javascript|vbscript)\s*:|"
+            r"(?:-moz-binding|behavior)\s*:\s*(?:url\s*\(|expression\s*\(|"
+            r"(?:\"|')?\s*(?:https?:|//|\.{0,2}/)))",
             normalized,
             re.IGNORECASE,
         )

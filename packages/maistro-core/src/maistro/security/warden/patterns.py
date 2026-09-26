@@ -53,7 +53,8 @@ ACTIVE_MARKUP_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
         regex.compile(
             r"(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|"
             r"paint\s*\(|expression\s*\(|@import\b|"
-            r"(?:-moz-binding|behavior)\s*:|"
+            r"(?:-moz-binding|behavior)\s*:\s*(?:url\s*\(|expression\s*\(|"
+            r"(?:\"|')?\s*(?:https?:|//|\.{0,2}/))|"
             r"(?:java\s*script|vb\s*script)\s*:)",
             regex.IGNORECASE,
         ),
@@ -103,7 +104,9 @@ VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
         regex.compile(
             r"(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|"
             r"paint\s*\(|expression\s*\(|@import\b|"
-            r"(?:-moz-binding|behavior)\s*:)",
+            r"(?:-moz-binding|behavior)\s*:\s*(?:url\s*\(|expression\s*\(|"
+            r"(?:\"|')?\s*(?:https?:|//|\.{0,2}/))|"
+            r"(?:javascript|vbscript)\s*:)",
             regex.IGNORECASE,
         ),
         _REASON_CSS_NETWORK_OR_CODE,
