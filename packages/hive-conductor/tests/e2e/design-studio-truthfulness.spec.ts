@@ -175,7 +175,10 @@ test("Design Studio is the parent surface and never enables fake visual executio
   });
 
   await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("Design Studio", { exact: true })).toBeVisible();
+  // Scope to the page heading: the fixed-page editor mounts by default in
+  // poster mode and its safe template legitimately contains the words
+  // "Design Studio" as body text.
+  await expect(page.getByRole("heading", { name: "Design Studio", exact: true })).toBeVisible();
 
   const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
   for (const mode of [
@@ -265,6 +268,28 @@ test("Deck is a contained Design Studio mode with keyboard-safe editing", async 
   await expect(page.getByRole("button", { name: "Present" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Export HTML" })).toBeVisible();
   await expect(page).toHaveURL(/\/cli\/canvas$/);
+});
+
+test("fixed-page artifacts rehydrate through the shared boundary", async () => {
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "hive_design_studio_fixed_page_artifacts",
+      JSON.stringify({
+        poster: '<h1>Persisted safely</h1><script>window.__designPwned=1</script><img src="http://attacker.invalid/persisted">',
+      }),
+    );
+  });
+
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+  const editor = page.getByTestId("fixed-page-editor");
+  const preview = editor.locator('[contenteditable="true"]');
+  await expect(preview).toContainText("Persisted safely");
+  await expect(preview.locator("script, img, iframe, foreignObject")).toHaveCount(0);
+  await expect(editor).toHaveAttribute("data-trust-recommendation", "review");
+  expect(await page.evaluate(() => window.localStorage.getItem("hive_design_studio_fixed_page_artifacts"))).not.toContain("<script>");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(preview.locator("script, img, iframe, foreignObject")).toHaveCount(0);
 });
 
 test("Design Studio reports optional design-system catalog degradation without hiding usable resources", async () => {

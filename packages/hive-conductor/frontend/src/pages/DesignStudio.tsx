@@ -1,10 +1,37 @@
-import { useEffect, useRef, useState } from "react";
+// Merged Design Studio surface (#768 × keyboard-complete Design Studio):
+// - The brief/catalog shell and the structured FixedPageEditor/DeckBuilder
+//   editor transitions come from the keyboard-complete rework (#370/#769).
+// - The shared visual-artifact trust boundary (#768) owns every place raw
+//   model/persisted markup could reach the browser: the inline
+//   FixedPageArtifactEditor below sanitizes loaded, edited, persisted, and
+//   exported markup through lib/visualArtifactRenderer, and persists the
+//   pre-scan verdict alongside the sanitized markup so a hostile artifact can
+//   never be re-read as trusted content.
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/shared";
 import { apiGet, apiPost } from "../lib/api";
 import DeckBuilder from "./DeckBuilder";
 import FixedPageEditor from "./FixedPageEditor";
+import FixedPageArtifactEditor, { type FixedPageMode } from "./FixedPageArtifactEditor";
+import {
+  recommendVisualArtifactTrust,
+  sanitizeVisualArtifactMarkup,
+  type VisualArtifactTrustRecommendation,
+} from "../lib/visualArtifactRenderer";
 
-type ArtifactModeId = "deck" | "poster" | "infographic" | "flyer" | "social" | "card" | "cover" | "diagram" | "custom";
+type ArtifactModeId = "deck" | FixedPageMode;
+
+const FIXED_PAGE_MODES: FixedPageMode[] = [
+  "poster",
+  "infographic",
+  "flyer",
+  "social",
+  "card",
+  "cover",
+  "diagram",
+  "custom",
+];
+
 type ArtifactMode = { id: ArtifactModeId; name: string; description: string };
 type DiscoveryField = { key: string; label: string; description: string; field_type?: string; options?: string[]; required?: boolean; default?: string | null };
 type DesignSkill = { slug: string; name: string; mode: string; description: string; render_slot: string | null; discovery_form?: DiscoveryField[] };
@@ -50,11 +77,72 @@ function fieldValue(field: DiscoveryField): string {
   return field.default ?? field.options?.[0] ?? "";
 }
 
+const FIXED_PAGE_STORAGE_KEY = "hive_design_studio_fixed_page_artifacts";
+
+type PersistedFixedPageArtifact = {
+  markup: string;
+  trustRecommendation: VisualArtifactTrustRecommendation;
+};
+
+function isPersistedArtifact(value: unknown): value is PersistedFixedPageArtifact {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as PersistedFixedPageArtifact).markup === "string" &&
+    ((value as PersistedFixedPageArtifact).trustRecommendation === "upgrade" ||
+      (value as PersistedFixedPageArtifact).trustRecommendation === "review")
+  );
+}
+
+function loadPersistedArtifacts(): Partial<Record<FixedPageMode, PersistedFixedPageArtifact>> {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const raw = window.localStorage.getItem(FIXED_PAGE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+
+    const stored = parsed as Record<string, unknown>;
+    let changed = false;
+    const migrated: Record<string, PersistedFixedPageArtifact> = {};
+    const restored: Partial<Record<FixedPageMode, PersistedFixedPageArtifact>> = {};
+    for (const mode of FIXED_PAGE_MODES) {
+      const value = stored[mode];
+      if (typeof value !== "string" && !isPersistedArtifact(value)) continue;
+      if (isPersistedArtifact(value)) {
+        restored[mode] = value;
+        migrated[mode] = value;
+        continue;
+      }
+      // Legacy string payloads (and any raw markup) keep the verdict the
+      // pre-scan produced for their ORIGINAL content alongside the sanitized
+      // markup. The recommendation must survive the storage migration: this
+      // component can mount more than once per page load, and later mounts
+      // would otherwise read the already-sanitized string and wrongly report
+      // "upgrade" for content the boundary blocked.
+      const artifact: PersistedFixedPageArtifact = {
+        markup: sanitizeVisualArtifactMarkup(value),
+        trustRecommendation: recommendVisualArtifactTrust(value),
+      };
+      restored[mode] = artifact;
+      migrated[mode] = artifact;
+      changed = true;
+    }
+    // Migrate old persisted content so later readers never receive raw markup.
+    if (changed) window.localStorage.setItem(FIXED_PAGE_STORAGE_KEY, JSON.stringify(migrated));
+    return restored;
+  } catch {
+    return {};
+  }
+}
+
 export default function DesignStudio() {
   const headingRef = useRef<HTMLDivElement>(null);
   const [selectedMode, setSelectedMode] = useState<ArtifactModeId>("poster");
   const selectedModeRef = useRef<ArtifactModeId>("poster");
   const [prompt, setPrompt] = useState("");
+  const [artifactMarkup, setArtifactMarkup] = useState<Partial<Record<FixedPageMode, PersistedFixedPageArtifact>>>(loadPersistedArtifacts);
   const [selectedSkillSlug, setSelectedSkillSlug] = useState("");
   const [selectedSystemSlug, setSelectedSystemSlug] = useState("default");
   const [responses, setResponses] = useState<Record<string, string>>({});
@@ -126,6 +214,21 @@ export default function DesignStudio() {
   const systemSlug = catalog.systems.some((system) => system.slug === selectedSystemSlug) ? selectedSystemSlug : (catalog.systems[0]?.slug ?? selectedSystemSlug);
   const canOpenEditor = prompt.trim().length > 0;
   const canSaveProject = canOpenEditor && Boolean(skill && systemSlug);
+
+  const persistArtifactMarkup = useCallback((fixedMode: FixedPageMode, markup: string, trustRecommendation: VisualArtifactTrustRecommendation) => {
+    const safeMarkup = sanitizeVisualArtifactMarkup(markup);
+    const artifact: PersistedFixedPageArtifact = { markup: safeMarkup, trustRecommendation };
+    setArtifactMarkup((current) => ({ ...current, [fixedMode]: artifact }));
+    try {
+      const stored: unknown = JSON.parse(window.localStorage.getItem(FIXED_PAGE_STORAGE_KEY) ?? "{}");
+      window.localStorage.setItem(
+        FIXED_PAGE_STORAGE_KEY,
+        JSON.stringify({ ...(typeof stored === "object" && stored !== null ? stored : {}), [fixedMode]: artifact }),
+      );
+    } catch {
+      // Browser storage can be unavailable; the in-memory editor remains usable.
+    }
+  }, []);
 
   function selectMode(id: ArtifactModeId): void {
     selectedModeRef.current = id;
@@ -248,8 +351,25 @@ export default function DesignStudio() {
         </div>
       </section>
 
+      {/* #768: the selected fixed-page artifact is previewed and edited only
+          through the shared visual boundary. Markup loaded from storage or
+          pasted/dropped by the user is sanitized here, and the pre-scan
+          verdict travels with the artifact so blocked content is never
+          recommended for a trust upgrade. */}
+      {selectedMode !== "deck" && (
+        <section className="card" style={{ marginBottom: 16 }} aria-label={`${mode.name} visual artifact`}>
+          <FixedPageArtifactEditor
+            key={selectedMode}
+            mode={selectedMode}
+            initialMarkup={artifactMarkup[selectedMode]?.markup}
+            initialTrustRecommendation={artifactMarkup[selectedMode]?.trustRecommendation}
+            onMarkupChange={(markup, trustRecommendation) => persistArtifactMarkup(selectedMode, markup, trustRecommendation)}
+          />
+        </section>
+      )}
+
       <section className="card" aria-labelledby="availability-title"><h2 id="availability-title" style={{ fontFamily: "var(--hand)", fontSize: 15, margin: "0 0 10px" }}>Availability</h2><div role="list" aria-label="Design Studio availability" style={{ display: "grid", gap: 8 }}>
-        {[{ label: "Design resource discovery", state: catalog.status === "ready" ? "available" : catalog.status, detail: "Skills and design systems are discovered from the connected Design service." }, { label: "Editing + preview", state: "available", detail: "Fixed-page and Deck editors expose selection, property controls, keyboard movement, and visible status." }, { label: "Presentation + export", state: selectedMode === "deck" ? "available" : "available", detail: "Deck presentation, ordered-page navigation, and HTML/print export are keyboard-operable." }].map((step) => <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}><div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span><span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>{step.state}</span></div><div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>{step.detail}</div></div>)}
+        {[{ label: "Design resource discovery", state: catalog.status === "ready" ? "available" : catalog.status, detail: "Skills and design systems are discovered from the connected Design service." }, { label: "Editing + preview", state: "available", detail: "Fixed-page and Deck editors expose selection, property controls, keyboard movement, and visible status." }, { label: "Presentation + export", state: "available", detail: "Deck presentation, ordered-page navigation, and HTML/print export are keyboard-operable." }].map((step) => <div key={step.label} role="listitem" style={{ border: "1px solid var(--rule)", borderRadius: 6, padding: "9px 10px" }}><div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}><span style={{ fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{step.label}</span><span style={{ fontFamily: "var(--mono)", fontSize: 8, textTransform: "uppercase", color: "var(--accent)" }}>{step.state}</span></div><div style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--pencil)", marginTop: 3 }}>{step.detail}</div></div>)}
       </div></section>
     </div>
 

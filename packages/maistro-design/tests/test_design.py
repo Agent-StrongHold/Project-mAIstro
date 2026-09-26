@@ -1228,7 +1228,9 @@ class TestBuildMultimodalOutput:
 
         output = build_multimodal_output(
             {
-                OutputFormat.HTML: "<html></html>",
+                # Boundary-safe markup (#768): a full <html> document wrapper is
+                # active markup the shared visual boundary rejects.
+                OutputFormat.HTML: "<article></article>",
                 OutputFormat.CSS: "body { color: red; }",
                 OutputFormat.JS: "console.log('hi')",
             },
@@ -1237,7 +1239,7 @@ class TestBuildMultimodalOutput:
         assert output.root.kind is ArtifactKind.CONTAINER
         assert set(output.root.children) == {"html", "css", "js"}
         assert output.root.children["html"].kind is ArtifactKind.FILE
-        assert output.root.children["html"].value == "<html></html>"
+        assert output.root.children["html"].value == "<article></article>"
         assert output.root.children["css"].format is OutputFormat.CSS
 
     @pytest.mark.contract("boundary")
@@ -1327,7 +1329,7 @@ class TestBuildMultimodalOutput:
         from maistro_design.types import OutputFormat
 
         output = build_multimodal_output(
-            {OutputFormat.HTML: "<html></html>", OutputFormat.PNG: b"\x89PNG"},
+            {OutputFormat.HTML: "<article></article>", OutputFormat.PNG: b"\x89PNG"},
             trust_tier=TrustTier.T3,
         )
         canvas_store = AsyncMock()

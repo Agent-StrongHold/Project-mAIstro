@@ -54,7 +54,9 @@ def test_hostile_content_is_flagged_skull_and_never_upgraded(content: str) -> No
     assert tier == TrustTier.SKULL
     assert record.assigned_tier == TrustTier.SKULL
     assert record.warden_flags
-    assert record.warden_flags == tuple(scan_blocking_patterns("content", content, None))
+    # Union boundary (#768): flags carry every shared-scanner finding and may
+    # additionally carry the visual-artifact reasons the renderer enforces.
+    assert set(record.warden_flags) >= set(scan_blocking_patterns("content", content, None))
     assert record.warden_confidence >= 0.85
     assert record.warden_recommendation == "banish"
 
@@ -91,6 +93,45 @@ def test_banish_list_match_still_yields_its_flag() -> None:
     assert tier == TrustTier.SKULL
     assert record.warden_flags == ("banish_list_match",)
     assert record.warden_confidence == 1.0
+    assert record.warden_recommendation == "banish"
+
+
+RENDERER_BLOCKED_MARKUP = (
+    ('<div onclick="alert(1)">handler</div>', "event-handler"),
+    (
+        '<svg><foreignObject><img src="data:text/html,<script>pwn()</script>"></foreignObject></svg>',
+        "dangerous-url",
+    ),
+    (
+        '<div style="background-image:url(https://attacker.invalid/pixel)">network</div>',
+        "css-network-or-code",
+    ),
+    # The renderer's OBFUSCATED_CSS gate blocks the whole style attribute when
+    # it carries a CSS comment or backslash escape (visualArtifactRenderer.tsx
+    # sanitizeStyle); a lexical pre-scan that only splits declarations would
+    # call this safe and recommend `upgrade` for content the browser strips.
+    (
+        '<div style="color: red/*...*/">steganographic css</div>',
+        "css-network-or-code",
+    ),
+)
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("unit")
+@pytest.mark.parametrize(("content", "reason"), RENDERER_BLOCKED_MARKUP)
+def test_renderer_blocked_markup_is_never_upgraded(content: str, reason: str) -> None:
+    """#768/#817: markup the visual rendering boundary blocks must not be upgraded.
+
+    Several of these carry no `scan_blocking_patterns` finding of their own, so
+    only the shared visual vocabulary stands between the admin recommendation
+    and an executable browser sink.
+    """
+    tier, record = _prescan(content)
+
+    assert tier == TrustTier.SKULL
+    assert record.assigned_tier == TrustTier.SKULL
+    assert reason in record.warden_flags
     assert record.warden_recommendation == "banish"
 
 
@@ -140,9 +181,9 @@ def test_banish_list_match_keeps_scanner_findings_alongside() -> None:
     tier, record = _prescan(content, banish_list)
 
     assert tier == TrustTier.SKULL
-    assert record.warden_flags == (
+    assert set(record.warden_flags) >= {
         "banish_list_match",
         *scan_blocking_patterns("content", content, None),
-    )
+    }
     assert len(record.warden_flags) > 1
     assert record.warden_recommendation == "banish"
