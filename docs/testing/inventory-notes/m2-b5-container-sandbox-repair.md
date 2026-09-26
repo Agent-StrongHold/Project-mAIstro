@@ -82,3 +82,43 @@ and refreshed the previously-IN_PROGRESS CI evidence:
   conclusion=success; the "test" job's "Build the real Builder sandbox image"
   and "Run the real Builder sandbox conformance lane" steps both succeeded —
   resolving the earlier "IN_PROGRESS; CI execution UNVERIFIED" finding.
+
+## Verification round 11 (head `22517ec20b5f`) — post-repair re-proof, CI success
+
+Round 10 committed the `/dev/shm` + `/dev/mqueue` read-only pin
+(`1a02c5fb5`, see `l80-shm-mqueue-read-only.md`); its verify returned BLOCKED
+solely because the PR-1450 `test` and `gates-ran` checks were IN_PROGRESS.
+This round re-proves the head from scratch with no code changes needed:
+
+- Live Docker conformance against the production `ContainerBuilderSandbox`:
+  `DOCKER_HOST=... uv run pytest packages/maistro-bootstrap/tests/
+  test_container_sandbox.py test_container_sandbox_hardening.py
+  test_container_sandbox_argv_status.py -v` = **30 passed (41.06s, live
+  containers)** — including `test_rootfs_and_writable_scope_are_explicit`
+  (agent `touch /dev/shm/l80-proof`, `/dev/mqueue/l80-proof`, `/dev/...`,
+  `/proc/...` all refused; full `/proc/mounts` enumeration proves no rw mount
+  outside {/tmp, /workspace} accepts an agent write), the seven-class egress
+  probe with `NetworkMode=none` asserted on the live container, credential
+  default-deny (ten proxy spellings blank, no credential env vars), seed
+  exclusion (indexed `.env`/`.env.production`/`.envrc`, untracked host
+  secrets, `server.pem`, `secrets/`, nested `.git`, gitlink child contents
+  absent while tracked work arrives), non-root exec (uid 65532, `/etc` write
+  and workspace chown fail), detached-descendant timeout kill, context
+  cleanup, memory-exhaustion containment.
+- `uv run pytest packages/maistro-rsi/tests/test_autonomous_isolation_tier.py
+  -q` = 7 passed.
+- `uv run ruff check .` clean; `uv run ruff format --check .` → 2587 files
+  already formatted.
+- `check-suite-inventory.py` ok (bootstrap 249, rsi 793);
+  `check-security-inventory.py` ok; `check-image-inventory.py` ok.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exit 0 (1403 reviewed identities, 0
+  unclassified, 0 never_allowlist — no ledger amendment needed).
+- CI execution (read-only `gh`, no mutations): at headSha `22517ec20b5f` the
+  PR-1450 rollup shows all 31 check-runs COMPLETED incl. `test` SUCCESS (whose
+  steps build `maistro-builders:latest` from the committed
+  `packages/maistro-bootstrap/tests/Dockerfile.sandbox` and run
+  `test_container_sandbox.py` — the production backend — per
+  `.github/workflows/ci.yml:468-475`), `security`, `docker-build` and
+  `exact-debt-ledger` SUCCESS; the combined commit status is `success` with
+  `gates-ran: success`, resolving the last round's IN_PROGRESS finding.
