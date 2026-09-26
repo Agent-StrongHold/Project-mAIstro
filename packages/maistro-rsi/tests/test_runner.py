@@ -433,8 +433,8 @@ class TestModelAndLlmCallThreading:
         recorded: list[tuple] = []
 
         class RecordingScheduler(FakeScheduler):
-            async def record_attempt(self, model, input_tokens, output_tokens):
-                recorded.append((model, input_tokens, output_tokens))
+            async def record_attempt(self, model, input_tokens, output_tokens, event_id=None):
+                recorded.append((model, input_tokens, output_tokens, event_id))
 
         cycle = RsiCycle(
             _config(benchmarks=["proxy_swebench"]),
@@ -445,7 +445,9 @@ class TestModelAndLlmCallThreading:
             llm_call=fake_llm,
         )
         await cycle.run(_genome("baseline"), _genome("candidate"), ["groq/kimi-k2"])
-        assert recorded == [("groq/kimi-k2", 120, 45)]
+        assert len(recorded) == 1
+        assert recorded[0][:3] == ("groq/kimi-k2", 120, 45)
+        assert isinstance(recorded[0][3], str)
 
     @pytest.mark.asyncio
     async def test_llm_call_reaches_evaluate_genome(self, patched_sandbox, patched_self_branch):

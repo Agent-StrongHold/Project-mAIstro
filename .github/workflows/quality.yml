@@ -547,6 +547,13 @@ jobs:
             -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
           uv run coverage run --append --branch --source=packages/maistro-design/src/maistro_design \
             -m pytest packages/maistro-design/tests --timeout=30 -q
+          # maistro-registry joins the measured set with #1096: its linker
+          # performs the caller-influenced GitHub fetch that the SSRF sweep
+          # (#67, ADR-102) routed through the central guard — the one tree
+          # where an unmeasured change would be indistinguishable from a
+          # tested one, because nothing else ran its suite under coverage.
+          uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
+            -m pytest packages/maistro-registry/tests --timeout=30 -q
           # hive-conductor's pytest-bdd is declared in that workspace member's
           # OWN `dev` extra, and `--all-extras` includes every optional
           # dependency of the ROOT project only — not of each member. So the

@@ -43,6 +43,9 @@ from typing import Any
 
 import httpx
 
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
+
 logger = logging.getLogger(__name__)
 
 CACHE_PATH = Path.home() / ".config" / "maistro" / "builders" / "model_cache.json"
@@ -316,7 +319,10 @@ def run_benchmark(
     client if a Builder or another library caller imports the helper later.
     """
     _require_operator_cli()
-    with httpx.Client(timeout=_CAPABLE_LATENCY_CAP_S + 5) as client:
+    # The gateway is operator configuration. Register its exact origin, then
+    # let the shared sync seam enforce the policy for every request (ADR-102).
+    configure_outbound_policy(_base_url())
+    with sync_client(timeout=_CAPABLE_LATENCY_CAP_S + 5) as client:
         if models is None:
             if verbose:
                 print("Discovering models…")

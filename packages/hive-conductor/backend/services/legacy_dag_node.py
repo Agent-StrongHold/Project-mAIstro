@@ -18,6 +18,11 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from maistro.capabilities.binding import Binding
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    default_effect_context,
+)
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.http import shared_client
 from maistro.sandbox import fence_from_context
@@ -212,41 +217,144 @@ async def _tool_browse_url(tool_config: dict[str, Any]) -> str:
     return json.dumps(result, indent=2)
 
 
+_MUTATING_LEGACY_TOOLS = frozenset({"jira_write", "deploy", "git_push", "file_write"})
+
+
+class _LegacyToolProvider:
+    """Provider metadata for one legacy tool inside the canonical boundary."""
+
+    def __init__(self, tool_name: str) -> None:
+        self._tool_name = tool_name
+
+    @property
+    def name(self) -> str:
+        return f"legacy:{self._tool_name}"
+
+    @property
+    def slot(self) -> str:
+        return f"legacy_tool:{self._tool_name}"
+
+    @property
+    def trust_tier(self) -> str:
+        return "t1"
+
+    def requires(self) -> tuple[str, ...]:
+        return ()
+
+    async def healthcheck(self) -> Any:
+        from maistro.capabilities.types import ProviderHealth
+
+        return ProviderHealth(healthy=True)
+
+
+def _legacy_tool_effect(tool_name: str) -> str:
+    return "mutate" if tool_name in _MUTATING_LEGACY_TOOLS else "network"
+
+
+async def _call_tool_node(
+    node: dict[str, Any],
+    nid: str,
+    inbound: dict[str, set[str]],
+    results: dict[str, dict[str, Any]],
+    task_desc: str,
+) -> str:
+    """Run the historical tool adapter, without deciding authorization."""
+    tool_name = str(node.get("tool") or "")
+    from services.tool_executor import TOOLS
+
+    tool_fn: Callable[[str], Any] | None = TOOLS.get(tool_name)
+    if tool_fn is None:
+        raise LookupError(f"Unknown tool: {tool_name}")
+    tool_config = node.get("tool_config", {})
+    if not isinstance(tool_config, dict):
+        tool_config = {}
+    parent_outputs = {
+        pid: results[pid]["response"]
+        for pid in inbound.get(nid, set())
+        if pid in results and results[pid].get("success")
+    }
+    if tool_name == "web_search":
+        return await _tool_web_search(tool_config, parent_outputs, task_desc)
+    if tool_name == "clarify":
+        return await _tool_clarify(tool_config, task_desc)
+    if tool_name == "browse_url":
+        return await _tool_browse_url(tool_config)
+    result = await tool_fn(task_desc)
+    return json.dumps(result) if isinstance(result, dict) else str(result)
+
+
 async def _run_tool_node(
     node: dict[str, Any],
     nid: str,
     inbound: dict[str, set[str]],
     results: dict[str, dict[str, Any]],
     task_desc: str,
+    *,
+    effect_context: CapabilityEffectContext | None = None,
+    ctx: NodeContext | None = None,
 ) -> None:
     role = node.get("role", "worker")
-    tool_name = node.get("tool")
+    tool_name = str(node.get("tool") or "")
     try:
         from services.tool_executor import TOOLS
 
-        tool_fn = TOOLS.get(tool_name)
-        if not tool_fn:
+        if tool_name not in TOOLS:
             results[nid] = {
                 "role": role,
                 "response": f"Unknown tool: {tool_name}",
                 "success": False,
             }
             return
-        tool_config = node.get("tool_config", {})
-        parent_outputs = {
-            pid: results[pid]["response"]
-            for pid in inbound.get(nid, set())
-            if pid in results and results[pid].get("success")
-        }
-        if tool_name == "web_search":
-            response = await _tool_web_search(tool_config, parent_outputs, task_desc)
-        elif tool_name == "clarify":
-            response = await _tool_clarify(tool_config, task_desc)
-        elif tool_name == "browse_url":
-            response = await _tool_browse_url(tool_config)
+        if ctx is not None:
+            # Canonical NodeContext is the execution boundary. Even standalone
+            # compatibility runs must use the canonical policy context rather
+            # than falling back to a direct provider call when the Container is
+            # not wired.
+            effect_context = effect_context or default_effect_context()
+            if not ctx.node_run_id or not ctx.attempt_id:
+                raise RuntimeError(
+                    "governed legacy tool call requires NodeRun and Attempt identity"
+                )
+            workspace_id = str(ctx.workspace_id or "hive-standalone-compat")
+            project_id = str(ctx.project_id or "hive-standalone-compat")
+            binding = Binding(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                binding_id=f"legacy-tool:{workspace_id}:{project_id}:{nid}:{tool_name}",
+                node_id=nid,
+                capability=f"legacy_tool:{tool_name}",
+                config={"effect": _legacy_tool_effect(tool_name)},
+            )
+            await effect_context.bindings.put(binding)
+            provider = _LegacyToolProvider(tool_name)
+
+            async def resolve(_binding: Binding) -> _LegacyToolProvider:
+                return provider
+
+            async def execute(_provider: Any, request: Any) -> str:
+                scratch = {
+                    pid: results[pid]
+                    for pid in inbound.get(nid, set())
+                    if pid in results and results[pid].get("success")
+                }
+                return await _call_tool_node(node, nid, inbound, scratch, str(request["task"]))
+
+            invocation = await effect_context.invocations.invoke(
+                binding=binding,
+                run_id=ctx.run_id,
+                node_run_id=ctx.node_run_id,
+                attempt_id=ctx.attempt_id,
+                effect_key=f"legacy-tool:{tool_name}",
+                request={"task": task_desc, "tool_config": node.get("tool_config", {})},
+                resolver=resolve,
+                executor=execute,
+            )
+            response = str(invocation.result or "")
         else:
-            result = await tool_fn(task_desc)
-            response = json.dumps(result) if isinstance(result, dict) else str(result)
+            # Compatibility helper callers without a NodeContext predate the
+            # canonical execution path and have no durable effect identity.
+            # Canonical production execution always supplies NodeContext above.
+            response = await _call_tool_node(node, nid, inbound, results, task_desc)
         results[nid] = {"role": role, "response": response, "success": True}
     except Exception as exc:
         logger.error("Tool node %s failed: %s", nid, exc)
@@ -304,10 +412,21 @@ async def _run_llm_node(
     task_desc: str,
     on_response: OnResponseHook | None = None,
     llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
+    *,
+    effect_context: CapabilityEffectContext | None = None,
+    ctx: NodeContext | None = None,
 ) -> None:
     role = node.get("role", "worker")
     if node.get("tool"):
-        await _run_tool_node(node, nid, inbound, results, task_desc)
+        await _run_tool_node(
+            node,
+            nid,
+            inbound,
+            results,
+            task_desc,
+            effect_context=effect_context,
+            ctx=ctx,
+        )
         return
     model = node.get("model", os.environ.get("CHAT_DEFAULT_MODEL", "gemini-3.5-flash"))
     system = node.get("prompt", "") or f"You are a {node.get('name', 'worker')} agent."
@@ -483,6 +602,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         execution_mode: str,
         on_response: OnResponseHook | None,
         llm_builder: Callable[[OnResponseHook | None], Any] | None = None,
+        effect_context: CapabilityEffectContext | None = None,
     ) -> None:
         self._raw_node = dict(raw_node)
         self._task_desc = task_desc
@@ -490,6 +610,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
         self._execution_mode = execution_mode
         self._on_response = on_response
         self._llm_builder = llm_builder
+        self._effect_context = effect_context
 
     async def _execute(self, inputs: _LegacyInputs, ctx: NodeContext) -> _LegacyOutput:
         node_id = ctx.node_id
@@ -524,6 +645,8 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 self._task_desc,
                 on_response=self._on_response,
                 llm_builder=self._llm_builder,
+                effect_context=self._effect_context,
+                ctx=ctx,
             )
             result = scratch[node_id]
 

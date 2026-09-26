@@ -3,6 +3,7 @@
   "counts": {
     "packages/maistro-core/tests": 7690,
     "packages/maistro-core/tests/sandbox": 153,
+    "packages/maistro-registry/tests": 0,
     "packages/maistro-evolve/tests": 629,
     "packages/maistro-rsi/tests": 428,
     "packages/maistro-server/tests": 255,
