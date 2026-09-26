@@ -270,6 +270,15 @@ or placeholder-only section.
 
 ### Added
 
+- **Proposed ADR for the durable cross-Workspace user model (#1047, partial).**
+  ADR-092526-4391 (Proposed) records the owner's decisions on #1047. The user model is a
+  separate `UserModelFact` record that does not decay. It has revision lineage,
+  sensitivity and shareability, a validity window, and tombstones that block
+  re-promotion. Promoting a Workspace-, Project- or Agent-scoped fact into the
+  same user's model is automatic self-consent with an audit entry, and the ADR
+  proposes that amendment to SPEC-242; cross-user and team/org/global widening still need a `ConsentTask`.
+  Decision only: no store, migration or runtime behaviour changes yet.
+
 - **Workspace Attention read: `GET /v1/workspaces/{workspace_id}/attention`
   (#1049, partial).** Computes the Workspace's Attention items on every read
   from canonical sources — human-paused NodeRuns in the durable run store and
@@ -606,6 +615,24 @@ or placeholder-only section.
 
 ### Fixed
 
+- **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
+  The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
+  with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,
+  when the recursion depth cap is hit, shape review does not approve, the
+  synthesized config cannot be dispatched (unregistered, disallowed or
+  duplicated kinds, an unusable entry, no Workspace/Project scope), or the
+  child Run ends FAILED, CANCELLED or TIMED_OUT — the last naming the child
+  Run. It used to complete with `success=False` (or, for an undispatchable
+  config, `success=True` and "not executed") inside its output, letting the
+  parent Run report success for work that never happened. A child that
+  COMPLETED, or is parked WAITING/PAUSED, still completes the node. A failed
+  node whose child was dispatched still spends its recursion level, so a
+  `max_attempts` retry or a `continue_on_failure` successor starts one level
+  deeper rather than spawning again at the same depth. Note the stricter
+  outcome for production-composed nodes: with no governed permission source
+  wired, the #1165 fail-closed Sentinel never approves a shape, so a Run
+  containing `agent.synth_dag` now fails rather than completing with a
+  refusal inside its output.
 - **Canvas job leases are fenced per claim, and stalled or cancelled jobs
   settle correctly (#735, follow-up to PR #1535).** A worker's completion write
   and lease heartbeat are now fenced on the claim's attempt number, not just
