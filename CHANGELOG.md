@@ -602,12 +602,13 @@ or placeholder-only section.
   native radio inputs (arrow keys change the strategy; each is named by its
   strategy and described by its summary). The Intent Map's click-only agent
   cell is now an "Edit routing for <intent>" disclosure button that reveals
-  the agent select; Escape collapses it and returns focus to the button. On
+  the agent select; Escape collapses it and returns focus to the button (the
+  Intent Map is still client-side only and not persisted). On
   the RSI page the Stop control for a running run was a `<span>` nested inside
   the run row's `<button>`, so it could not be reached by keyboard; it is now
   a sibling "Stop run <id>" button (same `POST /v1/rsi/runs/{id}/stop`), and
   the row is a `<button aria-pressed>`. A Playwright journey drives all three
-  with keys only and runs axe on `main`.
+  with keys only and runs axe on `main` (color-contrast excluded).
 
 - **Canvas job leases are fenced per claim, and stalled or cancelled jobs
   settle correctly (#735, follow-up to PR #1535).** A worker's completion write
