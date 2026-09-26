@@ -260,7 +260,7 @@ async def test_concurrent_admission_across_workspaces_holds_the_principal_ceilin
     )
 
 
-async def test_tightened_limits_are_what_the_store_enforces(pg_pool: Any) -> None:
+async def test_tightened_limits_are_what_the_store_enforces() -> None:
     from maistro.runs.consumer_claim import ClaimingInMemoryRunStore
 
     scope_store = InMemoryProjectScopeStore()
