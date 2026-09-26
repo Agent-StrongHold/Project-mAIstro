@@ -17,6 +17,7 @@ Gate, and `run_task` is patched where `ConductorAgent` imports it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch
@@ -27,8 +28,13 @@ from fastapi.testclient import TestClient
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
 from maistro.runs.admission import ADMISSION_SOURCE
-from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, CHAT_SOURCE, UPSTREAM_FAILURE
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    CHAT_SOURCE,
+    UPSTREAM_FAILURE,
+    ChatRunAdmitter,
+)
+from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.security._types import GateResult
 from maistro.types.config import AgentConfig
@@ -253,13 +259,19 @@ async def test_a_turn_yields_a_run_id_that_resolves(wired, client: TestClient) -
     with patch(RUN_TASK, AsyncMock(return_value=_output("42"))):
         response = client.post(
             "/v1/chat/completions",
-            json={"messages": [{"role": "user", "content": "what is the answer"}]},
+            headers={"X-Request-ID": "req-chat-1"},
+            json={
+                "session_id": "session-chat-1",
+                "messages": [{"role": "user", "content": "what is the answer"}],
+            },
         )
 
     run_id = response.json()["run_id"]
     run = await wired.get_run(run_id)
     assert run is not None
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    assert run.provenance["session_id"] == "session-chat-1"
+    assert run.provenance["request_id"] == "req-chat-1"
     assert run.status is RunStatus.COMPLETED
 
 
@@ -464,6 +476,43 @@ async def test_a_streamed_pre_dispatch_spine_failure_emits_an_unavailable_event(
 # --- review findings ------------------------------------------------------
 
 
+async def test_abandoned_stream_cleanup_enforces_the_retention_bound(
+    container: object, wired
+) -> None:
+    """Cleanup of a final pre-dispatch burst must invoke the same sweep."""
+    import asyncio
+
+    container.chat_admitter = ChatRunAdmitter(  # type: ignore[attr-defined]
+        wired,
+        workspace_id=container.config.workspace_id,  # type: ignore[attr-defined]
+        project_store=container.project_scope_store,  # type: ignore[attr-defined]
+        max_retained=2,
+    )
+    request = chat_api.ChatCompletionRequest(
+        stream=True, messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+    streams = []
+    admitted = []
+    for _ in range(8):
+        run = await chat_api._admit_turn(request, None)
+        assert run is not None
+        stream = chat_api._stream_conductor_response(request, None, run)
+        await stream.__anext__()
+        admitted.append(run)
+        streams.append(stream)
+
+    for stream in streams:
+        await stream.aclose()
+    await asyncio.sleep(0)
+
+    assert container.chat_admitter.retained <= 2  # type: ignore[attr-defined]
+    surviving = [
+        stored for run in admitted if (stored := await wired.get_run(run.run_id)) is not None
+    ]
+    assert len(surviving) <= 2
+    assert all(run.status is RunStatus.CANCELLED for run in surviving)
+
+
 async def test_an_abandoned_stream_still_closes_its_run(wired) -> None:
     """A client that disconnects at the first chunk must not strand the Run.
 
@@ -540,6 +589,15 @@ def test_the_run_id_header_is_readable_cross_origin() -> None:
     cors = [m for m in app.user_middleware if m.cls.__name__ == "CORSMiddleware"]
     assert cors, "the app no longer installs CORSMiddleware"
     assert chat_api.RUN_ID_HEADER in cors[0].kwargs["expose_headers"]
+
+
+def test_a_refusals_retry_after_is_readable_cross_origin() -> None:
+    """A browser client must be able to read the delay a refused turn's 503 names."""
+    from maistro_server.main import app
+
+    cors = [m for m in app.user_middleware if m.cls.__name__ == "CORSMiddleware"]
+    assert cors, "the app no longer installs CORSMiddleware"
+    assert "Retry-After" in cors[0].kwargs["expose_headers"]
 
 
 def test_content_chunks_are_produced_lazily() -> None:
@@ -662,3 +720,78 @@ async def test_a_failed_turn_never_echoes_the_provider_detail(
     assert len(runs) == 1
     assert runs[0].error == UPSTREAM_FAILURE
     assert "sk-secret" not in (runs[0].error or "")
+
+
+# --- admission vs. the disconnecting client -------------------------------
+
+
+class _CancelOnRunning:
+    """A store whose QUEUED -> RUNNING hop is interrupted, as if the request
+    task died between the two persistence writes."""
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self.admitted_run_id: str | None = None
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def transition_run(self, run_id: str, target: RunStatus, **kwargs: object) -> object:
+        if target is RunStatus.RUNNING:
+            # CREATED and QUEUED are durable by now, so a cancellation raised
+            # here is exactly a client vanishing after `admit()` returned.
+            self.admitted_run_id = run_id
+            raise asyncio.CancelledError
+        return await self._inner.transition_run(run_id, target, **kwargs)  # type: ignore[arg-type]
+
+
+async def test_a_disconnect_mid_admission_compensates_and_propagates(
+    container: object,
+) -> None:
+    """The endpoint admits before `route_request` can adopt the Run, so a
+    disconnect landing between the admission hops is this module's to clean
+    up: the compensating cancel is shielded from the very cancellation that
+    triggered it, and the cancellation still reaches the request."""
+    store = _CancelOnRunning(container.run_store)  # type: ignore[attr-defined]
+    container.run_store = store  # type: ignore[attr-defined]
+    request = chat_api.ChatCompletionRequest(
+        messages=[chat_api.ChatMessage(role="user", content="hi")],
+        session_id="sess-1",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await chat_api._admit_turn(request, None, request_id="req-1")
+
+    # The shield detaches the compensating write from the cancelled request,
+    # so the QUEUED Run this module admitted is not stranded by the disconnect.
+    assert store.admitted_run_id is not None
+    run = await store._inner.get_run(store.admitted_run_id)
+    assert run is not None
+    assert run.status is RunStatus.CANCELLED
+    assert run.error == ADMISSION_INCOMPLETE
+
+
+async def test_a_disconnect_before_any_persistence_propagates_without_compensation(
+    container: object,
+) -> None:
+    """The other arc of the guard: with no Run persisted there is nothing to
+    compensate, so the cancellation propagates untouched rather than being
+    swallowed into an endpoint error or a store write."""
+
+    async def _cancelled(*args: object, **kwargs: object) -> Run:
+        raise asyncio.CancelledError
+
+    container.chat_admitter.admit = _cancelled  # type: ignore[method-assign]
+    request = chat_api.ChatCompletionRequest(
+        messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await chat_api._admit_turn(request, None, request_id="req-2")
+
+    wired_store = container.run_store  # type: ignore[attr-defined]
+    assert not [
+        r
+        for r in wired_store._runs.values()  # type: ignore[attr-defined]
+        if r.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    ]

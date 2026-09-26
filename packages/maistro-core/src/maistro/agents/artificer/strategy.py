@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from maistro.security.warden.detector import WardenContext
 from maistro.types.agent import ReasoningResult
 
 if TYPE_CHECKING:
@@ -25,6 +27,7 @@ async def _noop_status(msg: str) -> None:
 
 _MAX_ARG_BYTES = 32_768
 _MAX_RESULT_BYTES = 16_384
+_TOOL_CONTEXT_MAX_TURNS = 8
 
 
 class ArtificerStrategy:
@@ -60,6 +63,10 @@ class ArtificerStrategy:
         **kwargs: Any,
     ) -> ReasoningResult:
         tool_history: list[dict[str, Any]] = []
+        # Tool output is untrusted and may form an attack only when combined
+        # across calls. Keep the detector context bounded independently of the
+        # model's unbounded message history.
+        tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
         status = status_callback or _noop_status
         security_pipeline = bool(kwargs.get("security_pipeline", False))
 
@@ -124,8 +131,10 @@ class ArtificerStrategy:
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
                     warden=kwargs.get("warden"),
+                    context=list(tool_context),
                     security_pipeline=security_pipeline,
                 )
+                tool_context.append(WardenContext(result_str))
                 tool_history.append(
                     {
                         "tool_name": tc.get("function", {}).get("name", ""),
@@ -209,16 +218,23 @@ class ArtificerStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
+        context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
     ) -> str:
-        """Keep standalone strategy calls safe; Agent owns production policy."""
+        """Apply the shared output gate with bounded prior tool context.
+
+        Inside the Agent security pipeline the governed executor has already
+        scanned the result with its own bounded context and redacted it, so
+        this gate only serves standalone strategy callers.
+        """
         if security_pipeline:
             return result_str
+        scan_kwargs: dict[str, Any] = {"context": context} if context else {}
         if sentinel is not None and auth is not None:
-            sanitized: str = await sentinel.post_call(tool_name, result_str, auth)
+            sanitized: str = await sentinel.post_call(tool_name, result_str, auth, **scan_kwargs)
             return sanitized
         if warden is not None:
-            verdict = await warden.scan(result_str, "tool_result")
+            verdict = await warden.scan(result_str, "tool_result", **scan_kwargs)
             if not verdict.clean:
                 result_str = (
                     f"[BLOCKED: tool result contained suspicious content: "
@@ -246,6 +262,7 @@ class ArtificerStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
+        context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end. Returns ``(tool_args, result_str)``."""
@@ -276,6 +293,7 @@ class ArtificerStrategy:
             sentinel=sentinel,
             auth=auth,
             warden=warden,
+            context=context,
             security_pipeline=security_pipeline,
         )
         await self._emit_result_status(tool_name, result_str, status)
@@ -307,8 +325,13 @@ class ArtificerStrategy:
         auth: Any,
         security_pipeline: bool,
     ) -> tuple[dict[str, Any], Any, bool]:
-        if security_pipeline or sentinel is None or auth is None:
+        if security_pipeline:
             return tool_args, None, False
+        if sentinel is None or auth is None:
+            logger.warning(
+                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+            )
+            return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
         sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
         if not sentinel_verdict.allowed:
             return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
