@@ -449,3 +449,63 @@ locally (all eight acceptance criteria executed this round).
   matches).
 - The extractor drift induced as finding-1 evidence was restored to committed
   bytes before this note was written; this note is the only tree delta.
+
+## Eighth verification (develop-sync repair round, head abc983810 + notes)
+
+Started from the preserved merge-conflict state (3 unmerged files vs develop
+`ca4caec7d`). Resolved in place and merged, then merged current `origin/develop`
+(`031bd0746`) cleanly.
+
+- Merge resolution `985c4f781`: #1567 readiness diagnostics reconciled with
+  #365 — whole detailed payload admin-gated; minimal contract for everyone
+  else (see `issue-365-health-readiness-reconciliation.md`).
+- Prior finding-1 (formal constants drift) is resolved structurally by
+  develop's oracle cutover: `formal/generated/security-constants.json` and the
+  extractor no longer exist anywhere; `check-formal-oracle-independence.py
+  --base 031bd0746` OK.
+- Prior finding-2 (root `tests/api/test_health.py` stale smoke) fixed in
+  `abc983810`; root `tests/api` 86 passed.
+- Live full-app probes (18/18 PASS at this head): anonymous `/metrics` 401/no
+  families; arbitrary bearer 401; wrong-scope service key 403/no families;
+  forwarded headers alone 401; scoped scraper 200 with 23 families via
+  X-Service-Key and Bearer, also through proxy headers; `/health`,
+  `/health/live` exactly `{"status":"ok"}`; `/health/startup` only
+  `{status, startup_complete}`; `/health/ready` anonymous/auth-disabled status
+  only. Reconciliation probe with real keys: user-scope and wrong-token get
+  `{"status":"ok"}`; admin gets the full payload including
+  `effective_resource_policy`, `container_limits`, `strike_tracker`.
+- #818 re-proven: 300 random attacker paths added exactly 1 new
+  `http_requests_total` route label (`unrouted`); no attacker URL in any
+  label; label-key audit: `dependency, le, method, outcome, route, status`.
+- Registry backstop re-proven: `max_metrics_per_registry=50` rendered exactly
+  50 of 200 minted dynamic families; refusals counted in
+  `metrics_registry_overflow_total`.
+- Alembic on live pg18 (container `auto-365-pg`, port 55445):
+  `upgrade head` to `042` clean; ScriptDirectory single head `042`, 44
+  revisions, `033` resolves — the historical KeyError '033' stays dead.
+- Formal conformance models: 664 passed (`pytest formal/models/
+  --timeout=300 --hypothesis-seed=0` with `MAISTRO_TEST_PG_DSN`), including
+  the PostgreSQL-backed I29 lease/fence model.
+- Gates at this head: `ruff check .`, `ruff format --check .` (2576 files),
+  mypy six packages (721 files), `check-doc-links.py`,
+  `check-m1-convergence-freeze.py --base 031bd0746`,
+  `check-formal-oracle-independence.py --base 031bd0746`,
+  `check_enumerations.py` (no new gaps), `check-ac-state.py`,
+  `check-suite-inventory.py`, `check-vulture-baseline.py ...` all exit 0.
+- Vulture CI-repair: `container_limits` finding eliminated at the source
+  (local binding mirroring develop's shape) rather than banked;
+  trusted-base-authorized `uptime_seconds` identity banked in the candidate
+  ledger; gate exit 0 with no unbanked/unauthorized identities.
+- maistro-server suite 395 passed; core targeted (metrics/SLO/resource-policy
+  103, security 1309/1310).
+- Pre-existing, NOT lane-caused:
+  `packages/maistro-core/tests/security/test_log_redaction.py::test_install_is_idempotent`
+  fails under pytest 9.1.1 whenever the logging plugin attaches its capture
+  handlers (passes with `-p no:logging`); reproduced with a minimal fixture
+  file importing only develop-identical code, so develop's own tree has the
+  same failure in this environment. Neither the test nor
+  `maistro/security/log_redaction.py` is changed by this branch.
+- Prior stale findings (PostgreSQL coverage KeyError '033', integration-scope
+  durable-events, Gate C coincurve/3.14) were already reported green at
+  `7cf1052ad` by the seventh verification and are superseded by the live
+  alembic/formal evidence above where re-checked.
