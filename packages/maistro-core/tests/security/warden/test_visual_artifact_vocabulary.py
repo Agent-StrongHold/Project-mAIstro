@@ -127,9 +127,7 @@ def test_renderer_css_families_are_all_recognized_by_the_shared_scanner() -> Non
     assert {"data", "javascript", "vbscript"} <= schemes, schemes
 
     css_pattern = next(
-        pattern
-        for pattern, reason in VISUAL_ARTIFACT_PATTERNS
-        if reason == "css-network-or-code"
+        pattern for pattern, reason in VISUAL_ARTIFACT_PATTERNS if reason == "css-network-or-code"
     )
 
     missing = []
@@ -146,8 +144,7 @@ def test_renderer_css_families_are_all_recognized_by_the_shared_scanner() -> Non
         if not css_pattern.search(probe):
             missing.append(family)
     assert not missing, (
-        "renderer blocks CSS primitive families the shared scanner does not "
-        f"classify: {missing}"
+        f"renderer blocks CSS primitive families the shared scanner does not classify: {missing}"
     )
 
 
