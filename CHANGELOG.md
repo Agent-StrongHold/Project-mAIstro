@@ -25,6 +25,16 @@ or placeholder-only section.
 
 ### Security
 
+- **Layer-1 episodic recall is scoped to the current Project
+  ([#1047](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1047),
+  partial).** `DefaultContextAssemblyPolicy.layer1` filtered by `agent_id`
+  only, so an agent id used in two Projects/Workspaces recalled Project A's
+  AGENT-scope memories inside Project B. `layer1` (and the
+  `ContextAssemblyPolicy` protocol) now take a keyword-only `project_id`,
+  which `assemble` passes through to both the ranked and the unranked store
+  read; a memory with no project is not guessed into one. A blank
+  `project_id` keeps the agent-wide recall.
+
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
   /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer
