@@ -30,6 +30,7 @@ def upgrade() -> None:
         sa.Column("attempt_id", sa.Text, nullable=False),
         sa.Column("binding_id", sa.Text, nullable=False),
         sa.Column("effect_key", sa.Text, nullable=False),
+        sa.Column("effect_scope", sa.Text, nullable=False, server_default=""),
         sa.Column("status", sa.Text, nullable=False),
         sa.Column("revision", sa.BigInteger, nullable=False, server_default="0"),
         sa.Column("created_at", sa.Float(precision=53), nullable=False),

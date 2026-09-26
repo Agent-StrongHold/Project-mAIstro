@@ -39,6 +39,7 @@ from .base import (
     PAUSE_AWAITING_REMOTE_DELEGATION,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     now_utc,
     pause_until,
 )
@@ -173,7 +174,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
     output_schema: ClassVar[type[BaseModel]] = DelegateRemoteOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: delegate to remote session"
     description: ClassVar[str] = (
@@ -591,6 +592,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._recover_in_process(inputs, key, child_id)
 
         try:
+            # This local admission is synchronous and deduplicates by effect
+            # key itself, so validating it before claiming the canonical child
+            # cannot create an ambiguous external effect.
             task_id = self._a2a_delegator.delegate_task(
                 inputs.from_agent,
                 inputs.task,

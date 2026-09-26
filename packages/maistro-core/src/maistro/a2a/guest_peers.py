@@ -168,8 +168,12 @@ class GuestPeerManager:
         *,
         idempotency_key: str | None = None,
     ) -> DelegationResult:
-        """Delegate a task to an external A2A peer."""
-        if idempotency_key is not None:
+        """Delegate a task to an external A2A peer.
+
+        The key is sent at the transport boundary so a remote admission service
+        can deduplicate a request whose caller lost its lease after dispatch.
+        """
+        if idempotency_key:
             cached = self._idempotent_receipts.get((peer_name, idempotency_key))
             if cached is not None:
                 return cached
@@ -201,7 +205,7 @@ class GuestPeerManager:
                     json={
                         "agent_id": agent_id,
                         "messages": messages,
-                        "delegation_key": idempotency_key,
+                        "idempotency_key": idempotency_key,
                     },
                     headers=headers,
                 )
@@ -218,7 +222,7 @@ class GuestPeerManager:
                 peer_name=peer_name,
                 status="submitted",
             )
-            if idempotency_key:
+            if idempotency_key and submitted.task_id:
                 self._idempotent_receipts[(peer_name, idempotency_key)] = submitted
             return submitted
         except Exception as exc:

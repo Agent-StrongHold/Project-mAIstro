@@ -1744,6 +1744,16 @@
       "effect_owner": "canvas executor.start_job"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/a2a.py",
+      "method": "POST",
+      "route": "/tasks/create",
+      "handler": "create_a2a_task",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "durably admits one idempotent remote A2A delegation as a canonical Run (ADR-058, SPEC-182)",
+      "effect_owner": "maistro.runs.store.RunStore.claim_run_by_effect (idempotent canonical Run admission)"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
       "method": "DELETE",
       "route": "/designs/{design_id}",

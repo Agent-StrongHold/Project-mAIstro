@@ -77,10 +77,11 @@ class _FakePgInvocationPool:
                 "attempt_id": args[3],
                 "binding_id": args[4],
                 "effect_key": args[5],
-                "status": args[6],
-                "revision": args[7],
-                "created_at": args[8],
-                "payload": args[9],
+                "effect_scope": args[6],
+                "status": args[7],
+                "revision": args[8],
+                "created_at": args[9],
+                "payload": args[10],
             }
             return _Row(invocation_id=invocation_id)
         if "ORDER BY created_at DESC" in query:
@@ -141,6 +142,7 @@ class _FakePgInvocationPool:
             "attempt_id": invocation.attempt_id,
             "binding_id": invocation.binding.binding_id,
             "effect_key": invocation.effect_key,
+            "effect_scope": invocation.effect_scope or invocation.node_run_id,
             "status": invocation.status.value,
             "revision": invocation.revision,
             "created_at": invocation.created_at.timestamp(),

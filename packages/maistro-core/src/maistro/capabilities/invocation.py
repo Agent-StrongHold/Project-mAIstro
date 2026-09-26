@@ -182,6 +182,9 @@ class Invocation(BaseModel):
     project_id: str = ""
     binding: ResolvedBinding
     effect_key: str
+    # Stable logical scope for retries; physical node_run_id remains the
+    # provenance of the Invocation that actually dispatched the provider call.
+    effect_scope: str = ""
     status: InvocationStatus = InvocationStatus.CREATED
     request: Any | None = None
     result: Any | None = None
@@ -221,7 +224,12 @@ class Invocation(BaseModel):
     def effect_identity(self) -> tuple[str, str, str, str]:
         """Logical effect identity stable across physical Attempt retries."""
 
-        return (self.run_id, self.node_run_id, self.binding.binding_id, self.effect_key)
+        return (
+            self.run_id,
+            self.effect_scope or self.node_run_id,
+            self.binding.binding_id,
+            self.effect_key,
+        )
 
 
 @runtime_checkable
@@ -241,6 +249,7 @@ class InvocationStore(Protocol):
         node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> list[Invocation]: ...
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]: ...
@@ -299,8 +308,10 @@ class InMemoryInvocationStore:
         node_run_id: str,
         binding_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> list[Invocation]:
-        identity = (run_id, node_run_id, binding_id, effect_key)
+        scope = effect_scope or node_run_id
+        identity = (run_id, scope, binding_id, effect_key)
         return [
             item.model_copy(deep=True)
             for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
@@ -394,6 +405,7 @@ class InvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        effect_scope: str | None = None,
     ) -> Invocation | None:
         """Return the latest canonical Invocation for one logical effect identity."""
 
@@ -402,6 +414,7 @@ class InvocationExecutionService:
             node_run_id=node_run_id,
             binding_id=binding.binding_id,
             effect_key=effect_key,
+            effect_scope=effect_scope,
         )
         return history[-1] if history else None
 
@@ -414,6 +427,7 @@ class InvocationExecutionService:
         attempt_id: str,
         effect_key: str,
         request: Any,
+        effect_scope: str | None = None,
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
@@ -434,6 +448,7 @@ class InvocationExecutionService:
                 node_run_id=node_run_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
+                effect_scope=effect_scope,
             )
             if history:
                 latest = history[-1]
@@ -465,6 +480,7 @@ class InvocationExecutionService:
                         project_id=binding.project_id,
                         binding=resolved,
                         effect_key=effect_key,
+                        effect_scope=effect_scope or node_run_id,
                         request=request,
                     )
                 )
@@ -478,6 +494,7 @@ class InvocationExecutionService:
                     node_run_id=node_run_id,
                     binding_id=binding.binding_id,
                     effect_key=effect_key,
+                    effect_scope=effect_scope,
                 )
                 if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
                     return latest_history[-1]
