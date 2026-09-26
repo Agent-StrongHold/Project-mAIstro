@@ -294,6 +294,7 @@ class EngineService:
                 settings_model=settings_store.current(),
                 config=settings,
                 vault=vault,
+                effect_context=getattr(container, "capability_effects", None),
             )
         except Exception as exc:
             logger.warning("capability wiring failed (%s) — slots use baselines/SAFE_NOOP", exc)

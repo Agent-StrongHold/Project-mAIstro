@@ -19,6 +19,13 @@ from maistro.capabilities.slots.self_repair import RepairDecision
 from maistro.capabilities.types import ProviderHealth
 
 
+def _effect_invoker(action: HostHealthAction):
+    async def invoke(action_name: str, params: dict, _effect_key: str):
+        return await action.act(action_name, params)
+
+    return invoke
+
+
 class _Monitor:
     name = "m"
     slot = "infra_monitor"
@@ -53,7 +60,11 @@ async def test_remediation_blocks_until_approved_then_hits_host() -> None:
     http = HttpxAsyncHttp("http://h:8150", transport=httpx.MockTransport(handler))
     inbox = InboxApproval()
     action = HostHealthAction(http, autonomy="approve_all", approval=inbox)
-    repair = RuleBasedRepair(infra_monitor=_Monitor(), infra_action=action, autonomy="approve_all")
+    repair = RuleBasedRepair(
+        infra_monitor=_Monitor(),
+        effect_invoker=_effect_invoker(action),
+        autonomy="approve_all",
+    )
 
     cycle = await repair.run_once()
     (r,) = cycle.results
@@ -82,7 +93,11 @@ async def test_denied_remediation_never_hits_host() -> None:
     )
     inbox = InboxApproval()
     action = HostHealthAction(http, autonomy="approve_all", approval=inbox)
-    repair = RuleBasedRepair(infra_monitor=_Monitor(), infra_action=action, autonomy="approve_all")
+    repair = RuleBasedRepair(
+        infra_monitor=_Monitor(),
+        effect_invoker=_effect_invoker(action),
+        autonomy="approve_all",
+    )
 
     await repair.run_once()
     await asyncio.sleep(0)

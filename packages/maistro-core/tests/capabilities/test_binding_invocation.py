@@ -16,6 +16,8 @@ from maistro.capabilities.binding_store import (
     SqliteBindingStore,
     _scope_checked,
 )
+from maistro.capabilities.effect_context import new_effect_context
+from maistro.capabilities.governed_invocation import InvocationDenied
 from maistro.capabilities.invocation import (
     EffectNotApplied,
     InMemoryInvocationStore,
@@ -35,6 +37,35 @@ class _Provider:
 async def _resolver(binding: Binding) -> _Provider:
     assert binding.capability == "external_write"
     return _Provider()
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_effect_context_denies_before_provider_call() -> None:
+    effects = new_effect_context()
+    binding = await effects.bindings.put(_binding())
+    calls = 0
+
+    async def execute(_provider: _Provider, _request: Any) -> None:
+        nonlocal calls
+        calls += 1
+
+    with pytest.raises(InvocationDenied, match="policy unavailable"):
+        await effects.invocations.invoke(
+            binding=binding,
+            run_id="run-unconfigured",
+            node_run_id="node-unconfigured",
+            attempt_id="attempt-unconfigured",
+            effect_key="effect-unconfigured",
+            request={"write": True},
+            resolver=_resolver,
+            executor=execute,
+        )
+
+    assert calls == 0
+    events = await effects.event_store.list_stream("workspace:ws-1")
+    assert events[-1].type == "capability.invocation.policy_decision"
+    assert events[-1].payload["decision"] == "deny"
+    assert events[-1].payload["rule"] == "invocation.unconfigured"
 
 
 def _binding(*, provider_name: str = "") -> Binding:
@@ -232,6 +263,24 @@ async def test_resolve_requires_every_scope_field() -> None:
             node_id="node-1",
             capability="external_write",
         )
+
+
+@pytest.mark.asyncio
+async def test_revoked_binding_cannot_be_recreated_or_resolved() -> None:
+    store = InMemoryBindingStore()
+    binding = await store.put(_binding())
+    await store.revoke(binding.binding_id)
+
+    with pytest.raises(BindingNotFound, match="has been revoked"):
+        await store.resolve(
+            binding.binding_id,
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="node-1",
+            capability="external_write",
+        )
+    with pytest.raises(BindingNotFound, match="has been revoked"):
+        await store.put(binding)
 
 
 @pytest.mark.asyncio

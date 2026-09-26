@@ -55,7 +55,12 @@ class BindingDisabled(BindingResolutionError):
 
 @runtime_checkable
 class BindingStore(Protocol):
-    """Canonical Binding definition and scope-resolution contract."""
+    """Canonical Binding definition and scope-resolution contract.
+
+    Implementable by both the ephemeral in-memory authority and durable
+    (SQLite/PostgreSQL) backends: every member is either async or usable at
+    boot over an open connection.
+    """
 
     async def put(self, binding: Binding) -> Binding: ...
 
@@ -70,6 +75,21 @@ class BindingStore(Protocol):
         node_id: str,
         capability: str,
     ) -> Binding: ...
+
+
+@runtime_checkable
+class RevocableBindingStore(BindingStore, Protocol):
+    """A BindingStore that additionally supports operator revocation (#846).
+
+    The canonical shipped wiring uses :class:`InMemoryBindingStore`, so a
+    capability can be cut off for already-constructed actors without a
+    process restart. Durable backends implement revocation through #1133;
+    until then they must not silently satisfy this contract.
+    """
+
+    def register(self, binding: Binding) -> Binding: ...
+
+    async def revoke(self, binding_id: str) -> None: ...
 
 
 def _scope_checked(
@@ -146,18 +166,39 @@ class InMemoryBindingStore:
 
     def __init__(self) -> None:
         self._items: dict[str, Binding] = {}
+        self._revoked: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def put(self, binding: Binding) -> Binding:
         async with self._lock:
-            existing = self._items.get(binding.binding_id)
-            if existing is not None and existing != binding:
-                raise ValueError(
-                    f"Binding {binding.binding_id!r} is immutable and already registered"
-                )
-            persisted = binding.model_copy(deep=True)
-            self._items[binding.binding_id] = persisted
-            return persisted.model_copy(deep=True)
+            return self._put_locked(binding)
+
+    def register(self, binding: Binding) -> Binding:
+        """Register a boot-time Binding without creating a runtime grant.
+
+        Composition roots use this before serving requests. Runtime effect paths
+        must use ``resolve``; in particular, a revoked identity can never be
+        re-created by an actor that still remembers its id.
+        """
+        if binding.binding_id in self._revoked:
+            raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
+        return self._put_locked(binding)
+
+    def _put_locked(self, binding: Binding) -> Binding:
+        if binding.binding_id in self._revoked:
+            raise BindingNotFound(f"Binding {binding.binding_id!r} has been revoked")
+        existing = self._items.get(binding.binding_id)
+        if existing is not None and existing != binding:
+            raise ValueError(f"Binding {binding.binding_id!r} is immutable and already registered")
+        persisted = binding.model_copy(deep=True)
+        self._items[binding.binding_id] = persisted
+        return persisted.model_copy(deep=True)
+
+    async def revoke(self, binding_id: str) -> None:
+        """Withdraw a Binding permanently for this store's lifetime."""
+        async with self._lock:
+            self._items.pop(binding_id, None)
+            self._revoked.add(binding_id)
 
     async def get(self, binding_id: str) -> Binding | None:
         item = self._items.get(binding_id)
@@ -172,6 +213,10 @@ class InMemoryBindingStore:
         node_id: str,
         capability: str,
     ) -> Binding:
+        if binding_id in self._revoked:
+            # Revocation is a distinct denial: the identity is known and
+            # forbidden, never merely "unknown" (#846).
+            raise BindingNotFound(f"Binding {binding_id!r} has been revoked")
         return await _resolve(
             self,
             binding_id,
@@ -309,5 +354,6 @@ __all__ = [
     "BindingStore",
     "InMemoryBindingStore",
     "PgBindingStore",
+    "RevocableBindingStore",
     "SqliteBindingStore",
 ]
