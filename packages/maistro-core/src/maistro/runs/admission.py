@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph, Node
 from maistro.graph.nodes import list_kinds
+from maistro.runs.model import RunStatus
 
 # Re-exported: `ADMISSION_SOURCE` has always been this module's name for the
 # provenance key, and it now lives in `runs.sources` so `runs.store` can read
@@ -94,6 +95,7 @@ async def admit_direct_work(
     persona_id: str | None = None,
     provenance: dict[str, Any] | None = None,
     retention_expires_at: datetime | None = None,
+    initial_status: RunStatus = RunStatus.CREATED,
 ) -> Run:
     """Admit directly-submitted work and return its canonical Run.
 
@@ -121,6 +123,7 @@ async def admit_direct_work(
         # audit correlates on.
         provenance={**(provenance or {}), ADMISSION_SOURCE: source},
         retention_expires_at=retention_expires_at,
+        initial_status=initial_status,
     )
 
 
