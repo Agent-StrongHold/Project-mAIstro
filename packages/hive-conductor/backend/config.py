@@ -197,6 +197,11 @@ class Settings(BaseSettings):
     allow_stub_llm: bool = False
 
     maistro_router_api_key: str | None = None
+    # Separate host key used to attest the authenticated Hive user across the
+    # service hop. The bearer key identifies Conductor; this key identifies the
+    # delegation context and must be shared only with maistro-server.
+    maistro_delegation_key: SecretStr | None = None
+    maistro_service_principal: str = "conductor"
     # Provider metadata is operator config, not inferred from the gateway URL.
     # The bridge passes it into the canonical Container so Canvas and graph
     # nodes share one provider registry. Model-Binding authorizations are

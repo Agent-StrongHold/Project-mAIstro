@@ -108,6 +108,46 @@ class TaskAdmitter(Protocol):
         ...
 
 
+def _admission_provenance(task: TaskResponse) -> dict[str, Any]:
+    """The provenance every admitted task Run carries.
+
+    Identity evidence (#1057) leads: the originating principal and the
+    service principal acting for it are recorded as separate claims, never
+    one collapsed into the other, so an auditor reading the Run sees
+    "service principal acting for user principal". Delegation id and actor
+    kind ride along so the assertion is reconstructible from the Run alone.
+    """
+    provenance: dict[str, Any] = {TASK_ID_KEY: task.task_id}
+    if task.session_id:
+        provenance[SESSION_ID_KEY] = task.session_id
+    if task.user_id:
+        provenance["user_id"] = task.user_id
+    if task.service_principal_id:
+        provenance["service_principal_id"] = task.service_principal_id
+    if task.delegation_id:
+        provenance["delegation_id"] = task.delegation_id
+    if task.actor_kind:
+        provenance["actor_kind"] = task.actor_kind
+    # The request that submitted this task, read off the ambient context
+    # rather than a TaskCreate/TaskResponse field (#1063): admit() runs
+    # inside the same coroutine chain RequestIDMiddleware bound it in
+    # (HTTP submission), or whatever a background caller explicitly
+    # bound (scheduled admission) -- either way, one vocabulary, not a
+    # second correlation path threaded through the task's own body.
+    request_id = current_execution_context().request_id
+    if request_id:
+        provenance[REQUEST_ID_KEY] = request_id
+    if task.idempotency_key:
+        # The caller's explicit key, on the Run (#1176): the claim store is
+        # the reconciliation mechanism, but an auditor correlating a retry
+        # storm reads the Run, so the key the caller chose is recorded
+        # where the admission it produced lives. Derived keys are absent —
+        # the derivation is admission machinery, not something the caller
+        # said.
+        provenance[IDEMPOTENCY_KEY_PROVENANCE] = task.idempotency_key
+    return provenance
+
+
 class TaskRunAdmitter:
     """Admit queued tasks as canonical Runs in one bound Workspace/Project."""
 
@@ -170,28 +210,7 @@ class TaskRunAdmitter:
             agent_id=task.agent_id,
             registry=self._intents,
         )
-        provenance: dict[str, Any] = {TASK_ID_KEY: task.task_id}
-        if task.session_id:
-            provenance[SESSION_ID_KEY] = task.session_id
-        if task.user_id:
-            provenance["user_id"] = task.user_id
-        # The request that submitted this task, read off the ambient context
-        # rather than a TaskCreate/TaskResponse field (#1063): admit() runs
-        # inside the same coroutine chain RequestIDMiddleware bound it in
-        # (HTTP submission), or whatever a background caller explicitly
-        # bound (scheduled admission) -- either way, one vocabulary, not a
-        # second correlation path threaded through the task's own body.
-        request_id = current_execution_context().request_id
-        if request_id:
-            provenance[REQUEST_ID_KEY] = request_id
-        if task.idempotency_key:
-            # The caller's explicit key, on the Run (#1176): the claim store is
-            # the reconciliation mechanism, but an auditor correlating a retry
-            # storm reads the Run, so the key the caller chose is recorded
-            # where the admission it produced lives. Derived keys are absent —
-            # the derivation is admission machinery, not something the caller
-            # said.
-            provenance[IDEMPOTENCY_KEY_PROVENANCE] = task.idempotency_key
+        provenance = _admission_provenance(task)
         run = await admit_direct_work(
             self._runs,
             workspace_id=self._workspace_id,

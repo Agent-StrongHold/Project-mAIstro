@@ -233,6 +233,26 @@ class TestTheChainApplies:
         assert _tables() == first
 
 
+class TestTaskIdentityMigration:
+    def test_pre_provenance_receipts_become_explicit_system_work(self, empty_database) -> None:
+        """Migration 041 must not invent an empty user actor for old receipts.
+
+        This uses the live PostgreSQL schema rather than inspecting migration
+        source, because the relevant contract is the value an upgrade writes
+        into an existing task row.
+        """
+        assert _alembic("upgrade", "034").returncode == 0
+        _execute(
+            "insert into tasks (id, status, description, workspace) values (%s, %s, %s, %s)",
+            ("legacy-task", "queued", "legacy work", "/tmp/maistro-workspace"),
+        )
+
+        assert _alembic("upgrade", "041_task_identity_provenance").returncode == 0
+        assert _query("select user_id, actor_kind from tasks where id = %s", ("legacy-task",)) == [
+            ("system", "system")
+        ]
+
+
 class TestIndexIntent:
     def test_the_recency_indexes_are_actually_descending(self, empty_database) -> None:
         """`postgresql_order_by=` is not a real argument — SQLAlchemy raises on

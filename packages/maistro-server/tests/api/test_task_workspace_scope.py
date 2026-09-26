@@ -10,15 +10,19 @@ from maistro.observability.middleware import REQUEST_ID_HEADER
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
 from maistro.tasks.http_contract import (
+    DELEGATION_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
+    sign_delegation_context,
     sign_workspace_scope,
 )
 from maistro.tasks.queue import configure_task_queue
+from maistro_server.api.runs import configure_run_store
 from maistro_server.main import app
 
 TASK_WORKSPACE = "/tmp/maistro-workspace/test"  # nosec B108 -- API contract fixture
 SCOPE_KEY = "test-only-workspace-scope-key"
+DELEGATION_KEY = "test-only-task-delegation-key"
 
 
 @pytest.fixture
@@ -37,9 +41,11 @@ async def durable_spine(tmp_path, monkeypatch):
         _continuations,
     ) = await wire_execution_spine(conn, workspace_id="default")
     configure_task_queue(admitter=admitter)
+    configure_run_store(run_store)
     try:
         yield scope_store, run_store
     finally:
+        configure_run_store(None)
         queue_module._queue = previous
         await conn.close()
 
@@ -57,6 +63,149 @@ def _scope_headers(workspace_id: str) -> dict[str, str]:
         WORKSPACE_ID_HEADER: workspace_id,
         WORKSPACE_SCOPE_SIGNATURE_HEADER: sign_workspace_scope(workspace_id, SCOPE_KEY),
     }
+
+
+def _delegation_headers(user_id: str) -> dict[str, str]:
+    return {
+        "Authorization": "Bearer service-secret",
+        DELEGATION_HEADER: sign_delegation_context(
+            service_principal="conductor",
+            originating_principal=user_id,
+            key=DELEGATION_KEY,
+        ),
+    }
+
+
+async def test_delegated_users_keep_distinct_task_and_run_ownership(
+    durable_spine, client: AsyncClient, monkeypatch
+) -> None:
+    """The shared service credential cannot collapse Alice and Bob."""
+    _scope_store, run_store = durable_spine
+    monkeypatch.setenv("API_KEYS", '["conductor:service-secret"]')
+    monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
+
+    alice = await client.post(
+        "/tasks",
+        headers=_delegation_headers("alice"),
+        json={
+            "description": "Alice task",
+            "workspace": TASK_WORKSPACE,
+            "user_id": "mallory",
+        },
+    )
+    bob = await client.post(
+        "/tasks",
+        headers=_delegation_headers("bob"),
+        json={"description": "Bob task", "workspace": TASK_WORKSPACE},
+    )
+
+    assert alice.status_code == 202
+    assert bob.status_code == 202
+    alice_body = alice.json()
+    bob_body = bob.json()
+    assert alice_body["task"]["user_id"] == "alice"
+    assert bob_body["task"]["user_id"] == "bob"
+    assert alice_body["task"]["service_principal_id"] == "conductor"
+    assert bob_body["task"]["service_principal_id"] == "conductor"
+
+    alice_run = await run_store.get_run(alice_body["run_id"])
+    bob_run = await run_store.get_run(bob_body["run_id"])
+    assert alice_run is not None and bob_run is not None
+    assert alice_run.actor_principal_id == "alice"
+    assert bob_run.actor_principal_id == "bob"
+    assert alice_run.provenance["service_principal_id"] == "conductor"
+    assert bob_run.provenance["service_principal_id"] == "conductor"
+    assert alice_run.provenance["delegation_id"] == alice_body["task"]["delegation_id"]
+    assert bob_run.provenance["delegation_id"] == bob_body["task"]["delegation_id"]
+
+    own = await client.get(f"/tasks/{alice_body['task_id']}", headers=_delegation_headers("alice"))
+    cross = await client.get(f"/tasks/{alice_body['task_id']}", headers=_delegation_headers("bob"))
+    assert own.status_code == 200
+    assert cross.status_code == 404
+
+    own_run = await client.get(
+        f"/runs/{alice_body['run_id']}", headers=_delegation_headers("alice")
+    )
+    cross_run = await client.get(
+        f"/runs/{alice_body['run_id']}", headers=_delegation_headers("bob")
+    )
+    assert own_run.status_code == 200
+    assert own_run.json()["provenance"]["service_principal_id"] == "conductor"
+    assert cross_run.status_code == 404
+    cross_cancel = await client.delete(
+        f"/tasks/{alice_body['task_id']}", headers=_delegation_headers("bob")
+    )
+    assert cross_cancel.status_code == 404
+
+
+async def test_a_forged_originating_principal_is_rejected(
+    durable_spine, client: AsyncClient, monkeypatch
+) -> None:
+    del durable_spine
+    monkeypatch.setenv("API_KEYS", '["conductor:service-secret"]')
+    monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
+    forged = sign_delegation_context(
+        service_principal="other-service",
+        originating_principal="alice",
+        key=DELEGATION_KEY,
+    )
+
+    response = await client.post(
+        "/tasks",
+        headers={"Authorization": "Bearer service-secret", DELEGATION_HEADER: forged},
+        json={"description": "must not admit", "workspace": TASK_WORKSPACE},
+    )
+
+    assert response.status_code == 403
+
+
+def test_delegation_without_an_authenticated_principal_is_refused() -> None:
+    """A delegation envelope is only ever evidence *about* a service caller;
+    with no authenticated caller there is nothing for it to match, so the
+    shared resolver refuses rather than trusting the envelope alone."""
+    from fastapi import HTTPException
+
+    from maistro_server.api.delegation import resolve_delegated_identity
+
+    with pytest.raises(HTTPException) as excinfo:
+        resolve_delegated_identity(None, "any-envelope-at-all")
+
+    assert excinfo.value.status_code == 403
+
+
+def test_an_unverifiable_delegation_envelope_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A garbage, expired or wrong-key envelope fails closed at the shared
+    resolver: 403, not a fall-through to the service credential's identity."""
+    from fastapi import HTTPException
+
+    from maistro_server.api.delegation import resolve_delegated_identity
+    from maistro_server.api.principal import AuthenticatedPrincipal
+
+    monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
+    principal = AuthenticatedPrincipal(
+        user_id="conductor", token="service-secret", roles=frozenset({"user"})
+    )
+
+    for envelope in (
+        "not-an-envelope",
+        "eworthy.unsigned",
+        sign_delegation_context(
+            service_principal="conductor",
+            originating_principal="alice",
+            key="a-different-key",
+        ),
+        sign_delegation_context(
+            service_principal="conductor",
+            originating_principal="alice",
+            key=DELEGATION_KEY,
+            now=1_000_000,
+        ),
+    ):
+        with pytest.raises(HTTPException) as excinfo:
+            resolve_delegated_identity(principal, envelope)
+        assert excinfo.value.status_code == 403
 
 
 async def test_named_workspace_run_resolves_under_that_workspaces_root_project(

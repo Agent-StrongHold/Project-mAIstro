@@ -328,6 +328,13 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # are durable.
         idempotency_store=container.task_idempotency,
     )
+    # Restore the receipt projection before the runner can accept work. Only
+    # queued rows with an existing canonical Run are re-enqueued; active Runs
+    # belong to the canonical recovery loop, never a second scheduler — and
+    # never a second claim: a restored queued receipt re-enters through the
+    # runner, not through admission, so it cannot consume or collide with an
+    # idempotency claim.
+    await queue.restore_persisted()
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
