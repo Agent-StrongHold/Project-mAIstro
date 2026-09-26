@@ -413,6 +413,101 @@ def fetch():
         assert gate._unpooled_fetch_modules() < gate._outbound_fetch_modules()
 
 
+class TestTheBypassScannersEdgePaths:
+    """The #1096 scanners against trees that are not clean.
+
+    CI's diff-coverage gate (run 36243700637) found the edge paths of the
+    three scanners unexecuted: every test drove them over the real repository,
+    which has all five sibling roots present and every file parseable, and in
+    which no self-authorized fetch or private constructor exists to find. A
+    scanner whose finding paths have never fired cannot be trusted to report
+    zero, and one that crashes on a vanished directory fails the whole gate
+    instead of reporting what it did find — so both halves are pinned here
+    against synthetic trees.
+    """
+
+    def test_a_missing_root_and_an_unparseable_file_are_skipped(self, gate, tmp_path, monkeypatch):
+        """A package directory that is not there and a file that cannot be
+        parsed are skips, not crashes: the census reports what it could read.
+        """
+        present = tmp_path / "src"
+        present.mkdir()
+        (present / "broken.py").write_text("def (:\n", encoding="utf-8")
+        (present / "caller.py").write_text(
+            "import httpx\n\nhttpx.get('https://example.test')\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(gate, "_SIBLING_SRC_ROOTS", (tmp_path / "vanished", present))
+
+        findings = gate._sibling_unguarded_httpx_calls()
+
+        assert len(findings) == 1, findings
+        assert findings[0].endswith(": httpx.get")
+
+    def test_the_self_authorized_census_detects_the_keyword_form(self, gate, tmp_path, monkeypatch):
+        """`configure_outbound_policy(url=dest)` followed by
+        `client.post(url=dest)` is the same self-allowlist bypass as the
+        positional spelling — the autorun defect (#1096) arrived in both
+        shapes across the sibling packages, so the scanner must read the
+        ``url`` keyword, not only ``call.args[0]``. The vanished root beside
+        the real one keeps the missing-directory skip honest too.
+        """
+        source = tmp_path / "helper.py"
+        source.write_text(
+            textwrap.dedent(
+                """
+                def fetch(dest):
+                    configure_outbound_policy(url=dest)
+                    return client.post(url=dest)
+                """
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gate, "_SIBLING_SRC_ROOTS", (tmp_path / "vanished", tmp_path))
+
+        findings = gate._self_authorized_fetch_helpers()
+
+        assert len(findings) == 1, findings
+        assert "configure_outbound_policy('dest')" in findings[0]
+
+    def test_a_call_whose_target_cannot_be_named_is_left_alone(self, gate):
+        """`client.post(timeout=5)` names no destination, and `_request_target`'s
+        own contract is to stay quiet rather than guess — a keyword that is not
+        ``url`` must not be mistaken for one.
+        """
+        func = ast.parse("def fetch():\n    return client.post(timeout=5)\n").body[0]
+        assert isinstance(func, ast.FunctionDef)
+
+        assert gate._self_authorized_fetches_in_function("x.py", func) == []
+
+    def test_an_unparseable_file_reports_no_self_authorized_fetches(self, gate, tmp_path):
+        broken = tmp_path / "broken.py"
+        broken.write_text("def (:\n", encoding="utf-8")
+
+        assert gate._self_authorized_fetches_in_file(broken) == []
+
+    def test_the_repo_census_reports_a_constructor_and_survives_broken_trees(
+        self, gate, tmp_path, monkeypatch
+    ):
+        """The repo-wide constructor census had only ever been asserted on its
+        empty result over the real tree. The append is the scanner's whole
+        point, so a synthetic production root holding one private client must
+        be reported — while a vanished root and an unparseable file are
+        skipped rather than crashing the census.
+        """
+        wire = tmp_path / "packages" / "wire"
+        wire.mkdir(parents=True)
+        (wire / "client.py").write_text("import httpx\n\nown = httpx.Client()\n", encoding="utf-8")
+        (wire / "broken.py").write_text("def (:\n", encoding="utf-8")
+        monkeypatch.setattr(gate, "ROOT", tmp_path)
+        monkeypatch.setattr(
+            gate, "_REPO_PRODUCTION_ROOTS", (tmp_path / "vanished", tmp_path / "packages")
+        )
+
+        findings = gate._repo_unguarded_httpx_constructors()
+
+        assert findings == ["packages/wire/client.py: private httpx client constructor"]
+
+
 def test_the_outbound_fetch_census_finds_the_modules_that_open_connections(gate):
     """A census that returned zero would make every count trivially checkable
     and completely uninformative."""
