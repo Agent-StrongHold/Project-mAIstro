@@ -30,7 +30,7 @@ history:
 **Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T0  
-**Depends on:** ADR-001
+**Depends on:** ADR-095
 
 ---
 
