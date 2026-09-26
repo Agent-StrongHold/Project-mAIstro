@@ -205,19 +205,24 @@ test("Design Studio is the parent surface and never enables fake visual executio
 
   const discovery = page.getByRole("listitem").filter({ hasText: "Design resource discovery" });
   await expect(discovery).toContainText("available");
-  await expect(discovery).toContainText("Brief creation is not connected yet");
+  await expect(discovery).toContainText("Skills and design systems are discovered from the connected Design service.");
   await expect(page.getByText("Brief + design system", { exact: true })).toHaveCount(0);
 
-  const generate = page.getByRole("button", { name: "Generate visual" });
-  await expect(generate).toBeDisabled();
-  await page.getByLabel("Describe the artifact").fill("An infographic explaining durable Run lineage");
-  await expect(generate).toBeDisabled();
+  const openEditor = page.getByRole("button", { name: "Open editor" });
+  await expect(openEditor).toBeDisabled();
 
-  // The old implementation changed stages to running/done solely because time
-  // elapsed and then called /v1/canvas/eval. Waiting must not manufacture work.
-  await page.waitForTimeout(1200);
-  await expect(page.getByText("Running...", { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/Generated output for/)).toHaveCount(0);
+  // Select the Infographic artifact mode through the keyboard before editing;
+  // the editor that opens must be the one the user chose, not the default.
+  await page.getByRole("group", { name: "Design artifact types" })
+    .getByRole("button").filter({ hasText: "Infographic" }).press("Enter");
+  await page.getByLabel("Describe the artifact").fill("An infographic explaining durable Run lineage");
+  await expect(openEditor).toBeEnabled();
+
+  // Opening a draft is an explicit local editor transition, not a fabricated
+  // canvas execution. No /v1/canvas/eval request is allowed here.
+  await openEditor.press("Enter");
+  await expect(page.getByRole("heading", { name: "Infographic editor" })).toBeVisible();
+  await expect(page.getByText(/Draft editor ready/)).toBeVisible();
   expect(canvasRequests).toEqual([]);
 
   // Engineering coordination belongs in issues/docs, not the shipped product.
@@ -251,13 +256,17 @@ test("Design Studio reports unavailable persistence instead of an empty durable 
   });
 });
 
-test("Deck is a contained Design Studio mode, not a route escape", async () => {
+test("Deck is a contained Design Studio mode with keyboard-safe editing", async () => {
   await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
   const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
-  await artifactTypes.getByRole("button").filter({ hasText: "Presentation / Deck" }).click();
+  await artifactTypes.getByRole("button").filter({ hasText: "Presentation / Deck" }).press("Enter");
+  await page.getByLabel("Describe the artifact").fill("A durable execution pitch deck");
+  await page.getByRole("button", { name: "Open Deck editor" }).press("Enter");
 
-  await expect(page.getByRole("button", { name: "Open Deck editor" })).toBeDisabled();
-  await expect(page.getByText(/Deck editing is temporarily unavailable while secure rendering is enabled/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
+  await expect(page.getByRole("listbox", { name: "Ordered deck pages" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Present" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export HTML" })).toBeVisible();
   await expect(page).toHaveURL(/\/cli\/canvas$/);
 });
 

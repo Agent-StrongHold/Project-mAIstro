@@ -473,6 +473,7 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
         run: Run | None = None,
     ) -> dict[str, Any]:
@@ -497,7 +498,9 @@ class Container:
                 messages,
                 auth=auth,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
+                dispatch_pending=True,
             )
 
         async def _dispatch() -> dict[str, Any]:
@@ -534,6 +537,10 @@ class Container:
                 exc.run_id,
                 exc_info=True,
             )
+            # Past the dispatch gap in the other direction: the Run stays open
+            # for recovery, unshielded, so once its lease lapses the retention
+            # window treats it as the stall it is.
+            self._release_chat_dispatch(run)
             result = exc.response
         except BaseException as exc:
             # Attempt reconciliation already owns cancellation, so a client
@@ -636,7 +643,9 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
+        dispatch_pending: bool = False,
     ) -> Run:
         """Admit this turn as a canonical Run, or refuse it (#1108).
 
@@ -645,6 +654,13 @@ class Container:
         retryable 503 and nothing reaches the model (owner decision
         2026-09-23, amending ADR-082326-c126). Whatever admission already
         persisted is compensated first, so the refusal strands nothing.
+
+        `dispatch_pending` says a dispatch follows in this process: the Run is
+        shielded from the retention window until the turn closes, so the
+        window cannot evict it in the gap between admission and its first
+        Attempt. Only the dispatching seam sets it. An admission-only caller
+        leaves it False, because a Run nobody will dispatch is a stall, and
+        stalls are exactly what the window exists to forget.
         """
         if self.chat_admitter is None:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
@@ -653,6 +669,7 @@ class Container:
             run = await self.chat_admitter.admit(
                 messages,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
                 known_task_types=self.config.task_types,
                 actor_principal_id=getattr(auth, "user_id", None) or None,
@@ -662,6 +679,15 @@ class Container:
             # is admitted and about to be dispatched — rather than a fiction
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+            if dispatch_pending:
+                # Marked while the Run is still QUEUED, with no await between
+                # the QUEUED write and this mark, so there is no observable
+                # moment where the Run is RUNNING, Attempt-less, and unshielded
+                # — the retention window could otherwise not tell a turn about
+                # to dispatch from a stalled admission. Released when the turn
+                # closes. An admission-only caller never marks, so its
+                # abandoned Runs stay evictable.
+                self.chat_admitter.mark_dispatch_pending(run.run_id)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         except asyncio.CancelledError:
             # The client disconnected mid-admission. Without the shield the
@@ -669,10 +695,12 @@ class Container:
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
             await asyncio.shield(self._cancel_incomplete_admission(run))
+            self._release_chat_dispatch(run)
             raise
         except Exception as exc:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
             await self._cancel_incomplete_admission(run)
+            self._release_chat_dispatch(run)
             raise ChatTurnRefused("chat turn could not be admitted as a Run") from exc
 
     async def _cancel_incomplete_admission(self, run: Run | None) -> None:
@@ -705,6 +733,7 @@ class Container:
                 RunStatus.CANCELLED,
                 error=ADMISSION_INCOMPLETE,
             )
+            await self._sweep_chat_runs()
         except Exception:
             logger.warning(
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
@@ -742,6 +771,7 @@ class Container:
         """
         if run is None:
             return True
+        self._release_chat_dispatch(run)
         if cancelled and (error is not None or result is not None):
             raise ValueError("cancelled chat closure cannot carry error or result")
         if cancelled:
@@ -755,7 +785,35 @@ class Container:
         except Exception:
             logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
             return False
+        await self._sweep_chat_runs()
         return True
+
+    def _release_chat_dispatch(self, run: Run | None) -> None:
+        """Drop the Run's dispatch shield once the turn is closing.
+
+        The shield exists for the gap between admission and the turn's first
+        Attempt; closure is past that gap in both directions — the Run
+        terminalizes here, or (dispatch unrecorded, #1108) stays open for
+        recovery with a lease that expires like any other. Housekeeping, on
+        the same terms as the sweep it protects: a failed release is logged,
+        never raised — it must not replace the turn's own outcome.
+        """
+        if run is None or self.chat_admitter is None:
+            return
+        try:
+            self.chat_admitter.release_dispatch_pending(run.run_id)
+        except Exception:
+            logger.warning("chat dispatch shield release failed", exc_info=True)
+
+    async def _sweep_chat_runs(self) -> None:
+        """Trim terminal chat Runs after the canonical seam closes one."""
+        if self.chat_admitter is None:
+            return
+        try:
+            await asyncio.shield(self.chat_admitter.sweep())
+        except Exception:
+            # Retention is housekeeping and must not replace the turn's answer.
+            logger.warning("chat Run retention sweep failed", exc_info=True)
 
     async def _terminalize(
         self,

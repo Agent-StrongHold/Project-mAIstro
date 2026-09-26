@@ -149,6 +149,8 @@ export default function FixedPageArtifactEditor({
       <SanitizedVisualArtifact
         contentEditable
         suppressContentEditableWarning
+        role="textbox"
+        aria-multiline="true"
         aria-label={`${MODE_LABELS[mode]} visual preview`}
         onPaste={handlePaste}
         onDrop={handleDrop}
