@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
 from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY
+from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.types.config import AgentConfig
 from maistro_server.api import chat_completions as chat_api
 from maistro_server.api import runs as runs_api
@@ -249,6 +250,49 @@ class TestNonStreamingChatCompletions:
         assert "error" not in attempt
         assert "result" not in attempt
         assert "secret-endpoint" not in node_runs.text
+
+
+class TestAdmissionCompensation:
+    def test_failed_pre_route_admission_does_not_strand_a_run(self, client: TestClient) -> None:
+        """A vetoed lifecycle write refuses the turn and cancels the Run (#1108).
+
+        Supersedes the best-effort contract this test used to assert: a turn
+        whose admission cannot reach RUNNING is refused with a retryable 503
+        and never dispatched, and the half-admitted Run is compensated to
+        CANCELLED rather than stranded at CREATED/QUEUED.
+        """
+        container = chat_api._container
+        assert container is not None
+        inner = container.run_store
+
+        class _VetoQueued:
+            def __init__(self) -> None:
+                self.veto = True
+
+            def __getattr__(self, name):
+                return getattr(inner, name)
+
+            async def transition_run(self, run_id, target, **kwargs):
+                if target is RunStatus.QUEUED and self.veto:
+                    self.veto = False
+                    raise RuntimeError("queue write failed")
+                return await inner.transition_run(run_id, target, **kwargs)
+
+        container.run_store = _VetoQueued()
+        run_task = AsyncMock(return_value=_output("recovered"))
+        with patch(RUN_TASK, run_task):
+            response = client.post(
+                "/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert response.status_code == 503
+        assert int(response.headers["Retry-After"]) > 0
+        run_task.assert_not_awaited()
+        statuses = [run.status for run in inner._runs.values()]
+        assert statuses
+        assert all(status in TERMINAL_RUN_STATUSES for status in statuses)
+        assert RunStatus.CANCELLED in statuses
 
 
 class TestStreamingChatCompletions:
