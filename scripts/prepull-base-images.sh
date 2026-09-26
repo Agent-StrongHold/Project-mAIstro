@@ -5,8 +5,8 @@
 # ---------------
 # `docker-build` failed on PR #174 before touching a line of repository content:
 #
-#   #2 [internal] load metadata for cgr.dev/chainguard/python:latest-dev
-#   #2 ERROR: failed to do request: Head "https://cgr.dev/v2/.../latest-dev":
+#   #2 [internal] load metadata for python:3.13.15-slim-bookworm
+#   #2 ERROR: failed to do request: Head "https://registry-1.docker.io/v2/...":
 #      read tcp ...: read: connection reset by peer
 #
 # The same job succeeded on PR #175 four minutes later, same Dockerfile and same
