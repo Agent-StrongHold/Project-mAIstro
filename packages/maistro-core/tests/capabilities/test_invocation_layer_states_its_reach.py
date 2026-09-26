@@ -73,13 +73,13 @@ class TestTheStoreStatesItsReachAndItsTable:
             for path in sorted(_MIGRATIONS.glob("*.py"))
             if "capability_invocations" in path.read_text()
         ]
-        # 035 creates the table; 042 recreates its effect index in the
+        # 035 creates the table; 043 recreates its effect index in the
         # SQLite shape so both durable backends of the replay contract
         # (#1194) stay aligned. Any further migration touching the table
         # must be added here deliberately.
         assert touching == [
             "035_capability_invocations.py",
-            "042_capability_invocation_effect_index.py",
+            "043_capability_invocation_effect_index.py",
         ]
 
     def test_the_migration_scan_has_a_corpus(self) -> None:

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS capability_invocations (
 -- whole Run, i.e. the NULL argument to list_effect) and the physical-visit
 -- lookup are both served by one index. Admission uniqueness keeps
 -- node_run_id (uq_capability_invocation_active_effect below), matching the
--- SQLite twin and Alembic revision 042.
+-- SQLite twin and Alembic revision 043.
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_effect
     ON capability_invocations (run_id, binding_id, effect_key, created_at, invocation_id);
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_attempt

@@ -85,6 +85,30 @@ def _isolate_persona_authoring_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 @pytest.fixture(autouse=True)
+def _isolate_username_claims():
+    """Give each test its own username-claim index.
+
+    Account allocation (#1061) routes every user creation through the
+    process-global claim store, so an active claim left by one test makes a
+    later test's fresh-users setup observe the name as already taken. Snapshot
+    and restore the ORIGINAL store object in place: a test may have rebound
+    the module attribute to its own store, and this fixture must restore the
+    global regardless of what the attribute points at by teardown time.
+    """
+    import copy
+
+    import stores
+
+    claims_store = stores.username_claims
+    snapshot = copy.deepcopy(dict(claims_store.items()))
+    yield
+    for key in list(claims_store.keys()):
+        claims_store.pop(key)
+    for key, value in snapshot.items():
+        claims_store[key] = value
+
+
+@pytest.fixture(autouse=True)
 def _isolate_dashboard_layouts():
     """Give each test its own layout store."""
     import copy

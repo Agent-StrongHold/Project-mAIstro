@@ -91,11 +91,19 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # therefore follows the then-chain tip (041, the tip of
     # 035 -> ... -> 038 -> 039 -> 040 -> 041) so
     # every deployment's ordinary ``upgrade head`` applies the audit scope
-    # migration rather than leaving it on a competing branch. 042 (the #1194
-    # capability Invocation effect index) now extends the chain past it.
+    # migration rather than leaving it on a competing branch. 041 (the
+    # #1194 canonical Run effect claim) re-parented this revision onto
+    # itself, and 042 (the #1120 manual-fire occurrence identity) and 043
+    # (the #1194 Invocation effect index, renumbered after 042 was taken)
+    # now extend the chain past it.
     assert revision.down_revision == "041"
-    assert directory.get_heads() == ["042"]
-    walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
+    # The contract under test is not that the audit migration IS the tip
+    # (any later migration on any open branch would break that); it is that
+    # a plain ``upgrade head`` still applies it: exactly one head, with the
+    # audit scope migration on that head's chain.
+    heads = directory.get_heads()
+    assert len(heads) == 1
+    walked = {item.revision for item in directory.walk_revisions("base", heads[0])}
     assert revision.revision in walked
 
 

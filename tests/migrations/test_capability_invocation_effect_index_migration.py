@@ -1,6 +1,6 @@
 """Migration conformance tests for the capability Invocation effect index (#1194).
 
-Revision 042 recreates ``idx_capability_invocation_effect`` without
+Revision 043 recreates ``idx_capability_invocation_effect`` without
 ``node_run_id`` so the PostgreSQL ledger matches the SQLite twin: the
 logical-effect lookup (``node_run_id=None`` — one history per Run across
 every physical NodeRun) and the physical-visit lookup must both be served
@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-MIGRATION = ROOT / "alembic" / "versions" / "042_capability_invocation_effect_index.py"
+MIGRATION = ROOT / "alembic" / "versions" / "043_capability_invocation_effect_index.py"
 
 
 @pytest.fixture
@@ -49,9 +49,9 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     directory = ScriptDirectory.from_config(config)
 
-    revision = directory.get_revision("042")
-    assert revision.down_revision == "036_audit_log_org_scope"
-    assert directory.get_heads() == ["042"]
+    revision = directory.get_revision("043")
+    assert revision.down_revision == "042"
+    assert directory.get_heads() == ["043"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
