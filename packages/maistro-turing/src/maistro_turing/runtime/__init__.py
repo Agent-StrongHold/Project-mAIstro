@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from maistro.security.warden.detector import context_from_messages
 from maistro_turing.bridge import (
     TuringClassifierBridge,
     TuringMemoryBridge,
@@ -180,14 +181,26 @@ class TuringChatSession:
         self._history: list[dict[str, str]] = []
 
     async def handle_message(self, message: str) -> str:
-        """Scan input and the provider result before trusted use."""
+        """Scan input and the provider result before trusted use.
+
+        The scan of the current turn carries the bounded ordered prior history
+        (#1158): a payload split across individually-benign turns is refused
+        at the completing turn, before any prompt that joins the fragments
+        into trusted model context exists. ``context_from_messages`` caps the
+        tail and per-item bytes, so the analysis window stays bounded no
+        matter how long the session runs.
+        """
         scan_user_input = getattr(self._security, "scan_user_input", None)
         if scan_user_input is None:
             # Compatibility for small test doubles and older bridge adapters;
             # the canonical bridge exposes scan_user_input directly.
             scan = await self._security.scan_self_write(message, kind="chat-input")
         else:
-            scan = await scan_user_input(message)
+            scan_kwargs: dict[str, Any] = {}
+            prior_context = context_from_messages(self._history)
+            if prior_context:
+                scan_kwargs["context"] = prior_context
+            scan = await scan_user_input(message, **scan_kwargs)
         if scan.get("verdict") != "allowed":
             raise TuringContentBlocked("user input refused by Warden")
 
