@@ -353,10 +353,13 @@ async def test_admit_hands_back_exactly_the_scanned_serialization() -> None:
 @pytest.mark.ac("SPEC-092526-c41d/AC-4")
 def test_sync_scan_inside_a_loop_records_the_refusal_on_an_async_sink() -> None:
     """A sync seam called inside a running loop cannot block it to await an
-    async audit sink — but the refusal must still be recorded. The in-loop
-    path schedules the sink write on the live loop instead of dropping it as
-    an un-awaited coroutine (repair probe at this seam previously returned
-    audit_calls=0 plus "coroutine was never awaited")."""
+    async audit sink, so durable evidence cannot be confirmed before
+    scan_sync returns. The truthful outcome is audit_unavailable (fail
+    closed — never a warden_unavailable refusal that implies a durable
+    record exists), the scan-level reason is preserved as scan_outcome, and
+    the record is still delivered on the live loop instead of being dropped
+    as an un-awaited coroutine (repair probe at this seam previously
+    returned audit_calls=0 plus "coroutine was never awaited")."""
     import asyncio
     import warnings
 
@@ -369,9 +372,10 @@ def test_sync_scan_inside_a_loop_records_the_refusal_on_an_async_sink() -> None:
         boundary = WardenHarvestBoundary(StubWarden(), audit_sink=async_sink)
         result = boundary.scan_sync("benign")
         assert result.admitted is False
-        assert result.outcome == "warden_unavailable"
+        assert result.outcome == "audit_unavailable"
+        assert result.audit["scan_outcome"] == "warden_unavailable"
         for _ in range(3):
-            await asyncio.sleep(0)  # let the scheduled audit write settle
+            await asyncio.sleep(0)  # let the scheduled audit delivery settle
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
@@ -379,7 +383,9 @@ def test_sync_scan_inside_a_loop_records_the_refusal_on_an_async_sink() -> None:
 
     assert len(recorded) == 1
     assert recorded[0]["admitted"] is False
-    assert recorded[0]["outcome"] == "warden_unavailable"
+    assert recorded[0]["outcome"] == "audit_unavailable"
+    assert recorded[0]["scan_outcome"] == "warden_unavailable"
+    assert recorded[0]["audit_delivery"] == "scheduled_unconfirmed"
     assert recorded[0]["boundary"] == "rsi_harvest_input"
 
 
@@ -398,6 +404,7 @@ def test_sync_scan_inside_a_loop_with_a_broken_sink_reports_audit_unavailable() 
         assert result.admitted is False
         assert result.outcome == "audit_unavailable"
         assert result.audit["outcome"] == "audit_unavailable"
+        assert result.audit["scan_outcome"] == "warden_unavailable"
 
     asyncio.run(exercise())
 
@@ -419,28 +426,147 @@ def test_sync_scan_inside_a_loop_delivers_to_a_sync_sink_inline() -> None:
     asyncio.run(exercise())
 
 
+@pytest.mark.ac("SPEC-092526-c41d/AC-4")
 def test_scheduled_async_audit_failure_is_contained_and_refusal_stands() -> None:
-    """An async sink that fails when its scheduled write finally runs must
-    not surface as an un-retrieved task exception nor reopen the refusal."""
+    """An async sink that fails when its scheduled delivery finally runs must
+    not surface as an un-retrieved task exception nor reopen the refusal —
+    and the returned outcome must tell the truth. The prior defect (verified
+    probe): after the sink raised, scan_sync had already returned
+    outcome=warden_unavailable while durable_records=0, i.e. the boundary
+    claimed a recorded warden-unavailable refusal that was never persisted.
+    Now the unconfirmable delivery is reported as audit_unavailable up
+    front, and both the initial delivery and the corrected retry are
+    contained inside the scheduled task."""
     import asyncio
+    import warnings
 
-    attempted: list[bool] = []
+    attempted: list[dict[str, object]] = []
 
-    async def failing_sink(_record: dict[str, object]) -> None:
-        attempted.append(True)
+    async def failing_sink(record: dict[str, object]) -> None:
+        attempted.append(dict(record))
         raise RuntimeError("audit sink down late")
 
     async def exercise() -> None:
         boundary = WardenHarvestBoundary(StubWarden(), audit_sink=failing_sink)
         result = boundary.scan_sync("benign")
         assert result.admitted is False
-        assert result.outcome == "warden_unavailable"
+        assert result.outcome == "audit_unavailable"
+        assert result.audit["scan_outcome"] == "warden_unavailable"
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        asyncio.run(exercise())
+
+    # the initial delivery ran and its failure was retried once, both drained
+    assert [record.get("audit_delivery") for record in attempted] == [
+        "scheduled_unconfirmed",
+        "retry_after_failure",
+    ]
+    assert all(record["outcome"] == "audit_unavailable" for record in attempted)
+    assert all(record["admitted"] is False for record in attempted)
+
+
+@pytest.mark.ac("SPEC-092526-c41d/AC-3")
+@pytest.mark.ac("SPEC-092526-c41d/AC-4")
+def test_scheduled_async_audit_failure_persists_truthful_audit_unavailable_record() -> None:
+    """A transiently failing async sink must still end up with a durable,
+    truthful audit-unavailable record: the corrected redelivery after the
+    failed write persists the not-admitted outcome instead of losing it."""
+    import asyncio
+    import json
+
+    persisted: list[dict[str, object]] = []
+    failed_once = False
+
+    async def flaky_sink(record: dict[str, object]) -> None:
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("audit sink down late")
+        persisted.append(dict(record))
+
+    async def exercise() -> None:
+        boundary = WardenHarvestBoundary(StubWarden(), audit_sink=flaky_sink)
+        result = boundary.scan_sync("benign")
+        assert result.admitted is False
+        assert result.outcome == "audit_unavailable"
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+
+    assert len(persisted) == 1
+    assert persisted[0]["outcome"] == "audit_unavailable"
+    assert persisted[0]["admitted"] is False
+    assert persisted[0]["scan_outcome"] == "warden_unavailable"
+    assert persisted[0]["audit_delivery"] == "retry_after_failure"
+    assert persisted[0]["boundary"] == "rsi_harvest_input"
+    assert persisted[0]["content_digest"]
+    # the record is correlation-only evidence: no harvested content leaks
+    assert "benign" not in json.dumps(persisted[0])
+
+
+def test_sync_scan_inside_a_loop_supersedes_an_unawaited_sink_coroutine() -> None:
+    """A sink declared sync that returns a coroutine anyway must not leave a
+    stale un-awaited write: the captured coroutine is closed unstarted and
+    only the truthful final record is delivered."""
+    import asyncio
+
+    delivered_outcomes: list[str] = []
+
+    def semi_async_sink(record: dict[str, object]) -> object:
+        outcome = str(record["outcome"])
+
+        async def captured() -> None:
+            delivered_outcomes.append(outcome)
+
+        return captured()
+
+    async def exercise() -> None:
+        boundary = WardenHarvestBoundary(StubWarden(), audit_sink=semi_async_sink)
+        result = boundary.scan_sync("benign")
+        assert result.admitted is False
+        assert result.outcome == "audit_unavailable"
         for _ in range(3):
             await asyncio.sleep(0)
 
     asyncio.run(exercise())
 
-    assert attempted == [True]  # the write ran and drained its own failure
+    # only the truthful final record ran; the stale warden_unavailable
+    # coroutine was closed before it could start
+    assert delivered_outcomes == ["audit_unavailable"]
+
+
+def test_sync_scan_inside_a_loop_supersedes_a_sink_returned_future() -> None:
+    """A sync-declared sink returning a Future gets the same treatment: the
+    unconfirmed inline future is cancelled and the scheduled delivery of the
+    truthful record is what actually runs."""
+    import asyncio
+
+    delivered: list[str] = []
+
+    def future_sink(record: dict[str, object]) -> object:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+        if record.get("audit_delivery"):
+            # the scheduled delivery of the final record resolves immediately
+            delivered.append(str(record["outcome"]))
+            future.set_result(None)
+        return future
+
+    async def exercise() -> None:
+        boundary = WardenHarvestBoundary(StubWarden(), audit_sink=future_sink)
+        result = boundary.scan_sync("benign")
+        assert result.admitted is False
+        assert result.outcome == "audit_unavailable"
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+
+    assert delivered == ["audit_unavailable"]
 
 
 @pytest.mark.ac("SPEC-092526-c41d/AC-2")

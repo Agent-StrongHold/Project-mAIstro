@@ -18,7 +18,7 @@ import inspect
 import json
 import logging
 import threading
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
@@ -220,19 +220,18 @@ def _correlation_payload(correlation: HarvestCorrelation, digest: str) -> dict[s
     return {key: value for key, value in data.items() if value is not None}
 
 
-async def _drain_audit_write(write: Awaitable[object]) -> None:
-    """Run one scheduled audit write, keeping its failure from surfacing
-    as an un-retrieved task exception. The admission decision is already
-    made (and refused) by the time this runs; a failed write is logged, not
-    swallowed silently."""
-    try:
-        await write
-    except Exception:
-        logger.warning("RSI harvest audit write failed after admission", exc_info=True)
-
-
 class WardenHarvestBoundary:
-    """Fail-closed Warden admission for RSI harvested content."""
+    """Fail-closed Warden admission for RSI harvested content.
+
+    Truthfulness rule for the synchronous in-loop seam: an admission whose
+    durable audit evidence cannot be confirmed before ``scan_sync`` returns
+    (an async audit sink on a live event loop) is reported as
+    ``audit_unavailable`` — never as a ``warden_unavailable`` refusal that
+    implies a durable record exists while none was written. The scheduled
+    delivery keeps the scan-level reason in ``scan_outcome`` and retries a
+    corrected record once when the write fails, so transient sink failures
+    still persist the truthful not-admitted outcome.
+    """
 
     def __init__(
         self,
@@ -259,7 +258,7 @@ class WardenHarvestBoundary:
             else None
         )
         self._policy_version = policy_version
-        # Strong references for audit tasks scheduled by the synchronous
+        # Strong references for audit records scheduled by the synchronous
         # adapter: the event loop keeps only weak task references, so an
         # unreferenced pending write can be garbage-collected mid-flight.
         self._audit_tasks: set[asyncio.Task[None]] = set()
@@ -305,7 +304,12 @@ class WardenHarvestBoundary:
 
         Running inside an event loop cannot safely block it to execute the
         async Warden. That is an unavailable policy decision, not an allow-all
-        fallback.
+        fallback: the content is refused. When the audit sink is async, its
+        write also cannot be confirmed before this method returns, so the
+        truthful admission-level outcome is ``audit_unavailable`` (the
+        scan-level reason is preserved as ``scan_outcome`` in the audit
+        record) and the record is delivered on the live loop, with one
+        corrected redelivery attempt if that write fails.
         """
         try:
             asyncio.get_running_loop()
@@ -319,16 +323,36 @@ class WardenHarvestBoundary:
                 return executor.submit(asyncio.run, self.scan(value)).result()
         content = serialize_harvest_input(value)
         digest = _digest(content)
-        outcome: AdmissionOutcome = "warden_unavailable"
-        audit = self._audit_record(outcome, False, digest, None)
+        # The async Warden cannot run on a live loop from this synchronous
+        # seam, so the scan-level reason is fixed: the scanner was unavailable.
+        scan_outcome: AdmissionOutcome = "warden_unavailable"
+        outcome = scan_outcome
+        audit = self._audit_record(scan_outcome, False, digest, None)
         try:
-            self._record_audit(audit)
+            confirmed = self._deliver_audit_inline(audit)
         except Exception:
             # Parity with scan(): an admission that cannot be audited is not
             # an admitted admission. The content stays refused either way.
             logger.warning("RSI harvest audit unavailable; refusing content")
             outcome = "audit_unavailable"
-            audit = self._audit_record(outcome, False, digest, None)
+            audit = self._audit_record(outcome, False, digest, None, scan_outcome=scan_outcome)
+            return HarvestAdmission(False, outcome, digest, None, audit)
+        if not confirmed:
+            # An async sink write cannot be confirmed before scan_sync
+            # returns. Fail closed to a truthful audit_unavailable outcome
+            # (never a warden_unavailable refusal that implies a durable
+            # record exists), preserve the scan-level reason as
+            # ``scan_outcome``, and deliver the record on the live loop.
+            outcome = "audit_unavailable"
+            audit = self._audit_record(
+                outcome,
+                False,
+                digest,
+                None,
+                scan_outcome=scan_outcome,
+                audit_delivery="scheduled_unconfirmed",
+            )
+            self._schedule_audit_record(audit)
         return HarvestAdmission(False, outcome, digest, None, audit)
 
     def _audit_record(
@@ -337,6 +361,9 @@ class WardenHarvestBoundary:
         admitted: bool,
         digest: str,
         verdict: WardenVerdict | None,
+        *,
+        scan_outcome: AdmissionOutcome | None = None,
+        audit_delivery: str | None = None,
     ) -> dict[str, object]:
         record: dict[str, object] = {
             "event": "rsi.harvest.warden_admission",
@@ -348,39 +375,98 @@ class WardenHarvestBoundary:
             "flags": list(verdict.flags) if verdict else [],
             "confidence": verdict.confidence if verdict else None,
         }
+        if scan_outcome is not None:
+            # The scan-level refusal reason, kept distinct from the
+            # admission-level outcome when audit delivery could not be
+            # confirmed (for example the in-loop scheduled path).
+            record["scan_outcome"] = scan_outcome
+        if audit_delivery is not None:
+            record["audit_delivery"] = audit_delivery
         record.update(_correlation_payload(self._correlation, digest))
         return record
 
     async def _record_audit_async(self, record: dict[str, object]) -> None:
         if self._audit_sink is not None:
-            result = self._audit_sink(dict(record))
-            if inspect.isawaitable(result):
-                await result
+            await self._invoke_audit_sink(record)
             return
         logger.info("RSI harvest Warden admission", extra={"audit": record})
 
-    def _record_audit(self, record: dict[str, object]) -> None:
-        if self._audit_sink is not None:
-            result = self._audit_sink(dict(record))
-            if inspect.isawaitable(result):
-                self._schedule_audit_write(result)
+    async def _invoke_audit_sink(self, record: dict[str, object]) -> None:
+        if self._audit_sink is None:  # pragma: no cover - callers narrow first
             return
-        logger.info("RSI harvest Warden admission", extra={"audit": record})
+        result = self._audit_sink(dict(record))
+        if inspect.isawaitable(result):
+            await result
 
-    def _schedule_audit_write(self, write: object) -> None:
-        """Deliver an async audit sink write from the synchronous adapter.
+    def _deliver_audit_inline(self, record: dict[str, object]) -> bool:
+        """Deliver an audit record that can be confirmed before returning.
+
+        Returns ``True`` when the record was durably delivered inline (or no
+        sink is configured and process logging is the audit channel), so the
+        caller may keep the scan-level outcome. Returns ``False`` when the
+        sink is async: delivery cannot be confirmed before ``scan_sync``
+        returns, so the caller must fail closed to ``audit_unavailable`` and
+        schedule the delivery instead. A raising synchronous sink propagates,
+        mirroring :meth:`scan`.
+        """
+        if self._audit_sink is None:
+            logger.info("RSI harvest Warden admission", extra={"audit": record})
+            return True
+        if inspect.iscoroutinefunction(self._audit_sink):
+            return False
+        result = self._audit_sink(dict(record))
+        if inspect.isawaitable(result):
+            # A sync-declared sink returned an awaitable anyway: the captured
+            # coroutine or future never ran. Close it and let the scheduled
+            # delivery hand the sink the truthful unconfirmed record instead
+            # of leaving a stale write racing the corrected one.
+            if inspect.iscoroutine(result):
+                result.close()
+            elif isinstance(result, asyncio.Future):
+                result.cancel()
+            return False
+        return True
+
+    def _schedule_audit_record(self, record: dict[str, object]) -> None:
+        """Deliver one audit record from the synchronous adapter.
 
         This path is only reached from ``scan_sync`` inside a running event
-        loop, so the blocked/not-admitted outcome can still be recorded:
-        schedule the sink coroutine on that loop instead of dropping it as
-        an un-awaited coroutine (which loses the refusal evidence and leaks
-        a RuntimeWarning). A strong reference is kept until the write
-        settles; the loop itself only holds weak task references.
+        loop, so the refused outcome can still be recorded: schedule the
+        delivery on that loop instead of dropping it as an un-awaited
+        coroutine (which loses the refusal evidence and leaks a
+        RuntimeWarning). A strong reference is kept until the write settles;
+        the loop itself only holds weak task references.
         """
         loop = asyncio.get_running_loop()
-        task = loop.create_task(_drain_audit_write(cast("Awaitable[object]", write)))
+        task = loop.create_task(self._deliver_scheduled_audit(record))
         self._audit_tasks.add(task)
         task.add_done_callback(self._audit_tasks.discard)
+
+    async def _deliver_scheduled_audit(self, record: dict[str, object]) -> None:
+        """Run one scheduled audit delivery, truthfully and contained.
+
+        The admission decision is already made (and refused) by the time this
+        runs. A failed delivery is retried once with an annotation marking the
+        retry, so a transiently failing sink still persists the truthful
+        ``audit_unavailable`` record rather than silently losing it; a hard
+        failure is logged with the outcome and digest only — never content —
+        instead of surfacing as an un-retrieved task exception.
+        """
+        try:
+            await self._invoke_audit_sink(record)
+            return
+        except Exception:
+            logger.warning("RSI harvest audit write failed after admission", exc_info=True)
+        corrected = dict(record)
+        corrected["audit_delivery"] = "retry_after_failure"
+        try:
+            await self._invoke_audit_sink(corrected)
+        except Exception:
+            logger.error(
+                "RSI harvest audit record undeliverable after retry (outcome=%s digest=%s)",
+                record.get("outcome"),
+                record.get("content_digest"),
+            )
 
 
 def _messages_for_scan(messages: Any, *, skip_system: bool) -> Any:

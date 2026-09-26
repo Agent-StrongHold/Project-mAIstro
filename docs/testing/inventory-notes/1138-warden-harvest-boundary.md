@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +58
+  packages/maistro-rsi/tests: +61
 ---
 # Issue #1138 Warden harvest boundary
 
@@ -462,3 +462,36 @@ out-of-tree: `admitted=False outcome=warden_unavailable audit_calls=1
 runtime_warnings=[]`. Admission semantics are unchanged: same scan order,
 same fail-closed outcomes, refusal before any model callable; only the
 dropped-audit defect changed.
+
+Truthful-outcome repair round at branch head past `17c257b51` (develop
+base `dd16ef2cfd`; the flagged defect came from the next verifier round's
+executed probe: after a scheduled async sink write raised, the in-loop
+`scan_sync` had already returned `admitted=False / outcome=
+warden_unavailable` with `durable_records=0`, and
+`test_scheduled_async_audit_failure_is_contained_and_refusal_stands`
+encoded that lost-audit behavior as passing). Root cause: the in-loop path
+could not distinguish a delivered audit record from a lost one — the sink
+write was scheduled on the live loop and the drain swallowed the late
+failure, so the returned `warden_unavailable` outcome implied a durable
+refusal record that was never persisted. Fix in `harvest_boundary.py`:
+`_deliver_audit_inline` returns whether delivery was confirmed before
+`scan_sync` returns; an async sink (or a sync-declared sink returning an
+awaitable — the stale coroutine/future is closed unstarted) can never be
+confirmed, so the admission-level outcome fails closed to a truthful
+`audit_unavailable`, the scan-level reason is preserved as `scan_outcome`,
+and the final record (annotated `audit_delivery=scheduled_unconfirmed`) is
+delivered by `_deliver_scheduled_audit` on the live loop with exactly one
+corrected redelivery (`audit_delivery=retry_after_failure`) so a
+transiently failing sink still persists the truthful not-admitted record;
+a hard failure is logged with outcome and digest only (never content) and
+stays contained (no un-retrieved task exception). Synchronous sinks keep
+inline confirmed delivery; the no-sink process-log path keeps
+`warden_unavailable`. Tests (net +3 node IDs, delta +58 -> +61): the
+async-sink in-loop case now asserts `audit_unavailable` + `scan_outcome` +
+the landed annotated record; the late-failure case asserts the truthful
+outcome and both contained delivery attempts; a new transient-sink case
+proves the corrected record PERSISTS with `outcome=audit_unavailable`,
+`admitted=false`, digest correlation and zero content leakage; corner
+cases pin that a sink-returned coroutine or Future is superseded so only
+the truthful final record runs. Admission order, fail-closed outcomes, and
+refusal before any model callable are unchanged everywhere else.
