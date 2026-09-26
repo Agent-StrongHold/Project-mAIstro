@@ -246,3 +246,61 @@ conflict-free) with real PG (`MAISTRO_TEST_PG_DSN` on the lane container):
   70.4 / 54.5 all above minimum.
 
 No test additions this round; the inventory delta is unchanged.
+
+## Verification record (L1114 independent verify @ 6d8a0fe4c, develop ca4caec merged)
+
+Independent verification at the exact lane head `6d8a0fe4c4b5` (merge of develop
+`ca4caec7d` into auto-1114; worktree clean, no source edits this round). Real PG:
+`MAISTRO_TEST_PG_DSN` against the lane container (pg16, alembic at 042 = head).
+
+Executed green at this head:
+
+- `packages/maistro-core/tests/tasks/` = **363 passed, 0 skipped**; the 25
+  acceptance-critical tests re-proven individually by name (-k run, all PASSED):
+  both PG crash boundaries (`..._death_after_run_admission_...`,
+  `..._death_after_receipt_before_notification_...`), the phase/claim boundary
+  (`..._death_between_dispatch_phase_and_claim_...`),
+  `..._malformed_admission_gets_a_terminal_disposition`,
+  `..._stranded_running_claim_...`, `..._lone_node_run_...`,
+  `test_a_run_with_no_living_receipt_is_recovered_from_durable_facts`,
+  `test_recovered_dispatchability_is_anchored_on_the_canonical_run`,
+  `test_recovered_task_runs_under_the_original_canonical_identity`,
+  duplicate-fence trio, `test_first_dispatch_writes_running_together_with_its_evidence`.
+  Crash tests verified non-hollow: real `_ProcessDeath` BaseException injection
+  after the durable admit()/receipt commits against `ClaimingPgRunStore`, then
+  original Run/NodeRun/Attempt identity asserted post-recovery.
+- `packages/maistro-server/tests/api/test_main.py` = 17 passed (lifespan
+  `queue.recover(run_store)` wiring intact at main.py:334).
+- ruff check + format, radon ratchet 67->67 rc=0, vulture ledger rc=0,
+  check-execution-lifecycles 19/19 OK, model-egress, fitness, xenon 0<=77,
+  bump_version/release/doc-links/enumerations/vendor x2, reachability +
+  dispositions + credential/wiring/agent-store/contract/convergence/security/
+  image/backlog gates all rc=0; mypy --strict core OK and pyright 21<=21
+  (after `uv sync --all-extras` + quality tools, matching CI env); interrogate
+  4 floors OK.
+- Closure-keyword audit: 0 `fixes/closes/resolves #N` in branch commit
+  subjects/bodies; live PR 1488 body says only "Refs #1114"; headRefOid matches
+  the reviewed head.
+
+**RED reproduced — new blocking finding.** The CI job "Quality gate
+(Pillars 1-4, 7, 8)" is FAILURE at this head (run 36229550253, job
+108369977475), and `scripts/check-ac-state.py --run-tests --ratchet --mandate
+ca4caec7d` reproduces rc=1 locally (PG wired):
+
+1. `FAIL: the repository moved away from its recorded state` —
+   `design_coverage: 37.6277 falls below the floor of 38.0924` (floor folded
+   from 75 notes at the develop base). The lane's own note still records
+   37.2884 from an older develop; the ratchet's remediation is restore the
+   evidence or `--bank` the fall with justification in the diff.
+2. `FAIL: authorized floor(s) independent landings have superseded` — the
+   `ac-state` `design_coverage@33.9095` grant (authored for #729) in
+   `quality/ratchet-authorizations.json` must be pruned: auto-1138/auto-1158/
+   auto-48 now clear that floor independently.
+
+Both failures are ledger reconciliation on lane-reachable surfaces
+(`quality/ac-state-notes/auto-1114.json` is a lane surface); every other
+quality-gate step passes locally at this head, so this is the blocking driver.
+Not locally executed: `pytest formal/` (CI formal-conformance = SUCCESS
+separately; 663 passed at 7ef64ca72), `alembic upgrade head` on a fresh DB
+(container already at 042), and the still-IN_PROGRESS CI jobs (test,
+integration-scope, Coverage gate, docker-build) — all UNVERIFIED.
