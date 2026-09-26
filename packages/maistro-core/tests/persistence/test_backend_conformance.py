@@ -153,6 +153,43 @@ async def test_retrying_one_event_does_not_double_count(quota_tracker: Any) -> N
     assert row["request_count"] == 1
 
 
+async def test_reusing_an_event_identity_with_different_usage_is_rejected(
+    quota_tracker: Any,
+) -> None:
+    """The same identity re-submitted with different usage is rejected.
+
+    Retry-safety by event identity must not become a way to silently rewrite
+    history: every backend that claims the protocol refuses the reuse, and
+    the original event stays the only contribution to the totals.
+    """
+    await quota_tracker.record_usage(
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=7,
+        output_tokens=5,
+        event_id="invocation-1",
+    )
+    with pytest.raises(ValueError, match="event_id"):
+        await quota_tracker.record_usage(
+            provider="anthropic",
+            billing_cycle="monthly",
+            input_tokens=9,
+            output_tokens=5,
+            event_id="invocation-1",
+        )
+
+    # The rejected attempt changed nothing, and the identity still deduplicates.
+    row = await quota_tracker.record_usage(
+        provider="anthropic",
+        billing_cycle="monthly",
+        input_tokens=7,
+        output_tokens=5,
+        event_id="invocation-1",
+    )
+    assert row["total_tokens"] == 12
+    assert row["request_count"] == 1
+
+
 async def test_providers_are_tracked_separately(quota_tracker: Any) -> None:
     await quota_tracker.record_usage(
         provider="anthropic", billing_cycle="monthly", input_tokens=10, output_tokens=0

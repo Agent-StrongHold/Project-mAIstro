@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +10
+  packages/maistro-core/tests: +17
 ---
 # #1204 SQLite usage-log idempotency
 
@@ -155,6 +155,35 @@ whose recorded floor no longer holds is a reviewed grant in
 commit cannot grant itself), which this lane is prohibited from writing. The
 #1204 surfaces are unaffected: every quota/usage criterion of this issue
 remains proven on the merged tree by the runs above.
+
+## Diff-coverage repair round (merge of develop a71fc2e43, lane L1204)
+
+CI at 6bccec60e failed two gates; the actual logs name three files below the
+diff-coverage floor and one superseded grant. Both are addressed here:
+
+- **Coverage gate (diff coverage)**: seven collected cases (one is
+  parametrized over the three backends) close the exact measured gaps.
+  `test_container_sqlite_backend.py` gains the swallowed shutdown-flush
+  failure path (`_flush_usage_log_on_shutdown`'s `except` arm: a snapshot
+  that raises must not block `aclose`). `test_backend_conformance.py` gains
+  `test_reusing_an_event_identity_with_different_usage_is_rejected`, run
+  against memory, SQLite, and PostgreSQL: identity reuse with different usage
+  is rejected and the original event stays the only contribution (the
+  equivalent no-double-count semantics criterion, now at conformance level —
+  this also covers `InMemoryQuotaTracker`'s reuse-rejection raise, which no
+  test exercised). `test_pg_quota.py` gains the three conflict-path cases the
+  FakeConnection can force: RETURNING-empty retry with the same payload
+  counts once, with a different payload is rejected, and with a vanished row
+  is rejected (`pg_quota.py:82`'s partial branch).
+- **Quality gate (acceptance-state ratchet)**: the failure was not the
+  floor — CI's own log measures `design_coverage` 38.0924 over 156 taken
+  decisions (92 at zero) with the PG legs live, exactly on the floor. It was
+  `authorized floor(s) independent landings have superseded`: the
+  `design_coverage@33.9095` grant (#729) in `quality/ratchet-authorizations.json`
+  is durably overtaken by the `auto-1138`/`auto-1158`/`auto-48` notes and had
+  to be pruned. Develop's #1114 lane already pruned it (the section is now
+  empty at a71fc2e43), so the mandated develop sync (merge of origin/develop
+  at a71fc2e43) lands that prune; no grant was written by this lane.
 
 ## CI-repair round (lane L1204, head 03b48facc)
 
