@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKLOG = ROOT / "BACKLOG.md"
@@ -92,7 +94,7 @@ def _state_failures(item_id: str, state: str, statuses: set[str], gaps: set[str]
     return failures
 
 
-def audit(text: str, root: Path = ROOT, legacy: frozenset[str] | None = None) -> list[str]:
+def audit(text: str, root: Path = ROOT, legacy: Mapping[str, str] | None = None) -> list[str]:
     statuses = _section_terms(text, "## Work status legend")
     gaps = _section_terms(text, "## Gap legend")
     prefixes = _prefixes(text)
@@ -131,31 +133,32 @@ def audit(text: str, root: Path = ROOT, legacy: frozenset[str] | None = None) ->
 
 
 #: Terminal items that predate the closure-evidence rule (#101). The set can only
-#: shrink: evidencing, reopening or removing one of these fails until its id is
-#: taken out here, so the improvement is banked and cannot silently regress.
-_LEGACY_UNEVIDENCED: frozenset[str] = frozenset(
+#: shrink: evidencing, reopening, removing or re-closing one under another status
+#: fails until its id is taken out here, so the improvement is banked and cannot
+#: silently regress.
+_LEGACY_UNEVIDENCED: Mapping[str, str] = MappingProxyType(
     {
-        "engine-001",
-        "engine-003",
-        "engine-004",
-        "engine-030",
-        "engine-052",
-        "engine-097",
-        "conductor-001",
-        "conductor-002",
-        "conductor-003",
-        "conductor-007",
-        "conductor-103",
-        "conductor-200",
-        "conductor-201",
-        "conductor-202",
-        "turing-011",
-        "turing-041",
-        "sh-030",
-        "sh-031",
-        "sh-032",
-        "turing-200",
-        "turing-201",
+        "engine-001": "Implemented",
+        "engine-003": "Implemented",
+        "engine-004": "Implemented",
+        "engine-030": "Implemented",
+        "engine-052": "Implemented",
+        "engine-097": "Implemented",
+        "conductor-001": "Implemented",
+        "conductor-002": "Implemented",
+        "conductor-003": "Implemented",
+        "conductor-007": "Implemented",
+        "conductor-103": "Implemented",
+        "conductor-200": "Implemented",
+        "conductor-201": "Implemented",
+        "conductor-202": "Implemented",
+        "turing-011": "Implemented",
+        "turing-041": "Implemented",
+        "sh-030": "Implemented",
+        "sh-031": "Implemented",
+        "sh-032": "Implemented",
+        "turing-200": "Abandoned",
+        "turing-201": "Abandoned",
     }
 )
 
@@ -173,8 +176,9 @@ def _terminal_items(text: str) -> dict[str, tuple[str, str]]:
     items: dict[str, tuple[str, str]] = {}
     current: tuple[str, str, list[str]] | None = None
     for line in [*text.splitlines(), "#"]:
-        header = _ITEM.match(line) if _ITEM_LINE.match(line) else None
-        if current is not None and (header is not None or line.startswith("#")):
+        is_item = _ITEM_LINE.match(line) is not None
+        header = _ITEM.match(line) if is_item else None
+        if current is not None and (is_item or line.startswith(("#", "---"))):
             items[current[0]] = (current[1], "\n".join(current[2]))
             current = None
         if header is None:
@@ -188,7 +192,7 @@ def _terminal_items(text: str) -> dict[str, tuple[str, str]]:
     return items
 
 
-def _closure_failures(text: str, root: Path, legacy: frozenset[str]) -> list[str]:
+def _closure_failures(text: str, root: Path, legacy: Mapping[str, str]) -> list[str]:
     """Terminal items must carry their closure evidence (#101).
 
     `Implemented` needs a PR/issue link or a repo path that exists, so an item
@@ -197,7 +201,11 @@ def _closure_failures(text: str, root: Path, legacy: frozenset[str]) -> list[str
     directory, so prose tokens like `registry/registry.json` are ignored rather
     than miscounted, and such a path that no longer resolves is rotted evidence.
     """
-    top_level = {path.name for path in root.iterdir() if path.is_dir()}
+    top_level = {
+        path.name
+        for path in root.iterdir()
+        if path.is_dir() and (path.name == ".github" or not path.name.startswith((".", "_")))
+    }
     items = _terminal_items(text)
     failures: list[str] = []
     for item_id, (status, body) in items.items():
@@ -209,9 +217,14 @@ def _closure_failures(text: str, root: Path, legacy: frozenset[str]) -> list[str
             failures.extend(
                 f"{item_id}: cites `{p}` as evidence, which does not exist" for p in rotted
             )
-            closed = bool(_LINK.search(body)) or len(cited) > len(rotted)
+            closed = bool(_LINK.search(body)) or any((root / p).is_file() for p in cited)
         if item_id in legacy:
-            if closed:
+            if status != legacy[item_id]:
+                failures.append(
+                    f"{item_id}: was {legacy[item_id]} when frozen and is now {status}; "
+                    "remove it from the legacy set and evidence the new closure"
+                )
+            elif closed:
                 failures.append(
                     f"{item_id}: now carries closure evidence; remove it from the legacy set"
                 )
@@ -226,7 +239,7 @@ def _closure_failures(text: str, root: Path, legacy: frozenset[str]) -> list[str
             )
     failures.extend(
         f"{item_id}: is no longer an Implemented or Abandoned item; remove it from the legacy set"
-        for item_id in sorted(legacy - items.keys())
+        for item_id in sorted(legacy.keys() - items.keys())
     )
     return failures
 
@@ -262,16 +275,20 @@ def main() -> int:
     text = BACKLOG.read_text()
     failures = audit(text)
     if failures:
-        print("FAIL: BACKLOG.md is inconsistent with its own legends\n")
+        print("FAIL: BACKLOG.md is inconsistent with its own legends or closure rules\n")
         for failure in failures:
             print(f"  - {failure}")
         print(
             "\nAdd the term to the legend if it is meant to exist, or fix the item. The legend "
-            "is the vocabulary; an item cannot invent one."
+            "is the vocabulary; an item cannot invent one. A terminal item carries its closure "
+            "evidence (see Maintenance in BACKLOG.md)."
         )
         return 1
     items = sum(1 for line in text.splitlines() if _ITEM_LINE.match(line))
-    print(f"OK: {items} backlog items parse, and every status, gap marker and citation resolves")
+    print(
+        f"OK: {items} backlog items parse, every status, gap marker and citation resolves, "
+        "and every terminal item outside the legacy set carries closure evidence"
+    )
     return 0
 
 

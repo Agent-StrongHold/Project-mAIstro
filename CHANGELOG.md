@@ -470,10 +470,12 @@ or placeholder-only section.
 
 - **Terminal BACKLOG.md items must carry closure evidence (#101, partial).**
   `scripts/check-backlog-consistency.py` now fails an `Implemented` item with
-  no PR/issue link or existing repo path, a cited repo path that no longer
+  no PR/issue link or existing repo file, a cited repo path that no longer
   exists, and an `Abandoned` item with no reason. The 21 items closed before
-  the rule are held in a legacy set that can only shrink, so every new closure
-  is evidenced.
+  the rule are frozen with their status in a legacy set that can only shrink,
+  so a new closure cannot pass without a link or file. The gate checks that
+  evidence is present, not that it proves the claim; a reviewer still judges
+  that.
 
 - **Hive conversation-only chat and voice turns run as canonical chat Runs
   (#1037).**

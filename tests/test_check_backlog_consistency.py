@@ -31,7 +31,7 @@ def gate():
 
 def audit(gate, text: str, **kwargs: object) -> list[str]:
     """Audit a synthetic backlog, which holds none of the real file's legacy ids."""
-    kwargs.setdefault("legacy", frozenset())
+    kwargs.setdefault("legacy", {})
     return gate.audit(text, **kwargs)
 
 
@@ -214,8 +214,8 @@ def repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def closure(gate, repo: Path, *items: str, legacy: frozenset[str] = frozenset()) -> list[str]:
-    return audit(gate, backlog(*items, statuses=TERMINAL), root=repo, legacy=legacy)
+def closure(gate, repo: Path, *items: str, legacy: dict[str, str] | None = None) -> list[str]:
+    return audit(gate, backlog(*items, statuses=TERMINAL), root=repo, legacy=legacy or {})
 
 
 def test_an_implemented_item_without_evidence_fails(gate, repo: Path) -> None:
@@ -270,7 +270,7 @@ def test_a_token_outside_any_top_level_directory_is_ignored(gate, repo: Path) ->
     ]
 
 
-def test_a_path_escaping_the_repo_is_not_evidence(gate, repo: Path) -> None:
+def test_a_dot_dot_segment_is_never_read_as_a_path(gate, repo: Path) -> None:
     item = "**[engine-001] A thing — Implemented — v1.0**\n- See `tests/../tests/x.py`"
 
     assert closure(gate, repo, item) != []
@@ -286,6 +286,51 @@ def test_evidence_does_not_leak_from_the_next_item_or_heading(gate, repo: Path) 
     )
 
     assert failures == ["engine-001: Implemented without a PR/issue link or an existing repo path"]
+
+
+@pytest.mark.parametrize(
+    "citation",
+    ["`tests/sub`", "`.git/HEAD`", "`.venv/marker`", "`__pycache__/marker`"],
+)
+def test_a_directory_or_hidden_path_is_not_evidence(gate, repo: Path, citation: str) -> None:
+    """A path that exists but proves nothing — a directory, or a file in VCS
+    internals or a local cache — cannot stand in for the shipped change."""
+    (repo / "tests" / "sub").mkdir()
+    for hidden in (".git", ".venv", "__pycache__"):
+        (repo / hidden).mkdir()
+    (repo / ".git" / "HEAD").write_text("")
+    (repo / ".venv" / "marker").write_text("")
+    (repo / "__pycache__" / "marker").write_text("")
+
+    failures = closure(gate, repo, f"**[engine-001] A thing — Implemented — v1.0**\n- {citation}")
+
+    assert failures == ["engine-001: Implemented without a PR/issue link or an existing repo path"]
+
+
+def test_a_github_workflow_path_is_evidence(gate, repo: Path) -> None:
+    (repo / ".github").mkdir()
+    (repo / ".github" / "ci.yml").write_text("")
+
+    item = "**[engine-001] A thing — Implemented — v1.0**\n- Gated by `.github/ci.yml`"
+
+    assert closure(gate, repo, item) == []
+
+
+def test_a_bullet_after_a_rule_does_not_belong_to_the_item(gate, repo: Path) -> None:
+    failures = closure(gate, repo, "**[engine-200] A thing — Abandoned**\n\n---\n\n- stray note")
+
+    assert failures == ["engine-200: Abandoned without a one-line reason"]
+
+
+def test_an_unparsable_header_ends_the_item_above(gate, repo: Path) -> None:
+    failures = closure(
+        gate,
+        repo,
+        "**[engine-001] A thing — Implemented — v1.0**",
+        "**[engine-002] broken**\n- Shipped (#3)",
+    )
+
+    assert "engine-001: Implemented without a PR/issue link or an existing repo path" in failures
 
 
 def test_an_abandoned_item_without_a_reason_fails(gate, repo: Path) -> None:
@@ -308,20 +353,39 @@ def test_an_abandoned_item_with_a_reason_passes(gate, repo: Path, item: str) -> 
 def test_a_legacy_id_is_tolerated_without_evidence(gate, repo: Path) -> None:
     item = "**[engine-001] A thing — Implemented — v1.0**"
 
-    assert closure(gate, repo, item, legacy=frozenset({"engine-001"})) == []
+    assert closure(gate, repo, item, legacy={"engine-001": "Implemented"}) == []
 
 
 @pytest.mark.parametrize(
     "item",
     [
         "**[engine-001] A thing — Implemented — v1.0**\n- Shipped (#12)",
-        "**[engine-001] A thing — Abandoned — v1.0** — dropped",
     ],
 )
 def test_a_legacy_id_that_gains_evidence_must_be_banked(gate, repo: Path, item: str) -> None:
-    failures = closure(gate, repo, item, legacy=frozenset({"engine-001"}))
+    failures = closure(gate, repo, item, legacy={"engine-001": "Implemented"})
 
     assert failures == ["engine-001: now carries closure evidence; remove it from the legacy set"]
+
+
+@pytest.mark.parametrize(
+    ("item", "frozen", "now"),
+    [
+        ("**[engine-001] A thing — Implemented — v1.0**", "Abandoned", "Implemented"),
+        ("**[engine-001] A thing — Abandoned — v1.0**", "Implemented", "Abandoned"),
+    ],
+)
+def test_a_legacy_id_reclosed_under_another_status_fails(
+    gate, repo: Path, item: str, frozen: str, now: str
+) -> None:
+    """Flipping a frozen Abandoned item to Implemented would otherwise close it
+    on assertion alone, the exact thing the rule exists to stop."""
+    failures = closure(gate, repo, item, legacy={"engine-001": frozen})
+
+    assert failures == [
+        f"engine-001: was {frozen} when frozen and is now {now}; "
+        "remove it from the legacy set and evidence the new closure"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -332,7 +396,7 @@ def test_a_legacy_id_that_gains_evidence_must_be_banked(gate, repo: Path, item: 
     ],
 )
 def test_a_legacy_id_that_reopens_or_disappears_fails(gate, repo: Path, item: str) -> None:
-    failures = closure(gate, repo, item, legacy=frozenset({"engine-001"}))
+    failures = closure(gate, repo, item, legacy={"engine-001": "Implemented"})
 
     assert failures == [
         "engine-001: is no longer an Implemented or Abandoned item; remove it from the legacy set"
@@ -342,8 +406,10 @@ def test_a_legacy_id_that_reopens_or_disappears_fails(gate, repo: Path, item: st
 def test_the_shipped_legacy_set_is_exactly_the_unevidenced_terminal_items(gate) -> None:
     """The legacy set is only a ratchet if it holds nothing already evidenced:
     auditing the real file with an empty legacy set must name exactly its ids."""
-    failures = gate.audit((ROOT / "BACKLOG.md").read_text(), legacy=frozenset())
+    failures = gate.audit((ROOT / "BACKLOG.md").read_text(), legacy={})
 
-    named = {failure.split(":", 1)[0] for failure in failures}
-    assert named == gate._LEGACY_UNEVIDENCED
+    named = {failure.split(":", 1)[0]: failure for failure in failures}
+    assert named.keys() == gate._LEGACY_UNEVIDENCED.keys()
+    for item_id, status in gate._LEGACY_UNEVIDENCED.items():
+        assert f"{item_id}: {status} without" in named[item_id]
     assert len(gate._LEGACY_UNEVIDENCED) == 21
