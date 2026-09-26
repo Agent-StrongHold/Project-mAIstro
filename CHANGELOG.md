@@ -527,8 +527,8 @@ or placeholder-only section.
   `/v1/chat/completions` maps it to `503` + `Retry-After` for both
   `stream=false` and `stream=true` (admission is refused before the
   `StreamingResponse` is built; a refusal inside the stream emits an
-  `unavailable` SSE error event), and the app's `HTTPException` handler now
-  keeps route-supplied headers. Post-dispatch spine failures still return the
+  `unavailable` SSE error event), the app's `HTTPException` handler now
+  keeps route-supplied headers, and CORS exposes `Retry-After` to browser clients. Post-dispatch spine failures still return the
   answer once as `ChatDispatchUnrecorded`. Hive `/chat/complete`,
   `/chat/stream`, `/voice/intent` and Workspace Agent chat are not yet covered.
 
