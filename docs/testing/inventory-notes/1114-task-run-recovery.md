@@ -199,3 +199,50 @@ are byte-identical to the previously verified state (`git diff a994af1447..
 
 All issue acceptance criteria re-proven at this head by the executed tests
 above; no source changes made this round — this note is the only tree delta.
+
+## Verification record (L1114 repair @ 7ef64ca72, third develop sync + radon repair)
+
+Repair round for the prior CI finding ("Quality gate (Pillars 1-4, 7, 8) =
+failure" at `101ad20cd`). Root cause found by re-running the gate's own steps
+locally: **`scripts/check-radon-baseline.py` rc=1** — the lane's #1114 repair
+commit `d08f85598` grew `TaskRunAdmitter.record_transition` to C(12), an
+unbanked raise the trusted-base ratchet must refuse (self-authorization is
+structurally impossible: grants are read from the base revision). The prior
+rounds' gate lists omitted radon, which is why it surfaced only in CI.
+
+Fix: behavior-preserving extraction of the two status-classification guards
+from `record_transition` — `_is_phase_only_transition` (claiming-store
+QUEUED/RUNNING phase advance) and module-level
+`_must_resume_before_terminalizing` (WAITING park, #143). `record_transition`
+leaves the C-or-worse set entirely; ratchet reports 68 -> 68 blocks, rc=0,
+no grant and no ledger edit needed.
+
+Battery executed at `7ef64ca72` (merge of develop `80ce0d998`, 12 commits,
+conflict-free) with real PG (`MAISTRO_TEST_PG_DSN` on the lane container):
+
+- `packages/maistro-core/tests/tasks/` = **363 passed, 0 skipped** (was 341;
+  the sync added #325 purge-driven tests). PG crash boundaries re-proven by
+  name: `test_postgres_death_after_run_admission_executes_original_identity`,
+  `test_postgres_death_after_receipt_before_notification_executes_original_identity`,
+  `test_postgres_death_between_dispatch_phase_and_claim_executes_original_identity`,
+  `test_postgres_malformed_admission_gets_a_terminal_disposition`,
+  `test_postgres_stranded_running_claim_gets_a_terminal_disposition`,
+  `test_postgres_queued_task_rehydrates_after_queue_restart`.
+- `packages/maistro-server/tests/api/test_main.py` = 17 passed (lifespan
+  `queue.recover(run_store)` wiring intact).
+- Every `quality-gate` (Pillars 1-4/7/8 job) step green: ruff check + format;
+  radon ratchet (after fix); `bump_version --check` (35 sites); release
+  consistency; doc links; enumerations; vendor IFEval + BFCL; xenon 0 <= 77;
+  **vulture 1412 -> 1411 rc=0** (the develop-side drift recorded last round
+  is resolved by develop commits arriving in this sync); reachability,
+  credential authority, wiring reads, agent-store writes, contract markers,
+  convergence matrix, reachability dispositions, security inventory, image
+  inventory, backlog consistency, merge markers, durable tables; `alembic
+  upgrade head` on a fresh database rc=0; acceptance-state ratchet rc=0 with
+  PG (ledger unchanged); `mypy --strict packages/maistro-core/src` Success
+  (633 files) and six-package mypy Success (717 files); pyright 20 <=
+  baseline 21; Hypothesis `formal/` 663 passed; `check-execution-lifecycles`
+  OK 19/19; model egress; fitness 7 passed; interrogate floors 50.5 / 56.3 /
+  70.4 / 54.5 all above minimum.
+
+No test additions this round; the inventory delta is unchanged.

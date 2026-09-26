@@ -75,6 +75,18 @@ SESSION_ID_KEY = "session_id"
 REQUEST_ID_KEY = "request_id"
 
 
+def _must_resume_before_terminalizing(current: RunStatus, target: RunStatus) -> bool:
+    """Whether a parked WAITING Run must be resumed before its terminal write.
+
+    A failed or timed-out Attempt parks its NodeRun (#143) and WAITING has no
+    edge to COMPLETED or FAILED, so the receipt of finished work has to resume
+    the Run first or its terminal outcome is written nowhere.
+    """
+    if current is not RunStatus.WAITING:
+        return False
+    return target in TERMINAL_RUN_STATUSES and target not in RUN_TRANSITIONS[RunStatus.WAITING]
+
+
 class WorkspaceNotAdmissible(ValueError):
     """An admitter was asked to file work in a Workspace it is not bound to."""
 
@@ -269,11 +281,7 @@ class TaskRunAdmitter:
         run = await self._runs.get_run(run_id)
         if run is None:
             return False
-        if (
-            self._consumer_claims
-            and target is RunStatus.RUNNING
-            and run.status in (RunStatus.QUEUED, RunStatus.RUNNING)
-        ):
+        if self._is_phase_only_transition(run.status, target):
             # A phase of one execution, not a Run lifecycle event. On a claiming
             # store the QUEUED->RUNNING dispatch write is the atomic consumer
             # claim: it lands in the same transaction as the NodeRun and leased
@@ -289,11 +297,7 @@ class TaskRunAdmitter:
             # recovered receipt must not treat another worker's claim as its
             # own merely because both task phase machines map to RUNNING.
             return not (previous_status is TaskStatus.QUEUED and target is RunStatus.RUNNING)
-        if (
-            run.status is RunStatus.WAITING
-            and target in TERMINAL_RUN_STATUSES
-            and target not in RUN_TRANSITIONS[RunStatus.WAITING]
-        ):
+        if _must_resume_before_terminalizing(run.status, target):
             # A failed or timed-out Attempt parks its NodeRun, and a Run with no
             # other active node then parks too (#143). The receipt is still the
             # domain here and it says the work is over — but WAITING has no edge
@@ -309,6 +313,18 @@ class TaskRunAdmitter:
         except InvalidLifecycleTransition:
             return False
         return True
+
+    def _is_phase_only_transition(self, current: RunStatus, target: RunStatus) -> bool:
+        """Whether a RUNNING target is only a phase of an in-flight execution.
+
+        On a claiming store the QUEUED->RUNNING dispatch write is the atomic
+        consumer claim, so a separate RUNNING write here would be a second
+        claim authority (#1114). QUEUED and RUNNING Runs are already claimed or
+        awaiting their claim; their phases advance without a Run write.
+        """
+        if not self._consumer_claims or target is not RunStatus.RUNNING:
+            return False
+        return current in (RunStatus.QUEUED, RunStatus.RUNNING)
 
 
 class WorkspaceRoutingAdmitter:
