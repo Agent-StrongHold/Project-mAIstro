@@ -1,9 +1,7 @@
----
-inventory-delta:
-  (no test changes — verification and develop-sync record only)
----
-
 # auto-38 repair round at ea8b8a125: develop-sync resolution + gate re-execution
+
+(no `inventory-delta:` block — this round adds no tests; this is the verification
+and develop-sync record only.)
 
 Two blocks inherited from the previous round were cleared, and the two CI failures
 reported at 9f84000bf (Quality gate, Pillars 1–4/7/8; Coverage gate) were re-proven
