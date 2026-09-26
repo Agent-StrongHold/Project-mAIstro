@@ -106,3 +106,32 @@ refresh at this head: not draft; previously-red required checks Gate C and
 Vulture Ratchet now SUCCESS; `test`/`integration-scope`/`quality` IN_PROGRESS
 with zero failed conclusions — GitHub-run completion remains the CI lane's
 residual. No closure keywords in the PR body or any branch commit.
+
+Repair-round record (lane auto-80, head 74b247e62): the prior CI findings
+("Coverage gate (publish-set floor + diff coverage) = cancelled", run
+36212813113; "gates-ran = failure", run 36214008698) were root-caused to a
+develop-sync gap, not to tree defects: the branch lacked origin/develop
+commit 80ce0d998, which raises the coverage-gate job timeout 15 -> 30 minutes
+precisely because (per the comment that commit adds at
+`.github/workflows/quality.yml:409-417`) "#1581 was cancelled at 15 twice; a
+cancelled gate never reports, so it blocks the PR without measuring anything"
+— the exact cancelled-gate -> gates-ran-failure chain observed. The branch had
+not modified that region (empty diff b0fcfcc8a..97c6e2746 on quality.yml); it
+was simply two commits behind. Resolved by merging origin/develop (clean,
+no conflicts) as commit 74b247e62, which restores the 30-minute timeout and
+its comment and brings develop's #1592/#1581 work (user_model suite arrives
+with its own inventory note, +30 core tests). Re-validated at the merged
+head: `uv sync --locked --extra dev`, `ruff check .`, `ruff format --check .`
+clean; live Docker conformance
+`pytest packages/maistro-bootstrap/tests/test_container_sandbox.py
+test_container_sandbox_hardening.py` = 25 passed (40.3s) and
+`packages/maistro-core/tests/memory/user_model` = 30 passed; full bootstrap
+suite = 245 passed, 1 skipped; `scripts/check-suite-inventory.py --suite
+packages/maistro-bootstrap/tests` ok (246); vulture ratchet = 1412 reviewed
+identities, unclassified 0, never_allowlist 0, exit 0 — no unbanked
+identities, so no ledger amendment was needed this round;
+`scripts/check-doc-links.py` and `scripts/check-adr-index.py` ok. The CI
+conformance lane (`ci.yml:473-475`) still builds `maistro-builders:latest`
+from the committed `Dockerfile.sandbox` and runs the real
+`ContainerBuilderSandbox` suite. GitHub-run completion of the re-triggered
+CI remains the CI lane's residual (no push from this lane).
