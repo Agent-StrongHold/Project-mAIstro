@@ -63,3 +63,18 @@ Known pre-existing failure (not this lane): `tests/security/test_log_redaction
 .py::test_install_is_idempotent` fails at pristine origin/develop ca4caec7d
 (probe worktree, no local changes), so it is a develop-side test-isolation
 defect, not a regression of this repair.
+
+## Focused post-repair validation (5403979a)
+
+The product-path acceptance bundle was rerun at the repaired head:
+`test_direct.py`, `test_react.py`, `test_base.py`, `test_output_security_gate.py`,
+`test_sentinel_policy.py`, `test_warden_pii_bypass.py`, and
+`test_warden_regex_equivalence.py` completed with **196 passed**. This includes
+the real `MasterOrchestrator.execute` timeout/window and capture-ordering
+regressions, governed-executor PII masking/fail-closed behavior, and the
+accelerated-versus-stdlib Warden verdict comparison. `ruff check .`, `ruff
+format --check .`, `check-compliance.py`, `check-security-inventory.py`, and
+`check-suite-inventory.py --suite packages/maistro-core/tests` all passed.
+The required vulture exact-debt command also passed with 1,412 reviewed
+identities, zero unclassified identities, and zero never-allowlisted findings;
+therefore no ledger amendment was needed in this CI-repair round.
