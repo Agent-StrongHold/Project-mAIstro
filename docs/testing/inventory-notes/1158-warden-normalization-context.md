@@ -327,3 +327,32 @@ Re-validated at the merge head, independent of prior claims:
   clean; trusted-labelled override context does not contaminate a benign
   scan; 200×10KB untrusted context collapses at scan time to 2 items /
   exactly 16384 analysis bytes.
+
+## Repair round 4 — CI gate unblock at 101bb7044 (radon ratchet + acceptance-state bank)
+
+CI at 101bb7044 failed the quality gate at the radon CC ratchet; the coverage
+gate was cancelled behind it. Repairs, all validated locally:
+
+- `message_to_scan_text` (detector.py) had grown to a new unbaselined C(12)
+  block with the bounded-serialization work. Split into
+  `_content_scan_text`/`_extra_scan_fields`/`_unbounded_scan_text`/
+  `_bounded_scan_text`; every block is B or better and behavior is unchanged.
+- `quality/radon-baseline.json` still carried `security/gate.py::Gate` at
+  C(11); the trust-gate reconciliation extracted `_scan_with_context`, so the
+  class block improved to B(8) and the ledger had to shrink. Pruned the entry
+  (ratchet: 68 -> 67 reviewed blocks, 0 new/regressed/improved/stale-candidate).
+- Acceptance-state ratchet: with CI's env (DATABASE_URL **and**
+  MAISTRO_TEST_PG_DSN against a migrated pgvector:pg18), the branch measures
+  design coverage 38.0924% — above the inherited 33.9095 floor, so the gate
+  demanded exact banking. Banked `quality/ac-state-notes/auto-1158.json` at
+  38.0924 (a strict tightening; no slack left for regressions). Caution for
+  future rounds: some PG-backed fixture wipes the shared schema at the end of
+  a full `--run-tests` sequence, so a *second* check-ac-state run against the
+  same database under-measures (~33.6). Re-run `alembic upgrade head` before
+  each acceptance-state measurement.
+
+Re-validation at the repair head: radon ratchet exit 0; xenon 67<=77; vulture
+ledger exit 0; mypy --strict clean (631 files); pyright 21<=21; interrogate
+PASS; ruff check/format clean; formal/ 421 passed; security+conduit+harness
+1314 passed; agents+turing 966 passed. No test added or removed by this round;
+inventory delta unchanged from the reconciliation above.
