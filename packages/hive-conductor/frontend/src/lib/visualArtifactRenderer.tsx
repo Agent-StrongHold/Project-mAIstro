@@ -66,7 +66,9 @@ const SVG_TAGS = new Set([
 const HTML_ATTRIBUTES = new Set([
   "aria-hidden",
   "aria-label",
+  "class",
   "dir",
+  "id",
   "role",
   "style",
   "title",
@@ -75,6 +77,7 @@ const HTML_ATTRIBUTES = new Set([
 const SVG_ATTRIBUTES = new Set([
   "aria-hidden",
   "aria-label",
+  "class",
   "cx",
   "cy",
   "d",
@@ -85,6 +88,7 @@ const SVG_ATTRIBUTES = new Set([
   "font-weight",
   "gradientunits",
   "height",
+  "id",
   "offset",
   "opacity",
   "points",
@@ -216,29 +220,26 @@ const STYLE_PROPERTIES = new Set([
   "-webkit-text-fill-color",
 ]);
 
+// The SVG namespace string is the W3C-fixed XML namespace identifier that
+// DOMParser stamps on parsed SVG elements. It is a namespaced name, not a
+// network address: nothing ever fetches it, and TLS is meaningless for it.
+// DevSkim's insecure-URL rule pattern-matches the scheme prefix and cannot
+// tell the difference, so it is suppressed for this single literal.
+const SVG_NAMESPACE_URI = "http://www.w3.org/2000/svg"; // DevSkim: ignore DS137138 until 2027-12-31
+
 const NETWORK_OR_CODE_CSS = /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()/i;
-const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|(?:javascript|vbscript|data|blob|file|filesystem|ftp|http|https|ws|wss|about|mailto|tel|cid)\s*:|\/\/)/i;
-// CSS escapes/comments can hide a blocked function from a lexical check. They
-// are not needed by the supported presentation templates, so reject them
-// before CSSOM normalization rather than trying to decode every browser CSS
-// grammar.
-const OBFUSCATED_CSS = /\\|\/\*/;
+// Every scheme that can name a fetchable/executable resource, not just the
+// HTTP pair: SVG paint/transform attributes are the only non-style values
+// this check guards, and Deck/Design content never legitimately carries any
+// of them (defense in depth over the absent href/src allowlist).
+const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|(?:javascript|vbscript|data|blob|file|filesystem|ftp|https?|ws|wss|about|mailto|tel|cid)\s*:|\/\/)/i;
 
-// The W3C SVG namespace identifier, fixed by the DOM specification. It is an
-// opaque namespace constant that is never fetched, so DevSkim's insecure-URL
-// rules are suppressed on the single line that spells it out; scrubbing
-// compares namespaceURI against this constant to pick the SVG vs HTML
-// allowlist. The rulepack reports the finding as DS137138 (verified against
-// DevSkim CLI 1.0.90); DS137837 is named alongside it so a rulepack
-// renumbering cannot resurrect the false positive.
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg"; // devskim: ignore DS137138,DS137837
-
+// Keep this list in lockstep with Warden's VISUAL_ARTIFACT_BLOCK_REASONS.
+// Unsupported inert markup is removed, but it is not a security block.
 export const VISUAL_ARTIFACT_BLOCK_REASONS = [
   "active-element",
   "event-handler",
   "dangerous-url",
-  "unsupported-attribute",
-  "unsupported-css-property",
   "css-network-or-code",
 ] as const;
 
@@ -255,7 +256,11 @@ export type VisualArtifactTrustRecommendation = "upgrade" | "review";
 type SanitizationContext = { reasons: Set<VisualArtifactBlockReason> };
 
 function sanitizeStyle(styleText: string, context: SanitizationContext): string {
-  if (OBFUSCATED_CSS.test(styleText)) {
+  // CSS escapes and comments can hide a blocked function from the CSSOM
+  // normalization below (a browser parser reads `\\75rl(` as `url(`), and no
+  // supported template needs either. Fail closed on the whole declaration
+  // block before parsing rather than trying to out-parse the CSS grammar.
+  if (/\\|\/\*/.test(styleText)) {
     context.reasons.add("css-network-or-code");
     return "";
   }
@@ -267,15 +272,8 @@ function sanitizeStyle(styleText: string, context: SanitizationContext): string 
   for (const property of Array.from(source.style)) {
     const normalizedProperty = property.toLowerCase();
     if (!STYLE_PROPERTIES.has(normalizedProperty)) {
-      if (
-        normalizedProperty.includes("image") ||
-        normalizedProperty === "mask" ||
-        normalizedProperty === "content"
-      ) {
-        context.reasons.add("css-network-or-code");
-      } else {
-        context.reasons.add("unsupported-css-property");
-      }
+      // Unknown presentation properties are dropped safely. Network/code
+      // values are still blocked below when they appear in allowed properties.
       continue;
     }
 
@@ -302,17 +300,11 @@ function attributeAllowed(
     context.reasons.add("event-handler");
     return false;
   }
-  if (name.includes(":")) {
-    context.reasons.add("unsupported-attribute");
-    return false;
-  }
+  if (name.includes(":")) return false;
 
-  const isSvg = element.namespaceURI === SVG_NAMESPACE;
+  const isSvg = element.namespaceURI === SVG_NAMESPACE_URI;
   const allowed = isSvg ? SVG_ATTRIBUTES : HTML_ATTRIBUTES;
-  if (!allowed.has(name)) {
-    context.reasons.add("unsupported-attribute");
-    return false;
-  }
+  if (!allowed.has(name)) return false;
   if (name === "style") return true;
 
   // No href/src attributes are allowlisted. Keep this check as defense in
@@ -327,7 +319,7 @@ function attributeAllowed(
 function scrubTree(root: ParentNode, context: SanitizationContext): void {
   for (const child of Array.from(root.children)) {
     const tag = child.localName.toLowerCase();
-    const isSvg = child.namespaceURI === SVG_NAMESPACE;
+    const isSvg = child.namespaceURI === SVG_NAMESPACE_URI;
     const tagAllowed = isSvg ? SVG_TAGS.has(tag) : HTML_TAGS.has(tag);
 
     if (!tagAllowed) {
@@ -384,14 +376,8 @@ export function recommendVisualArtifactTrust(markup: string): VisualArtifactTrus
   return scanVisualArtifactMarkup(markup).blocked ? "review" : "upgrade";
 }
 
-/**
- * The one HTML/SVG trust boundary shared by every Design Studio visual mode.
- * The unknown input type is intentional: stored JSON can outlive the
- * TypeScript model, so a malformed value must fail closed at this boundary
- * too.
- */
-export function sanitizeVisualArtifactMarkup(markup: unknown): string {
-  if (typeof markup !== "string") return "";
+/** The one HTML/SVG trust boundary shared by every Design Studio visual mode. */
+export function sanitizeVisualArtifactMarkup(markup: string): string {
   return scanVisualArtifactMarkup(markup).sanitizedMarkup;
 }
 
@@ -407,10 +393,15 @@ export function createSanitizedVisualArtifactFragment(markup: string): DocumentF
  * transient DOM cannot survive between the edit and React's state commit.
  * This is the only sanctioned executable sink outside the React component
  * above; model-authored strings must not be assigned to the DOM anywhere
- * else.
+ * else (#768 one-sink contract, enforced by visual-artifact-boundary.spec.ts).
+ * The unknown input type is intentional: stored JSON can outlive the
+ * TypeScript model, so a malformed value must fail closed at this boundary
+ * too.
  */
 export function writeSanitizedVisualArtifact(host: HTMLElement, markup: unknown): void {
-  host.innerHTML = sanitizeVisualArtifactMarkup(markup);
+  // Fail closed on non-string input (stored JSON can outlive the TS model):
+  // an unusable value renders as empty, never as raw markup.
+  host.innerHTML = typeof markup === "string" ? sanitizeVisualArtifactMarkup(markup) : "";
 }
 
 type SanitizedVisualArtifactProps = Omit<
@@ -424,7 +415,8 @@ type SanitizedVisualArtifactProps = Omit<
  */
 export const SanitizedVisualArtifact = forwardRef<HTMLDivElement, SanitizedVisualArtifactProps>(
   function SanitizedVisualArtifact({ markup, ...props }, ref) {
-    return <div {...props} ref={ref} dangerouslySetInnerHTML={{ __html: sanitizeVisualArtifactMarkup(markup) }} />; // nosemgrep: typescript.react.security.audit.react-dangerouslysetinnerhtml.react-dangerouslysetinnerhtml -- the reviewed #768 visual-artifact boundary: the only sanctioned React sink, and its input always passes sanitizeVisualArtifactMarkup (allowlist sanitizer mirror-tested against the hostile corpus)
+    // nosemgrep: typescript.react.security.audit.react-dangerouslysetinnerhtml.react-dangerouslysetinnerhtml -- the single reviewed React sink (#768): the exact expression passes markup through sanitizeVisualArtifactMarkup (two-pass sanitizer + shared block-reason vocabulary), and callers must not render raw model/persisted strings themselves
+    return <div {...props} ref={ref} dangerouslySetInnerHTML={{ __html: sanitizeVisualArtifactMarkup(markup) }} />;
   },
 );
 SanitizedVisualArtifact.displayName = "SanitizedVisualArtifact";
