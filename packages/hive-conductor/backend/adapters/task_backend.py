@@ -135,7 +135,14 @@ class TaskBackend(Protocol):
 class LocalTaskBackend:
     """Wraps TaskQueue + TaskRunner in-process. Demo/dev mode only (ADR-096)."""
 
-    def __init__(self, *, executor: Any, admitter: Any = None, run_store: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        executor: Any,
+        admitter: Any = None,
+        run_store: Any = None,
+        idempotency_store: Any = None,
+    ) -> None:
         from maistro.tasks.execution import TaskAttemptExecutor
         from maistro.tasks.queue import TaskQueue
         from maistro.tasks.runner import TaskRunner
@@ -143,7 +150,9 @@ class LocalTaskBackend:
         # `admitter` is the core Container's seam onto the canonical Run spine
         # (#41). None means this process has no Container — the stub path — and
         # the queue then admits without a Run rather than inventing one.
-        self._queue = TaskQueue(admitter=admitter)
+        # The claim store must travel with the Run admitter. Otherwise the
+        # demo backend has a canonical Run but retries still mint a second one.
+        self._queue = TaskQueue(admitter=admitter, idempotency_store=idempotency_store)
         # `run_store` is the other half (#143): with it, a task's work runs as
         # an Attempt under its Run's NodeRun. Without it the executor is called
         # directly, exactly as before — there is no Run here to hang one on.

@@ -85,6 +85,17 @@ class EngineService:
         return getattr(container, "task_admitter", None)
 
     @property
+    def task_idempotency(self) -> Any:
+        """The claim store paired with the canonical Run spine, or None.
+
+        Demo mode uses the same admission claim tier as maistro-server. Without
+        this bridge there is no durable Run to reconcile, so there is no claim
+        store to pass to the local queue.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "task_idempotency", None)
+
+    @property
     def run_store(self) -> Any:
         """The core Container's canonical Run store, or None.
 
@@ -221,6 +232,7 @@ class EngineService:
                     executor=run_task,
                     admitter=self.task_admitter,
                     run_store=self.run_store,
+                    idempotency_store=self.task_idempotency,
                 )
                 await backend.start()
                 self._backend = backend
