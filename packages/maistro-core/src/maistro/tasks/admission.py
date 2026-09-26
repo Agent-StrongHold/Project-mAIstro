@@ -30,7 +30,6 @@ worth being loud about.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from typing import TYPE_CHECKING, Any, Protocol
 
 from maistro.observability.correlation import current_execution_context
@@ -71,8 +70,21 @@ TASK_QUEUE_SOURCE = "task_queue"
 
 #: Provenance keys correlating the Run back to the receipt that admitted it.
 TASK_ID_KEY = "task_id"
+TASK_PAYLOAD_KEY = "task_payload"
 SESSION_ID_KEY = "session_id"
 REQUEST_ID_KEY = "request_id"
+
+
+def _must_resume_before_terminalizing(current: RunStatus, target: RunStatus) -> bool:
+    """Whether a parked WAITING Run must be resumed before its terminal write.
+
+    A failed or timed-out Attempt parks its NodeRun (#143) and WAITING has no
+    edge to COMPLETED or FAILED, so the receipt of finished work has to resume
+    the Run first or its terminal outcome is written nowhere.
+    """
+    if current is not RunStatus.WAITING:
+        return False
+    return target in TERMINAL_RUN_STATUSES and target not in RUN_TRANSITIONS[RunStatus.WAITING]
 
 
 class WorkspaceNotAdmissible(ValueError):
@@ -99,6 +111,7 @@ class TaskAdmitter(Protocol):
         *,
         result: object | None = None,
         error: str | None = None,
+        previous_status: TaskStatus | None = None,
     ) -> bool:
         """Advance the Run to match a task transition. False if it refused."""
         ...
@@ -132,6 +145,13 @@ class TaskRunAdmitter:
         self._project_id = project_id
         self._projects = project_store
         self._intents = intents
+        # Whether dispatch on this store is claimed atomically with its
+        # physical evidence (#544, #1114). On a claiming store the Run's
+        # QUEUED->RUNNING write belongs to `claim_consumer_run` — the same
+        # transaction as the NodeRun and leased Attempt that make RUNNING
+        # true — so `record_transition` must not make that write separately
+        # for a task phase and reopen the crash window this repair closes.
+        self._consumer_claims = callable(getattr(run_store, "claim_consumer_run", None))
 
     async def _resolve_project_id(self) -> str:
         if self._project_id is not None:
@@ -170,7 +190,12 @@ class TaskRunAdmitter:
             agent_id=task.agent_id,
             registry=self._intents,
         )
-        provenance: dict[str, Any] = {TASK_ID_KEY: task.task_id}
+        provenance: dict[str, Any] = {
+            TASK_ID_KEY: task.task_id,
+            # This snapshot is committed with the QUEUED Run. Recovery must not
+            # depend on the best-effort TaskRecord or process-local receipt.
+            TASK_PAYLOAD_KEY: task.model_dump(mode="json"),
+        }
         if task.session_id:
             provenance[SESSION_ID_KEY] = task.session_id
         if task.user_id:
@@ -203,24 +228,11 @@ class TaskRunAdmitter:
             description=task.description,
             actor_principal_id=task.user_id or None,
             provenance=provenance,
+            initial_status=RunStatus.QUEUED,
         )
-        # The receipt is born QUEUED, so the Run is too. Leaving it CREATED
-        # would mean the two disagreed from the first instant about a task that
-        # is, by then, genuinely queued.
-        #
-        # Two commits on a durable store, and a failure between them would leave
-        # a CREATED Run whose provenance names a task receipt that was never
-        # queued. Compensate rather than leak: a Run that could not be queued is
-        # cancelled, which is true and terminal. The remaining window — process
-        # death between the two commits — needs a create-in-queued-state
-        # operation on the RunStore protocol, which is #132's to add along with
-        # the durable backend.
-        try:
-            await self._runs.transition_run(run.run_id, RunStatus.QUEUED)
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._runs.transition_run(run.run_id, RunStatus.CANCELLED)
-            raise
+        # The Run and its durable payload are now committed as QUEUED in one
+        # store operation. The queue receipt can therefore be rebuilt after a
+        # process death before either in-memory handoff step.
         return run.run_id
 
     async def cancel_run(self, run_id: str) -> bool:
@@ -244,6 +256,7 @@ class TaskRunAdmitter:
         *,
         result: object | None = None,
         error: str | None = None,
+        previous_status: TaskStatus | None = None,
     ) -> bool:
         """Advance the Run to match one task transition.
 
@@ -268,13 +281,23 @@ class TaskRunAdmitter:
         run = await self._runs.get_run(run_id)
         if run is None:
             return False
-        if run.status is target:
+        if self._is_phase_only_transition(run.status, target):
+            # A phase of one execution, not a Run lifecycle event. On a claiming
+            # store the QUEUED->RUNNING dispatch write is the atomic consumer
+            # claim: it lands in the same transaction as the NodeRun and leased
+            # Attempt, so a worker death before it leaves the Run QUEUED for
+            # `TaskQueue.recover` and one after it leaves leased evidence for
+            # the Attempt sweep. Writing RUNNING here, separately from that
+            # evidence, is exactly the gap that stranded a RUNNING Run with no
+            # Attempt and no recovery path (#1114). The receipt may record its
+            # phase; terminal targets below still write and still refuse.
             return True
-        if (
-            run.status is RunStatus.WAITING
-            and target in TERMINAL_RUN_STATUSES
-            and target not in RUN_TRANSITIONS[RunStatus.WAITING]
-        ):
+        if run.status is target:
+            # QUEUED -> RUNNING is the physical dispatch fence. A second
+            # recovered receipt must not treat another worker's claim as its
+            # own merely because both task phase machines map to RUNNING.
+            return not (previous_status is TaskStatus.QUEUED and target is RunStatus.RUNNING)
+        if _must_resume_before_terminalizing(run.status, target):
             # A failed or timed-out Attempt parks its NodeRun, and a Run with no
             # other active node then parks too (#143). The receipt is still the
             # domain here and it says the work is over — but WAITING has no edge
@@ -290,6 +313,18 @@ class TaskRunAdmitter:
         except InvalidLifecycleTransition:
             return False
         return True
+
+    def _is_phase_only_transition(self, current: RunStatus, target: RunStatus) -> bool:
+        """Whether a RUNNING target is only a phase of an in-flight execution.
+
+        On a claiming store the QUEUED->RUNNING dispatch write is the atomic
+        consumer claim, so a separate RUNNING write here would be a second
+        claim authority (#1114). QUEUED and RUNNING Runs are already claimed or
+        awaiting their claim; their phases advance without a Run write.
+        """
+        if not self._consumer_claims or target is not RunStatus.RUNNING:
+            return False
+        return current in (RunStatus.QUEUED, RunStatus.RUNNING)
 
 
 class WorkspaceRoutingAdmitter:
@@ -392,6 +427,7 @@ class WorkspaceRoutingAdmitter:
         *,
         result: object | None = None,
         error: str | None = None,
+        previous_status: TaskStatus | None = None,
     ) -> bool:
         """Advance the Run to match a task transition.
 
@@ -402,13 +438,20 @@ class WorkspaceRoutingAdmitter:
         one implementation of the refusal semantics rather than a second copy.
         """
         admitter = await self.admitter_for(None)
-        return await admitter.record_transition(run_id, status, result=result, error=error)
+        return await admitter.record_transition(
+            run_id,
+            status,
+            result=result,
+            error=error,
+            previous_status=previous_status,
+        )
 
 
 __all__ = [
     "RUN_STATUS_BY_TASK_STATUS",
     "SESSION_ID_KEY",
     "TASK_ID_KEY",
+    "TASK_PAYLOAD_KEY",
     "TASK_QUEUE_SOURCE",
     "TaskAdmitter",
     "TaskRunAdmitter",

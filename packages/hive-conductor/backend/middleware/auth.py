@@ -119,6 +119,10 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         "/v1/workspaces": "workspaces.write",
         # The evolution tournament is the self-improvement loop's other door.
         "/v1/evolution": "rsi.execute",
+        # Chat workflow execution creates durable Run history and can invoke
+        # mutating nodes. It uses the shared approval capability before the
+        # existing chat dispatch path, so authentication alone is not enough.
+        "/v1/chat/workflows": "dags.write",
         # Executes GitHub/GitLab tools with stored credentials against real
         # external trackers.
         # Audit entries name an arbitrary `actor`: an unscoped writer is a
@@ -139,8 +143,11 @@ _PROTECTED_OPS: dict[str, dict[str, str]] = {
         # scratch workdir is a smaller decision than granting the loop that
         # rewrites this repository.
         "/v1/rsi": "rsi.execute",
-        # Capability discovery + approval resolution (approving a destructive
-        # infra action is high-stakes) — gate behind config.write.
+        # Resolving an approval is an authority-bearing decision, not a
+        # generic configuration write. Require the dedicated approver scope;
+        # the route applies the action-specific policy on top of this.
+        "/v1/capabilities/approvals": "approvals.resolve",
+        # Capability discovery and provider configuration remain config writes.
         "/v1/capabilities": "config.write",
         # Provider activation uses the LiteLLM master key, mutates the global
         # model registry, and can trigger billed calls (SPEC-072726-3439).

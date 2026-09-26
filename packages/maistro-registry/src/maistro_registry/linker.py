@@ -23,9 +23,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import quote, urlsplit
 
 import httpx
 
+from maistro.http import sync_client
 from maistro_registry.schema import FrontMatter
 
 _RELATIONSHIP_FIELDS: tuple[str, ...] = (
@@ -41,6 +43,22 @@ _RELATIONSHIP_FIELDS: tuple[str, ...] = (
 _DEFAULT_REPO_OWNERS: dict[str, str] = {
     "maistro-engine": "BlakeMatthews-dev",
 }
+
+# Link checking is restricted to GitHub's HTTPS Contents API. Repository and
+# artifact identifiers can influence the path, but never the network origin.
+_GITHUB_API_ORIGIN = "https://api.github.com"
+_GITHUB_ALLOWED_HOSTS = frozenset({"api.github.com"})
+
+
+def _github_contents_url(owner: str, repo: str, path: str) -> str:
+    """Build a URL whose scheme and origin are an explicit policy decision."""
+    url = (
+        f"{_GITHUB_API_ORIGIN}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/contents/{path}"
+    )
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname not in _GITHUB_ALLOWED_HOSTS:
+        raise ValueError("GitHub resolver URL must use the api.github.com HTTPS origin")
+    return url
 
 
 class Resolver(Protocol):
@@ -150,10 +168,15 @@ class GitHubResolver:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
+        # The fixed host allowlist and HTTPS pin are explicit policy decisions;
+        # the owner/repo values only affect quoted path segments. Do not add the
+        # public endpoint to the configured-origin bypass: the central validator
+        # must still inspect its DNS answer before this caller-influenced fetch.
         for path in ("docs/adr", "docs/specs"):
-            url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+            url = _github_contents_url(owner, repo, path)
             try:
-                resp = httpx.get(url, headers=headers, timeout=10)
+                with sync_client(timeout=10) as client:
+                    resp = client.get(url, headers=headers)
             except httpx.RequestError:
                 continue
             if resp.status_code != 200:
