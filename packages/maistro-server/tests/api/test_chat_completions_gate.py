@@ -35,7 +35,7 @@ from maistro.runs.chat_admission import (
     ChatRunAdmitter,
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run, RunStatus
-from maistro.runs.store import InMemoryRunStore
+from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.security._types import GateResult
 from maistro.types.config import AgentConfig
 from maistro_server.api import chat_completions as chat_api
@@ -344,49 +344,133 @@ async def test_a_streamed_failure_leaves_no_running_run(wired, client: TestClien
     assert chat_runs[0].status is RunStatus.FAILED
 
 
-async def test_admission_failure_means_a_null_run_id_and_a_working_endpoint(
-    container: object,
-    client: TestClient,
+class _BrokenAdmitter:
+    async def admit(self, *_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("project unavailable")
+
+
+def _assert_refused(response: object, run_task: AsyncMock) -> None:
+    assert response.status_code == 503  # type: ignore[attr-defined]
+    assert int(response.headers["Retry-After"]) > 0  # type: ignore[attr-defined]
+    run_task.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_admission_failure_is_a_retryable_503_that_never_dispatches(
+    container: object, wired: InMemoryRunStore, client: TestClient, stream: bool
 ) -> None:
-    """A broken admitter must not turn best-effort bookkeeping into a refusal."""
+    """No canonical Run, no answer (#1108 owner decision, amends ADR-082326-c126).
 
-    class _BrokenAdmitter:
-        async def admit(self, *_args: object, **_kwargs: object) -> None:
-            raise RuntimeError("project unavailable")
-
-    container.chat_admitter = _BrokenAdmitter()  # type: ignore[attr-defined]
-    with patch(RUN_TASK, AsyncMock(return_value=_output("42"))):
-        response = client.post(
-            "/v1/chat/completions",
-            json={"messages": [{"role": "user", "content": "hi"}]},
-        )
-
-    body = response.json()
-    assert response.status_code == 200
-    assert body["choices"][0]["message"]["content"] == "42"
-    assert body["run_id"] is None
-
-
-async def test_no_chat_admitter_means_a_null_run_id_and_a_working_endpoint(
-    container: object,
-    client: TestClient,
-) -> None:
-    """A turn is never refused for want of a Run.
-
-    The chat path has no receipt to fall back on, so a process that cannot
-    record the turn must still answer it — the alternative turns a bookkeeping
-    failure into an outage.
+    Refused before the StreamingResponse is built, so a streaming caller gets a
+    real status code rather than a 200 whose body carries the error.
     """
+    container.chat_admitter = _BrokenAdmitter()  # type: ignore[attr-defined]
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"stream": stream, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    _assert_refused(response, run_task)
+    assert chat_api.RUN_ID_HEADER not in response.headers
+    assert not [r for r in wired._runs.values() if r.status not in TERMINAL_RUN_STATUSES]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_no_chat_admitter_is_a_retryable_503_that_never_dispatches(
+    container: object, client: TestClient, stream: bool
+) -> None:
     container.chat_admitter = None  # type: ignore[attr-defined]
-    with patch(RUN_TASK, AsyncMock(return_value=_output("42"))):
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"stream": stream, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    _assert_refused(response, run_task)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_no_container_is_a_retryable_503_that_never_dispatches(
+    client: TestClient, stream: bool
+) -> None:
+    """Before the lifespan wires a Container there is no Run to govern a turn."""
+    chat_api.configure_container(None)
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"stream": stream, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    _assert_refused(response, run_task)
+
+
+async def test_a_failed_queued_transition_is_compensated_and_refused(
+    container: object, wired: InMemoryRunStore, client: TestClient
+) -> None:
+    """The Run admission already persisted is cancelled, not stranded, on refusal."""
+    real_transition = wired.transition_run
+
+    async def _veto_queued(run_id: str, target: RunStatus, **kwargs: object):
+        if target is RunStatus.QUEUED:
+            raise RuntimeError("queue write failed")
+        return await real_transition(run_id, target, **kwargs)  # type: ignore[arg-type]
+
+    wired.transition_run = _veto_queued  # type: ignore[method-assign]
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
         response = client.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "hi"}]},
         )
 
-    body = response.json()
-    assert body["choices"][0]["message"]["content"] == "42"
-    assert body["run_id"] is None
+    _assert_refused(response, run_task)
+    (run,) = wired._runs.values()
+    assert run.status is RunStatus.CANCELLED
+    assert run.error == ADMISSION_INCOMPLETE
+
+
+async def test_a_pre_dispatch_spine_failure_is_a_retryable_503(
+    container: object, wired: InMemoryRunStore, client: TestClient
+) -> None:
+    """Refused inside `route_request`: the non-stream `except` chain maps it to 503."""
+
+    async def _veto_attempt(*_args: object, **_kwargs: object) -> None:
+        raise RunIntegrityError("attempt write vetoed")
+
+    wired.create_attempt = _veto_attempt  # type: ignore[method-assign]
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    _assert_refused(response, run_task)
+
+
+async def test_a_streamed_pre_dispatch_spine_failure_emits_an_unavailable_event(
+    container: object, wired: InMemoryRunStore, client: TestClient
+) -> None:
+    """Headers are already out when `route_request` refuses; the SSE body says so."""
+
+    async def _veto_attempt(*_args: object, **_kwargs: object) -> None:
+        raise RunIntegrityError("attempt write vetoed")
+
+    wired.create_attempt = _veto_attempt  # type: ignore[method-assign]
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        response = client.post(
+            "/v1/chat/completions",
+            json={"stream": True, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    run_task.assert_not_awaited()
+    assert '"type": "unavailable"' in response.text
+    assert _sse_text(response.text) == ""
 
 
 # --- review findings ------------------------------------------------------

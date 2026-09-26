@@ -86,10 +86,18 @@ behind a receipt a caller still holds; a chat Run's job is to be followable for
 a while after its turn. Ordering the eviction by that difference is what makes
 the guarantee real rather than asserted.
 
-**A turn is never refused for want of a Run.** If admission fails, the turn is
-answered anyway and the response simply carries no `run_id`. The chat path has
-no receipt to fall back on, so refusing would convert "this process cannot
-record the turn" into "this process cannot answer".
+**A turn that cannot get its Run is refused, retryably** *(amended 2026-09-23,
+owner decision on #1108; supersedes #223 AC4)*. Every answered turn has a
+canonical Run, NodeRun and Attempt. If no chat admitter is wired, admission
+fails, or the spine fails before the dispatch, the turn raises
+`ChatTurnRefused` — HTTP doors answer `503` with `Retry-After` — and nothing
+reaches the model; a Run admission already persisted is cancelled rather than
+stranded. The original rule ("a turn is never refused for want of a Run",
+answering with no `run_id`) traded governance for availability, and the owner
+chose governance: an ungoverned answer is not a degraded mode. A spine failure
+*after* the dispatch is different — the answer exists, so it is returned once
+and the Run is left open for recovery (`ChatDispatchUnrecorded`), never
+redispatched.
 
 **The turn's answer is on the Run, bounded.** A completed turn records its
 `finish_reason` and the first `MAX_RECORDED_ANSWER_CHARS` of the assistant's
@@ -109,8 +117,7 @@ agent went on to do: a canonical record that contradicts what happened, which is
 worse than one that admits the agent was not yet chosen.
 
 **`run_id` is additive on the response.** The OpenAI-compatible shape a caller
-parses is unchanged; `run_id` sits alongside `choices` and is absent when no
-chat admitter is wired.
+parses is unchanged; `run_id` sits alongside `choices` on every answered turn.
 
 ## Consequences
 
@@ -134,6 +141,9 @@ chat admitter is wired.
   does. That is what makes the node executable rather than a decorative record,
   but it is user content in a durable store, and the tight retention window
   above is part of the mitigation rather than an accident.
+- Since the 2026-09-23 amendment, a store or project outage that blocks
+  admission is a chat outage (retryable 503) rather than unrecorded answers.
+  That is the chosen cost: an answer outside the governed path is not offered.
 - `RunStore` grew `delete_run`. A store with no way to forget a Run cannot
   implement any retention policy, so this is a gap being closed rather than a
   concession — but every implementation now owes it, including the PostgreSQL
