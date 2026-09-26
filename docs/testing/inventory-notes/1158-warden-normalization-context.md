@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +39
+  packages/maistro-core/tests: +40
   packages/maistro-turing/tests: +4
 ---
 # #1158 Warden normalization and bounded context
@@ -13,6 +13,11 @@ inventory-delta:
 - ReAct and Artificer tool-result coverage verifies ordered cross-call
   aggregation, and the message-context regression verifies the tail and
   per-item serialization caps.
+- Repair round 5 adds `test_trusted_system_turn_is_labeled_context_never_scanned_content`
+  (harness seam): the trusted system turn reaches the detector only as
+  provenance-labeled prior context, never as scanned content — this is the
+  trusted/`continue` branch of `SafeHarnessRunner._scan_inbound` the
+  diff-coverage gate found unexecuted (changed lines 123–124).
 
 ## Merge reconciliation with #1398 (central Agent trust pipeline)
 
