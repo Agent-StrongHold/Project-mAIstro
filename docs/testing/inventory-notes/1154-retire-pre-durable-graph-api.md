@@ -321,3 +321,80 @@ merged into `auto-1154`; tree clean, `git diff --check` exit 0):
   graph/nodes/agent_synth_dag.py:474); `legacy_archive.py` is a read-only
   pre-convergence reader. PR #1318 body and commit subjects contain no
   fixes/closes/resolves keywords.
+
+## Repair round at head `6d5af3c8194e` — CI-gate repair: candidate ledger
+re-synced to the exact CI invocation; trusted residual re-attributed
+per-identity (2026-09-25)
+
+Both verifier findings re-derived from scratch before acting:
+
+1. `builders/dag.py` conflict markers — absent: `git diff --check HEAD`
+   exit 0, line-anchored marker scan of the file empty,
+   `check-merge-markers.py` exit 0. Nothing to repair.
+2. `check-vulture-baseline.py` exit 1 — decomposed into its two independent
+   failure levels against the exact CI invocation (`packages/*/src
+   --min-confidence 60 --exclude '*/third_party/*'`, the form both
+   `.github/workflows/quality.yml` and `vulture-ratchet.yml` run):
+   - **Candidate level (fixed this round).** The working-tree ledger had
+     been `--update`-ed in the bd346d241 round with the script DEFAULT args
+     (`packages tests --exclude '*/.venv/*'`), so it mirrored a different
+     scan than CI: 400+ banked rows lived in `tests/`,
+     `hive-conductor/backend/`, `canvas/frontend/` (pytest-surface 448,
+     fastapi 237, pydantic 332) while the CI scan sees packages/*/src only
+     (pytest-surface 0, fastapi 41). Repair: findings-only `--update` with
+     the exact CI args. Diff verified programmatically: rule
+     id/owner/rationale/patterns byte-identical, `version` unchanged, only
+     `findings` arrays rewritten (960 insertions / 979 deletions).
+     Post-repair the candidate-bookkeeping section is EMPTY (0 NEW /
+     0 stale).
+   - **Trusted level (re-attributed per identity; not clearable
+     in-branch).** 15 NEW identities vs the base (`03c8ba83a`) ledger, of
+     which `config/models.py::parallel_generations` is already granted
+     (#1154) — 14 unauthorized. A scratch detached worktree at the base
+     (`~/Git/worktrees/base-probe-1154`) scanned with identical args shows
+     the raw head-only identity diff is EXACTLY these 15 (base-only: 12,
+     the retirement's own removed debt: run.py `_parse_rhs`/`duration_s`/
+     `latest_node_run`, node.py `duration_s`/`retry_count`, phases.py
+     `TERMINAL_NODE_PHASES`, types.py `evaluation_score`/`next_nodes`,
+     harness.py `assert_event_type`/`get_events`). Per-identity provenance
+     of the 14 — every src caller was removed by this branch's own #1154
+     retirement commits (`git log -S`): `llm_call_permit` and
+     `compute_backoff` callers by b10bc00d1 (retire direct legacy node
+     execution); the `WaveEnsembleStrategy` protocol methods
+     (`build_user_prompt`/`score_output`/`update_blackboard`) by
+     d39fe554e/72e4cc789 (strategy.py executor deleted); `scout.run_scout`
+     caller was run.py:282 `_run_scout` (run.py deleted). None is genuinely
+     dead: each is test-exercised (`test_concurrency.py`, `test_backoff.py`,
+     `test_retry_policy.py`, `test_scout.py`, `test_ensemble.py:362-380`,
+     `test_sync_kinds.py`) or a serialized contract surface
+     (`LlmSummarizeOut.tokens_in/out` written at llm_summarize.py:196-197;
+     `NodeResult.tokens_in/out` telemetry envelope;
+     `ScoutContext.raw_findings` written by scout.py:86;
+     `GraphSpec.run_scout` consumed via hive DAG payloads — stores.py:531,
+     canonical_dag_runner.py:186/624, edit_lock.py:134;
+     `CodeModule.parse_error` written by python_parser.py:46;
+     `jittered_backoff` remains live via delivery/dispatch.py:55). These
+     are exactly the "algorithm-only fixtures with no universal lifecycle
+     authority" the issue acceptance blesses, so retention (bank) beats
+     deletion. In-branch authorization is impossible BY DESIGN:
+     `ratchet_provenance.load_authorizations` reads grants from the BASE
+     revision (two-merge doctrine, scripts/ratchet_provenance.py:482-494),
+     and this lane's mandate covers amending `quality/vulture-baseline.json`
+     only — so the 14 stay as reviewed, banked, grant-ready identities for
+     the out-of-lane grants-first PR (the #1523 pattern). Once this branch
+     lands, its ledger becomes the trusted base and the gate clears
+     structurally.
+
+Re-validated at this head: `ruff check .` clean; `ruff format --check .`
+clean (2537 files); `tests/graph` 1202 passed / 97 skipped (incl.
+test_retired_executor.py + durable_runs); driver set (testing,
+orchestrator/waves, integration/test_chat_to_graph_e2e.py, resilience,
+codebase) 323 passed; hive `test_graph_runner.py` +
+`test_canonical_dag_runner.py` 51 passed; `check-retired-guidance.py`,
+`check-execution-lifecycles.py`, `check-convergence-matrix.py`,
+`check-merge-markers.py`, `check-suite-inventory.py` all exit 0. Surface
+probes: zero `run_graph(`/`GraphRun(` call sites in shipped code;
+`maistro.graph.__all__` exposes neither; shipped Graph work crosses only
+`run_durable_graph`; `quality/retired-guidance.json` entry
+`pre-durable-run-graph` carries `retired_by: #1154`. No test files changed
+in this pass: suite inventories unchanged.
