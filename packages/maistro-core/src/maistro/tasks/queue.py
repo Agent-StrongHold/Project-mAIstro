@@ -67,7 +67,14 @@ from maistro.tasks.idempotency import (
     normalize_idempotency_key,
     request_fingerprint,
 )
-from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskResult, TaskStatus
+from maistro.tasks.models import (
+    TaskActorKind,
+    TaskCreate,
+    TaskProgress,
+    TaskResponse,
+    TaskResult,
+    TaskStatus,
+)
 from maistro.tasks.status import can_transition
 
 logger = structlog.get_logger()
@@ -152,7 +159,10 @@ def _task_from_record(record: TaskRecord) -> TaskResponse:
     from maistro.tasks.lanes import Lane
 
     actor_kind = record.actor_kind
-    if actor_kind not in {"user", "system", "service"}:
+    # Tuple membership, not a set literal: only the tuple form narrows the
+    # restored ``str`` back to the Literal for the type checker, so the guard
+    # and the proof stay one statement instead of drifting apart.
+    if actor_kind not in ("user", "system", "service"):
         raise ValueError("invalid persisted task actor kind")
     if not isinstance(record.user_id, str) or not record.user_id.strip():
         # A malformed/partially migrated receipt must never become runnable
@@ -160,10 +170,13 @@ def _task_from_record(record: TaskRecord) -> TaskResponse:
         # explicit system actor; this guard protects a restart during or before
         # that migration as well as hand-edited data.
         raise ValueError("persisted task has no effective actor")
-    lane = record.lane if record.lane in {item.value for item in Lane} else Lane.BACKGROUND.value
+    try:
+        lane: Lane = Lane(record.lane)
+    except ValueError:
+        lane = Lane.BACKGROUND
     priority_tier = (
         record.priority_tier
-        if record.priority_tier in {"P0", "P1", "P2", "P3", "P4", "P5"}
+        if record.priority_tier in ("P0", "P1", "P2", "P3", "P4", "P5")
         else "P2"
     )
     return TaskResponse(
@@ -324,7 +337,7 @@ class TaskQueue:
         workspace_id: str | None = None,
         service_principal_id: str | None = None,
         delegation_id: str | None = None,
-        actor_kind: str = "user",
+        actor_kind: TaskActorKind = "user",
         idempotency_key: str | None = None,
     ) -> TaskResponse:
         """Queue one task, admitting it as a Run when an admitter is wired.
@@ -393,7 +406,7 @@ class TaskQueue:
         workspace_id: str | None,
         service_principal_id: str | None = None,
         delegation_id: str | None = None,
-        actor_kind: str = "user",
+        actor_kind: TaskActorKind = "user",
     ) -> TaskResponse:
         """Submit through the claim store: reconcile, or admit exactly once.
 
@@ -577,7 +590,7 @@ class TaskQueue:
         workspace_id: str | None = None,
         service_principal_id: str | None = None,
         delegation_id: str | None = None,
-        actor_kind: str = "user",
+        actor_kind: TaskActorKind = "user",
         idempotency_key: str | None = None,
     ) -> TaskResponse:
         """Admit and queue one submission unconditionally — the pre-#1176 path.

@@ -7,13 +7,14 @@ import os
 from fastapi import HTTPException, status
 
 from maistro.tasks.http_contract import verify_delegation_context
+from maistro.tasks.models import TaskActorKind
 from maistro_server.api.principal import AuthenticatedPrincipal
 
 
 def resolve_delegated_identity(
     auth: AuthenticatedPrincipal | None,
     delegation: str | None,
-) -> tuple[str, str, str | None, str]:
+) -> tuple[str, str, str | None, TaskActorKind]:
     """Resolve an effective actor from service auth and signed delegation.
 
     The request body and ordinary user-id headers are never authority. A
@@ -23,7 +24,9 @@ def resolve_delegated_identity(
     if delegation is None:
         owner = "dev" if auth is None else auth.user_id
         service = owner
-        actor_kind = "service" if auth is not None else "system"
+        # Annotated: mypy joins the two literals back to ``str`` otherwise,
+        # pyright keeps the union — spelling the alias keeps both honest.
+        actor_kind: TaskActorKind = "service" if auth is not None else "system"
         return owner, service, None, actor_kind
     if auth is None:
         raise HTTPException(
