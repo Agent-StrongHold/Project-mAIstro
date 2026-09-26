@@ -14,6 +14,71 @@ collected by pytest, so their node count is not part of the inventory ledger
 API tests). The routed `/decks` journey added in repair round 12 grows the
 browser corpus, not the pytest ledger, so the delta stays `+0`.
 
+## Executed evidence (repair round 14, Deck entry focus + presentation Tab trap)
+
+Round 13's verification returned NEEDS-REPAIR with three reproduced focus
+defects (the run then died on the wall-clock deadline before repair). All
+three are fixed in source and re-proven with negative controls:
+
+- `DeckBuilder.tsx` had no entry-focus target: Design Studio swaps the editor
+  in for the page behind it, so the "Open Deck editor" button unmounts and
+  focus fell to `<body>` (`document.activeElement === BODY`, the round-13
+  finding). The editor now focuses its visible Deck title input on mount
+  (`deckTitleRef` + a mount effect), giving the surface a real, announced
+  first tab stop (WCAG 2.4.3/2.4.7 — a visible control, not a hidden anchor).
+  This covers both the embedded `/cli/canvas` editor and the routed `/decks`
+  mount. `DesignStudio.tsx` needs no change: its textless anchor already
+  handles the exit direction (it remounts when the editor closes), and its
+  `[editor]` effect no-ops while an editor is mounted.
+- The `aria-modal="true"` presentation dialog had no focus trap: five Tabs
+  moved focus out of the dialog into the app shell behind the full-screen
+  overlay (WCAG 2.1.2 / the `aria-modal` contract). The presenting keydown
+  handler now intercepts Tab and cycles Tab/Shift+Tab among the dialog's
+  focusable controls (disabled ones skipped, matching browser Tab semantics)
+  via a `presentationRef` handle on the dialog container.
+- The spec's Deck section only asserted heading visibility. Both journeys now
+  assert the editor-entry focus target (`Deck title` focused after "Open Deck
+  editor" and on the routed mount), the Tab containment cycle inside the
+  presentation dialog (full Previous/Next/Exit cycle on the 2-slide routed
+  surface; Tab/Shift+Tab pinning on the 1-slide embedded surface where both
+  slide buttons are disabled), `dialog.contains(document.activeElement)`, and
+  Present-button focus restoration after dialog exit.
+- Negative controls executed against the pre-fix `DeckBuilder.tsx` (HEAD
+  version swapped in, `frontend` rebuilt): the embedded journey fails at
+  `design-studio-keyboard.spec.ts:178` (`expect(...getByLabel("Deck title"))
+  .toBeFocused()` — "unexpected value inactive"), the routed journey fails
+  at `:211` (same assertion), and a temporary five-Tab probe against the
+  routed presentation dialog failed `dialog.contains(document.activeElement)`
+  (focus escaped into the shell). The probe file was deleted after the run;
+  with the fix restored all three pass — the assertions are load-bearing, not
+  decorative.
+- Battery at the fixed head: `npm run build` (tsc + vite) clean; `npm run
+  lint` 0 errors (90 pre-existing warnings); `uv run ruff check .` + `uv run
+  ruff format --check .` clean (2556 files); `uv run pytest
+  packages/hive-conductor/backend/tests -q -k design` → **82 passed**;
+  `scripts/check-suite-inventory.py` → exit 0 (13 suites);
+  `scripts/check-frontend-api-routes.py` → exit 0 (214 routes across 61
+  files); vulture gate `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0 (1413 reviewed
+  identities, 0 unclassified — no ledger amendment needed, TSX-only change).
+- Live e2e, executed this round: backend `uv run --no-project uvicorn
+  main:app` on 127.0.0.1:8102 serving the freshly rebuilt `frontend/dist`
+  (`/v1/setup/status` → `setup_complete: true`; `GET /decks` → 200):
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts` →
+  **8/8 passed (12.4s)**; `deck-sanitization.spec.ts` → **7/7 passed
+  (3.2s)** via the `tests/Dockerfile.playwright`-shaped staging
+  (`E2E_SRC_ROOT`/`E2E_NODE_PATHS` at `/tmp/auto769-stage` with the e2e
+  standalone `node_modules`) — the #752 sanitizer boundary still holds with
+  the changed DeckBuilder. Server stopped afterwards.
+- CI-identical compose stack re-run (port 8101 was occupied by a sibling
+  lane's stack, so host publishing was overridden to 28152 with a compose
+  override file; the e2e-tests container still talks to `http://hive:8101`
+  on the compose network, exactly like CI): `docker compose -p auto769-repair
+  -f docker-compose.test.yml --profile test up --build
+  --abort-on-container-exit --exit-code-from e2e-tests` → **87 passed
+  (1.5m), exit 0** — every `*.spec.ts` in the suite, including the four
+  strengthened keyboard journeys. Stack torn down (`down -v`) after the run.
+
 ## Executed evidence (repair round 13, CI-repair: hive-conductor-e2e-ui root-caused and fixed)
 
 The GitHub checks at head `b0048035f` showed exactly one failing required

@@ -171,12 +171,32 @@ test("fixed-page and Deck editors expose keyboard workflows and deterministic tr
   await page.getByLabel("Describe the artifact").fill("A keyboard-first deck about reliable execution");
   await page.getByRole("button", { name: "Open Deck editor" }).press("Enter");
   await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
+  // Deterministic editor entry: the Design Studio page behind the editor
+  // unmounts when it opens, so focus must land on a real control inside the
+  // Deck editor rather than staying on <body> (the round-13 verification
+  // finding: document.activeElement was BODY right after Open Deck editor).
+  await expect(page.getByLabel("Deck title")).toBeFocused();
   await page.getByRole("button", { name: "Present" }).press("Enter");
-  await expect(page.getByRole("dialog")).toBeVisible();
+  const embeddedDialog = page.getByRole("dialog");
+  await expect(embeddedDialog).toBeVisible();
+  // aria-modal containment with a single slide: both slide buttons are
+  // disabled, so Tab and Shift+Tab keep focus on the dialog's only enabled
+  // control instead of escaping into the app shell behind the overlay (the
+  // round-13 finding: five Tabs moved focus out of the dialog).
+  await expect(page.getByRole("button", { name: "Exit (Esc)" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Exit (Esc)" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.getByRole("button", { name: "Exit (Esc)" })).toBeFocused();
+  expect(
+    await embeddedDialog.evaluate((element) => element.contains(document.activeElement)),
+  ).toBe(true);
   // The Deck editor and its presentation dialog are axe-clean surfaces too.
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.getByRole("button", { name: "Exit (Esc)" }).press("Enter");
   await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
+  // Closing the dialog restores focus to the control that opened it.
+  await expect(page.getByRole("button", { name: "Present" })).toBeFocused();
 });
 
 test("routed /decks surface is keyboard-complete for page navigation, reordering, and presentation", async () => {
@@ -186,6 +206,9 @@ test("routed /decks surface is keyboard-complete for page navigation, reordering
   await page.goto("/decks", { waitUntil: "domcontentloaded" });
   await expect(page).toHaveURL(/\/decks$/);
   await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
+  // The routed surface has the same deterministic entry focus as the
+  // embedded editor: focus starts on the Deck title, not <body>.
+  await expect(page.getByLabel("Deck title")).toBeFocused();
 
   // Slide selection must be reachable in the real tab order: Tab from the top
   // of the page until the first ordered-page option is focused, then activate
@@ -246,6 +269,21 @@ test("routed /decks surface is keyboard-complete for page navigation, reordering
   await present.press("Enter");
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
+  await expect(page.getByRole("button", { name: "Exit (Esc)" })).toBeFocused();
+  // Tab containment: the aria-modal dialog cycles focus among its own
+  // enabled controls (on slide 1 of 2 the Previous button is disabled and
+  // skipped, matching browser Tab semantics) and never lets focus escape
+  // into the app shell behind the full-screen overlay.
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Next slide" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Exit (Esc)" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(dialog.getByRole("button", { name: "Next slide" })).toBeFocused();
+  expect(
+    await dialog.evaluate((element) => element.contains(document.activeElement)),
+  ).toBe(true);
+  await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Exit (Esc)" })).toBeFocused();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 
