@@ -129,6 +129,18 @@ async def _writable_schedule(
     return current
 
 
+async def _write_canonical(schedule: Schedule) -> None:
+    """Write the canonical definition before its Hive projection (#1199)."""
+    from services.scheduler import ScheduleAdmissionUnavailable, put_canonical_definition
+
+    try:
+        await put_canonical_definition(schedule.id, schedule)
+    except ScheduleAdmissionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ValueError, LookupError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("", response_model=list[Schedule])
 async def list_schedules(request: Request) -> list[Schedule]:
     allowed = await dag_run_inspection.authorized_workspace_ids(_actor(request))
@@ -196,6 +208,7 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
         created_at=t,
         updated_at=t,
     )
+    await _write_canonical(schedule)
     stores.schedules[sid] = schedule
     return schedule
 
@@ -225,19 +238,40 @@ class UpdateScheduleBody(BaseModel):
 
 @router.put("/{schedule_id}", response_model=Schedule)
 async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: Request) -> Schedule:
-    schedule = await _writable_schedule(request, schedule_id)
+    await _writable_schedule(request, schedule_id)
+    from services.scheduler import definition_lock
+
     updates = body.model_dump(exclude_none=True)
-    t = _now()
-    updates["updated_at"] = t
-    schedule = schedule.model_copy(update=updates)
-    stores.schedules[schedule_id] = schedule
-    return schedule
+    updates["updated_at"] = _now()
+    async with definition_lock(schedule_id):
+        current = stores.schedules.get(schedule_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        await _write_canonical(current.model_copy(update=updates))
+        # Re-read after the await: a tick may have projected newer cursors.
+        latest = stores.schedules.get(schedule_id) or current
+        updated: Schedule = latest.model_copy(update=updates)
+        stores.schedules[schedule_id] = updated
+    return updated
+
+
+async def _delete_canonical(schedule_id: str) -> None:
+    from services.scheduler import ScheduleAdmissionUnavailable, delete_canonical_definition
+
+    try:
+        await delete_canonical_definition(schedule_id)
+    except ScheduleAdmissionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
     await _writable_schedule(request, schedule_id, require_active=False)
-    stores.schedules.pop(schedule_id, None)
+    from services.scheduler import definition_lock
+
+    async with definition_lock(schedule_id):
+        await _delete_canonical(schedule_id)
+        stores.schedules.pop(schedule_id, None)
 
 
 class ManualFireBody(BaseModel):
