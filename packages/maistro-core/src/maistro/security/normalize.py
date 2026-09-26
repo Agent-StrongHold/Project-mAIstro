@@ -27,13 +27,19 @@ The detection view applies entity/CSS escape decoding before these folds:
    letter and an approved digit/symbol are folded. The deliberately small map
    (0/o, 1/i, 3/e, 4/a, 5/s, 7/t, @/a, $/s) avoids rewriting ordinary numbers
    while making common instruction overrides share one canonical view.
+
+Additionally, this module converts JSON-serializable values to deterministic
+strings for security scanning, so mapping keys cannot be omitted from the
+model-visible representation.
 """
 
 from __future__ import annotations
 
 import html
+import json
 import re
 import unicodedata
+from typing import Any
 
 # The whitespace classes are single-escaped regex tokens: [ \t\r\n\f] must
 # match actual tab/CR/LF/FF. Doubling the backslashes would make the class
@@ -198,3 +204,19 @@ def normalize_for_redaction(text: str) -> str:
     same-length ``fold_homoglyphs`` view while keeping offsets anchored here.
     """
     return strip_invisibles(unicodedata.normalize("NFKD", text))
+
+
+def to_scan_string(value: Any) -> str:
+    """Return a string representation of a JSON-serializable value for security scanning.
+
+    For strings, returns the string unchanged.
+    For other JSON-serializable values (dict, list, tuple, int, float, bool, None),
+    returns the JSON string with sorted keys to ensure deterministic representation.
+    Other objects are fallen back to ``str``.
+    """
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, default=str)
+    except Exception:
+        return str(value)

@@ -185,6 +185,142 @@ async def test_browse_url_returns_the_extractor_payload_as_json(
     assert '"facts"' in results["n1"]["response"]
 
 
+async def test_legacy_tool_uses_the_canonical_governed_invocation_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import new_effect_context
+
+    calls: list[str] = []
+
+    async def fake_search(query: str, *, max_results: int = 5) -> dict[str, Any]:
+        calls.append(query)
+        return {"query": query}
+
+    monkeypatch.setattr(tools, "web_search", fake_search)
+    effects = new_effect_context()
+    binding_id = "legacy-tool:ws-1:proj-1:n1:web_search"
+    results: dict[str, dict[str, Any]] = {}
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="n1",
+        node_run_id="nr-1",
+        attempt_id="a-1",
+        workspace_id="ws-1",
+        project_id="proj-1",
+    )
+
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "web_search", "tool_config": {"queries_from_input": True}},
+        "n1",
+        {},
+        results,
+        "the task",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == ["the task"]
+    assert results["n1"]["success"] is True
+    invocations = await effects.invocation_store.list_effect(
+        run_id="run-1",
+        node_run_id="nr-1",
+        binding_id=binding_id,
+        effect_key="legacy-tool:web_search",
+    )
+    assert len(invocations) == 1
+    assert invocations[0].status.value == "completed"
+    assert invocations[0].binding.capability == "legacy_tool:web_search"
+
+
+async def test_legacy_mutation_is_refused_by_independent_effect_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    from maistro.capabilities.effect_context import new_effect_context
+
+    calls: list[str] = []
+
+    async def fake_write(task_desc: str) -> dict[str, Any]:
+        calls.append(task_desc)
+        return {"ok": True}
+
+    monkeypatch.setattr(tools, "TOOLS", {"jira_write": fake_write})
+    effects = new_effect_context()
+    results: dict[str, dict[str, Any]] = {}
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="n1",
+        node_run_id="nr-1",
+        attempt_id="a-1",
+        workspace_id="ws-1",
+        project_id="proj-1",
+    )
+
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "jira_write"},
+        "n1",
+        {},
+        results,
+        "mutate Jira",
+        effect_context=effects,
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "approval" in results["n1"]["response"].lower()
+    events = await effects.event_store.list_stream("workspace:ws-1")
+    event = events[0]
+    assert event.payload["decision"] == "require_approval"
+    assert event.payload["effect_key"] == "legacy-tool:jira_write"
+
+
+async def test_standalone_canonical_node_cannot_bypass_effect_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A canonical NodeContext is governed even without a Container wiring."""
+    import services.legacy_dag_node as adapter
+    import services.tool_executor as tools
+
+    calls: list[str] = []
+
+    async def fake_write(task_desc: str) -> dict[str, Any]:
+        calls.append(task_desc)
+        return {"ok": True}
+
+    monkeypatch.setattr(tools, "TOOLS", {"jira_write": fake_write})
+    results: dict[str, dict[str, Any]] = {}
+    ctx = NodeContext(
+        run_id="run-standalone",
+        dag_id="dag-standalone",
+        node_id="n1",
+        node_run_id="nr-standalone",
+        attempt_id="a-standalone",
+        workspace_id="ws-standalone",
+        project_id="proj-standalone",
+    )
+
+    await adapter._run_tool_node(
+        {"id": "n1", "tool": "jira_write"},
+        "n1",
+        {},
+        results,
+        "mutate Jira",
+        ctx=ctx,
+    )
+
+    assert calls == []
+    assert results["n1"]["success"] is False
+    assert "approval" in results["n1"]["response"].lower()
+
+
 async def test_a_generic_tool_result_is_json_encoded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
