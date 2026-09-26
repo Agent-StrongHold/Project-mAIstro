@@ -75,6 +75,22 @@ regressions, governed-executor PII masking/fail-closed behavior, and the
 accelerated-versus-stdlib Warden verdict comparison. `ruff check .`, `ruff
 format --check .`, `check-compliance.py`, `check-security-inventory.py`, and
 `check-suite-inventory.py --suite packages/maistro-core/tests` all passed.
-The required vulture exact-debt command also passed with 1,412 reviewed
-identities, zero unclassified identities, and zero never-allowlisted findings;
-therefore no ledger amendment was needed in this CI-repair round.
+The required vulture exact-debt command — the exact CI argv
+`uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` (the form wired in
+`.github/workflows/vulture-ratchet.yml` and `.github/workflows/quality.yml`) —
+passed (exit 0) with 1,412 reviewed identities -> 1,412 findings, zero
+unclassified identities, and zero never-allowlisted findings, measured at
+`5403979a` and re-measured at this round's develop-sync merge head;
+therefore no ledger amendment was needed or made in this CI-repair round.
+Reconciliation of the prior verifier's exit-1 report: that run omitted the
+`--exclude '*/third_party/*'` flag, scanning vendored upstream benchmark
+sources under
+`packages/maistro-evolve/src/maistro_evolve/benchmarks/third_party/` and
+reporting 60 "new" identities (1472 findings) there. Those trees are
+deliberately excluded by CI — `quality.yml` documents them as vendored
+upstream source (Google's IFEval verifier, BFCL's AST checker) kept
+byte-faithful — so the exclude-less result is out of the gate's scope, is
+pre-existing develop-wide debt, and is not a regression of this lane; no
+lane-touched `maistro-core` identity changed (1,412 = 1,412 at every
+measured head).
