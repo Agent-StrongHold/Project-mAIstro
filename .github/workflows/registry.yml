@@ -47,11 +47,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install minimal deps
-        run: pip install -e ./packages/maistro-registry pytest
+        run: pip install -e ./packages/maistro-core -e ./packages/maistro-registry pytest
 
       - name: Run unit tests
         run: |
           pytest tests/tools/registry/ tests/tools/test_lint_lifecycle.py \
+            packages/maistro-registry/tests \
             --confcutdir=tests/tools \
             -p no:cacheprovider \
             -v

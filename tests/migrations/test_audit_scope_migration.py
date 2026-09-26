@@ -94,7 +94,12 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # tip of 035 -> ... -> 040 -> 041_task_identity_provenance ->
     # 042_task_receipt_dispatch_inputs) so every deployment's ordinary
     # ``upgrade head`` applies the audit scope migration rather than leaving
-    # it on a competing branch.
+    # it on a competing branch. The chain has since grown past it again on both
+    # sides: #1120 re-parented its manual-fire occurrence migration (042) onto
+    # this revision, and #1204 appends `039_quota_usage_event_identity` as the
+    # new tip, exactly as any tip-landing branch does — the invariants that
+    # matter are that the chain still has one head and that this revision sits
+    # on the path `upgrade head` walks, not that it is the tip forever.
     assert revision.down_revision == "042_task_receipt_dispatch_inputs"
     # #1120's manual-fire occurrence migration (042) re-parented onto this
     # revision when the develop chain grew again while that branch was open —
@@ -107,6 +112,7 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     assert len(heads) == 1
     walked = {item.revision for item in directory.walk_revisions("base", heads[0])}
     assert revision.revision in walked
+    assert "039_quota_usage_event_identity" in walked
 
 
 def test_backfill_is_bounded_and_stops_after_the_last_batch(migration: ModuleType) -> None:

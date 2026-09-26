@@ -6,8 +6,12 @@ Live task state is held in memory. When a database is configured
 — upserts a ``TaskRecord`` row, fire-and-forget, so task execution never
 fails because the database is unavailable. Writes for one task are chained so
 they land in the order the state changed. With no database the queue behaves
-exactly as before. A configured database restores receipt rows on startup and
-re-enqueues only queued rows that already carry a canonical Run id.
+exactly as before. Wired canonical Runs are the restart source (#1114); an
+unwired queue remains intentionally in-memory. A restart re-enqueues queued
+task Runs from the durable provenance payload committed at admission — the
+same snapshot that carries the originating-principal evidence (#1057) — so
+recovery never depends on a second handoff path the admission did not
+already commit.
 
 When an idempotency store is wired (#1176), ``submit()`` first claims stable
 admission identity for the request — supplied or payload-derived key, scoped
@@ -30,7 +34,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import select
 
 from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.memory.store import TaskRecord, get_async_session_factory
@@ -40,7 +43,14 @@ from maistro.observability.metrics import (
     tasks_failed_total,
     tasks_submitted_total,
 )
-from maistro.tasks.admission import TaskAdmitter
+from maistro.runs.model import RunStatus
+from maistro.runs.sources import ADMISSION_SOURCE
+from maistro.tasks.admission import (
+    TASK_ID_KEY,
+    TASK_PAYLOAD_KEY,
+    TASK_QUEUE_SOURCE,
+    TaskAdmitter,
+)
 from maistro.tasks.idempotency import (
     DEFAULT_REPLAY_WINDOW,
     DERIVED_KEY_PREFIX,
@@ -76,6 +86,8 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
         "status": task.status.value,
         "description": task.description,
         "workspace": task.workspace,
+        "constraints": list(task.constraints),
+        "branch": task.branch,
         "tier": task.tier,
         "phase": task.phase,
         "progress": task.progress.model_dump(mode="json") if task.progress else None,
@@ -131,7 +143,12 @@ _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCE
 
 
 def _task_from_record(record: TaskRecord) -> TaskResponse:
-    """Rebuild a receipt without creating a new Run or delegation."""
+    """Rebuild a receipt without creating a new Run or delegation.
+
+    Used by the idempotency replay path (#1176/#1057): the durable receipt row
+    carries the originating-principal evidence the claim's stored request does
+    not, so a replay answered from it re-answers with the original identity.
+    """
     from maistro.tasks.lanes import Lane
 
     actor_kind = record.actor_kind
@@ -174,6 +191,38 @@ def _task_from_record(record: TaskRecord) -> TaskResponse:
         started_at=record.started_at,
         completed_at=record.completed_at,
     )
+
+
+def _task_from_run(run: Any) -> tuple[TaskResponse | None, str | None]:
+    """Validate one canonical task payload, returning a visible failure reason."""
+    raw = run.provenance.get(TASK_PAYLOAD_KEY)
+    if raw is None:
+        return None, "missing durable task payload"
+    try:
+        task = TaskResponse.model_validate(raw)
+        if run.provenance.get(TASK_ID_KEY) != task.task_id:
+            raise ValueError("task payload task_id does not match Run provenance")
+        if task.status is not TaskStatus.QUEUED:
+            raise ValueError("task payload is not queued")
+    except Exception as exc:
+        return None, f"invalid durable task payload: {exc}"
+    return task.model_copy(update={"run_id": run.run_id, "status": TaskStatus.QUEUED}), None
+
+
+async def _has_attempt_evidence(run_store: Any, node_runs: list[Any]) -> bool:
+    """Whether any physical Attempt exists under these NodeRuns.
+
+    A NodeRun is logical scaffolding: it says where a try would run, not that
+    one ever started. The Attempt is the physical evidence — active, its lease
+    is the Attempt sweep's to expire; terminal, its outcome is the
+    reconciler's to re-derive. A NodeRun with no Attempt under it is an
+    execution record that is incomplete rather than absent, and no sweep
+    anchored on physical evidence can reach it.
+    """
+    for node_run in node_runs:
+        if await run_store.list_attempts(node_run.node_run_id):
+            return True
+    return False
 
 
 class TaskQueue:
@@ -232,52 +281,6 @@ class TaskQueue:
                 self._last_write.pop(task.task_id, None)
 
         write.add_done_callback(_done)
-
-    async def restore_persisted(self) -> int:
-        """Restore task receipts and retry only durable queued work.
-
-        A queued row already has a canonical ``run_id``. Re-enqueuing that same
-        receipt lets the normal runner resume it without admitting a second Run
-        or minting a new delegation. Active rows stay projections: canonical
-        Run/Attempt recovery owns them, so this queue never becomes a second
-        recovery scheduler.
-        """
-        factory = get_async_session_factory()
-        if factory is None:
-            return 0
-        try:
-            async with factory() as session:
-                result = await session.execute(
-                    select(TaskRecord).order_by(TaskRecord.created_at, TaskRecord.id)
-                )
-                records = list(result.scalars().all())
-        except Exception as exc:
-            logger.warning("task_record_restore_failed", error=str(exc))
-            return 0
-
-        restored = 0
-        queued: list[str] = []
-        async with self._lock:
-            for record in records:
-                if record.id in self._tasks:
-                    continue
-                try:
-                    task = _task_from_record(record)
-                except (TypeError, ValueError) as exc:
-                    logger.warning("task_record_restore_skipped", task_id=record.id, error=str(exc))
-                    continue
-                self._tasks[task.task_id] = task
-                restored += 1
-                if task.status is TaskStatus.QUEUED and task.run_id:
-                    active_tasks.inc()
-                    queued.append(task.task_id)
-            self._maybe_prune()
-
-        for task_id in queued:
-            await self._pending.put(task_id)
-        if restored:
-            logger.info("task_records_restored", restored=restored, queued=len(queued))
-        return restored
 
     def _get_event(self, task_id: str) -> asyncio.Event:
         """Get or create an asyncio.Event for a task."""
@@ -597,6 +600,8 @@ class TaskQueue:
             agent_id=request.agent_id,
             capability=request.capability,
             program_context=request.program_context,
+            branch=request.branch,
+            constraints=list(request.constraints),
             tier=request.tier or 2,
             lane=request.lane,
             priority_tier=request.priority_tier,
@@ -626,6 +631,140 @@ class TaskQueue:
             description=request.description[:DESCRIPTION_LOG_PREVIEW_LEN],
         )
         return task
+
+    async def recover(self, run_store: Any, *, batch_size: int = 100) -> int:
+        """Rebuild task receipts from queued canonical Runs after a restart.
+
+        The Run contains the immutable task payload and is inserted as QUEUED in
+        the same durable write as admission. Rehydrating from that source closes
+        both process-death windows without adding a second queue lifecycle.
+        A malformed snapshot is claimed and failed on the canonical Run so it
+        cannot remain an invisible QUEUED row forever. Task Runs left RUNNING
+        with no physical execution evidence — the residue of a refused
+        terminalization, or of a dispatch that wrote RUNNING separately from
+        its Attempt, including one that died after creating a NodeRun but
+        before any Attempt under it — are failed visibly for the same reason
+        (#1114).
+        """
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        from maistro.runs.store import run_cursor_key
+
+        recovered = 0
+        after: tuple[str, str] | None = None
+        while True:
+            queued = await run_store.list_by_status(RunStatus.QUEUED, limit=batch_size, after=after)
+            if not queued:
+                break
+            for run in queued:
+                after = run_cursor_key(run)
+                if run.provenance.get(ADMISSION_SOURCE) != TASK_QUEUE_SOURCE:
+                    continue
+                task, reason = _task_from_run(run)
+                if reason is not None:
+                    await self._fail_unrecoverable_run(run_store, run.run_id, reason)
+                    continue
+                assert task is not None
+                async with self._lock:
+                    if task.task_id in self._tasks:
+                        continue
+                    self._tasks[task.task_id] = task
+                    self._maybe_prune()
+                await self._pending.put(task.task_id)
+                active_tasks.inc()
+                recovered += 1
+                await logger.ainfo(
+                    "task_recovered",
+                    task_id=task.task_id,
+                    run_id=task.run_id,
+                )
+            if len(queued) < batch_size:
+                break
+        await self._terminalize_stranded_claims(run_store, batch_size=batch_size)
+        return recovered
+
+    async def _terminalize_stranded_claims(self, run_store: Any, *, batch_size: int) -> None:
+        """Fail task Runs claiming execution with no physical evidence (#1114).
+
+        A task Run that is RUNNING with no Attempt — with or without a NodeRun
+        — has no lease and no dispatch path. A NodeRun alone is not evidence:
+        one with no Attempt under it is an execution record that is incomplete
+        rather than absent, left by a worker that died between creating the
+        NodeRun and persisting its first Attempt. On a claiming store RUNNING
+        is only ever committed together with the NodeRun and leased Attempt
+        that make it true, so these states are the residue of a terminalization
+        whose FAILED write was refused, of a pre-repair worker that wrote
+        RUNNING before creating its evidence, or of a legacy worker mid-dispatch
+        during a rolling upgrade — whose execute then fails visibly against the
+        terminal Run rather than silently racing the recovering process. An
+        Attempt, active or terminal, is evidence: active, the lease sweep
+        (#232) owns reclaiming it; terminal, the reconciler re-derives the
+        logical record from it. Failing the rest is the honest disposition, and
+        every restart retries it, so it cannot outlive recovery as an immortal
+        RUNNING Run.
+        """
+        from maistro.runs.store import run_cursor_key
+
+        after: tuple[str, str] | None = None
+        while True:
+            running = await run_store.list_by_status(
+                RunStatus.RUNNING, limit=batch_size, after=after
+            )
+            if not running:
+                return
+            for run in running:
+                after = run_cursor_key(run)
+                if run.provenance.get(ADMISSION_SOURCE) != TASK_QUEUE_SOURCE:
+                    continue
+                node_runs = await run_store.list_node_runs(run.run_id)
+                if await _has_attempt_evidence(run_store, node_runs):
+                    # Physical evidence exists — an Attempt, not a NodeRun: the
+                    # Attempt lease sweep (#232) owns the active ones and the
+                    # reconciler the terminal ones, not this scan.
+                    continue
+                try:
+                    await run_store.transition_run(
+                        run.run_id,
+                        RunStatus.FAILED,
+                        error=(
+                            "task_recovery_failed: running task Run has no physical "
+                            "execution evidence (stranded dispatch)"
+                        ),
+                    )
+                    await logger.awarning(
+                        "task_recovery_stranded_claim_failed",
+                        run_id=run.run_id,
+                    )
+                except Exception:
+                    await logger.awarning(
+                        "task_recovery_stranded_claim_not_terminalized",
+                        run_id=run.run_id,
+                    )
+            if len(running) < batch_size:
+                return
+
+    async def _fail_unrecoverable_run(self, run_store: Any, run_id: str, reason: str) -> None:
+        """Record malformed admitted work as a terminal canonical failure."""
+        try:
+            await run_store.transition_run(run_id, RunStatus.RUNNING)
+        except Exception:
+            # A concurrent worker owns the Run, so it is not safe for recovery
+            # to overwrite its outcome. The canonical claim remains the fence.
+            logger.warning("task recovery lost claim", run_id=run_id, reason=reason)
+            return
+        try:
+            await run_store.transition_run(
+                run_id,
+                RunStatus.FAILED,
+                error=f"task_recovery_failed: {reason}",
+            )
+        except Exception:
+            # Not terminalized this pass — but no longer invisible either: the
+            # Run is now RUNNING with no NodeRun, which
+            # `_terminalize_stranded_claims` re-examines on this and every
+            # later restart until the FAILED write lands. Eventual, explicit
+            # disposition rather than an immortal Run (#1114).
+            logger.warning("task recovery failure was not terminalized", run_id=run_id)
 
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskResponse | None:
         task = self._tasks.get(task_id)
@@ -677,7 +816,11 @@ class TaskQueue:
                 self._admitter is not None
                 and task.run_id
                 and not await self._admitter.record_transition(
-                    task.run_id, status, result=result, error=error
+                    task.run_id,
+                    status,
+                    result=result,
+                    error=error,
+                    previous_status=task.status,
                 )
             ):
                 logger.warning(

@@ -15,7 +15,11 @@ import pytest
 
 import maistro.tasks.queue as queue_mod
 from maistro.memory.store import TaskRecord
-from maistro.tasks.models import TaskCreate, TaskProgress, TaskResult, TaskStatus
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs.model import RunStatus
+from maistro.runs.store import InMemoryRunStore
+from maistro.tasks.admission import TaskRunAdmitter
+from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskResult, TaskStatus
 from maistro.tasks.queue import TaskQueue
 
 
@@ -206,224 +210,89 @@ async def test_writes_for_one_task_commit_in_state_order(
     assert commits == ["queued", "planning", "coding"]
 
 
-async def test_restore_requeues_same_delegated_receipt_without_new_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A restart restores the receipt and retries only queued canonical work."""
-    created = datetime(2026, 9, 8, tzinfo=UTC)
-    records = [
-        TaskRecord(
-            id="alice-task",
-            run_id="alice-run",
-            user_id="alice",
+async def test_recover_requeues_delegated_receipts_with_their_identity() -> None:
+    """A restart rebuilds receipts from each Run's committed payload (#1114),
+    keeping the originating-principal evidence (#1057) exactly as admitted:
+    the same run_id, the same delegation, no invented user, and per-user
+    visibility still isolating one user's task from another's."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    project = await projects.create(
+        workspace_id="w1", parent_project_id=root.project_id, name="Tasks"
+    )
+    runs = InMemoryRunStore(project_store=projects)
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+
+    async def admit_for(user: str, delegation: str, description: str) -> TaskResponse:
+        receipt = TaskResponse(
+            task_id=TaskResponse.new_id(),
+            status=TaskStatus.QUEUED,
+            description=description,
+            workspace="/tmp/maistro-workspace",
+            user_id=user,
             service_principal_id="conductor",
-            delegation_id="alice-delegation",
+            delegation_id=delegation,
             actor_kind="user",
-            status="queued",
-            description="Alice's work",
-            workspace="/tmp/maistro-workspace",
             tier=2,
-            phase="queued",
-            progress={"subtasks": 0, "completed": 0, "current": ""},
-            result=None,
-            task_type="engineering",
-            agent_id=None,
-            capability=None,
-            program_context=None,
-            lane="background",
-            priority_tier="P2",
-            session_id="alice-session",
-            created_at=created,
-        ),
-        TaskRecord(
-            id="bob-task",
-            run_id="bob-run",
-            user_id="bob",
-            service_principal_id="conductor",
-            delegation_id="bob-delegation",
-            actor_kind="user",
-            status="coding",
-            description="Bob's work",
-            workspace="/tmp/maistro-workspace",
-            tier=2,
-            phase="coding",
-            progress={"subtasks": 1, "completed": 0, "current": "coding"},
-            result=None,
-            task_type=None,
-            agent_id=None,
-            capability=None,
-            program_context=None,
-            lane="background",
-            priority_tier="P2",
-            session_id="bob-session",
-            created_at=created,
-        ),
-        # This is the shape produced by a partially applied pre-1057
-        # migration. It must not be restored as runnable user work.
-        TaskRecord(
-            id="ownerless-task",
-            run_id="ownerless-run",
-            user_id="",
-            service_principal_id=None,
-            delegation_id=None,
-            actor_kind="user",
-            status="queued",
-            description="Unattributed legacy work",
-            workspace="/tmp/maistro-workspace",
-            tier=2,
-            phase="queued",
-            progress={"subtasks": 0, "completed": 0, "current": ""},
-            result=None,
-            task_type=None,
-            agent_id=None,
-            capability=None,
-            program_context=None,
-            lane="background",
-            priority_tier="P2",
-            session_id=None,
-            created_at=created,
-        ),
-    ]
+            session_id=f"{user}-session",
+            created_at=datetime(2026, 9, 8, tzinfo=UTC),
+        )
+        receipt.run_id = await admitter.admit(receipt, workspace_id="w1")
+        return receipt
 
-    class _Rows:
-        def scalars(self) -> _Rows:
-            return self
+    alice = await admit_for("alice", "alice-delegation", "Alice's work")
+    bob = await admit_for("bob", "bob-delegation", "Bob's work")
 
-        def all(self) -> list[TaskRecord]:
-            return records
+    # ...process death here: a bare restarted queue knows nothing but the store.
+    restarted = TaskQueue()
+    assert await restarted.recover(runs) == 2
 
-    class _RestoreSession:
-        async def __aenter__(self) -> _RestoreSession:
-            return self
+    recovered = restarted.get(alice.task_id, user_id="alice")
+    assert recovered is not None
+    assert recovered.run_id == alice.run_id
+    assert recovered.user_id == "alice"
+    assert recovered.service_principal_id == "conductor"
+    assert recovered.delegation_id == "alice-delegation"
+    assert recovered.actor_kind == "user"
 
-        async def __aexit__(self, *args: Any) -> None:
-            return None
+    # Service and user principals stay separately inspectable on the Run
+    # itself, not just on the rebuilt receipt.
+    run = await runs.get_run(alice.run_id or "")
+    assert run is not None
+    assert run.actor_principal_id == "alice"
+    assert run.provenance["user_id"] == "alice"
+    assert run.provenance["service_principal_id"] == "conductor"
+    assert run.provenance["delegation_id"] == "alice-delegation"
+    assert run.provenance["actor_kind"] == "user"
 
-        async def execute(self, statement: Any) -> _Rows:
-            del statement
-            return _Rows()
+    # The restart admitted nothing new: exactly the two Runs admission wrote.
+    still_queued = await runs.list_by_status(RunStatus.QUEUED, limit=10)
+    assert {item.run_id for item in still_queued} == {alice.run_id, bob.run_id}
 
-    monkeypatch.setattr(queue_mod, "get_async_session_factory", lambda: lambda: _RestoreSession())
-    queue = TaskQueue()
+    # Two users behind one service bridge stay distinguishable after restart.
+    assert restarted.get(alice.task_id, user_id="bob") is None
+    assert restarted.get(bob.task_id, user_id="alice") is None
 
-    assert await queue.restore_persisted() == 2
-    assert queue.get("ownerless-task") is None
-    alice = queue.get("alice-task", user_id="alice")
-    assert alice is not None
-    assert alice.user_id == "alice"
-    assert alice.service_principal_id == "conductor"
-    assert alice.delegation_id == "alice-delegation"
-    assert alice.run_id == "alice-run"
-    assert queue.get("alice-task", user_id="bob") is None
-    assert queue.get("bob-task", user_id="alice") is None
-    assert await queue.next_task() == "alice-task"
-    # A task already in flight is restored for visibility, not dispatched by a
-    # second scheduler; canonical Run/Attempt recovery owns that work.
-    assert queue._pending.empty()
+    # Dispatch intent is rebuilt for both receipts, and only those.
+    dispatched = {await restarted.next_task() for _ in range(2)}
+    assert dispatched == {alice.task_id, bob.task_id}
+    assert restarted._pending.empty()
 
 
-async def test_restore_skips_a_row_with_an_invalid_actor_kind(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A tampered or half-migrated row must not become runnable work."""
-    created = datetime(2026, 9, 8, tzinfo=UTC)
-    records = [
-        TaskRecord(
-            id="forged-kind",
-            run_id="forged-run",
-            user_id="alice",
-            actor_kind="agent",
-            status="queued",
-            description="row with an impossible actor",
-            workspace="/tmp/maistro-workspace",
-            created_at=created,
-        ),
-        TaskRecord(
-            id="whitespace-owner",
-            run_id="ws-run",
-            user_id="   ",
-            actor_kind="user",
-            status="queued",
-            description="row with a blank owner",
-            workspace="/tmp/maistro-workspace",
-            created_at=created,
-        ),
-    ]
-
-    class _Rows:
-        def scalars(self) -> _Rows:
-            return self
-
-        def all(self) -> list[TaskRecord]:
-            return records
-
-    class _RestoreSession:
-        async def __aenter__(self) -> _RestoreSession:
-            return self
-
-        async def __aexit__(self, *args: Any) -> None:
-            return None
-
-        async def execute(self, statement: Any) -> _Rows:
-            del statement
-            return _Rows()
-
-    monkeypatch.setattr(queue_mod, "get_async_session_factory", lambda: lambda: _RestoreSession())
-    queue = TaskQueue()
-
-    assert await queue.restore_persisted() == 0
-    assert queue.get("forged-kind", user_id=None) is None
-    assert queue.get("whitespace-owner", user_id=None) is None
-    assert queue._pending.empty()
-
-
-async def test_restore_skips_rows_already_held_in_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_recover_skips_receipts_the_live_queue_still_holds() -> None:
     """A restart never double-counts a receipt the live queue still holds."""
-
-    class _Rows:
-        def scalars(self) -> _Rows:
-            return self
-
-        def all(self) -> list[TaskRecord]:
-            return []
-
-    class _RestoreSession:
-        async def __aenter__(self) -> _RestoreSession:
-            return self
-
-        async def __aexit__(self, *args: Any) -> None:
-            return None
-
-        async def execute(self, statement: Any) -> _Rows:
-            del statement
-            return _Rows()
-
-    monkeypatch.setattr(queue_mod, "get_async_session_factory", lambda: lambda: _RestoreSession())
-    queue = TaskQueue()
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("w1")
+    project = await projects.create(
+        workspace_id="w1", parent_project_id=root.project_id, name="Tasks"
+    )
+    runs = InMemoryRunStore(project_store=projects)
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter)
     task = await queue.submit(TaskCreate(description="live"), user_id="alice")
 
-    assert await queue.restore_persisted() == 0
+    assert await queue.recover(runs) == 0
     assert queue.get(task.task_id, user_id="alice") is not None
-
-
-async def test_restore_swallows_a_database_outage(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ADR-018: a read failure at startup is degradation, not a crash."""
-
-    class _BrokenSession:
-        async def __aenter__(self) -> _BrokenSession:
-            return self
-
-        async def __aexit__(self, *args: Any) -> None:
-            return None
-
-        async def execute(self, statement: Any) -> None:
-            raise RuntimeError("synthetic outage")
-
-    monkeypatch.setattr(queue_mod, "get_async_session_factory", lambda: lambda: _BrokenSession())
-    queue = TaskQueue()
-
-    assert await queue.restore_persisted() == 0
-    assert queue._pending.empty()
 
 
 async def test_a_corrupt_persisted_receipt_never_answers_a_replay(
@@ -454,6 +323,34 @@ async def test_a_corrupt_persisted_receipt_never_answers_a_replay(
     monkeypatch.setattr(queue_mod, "get_async_session_factory", lambda: lambda: _RowSession())
     queue = TaskQueue()
 
+    assert await queue._persisted_receipt("row-1") is None
+
+    class _ForgedKindSession(_RowSession):
+        async def get(self, model: Any, task_id: str) -> TaskRecord:
+            return TaskRecord(
+                id=task_id,
+                run_id="some-run",
+                user_id="alice",
+                actor_kind="agent",
+                status="queued",
+                description="row with an impossible actor",
+                workspace="/tmp/maistro-workspace",
+            )
+
+    monkeypatch.setattr(
+        queue_mod, "get_async_session_factory", lambda: lambda: _ForgedKindSession()
+    )
+    assert await queue._persisted_receipt("row-1") is None
+
+    class _MissingRowSession(_RowSession):
+        async def get(self, model: Any, task_id: str) -> TaskRecord | None:
+            return None
+
+    monkeypatch.setattr(
+        queue_mod, "get_async_session_factory", lambda: lambda: _MissingRowSession()
+    )
+    # A missing durable row is a fall-through to the stored-request
+    # reconstruction, never an error the replay has to answer for.
     assert await queue._persisted_receipt("row-1") is None
 
     class _BrokenSession(_RowSession):

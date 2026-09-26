@@ -495,6 +495,56 @@ class SqliteProjectScopeStore:
             )
         return updated
 
+    async def merge_membership(self, membership: ProjectMembership) -> ProjectMembership:
+        """Merge a delegated re-grant into the canonical row atomically.
+
+        Locked the same way `set_membership` is: the read that decides what
+        to preserve and the write that stores it share one `_serialized_write`
+        critical section, so an owner's `remove_membership` either commits
+        entirely before it (leaving no row to preserve -- no resurrection of
+        revoked grants) or is ordered after it (#1148).
+        """
+        async with self._serialized_write():
+            project = await self._require(membership.project_id)
+            if project.workspace_id != membership.workspace_id:
+                raise ProjectIntegrityError("ProjectMembership Workspace does not match Project")
+            existing = await self._membership_or_none(
+                membership.project_id, membership.principal_id
+            )
+            if existing is None:
+                updated = membership.model_copy(update={"updated_at": datetime.now(UTC)})
+            else:
+                updated = membership.model_copy(
+                    update={
+                        "membership_id": existing.membership_id,
+                        "created_at": existing.created_at,
+                        "role": existing.role,
+                        "grants": existing.grants | membership.grants,
+                        "denies": existing.denies,
+                        "delegable_grants": (
+                            existing.delegable_grants | membership.delegable_grants
+                        ),
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+            await self._conn.execute(
+                """INSERT INTO canonical_project_memberships
+                   (project_id, principal_id, workspace_id, membership_id, payload)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(project_id, principal_id) DO UPDATE SET
+                     workspace_id = excluded.workspace_id,
+                     membership_id = excluded.membership_id,
+                     payload = excluded.payload""",
+                (
+                    updated.project_id,
+                    updated.principal_id,
+                    updated.workspace_id,
+                    updated.membership_id,
+                    updated.model_dump_json(),
+                ),
+            )
+        return updated
+
     async def memberships_for(
         self,
         project_id: str,
