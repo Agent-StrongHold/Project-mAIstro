@@ -555,3 +555,22 @@ async def test_a_failed_turn_never_echoes_the_provider_detail(
     assert len(runs) == 1
     assert runs[0].error == UPSTREAM_FAILURE
     assert "sk-secret" not in (runs[0].error or "")
+
+
+async def test_a_turn_over_the_active_run_ceiling_is_a_429_not_an_unrecorded_answer(
+    container, wired, client
+) -> None:
+    """Backpressure is the one admission failure this door does not answer
+    through (#1182): answering would run the turn unbounded and unrecorded."""
+    for _ in range(32):
+        await container.chat_admitter.admit([{"role": "user", "content": "busy"}])  # type: ignore[attr-defined]
+
+    with patch(RUN_TASK, AsyncMock(return_value=_output("42"))) as run_task:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "5"
+    run_task.assert_not_called()

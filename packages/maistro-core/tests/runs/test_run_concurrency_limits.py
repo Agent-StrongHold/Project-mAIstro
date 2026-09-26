@@ -24,7 +24,13 @@ from maistro.runs.concurrency import (
 )
 from maistro.runs.lifecycle import transition_path
 from maistro.runs.model import RunStatus
-from maistro.runs.store import RunStore
+from maistro.runs.sources import (
+    ADMISSION_SOURCE,
+    SCHEDULE_ID_KEY,
+    SCHEDULE_SOURCE,
+    SCHEDULED_FOR_KEY,
+)
+from maistro.runs.store import DuplicateOccurrence, RunStore
 
 
 @dataclass
@@ -297,3 +303,98 @@ async def test_the_spine_wiring_enforces_the_configured_settings(
         get_settings.cache_clear()
         if conn is not None:
             await conn.close()
+
+
+def _occurrence(scheduled_for: str) -> dict[str, str]:
+    return {
+        ADMISSION_SOURCE: SCHEDULE_SOURCE,
+        SCHEDULE_ID_KEY: "sched-1",
+        SCHEDULED_FOR_KEY: scheduled_for,
+    }
+
+
+async def test_a_duplicate_occurrence_at_the_ceiling_is_refused_as_a_duplicate(
+    spine: _Spine,
+) -> None:
+    """A second ticker retrying an admitted occurrence must see the duplicate,
+    or it holds its cursor behind backpressure that is not its own."""
+    w1, _ = _workspaces(spine)
+    await spine.store.create_run(
+        spine.graph(w1),
+        actor_principal_id="alice",
+        provenance=_occurrence("2026-09-26T00:00:00+00:00"),
+        initial_status=RunStatus.QUEUED,
+    )
+    for _ in range(7):
+        await spine.root(w1, "alice")
+
+    with pytest.raises(DuplicateOccurrence):
+        await spine.store.create_run(
+            spine.graph(w1),
+            actor_principal_id="alice",
+            provenance=_occurrence("2026-09-26T00:00:00+00:00"),
+            initial_status=RunStatus.QUEUED,
+        )
+
+
+async def test_a_refused_occurrence_is_admissible_once_a_slot_frees(spine: _Spine) -> None:
+    """The refusal leaves no claim behind that would later read as a duplicate."""
+    w1, _ = _workspaces(spine)
+    admitted = [await spine.root(w1, "alice") for _ in range(8)]
+    owed = _occurrence("2026-09-26T01:00:00+00:00")
+    with pytest.raises(RunConcurrencyExceeded):
+        await spine.store.create_run(spine.graph(w1), actor_principal_id="alice", provenance=owed)
+
+    await spine.move(admitted[0].run_id, RunStatus.CANCELLED)
+
+    run = await spine.store.create_run(spine.graph(w1), actor_principal_id="alice", provenance=owed)
+    assert run.provenance[SCHEDULED_FOR_KEY] == owed[SCHEDULED_FOR_KEY]
+
+
+async def test_a_sqlite_refusal_leaves_a_sibling_stores_open_write_intact() -> None:
+    """The spine's SQLite connection is shared with sibling stores: a refusal
+    must neither collide with their open transaction nor roll it back."""
+    from maistro.runs.consumer_claim import ClaimingSqliteRunStore
+
+    scope_store = InMemoryProjectScopeStore()
+    projects = await _projects(scope_store, ("w1",))
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = ClaimingSqliteRunStore(
+            conn,
+            project_store=scope_store,
+            concurrency_limits=RunConcurrencyLimits(per_principal=1),
+        )
+        await store.ensure_schema()
+        await conn.execute("CREATE TABLE sibling (value TEXT)")
+        await conn.commit()
+        spine = _Spine(store, projects)
+        await spine.root("w1", "alice")
+
+        await conn.execute("INSERT INTO sibling VALUES ('uncommitted')")
+        assert conn.in_transaction
+        with pytest.raises(RunConcurrencyExceeded):
+            await spine.root("w1", "alice")
+
+        async with conn.execute("SELECT value FROM sibling") as cursor:
+            assert await cursor.fetchall() == [("uncommitted",)]
+    finally:
+        await conn.close()
+
+
+async def test_a_chat_turn_over_the_ceiling_is_refused_not_answered_unrecorded() -> None:
+    """`Container._admit_chat_turn` swallows bookkeeping failures so a turn is
+    still answered; backpressure is not one of them."""
+    from types import SimpleNamespace
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    container = await create_container(AgentConfig(router_api_key="test-key"))
+    messages = [{"role": "user", "content": "hi"}]
+    alice = SimpleNamespace(user_id="alice")
+    for _ in range(8):
+        assert await container._admit_chat_turn(messages, auth=alice) is not None
+
+    with pytest.raises(RunConcurrencyExceeded):
+        await container._admit_chat_turn(messages, auth=alice)

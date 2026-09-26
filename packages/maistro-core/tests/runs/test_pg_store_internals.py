@@ -277,7 +277,7 @@ class _PoolRaising:
     async def __aexit__(self, *_exc_info: object) -> bool:
         return False
 
-    def transaction(self) -> _PoolRaising:
+    def transaction(self, **_options: object) -> _PoolRaising:
         return self
 
     async def fetchrow(self, *_args: object) -> dict[str, int]:

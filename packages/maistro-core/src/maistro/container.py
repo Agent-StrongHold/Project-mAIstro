@@ -57,6 +57,7 @@ from maistro.runs.chat_execution import (
     ChatDispatch,
     ChatDispatchUnrecorded,
 )
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -639,7 +640,9 @@ class Container:
         A turn is never refused for want of a Run. The chat path has no receipt
         to fall back on — refusing here would turn "this process cannot record
         the turn" into "this process cannot answer", which is a worse failure
-        than an unrecorded answer and not the one #41 asked for.
+        than an unrecorded answer and not the one #41 asked for. The one
+        exception is a full active-Run ceiling (#1182), which is re-raised:
+        that is backpressure, and answering anyway would bypass it.
         """
         if self.chat_admitter is None:
             return None
@@ -664,6 +667,10 @@ class Container:
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
             await asyncio.shield(self._cancel_incomplete_admission(run))
+            raise
+        except RunConcurrencyExceeded:
+            # Backpressure, not a bookkeeping failure (#1182): answering anyway
+            # would run the turn unbounded and unrecorded.
             raise
         except Exception:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)

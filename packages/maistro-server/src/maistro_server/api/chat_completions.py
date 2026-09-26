@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field
 
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.model import Run, RunStatus
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
@@ -193,6 +194,10 @@ def _auth_context(auth: AuthenticatedPrincipal | None) -> AuthContext | None:
     )
 
 
+#: Seconds a client refused for backpressure should wait before retrying.
+_RETRY_AFTER_S = "5"
+
+
 async def _admit_turn(
     request: ChatCompletionRequest,
     auth: AuthenticatedPrincipal | None,
@@ -207,7 +212,9 @@ async def _admit_turn(
 
     Never refuses the turn. The chat path has no receipt to fall back on, so
     failing here would turn "this process cannot record the turn" into "this
-    process cannot answer" — the same rule the seam itself follows.
+    process cannot answer" — the same rule the seam itself follows. A full
+    active-Run ceiling (#1182) is the exception: that is backpressure, and it
+    is answered with 429 rather than an unbounded, unrecorded turn.
     """
     if _container is None or _container.chat_admitter is None:
         return None
@@ -219,6 +226,14 @@ async def _admit_turn(
         await _container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
         running: Run = await _container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         return running
+    except RunConcurrencyExceeded as exc:
+        # Backpressure, not a bookkeeping failure (#1182): the one refusal
+        # this path does not answer through.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": _RETRY_AFTER_S},
+        ) from exc
     except Exception:
         logger.exception("chat_completions_run_admission_failed")
         return None

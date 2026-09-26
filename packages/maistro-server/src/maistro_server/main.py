@@ -475,6 +475,9 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
                 request_id=request_id,
             ),
         ).model_dump(),
+        # Kept, not rebuilt: a raiser's headers (a 429's Retry-After) are part
+        # of the answer, and the envelope used to drop them.
+        headers=exc.headers,
     )
 
 

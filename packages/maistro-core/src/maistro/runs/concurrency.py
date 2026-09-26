@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from maistro.config.settings import get_settings
 from maistro.runs.model import RunStatus
 from maistro.security.resource_policy import (
     BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL,
@@ -65,6 +66,16 @@ class RunConcurrencyLimits:
             per_principal=settings.max_active_root_runs_per_principal,
             per_workspace=settings.max_active_root_runs_per_workspace,
         )
+
+    @classmethod
+    def configured(cls) -> RunConcurrencyLimits:
+        """The ceilings the operator configured, which `/health` reports.
+
+        What a store falls back to when it is not handed limits, so a store
+        built outside the spine wiring holds the same ceilings as one built
+        inside it.
+        """
+        return cls.from_settings(get_settings())
 
     def check(self, *, workspace_active: int, principal_active: int | None) -> None:
         """Refuse one more root Run when either ceiling is already full.

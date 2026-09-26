@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLimits
+from maistro.runs.concurrency import (
+    ACTIVE_ROOT_STATUS_VALUES,
+    RunConcurrencyExceeded,
+    RunConcurrencyLimits,
+)
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -341,7 +345,7 @@ class SqliteRunStore:
     ) -> None:
         self._conn = conn
         self._project_store = project_store
-        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits()
+        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # One connection, and now more than one caller: the task runner drives
         # four workers against this store (#143), and `create_attempt` opens an
         # explicit BEGIN IMMEDIATE. Two of those interleaving on one aiosqlite
@@ -418,63 +422,67 @@ class SqliteRunStore:
             # names a receipt that was already queued.
             run = admit_in_state(run, initial_status)
             try:
-                await self._insert_run(run)
+                await self._conn.execute(
+                    """INSERT INTO canonical_runs
+                       (run_id, workspace_id, project_id, parent_run_id,
+                        parent_node_run_id, status, payload)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        run.run_id,
+                        run.workspace_id,
+                        run.project_id,
+                        run.parent_run_id,
+                        run.parent_node_run_id,
+                        run.status.value,
+                        json_of(run),
+                    ),
+                )
             except sqlite3.IntegrityError as exc:
+                # Rolled back before raising, whatever the conflict: the failed
+                # INSERT opened a transaction, and leaving it for the next
+                # caller to inherit would make an unrelated write commit inside
+                # this one. A delegation-key conflict re-raises into
+                # `_reserve_child`'s adopt-the-winner recovery, which must not
+                # inherit the loser's open write transaction either -- the
+                # recovery's next write (or its uncertain-transport pause)
+                # would otherwise hold the database write lock indefinitely.
+                await self._conn.rollback()
                 occurrence = occurrence_key(run.provenance)
                 if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
                     raise
                 raise DuplicateOccurrence(*occurrence) from exc
+            await self._admit_root(run)
             await self._conn.commit()
             return run
 
-    async def _insert_run(self, run: Run) -> None:
-        """Insert `run`, admitting it against the root ceilings when it is one.
+    async def _admit_root(self, run: Run) -> None:
+        """Hold a just-inserted root Run to the active ceilings (#1182).
 
-        Rolled back before raising, whatever the failure: a failed INSERT or a
-        refused admission leaves a transaction open, and leaving it for the
-        next caller to inherit would make an unrelated write commit inside this
-        one. A delegation-key conflict re-raises into `_reserve_child`'s
-        adopt-the-winner recovery, which must not inherit the loser's open write
-        transaction either -- the recovery's next write (or its
-        uncertain-transport pause) would otherwise hold the database write lock
-        indefinitely.
+        Counted after the insert, under `_write_lock`, so a duplicate
+        occurrence is refused as a duplicate rather than as backpressure. A
+        refusal deletes the row rather than rolling back: this connection is
+        shared with sibling stores, and a rollback would discard their
+        uncommitted writes along with this one. No `BEGIN IMMEDIATE` for the
+        same reason -- the SQLite tier is one process, and `_write_lock` is
+        what serializes its admissions.
         """
-        try:
-            if run.parent_run_id is None:
-                # IMMEDIATE takes the write lock before the count, so a second
-                # process on this file cannot admit into the gap.
-                await self._conn.execute("BEGIN IMMEDIATE")
-                await self._check_root_admission(run)
-            await self._conn.execute(
-                """INSERT INTO canonical_runs
-                   (run_id, workspace_id, project_id, parent_run_id,
-                    parent_node_run_id, status, payload)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    run.run_id,
-                    run.workspace_id,
-                    run.project_id,
-                    run.parent_run_id,
-                    run.parent_node_run_id,
-                    run.status.value,
-                    json_of(run),
-                ),
-            )
-        except BaseException:
-            await self._conn.rollback()
-            raise
-
-    async def _check_root_admission(self, run: Run) -> None:
+        if run.parent_run_id is not None:
+            return
         principal = run.actor_principal_id or None
         row = await self._fetchone(
             _ACTIVE_ROOT_COUNTS_SQL,
             (*ACTIVE_ROOT_STATUS_VALUES, run.workspace_id, *ACTIVE_ROOT_STATUS_VALUES, principal),
         )
         assert row is not None  # nosec B101 - a scalar SELECT always yields a row
-        self._concurrency_limits.check(
-            workspace_active=int(row[0]),
-            principal_active=int(row[1]) if principal is not None else None,
-        )
+        try:
+            self._concurrency_limits.check(
+                workspace_active=int(row[0]) - 1,
+                principal_active=int(row[1]) - 1 if principal is not None else None,
+            )
+        except RunConcurrencyExceeded:
+            await self._conn.execute("DELETE FROM canonical_runs WHERE run_id = ?", (run.run_id,))
+            await self._conn.commit()
+            raise
 
     async def get_run(self, run_id: str) -> Run | None:
         row = await self._fetchone(

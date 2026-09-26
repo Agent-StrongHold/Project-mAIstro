@@ -31,16 +31,23 @@ or placeholder-only section.
   its actor principal (across Workspaces) or 32 for its Workspace. "Active"
   means CREATED, QUEUED or RUNNING. Child Runs, parked WAITING/PAUSED Runs and
   terminal Runs hold no slot, and a parked Run resuming is not a new admission.
-  PostgreSQL serializes the count and the insert with transaction-scoped
-  advisory locks, so the ceiling holds across replicas. SQLite uses
-  `BEGIN IMMEDIATE`. The ceilings are governed floors in
-  `quality/security-resource-floors.json`
-  (`MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL`, `MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE`).
-  Operators may lower them, but raising either requires
-  `ALLOW_UNSAFE_RESOURCE_OVERRIDES`. Both appear in `/health`
-  `effective_resource_policy`. The scheduler already keeps a refused occurrence
-  owed and retries it on a later tick. Not yet done: HTTP/WebSocket submit
-  surfaces still need to map the refusal to 429.
+  A duplicate schedule occurrence is still refused as a duplicate. PostgreSQL
+  serializes the insert and the count with transaction-scoped advisory locks,
+  so the ceiling holds across replicas. SQLite relies on the store's write
+  lock, since that tier is a single process.
+  - The ceilings are governed floors in `quality/security-resource-floors.json`
+    (`MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL`, `MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE`).
+    Operators may lower them, but raising either requires
+    `ALLOW_UNSAFE_RESOURCE_OVERRIDES`.
+  - Both values appear in maistro-server's `/health` `effective_resource_policy`.
+  - maistro-server `/v1/chat/completions` answers a refused turn with 429 and
+    `Retry-After`. `Container` chat admission re-raises the refusal instead of
+    answering unrecorded.
+  - The server's `HTTPException` handler now keeps the raiser's headers.
+  - The scheduler already keeps a refused occurrence owed and retries it on a
+    later tick.
+  - Not yet done: the other HTTP/WebSocket submit surfaces still need to map
+    the refusal to 429.
 
 - **Tool-result governance is pinned across real Agent strategies (#1202,
   partial).** A regression suite drives the shipped ReAct, Artificer and

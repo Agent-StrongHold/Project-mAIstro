@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any, Final
 
 from maistro.agents.intents import IntentRegistry
 from maistro.archive.protocols import ArchiveStore
-from maistro.config.settings import get_settings
 from maistro.graph.templates import GraphTemplateStore, NodeTemplateStore
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.chat_admission import ChatRunAdmitter
@@ -219,11 +218,11 @@ async def wire_execution_spine(
     writes, such as the read-only repair CLI.
 
     `concurrency_limits` are the active root-Run ceilings the Run store
-    enforces (#1182). None reads them from the validated settings, so a
-    ceiling an operator tightened is the one every producer is held to, and
-    the one `/health` reports.
+    enforces (#1182). None reads them from the validated settings, so the
+    ceiling an operator tightened is the one enforced and the one `/health`
+    reports.
     """
-    limits = concurrency_limits or RunConcurrencyLimits.from_settings(get_settings())
+    limits = concurrency_limits or RunConcurrencyLimits.configured()
     project_scope_store: ProjectScopeStore
     run_store: RunStore
     template_store: GraphTemplateStore

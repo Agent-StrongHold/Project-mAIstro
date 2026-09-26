@@ -180,7 +180,7 @@ class PgRunStore:
     ) -> None:
         self._pool = pool
         self._project_store = project_store
-        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits()
+        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits.configured()
         # None means the tier is off (f436 decision 9). A store with archived
         # rows and no archive configured still reads correctly for everything
         # resident and raises `ArchivedPayloadUnavailable` -- never an empty
@@ -238,9 +238,10 @@ class PgRunStore:
         run = admit_in_state(run, initial_status)
         async with self._pool.acquire() as conn:
             try:
-                async with conn.transaction():
-                    if parent_run_id is None:
-                        await self._check_root_admission(conn, run)
+                # READ COMMITTED pinned: the count after the advisory locks
+                # must take its snapshot after the wait, not before it.
+                async with conn.transaction(isolation="read_committed"):
+                    await self._lock_root_admission(conn, run)
                     await conn.execute(
                         """INSERT INTO canonical_runs
                        (run_id, workspace_id, project_id, parent_run_id,
@@ -259,6 +260,7 @@ class PgRunStore:
                         # `status` could.
                         run.retention_expires_at,
                     )
+                    await self._admit_root(conn, run)
             except _integrity_errors() as exc:
                 conflict = _occurrence_conflict(exc, run)
                 if conflict is None:
@@ -266,41 +268,42 @@ class PgRunStore:
                 raise conflict from exc
         return run
 
-    async def _check_root_admission(self, conn: Any, run: Run) -> None:
-        """Count active root Runs under locks every replica takes (#1182).
+    async def _lock_root_admission(self, conn: Any, run: Run) -> None:
+        """Serialize root admissions across replicas (#1182).
 
-        Transaction-scoped advisory locks, so the count and the caller's insert
-        are one critical section across replicas and the locks go with the
+        Transaction-scoped advisory locks, so the caller's insert and count are
+        one critical section on every replica and the locks go with the
         transaction however it ends. Workspace before principal, always: each
         admission takes one lock per namespace in that order, so two cannot
         wait on each other.
         """
-        principal = run.actor_principal_id or None
+        if run.parent_run_id is not None:
+            return
         await conn.execute(
             "SELECT pg_advisory_xact_lock($1, $2)",
             _WORKSPACE_ADMISSION_LOCK,
             _admission_lock_key(run.workspace_id),
         )
-        if principal is not None:
+        if run.actor_principal_id:
             await conn.execute(
                 "SELECT pg_advisory_xact_lock($1, $2)",
                 _PRINCIPAL_ADMISSION_LOCK,
-                _admission_lock_key(principal),
+                _admission_lock_key(run.actor_principal_id),
             )
-        row = await conn.fetchrow(
-            """SELECT
-                   COUNT(*) FILTER (WHERE workspace_id = $2) AS workspace_active,
-                   COUNT(*) FILTER (WHERE payload->>'actor_principal_id' = $3)
-                       AS principal_active
-                 FROM canonical_runs
-                WHERE parent_run_id IS NULL AND status = ANY($1::text[])""",
-            list(ACTIVE_ROOT_STATUS_VALUES),
-            run.workspace_id,
-            principal,
-        )
+
+    async def _admit_root(self, conn: Any, run: Run) -> None:
+        """Refuse a just-inserted root Run over a ceiling, rolling it back.
+
+        Counted after the insert so a duplicate occurrence is refused as a
+        duplicate, not as backpressure; the count includes the new row.
+        """
+        if run.parent_run_id is not None:
+            return
+        principal = run.actor_principal_id or None
+        row = await conn.fetchrow(_ACTIVE_ROOT_COUNTS_SQL, run.workspace_id, principal)
         self._concurrency_limits.check(
-            workspace_active=int(row["workspace_active"]),
-            principal_active=int(row["principal_active"]) if principal is not None else None,
+            workspace_active=int(row["workspace_active"]) - 1,
+            principal_active=int(row["principal_active"]) - 1 if principal is not None else None,
         )
 
     async def purge_expired_runs(
@@ -1354,6 +1357,17 @@ _NOT_FOUND: dict[str, type[Exception]] = {
 #: share a lock, which is what keeps the lock order acyclic.
 _WORKSPACE_ADMISSION_LOCK = 0x72617721  # "raw!"
 _PRINCIPAL_ADMISSION_LOCK = 0x72617021  # "rap!"
+
+
+#: Literal statuses rather than a parameter, so the planner can prove the
+#: predicate implies the partial `ix_canonical_runs_live` index (migration 012).
+_ACTIVE_ROOT_COUNTS_SQL = """SELECT
+       COUNT(*) FILTER (WHERE workspace_id = $1) AS workspace_active,
+       COUNT(*) FILTER (WHERE payload->>'actor_principal_id' = $2) AS principal_active
+     FROM canonical_runs
+    WHERE parent_run_id IS NULL AND status IN ({statuses})""".format(  # nosec B608
+    statuses=", ".join(f"'{status}'" for status in ACTIVE_ROOT_STATUS_VALUES)
+)
 
 
 def _admission_lock_key(identity: str) -> int:
