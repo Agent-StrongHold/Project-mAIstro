@@ -106,8 +106,6 @@
     "maistro.integrations.home_assistant",
     "maistro.integrations.ntfy",
     "maistro.integrations.turing",
-    "maistro.interop",
-    "maistro.interop.contract",
     "maistro.memory.episodic.consolidation",
     "maistro.memory.episodic.sharing",
     "maistro.memory.exposure",
