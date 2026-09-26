@@ -503,6 +503,14 @@ or placeholder-only section.
 
 ### Changed
 
+- **The Coverage gate's job timeout is 30 minutes instead of 15.**
+  (no linked issue: base-branch CI capacity) The gate re-runs six suites serially
+  after the publish-set floor (the root `tests/` suite alone took 7m49s on
+  #1591), so it was finishing at ~14 minutes and being cancelled at 15 on
+  some PRs, which blocks the PR without measuring anything. The measured
+  suites, `--source` set, the 87% publish-set floor and the 90% line / 80%
+  branch diff thresholds are unchanged.
+
 - **A chat turn that cannot get its canonical Run is refused with a retryable
   503 instead of answered ungoverned (#1108, partial).**
   Owner decision 2026-09-23, amending ADR-082326-c126 and superseding #223 AC4.
