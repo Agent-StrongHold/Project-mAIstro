@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +36
+  packages/maistro-core/tests: +39
   packages/maistro-turing/tests: +4
 ---
 # #1158 Warden normalization and bounded context
@@ -356,3 +356,14 @@ ledger exit 0; mypy --strict clean (631 files); pyright 21<=21; interrogate
 PASS; ruff check/format clean; formal/ 421 passed; security+conduit+harness
 1314 passed; agents+turing 966 passed. No test added or removed by this round;
 inventory delta unchanged from the reconciliation above.
+
+Follow-up in the same round: the diff-coverage gate (90% lines / 80% branch
+arcs over changed lines, per file) would have failed on the refactored
+serialization helpers: the full core suite left four branch groups of
+`message_to_scan_text` uncovered even before the refactor (unbounded
+non-string content, the `json.dumps` fallback, and the bounded
+content+metadata join with both separator arcs). Three tests pin those
+branches in `test_detector.py` (+3, reflected in the delta above): stringified
+non-string content, unserializable-metadata fallback to `str()`, and the
+bounded content+metadata budget join (non-empty and empty content).
+Changed-line coverage for detector.py is now complete.

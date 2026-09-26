@@ -15,6 +15,7 @@ from maistro.security.warden.detector import (
     _pattern_search,
     _scan_reject_patterns,
     context_from_messages,
+    message_to_scan_text,
 )
 
 
@@ -529,6 +530,50 @@ def test_message_context_bounds_tail_before_serializing_metadata() -> None:
         len(context.content.encode("utf-8")) <= detector_mod._CONTEXT_MAX_BYTES
         for context in contexts
     )
+
+
+def test_message_scan_text_unbounded_non_string_content_is_stringified() -> None:
+    """Unbounded non-string content (structured blocks) still reaches the scan."""
+    blocks = [{"type": "text", "text": "plain reading"}]
+    result = message_to_scan_text({"role": "user", "content": blocks})
+    assert "plain reading" in result
+
+
+def test_message_scan_text_unbounded_unserializable_metadata_falls_back_to_str() -> None:
+    """Metadata that defeats ``json.dumps(default=str)`` falls back to ``str()``
+    instead of dropping the fields or raising out of the scan path."""
+
+    class _StrRaises:
+        """``json``'s ``default=str`` blows up; ``repr`` inside ``str(dict)`` works."""
+
+        def __str__(self) -> str:
+            raise ValueError("no string form")
+
+        def __repr__(self) -> str:
+            return "<unprintable>"
+
+    result = message_to_scan_text({"role": "tool", "content": "tool body", "payload": _StrRaises()})
+    assert result.startswith("tool body")
+    assert "<unprintable>" in result
+
+
+def test_message_scan_text_bounded_metadata_shares_the_byte_budget() -> None:
+    """Under the bound, content and metadata join with the role excluded; the
+    empty-content variant joins without a leading separator."""
+    with_metadata = message_to_scan_text(
+        {"role": "assistant", "content": "partial output", "tool_call_id": "call_1"},
+        max_bytes=4 * 1024,
+    )
+    assert "partial output" in with_metadata
+    assert "tool_call_id" in with_metadata
+    assert len(with_metadata.encode("utf-8")) <= 4 * 1024
+
+    metadata_only = message_to_scan_text(
+        {"role": "assistant", "content": "", "tool_call_id": "call_2"},
+        max_bytes=4 * 1024,
+    )
+    assert metadata_only.startswith("{")
+    assert "call_2" in metadata_only
 
 
 async def test_raw_system_context_is_not_joined_with_untrusted_content() -> None:
