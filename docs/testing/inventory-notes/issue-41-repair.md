@@ -224,3 +224,41 @@ the cause is UNVERIFIED and was not inferred either way. 26 other checks are
 SUCCESS (incl. postgres pg17/pg18, coverage PostgreSQL, lint-and-type-check,
 hive-conductor-e2e); `integration-scope`, `test`, and the Coverage gate were
 still in progress at review time.
+
+## Round 8 (develop-sync repair, lane auto-41)
+
+Block from round 7 resolved: the worktree carried an in-progress merge of
+`b906cc577` with three conflicted files. All three conflicts were the same
+shape — HEAD had added `find_run_by_task_receipt` (#41/#1176 read path) and the
+incoming side had added `find_occurrence_run` (#220/#1120 manual-fire read
+path) at the same anchor after `get_run`. Resolution keeps **both** methods in
+`maistro/runs/store.py`, `maistro/runs/pg_store.py`, and
+`maistro/runs/sqlite_store.py` (two independent provenance lookups, no
+semantic overlap). Committed as `d92ffe8af`, then `origin/develop`
+(`5fff24e1d`) merged cleanly on top as `7968987a3`. No test delta this round;
+the battery below is the same recorded suites re-executed at the merged head.
+
+Re-validation at `7968987a3` (all from a dotenv-free CWD; the untracked
+gitignored root `.env` with non-JSON `API_KEYS` breaks Settings-importing
+suites from the repo-root CWD — environment, not tree):
+
+- `ruff check .` clean; `ruff format --check .` — 2556 files already formatted.
+- vulture per-identity gate: `uv run python scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` —
+  unclassified 0, never_allowlist 0, ratchet `5fff24e1d -> 7968987a3`
+  1413/1413; no ledger amendment needed (the merge resolution added no
+  identities).
+- core runs+scheduling: 1123 passed, 243 skipped; core tasks+integration:
+  338 passed, 1 skipped; maistro-server: 383 passed; hive-conductor
+  backend: 2763 passed, 6 skipped.
+- live pg18 (lane container `auto-41-repair-pg`, alembic chain upgraded to
+  head `042` first): idempotency trio 92 passed; `tests/migrations`
+  29 passed, 71 skipped (version-specific legs); runs+tasks 1416 passed,
+  3 skipped.
+- gates: suite-inventory x3 ok; compliance, convergence-matrix, doc-links,
+  adr-index, durable-table-inventory (63 tables), branch-independence,
+  formal-oracle-independence (`--base 5fff24e1d`) all PASS. The
+  branch-independence failure seen first was the gitignored generated
+  `quality/ac-state.json` artifact on disk (backed up to the job dir, then
+  removed); `check-enumerations.py` was deleted upstream by develop.
+- `gh issue view 1176` read-only = **CLOSED** (re-confirmed this round).
