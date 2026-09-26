@@ -72,10 +72,11 @@ either seam.
 
 from __future__ import annotations
 
+import os
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 import structlog
 
@@ -84,7 +85,11 @@ from maistro.security.outbound import (
     current_outbound_policy,
     outbound_origin,
 )
-from maistro.security.ssrf import ALLOWED_SCHEMES, SSRFBlockedError, avalidate_outbound_url
+from maistro.security.ssrf import (
+    SSRFBlockedError,
+    avalidate_outbound_url,
+    validate_outbound_url,
+)
 
 logger = structlog.get_logger()
 
@@ -117,6 +122,26 @@ MAX_AUDIT_EVENTS = 1000
 #: Refusing a longer chain is safer than handing control back to Chromium,
 #: whose redirect hops do not re-enter a context route handler.
 MAX_REDIRECT_HOPS = 20
+
+
+class _RedirectBlockedError(Exception):
+    """Keep the denied redirect URL attached to the policy failure."""
+
+    def __init__(self, url: str, cause: SSRFBlockedError) -> None:
+        super().__init__(str(cause))
+        self.url = url
+        self.cause = cause
+
+
+def browser_allowed_origins() -> tuple[str, ...]:
+    """Return host-owned browser origins allowed in addition to the shared policy.
+
+    The environment is operator configuration, never browser/model input. Keep
+    this resolver at the shared browser seam so every Playwright caller uses the
+    same narrowly scoped allowlist.
+    """
+    raw = os.environ.get("BROWSER_USE_ALLOWED_ORIGINS", "")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
 @dataclass(frozen=True)
@@ -197,68 +222,57 @@ class BrowserNetworkGuard:
         Chromium does not send every HTTP redirect hop back through a context
         route handler. Calling `route.continue_()` would therefore make the
         first hop look governed while the browser connected to later hops
-        directly. `route.fetch(max_redirects=0)` keeps each hop in this handler;
-        the guard validates the Location and only then fetches it, finally
-        fulfilling the original browser request with the terminal response.
+        directly. `_fetch_redirect_chain` keeps each hop in this handler.
 
         Playwright calls handlers as `(route, request)`; the second parameter
         is optional so single-argument handler shapes and test doubles work.
         Nothing may escape this handler: every failure path aborts the request.
         """
         req = request if request is not None else getattr(route, "request", None)
-        url = str(getattr(req, "url", "") or "")
+        decision_url = str(getattr(req, "url", "") or "")
         resource_type = str(getattr(req, "resource_type", "") or "unknown")
-        # Single-element cell: _follow_redirects advances it per hop, and the
-        # denial records below must name the URL that was being decided when
-        # the failure happened, not the original request URL.
-        decided = [url]
         try:
-            fetch = getattr(route, "fetch", None)
-            fulfill = getattr(route, "fulfill", None)
-            if not callable(fetch) or not callable(fulfill):
-                raise RuntimeError("Playwright route lacks fetch/fulfill")
-
-            await self._decide(decided[0])
-            self._record(ALLOWED, decided[0], "", resource_type)
-            response = await fetch(max_redirects=0)
-            response = await self._follow_redirects(fetch, response, decided, resource_type)
+            fulfill = _route_fulfill(route)
+            await self._decide(decision_url)
+            self._record(ALLOWED, decision_url, "", resource_type)
+            response = await self._fetch_redirect_chain(route, decision_url, resource_type)
             await fulfill(response=response)
-        except SSRFBlockedError as exc:
-            await _abort(route)
-            self._record(DENIED, decided[0], exc.reason or "policy", resource_type)
         except Exception as exc:
-            # A resolver fault, malformed URL, unsupported route API, or
-            # transport error cannot be shown safe, so it is denied. Log only
-            # the exception type: Playwright errors may contain full URLs.
-            logger.debug("browser_net_route_error", error_type=type(exc).__name__)
-            await _abort(route)
-            self._record(DENIED, decided[0], "error", resource_type)
+            await self._deny_route(route, exc, decision_url, resource_type)
 
-    async def _follow_redirects(
-        self,
-        fetch: Any,
-        response: Any,
-        decided: list[str],
-        resource_type: str,
-    ) -> Any:
-        """Follow each redirect hop through this guard, never the browser.
-
-        Chromium does not send every HTTP redirect hop back through a context
-        route handler, so each hop is fetched here with `max_redirects=0`:
-        the Location is re-decided against the snapshotted policy and only
-        then fetched. Returns the terminal response, or raises when the chain
-        exceeds `MAX_REDIRECT_HOPS` (refusing is safer than handing control
-        back to Chromium, whose hops would bypass governance).
-        """
+    async def _fetch_redirect_chain(self, route: Any, url: str, resource_type: str) -> Any:
+        """Fetch one hop at a time, validating each redirect destination."""
+        fetch = route.fetch
+        response = await fetch(max_redirects=0)
         for _ in range(MAX_REDIRECT_HOPS):
             location = _redirect_location(response)
             if not location:
                 return response
-            decided[0] = urljoin(decided[0], location)
-            await self._decide(decided[0])
-            self._record(ALLOWED, decided[0], "", resource_type)
-            response = await fetch(url=decided[0], max_redirects=0)
+            url = urljoin(url, location)
+            try:
+                await self._decide(url)
+            except SSRFBlockedError as exc:
+                raise _RedirectBlockedError(url, exc) from exc
+            self._record(ALLOWED, url, "", resource_type)
+            response = await fetch(url=url, max_redirects=0)
         raise RuntimeError("redirect chain exceeded browser policy limit")
+
+    async def _deny_route(
+        self, route: Any, exc: Exception, decision_url: str, resource_type: str
+    ) -> None:
+        await _abort(route)
+        if isinstance(exc, _RedirectBlockedError):
+            decision_url = exc.url
+            reason = exc.cause.reason or "policy"
+        elif isinstance(exc, SSRFBlockedError):
+            reason = exc.reason or "policy"
+        else:
+            # A resolver fault, malformed URL, unsupported route API, or
+            # transport error cannot be shown safe, so it is denied. Log only
+            # the exception type: Playwright errors may contain full URLs.
+            logger.debug("browser_net_route_error", error_type=type(exc).__name__)
+            reason = "error"
+        self._record(DENIED, decision_url, reason, resource_type)
 
     async def handle_web_socket(self, ws_route: Any) -> None:
         """The `route_web_socket` handler: WebSocket upgrades are refused.
@@ -274,18 +288,8 @@ class BrowserNetworkGuard:
         """The canonical decision: a configured origin passes, the rest prove
         themselves public. This is `enforce_outbound_policy`'s rule against
         this guard's snapshotted policy (which may carry browser allowances
-        the shared one does not).
-
-        A browser allowance is still restricted to the validator's network
-        schemes. The shared policy normally contains HTTP origins, but a
-        malformed or non-network operator value must never turn a browser
-        request for `file:`, `data:`, or another scheme into an allow.
-        """
-        try:
-            scheme = urlsplit(url).scheme.lower()
-        except ValueError:
-            scheme = ""
-        if scheme in ALLOWED_SCHEMES and self._policy.allows(url):
+        the shared one does not)."""
+        if self._policy.allows(url):
             return
         await avalidate_outbound_url(url)
 
@@ -308,6 +312,130 @@ class BrowserNetworkGuard:
             logger.debug("browser_net_allowed", origin=origin, resource_type=resource_type)
 
 
+class SyncBrowserNetworkGuard:
+    """Synchronous Playwright adapter using the same canonical policy.
+
+    The Conductor hill-climb driver uses Playwright's sync API. It cannot use
+    the async guard, but it must make the same decision at the same browser
+    route boundary rather than falling back to a starting-URL check.
+    """
+
+    def __init__(
+        self,
+        *,
+        policy: OutboundPolicy | None = None,
+        extra_origins: tuple[str, ...] | list[str] = (),
+    ) -> None:
+        base = policy if policy is not None else current_outbound_policy()
+        self._policy = base.with_origins(extra_origins)
+        self.events: deque[BrowserNetEvent] = deque(maxlen=MAX_AUDIT_EVENTS)
+        self.websocket_governed = False
+
+    @property
+    def policy(self) -> OutboundPolicy:
+        """The policy in force for this sync guard."""
+        return self._policy
+
+    def denied_events(self) -> tuple[BrowserNetEvent, ...]:
+        """The refusals, oldest first."""
+        return tuple(e for e in self.events if e.decision == DENIED)
+
+    def attach(self, context: Any) -> SyncBrowserNetworkGuard:
+        """Register the guard before the sync context performs any navigation."""
+        context.route(ROUTE_PATTERN, self.handle_route)
+        route_ws = getattr(context, "route_web_socket", None)
+        if route_ws is not None:
+            route_ws(ROUTE_PATTERN, self.handle_web_socket)
+            self.websocket_governed = True
+        else:
+            logger.warning(
+                "browser_net_websocket_interception_unavailable",
+                detail="context lacks route_web_socket; WebSocket upgrades "
+                "would not be governed by the outbound policy",
+            )
+        return self
+
+    def handle_route(self, route: Any, request: Any = None) -> None:
+        """Decide, fetch and fulfill one sync Playwright route."""
+        req = request if request is not None else getattr(route, "request", None)
+        decision_url = str(getattr(req, "url", "") or "")
+        resource_type = str(getattr(req, "resource_type", "") or "unknown")
+        try:
+            fulfill = _route_fulfill_sync(route)
+            self._decide(decision_url)
+            self._record(ALLOWED, decision_url, "", resource_type)
+            response = self._fetch_redirect_chain(route, decision_url, resource_type)
+            fulfill(response=response)
+        except Exception as exc:
+            self._deny_route(route, exc, decision_url, resource_type)
+
+    def _fetch_redirect_chain(self, route: Any, url: str, resource_type: str) -> Any:
+        fetch = route.fetch
+        response = fetch(max_redirects=0)
+        for _ in range(MAX_REDIRECT_HOPS):
+            location = _redirect_location(response)
+            if not location:
+                return response
+            url = urljoin(url, location)
+            try:
+                self._decide(url)
+            except SSRFBlockedError as exc:
+                raise _RedirectBlockedError(url, exc) from exc
+            self._record(ALLOWED, url, "", resource_type)
+            response = fetch(url=url, max_redirects=0)
+        raise RuntimeError("redirect chain exceeded browser policy limit")
+
+    def _deny_route(
+        self, route: Any, exc: Exception, decision_url: str, resource_type: str
+    ) -> None:
+        _abort_sync(route)
+        if isinstance(exc, _RedirectBlockedError):
+            decision_url = exc.url
+            reason = exc.cause.reason or "policy"
+        elif isinstance(exc, SSRFBlockedError):
+            reason = exc.reason or "policy"
+        else:
+            logger.debug("browser_net_route_error", error_type=type(exc).__name__)
+            reason = "error"
+        self._record(DENIED, decision_url, reason, resource_type)
+
+    def handle_web_socket(self, ws_route: Any) -> None:
+        """Refuse sync WebSocket upgrades, as the async guard does."""
+        url = str(getattr(ws_route, "url", "") or "")
+        _close_web_socket_sync(ws_route)
+        self._record(DENIED, url, WEBSOCKET_BLOCK_REASON, "websocket")
+
+    def _decide(self, url: str) -> None:
+        if self._policy.allows(url):
+            return
+        validate_outbound_url(url)
+
+    def _record(self, decision: str, url: str, reason: str, resource_type: str) -> None:
+        origin = outbound_origin(url)
+        event = BrowserNetEvent(
+            decision=decision, origin=origin, reason=reason, resource_type=resource_type
+        )
+        self.events.append(event)
+        if decision == DENIED:
+            logger.warning(
+                "browser_net_denied",
+                origin=origin,
+                reason=reason,
+                resource_type=resource_type,
+            )
+        else:
+            logger.debug("browser_net_allowed", origin=origin, resource_type=resource_type)
+
+
+def _route_fulfill(route: Any) -> Any:
+    """Validate the route API and return its response fulfillment method."""
+    fetch = getattr(route, "fetch", None)
+    fulfill = getattr(route, "fulfill", None)
+    if not callable(fetch) or not callable(fulfill):
+        raise RuntimeError("Playwright route lacks fetch/fulfill")
+    return fulfill
+
+
 def _redirect_location(response: Any) -> str:
     """Return an HTTP redirect target without treating arbitrary headers as URLs."""
     status = int(getattr(response, "status", 0) or 0)
@@ -315,6 +443,28 @@ def _redirect_location(response: Any) -> str:
         return ""
     headers = getattr(response, "headers", {})
     return str(headers.get("location", "") or "")
+
+
+def _route_fulfill_sync(route: Any) -> Any:
+    fetch = getattr(route, "fetch", None)
+    fulfill = getattr(route, "fulfill", None)
+    if not callable(fetch) or not callable(fulfill):
+        raise RuntimeError("Playwright route lacks fetch/fulfill")
+    return fulfill
+
+
+def _abort_sync(route: Any) -> None:
+    try:
+        route.abort(ABORT_REASON)
+    except Exception:
+        logger.debug("browser_net_abort_undeliverable")
+
+
+def _close_web_socket_sync(ws_route: Any) -> None:
+    try:
+        ws_route.close()
+    except Exception:
+        logger.debug("browser_net_websocket_close_undeliverable")
 
 
 async def _abort(route: Any) -> None:
@@ -343,4 +493,6 @@ __all__ = [
     "WEBSOCKET_BLOCK_REASON",
     "BrowserNetEvent",
     "BrowserNetworkGuard",
+    "SyncBrowserNetworkGuard",
+    "browser_allowed_origins",
 ]

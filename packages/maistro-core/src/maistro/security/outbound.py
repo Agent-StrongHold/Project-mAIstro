@@ -99,6 +99,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from maistro.security.ssrf import (
+    ALLOWED_SCHEMES,
     SSRFBlockedError,
     avalidate_outbound_url,
     validate_outbound_url,
@@ -193,7 +194,18 @@ class OutboundPolicy:
     origins: frozenset[str] = frozenset()
 
     def allows(self, url: str) -> bool:
-        """Whether `url` names a configured endpoint, exactly."""
+        """Whether ``url`` names a configured HTTP(S) endpoint, exactly.
+
+        Allowances exempt a destination from DNS-based SSRF resolution; they
+        never turn the canonical scheme whitelist off. This matters at the
+        browser seam, where Chromium can be handed non-HTTP URLs that an
+        ``httpx`` caller could never construct.
+        """
+        try:
+            if urlsplit(url).scheme.lower() not in ALLOWED_SCHEMES:
+                return False
+        except ValueError:
+            return False
         return outbound_origin(url) in self.origins
 
     def with_origins(self, urls: Iterable[str]) -> OutboundPolicy:

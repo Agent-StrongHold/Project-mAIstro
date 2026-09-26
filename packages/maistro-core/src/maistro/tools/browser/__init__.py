@@ -21,6 +21,7 @@ from maistro.tools.browser.client import (
 from maistro.tools.browser.guard import (
     BrowserNetEvent,
     BrowserNetworkGuard,
+    SyncBrowserNetworkGuard,
 )
 from maistro.tools.browser.types import (
     BrowseResult,
@@ -36,4 +37,5 @@ __all__ = [
     "BrowserToolError",
     "Citation",
     "SearchResult",
+    "SyncBrowserNetworkGuard",
 ]

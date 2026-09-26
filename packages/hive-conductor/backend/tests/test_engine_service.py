@@ -388,6 +388,55 @@ async def test_maistro_server_task_backend_get_missing_returns_none(
     assert backend.get("missing") is None
 
 
+def test_task_reads_use_the_guarded_sync_client_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Synchronous production reads cannot bypass the shared policy seam."""
+    import adapters.task_backend as backend_module
+    import httpx
+
+    calls: list[dict[str, object]] = []
+
+    class _Client:
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def get(self, url: str, **kwargs: object) -> httpx.Response:
+            calls.append({"url": url, **kwargs})
+            if url.endswith("/missing"):
+                return httpx.Response(404, request=httpx.Request("GET", url))
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                json={"items": []},
+            )
+
+    def _sync_client(**kwargs: object) -> _Client:
+        calls.append({"timeout": kwargs["timeout"]})
+        return _Client()
+
+    def _raw_client(**kwargs: object) -> None:
+        raise AssertionError(f"raw httpx.Client bypassed the shared seam: {kwargs}")
+
+    monkeypatch.setattr(backend_module, "sync_client", _sync_client)
+    monkeypatch.setattr(httpx, "Client", _raw_client)
+
+    backend = backend_module.MaistroServerTaskBackend(
+        base_url="http://maistro-server", api_key=None
+    )
+    assert backend.get("missing") is None
+    assert backend.list_tasks() == []
+
+    assert [call["timeout"] for call in calls if "timeout" in call] == [30.0, 30.0]
+    assert [call["url"] for call in calls if "url" in call] == [
+        "http://maistro-server/tasks/missing",
+        "http://maistro-server/tasks",
+    ]
+
+
 # --- submit_task ---------------------------------------------------------
 
 

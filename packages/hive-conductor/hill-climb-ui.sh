@@ -19,9 +19,13 @@ export BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY:-}"
 echo "═══ UI Hill-Climb: $COMPONENT × $PASSES passes ═══"
 
 $PYTHON << PYTHON
-import asyncio, httpx, json, base64, os, subprocess, random, time
+import asyncio, json, base64, os, subprocess, random, time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
+from maistro.tools.browser.guard import SyncBrowserNetworkGuard, browser_allowed_origins
 
 COMPONENT = "$COMPONENT"
 PASSES = $PASSES
@@ -33,6 +37,18 @@ COMPONENT_PATH = FRONTEND / "src/pages" / COMPONENT
 BASE = os.environ["LITELLM_API_BASE"].rstrip("/")
 if not BASE.endswith("/v1"): BASE += "/v1"
 KEY = os.environ["LITELLM_API_KEY"]
+# The VM's app and model gateway are operator-configured internal endpoints;
+# every other browser destination remains subject to the canonical policy.
+configure_outbound_policy(BASE, URL)
+
+
+def guarded_context(browser):
+    """Create a sync context before any page can issue an unguarded request."""
+    context = browser.new_context(service_workers="block", viewport={"width": 1280, "height": 800})
+    SyncBrowserNetworkGuard(extra_origins=browser_allowed_origins()).attach(context)
+    return context
+
+
 CORPUS_DIR = Path("/tmp/ui-corpus")
 CORPUS_DIR.mkdir(exist_ok=True)
 
@@ -53,7 +69,7 @@ TOP_SITES = [
 def screenshot_app():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+        ctx = guarded_context(browser)
         page = ctx.new_page()
         page.goto(URL, wait_until="networkidle", timeout=10000)
         page.wait_for_timeout(500)
@@ -79,7 +95,8 @@ def screenshot_site(url):
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": 1280, "height": 800})
+            ctx = guarded_context(browser)
+            page = ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=8000)
             page.wait_for_timeout(1500)
             buf = page.screenshot(type="png")
@@ -113,12 +130,14 @@ If the fix is in the component TSX, use: {{"score": int, "issue": str, "old_tsx"
     for ref in ref_b64s[:3]:
         content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{ref}"}})
 
-    r = httpx.post(f"{BASE}/chat/completions",
-        headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
-        json={"model": "gemini-3.5-flash", "messages": [{"role": "user", "content": content}],
-              "response_format": {"type": "json_object"}},
-        timeout=60.0)
-    r.raise_for_status()
+    with sync_client(timeout=60.0) as client:
+        r = client.post(
+            f"{BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
+            json={"model": "gemini-3.5-flash", "messages": [{"role": "user", "content": content}],
+                  "response_format": {"type": "json_object"}},
+        )
+        r.raise_for_status()
     return json.loads(r.json()["choices"][0]["message"]["content"])
 
 def apply_fix(fix):

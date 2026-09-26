@@ -147,20 +147,30 @@ def ask():
     ]
 
 
-def test_non_src_package_python_is_scanned_but_explicit_dev_utility_is_not(gate, tmp_path) -> None:
+def test_non_src_package_python_is_scanned_including_shipped_drivers(gate, tmp_path) -> None:
+    """Non-src package Python is scanned, tests are not.
+
+    `run_hill_climb.py` used to sit on an explicit exclusion list, back when
+    it made no outbound calls; #155 gave its LLM and browser egress the
+    governed sync seams and the file became dispositioned shipped Python
+    (#155) — so the exclusion list is gone and the scan must reach it.
+    """
     shipped = tmp_path / "packages/demo/frontend/server/mcp/effect.py"
     shipped.parent.mkdir(parents=True)
     shipped.write_text("pass\n")
     test_file = tmp_path / "packages/demo/tests/test_effect.py"
     test_file.parent.mkdir(parents=True)
     test_file.write_text("pass\n")
-    excluded = tmp_path / "packages/hive-conductor/run_hill_climb.py"
-    excluded.parent.mkdir(parents=True)
-    excluded.write_text("pass\n")
+    governed_driver = tmp_path / "packages/hive-conductor/run_hill_climb.py"
+    governed_driver.parent.mkdir(parents=True)
+    governed_driver.write_text("pass\n")
     found = {
         item.relative_to(tmp_path).as_posix() for item in gate._production_python_files(tmp_path)
     }
-    assert found == {"packages/demo/frontend/server/mcp/effect.py"}
+    assert found == {
+        "packages/demo/frontend/server/mcp/effect.py",
+        "packages/hive-conductor/run_hill_climb.py",
+    }
 
 
 def test_curated_image_provider_http_is_detected_without_generic_http_matching(gate) -> None:
