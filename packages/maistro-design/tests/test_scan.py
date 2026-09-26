@@ -303,3 +303,92 @@ class TestCssNetworkPrimitiveReview:
                 raise TimeoutError("backtracking budget exceeded")
 
         assert _pattern_matches(_ExplodingPattern(), "benign content") is True
+
+
+class TestVisualMarkupFormatGate:
+    """The artifact-tree visual-artifact arm is a markup-sink boundary.
+
+    ``scan_design_output()`` runs the markup-sink families of the shared
+    vocabulary (unknown active elements, bare dangerous-url schemes, CSS
+    ``var()``/``env()``/``data:`` values — the ``VISUAL_ARTIFACT`` patterns)
+    only for leaves whose format reaches a browser markup sink: HTML, SVG,
+    and untagged FILE leaves, failing closed. Prose leaves (the MARKDOWN
+    prompt stack embeds design-system component examples as model-facing
+    documentation, never executable markup) keep every unconditional arm of
+    ``scan_blocking_patterns`` — script, prompt-injection, active-markup,
+    base64, suspicious Unicode — but not the sink families.
+
+    The renderer boundary (``scan_design_text``, ``visual_artifact=True``)
+    and the trust pre-scan keep the sink families unconditionally, so nothing
+    that reaches a browser and nothing the admin pre-scan reviews is scanned
+    more narrowly than before.
+
+    Regression pin: a merge resolution silently dropped this format gate,
+    which both widened the prose scan and stranded the ``OutputFormat.SVG``
+    vocabulary member outside the reviewed src surface (the exact-debt-ledger
+    failure this repair closes).
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_prose_leaf_keeps_unconditional_arms_not_sink_families(self):
+        from maistro_design.scan import (
+            scan_blocking_patterns,
+            scan_design_output,
+            scan_design_text,
+        )
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        payload = '<div style="color:var(--attacker-controlled)">y</div>'
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="brief", kind=ArtifactKind.FILE, format=OutputFormat.MARKDOWN, value=payload
+            )
+        )
+
+        # Sink-only payload: the unconditional arms see nothing...
+        assert scan_blocking_patterns("content", payload, None, visual_artifact=False) == []
+        # ...so the prose leaf passes the artifact-tree walk.
+        assert scan_design_output(output).passed
+        # The renderer boundary still classifies it — prose is model input,
+        # never an exemption for the sink itself (AC-3/AC-4 unchanged).
+        assert not scan_design_text(payload).passed
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize("fmt_is_none", [False, True], ids=["html-leaf", "untagged-leaf"])
+    def test_markup_sinks_fail_closed_for_sink_only_payload(self, fmt_is_none: bool):
+        from maistro_design.scan import scan_design_output
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="leaf",
+                kind=ArtifactKind.FILE,
+                format=None if fmt_is_none else OutputFormat.HTML,
+                value='<div style="color:var(--attacker-controlled)">y</div>',
+            )
+        )
+
+        report = scan_design_output(output)
+        assert not report.passed
+        assert any("visual artifact" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_svg_leaf_script_still_blocks(self):
+        from maistro_design.scan import scan_design_output
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="leaf",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat.SVG,
+                value="<svg><script>alert(1)</script></svg>",
+            )
+        )
+
+        report = scan_design_output(output)
+        assert not report.passed
+        assert any("visual artifact" in f for f in report.blocking_flags)

@@ -237,19 +237,25 @@ def scan_design_text(
     label: str = "content",
     banish_list: InMemoryTrustBanishList | None = None,
     url_allowlist: tuple[str, ...] = DEFAULT_URL_ALLOWLIST,
+    visual_artifact: bool = True,
 ) -> ScanReport:
     """Scan one text value at a final Design Studio output boundary.
 
     This is the same fail-closed path used for artifact trees. Renderers call it
     before handing content to a document/browser backend, so a caller cannot
     bypass the returned-artifact scan merely by choosing a different output sink.
+
+    ``visual_artifact`` defaults to True — a renderer boundary is a markup sink,
+    so the visual-artifact families run unconditionally there. The artifact-tree
+    walk (``scan_design_output``) passes the leaf's format decision instead; the
+    blocking vocabulary itself stays shared either way (#817).
     """
     blocking = scan_blocking_patterns(
         label,
         content,
         banish_list,
         url_allowlist=url_allowlist,
-        visual_artifact=True,
+        visual_artifact=visual_artifact,
     )
     return ScanReport(
         passed=not blocking,
@@ -268,7 +274,22 @@ def scan_design_output(
 
     Binary (BLOB) leaves are not pattern-scanned — there is no text to match against;
     binary content safety is the renderer/asset-store boundary's concern.
+
+    The visual-artifact arm is a *markup* boundary, so it runs only on leaves whose
+    format reaches a browser markup sink (HTML/SVG); an untagged FILE leaf fails
+    closed and is scanned. Prose leaves — the MARKDOWN prompt-stack embeds
+    design-system component examples, links, and forms as documentation for the
+    model, never as executable markup — are model input and stay covered by the
+    unconditional arms of scan_blocking_patterns() (script, prompt-injection,
+    active-markup, base64, suspicious Unicode). The renderer boundary itself
+    (scan_design_text, visual_artifact=True) never widens: markup-sink families
+    are enforced wherever content actually reaches a browser (#817 AC-3/AC-4).
     """
+    # Deferred import: maistro_design.types imports trust, which imports this
+    # module, so a module-level types import would close a runtime cycle.
+    from maistro_design.types import OutputFormat
+
+    visual_markup_formats = frozenset({OutputFormat.HTML, OutputFormat.SVG})
     blocking: list[str] = []
     external_urls: set[str] = set()
 
@@ -279,6 +300,7 @@ def scan_design_output(
                 label=address,
                 banish_list=banish_list,
                 url_allowlist=url_allowlist,
+                visual_artifact=node.format is None or node.format in visual_markup_formats,
             )
             blocking.extend(report.blocking_flags)
             external_urls.update(report.external_urls)
