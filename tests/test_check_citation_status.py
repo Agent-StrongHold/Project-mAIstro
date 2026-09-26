@@ -593,6 +593,56 @@ def test_matrix_explicit_relations_and_comma_lists_remain_historical(note: str) 
     assert _gate_module()._governing_ids(f"ADR-001 ({note})") == ["ADR-001"]
 
 
+def test_the_matrix_parser_ignores_text_without_the_disposition_marker() -> None:
+    """A document with no ``matrix:disposition`` marker has no matrix rows."""
+    assert _gate_module()._matrix_references("prose only, no marker") == []
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        # Header only: no separator row and no body row.
+        "| Subsystem | Governing ADR/spec |\n",
+        # Header plus separator: still no body row to read authorities from.
+        "| Subsystem | Governing ADR/spec |\n|---|---|\n",
+    ],
+)
+def test_the_matrix_parser_needs_header_separator_and_body_row(table: str) -> None:
+    """Fewer than header + separator + one body row is no disposition table."""
+    text = "<!-- matrix:disposition -->\n" + table
+    assert _gate_module()._matrix_references(text) == []
+
+
+def test_the_matrix_parser_ignores_a_table_without_the_governing_columns() -> None:
+    """A table under the marker that names neither column has no authorities."""
+    text = (
+        "<!-- matrix:disposition -->\n| Subsystem | Unreachable |\n|---|---|\n| Demo | `none` |\n"
+    )
+    assert _gate_module()._matrix_references(text) == []
+
+
+def test_the_matrix_parser_skips_body_rows_shorter_than_the_header() -> None:
+    """A truncated row cannot name an authority; it must be skipped, not crash."""
+    text = (
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Governing ADR/spec |\n"
+        "|---|---|\n"
+        "| Demo |\n"
+        "| Full | ADR-002 |\n"
+    )
+    references = _gate_module()._matrix_references(text)
+    assert references == [("matrix#Full", "governing", _ref("ADR-002"))]
+
+
+def test_matrix_problems_without_a_matrix_file_are_silence_not_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    monkeypatch.setattr(module, "MATRIX", tmp_path / "absent-matrix.md")
+
+    assert module._matrix_problems([_doc("ADR-002", Status.PROPOSED)]) == []
+
+
 def test_the_matrix_unqualified_parenthetical_superseded_names_replacement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -3,12 +3,13 @@ id: SPEC-062126-d421
 title: "Medley import sanitization pipeline — scan, salvage-or-block, register, re-scan-on-use"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-06-21
 substrate:
   - maistro-engine#ADR-072
   - maistro-engine#ADR-073
-implements: []
+implements:
+  - maistro-engine#ADR-083
 related:
   - maistro-engine#SPEC-005
   - maistro-engine#ADR-050
@@ -28,6 +29,11 @@ tests:
 layer: Tools
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-062126-d421: Medley import sanitization pipeline

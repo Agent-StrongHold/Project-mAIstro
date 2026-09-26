@@ -3,12 +3,13 @@ id: SPEC-182
 title: A2A delegation broker — implementation
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-05-29
 accepted: null
 implemented: null
 substrate: []
-implements: []
+implements:
+  - maistro-engine#ADR-058
 related:
   - maistro-engine#SPEC-008
   - maistro-engine#SPEC-181
@@ -27,6 +28,10 @@ history:
   - status: Proposed
     date: 2026-05-29
   - status: Accepted
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-182: A2A delegation broker — implementation

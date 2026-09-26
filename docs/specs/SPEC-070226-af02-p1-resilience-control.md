@@ -3,12 +3,13 @@ id: SPEC-070226-af02
 title: "P1 Resilience: depth/compaction/retry enforcement with control-scope steering"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-038
   - maistro-engine#ADR-062
-implements: []
+implements:
+  - maistro-engine#ADR-066
 related:
   - maistro-engine#ADR-071
   - maistro-engine#SPEC-248
@@ -22,6 +23,11 @@ tests:
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-af02: P1 Resilience — depth/compaction/retry enforcement with control-scope steering

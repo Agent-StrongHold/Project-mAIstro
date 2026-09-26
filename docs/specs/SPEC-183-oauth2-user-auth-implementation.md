@@ -3,12 +3,13 @@ id: SPEC-183
 title: OAuth2 user authentication — implementation
 repo: maistro-engine
 kind: spec
-status: In Progress
+status: Proposed
 created: 2026-05-29
 accepted: null
 implemented: null
 substrate: []
-implements: []
+implements:
+  - maistro-engine#ADR-059
 related:
   - maistro-engine#ADR-020
   - maistro-engine#ADR-024
@@ -42,6 +43,10 @@ history:
       account-link/provisioning product flow remain unmet; the shipped login
       path accepts only pre-linked active users and intentionally discards
       provider tokens.
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-183: OAuth2 user authentication — implementation

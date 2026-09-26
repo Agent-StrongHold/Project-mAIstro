@@ -85,13 +85,26 @@ jobs:
         # decision still merely Proposed. Existing reviewed exceptions remain
         # visible, but the trusted-base adapter prevents a candidate from adding
         # a citation to its own baseline to hide a new one.
+        #
+        # RATCHET_BASE_REV uses the same guarded chain as quality.yml /
+        # ci.yml / vulture-ratchet.yml: `github.event.before` is the replaced
+        # revision only on a protected-branch push; a topic-branch `before` is
+        # the branch's own previous tip, which any rebase orphans, so the
+        # fallback is the integration base the pull-request run compares
+        # against (tests/test_ratchet_base_rev_policy.py pins this shape).
         env:
           RATCHET_BASE_REV: >-
             ${{ github.event_name == 'pull_request'
                 && format('origin/{0}', github.base_ref)
                 || github.event_name == 'merge_group'
                 && github.event.merge_group.base_sha
-                || github.event.before }}
+                || github.ref == 'refs/heads/develop'
+                && github.event.before
+                || github.ref == 'refs/heads/integration'
+                && github.event.before
+                || github.ref == 'refs/heads/main'
+                && github.event.before
+                || 'origin/develop' }}
         run: python scripts/check-citation-status-provenance.py
 
       - name: ADR-INDEX agrees with ADR front matter (#379)

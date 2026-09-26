@@ -3,11 +3,12 @@ id: SPEC-070226-b234
 title: "Events, triggers, and the reactor: durable event log with idempotent replay"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-037
-implements: []
+implements:
+  - maistro-engine#ADR-086
 related:
   - maistro-engine#ADR-082
   - maistro-engine#ADR-086
@@ -31,6 +32,11 @@ ac-modules:
 layer: Observability
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-b234: Events, triggers, and the reactor — durable event log with idempotent replay

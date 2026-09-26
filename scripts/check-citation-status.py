@@ -115,9 +115,9 @@ def _matrix_references(text: str) -> list[tuple[str, str, str]]:
             if in_table:
                 break
             continue
+        # `str.split` always returns at least one element, so a table line
+        # always yields at least one cell — there is no empty-row case to skip.
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if not cells:
-            continue
         in_table = True
         rows.append(cells)
 

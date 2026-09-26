@@ -3,13 +3,14 @@ id: SPEC-070226-2b70
 title: "Observability extensions: replayable LLM/tool proxies and PII sensitivity-tier routing"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-037
   - maistro-engine#ADR-050
   - maistro-engine#SPEC-228
-implements: []
+implements:
+  - maistro-engine#ADR-055
 related:
   - maistro-engine#ADR-053
   - maistro-engine#ADR-056
@@ -37,6 +38,11 @@ ac-modules:
 layer: Observability
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-2b70: Observability extensions — replayable proxies and PII sensitivity tiers

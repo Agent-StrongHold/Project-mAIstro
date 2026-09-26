@@ -3,11 +3,12 @@ id: SPEC-070226-c4f8
 title: "Hierarchical orchestration: agent/skill portability across harnesses"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#SPEC-208
-implements: []
+implements:
+  - maistro-engine#ADR-101
 related:
   - maistro-engine#ADR-062
   - maistro-engine#ADR-070
@@ -24,6 +25,11 @@ tests:
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-c4f8: Hierarchical orchestration — agent/skill portability across harnesses
