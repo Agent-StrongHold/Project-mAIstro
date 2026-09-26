@@ -31,7 +31,20 @@ Environment observation (not a product defect, no code change): re-running
 the core projects/workspaces conformance suites twice against the same
 PostgreSQL database can fail postgres legs with leftover deterministic
 workspace rows, because `workspaces` is not in `_PG_SCRATCH_TABLES`
-(`packages/maistro-core/tests/conftest.py`). On a freshly migrated database
-(`alembic upgrade head` → 042) the combined targeted run is green in one
-shot: 1003 passed, 3 skipped (core projects/workspaces + spine + retention
-conformance + server API suite), with `MAISTRO_REQUIRE_PG_LEGS=1`.
+(`packages/maistro-core/tests/conftest.py`). Two recovery details, confirmed
+in the repair round at eec05d0e2:
+
+1. A stale database (alembic 036) cannot simply be migrated forward:
+   `042_manual_fire_occurrence_identity` builds a unique index over
+   `canonical_runs` provenance, and leftover scratch rows from earlier
+   conformance runs (e.g. `sched-1`/`manual:retry-token-1` written by
+   `test_a_retried_manual_fire_is_one_occurrence`) violate it, so the upgrade
+   aborts with UniqueViolation. Reset the scratch schema
+   (`DROP SCHEMA public CASCADE; CREATE SCHEMA public;`) before
+   `alembic upgrade head`.
+2. After the reset + fresh migration to 042, the combined targeted run is
+   green in one shot: 579 passed / 3 skipped (projects + workspaces +
+   `runs/test_spine_conformance.py`, PG legs via `MAISTRO_REQUIRE_PG_LEGS=1`),
+   and 66 passed (server projects API incl. the two regression tests above +
+   core container wiring), with `ruff check`/`format --check`, the
+   `packages/*/src` vulture baseline, and both suite inventories green.
