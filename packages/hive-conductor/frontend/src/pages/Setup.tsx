@@ -4,6 +4,8 @@ import { SecretField, TextField } from "../components/shared";
 
 type Preset = { name: string; label: string; description: string; max_vcpu: number; max_memory_gb: number; db_backend: string; networking: string; gpu_available: boolean; reactor_enabled: boolean; max_agents: number };
 
+type IdentityStatus = "checking" | "operational" | "disabled" | "misconfigured" | "unavailable";
+
 const MODULES = [
   { id: "crypto_identity", name: "Crypto Identity", desc: "BIP39 HD wallet seed, DID addresses, hierarchical key derivation, agent signing (ADR-021/024)", requires: [] },
   { id: "crypto_trading", name: "Crypto Trading", desc: "CoinSwarm integration, exchange WebSockets, evolutionary strategies", requires: ["crypto_identity"] },
@@ -24,6 +26,8 @@ export default function Setup() {
   const [preset, setPreset] = useState<string | null>(null);
   const [presets, setPresets] = useState<Record<string, Preset>>({});
   const [presetsUnavailable, setPresetsUnavailable] = useState(false);
+  const [identityStatus, setIdentityStatus] = useState<IdentityStatus>("checking");
+  const [identityReason, setIdentityReason] = useState<string | null>(null);
   const [modules, setModules] = useState<string[]>([]);
   const [adminUsername, setAdminUsername] = useState("admin");
   const [adminPassword, setAdminPassword] = useState("");
@@ -111,6 +115,31 @@ export default function Setup() {
       active = false;
     };
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let active = true;
+    apiGet<{ identity?: { status?: string; reason?: string } }>("/health")
+      .then((data) => {
+        if (!active) return;
+        const status = data.identity?.status;
+        setIdentityReason(data.identity?.reason ?? null);
+        if (status === "operational" || status === "disabled" || status === "misconfigured" || status === "unavailable") {
+          setIdentityStatus(status);
+        } else {
+          setIdentityStatus("unavailable");
+        }
+      })
+      .catch(() => {
+        // Do not offer a crypto action when the capability probe did not answer.
+        if (active) {
+          setIdentityStatus("unavailable");
+          setIdentityReason("health_probe_failed");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Mount-only, and it has to stay that way. This was previously a bare
   // `void loadPresets()` sitting in the component body, which re-ran on every
@@ -362,14 +391,26 @@ export default function Setup() {
               {MODULES.map((m) => {
                 const enabled = modules.includes(m.id);
                 const depsMet = m.requires.every((r) => modules.includes(r));
+                const identityUnavailable =
+                  m.id === "crypto_identity" &&
+                  (identityStatus === "checking" ||
+                    identityStatus === "unavailable" ||
+                    (identityStatus === "misconfigured" && identityReason !== "setup_incomplete"));
                 return (
-                  <div key={m.id} className="card" style={{ display: "grid", gridTemplateColumns: "1fr 36px", gap: 8, alignItems: "center", opacity: depsMet || enabled ? 1 : 0.5 }}>
+                  <div key={m.id} className="card" style={{ display: "grid", gridTemplateColumns: "1fr 36px", gap: 8, alignItems: "center", opacity: identityUnavailable ? 0.5 : depsMet || enabled ? 1 : 0.5 }}>
                     <div>
                       <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{m.name}</div>
                       <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{m.desc}</div>
                       {m.requires.length > 0 && <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 2 }}>requires: {m.requires.join(", ")}</div>}
+                      {identityUnavailable && <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--danger)", marginTop: 2 }}>{identityStatus === "checking" ? "checking deployment support; action unavailable" : "unavailable in this deployment; no action offered"}</div>}
                     </div>
-                    <div className={`toggle${enabled ? " on" : ""}`} onClick={() => { if (depsMet || enabled) setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id]); }} />
+                    <button
+                      type="button"
+                      className={`toggle${enabled ? " on" : ""}`}
+                      aria-label={`Toggle ${m.name}`}
+                      disabled={identityUnavailable || !(depsMet || enabled)}
+                      onClick={() => setModules(enabled ? modules.filter((x) => x !== m.id) : [...modules, m.id])}
+                    />
                   </div>
                 );
               })}
