@@ -281,6 +281,15 @@ or placeholder-only section.
 
 ### Added
 
+- **Proposed spec for Workspace work campaigns (#103, partial).**
+  SPEC-092626-1831 (Proposed), with its boundary decision ADR-092626-c1e7
+  (Proposed), records the campaign contract before any code: a
+  campaign is operator policy that narrows eligible BacklogItems and linked
+  Goals, with four autonomy modes, durable pin-next/pause/exclude/human-only
+  controls, human priority kept separate from the system selection score, and
+  audit keyed to actor and policy version. It grants no permissions and owns no
+  Goals. The priority combination rule and default mode stay open questions.
+  Documentation only: no store, route or runtime behaviour changes yet.
 - **Proposed ADR for the durable cross-Workspace user model (#1047, partial).**
   ADR-092526-4391 (Proposed) records the owner's decisions on #1047. The user model is a
   separate `UserModelFact` record that does not decay. It has revision lineage,

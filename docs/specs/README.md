@@ -28,3 +28,4 @@ Frozen **reference** trees that specs ported from (hyperagent bundle, gateway sn
 | SPEC-194 | [Ultra Think — tiered parallel diverse generation](SPEC-194-ultra-think-parallel-generation.md) |
 | SPEC-195 | [Operational training data collection](SPEC-195-operational-training-data.md) |
 | SPEC-091226-1341 | [Gates Ran path-scoped execution evidence](SPEC-091226-1341-gates-ran-path-scope-evaluator.md) |
+| SPEC-092626-1831 | [Workspace work campaigns (Proposed)](SPEC-092626-1831-workspace-work-campaigns.md) |
