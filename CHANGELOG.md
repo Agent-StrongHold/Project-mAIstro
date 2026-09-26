@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Security
 
+- **Tool calls fail closed when Sentinel or caller auth is missing (#1165).**
+  An `Agent` built without a Sentinel, or handed a turn with no `auth`, used
+  to execute tool calls unauthorized; it now returns `Error: Permission denied
+  for tool …` and logs why. The standalone ReAct and Artificer strategy paths
+  apply the same rule. Callers that construct Agents directly must wire a
+  Sentinel whose permission table grants the tools they need.
+
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
   /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer

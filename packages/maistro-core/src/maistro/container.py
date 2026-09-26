@@ -478,10 +478,11 @@ class Container:
         """Evaluate an identity-free turn as the role-less anonymous principal.
 
         The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it is
-        empty -- it denies -- but the strategies consult Sentinel only when
-        `auth is not None`, so `None` passed through here would let an
-        unauthenticated turn execute every tool the table denies. Such a turn
-        is routed as the anonymous principal instead. Armed-control enforcement
+        empty -- it denies. The Agent tool seam also denies every tool call made
+        with `auth=None`, so an identity-free turn is routed as the anonymous
+        principal: its tool calls are then decided by the table (which grants
+        the role-less principal nothing unless an operator says otherwise)
+        rather than refused for want of an identity. Armed-control enforcement
         lives in one place: `_require_auth_while_armed`.
         """
         self._require_auth_while_armed(auth)
@@ -588,11 +589,12 @@ class Container:
         one: the operator believes it is enforcing. Both controls this
         container can arm are keyed on the caller's identity --
         Gate.process_input derives user_id from auth and skips every strike
-        path when it is empty (security/gate.py:62,64,102), and the ReAct and
-        Artificer strategies guard Sentinel.pre_call with `auth is not None`
-        (agents/strategies/react.py:252). So with auth=None an armed
-        permission table authorizes everything and an armed strike tracker
-        records nothing, silently.
+        path when it is empty (security/gate.py:62,64,102), and a permission
+        table grants by the caller's roles. The Agent tool seam denies every
+        tool call made without auth (#1165), so an armed table fails closed
+        rather than open -- but an armed strike tracker would still record
+        nothing, silently, and an operator's grants would never apply to a
+        caller the turn cannot name.
 
         Refusing here costs nothing at the shipped defaults (empty table, no
         tracker -> this never fires) and converts a silent no-op into an
