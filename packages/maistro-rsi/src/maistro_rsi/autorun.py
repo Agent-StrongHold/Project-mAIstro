@@ -50,6 +50,7 @@ from maistro_rsi.coordinator import (
     HypothesisProposer,
     report_from_cycle_result,
 )
+from maistro_rsi.harvest_boundary import HarvestCorrelation, WardenHarvestBoundary
 from maistro_rsi.htr import (
     FrontierExhausted,
     HypothesisEvidence,
@@ -192,7 +193,10 @@ _MAX_CONSECUTIVE_FALLBACKS = 3
 
 
 def make_llm_proposer(
-    model: str | None = None, prior_learnings: Sequence[str] = ()
+    model: str | None = None,
+    prior_learnings: Sequence[str] = (),
+    audit_sink: Callable[[dict[str, object]], object] | None = None,
+    correlation: HarvestCorrelation | None = None,
 ) -> HypothesisProposer:
     """An LLM-backed proposer over the connected LiteLLM instance.
 
@@ -203,6 +207,9 @@ def make_llm_proposer(
     the run instead of funding it.
     """
     consecutive_fallbacks = 0
+    proposal_boundary = WardenHarvestBoundary(
+        Warden(), correlation=correlation, audit_sink=audit_sink
+    )
 
     def _propose(context: HtrContext) -> str:
         nonlocal consecutive_fallbacks
@@ -212,6 +219,13 @@ def make_llm_proposer(
             lesson for lesson in prior_learnings if lesson not in lineage
         ]
         insights = "\n".join(f"- {i}" for i in combined) or "- (none yet)"
+        admission = proposal_boundary.scan_sync(
+            {"hypothesis": context.node.hypothesis, "insights": combined}, allow_thread=True
+        )
+        if not admission.admitted:
+            raise ProposerCircuitOpen(
+                f"Warden did not admit autonomous proposer context ({admission.outcome})"
+            )
         prompt = (
             "You steer an autonomous code-improvement experiment loop.\n"
             f"Current branch of inquiry: {context.node.hypothesis}\n"
@@ -307,6 +321,13 @@ class AuditLog:
             "hypothesis": context.node.hypothesis,
         }
 
+    def record_security_event(self, record: dict[str, object]) -> None:
+        """Persist a Warden decision in the run's append-only audit trail."""
+        event_type = (
+            "security.violation" if not record.get("admitted") else "rsi.harvest.warden_admission"
+        )
+        self._append({"event_type": event_type, **record})
+
     def record_failure(self, context: HtrContext, error: BaseException) -> None:
         """Record an experiment that never produced an ``RsiCycleResult``.
 
@@ -389,6 +410,7 @@ class LearningsLedger:
         run_id: str,
         node: HypothesisNode,
         warden_flags: Sequence[str] = (),
+        warden_admitted: bool = False,
     ) -> None:
         """Record one executed hypothesis's distilled insight (autorun-10).
 
@@ -401,6 +423,9 @@ class LearningsLedger:
         """
         if not node.insight:
             return
+        flags = list(warden_flags)
+        if not warden_admitted and not flags:
+            flags = ["warden_not_admitted"]
         entry = {
             "ts": datetime.now(UTC).isoformat(),
             "repo_url": repo_url,
@@ -411,7 +436,8 @@ class LearningsLedger:
             "improved": bool(node.evidence.improved) if node.evidence else False,
             "tests_passed": bool(node.evidence.tests_passed) if node.evidence else False,
             "score": node.score,
-            "warden_flags": list(warden_flags),
+            "warden_flags": flags,
+            "warden_admitted": warden_admitted,
         }
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
@@ -492,6 +518,7 @@ def build_executor(
     warden: Warden | None = None,
     audit: AuditLog | None = None,
     prior_learnings: Sequence[str] = (),
+    correlation: HarvestCorrelation | None = None,
 ) -> ExecutorFn:
     """Wire one `RsiCycle` per hypothesis into the coordinator's executor seam.
 
@@ -515,8 +542,32 @@ def build_executor(
     async def _quarantine_check(diff: str, touched_paths: list[str]) -> QuarantineVerdict:
         return await quarantine_scan(diff, touched_paths, active_warden)
 
+    audit_sink = (
+        getattr(audit, "record_security_event", None)
+        if getattr(audit, "path", None) is not None
+        else None
+    )
+    prompt_boundary = WardenHarvestBoundary(
+        active_warden,
+        # Correlation is supplied by the run that owns this executor (its
+        # campaign identity); standalone callers keep the repository identity
+        # available at this seam.
+        correlation=correlation or HarvestCorrelation(source_repository=config.repo_url),
+        audit_sink=audit_sink,
+    )
+
     async def _execute(context: HtrContext) -> ExecutionReport:
         prompt = build_prompt(context, prior_learnings)
+        admission = await prompt_boundary.scan(
+            {"hypothesis": context.node.hypothesis, "insights": context.insights, "prompt": prompt}
+        )
+        if not admission.admitted:
+            return ExecutionReport(
+                evidence=HypothesisEvidence(
+                    tests_passed=False, benchmarks_won=0, battles=0, improved=False
+                ),
+                insight="RSI objective was not admitted by Warden",
+            )
         cycle = RsiCycle(
             cycle_config,
             harness,
@@ -662,6 +713,14 @@ async def run_autonomous(
     wiring is the default. The wall-clock budget is enforced between cycles.
     """
     run_id = uuid.uuid4().hex[:10]
+    # Every Warden admission decision this run records is attributable to it:
+    # the campaign id ties proposer/executor/ledger verdicts to one run, the
+    # repository identity to one source tree (credentials stripped by the
+    # boundary's audit redaction).
+    run_correlation = HarvestCorrelation(
+        campaign_id=run_id,
+        source_repository=config.repo_url,
+    )
     repo_slug = _repo_slug(config.repo_url)
     tree_path = Path(config.tree_path or Path(config.workspace_root) / f"htr-tree-{repo_slug}.json")
     active_ledger = ledger or LearningsLedger(
@@ -677,22 +736,39 @@ async def run_autonomous(
     # ledger file sits on disk between runs, and an entry tampered with after
     # append (or written by an older version that never scanned) would
     # otherwise ride straight into this run's prompts.
-    ledger_warden = Warden()
+    active_audit = audit or AuditLog(Path(config.workspace_root) / f"autorun-{run_id}.jsonl")
+    audit_sink = (
+        getattr(active_audit, "record_security_event", None)
+        if getattr(active_audit, "path", None) is not None
+        else None
+    )
+    ledger_boundary = WardenHarvestBoundary(
+        Warden(), correlation=run_correlation, audit_sink=audit_sink
+    )
     prior_learnings: list[str] = []
     for insight in active_ledger.recall(config.recall_top_k, repo_url=config.repo_url):
-        verdict = await ledger_warden.scan(insight, "rsi_learnings")
-        if verdict.clean:
+        admission = await ledger_boundary.scan(insight)
+        if admission.admitted:
             prior_learnings.append(insight)
         else:
             await logger.awarning(
-                "rsi_learnings_recall_flagged", flags=verdict.flags, insight=insight[:120]
+                "rsi_learnings_recall_refused",
+                outcome=admission.outcome,
+                flags=list(admission.verdict.flags) if admission.verdict else [],
             )
 
-    active_audit = audit or AuditLog(Path(config.workspace_root) / f"autorun-{run_id}.jsonl")
     active_executor = executor or build_executor(
-        config, audit=active_audit, prior_learnings=prior_learnings
+        config,
+        audit=active_audit,
+        prior_learnings=prior_learnings,
+        correlation=run_correlation,
     )
-    active_proposer = proposer or make_llm_proposer(config.model, prior_learnings=prior_learnings)
+    active_proposer = proposer or make_llm_proposer(
+        config.model,
+        prior_learnings=prior_learnings,
+        audit_sink=audit_sink,
+        correlation=run_correlation,
+    )
 
     tree = _load_or_create_tree(config, tree_path)
 
@@ -735,11 +811,17 @@ async def run_autonomous(
         for node_id in partial.steps:
             node = tree.nodes[node_id]
             flags: tuple[str, ...] = ()
+            admitted = False
             if node.insight:
-                verdict = await ledger_warden.scan(node.insight, "rsi_learnings")
-                flags = verdict.flags
+                admission = await ledger_boundary.scan(node.insight)
+                flags = admission.verdict.flags if admission.verdict else ()
+                admitted = admission.admitted
             active_ledger.append(
-                repo_url=config.repo_url, run_id=run_id, node=node, warden_flags=flags
+                repo_url=config.repo_url,
+                run_id=run_id,
+                node=node,
+                warden_flags=flags,
+                warden_admitted=admitted,
             )
         _atomic_write_json(tree_path, {"repo_url": config.repo_url, "tree": tree.to_dict()})
 
