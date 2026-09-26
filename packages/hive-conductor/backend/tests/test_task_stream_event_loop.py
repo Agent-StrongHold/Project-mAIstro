@@ -71,13 +71,14 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def task_server() -> Iterator[_StallingTaskServer]:
-    from maistro.security.outbound import configure_outbound_policy
+def task_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[_StallingTaskServer]:
+    from maistro.security import outbound
 
+    monkeypatch.setattr(outbound, "_policy", outbound.current_outbound_policy())
     server = _StallingTaskServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    configure_outbound_policy(_origin(server))
+    outbound.configure_outbound_policy(_origin(server))
     try:
         yield server
     finally:
@@ -102,7 +103,12 @@ def _engine_over(server: _StallingTaskServer) -> Any:
 async def test_stalled_ownership_probe_does_not_block_the_loop(
     task_server: _StallingTaskServer,
 ) -> None:
+    from maistro.http import get_shared_client
+
     svc = _engine_over(task_server)
+    # Build this loop's pooled client up front: its one-off TLS setup is not
+    # the stall under test and would otherwise count against the heartbeat.
+    get_shared_client(timeout=30.0)
     done = asyncio.Event()
     max_gap = 0.0
 
