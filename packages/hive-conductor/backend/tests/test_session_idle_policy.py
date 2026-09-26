@@ -384,6 +384,214 @@ def test_logout_still_invalidates_a_live_session() -> None:
     assert client.get("/v1/auth/whoami").json()["authenticated"] is False
 
 
+def test_records_from_before_idle_expiry_are_active_at_creation_and_bounded(clock) -> None:
+    """Records written before idle expiry shipped carry no last_activity_at.
+
+    ADR-077: they are treated as having been active at creation — admitted
+    inside a creation-anchored idle window, never granted an unbounded
+    lifetime by the missing timestamp.
+    """
+    session_id = "legacy-record"
+    record = _session(session_id, created=clock.value, last_activity=clock.value)
+    del record["last_activity_at"]
+    stores.sessions[session_id] = record
+
+    clock.advance(seconds=auth_routes._SESSION_IDLE_TIMEOUT - 1)
+    assert auth_routes.get_current_user(session_id) is not None
+
+    clock.advance(seconds=1)
+    assert auth_routes.get_current_user(session_id) is None
+    assert session_id not in stores.sessions
+
+
+def test_activity_refresh_fails_closed_on_an_empty_session_id(clock) -> None:
+    """The refresh helper denies without a session id: no crash, no admission."""
+    assert auth_routes.refresh_session_activity(None) is False
+    assert auth_routes.refresh_session_activity("") is False
+
+
+def test_a_session_that_cannot_produce_expiries_is_denied_not_served(
+    logged_in: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defense in depth at the last gate before the user dict is built: when
+    the expiry computation yields nothing, the session is denied rather than
+    served with unbounded authority. Simulated by the timestamps becoming
+    unreadable between the resolving decision and the re-check."""
+    _client, session_id = logged_in
+    real = auth_routes._session_expiries
+    calls = {"count": 0}
+
+    def torn(sess: dict[str, Any], now: datetime) -> tuple[datetime, datetime] | None:
+        calls["count"] += 1
+        result = real(sess, now)
+        return None if calls["count"] >= 2 else result
+
+    monkeypatch.setattr(auth_routes, "_session_expiries", torn)
+    assert auth_routes.get_current_user(session_id) is None
+    # Denial without destruction: cleanup stays the normal expiry path's job.
+    assert session_id in stores.sessions
+
+
+def test_user_has_permission_fails_closed_on_missing_or_dead_accounts(clock) -> None:
+    """The policy lookup answers no for a deleted or deactivated account even
+    while the session record itself still resolves."""
+    session_id = "perm-lookup"
+    stores.sessions[session_id] = _session(
+        session_id, created=clock.value, last_activity=clock.value
+    )
+    user = stores.users["user"]
+    try:
+        stores.users["user"] = user.model_copy(update={"permissions": ["dags.read"]})
+        # Control: a live session over a live account answers the question.
+        assert auth_routes.user_has_permission(session_id, "dags.read") is True
+        # A deleted account row answers no.
+        stores.users.pop("user")
+        assert auth_routes.user_has_permission(session_id, "dags.read") is False
+        # A deactivated account answers no even though the session resolves.
+        stores.users["user"] = user.model_copy(update={"is_active": False})
+        assert auth_routes.user_has_permission(session_id, "dags.read") is False
+    finally:
+        stores.users["user"] = user
+        stores.sessions.pop(session_id, None)
+    assert auth_routes.user_has_permission("no-such-session", "dags.read") is False
+
+
+def test_revoking_elevation_from_unknown_sessions_or_tasks_is_a_noop(clock) -> None:
+    """Revocation is idempotent: neither an unknown session nor an unknown
+    task writes anything, so a stale revoke cannot create state."""
+    session_id = "revoke-noop"
+    stores.sessions[session_id] = _session(
+        session_id, created=clock.value, last_activity=clock.value
+    )
+    before = dict(stores.sessions[session_id])
+
+    auth_routes.revoke_task_elevation("no-such-session", "task-1")
+    auth_routes.revoke_task_elevation(session_id, "no-such-task")
+    assert stores.sessions[session_id] == before
+    stores.sessions.pop(session_id, None)
+
+
+def test_elevate_denies_requests_without_a_live_session() -> None:
+    """Elevation requires a session that resolves: none at all, or one that
+    expired/revoked/forged, both end in 401 before any password work."""
+    client = TestClient(app)
+    body = {"password": "testpass", "task_id": "task-1"}
+    assert client.post("/v1/auth/elevate", json=body).status_code == 401
+
+    client.cookies.set("hive_session", "forged-or-expired")
+    response = client.post("/v1/auth/elevate", json=body)
+    assert response.status_code == 401
+    assert "forged-or-expired" not in stores.sessions
+
+
+def test_elevate_cannot_overwrite_a_concurrent_logout(
+    logged_in: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The elevation write re-reads the session under the lock: a logout (or
+    purge) winning that race must end in 401, not in a resurrected record
+    carrying fresh grants."""
+    client, session_id = logged_in
+    real_verify = auth_routes.equal_cost_verify
+    reached = {"verify": False}
+
+    def logout_wins_mid_request(*args: Any, **kwargs: Any) -> bool:
+        result = real_verify(*args, **kwargs)
+        reached["verify"] = True
+        # The concurrent logout deletes the record after the route's first
+        # resolve and before the locked re-read.
+        stores.sessions.pop(session_id, None)
+        return result
+
+    monkeypatch.setattr(auth_routes, "equal_cost_verify", logout_wins_mid_request)
+    response = client.post("/v1/auth/elevate", json={"password": "testpass", "task_id": "task-1"})
+    # The 401 comes from the locked re-read: the flow passed password
+    # verification, where the logout won, and the elevation was refused.
+    assert reached["verify"] is True
+    assert response.status_code == 401, response.text
+    assert session_id not in stores.sessions
+
+
+def test_the_middleware_touch_losing_the_race_denies_the_request(
+    logged_in: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-077: revocation wins over a concurrent activity update. When the
+    serialized touch fails after the request resolved — expiry or revocation
+    won between resolve and touch — the request is denied with 401 rather
+    than served on a session that no longer exists."""
+    client, session_id = logged_in
+    original_activity = stores.sessions[session_id]["last_activity_at"]
+    monkeypatch.setattr(auth_routes, "refresh_session_activity", lambda sid: False)
+
+    response = client.get("/v1/tasks")
+
+    assert response.status_code == 401
+    assert stores.sessions[session_id]["last_activity_at"] == original_activity
+
+
+def test_handshake_denied_when_the_session_dies_before_the_recheck(
+    logged_in: tuple[TestClient, str], clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session revoked (or expired) between the handshake's admission check
+    and the activity re-check is denied at the re-check — a denial that
+    happens before the serialized touch is not activity and slides nothing."""
+    import routes.ws as ws_routes
+
+    client, session_id = logged_in
+    real = ws_routes.resolve_principal
+    calls = {"count": 0}
+
+    def revoked_mid_handshake(
+        cookies: object, authorization: object, *, refresh_activity: bool = False
+    ) -> dict | None:
+        calls["count"] += 1
+        if calls["count"] == 2:
+            # Admission (call 1, in _authenticate) passed; revocation wins
+            # before the re-check (call 2, the non-refreshing resolve).
+            stores.sessions.pop(session_id, None)
+        return real(cookies, authorization, refresh_activity=refresh_activity)
+
+    monkeypatch.setattr(ws_routes, "resolve_principal", revoked_mid_handshake)
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc,
+        client.websocket_connect("/v1/ws/tasks/whatever") as websocket,
+    ):
+        websocket.receive_json()
+
+    assert exc.value.code == 1008
+    assert session_id not in stores.sessions
+
+
+def test_handshake_denied_when_revocation_wins_before_the_touch(
+    logged_in: tuple[TestClient, str], clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The serialized touch re-validates the record under the session lock:
+    revocation winning between the authorization decision and the touch
+    denies the handshake and leaves nothing to resurrect."""
+    import routes.ws as ws_routes
+
+    client, session_id = logged_in
+    real = ws_routes.resolve_principal
+
+    def revoked_at_touch(
+        cookies: object, authorization: object, *, refresh_activity: bool = False
+    ) -> dict | None:
+        if refresh_activity:
+            stores.sessions.pop(session_id, None)
+        return real(cookies, authorization, refresh_activity=refresh_activity)
+
+    monkeypatch.setattr(ws_routes, "resolve_principal", revoked_at_touch)
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc,
+        client.websocket_connect("/v1/ws/tasks/whatever") as websocket,
+    ):
+        websocket.receive_json()
+
+    assert exc.value.code == 1008
+    assert session_id not in stores.sessions
+
+
 def test_corrupt_session_records_are_still_evicted() -> None:
     """The eviction branch stays reachable for session-shaped records: a real
     session whose timestamps became unparseable is cleaned up, while the

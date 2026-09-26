@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +17
+  packages/hive-conductor/backend/tests: +27
 ---
 
 # #1187 authenticated session idle policy
@@ -309,3 +309,47 @@ workspace/restoration/preferences route can touch auth-session lifetime,
 holding the #1050 separation; whoami stays observational
 (_SESSION_ACTIVITY_EXCLUDED_PATHS); the governed 30-minute idle + seven-day
 absolute constants are module-level in routes/auth.py, not settings-writable.
+
+Fourteenth round (coverage-gate repair at 652496df4): the lane's recorded CI
+finding — `Coverage gate (publish-set floor + diff coverage)` = failure — was
+reproduced locally and root-caused to the DIFF half of that job, not the
+floor and not infrastructure. `scripts/check-diff-coverage.py` scores the
+branch's four changed measured files against the hive-conductor producer's
+`--branch` data only (the producers' `--source` trees are disjoint); at this
+head it failed with: middleware/auth.py 50% of 2 changed branch arcs, routes/
+auth.py 67.6% of 34 (partials at the `_session_timestamp` non-string arc, the
+pre-idle-expiry `last_activity_at is None` fallback, the empty-id resolve
+guard, `get_current_user`'s expiry-defense deny, `user_has_permission`'s
+never-taken dead-account branches, both `revoke_task_elevation` no-op arcs,
+and elevate's no-cookie/stale-cookie/concurrent-logout refusals), and
+routes/ws.py lines 69-70/83-84 (both fail-closed denials inside
+`_refresh_authenticated_activity` uncovered). Ten cases added to
+`test_session_idle_policy.py` (+27 total in the suite inventory), each pinning
+a documented-but-unpinned contract: legacy records are active-at-creation AND
+bounded; refresh fails closed on an empty id; a session that cannot produce
+expiries is denied not served; `user_has_permission` answers no for
+deleted/deactivated accounts; elevation revocation is a no-op on unknown
+sessions/tasks; elevate denies no-cookie and unresolvable-cookie callers;
+elevation cannot overwrite a concurrent logout (the logout wins inside
+`equal_cost_verify`, between the route's two resolves); the HTTP middleware's
+touch losing the race denies with 401 and slides nothing; a handshake whose
+session dies between admission and the re-check is denied (1008); revocation
+winning before the serialized touch denies without resurrecting the record.
+Re-executed at this head: focused idle-policy suite 27/27; full backend suite
+2746 passed / 5 skipped (2751 collected, inventory gate re-recorded); `ruff
+check .` and `ruff format --check .` clean; diff-coverage gate against
+origin/develop EXIT 0. The floor half of the failed job was re-derived rather
+than assumed: all three CI producers were run locally against real services
+(pgvector:pg17 on a scratch instance for tests/migrations [96 passed], the
+persistence/events/runs/graph/projects/workspaces/scheduling schema suites
+[4124 passed / 7 skipped], and the canvas suite [441 passed / 2 skipped]; the
+pinned MinIO RELEASE.2025-04-22T22-12-26Z for the archive tier [128 passed]);
+`coverage combine` over the three producers reports 46,203 statements at 94%
+against the 87% floor — EXIT 0. One environmental failure is recorded, not
+attributed to the branch:
+`test_an_unreachable_server_is_an_error_not_a_fallback` hangs past the 30 s
+pytest-timeout connecting to reserved port 1 because WSL2 mirrored networking
+does not answer closed ports with a prompt refusal the way CI runners do; the
+same test passes in CI and its module is fully exercised by the postgres
+producer. Remote CI completion on the PR rollup remains the only unverified
+item from this environment.
