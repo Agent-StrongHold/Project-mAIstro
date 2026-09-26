@@ -99,7 +99,8 @@ class EngineService:
     def run_reader(self) -> Any:
         """The core Container's Workspace-scoped Run reader, or None (#1152).
 
-        None exactly when `run_store` is: the reader scopes that same store.
+        `create_container` builds it over the Container's own `run_store`, so
+        it is None when there is no Container, as `run_store` is.
         """
         container = getattr(self._agent_port, "container", None)
         return getattr(container, "run_reader", None)

@@ -31,21 +31,31 @@ from services.dag_run_store import MAX_RUNS, get_dag_run_store
 from services.workspace_authority import list_views_for_user
 
 
-async def _canonical_projection(record: dict[str, Any], user_id: str) -> dict[str, Any]:
-    """Overlay lifecycle truth from the canonical Run `user_id` may read, if any."""
-    run_id = str(record.get("canonical_run_id") or record.get("id") or "")
-    if not run_id:
-        return record
+def _canonical_run_id(record: dict[str, Any]) -> str:
+    return str(record.get("canonical_run_id") or record.get("id") or "")
+
+
+async def _readable_canonical_runs(run_ids: list[str], user_id: str) -> dict[str, Any]:
+    """The canonical Runs among `run_ids` that `user_id` may read, keyed by id."""
+    wanted = [run_id for run_id in run_ids if run_id]
+    if not wanted:
+        return {}
     try:
         from services.engine import get_engine
 
         reader = get_engine().run_reader
-        run = await reader.get_run(run_id, principal_id=user_id) if reader is not None else None
+        if reader is None:
+            return {}
+        return dict(await reader.get_runs(wanted, principal_id=user_id))
     except Exception:
         # Projection reads remain available in standalone mode, but never
-        # invent canonical status when the spine is unavailable -- nor borrow
-        # it from a canonical Run outside the caller's Workspaces (#1152).
-        return record
+        # invent canonical status when the spine is unavailable.
+        return {}
+
+
+def _overlay(record: dict[str, Any], run: Any) -> dict[str, Any]:
+    # No readable canonical Run -- none recorded, or one outside the caller's
+    # Workspaces (#1152) -- leaves the projection row as it is.
     if run is None:
         return record
     return {
@@ -54,6 +64,13 @@ async def _canonical_projection(record: dict[str, Any], user_id: str) -> dict[st
         **({"result": run.result} if run.result is not None else {}),
         **({"error": run.error} if run.error else {}),
     }
+
+
+async def _canonical_projection(record: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Overlay lifecycle truth from the canonical Run `user_id` may read, if any."""
+    run_id = _canonical_run_id(record)
+    runs = await _readable_canonical_runs([run_id], user_id)
+    return _overlay(record, runs.get(run_id))
 
 
 async def authorized_workspace_ids(user_id: str) -> set[str]:
@@ -83,11 +100,17 @@ async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, 
     # scope. Filtering first preserves normal pagination semantics without
     # exposing any additional rows. Each surviving summary is overlaid with
     # canonical execution truth before the caller's limit is applied.
-    visible = [
-        await _canonical_projection(summary, user_id)
+    in_scope = [
+        summary
         for summary in get_dag_run_store().list_runs(limit=MAX_RUNS)
         if _in_scope(summary, allowed)
     ]
+    # One batched canonical read for the page, not one membership resolution
+    # per row.
+    runs = await _readable_canonical_runs(
+        [_canonical_run_id(summary) for summary in in_scope], user_id
+    )
+    visible = [_overlay(summary, runs.get(_canonical_run_id(summary))) for summary in in_scope]
     return visible[:limit]
 
 

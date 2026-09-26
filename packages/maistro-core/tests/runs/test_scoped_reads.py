@@ -198,3 +198,51 @@ async def test_the_container_reader_scopes_the_containers_own_stores() -> None:
     assert (await reader.get_run(tree.run.run_id, principal_id="alice")).run_id == tree.run.run_id
     with pytest.raises(RunNotVisible):
         await reader.get_run(tree.run.run_id, principal_id="bob")
+
+
+async def test_get_runs_returns_only_the_visible_runs(world: _World) -> None:
+    ids = [world.a.run.run_id, world.b.run.run_id, "missing-run", world.a.run.run_id]
+
+    assert list(await world.reader.get_runs(ids, principal_id="carol")) == [world.a.run.run_id]
+    assert list(await world.reader.get_runs(ids, principal_id="bob")) == [world.b.run.run_id]
+    assert await world.reader.get_runs(ids, principal_id=" ") == {}
+
+
+class _ProjectsFiledElsewhere(InMemoryProjectScopeStore):
+    """Answers every Project as belonging to another Workspace."""
+
+    def __init__(self, inner: ProjectScopeStore) -> None:
+        super().__init__()
+        self._inner = inner
+
+    async def get(self, project_id: str) -> Any:
+        project = await self._inner.get(project_id)
+        return None if project is None else project.model_copy(update={"workspace_id": "other"})
+
+
+async def test_a_run_whose_project_is_filed_in_another_workspace_is_denied(
+    world: _World, stores: Any
+) -> None:
+    _runs, workspaces, projects = stores
+    reader = ScopedRunReader(world.runs, workspaces, _ProjectsFiledElsewhere(projects))
+
+    with pytest.raises(RunNotVisible):
+        await reader.get_run(world.a.run.run_id, principal_id="alice")
+    assert await reader.get_runs([world.a.run.run_id], principal_id="alice") == {}
+
+
+async def test_membership_revoked_after_listing_denies_the_read(world: _World) -> None:
+    workspaces = world.reader.workspace_store
+    workspace_id = world.a.run.workspace_id
+    listed = workspaces.list_for_user
+
+    async def list_then_revoke(user_id: str) -> Any:
+        found = await listed(user_id)
+        await workspaces.remove_membership(workspace_id, user_id=user_id)
+        return found
+
+    workspaces.list_for_user = list_then_revoke  # type: ignore[method-assign]
+
+    with pytest.raises(RunNotVisible) as caught:
+        await world.reader.get_run(world.a.run.run_id, principal_id="carol")
+    assert caught.value.__context__ is None

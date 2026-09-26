@@ -11,6 +11,7 @@ a child id that belongs to another Run -- so no answer confirms an id exists.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import suppress
 
 from maistro.projects.scope_store import ProjectScopeStore
@@ -75,23 +76,48 @@ class ScopedRunReader:
             raise RunNotVisible
         return node_run
 
+    async def get_runs(self, run_ids: Iterable[str], *, principal_id: str) -> dict[str, Run]:
+        """The visible Runs among `run_ids`, keyed by id; the rest are simply absent.
+
+        For a page of Runs: membership is resolved once and each
+        Workspace/Project decision once, not once per Run.
+        """
+        member_of = await self._member_workspace_ids(principal_id)
+        decided: dict[tuple[str, str], bool] = {}
+        visible: dict[str, Run] = {}
+        for run_id in dict.fromkeys(run_ids):
+            run = await self.run_store.get_run(run_id)
+            if run is None or run.workspace_id not in member_of:
+                continue
+            scope = (run.workspace_id, run.project_id)
+            if scope not in decided:
+                decided[scope] = await self._admits(run, principal_id)
+            if decided[scope]:
+                visible[run_id] = run
+        return visible
+
     async def _visible_run(self, run_id: str, principal_id: str) -> Run:
         # The principal's Workspaces are resolved before, and independently
         # of, the Run lookup, so a missing id and a foreign id do the same
-        # membership work and neither latency nor answer confirms existence.
+        # membership work before the same refusal.
         member_of = await self._member_workspace_ids(principal_id)
         run = await self.run_store.get_run(run_id)
         if run is None or run.workspace_id not in member_of:
             raise RunNotVisible
+        if not await self._admits(run, principal_id):
+            raise RunNotVisible
+        return run
+
+    async def _admits(self, run: Run, principal_id: str) -> bool:
         membership = None
         with suppress(WorkspaceAuthorizationDenied):
             membership = await self._authorizer.require(
                 principal_id, run.workspace_id, WorkspaceAction.VIEW
             )
+        if membership is None:
+            return False
         project = await self.project_store.get(run.project_id)
-        if membership is None or project is None or project.workspace_id != run.workspace_id:
-            raise RunNotVisible
-        return run
+        return project is not None and project.workspace_id == run.workspace_id
 
     async def _member_workspace_ids(self, principal_id: str) -> frozenset[str]:
         if not isinstance(principal_id, str) or not principal_id.strip():

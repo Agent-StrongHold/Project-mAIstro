@@ -35,8 +35,10 @@ or placeholder-only section.
   `RunNotVisible`, and membership is resolved before the Run lookup. Hive's
   DAG-run inspection now reads its canonical lifecycle overlay through this
   reader, so a projection row naming another Workspace's Run no longer
-  borrows that Run's status, result or error. maistro-server `/v1/runs`, Hive
-  Canvas eval, `actor_principal_id` validation, accounting identity and
+  borrows that Run's status, result or error; the list path batches those
+  reads through `ScopedRunReader.get_runs`. maistro-server `/v1/runs`, Hive
+  Canvas eval, Hive DAG-run cancel (which still acts on the unscoped
+  `run_store`), `actor_principal_id` validation, accounting identity and
   delegation identity are still open.
 
 - **Tool-result governance is pinned across real Agent strategies (#1202,
