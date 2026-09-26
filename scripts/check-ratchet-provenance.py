@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -23,6 +25,8 @@ from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+PROVENANCE_POLICY = ROOT / "quality" / "ratchet-provenance.json"
+_PROVENANCE_SOURCE = SCRIPTS / "ratchet_provenance.py"
 _ROOT_NAMES = frozenset({"ROOT", "REPO", "REPO_ROOT"})
 
 CANDIDATE_AUTHORED: dict[tuple[str, str], str] = {
@@ -133,6 +137,23 @@ DELEGATED_ADAPTERS: dict[tuple[str, str], str] = {
 # resolver that base-resolves ratchet-authorizations.json, so requiring it to
 # import itself would be nonsense rather than stronger enforcement.
 SPECIAL_TRUSTED_CONSUMERS = {"ac_state_notes.py", "ratchet_provenance.py"}
+
+_WORKFLOW_REQUIRED = (
+    "uv run python scripts/check-workflow-ratchets.py coverage",
+    "uv run python scripts/check-workflow-ratchets.py xenon",
+    "uv run python scripts/check-workflow-ratchets.py pyright",
+    "uv run python scripts/check-workflow-ratchets.py interrogate:graph/nodes",
+    "uv run python scripts/check-workflow-ratchets.py interrogate:graph/durable_runs",
+    "uv run python scripts/check-workflow-ratchets.py interrogate:projects",
+    "uv run python scripts/check-workflow-ratchets.py interrogate:all",
+    "scripts/check-diff-coverage.py",
+)
+_WORKFLOW_INLINE_RATCHETS = (
+    re.compile(r"--fail-under\s*=?\s*\d"),
+    re.compile(r"\bXENON_BASELINE\s*:"),
+    re.compile(r"\bPYRIGHT_BASELINE\s*:"),
+    re.compile(r"^\s*(?:uv run\s+)?interrogate\s+-f\s+\d"),
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -246,6 +267,31 @@ def _consumer_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
+def workflow_violations(root: Path = ROOT) -> list[str]:
+    """Require workflow ratchets to use fixed trusted-base checkers."""
+    workflow = root / ".github" / "workflows" / "quality.yml"
+    if not workflow.is_file():
+        return ["quality workflow is missing; inline ratchets cannot be inventoried"]
+    source = workflow.read_text(encoding="utf-8")
+    errors = [
+        f"quality workflow is missing trusted ratchet invocation: {required}"
+        for required in _WORKFLOW_REQUIRED
+        if required not in source
+    ]
+    workflows = sorted((root / ".github" / "workflows").glob("*.yml"))
+    for candidate in workflows:
+        for line_number, line in enumerate(
+            candidate.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            code = line.split("#", 1)[0]
+            if any(pattern.search(code) for pattern in _WORKFLOW_INLINE_RATCHETS):
+                errors.append(
+                    f"{candidate.relative_to(root)} line {line_number} contains a "
+                    "candidate-controlled ratchet"
+                )
+    return errors
+
+
 def consumers(root: Path = ROOT) -> set[Consumer]:
     result: set[Consumer] = set()
     for path in _consumer_files(root):
@@ -298,17 +344,35 @@ def stale_mapping_errors(
     ]
 
 
-def violations(root: Path = ROOT) -> list[str]:
+def violations(
+    root: Path = ROOT,
+    *,
+    candidate_authored: dict[tuple[str, str], str] | None = None,
+    candidate_adapters: dict[tuple[str, str], str] | None = None,
+    trusted_adapters: dict[tuple[str, str], str] | None = None,
+    trusted_exceptions: dict[tuple[str, str], str] | None = None,
+) -> list[str]:
+    """Check candidate consumers against policy established before this run.
+
+    ``candidate_authored`` and ``trusted_adapters`` describe the current tree so
+    stale mappings can be removed with a consumer. The maps used to *allow* a
+    live consumer come from the trusted base in CI; otherwise adding an
+    exception beside a new consumer would make the inventory self-approving.
+    """
     errors: list[str] = []
     seen = consumers(root)
     live_keys = {(c.script, c.ledger) for c in seen}
+    candidate_authored = CANDIDATE_AUTHORED if candidate_authored is None else candidate_authored
+    candidate_adapters = DELEGATED_ADAPTERS if candidate_adapters is None else candidate_adapters
+    trusted_adapters = DELEGATED_ADAPTERS if trusted_adapters is None else trusted_adapters
+    trusted_exceptions = CANDIDATE_AUTHORED if trusted_exceptions is None else trusted_exceptions
     checked_adapters: set[str] = set()
 
     for consumer in sorted(seen):
         key = (consumer.script, consumer.ledger)
-        if key in CANDIDATE_AUTHORED:
+        if key in trusted_exceptions:
             continue
-        adapter_name = DELEGATED_ADAPTERS.get(key)
+        adapter_name = trusted_adapters.get(key)
         if adapter_name is not None:
             if adapter_name not in checked_adapters:
                 problem = _adapter_problem(root, adapter_name)
@@ -330,9 +394,10 @@ def violations(root: Path = ROOT) -> list[str]:
     # the repository's full policy map.
     if root == ROOT:
         errors.extend(
-            stale_mapping_errors(live_keys, CANDIDATE_AUTHORED, label="provenance exception")
+            stale_mapping_errors(live_keys, candidate_authored, label="provenance exception")
         )
-        errors.extend(stale_mapping_errors(live_keys, DELEGATED_ADAPTERS, label="trusted adapter"))
+        errors.extend(stale_mapping_errors(live_keys, candidate_adapters, label="trusted adapter"))
+        errors.extend(workflow_violations(root))
     return errors
 
 
@@ -359,11 +424,17 @@ def _load_module(path: Path, name: str) -> ModuleType:
     return module
 
 
-def run_delegated(root: Path = ROOT) -> list[str]:
+def run_delegated(
+    root: Path = ROOT,
+    trusted_adapters: dict[tuple[str, str], str] | None = None,
+) -> list[str]:
     live_keys = {(c.script, c.ledger) for c in consumers(root)}
     failures: list[str] = []
     seen_adapters: set[str] = set()
-    for index, (key, adapter_name) in enumerate(sorted(DELEGATED_ADAPTERS.items())):
+    trusted_adapters = DELEGATED_ADAPTERS if trusted_adapters is None else trusted_adapters
+    if "ratchet_provenance" not in sys.modules:
+        _load_module(SCRIPTS / "ratchet_provenance.py", "ratchet_provenance")
+    for index, (key, adapter_name) in enumerate(sorted(trusted_adapters.items())):
         if key not in live_keys or adapter_name in seen_adapters:
             continue
         seen_adapters.add(adapter_name)
@@ -380,6 +451,96 @@ def run_delegated(root: Path = ROOT) -> list[str]:
     return failures
 
 
+def _source_mapping(source: str, name: str) -> object:
+    """Read one literal policy map from the trusted inventory source."""
+    tree = ast.parse(source, filename="check-ratchet-provenance.py")
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign | ast.AnnAssign):
+            continue
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            if statement.value is None:
+                break
+            return ast.literal_eval(statement.value)
+    raise RatchetPolicyError(f"trusted inventory source has no literal {name} map")
+
+
+def _source_mapping_any(source: str, names: tuple[str, ...]) -> object:
+    """Read the first literal map found under any historical constant name."""
+    for name in names:
+        try:
+            return _source_mapping(source, name)
+        except RatchetPolicyError:
+            continue
+    raise RatchetPolicyError(
+        f"trusted inventory source has no literal map for any of: {', '.join(names)}"
+    )
+
+
+def _policy_mapping(value: object, *, label: str) -> dict[tuple[str, str], str]:
+    if not isinstance(value, dict):
+        raise RatchetPolicyError(f"{label} must be an object")
+    result: dict[tuple[str, str], str] = {}
+    for key, reason in value.items():
+        if isinstance(key, tuple) and len(key) == 2 and all(isinstance(part, str) for part in key):
+            script, ledger = key
+        elif isinstance(key, str) and "|" in key:
+            script, ledger = key.split("|", 1)
+        else:
+            raise RatchetPolicyError(f"{label} key {key!r} must be 'script|ledger'")
+        if not script or not ledger or not isinstance(reason, str) or not reason.strip():
+            raise RatchetPolicyError(f"{label} entry {key!r} needs a non-empty reason")
+        result[(script, ledger)] = reason
+    return result
+
+
+class RatchetPolicyError(RuntimeError):
+    """The inventory policy cannot be established from the trusted tree."""
+
+
+def _trusted_policy(
+    root: Path = ROOT,
+) -> tuple[
+    dict[tuple[str, str], str],
+    dict[tuple[str, str], str],
+    dict[tuple[str, str], str],
+    dict[tuple[str, str], str],
+    object,
+]:
+    """Load the allow map from the same trusted revision as ledgers."""
+    provenance = _load_module(_PROVENANCE_SOURCE, "_ratchet_inventory_provenance")
+    baseline = provenance.resolve_baseline(PROVENANCE_POLICY, root=root)
+    trusted_loaded = baseline.loads()
+    if trusted_loaded is None:
+        # The JSON registry is introduced alongside this migration. Before it
+        # exists at the base, the already-governed literal maps in the base
+        # inventory script are the independent oracle for this first landing.
+        trusted_source_ref = provenance.resolve_baseline(SCRIPTS / Path(__file__).name, root=root)
+        if trusted_source_ref.text is None:
+            raise RatchetPolicyError("trusted inventory source is absent")
+        trusted_authored = _source_mapping(trusted_source_ref.text, "CANDIDATE_AUTHORED")
+        trusted_adapter_map = _source_mapping_any(
+            trusted_source_ref.text, ("DELEGATED_ADAPTERS", "TRUSTED_ADAPTERS")
+        )
+    else:
+        if not isinstance(trusted_loaded, dict):
+            raise RatchetPolicyError("trusted ratchet-provenance.json must be a JSON object")
+        trusted_authored = trusted_loaded.get("candidate_authored")
+        trusted_adapter_map = trusted_loaded.get("trusted_adapters")
+    if not PROVENANCE_POLICY.is_file():
+        raise RatchetPolicyError(f"{PROVENANCE_POLICY} is missing from the candidate tree")
+    candidate_loaded = json.loads(PROVENANCE_POLICY.read_text(encoding="utf-8"))
+    if not isinstance(candidate_loaded, dict):
+        raise RatchetPolicyError("candidate ratchet-provenance.json must be a JSON object")
+    return (
+        _policy_mapping(candidate_loaded.get("candidate_authored"), label="candidate_authored"),
+        _policy_mapping(candidate_loaded.get("trusted_adapters"), label="candidate_adapters"),
+        _policy_mapping(trusted_adapter_map, label="trusted_adapters"),
+        _policy_mapping(trusted_authored, label="trusted_authored"),
+        baseline,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     unknown = [arg for arg in args if arg != "--inventory-only"]
@@ -387,16 +548,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: unknown argument(s): {' '.join(unknown)}", file=sys.stderr)
         return 2
 
-    errors = violations(ROOT)
+    try:
+        (
+            candidate_policy,
+            candidate_adapters,
+            trusted_adapters,
+            trusted_exceptions,
+            policy_ref,
+        ) = _trusted_policy(ROOT)
+    except (RatchetPolicyError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+        print(f"FAIL: ratchet provenance policy is not trusted: {exc}", file=sys.stderr)
+        return 1
+
+    errors = violations(
+        ROOT,
+        candidate_authored=candidate_policy,
+        candidate_adapters=candidate_adapters,
+        trusted_adapters=trusted_adapters,
+        trusted_exceptions=trusted_exceptions,
+    )
+    # Candidate mapping edits are used only for stale-entry bookkeeping. The
+    # trusted exception set above is intentionally read from the base ledger.
     if not errors and "--inventory-only" not in args:
-        errors.extend(run_delegated(ROOT))
+        errors.extend(run_delegated(ROOT, trusted_adapters))
     if errors:
         print("FAIL: ratchet provenance inventory is incomplete", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
     mode = "inventory" if "--inventory-only" in args else "inventory + delegated gates"
-    print(f"OK: {len(consumers(ROOT))} quality JSON consumer(s) have explicit provenance ({mode})")
+    origin = getattr(policy_ref, "origin", "unknown")
+    print(
+        f"OK: {len(consumers(ROOT))} quality JSON consumer(s) have explicit provenance "
+        f"(policy {origin}; {mode})"
+    )
     return 0
 
 

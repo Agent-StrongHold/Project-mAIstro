@@ -296,6 +296,22 @@
         "quality/wiring-reads-baseline.json"
       ],
       "reason": "The wiring-reads gate measures the candidate but resolves its comparison ledger and authorizations from the trusted base, so editing the candidate copy cannot authorize new unread wiring."
+    },
+    {
+      "id": "ratchet-provenance-policy",
+      "kind": "base_derived",
+      "paths": [
+        "quality/ratchet-provenance.json"
+      ],
+      "reason": "Provenance policy registry (#319): check-ratchet-provenance.py resolves the allow maps that judge a candidate from the trusted base (registry JSON at base, falling back to base inventory source literals), so the worktree copy is landing state, never the oracle."
+    },
+    {
+      "id": "workflow-ratchet-baseline",
+      "kind": "base_derived",
+      "paths": [
+        "quality/workflow-ratchet-baseline.json"
+      ],
+      "reason": "Workflow quality floors (#319): check-workflow-ratchets.py and check-diff-coverage.py compare candidate measurements against floors resolved from the trusted base; the candidate copy may bank improvements but can never lower a floor."
     }
   ]
 }
