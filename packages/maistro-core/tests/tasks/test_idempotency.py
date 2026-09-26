@@ -32,6 +32,7 @@ from maistro.tasks.admission import (
     TASK_ID_KEY,
     TASK_QUEUE_SOURCE,
     TaskRunAdmitter,
+    WorkspaceNotAdmissible,
     WorkspaceRoutingAdmitter,
 )
 from maistro.tasks.idempotency import (
@@ -1430,3 +1431,342 @@ async def test_the_bound_evicts_the_oldest_when_nothing_is_expired() -> None:
     assert _scope("live-2") not in store._rows
     assert _scope("live-3") in store._rows
     assert _scope(f"live-{store._MAX_ENTRIES + 1}") in store._rows
+
+
+# ── the scoping seam's own edges (round-12 CI repair) ─────────────
+
+
+class _MalformedScopeAdmitter:
+    """An admitter whose ``admission_scope`` returns the wrong shape. The
+    queue must refuse loudly before any claim is written rather than scope a
+    key by a silently truncated tuple."""
+
+    workspace_id = "w1"
+
+    async def admission_scope(self, workspace_id: str | None = None) -> tuple[str, ...]:
+        return ("w1", "p1", "surprise")
+
+    async def admit(self, task, *, workspace_id=None):  # type: ignore[no-untyped-def]
+        raise AssertionError("a malformed scope must fail before any mint")
+
+    async def record_transition(self, run_id, status, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("a malformed scope must fail before any Run exists")
+
+
+async def test_a_malformed_admission_scope_is_refused_before_any_claim() -> None:
+    store = InMemoryTaskIdempotencyStore()
+    queue = TaskQueue(admitter=_MalformedScopeAdmitter(), idempotency_store=store)
+
+    with pytest.raises(RuntimeError, match="Workspace and Project"):
+        await queue.submit(TaskCreate(description="x"), user_id="alice")
+
+    # Refused before the claim: nothing to reconcile, nothing to release.
+    assert store._rows == {}
+
+
+class _RouteOnlyAdmitter:
+    """A router with ``admitter_for`` but without the newer ``admission_scope``
+    seam — the legacy shape the binding derivation must still serve. The
+    binding comes from the bound admitter, so claims written by one process
+    reconcile for the next."""
+
+    def __init__(self, bound: TaskRunAdmitter) -> None:
+        self._bound = bound
+
+    async def admitter_for(self, workspace_id: str | None = None) -> TaskRunAdmitter:
+        if workspace_id not in (None, self._bound.workspace_id):
+            raise WorkspaceNotAdmissible(f"unknown workspace {workspace_id!r}")
+        return self._bound
+
+    async def admit(self, task, *, workspace_id=None):  # type: ignore[no-untyped-def]
+        return await self._bound.admit(task, workspace_id=workspace_id)
+
+    async def record_transition(self, run_id, status, **kwargs):  # type: ignore[no-untyped-def]
+        return await self._bound.record_transition(run_id, status, **kwargs)
+
+    async def run_for_task_receipt(self, task_id: str) -> str | None:
+        return await self._bound.run_for_task_receipt(task_id)
+
+
+async def test_a_router_without_the_scope_seam_still_scopes_and_reconciles(scoped) -> None:
+    _projects, runs, _root, project = scoped
+    bound = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    store = InMemoryTaskIdempotencyStore()
+    queue = TaskQueue(admitter=_RouteOnlyAdmitter(bound), idempotency_store=store)
+    request = TaskCreate(description="scoped by the routed binding", idempotency_key="k")
+
+    first = await queue.submit(request, user_id="alice")
+    restarted = TaskQueue(admitter=_RouteOnlyAdmitter(bound), idempotency_store=store)
+    retry = await restarted.submit(request, user_id="alice")
+
+    # Both processes derived the same Workspace binding through the routing
+    # fallback, so the retry reconciled to the first admission.
+    assert first.run_id is not None
+    assert retry.task_id == first.task_id
+    assert retry.run_id == first.run_id
+    assert len(store._rows) == 1
+
+
+async def test_a_bound_admitter_scopes_only_its_own_workspace(scoped) -> None:
+    """``admission_scope`` is the binding the claim key is spelled with, so a
+    bound admitter must refuse to scope a Workspace it is not bound to —
+    silently doing so would let one admitter's key replay another's Run."""
+    _projects, runs, _root, project = scoped
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+
+    assert await admitter.admission_scope() == ("w1", project.project_id)
+    assert await admitter.admission_scope("w1") == ("w1", project.project_id)
+    with pytest.raises(WorkspaceNotAdmissible, match="bound to Workspace"):
+        await admitter.admission_scope("w2")
+
+
+async def test_the_routing_admitter_resolves_receipts_workspace_independently(scoped) -> None:
+    """``WorkspaceRoutingAdmitter.run_for_task_receipt`` reaches the one
+    provenance search through the default admitter, from any caller."""
+    projects, runs, _root, _project = scoped
+    routing = WorkspaceRoutingAdmitter(runs, projects, default_workspace_id="w-route")
+    store = InMemoryTaskIdempotencyStore()
+    queue = TaskQueue(admitter=routing, idempotency_store=store)
+
+    task = await queue.submit(TaskCreate(description="routed"), user_id="alice")
+
+    assert task.run_id is not None
+    assert await routing.run_for_task_receipt(task.task_id) == task.run_id
+    assert await routing.run_for_task_receipt("no-such-receipt") is None
+
+
+# ── losing the begin race, and the fences around complete ─────────
+
+
+async def test_a_claim_superseded_before_begin_replays_the_winner(scoped, monkeypatch) -> None:
+    """``begin`` refused our token: the claim was taken over between the claim
+    and the announcement, so nothing of ours was minted and the winner's
+    recorded outcome is what this submission returns."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+
+    # A first, complete admission under another key: its recorded outcome is
+    # the winner's, and its live receipt is what the loser must get back.
+    winner = await queue.submit(
+        TaskCreate(description="the winner", idempotency_key="winner"), user_id="alice"
+    )
+    [winner_row] = store._rows.values()
+    assert winner_row.admitted
+
+    async def begin_refused(scope_key: str, **kwargs: object) -> bool:
+        return False
+
+    async def get(scope_key: str):
+        return winner_row
+
+    monkeypatch.setattr(store, "begin", begin_refused)
+    monkeypatch.setattr(store, "get", get)
+
+    loser = await queue.submit(
+        TaskCreate(description="the loser", idempotency_key="loser"), user_id="alice"
+    )
+
+    assert loser.task_id == winner.task_id
+    assert loser.run_id == winner.run_id
+    # The loser minted nothing: one receipt, one Run, both the winner's.
+    receipts, _cursor = queue.list_tasks(user_id="alice")
+    assert [receipt.task_id for receipt in receipts] == [winner.task_id]
+    assert len(runs._runs) == 1
+
+
+async def test_a_claim_superseded_before_begin_times_out_when_the_row_is_gone(
+    scoped, monkeypatch
+) -> None:
+    """The row vanished under the superseded claim (released, or expired and
+    purged): there is no winner to wait for, so the bounded wait ends
+    visibly."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+    monkeypatch.setattr(queue_module, "PENDING_POLL", 0.001)
+
+    async def begin_refused(scope_key: str, **kwargs: object) -> bool:
+        return False
+
+    async def gone(scope_key: str):
+        return None
+
+    monkeypatch.setattr(store, "begin", begin_refused)
+    monkeypatch.setattr(store, "get", gone)
+
+    with pytest.raises(IdempotencyPendingTimeout, match="superseded before admission began"):
+        await queue.submit(TaskCreate(description="x", idempotency_key="k"), user_id="alice")
+
+    assert runs._runs == {}
+
+
+async def test_a_claim_superseded_before_begin_times_out_when_the_winner_dies(
+    scoped, monkeypatch
+) -> None:
+    """The winner's row is still there but never resolves (the winner died
+    mid-admission): the bounded wait exhausts its polls rather than hanging."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+    monkeypatch.setattr(queue_module, "PENDING_POLL", 0.001)
+
+    async def begin_refused(scope_key: str, **kwargs: object) -> bool:
+        return False
+
+    stuck = _mid_admission_record(datetime.now(UTC))
+
+    async def never_admitted(scope_key: str):
+        return stuck
+
+    monkeypatch.setattr(store, "begin", begin_refused)
+    monkeypatch.setattr(store, "get", never_admitted)
+
+    with pytest.raises(IdempotencyPendingTimeout, match="superseded before admission began"):
+        await queue.submit(TaskCreate(description="x", idempotency_key="k"), user_id="alice")
+
+
+async def test_a_complete_failure_still_returns_the_admitted_task(scoped, monkeypatch) -> None:
+    """A store *error* while recording the outcome is logged, not raised: the
+    task exists and its Run was minted, so failing the caller's 202 would
+    teach it to retry an admission that already happened."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+
+    async def complete_fails(scope_key: str, **kwargs: object) -> bool:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(store, "complete", complete_fails)
+
+    task = await queue.submit(TaskCreate(description="d", idempotency_key="k"), user_id="alice")
+
+    assert task.run_id is not None
+    assert await runs.get_run(task.run_id) is not None
+    receipts, _cursor = queue.list_tasks(user_id="alice")
+    assert [receipt.task_id for receipt in receipts] == [task.task_id]
+
+
+async def test_a_fence_refusal_cancels_the_orphan_and_fails_retryably(scoped, monkeypatch) -> None:
+    """``complete`` returning False means our claim was superseded
+    mid-admission: the minted Run is compensated (cancelled, never enqueued)
+    and the submission fails visibly so a retry reconciles against the
+    winner."""
+    _projects, runs, _root, project = scoped
+    store = InMemoryTaskIdempotencyStore()
+    admitter = TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id)
+    queue = TaskQueue(admitter=admitter, idempotency_store=store)
+    monkeypatch.setattr(queue_module, "PENDING_POLL", 0.001)
+
+    async def complete_refused(scope_key: str, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(store, "complete", complete_refused)
+
+    with pytest.raises(IdempotencyPendingTimeout, match="superseded mid-admission"):
+        await queue.submit(TaskCreate(description="d", idempotency_key="k"), user_id="alice")
+
+    # The orphaned Run was compensated, and nothing was enqueued.
+    [orphan] = list(runs._runs.values())
+    assert orphan.status is RunStatus.CANCELLED
+    receipts, _cursor = queue.list_tasks(user_id="alice")
+    assert receipts == []
+
+
+# ── ambiguity without a spine, and without a discovery seam ───────
+
+
+async def _begun_corpse_record(
+    store: InMemoryTaskIdempotencyStore,
+    request: TaskCreate,
+    *,
+    workspace_id: str,
+) -> AdmissionRecord:
+    wall = datetime.now(UTC)
+    died_at = wall - PENDING_LEASE - timedelta(seconds=1)
+    principal = "alice"
+    key = request.idempotency_key or ""
+    scope = admission_scope_key(
+        principal=principal,
+        workspace_id=workspace_id,
+        action=TASK_SUBMIT_ACTION,
+        key=key,
+    )
+    request_json = json.dumps(
+        request.model_copy(update={"user_id": principal, "idempotency_key": key}).model_dump(
+            mode="json"
+        )
+    )
+    claimed = await store.claim(
+        scope, fingerprint=request_fingerprint(request), request=request_json, now=died_at
+    )
+    assert isinstance(claimed, Claimed)
+    assert await store.begin(scope, token=claimed.token, task_id="corpse-1", now=died_at)
+    record = await store.get(scope)
+    assert record is not None and record.begun and not record.admitted
+    return record
+
+
+async def test_an_ambiguous_claim_without_a_spine_mints_fresh(monkeypatch) -> None:
+    """No admitter, no Runs: there is nothing discovery could find and
+    nothing a takeover could duplicate, so the ambiguity resolves as a
+    takeover and mints a fresh receipt."""
+    store = InMemoryTaskIdempotencyStore()
+    queue = TaskQueue(admitter=None, idempotency_store=store)
+    request = TaskCreate(description="the no-database tier", idempotency_key="k")
+    await _begun_corpse_record(store, request, workspace_id="")
+
+    task = await queue.submit(request, user_id="alice")
+
+    assert task.run_id is None
+    assert task.task_id != "corpse-1"
+    receipts, _cursor = queue.list_tasks(user_id="alice")
+    assert [receipt.task_id for receipt in receipts] == [task.task_id]
+
+
+class _NoDiscoveryAdmitter:
+    """A custom admitter with neither the scope nor the discovery seam. The
+    queue cannot decide an ambiguity against it, so minting over the claim is
+    forbidden and the caller's bounded wait fails visibly instead."""
+
+    workspace_id = "w1"
+
+    async def admit(self, task, *, workspace_id=None):  # type: ignore[no-untyped-def]
+        raise AssertionError("an undecidable ambiguity must not mint")
+
+    async def record_transition(self, run_id, status, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("an undecidable ambiguity has no Run to transition")
+
+
+async def test_an_ambiguity_undecidable_by_the_admitter_fails_visibly(monkeypatch) -> None:
+    store = InMemoryTaskIdempotencyStore()
+    queue = TaskQueue(admitter=_NoDiscoveryAdmitter(), idempotency_store=store)
+    request = TaskCreate(description="custom admitter", idempotency_key="k")
+    await _begun_corpse_record(store, request, workspace_id="w1")
+    monkeypatch.setattr(queue_module, "PENDING_POLL", 0.001)
+
+    with pytest.raises(IdempotencyPendingTimeout, match="bounded wait"):
+        await queue.submit(request, user_id="alice")
+
+
+async def test_a_replay_without_a_spine_returns_the_receipt_unqueued() -> None:
+    """The no-database tier's documented ephemerality: a replay reconstructs
+    the receipt from the claim, and with no spine there is no Run state to
+    consult, so it comes back exactly as first answered."""
+    store = InMemoryTaskIdempotencyStore()
+    queue = TaskQueue(admitter=None, idempotency_store=store)
+    request = TaskCreate(description="ephemeral tier", idempotency_key="k")
+
+    first = await queue.submit(request, user_id="alice")
+    assert first.run_id is None
+
+    restarted = TaskQueue(admitter=None, idempotency_store=store)
+    replay = await restarted.submit(request, user_id="alice")
+
+    assert replay.task_id == first.task_id
+    assert replay.run_id is None
+    assert replay.status is TaskStatus.QUEUED
