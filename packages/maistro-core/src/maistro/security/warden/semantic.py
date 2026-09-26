@@ -109,9 +109,11 @@ def semantic_tool_poisoning_capture_positions(text: str) -> tuple[int | None, in
     text_lower = text.lower()
     first_capture: int | None = None
     for pattern in _CAPTURE_ACTIONS:
-        match = pattern.search(text_lower)
-        if match is not None and (first_capture is None or match.start() < first_capture):
-            first_capture = match.start()
+        for match in pattern.finditer(text_lower):
+            # Only each pattern's leftmost match can be the global first.
+            if first_capture is None or match.start() < first_capture:
+                first_capture = match.start()
+            break
     last_conversation: int | None = None
     for pattern in _FULL_CONVERSATION_OBJECTS:
         for match in pattern.finditer(text_lower):

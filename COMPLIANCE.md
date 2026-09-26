@@ -59,11 +59,14 @@ boundary and on the canonical execution paths, rather than inferred from
 Warden constants: the real Warden is invoked by the output gate against a
 catastrophic regex in overlapping windows, a multi-window benign result, a
 padded semantic instruction whose action and object cross a window boundary,
-and the product-path capture/object ordering regression
+and the product-path capture/object ordering regression — including the
+case an earlier complete-object mention must not suppress a later
+capture→object pair
 (`packages/maistro-core/tests/security/test_sentinel_policy.py`). The same
 defenses run behind `build_output_security_gate` through
 `MasterOrchestrator.execute` — timeout fail-closed, windowed reject and
-fallback searches, static refusal in the canonical Run projection
+fallback searches, static refusal in the canonical Run projection, and the
+end-to-end refusal of that ordering evasion
 (`packages/maistro-core/tests/orchestrator/test_output_security_gate.py`) —
 and through the production governed tool executor in `Agent.handle`, since
 `BaseAgent` always sets `security_pipeline=True`

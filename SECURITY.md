@@ -122,8 +122,11 @@ and its large-input cases record that heuristic and semantic fallback passes are
 at most `_SCAN_WINDOW_CHARS`;
 `test_post_call_real_warden_preserves_padded_semantic_signal` also proves a
 capture/full-conversation instruction cannot hide across those windows, while
-`test_post_call_real_warden_preserves_capture_ordering` proves the legacy
-capture-before-object ordering does not create a false positive. The Warden test
+`test_post_call_real_warden_preserves_capture_ordering` pins both sides of
+the ordering contract: a complete-object phrase that merely precedes the
+capture verb (with no later object) stays clean, and an earlier benign
+complete-object mention cannot suppress a later capture→object pair — the
+evasion the pre-repair first-conversation carry allowed. The Warden test
 suite also
 covers the no-tail window invariant and runs the accelerated-versus-stdlib corpus
 comparison in `test_warden_regex_equivalence.py` (the root dev extra installs
@@ -136,8 +139,14 @@ test_output_security_gate.py` runs the real `Warden` behind
 catastrophic reject pattern is cut off by the per-search timeout while the
 canonical Run/NodeRun/Attempt projection records only the static refusal, a
 multi-window pathological body proves every reject search sees at most
-`_SCAN_WINDOW_CHARS`, and a multi-window benign body completes with the
-heuristic fallback scans likewise windowed. The agent seam carries the same
+`_SCAN_WINDOW_CHARS`, a multi-window benign body completes with the
+heuristic fallback scans likewise windowed, and
+`test_real_warden_semantic_capture_pair_after_earlier_object_is_refused`
+reproduces the #74 ordering false negative end to end: an output whose later
+capture→full-conversation pair follows an earlier benign object mention —
+flagged by the legacy single-regex rule, missed by the pre-repair windowed
+carry — now fails the canonical work item with the static refusal. The agent
+seam carries the same
 guarantee in `packages/maistro-core/tests/agents/test_base.py`
 (`TestGovernedExecutorProductPathSecurity`): it runs the production governed
 tool executor — the only effect boundary, since `BaseAgent` always sets
