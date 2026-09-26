@@ -45,3 +45,40 @@ green (read-only `gh`): run 36219874931 — "Build the real Builder sandbox imag
 and "Run the real Builder sandbox conformance lane" both succeeded, all 10
 workflows completed success. No production change was required this round; this
 commit is the verification record itself.
+
+## Repair round 3 (head `152c27ee0519`) — re-verification and CI refresh
+
+The prior round ended without emitting its result record; this round re-ran the
+full battery from scratch against the same tree (clean, no code changes needed)
+and refreshed the previously-IN_PROGRESS CI evidence:
+
+- `uv run ruff check .` clean; `uv run ruff format --check .` → 2569 files
+  already formatted.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` exit 0 (1412 reviewed identities, 0 unbanked —
+  no ledger amendment needed).
+- Live Docker conformance against the real `ContainerBuilderSandbox`:
+  `uv run pytest packages/maistro-bootstrap/tests/test_container_sandbox.py -v`
+  = **11 passed (32.5s, live containers)** — network default-deny, credential
+  default-deny, seed exclusion, non-root execution, read-only rootfs,
+  namespace/device/host-socket, detached-descendant timeout kill, cleanup,
+  memory exhaustion. Argv-shape hardening suite: 14 passed. Full package:
+  `uv run pytest packages/maistro-bootstrap/tests -q` = 245 passed, 1 skipped.
+- `packages/maistro-core/tests/sandbox -q` = 113 passed, 35 skipped. The bwrap
+  escape lane skips *fail-closed* on this validation host: the capability probe
+  runs bwrap under the spawn rlimits (RLIMIT_NPROC/RLIMIT_AS) and namespace
+  creation fails EAGAIN here (`unshare --user` succeeds unlimited; the failure
+  is induced by the probe's own budget in this nested sandbox), while the CI
+  lane relaxes `kernel.apparmor_restrict_unprivileged_userns` on a real runner
+  so the kernel assertions execute there.
+- `packages/maistro-rsi/tests/test_sandbox.py` +
+  `packages/hive-conductor/backend/tests/test_sandbox_mode_gating.py` =
+  41 passed.
+- `check-suite-inventory.py --suite packages/maistro-bootstrap/tests` ok;
+  `check-security-inventory.py` ok; `check-doc-links.py` ok.
+- CI refresh (read-only `gh`, no mutations): run 36219874931 "CI" at headSha
+  `64668d095ee8ff2d10e63eb862ac65590edd1041` (the code-identical parent of this
+  head; `152c27ee0519` only adds this documentation) status=completed,
+  conclusion=success; the "test" job's "Build the real Builder sandbox image"
+  and "Run the real Builder sandbox conformance lane" steps both succeeded —
+  resolving the earlier "IN_PROGRESS; CI execution UNVERIFIED" finding.
