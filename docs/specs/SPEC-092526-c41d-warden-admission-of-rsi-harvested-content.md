@@ -84,7 +84,12 @@ evaluator instructions, or executable transformation paths.
 - Failure is fail-closed and truthful: no configured policy, a raising scanner, an audit sink
   that cannot record, or a sync seam that cannot run the async scanner safely all produce a
   refusal with an explicit unavailable/blocked outcome — never an allow-all admission because
-  RSI happens to run isolated.
+  RSI happens to run isolated. On the synchronous in-loop seam, an audit sink whose write
+  cannot be confirmed before `scan_sync` returns (an async sink on a live event loop) is
+  itself reported as `audit_unavailable`: the scan-level reason is preserved as
+  `scan_outcome` in the audit record, the record is still delivered on the live loop, and a
+  failed scheduled write is redelivered once with a corrected annotation so a transiently
+  failing sink still persists the truthful not-admitted outcome.
 - Refusal prevents admission: the caller receives no admitted serialization, and guarded
   callables raise before the wrapped model callable is invoked.
 - Audit evidence records the verdict against Workspace/Project/Run/Attempt, source repository

@@ -495,3 +495,36 @@ proves the corrected record PERSISTS with `outcome=audit_unavailable`,
 cases pin that a sink-returned coroutine or Future is superseded so only
 the truthful final record runs. Admission order, fail-closed outcomes, and
 refusal before any model callable are unchanged everywhere else.
+
+Executed evidence for the truthful-outcome repair (branch head `75cdbd259`,
+the develop-sync merge of `origin/develop@ca4caec7d` — PR #1446, this lane's
+own squash-merge — plus `920fb384e`; all three add/add conflicts resolved to
+the repaired blobs after proving develop's side byte-identical to the
+pre-repair parent `17c257b51`): full `packages/maistro-rsi/tests` 782 passed;
+`packages/maistro-evolve/tests` 645 passed (6 skipped); 58 conductor
+containment tests passed; 13 non-production-reachability node IDs passed;
+87 `ac`-marked rsi tests passed; ruff check/format clean repo-wide;
+`check-suite-inventory.py` — all 13 suites match (782 recorded for rsi);
+`check-vulture-baseline.py` 1412->1412 (no ledger edits); promotion-surface,
+security-inventory, and all four reachability gates pass; harvest_boundary.py
+at 99% line/branch (one defensive partial arc: an awaitable that is neither
+coroutine nor asyncio.Future falls through to `return False`). Out-of-tree
+probe with the real `Warden` (no tree edits): hard-down async sink now
+returns `admitted=False outcome=audit_unavailable scan_outcome=
+warden_unavailable` with both delivery attempts contained (was:
+`outcome=warden_unavailable` with `durable_records=0` and the failure
+suppressed — the flagged defect); a transient sink persists the corrected
+record (`audit_delivery=retry_after_failure`, admitted=false, digest
+correlation, zero content); the canonical blocked path is unchanged.
+Mutation evidence with byte backups, both reverted `cmp`-identical and
+`git status --porcelain` empty: (1) claiming confirmed delivery for async
+sinks (the old defect) fails 3 tests; (2) suppressing the corrected
+redelivery fails 2 tests. Known upstream condition, NOT introduced by this
+repair and measurement-neutral to it: `check-ac-state.py --run-tests
+--ratchet --mandate` fails `design_coverage 33.607 < 38.0924` (banked
+auto-1138.json floor) and `< 33.9095` (granted floor) — reproduced
+byte-identically at the pristine starting head `17c257b51` in a detached
+worktree and attributable to develop's own #1460/#1290 dilution (156 taken
+decisions, 93 at zero); the mandate halves pass (0 unproven criteria, 0
+absent chain links). Banking the fall or pruning the superseded grant is a
+ledger/grant edit outside this lane's authorized scope.
