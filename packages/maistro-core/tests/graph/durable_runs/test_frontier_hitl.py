@@ -9,7 +9,7 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.lifecycle import transition_node_run
 from maistro.runs.model import NodeRun, RunStatus
 
-from .._canonical_helpers import durable_record
+from .._canonical_helpers import durable_record, hitl_authorization
 
 
 def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
@@ -53,7 +53,9 @@ def _two_pause_record(run_id: str):
 async def _assert_independent_answers(store, run_id: str) -> None:
     await store.create(_two_pause_record(run_id))
 
-    first = await store.submit_hitl_answer(run_id, "left", {"answer": "L"})
+    first = await store.submit_hitl_answer(
+        run_id, "left", {"answer": "L"}, authorization=hitl_authorization()
+    )
     assert first.status is RunStatus.PAUSED
     assert first.graph_state.active_node_ids == ("left", "right")
     assert [node.status for node in first.node_runs] == [RunStatus.QUEUED, RunStatus.PAUSED]
@@ -61,7 +63,9 @@ async def _assert_independent_answers(store, run_id: str) -> None:
     assert tuple(first.graph_state.metadata["pauses"]) == ("right",)
     assert first.graph_state.metadata["pause"]["metadata"]["question"] == "Right?"
 
-    second = await store.submit_hitl_answer(run_id, "right", {"answer": "R"})
+    second = await store.submit_hitl_answer(
+        run_id, "right", {"answer": "R"}, authorization=hitl_authorization()
+    )
     assert second.status is RunStatus.QUEUED
     assert second.graph_state.active_node_ids == ("left", "right")
     assert [node.status for node in second.node_runs] == [RunStatus.QUEUED, RunStatus.QUEUED]
@@ -92,7 +96,9 @@ async def _assert_the_answer_carries_the_pause_it_settles(store, run_id: str) ->
     """
     await store.create(_two_pause_record(run_id))
 
-    answered = await store.submit_hitl_answer(run_id, "left", {"answer": "L"})
+    answered = await store.submit_hitl_answer(
+        run_id, "left", {"answer": "L"}, authorization=hitl_authorization()
+    )
 
     stamped = answered.hitl_answers["left"]["_pause"]
     assert stamped["metadata"]["question"] == "Left?"
@@ -114,6 +120,7 @@ async def _assert_a_submitted_pause_cannot_displace_the_real_one(store, run_id: 
         run_id,
         "left",
         {"answer": "L", "_pause": {"metadata": {"question": "Forged?"}, "run_id": "attacker"}},
+        authorization=hitl_authorization(),
     )
 
     stamped = answered.hitl_answers["left"]["_pause"]

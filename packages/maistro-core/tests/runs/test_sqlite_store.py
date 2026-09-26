@@ -20,10 +20,12 @@ from maistro.runs import (
 )
 from maistro.runs.sources import (
     ADMISSION_SOURCE,
+    SCHEDULE_FIRE_ID_KEY,
     SCHEDULE_ID_KEY,
     SCHEDULE_SOURCE,
     SCHEDULED_FOR_KEY,
 )
+from maistro.runs.store import DuplicateOccurrence
 from maistro.runtime import PythonExecutionRuntime
 
 
@@ -595,6 +597,50 @@ async def test_delete_run_for_an_unknown_run_is_false(tmp_path: Path) -> None:
     store, _project_id = await _durable_store(tmp_path)
 
     assert await store.delete_run("no-such-run") is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_replaces_the_legacy_occurrence_index(tmp_path: Path) -> None:
+    """An existing SQLite file must adopt manual-fire claim semantics.
+
+    ``CREATE INDEX IF NOT EXISTS`` leaves the pre-manual-fire index in place,
+    whose ``scheduled_for`` key lets the same token claim twice. Opening the
+    file through ``ensure_schema`` must replace that index before the first new
+    Run is admitted.
+    """
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "runs.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    await conn.execute("DROP INDEX idx_canonical_runs_occurrence")
+    await conn.execute(
+        """CREATE UNIQUE INDEX idx_canonical_runs_occurrence
+           ON canonical_runs(
+               json_extract(payload, '$.provenance.schedule_id'),
+               json_extract(payload, '$.provenance.scheduled_for')
+           )
+           WHERE json_extract(payload, '$.provenance.schedule_id') IS NOT NULL
+             AND json_extract(payload, '$.provenance.scheduled_for') IS NOT NULL"""
+    )
+    await conn.commit()
+
+    try:
+        await store.ensure_schema()
+        provenance = {
+            ADMISSION_SOURCE: SCHEDULE_SOURCE,
+            SCHEDULE_ID_KEY: "sched-1",
+            SCHEDULE_FIRE_ID_KEY: "retry-token-1",
+            SCHEDULED_FOR_KEY: "2026-08-24T12:00:01+00:00",
+        }
+        await store.create_run(_graph(project_id), provenance=provenance)
+
+        with pytest.raises(DuplicateOccurrence):
+            await store.create_run(
+                _graph(project_id),
+                provenance={**provenance, SCHEDULED_FOR_KEY: "2026-08-24T12:04:00+00:00"},
+            )
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio

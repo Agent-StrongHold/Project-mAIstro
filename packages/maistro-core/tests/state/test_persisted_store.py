@@ -591,6 +591,131 @@ class TestDuplicateUsernameMigrationReconciliation:
         assert not [r for r in caplog.records if "duplicate username" in r.message]
         state.close()
 
+    def test_account_created_through_the_atomic_seam_is_not_flagged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """#1061's canonical claim IS a durable uniqueness claim.
+
+        Account allocation writes the claim and the user row in one
+        transaction and bypasses `put_model_unique`, so such a row holds no
+        `unique_fields` row until its first password rehash. Warning about it
+        on every restart told operators a healthy hive held an ambiguous
+        duplicate — the false alarm the canonical-claim clause removes, while
+        genuinely unclaimed rows stay loud.
+        """
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        store = PersistedStore(state)
+        store.initialize()
+
+        assert store.put_raw_with_unique_claims(
+            [
+                (
+                    "username_claims",
+                    "username:alice",
+                    '{"schema_version": 1, "status": "active", '
+                    '"normalized_username": "alice", "user_id": "u1"}',
+                )
+            ],
+            [("users", "u1", '{"id": "u1", "username": "Alice"}')],
+        )
+        state.flush()
+
+        with caplog.at_level("WARNING", logger="maistro.state"):
+            PersistedStore(state).initialize()
+
+        assert not [r for r in caplog.records if "duplicate username" in r.message]
+        state.close()
+
+    def test_only_rows_holding_no_durable_claim_are_flagged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The warning names exactly the rows holding neither layer's claim.
+
+        Pre-existing duplicate rows are written before the migrations apply
+        (the rolling-upgrade shape). The backfill claims one of them in
+        `unique_fields`, the canonical claim names the other — whichever row
+        ends up holding NEITHER is the ambiguous one, and the only one the
+        warning may name."""
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        state.open_writer()
+        state.run_migration(
+            "kv_store_001",
+            "CREATE TABLE IF NOT EXISTS kv_store "
+            "(store_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, PRIMARY KEY (store_name, key))",
+        )
+        _write_raw_user(state, "winner", "dupe")
+        _write_raw_user(state, "loser", "DUPE")
+        PersistedStore(state).put_raw(
+            "username_claims",
+            "username:dupe",
+            '{"schema_version": 1, "status": "active", '
+            '"normalized_username": "dupe", "user_id": "winner"}',
+        )
+        state.flush()
+
+        with caplog.at_level("WARNING", logger="maistro.state"):
+            PersistedStore(state).initialize()
+
+        reader = state.open_reader()
+        try:
+            unique_fields_holder = reader.execute(
+                "SELECT record_key FROM unique_fields "
+                "WHERE store_name = 'users' AND field_name = 'username' "
+                "AND normalized_value = 'dupe'"
+            ).fetchone()
+        finally:
+            reader.close()
+        claimed = {"winner", unique_fields_holder[0] if unique_fields_holder else None}
+        expected = {"winner", "loser"} - claimed  # a canonically-named row is never flagged
+
+        warnings = [r.message for r in caplog.records if "no durable uniqueness claim" in r.message]
+        if expected == {"loser"}:
+            assert len(warnings) == 1
+            assert "loser" in warnings[0]
+            assert "winner" not in warnings[0]
+        else:
+            # Both rows hold a durable claim (the canonical layer decides
+            # login deterministically), so there is no ambiguity to surface.
+            assert warnings == []
+        state.close()
+
+    def test_quarantined_and_crossed_claims_do_not_silence_the_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Only an ACTIVE claim naming the row suppresses it — a quarantined
+        record or a claim pointing at another key leaves the row exactly as
+        loud as before the canonical clause existed."""
+        db_path = tmp_path / "state.db"
+        state = State(db_path=str(db_path))
+        PersistedStore(state).initialize()
+        _write_raw_user(state, "q1", "zara")
+        PersistedStore(state).put_raw(
+            "username_claims",
+            "username:zara",
+            '{"schema_version": 1, "status": "quarantined", '
+            '"normalized_username": "zara", "candidate_user_ids": ["q1"]}',
+        )
+        _write_raw_user(state, "crossed", "misty")
+        PersistedStore(state).put_raw(
+            "username_claims",
+            "username:misty",
+            '{"schema_version": 1, "status": "active", '
+            '"normalized_username": "misty", "user_id": "someone-else"}',
+        )
+        state.flush()
+
+        with caplog.at_level("WARNING", logger="maistro.state"):
+            PersistedStore(state).initialize()
+
+        warnings = [r.message for r in caplog.records if "no durable uniqueness claim" in r.message]
+        assert len(warnings) == 1
+        for flagged in ("q1", "crossed"):
+            assert flagged in warnings[0], flagged
+        state.close()
+
     def test_warning_persists_across_repeated_initialize_calls(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

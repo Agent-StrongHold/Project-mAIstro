@@ -861,7 +861,7 @@ class _ReconcilingStore(_BootstrapStore):
         super().__init__(*records)
         self.reconciled: list[int] = []
 
-    async def reconcile_persistence(self, *, limit: int = 100) -> int:
+    async def reconcile_persistence(self, *, limit: int = 100, now: object = None) -> int:
         self.reconciled.append(limit)
         return 0
 

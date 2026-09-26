@@ -23,6 +23,8 @@ from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.model import RunStatus
 
+from .._canonical_helpers import hitl_authorization
+
 _T0 = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
 _TIMEOUT = 10
 
@@ -110,6 +112,7 @@ async def test_repeated_malformed_answers_preserve_deadline_after_restart(
             "step",
             answer,
             at=clock.value,
+            authorization=hitl_authorization(),
         )
         assert answered.status is RunStatus.PAUSED
         assert answered.graph_state.metadata["pauses"]["step"]["resume_at"] == deadline.isoformat()
@@ -127,6 +130,7 @@ async def test_repeated_malformed_answers_preserve_deadline_after_restart(
     expired = await expire_hitl_pauses(
         SqliteDurableRunStore(database),
         now=deadline,
+        authorization=hitl_authorization(),
     )
     assert [record.run_id for record in expired] == [paused.run_id]
     assert expired[0].status is RunStatus.TIMED_OUT
@@ -177,11 +181,16 @@ async def test_canonical_spine_preserves_malformed_verdict_deadline(
         "step",
         {"verdict": "   "},
         at=_T0 + timedelta(seconds=9),
+        authorization=hitl_authorization(),
     )
 
     assert malformed.status is RunStatus.PAUSED
     assert malformed.graph_state.metadata["pauses"]["step"]["resume_at"] == deadline
-    expired = await expire_hitl_pauses(store, now=datetime.fromisoformat(deadline))
+    expired = await expire_hitl_pauses(
+        store,
+        now=datetime.fromisoformat(deadline),
+        authorization=hitl_authorization(),
+    )
     assert [record.run_id for record in expired] == [paused.run_id]
     canonical = await run_store.get_run(paused.run_id)
     assert canonical is not None and canonical.status is RunStatus.TIMED_OUT
@@ -212,8 +221,19 @@ async def test_malformed_answer_cannot_beat_timeout_at_deadline(
         malformed_store = SqliteDurableRunStore(database)
         timeout_store = SqliteDurableRunStore(database)
         results = await asyncio.gather(
-            malformed_store.submit_hitl_answer(run_id, "step", {}, at=_T0 + timedelta(seconds=10)),
-            timeout_store.timeout_hitl(run_id, "step", at=_T0 + timedelta(seconds=10)),
+            malformed_store.submit_hitl_answer(
+                run_id,
+                "step",
+                {},
+                at=_T0 + timedelta(seconds=10),
+                authorization=hitl_authorization(),
+            ),
+            timeout_store.timeout_hitl(
+                run_id,
+                "step",
+                at=_T0 + timedelta(seconds=10),
+                authorization=hitl_authorization(),
+            ),
             return_exceptions=True,
         )
 
@@ -227,6 +247,7 @@ async def test_malformed_answer_cannot_beat_timeout_at_deadline(
                 "step",
                 {"verdict": "approved"},
                 at=_T0 + timedelta(seconds=11),
+                authorization=hitl_authorization(),
             )
 
 
@@ -257,6 +278,7 @@ async def test_valid_answer_before_deadline_still_settles(
         "step",
         {"verdict": "   "},
         at=_T0 + timedelta(seconds=1),
+        authorization=hitl_authorization(),
     )
     assert malformed.status is RunStatus.PAUSED
 
@@ -265,6 +287,7 @@ async def test_valid_answer_before_deadline_still_settles(
         "step",
         {"verdict": "approved"},
         at=_T0 + timedelta(seconds=2),
+        authorization=hitl_authorization(),
     )
     settled = await resume_durable_graph(
         paused.run_id,

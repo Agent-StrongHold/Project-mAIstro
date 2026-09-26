@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from maistro_canvas.canvas.runner import CanvasJobRunner
+from maistro_canvas.canvas.runner import LEASE_EXPIRED_MESSAGE, CanvasJobRunner
 from maistro_canvas.types import (
     GenerationJobRecord,
     JobAction,
@@ -71,17 +71,25 @@ class InMemoryJobStore:
         *,
         org_id: str,
         expected_leased_by: str | None = None,
+        expected_attempts: int | None = None,
+        expected_status: str | None = None,
     ) -> GenerationJobRecord:
-        if expected_leased_by is not None:
+        fences = {
+            "leased_by": expected_leased_by,
+            "attempts": expected_attempts,
+            "status": expected_status,
+        }
+        if any(value is not None for value in fences.values()):
             current = self._jobs.get(job.id)
             if current is None:
                 from maistro_canvas.types import JobNotFoundError
 
                 raise JobNotFoundError(job.id)
-            if current.leased_by != expected_leased_by:
-                raise JobLeaseLostError(
-                    f"job {job.id!r} lease no longer held by {expected_leased_by!r}"
-                )
+            for field, expected in fences.items():
+                if expected is not None and getattr(current, field) != expected:
+                    raise JobLeaseLostError(
+                        f"job {job.id!r} fenced write refused: {field}={expected!r}"
+                    )
         self._jobs[job.id] = dataclasses.replace(job)
         return job
 
@@ -90,7 +98,11 @@ class InMemoryJobStore:
     ) -> GenerationJobRecord | None:
         async with self._claim_lock:
             pending = sorted(
-                (j for j in self._jobs.values() if j.status == JobStatus.PENDING),
+                (
+                    j
+                    for j in self._jobs.values()
+                    if j.status == JobStatus.PENDING and j.attempts < j.max_attempts
+                ),
                 key=lambda j: j.created_at,
             )
             if not pending:
@@ -112,6 +124,13 @@ class InMemoryJobStore:
         now = datetime.now(UTC)
         reaped: list[GenerationJobRecord] = []
         for job in self._jobs.values():
+            if job.status == JobStatus.PENDING and job.attempts >= job.max_attempts:
+                # Over-budget pending (unclaimable): handed back for terminalizing.
+                job.status = JobStatus.RUNNING
+                job.leased_by = None
+                job.lease_expires_at = now
+                reaped.append(dataclasses.replace(job))
+                continue
             if (
                 job.status == JobStatus.RUNNING
                 and job.lease_expires_at is not None
@@ -124,9 +143,18 @@ class InMemoryJobStore:
                 reaped.append(dataclasses.replace(job))
         return reaped
 
-    async def renew_lease(self, job_id: str, worker_id: str, lease_seconds: int) -> bool:
+    async def renew_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        *,
+        expected_attempts: int | None = None,
+    ) -> bool:
         job = self._jobs.get(job_id)
         if job is None or job.leased_by != worker_id or job.status != JobStatus.RUNNING:
+            return False
+        if expected_attempts is not None and job.attempts != expected_attempts:
             return False
         job.lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
         return True
@@ -277,7 +305,7 @@ async def test_reap_once_terminalizes_exhausted_job_after_canonical_reconciliati
     dead = await store.get_job("job1")
     assert dead is not None
     assert dead.status == JobStatus.FAILED
-    assert dead.error_message == "canonical: canvas worker lease expired"
+    assert dead.error_message == f"canonical: {LEASE_EXPIRED_MESSAGE}"
 
 
 async def test_reap_once_leaves_job_reconcilable_when_canonical_reconciliation_fails() -> None:
@@ -500,7 +528,7 @@ async def test_reap_once_without_canonical_hook_fails_with_lease_expiry_reason()
     dead = await store.get_job("job1")
     assert dead is not None
     assert dead.status == JobStatus.FAILED
-    assert dead.error_message == "canvas worker lease expired"
+    assert dead.error_message == LEASE_EXPIRED_MESSAGE
     assert dead.leased_by is None
     assert dead.lease_expires_at is None
     assert dead.completed_at is not None
@@ -513,7 +541,14 @@ async def test_lease_renewal_heartbeat_survives_a_failing_renew(
     never abort the in-flight provider call."""
 
     class FailingRenewStore(InMemoryJobStore):
-        async def renew_lease(self, job_id: str, worker_id: str, lease_seconds: int) -> bool:
+        async def renew_lease(
+            self,
+            job_id: str,
+            worker_id: str,
+            lease_seconds: int,
+            *,
+            expected_attempts: int | None = None,
+        ) -> bool:
             raise RuntimeError("store unavailable")
 
     store = FailingRenewStore()
@@ -537,3 +572,197 @@ async def test_lease_renewal_heartbeat_survives_a_failing_renew(
 
     assert executed == ["job1"]
     assert any("canvas_lease_renew_error" in r.getMessage() for r in caplog.records)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Codex #1535 follow-ups (#735)
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def test_same_worker_id_reclaim_discards_the_stale_claims_completion() -> None:
+    """Production defaults every instance to ``canvas-worker-1``, so a reaped
+    job can be re-claimed under the *same* worker id while the first claim's
+    provider call is still in flight. The stale completion must be fenced on
+    its claim generation (attempt number), not the reusable worker id."""
+    store = InMemoryJobStore()
+    await _seed_pending_job(store, job_id="job1")
+    reclaimed: list[GenerationJobRecord] = []
+
+    class ReclaimedMidCallExecutor:
+        async def _execute_claimed(self, job: GenerationJobRecord) -> None:
+            # The lease expires and is reaped; instance two (same id) claims it.
+            row = store._jobs["job1"]
+            row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await store.reap_expired_leases()
+            second = await store.claim_next_pending("canvas-worker-1", 300)
+            assert second is not None
+            reclaimed.append(second)
+            job.result_paths = ["https://img/stale.png"]
+
+    runner = CanvasJobRunner(
+        store=store,
+        executor=ReclaimedMidCallExecutor(),  # type: ignore[arg-type]
+        worker_id="canvas-worker-1",
+    )
+
+    assert await runner.tick_once() is True
+
+    current = await store.get_job("job1")
+    assert current is not None
+    assert reclaimed and reclaimed[0].attempts == 2
+    assert current.status == JobStatus.RUNNING, "stale claim clobbered the newer claim"
+    assert current.attempts == 2
+    assert current.result_paths == []
+
+
+async def test_worker_completion_does_not_overwrite_a_mid_call_cancellation() -> None:
+    """A user cancellation that lands while the provider call runs leaves the
+    lease holder in place; the completion write must still refuse to turn
+    ``cancelled`` back into ``done``."""
+    store = InMemoryJobStore()
+    await _seed_pending_job(store, job_id="job1")
+
+    class CancelledMidCallExecutor:
+        async def _execute_claimed(self, job: GenerationJobRecord) -> None:
+            store._jobs["job1"].status = JobStatus.CANCELLED
+            job.result_paths = ["https://img/late.png"]
+
+    runner = CanvasJobRunner(store=store, executor=CancelledMidCallExecutor())  # type: ignore[arg-type]
+
+    await runner.tick_once()
+
+    current = await store.get_job("job1")
+    assert current is not None
+    assert current.status == JobStatus.CANCELLED
+
+
+async def test_reap_once_does_not_overwrite_a_concurrent_cancellation() -> None:
+    """The exhausted receipt stays ``running`` while canonical reconciliation
+    runs, so a user can cancel it in that window. Once cancellation wins, the
+    reaper's terminal write must refuse to replace it with ``failed``."""
+    store = InMemoryJobStore()
+    job = await _seed_pending_job(store, max_attempts=3)
+    job.status = JobStatus.RUNNING
+    job.attempts = 3
+    job.leased_by = "dead-worker"
+    job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await store.update_job(job, org_id=job.org_id)
+
+    executor = FakeExecutor()
+
+    async def fail_job_execution(reaped: GenerationJobRecord, error: Exception) -> str:
+        # User cancellation completes while canonical failure is in flight;
+        # the canonical Run is already CANCELLED, so fail() is a no-op.
+        store._jobs[reaped.id].status = JobStatus.CANCELLED
+        return str(error)
+
+    executor.fail_job_execution = fail_job_execution  # type: ignore[attr-defined]
+    runner = CanvasJobRunner(store=store, executor=executor)  # type: ignore[arg-type]
+
+    await runner.reap_once()
+
+    current = await store.get_job("job1")
+    assert current is not None
+    assert current.status == JobStatus.CANCELLED
+
+
+async def test_reap_once_reports_lease_expiry_not_a_provider_error_through_real_executor() -> None:
+    """The real ``CanvasExecutor.fail_job_execution`` sanitises unknown errors
+    into a generic provider message; worker loss must survive it verbatim."""
+    from maistro_canvas.canvas.executor import CanvasExecutor
+
+    store = InMemoryJobStore()
+    job = await _seed_pending_job(store, max_attempts=1)
+    job.status = JobStatus.RUNNING
+    job.attempts = 1
+    job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await store.update_job(job, org_id=job.org_id)
+    executor = CanvasExecutor(
+        store=store,  # type: ignore[arg-type]
+        image_client=None,  # type: ignore[arg-type]
+        model_registry=None,  # type: ignore[arg-type]
+        warden=None,  # type: ignore[arg-type]
+    )
+    runner = CanvasJobRunner(store=store, executor=executor)
+
+    await runner.reap_once()
+
+    dead = await store.get_job("job1")
+    assert dead is not None
+    assert dead.status == JobStatus.FAILED
+    assert dead.error_message == LEASE_EXPIRED_MESSAGE
+    assert "provider error" not in (dead.error_message or "")
+
+
+async def test_lease_renewal_stops_past_max_execution_without_cancelling_the_call() -> None:
+    """A provider await that never returns must not renew its lease forever:
+    past ``max_execution_seconds`` renewal stops so the reaper can recover the
+    job. The runner itself does not cancel the call -- a cancellation of the
+    awaiting task is recorded canonically as a requested cancel (Codex #1560);
+    the executor's canonical deadline ends the call as a retryable timeout."""
+    store = InMemoryJobStore()
+    await _seed_pending_job(store, job_id="job1", max_attempts=1)
+    claimed = await store.claim_next_pending("canvas-worker-1", 3)
+    assert claimed is not None
+    renewals: list[str] = []
+    original_renew = store.renew_lease
+
+    async def counting_renew(*args: object, **kwargs: object) -> bool:
+        renewals.append("renew")
+        return await original_renew(*args, **kwargs)  # type: ignore[arg-type]
+
+    store.renew_lease = counting_renew  # type: ignore[method-assign]
+    release = asyncio.Event()
+    cancelled: list[bool] = []
+
+    class StalledExecutor:
+        async def _execute_claimed(self, job: GenerationJobRecord) -> None:
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+    runner = CanvasJobRunner(
+        store=store,
+        executor=StalledExecutor(),  # type: ignore[arg-type]
+        lease_seconds=3,
+        max_execution_seconds=1.5,
+    )
+
+    call = asyncio.create_task(runner._execute_claimed_with_lease_renewal(claimed))
+    await asyncio.sleep(1.2)
+    renewed_before_limit = len(renewals)
+    assert renewed_before_limit >= 1  # long legitimate calls still heartbeat
+    await asyncio.sleep(1.3)
+    assert len(renewals) == renewed_before_limit, "lease kept renewing past the limit"
+    assert not call.done() and cancelled == []
+
+    release.set()
+    await asyncio.wait_for(call, timeout=2)
+
+
+async def test_runner_rejects_non_positive_max_execution_seconds() -> None:
+    with pytest.raises(ValueError, match="max_execution_seconds must be positive"):
+        CanvasJobRunner(store=InMemoryJobStore(), executor=FakeExecutor(), max_execution_seconds=0)  # type: ignore[arg-type]
+
+
+async def test_over_budget_pending_job_is_never_claimed_and_is_reaped_to_failed() -> None:
+    """A receipt requeued with no retry budget left must not be claimed again
+    (that would run the provider past ``max_attempts``); the reaper hands it
+    back for canonical terminalization instead of stranding it."""
+    store = InMemoryJobStore()
+    job = await _seed_pending_job(store, job_id="job1", max_attempts=2)
+    job.attempts = 2
+    await store.update_job(job, org_id=job.org_id)
+    executor = FakeExecutor()
+    runner = CanvasJobRunner(store=store, executor=executor)  # type: ignore[arg-type]
+
+    assert await runner.tick_once() is False
+    assert executor._calls == 0
+
+    await runner.reap_once()
+    dead = await store.get_job("job1")
+    assert dead is not None
+    assert dead.status == JobStatus.FAILED
+    assert dead.attempts == 2

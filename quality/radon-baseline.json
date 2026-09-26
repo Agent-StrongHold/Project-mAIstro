@@ -233,16 +233,6 @@
       "rationale": "The #1263-family HITL lifecycle-mirror work funnels terminal-evidence resolution into the durable-run executor's node context build. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
     },
     {
-      "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::answer_record",
-      "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
-      "line": 109,
-      "name": "answer_record",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "The #1263-family durable answer record mirrors HITL settlement state onto the canonical spine. Post-merge ledger reconciliation tracked under SPEC-264 - the ratchet is set at 11."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py::settle_hitl_record",
       "path": "packages/maistro-core/src/maistro/graph/durable_runs/stores.py",
       "line": 139,
@@ -433,16 +423,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/memory/learnings/store.py::InMemoryLearningStore.find_relevant",
-      "path": "packages/maistro-core/src/maistro/memory/learnings/store.py",
-      "line": 60,
-      "name": "find_relevant",
-      "classname": "InMemoryLearningStore",
-      "rank": "C",
-      "complexity": 14,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/memory/outcomes.py::InMemoryOutcomeStore.get_experience_context",
       "path": "packages/maistro-core/src/maistro/memory/outcomes.py",
       "line": 94,
@@ -598,16 +578,6 @@
       "line": 131,
       "name": "_get_jwks_client",
       "classname": "JWTAuthProvider",
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
-      "key": "packages/maistro-core/src/maistro/security/gate.py::Gate",
-      "path": "packages/maistro-core/src/maistro/security/gate.py",
-      "line": 30,
-      "name": "Gate",
-      "classname": null,
       "rank": "C",
       "complexity": 11,
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."

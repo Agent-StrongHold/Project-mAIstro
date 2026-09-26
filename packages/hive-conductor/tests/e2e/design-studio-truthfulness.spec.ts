@@ -127,6 +127,16 @@ const designSystems = {
   bundled_count: 1,
 };
 
+const designProjects = [
+  {
+    id: "project-1",
+    name: "Durable Run lineage infographic",
+    skill_slug: "infographic",
+    design_system_slug: "default",
+    output_count: 1,
+  },
+];
+
 test.beforeAll(async ({ browser }) => {
   context = await browser.newContext({ baseURL: test.info().project.use.baseURL });
 
@@ -148,6 +158,9 @@ test.beforeAll(async ({ browser }) => {
   });
   await page.route("**/v1/design/systems", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designSystems) });
+  });
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designProjects) });
   });
 });
 
@@ -180,25 +193,33 @@ test("Design Studio is the parent surface and never enables fake visual executio
   }
 
   await expect(page.getByText(/10 design skills and 1 design system available/)).toBeVisible();
+  await expect(page.getByText("Persisted Design projects", { exact: true })).toBeVisible();
+  await expect(page.getByText("Durable Run lineage infographic", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 stored output", { exact: true })).toBeVisible();
   const availableSkills = page.getByLabel("Available design skills");
   await expect(availableSkills.getByText("Hero Image", { exact: true })).toBeVisible();
   await expect(availableSkills.getByText("Social Card", { exact: true })).toBeVisible();
 
   const discovery = page.getByRole("listitem").filter({ hasText: "Design resource discovery" });
   await expect(discovery).toContainText("available");
-  await expect(discovery).toContainText("Brief creation is not connected yet");
+  await expect(discovery).toContainText("Skills and design systems are discovered from the connected Design service.");
   await expect(page.getByText("Brief + design system", { exact: true })).toHaveCount(0);
 
-  const generate = page.getByRole("button", { name: "Generate visual" });
-  await expect(generate).toBeDisabled();
-  await page.getByLabel("Describe the artifact").fill("An infographic explaining durable Run lineage");
-  await expect(generate).toBeDisabled();
+  const openEditor = page.getByRole("button", { name: "Open editor" });
+  await expect(openEditor).toBeDisabled();
 
-  // The old implementation changed stages to running/done solely because time
-  // elapsed and then called /v1/canvas/eval. Waiting must not manufacture work.
-  await page.waitForTimeout(1200);
-  await expect(page.getByText("Running...", { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/Generated output for/)).toHaveCount(0);
+  // Select the Infographic artifact mode through the keyboard before editing;
+  // the editor that opens must be the one the user chose, not the default.
+  await page.getByRole("group", { name: "Design artifact types" })
+    .getByRole("button").filter({ hasText: "Infographic" }).press("Enter");
+  await page.getByLabel("Describe the artifact").fill("An infographic explaining durable Run lineage");
+  await expect(openEditor).toBeEnabled();
+
+  // Opening a draft is an explicit local editor transition, not a fabricated
+  // canvas execution. No /v1/canvas/eval request is allowed here.
+  await openEditor.press("Enter");
+  await expect(page.getByRole("heading", { name: "Infographic editor" })).toBeVisible();
+  await expect(page.getByText(/Draft editor ready/)).toBeVisible();
   expect(canvasRequests).toEqual([]);
 
   // Engineering coordination belongs in issues/docs, not the shipped product.
@@ -208,13 +229,41 @@ test("Design Studio is the parent surface and never enables fake visual executio
   await expect(product).not.toContainText("M3 #");
 });
 
-test("Deck is a contained Design Studio mode, not a route escape", async () => {
+test("Design Studio reports unavailable persistence instead of an empty durable state", async () => {
+  await page.unroute("**/v1/design/projects");
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Design persistence unavailable (DATABASE_URL not set)" }),
+    });
+  });
+
+  await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
+
+  const projectsHeader = page.getByText("Persisted Design projects", { exact: true }).locator("..");
+  await expect(projectsHeader.getByText("unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Persisted Design projects are unavailable:.*DATABASE_URL not set/)).toBeVisible();
+  await expect(page.getByText("No persisted Design projects in this scope.", { exact: true })).toHaveCount(0);
+
+  // Keep the shared serial browser state truthful for the following catalog test.
+  await page.unroute("**/v1/design/projects");
+  await page.route("**/v1/design/projects", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(designProjects) });
+  });
+});
+
+test("Deck is a contained Design Studio mode with keyboard-safe editing", async () => {
   await page.goto("/cli/canvas", { waitUntil: "domcontentloaded" });
   const artifactTypes = page.getByRole("group", { name: "Design artifact types" });
-  await artifactTypes.getByRole("button").filter({ hasText: "Presentation / Deck" }).click();
+  await artifactTypes.getByRole("button").filter({ hasText: "Presentation / Deck" }).press("Enter");
+  await page.getByLabel("Describe the artifact").fill("A durable execution pitch deck");
+  await page.getByRole("button", { name: "Open Deck editor" }).press("Enter");
 
-  await expect(page.getByRole("button", { name: "Open Deck editor" })).toBeDisabled();
-  await expect(page.getByText(/Deck editing is temporarily unavailable while secure rendering is enabled/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
+  await expect(page.getByRole("listbox", { name: "Ordered deck pages" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Present" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Export HTML" })).toBeVisible();
   await expect(page).toHaveURL(/\/cli\/canvas$/);
 });
 

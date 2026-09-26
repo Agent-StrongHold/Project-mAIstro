@@ -43,7 +43,6 @@ dependencies = [
     "pydantic-settings>=2.0.0,<3",
     "python-multipart>=0.0.31,<1",
     "httpx>=0.27.0,<1",
-    "cryptography>=50.0.0,<51",
     "sqlalchemy[asyncio]>=2.0.0,<3",
     # `[bcrypt]` rather than a bare `bcrypt` pin. Nothing under `backend/`
     # imports bcrypt; the importer is `maistro.security.passwords`, which
@@ -55,6 +54,13 @@ dependencies = [
     # reason with no extra needed: all three are hard dependencies of
     # maistro-core, which is what imports them, and the backend imports none of
     # them itself.
+    #
+    # cryptography joined them when credential_store_v2 was retired (#1186):
+    # nothing under `backend/` imports it in production any more — the Fernet
+    # import lives in `maistro.credentials.store` (maistro-core's
+    # UserCredentialStore), so maistro-core owns both the import and the
+    # version range. backend/requirements.txt still restates it because that
+    # file is the separate Docker/CI resolution with its own reasons.
     #
     # Bound is `>=0.9.0,<2` because 0.9.0 is what every package in this repo is
     # at today (root VERSION); nothing resolves at 1.0.0 yet. Tighten to
