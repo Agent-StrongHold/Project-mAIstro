@@ -32,7 +32,7 @@ def _capture_runtime_seams(monkeypatch, container: SimpleNamespace) -> dict[str,
     """Stub create_container/create_agents and return what the factory got."""
     captured: dict[str, object] = {}
 
-    async def fake_create_container(config):
+    async def fake_create_container(config, **kwargs):
         return container
 
     async def fake_create_agents(**kwargs):
@@ -43,6 +43,30 @@ def _capture_runtime_seams(monkeypatch, container: SimpleNamespace) -> dict[str,
     monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
     monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "")
     return captured
+
+
+@pytest.mark.asyncio
+async def test_start_passes_configured_llm_to_container_warden(monkeypatch):
+    """The bridge supplies its configured client to the canonical Warden."""
+    container = _fake_container()
+    captured: dict[str, object] = {}
+
+    async def fake_create_container(config, **kwargs):
+        captured.update(kwargs)
+        return container
+
+    async def fake_create_agents(**kwargs):
+        return {}
+
+    monkeypatch.setattr("maistro.container.create_container", fake_create_container)
+    monkeypatch.setattr("maistro.agents.factory.create_agents", fake_create_agents)
+    monkeypatch.setattr("services.secrets.maistro_llm_api_key", lambda _settings: "judge-key")
+
+    await MaistroCoreBridge().start(
+        Settings(maistro_agents_dir="agents", litellm_api_base="http://judge:4000/v1")
+    )
+
+    assert captured["warden_llm"] is not None
 
 
 @pytest.mark.asyncio
@@ -69,7 +93,7 @@ async def test_start_passes_container_prompt_manager_to_agent_factory(monkeypatc
     wired_agents: dict[str, object] = {}
     container.agents = wired_agents
 
-    async def fake_create_container(config):
+    async def fake_create_container(config, **kwargs):
         captured["config"] = config
         return container
 
@@ -189,7 +213,7 @@ async def test_start_populates_the_dict_the_hierarchy_closed_over(monkeypatch):
         agents=wired_agents,
     )
 
-    async def fake_create_container(config):
+    async def fake_create_container(config, **kwargs):
         return container
 
     async def fake_create_agents(**kwargs):
@@ -245,7 +269,7 @@ async def test_start_carries_the_permission_grants_onto_the_container_config(mon
     container = _fake_container()
     captured: dict[str, object] = {}
 
-    async def fake_create_container(config):
+    async def fake_create_container(config, **kwargs):
         captured["config"] = config
         return container
 
@@ -280,7 +304,7 @@ async def test_start_carries_the_model_bindings_onto_the_container_config(monkey
     container = _fake_container()
     captured: dict[str, object] = {}
 
-    async def fake_create_container(config):
+    async def fake_create_container(config, **kwargs):
         captured["config"] = config
         return container
 

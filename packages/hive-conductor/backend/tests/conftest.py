@@ -28,9 +28,24 @@ def _init_engine() -> None:
     import services.engine as engine_mod
     from adapters.maistro_core import StubAgentPort
 
+    from maistro.security.warden.detector import Warden
+
     if engine_mod._singleton is None:
         svc = engine_mod.EngineService()
+        # The session engine runs as a standalone Conductor: no Container is
+        # wired, so every store service takes its documented no-bridge
+        # fallback (in-memory run store, local schedule admission, ...). Do
+        # not fake a container here -- services read the full Container
+        # surface (graph_run_store, schedule_admitter, capability_effects,
+        # ...), and a partial fake turns those reads into AttributeError or
+        # fail-closed refusals instead of the fallback the standalone mode
+        # defines. The security scan stack still needs the one canonical
+        # detector, so the composition root installs it explicitly on the
+        # engine; routes keep reading engine.warden and never build their
+        # own. Tests that exercise the no-composition refusal clear the slot
+        # (see the fail-closed tests) rather than patching a fake container.
         svc._agent_port = StubAgentPort()
+        svc.set_warden_composition(Warden())
         engine_mod._singleton = svc
 
     import services.foundation as foundation_mod

@@ -26,7 +26,18 @@ DEFAULT_WORKSPACE_ID = "default"
 if TYPE_CHECKING:
     from config import Settings
 
-__all__ = ["EngineService", "TaskRecord", "get_engine", "start_engine", "stop_engine"]
+__all__ = [
+    "EngineService",
+    "TaskRecord",
+    "WardenCompositionUnavailable",
+    "get_engine",
+    "start_engine",
+    "stop_engine",
+]
+
+
+class WardenCompositionUnavailable(RuntimeError):
+    """The canonical Container security composition is not available."""
 
 
 class EngineService:
@@ -41,6 +52,12 @@ class EngineService:
         self._backend: Any = None
         self._configured = False
         self._capabilities: Any = None
+        # Explicitly installed Warden for composition roots that host no
+        # Container (a test composition root; a standalone Conductor would
+        # install one the same way). Nothing falls back into this slot: with
+        # neither a Container Warden nor an installed composition, `warden`
+        # raises and every consumer fails closed.
+        self._warden_composition: Any = None
 
     @property
     def is_configured(self) -> bool:
@@ -51,6 +68,37 @@ class EngineService:
         """The bound AgentPort, for boot seams that need the runtime itself
         (the roster materializer reads the bridge's container off it)."""
         return self._agent_port
+
+    def set_warden_composition(self, warden: Any) -> None:
+        """Install the one canonical detector for this process.
+
+        This is the composition-root seam for a host that has no Container to
+        read: the installer hands over the already-composed instance (layers,
+        policy version and all), and every consumer keeps reading `warden` —
+        nobody constructs a route-local detector. Passing None removes the
+        installation, which is how the fail-closed contract is exercised.
+        """
+        self._warden_composition = warden
+
+    @property
+    def warden(self) -> Any:
+        """Return the Warden owned by the canonical security composition.
+
+        Routes must not construct a detector here: a bare instance would lose
+        configured layers such as the LLM judge. The composition is the
+        Container's when this process has one, else the explicitly installed
+        one. With neither, this is a security wiring failure, not permission
+        to fall back to regex-only scanning.
+        """
+        container = getattr(self._agent_port, "container", None)
+        warden = getattr(container, "warden", None)
+        if warden is None:
+            warden = self._warden_composition
+        if warden is None:
+            raise WardenCompositionUnavailable(
+                "canonical Container Warden composition is unavailable"
+            )
+        return warden
 
     @property
     def capabilities(self) -> Any:

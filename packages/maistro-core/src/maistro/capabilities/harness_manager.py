@@ -47,12 +47,25 @@ class HarnessSessionManager:
         self._policy = policy
         self._sessions: dict[str, SafeHarnessRunner] = {}
 
+    def uses_composition(self, registry: CapabilityRegistry, warden: Warden) -> bool:
+        """Report whether this manager still belongs to the active app wiring.
+
+        A harness session captures its safety wrapper at creation time. If the
+        application replaces its Container, retaining that manager would keep
+        using the old Warden (or keep sessions alive after security wiring was
+        removed), so the route must discard it instead.
+        """
+        return self._registry is registry and self._warden is warden
+
     async def start(self, agent_spec: AgentSpec, *, workdir: str) -> str | Unavailable:
         """Resolve + start a safety-wrapped harness session, or ``Unavailable``."""
         provider = await self._registry.resolve(SLOT_NAME)
         if not isinstance(provider, HarnessRunner):
             return Unavailable(slot=SLOT_NAME, reason="no active harness_runner provider")
-        session_id = await provider.start_session(agent_spec, workdir=workdir)
+        # Scan the startup AgentSpec before the foreign provider receives it;
+        # SafeHarnessRunner applies the same canonical boundary used for turns.
+        startup_safe = SafeHarnessRunner(provider, warden=self._warden)
+        session_id = await startup_safe.start_session(agent_spec, workdir=workdir)
         gate: ActionGate | None = (
             PolicyActionGate(self._policy, key=session_id) if self._policy is not None else None
         )

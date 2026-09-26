@@ -236,13 +236,19 @@ async def test_a_flagged_description_is_refused_and_nothing_is_stored() -> None:
 
 
 async def test_a_scanner_that_cannot_run_stores_nothing(monkeypatch) -> None:
-    import services.agent_materialization as materialization
+    from types import SimpleNamespace
+
+    import services.engine as engine_mod
 
     class _BrokenWarden:
         async def scan(self, text: str, boundary: str) -> None:
             raise RuntimeError("detector offline")
 
-    monkeypatch.setattr(materialization, "_warden_instance", _BrokenWarden())
+    monkeypatch.setattr(
+        engine_mod.get_engine(),
+        "_agent_port",
+        SimpleNamespace(container=SimpleNamespace(warden=_BrokenWarden())),
+    )
     result = await _tool_save_as_action({"name": "Whatever"}, "user-1", None)
 
     assert "error" in result

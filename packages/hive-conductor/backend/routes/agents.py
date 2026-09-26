@@ -203,6 +203,11 @@ async def scan_proposed_config(body: dict) -> dict:
         return await scan_config(body)
     except ScanBudgetExceeded as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except AgentScannerUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="agent unavailable: the security scan could not run; nothing was stored",
+        ) from exc
 
 
 @router.post("/{agent_id}/scan")
@@ -215,6 +220,11 @@ async def scan_agent(agent_id: str) -> dict:
         return await scan_config(agent.model_dump(mode="json"))
     except ScanBudgetExceeded as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except AgentScannerUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="agent unavailable: the security scan could not run; nothing was stored",
+        ) from exc
 
 
 class ForgeAgentBody(BaseModel):

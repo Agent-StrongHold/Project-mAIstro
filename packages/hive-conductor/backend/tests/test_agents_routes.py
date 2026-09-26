@@ -218,6 +218,67 @@ def test_scan_agent_normal_mode_found(admin_client: Any, monkeypatch) -> None:
     assert r.json() == {"findings": [], "status": "clean"}
 
 
+def test_agent_scan_uses_the_application_container_warden(admin_client: Any, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import services.engine as engine_mod
+
+    from maistro.security._types import WardenVerdict
+
+    class _RecordingWarden:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def scan(self, content: str, boundary: str) -> WardenVerdict:
+            self.calls.append((content, boundary))
+            return WardenVerdict(clean=True)
+
+    warden = _RecordingWarden()
+    monkeypatch.setattr(
+        engine_mod.get_engine(),
+        "_agent_port",
+        SimpleNamespace(container=SimpleNamespace(warden=warden)),
+    )
+    r = admin_client.post("/v1/agents/scan", json={"description": "same input"})
+    assert r.status_code == 200
+    assert warden.calls == [("same input", "user_input")]
+
+
+def test_agent_scan_fails_closed_when_container_warden_cannot_scan(
+    admin_client: Any, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    import services.engine as engine_mod
+
+    class _BrokenWarden:
+        async def scan(self, content: str, boundary: str) -> None:
+            raise RuntimeError("judge offline")
+
+    monkeypatch.setattr(
+        engine_mod.get_engine(),
+        "_agent_port",
+        SimpleNamespace(container=SimpleNamespace(warden=_BrokenWarden())),
+    )
+    r = admin_client.post("/v1/agents/scan", json={"description": "clean"})
+    assert r.status_code == 503
+
+
+def test_agent_scan_fails_closed_without_container_security_composition(
+    admin_client: Any, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    import services.engine as engine_mod
+
+    monkeypatch.setattr(engine_mod.get_engine(), "_agent_port", SimpleNamespace(container=None))
+    # No Container AND no installed composition: the fail-closed contract.
+    monkeypatch.setattr(engine_mod.get_engine(), "_warden_composition", None)
+    r = admin_client.post("/v1/agents/scan", json={"description": "clean"})
+    assert r.status_code == 503
+    assert "security scan could not run" in r.json()["detail"]
+
+
 def test_scan_agent_normal_mode_missing_404(admin_client: Any, monkeypatch) -> None:
     r = admin_client.post("/v1/agents/missing/scan")
     assert r.status_code == 404
@@ -467,15 +528,21 @@ class TestForgeValidatesAndFailsClosed:
         assert len(stores.agents) == 0
 
     def test_a_scanner_that_cannot_run_forges_nothing(self, admin_client: Any, monkeypatch) -> None:
-        import services.agent_materialization as materialization
+        from types import SimpleNamespace
+
+        import services.engine as engine_mod
 
         class _BrokenWarden:
             async def scan(self, text: str, boundary: str) -> None:
                 raise RuntimeError("detector offline")
 
-        # The detector instance lives with the scan it owns -- the one writer
-        # this store has -- since the write-path scan moved there.
-        monkeypatch.setattr(materialization, "_warden_instance", _BrokenWarden())
+        # The application-owned detector is unavailable, so the write path
+        # refuses instead of falling back to a pattern-only instance.
+        monkeypatch.setattr(
+            engine_mod.get_engine(),
+            "_agent_port",
+            SimpleNamespace(container=SimpleNamespace(warden=_BrokenWarden())),
+        )
         r = admin_client.post("/v1/agents/forge", json={"description": FORGE_DESCRIPTION})
         assert r.status_code == 503
         assert "no artifact was stored" in r.json()["detail"]

@@ -12,10 +12,23 @@ from typing import Any
 from maistro.auth.client import ServiceKeyClient
 from maistro.events.bus import Event, Trigger
 from maistro.http import shared_client
+from maistro.security.warden.detector import Warden
 
 logger = logging.getLogger("maistro.events.handlers")
 
 _global_client: ServiceKeyClient | None = None
+
+
+class EventSecurityUnavailable(RuntimeError):
+    """The canonical Warden composition is not available for event re-entry."""
+
+
+class EventPayloadBlocked(RuntimeError):
+    """An event payload was refused before it could become model context."""
+
+    def __init__(self, flags: tuple[str, ...]) -> None:
+        self.flags = flags
+        super().__init__(f"event payload blocked by Warden: {', '.join(flags) or 'unspecified'}")
 
 
 class _DefaultingDict(dict):  # type: ignore[type-arg]
@@ -55,6 +68,23 @@ def _get_client() -> ServiceKeyClient | None:
     return _global_client
 
 
+async def _scan_model_reentry(message: str, warden: Warden) -> None:
+    """Scan the exact labelled content that will be sent to the model.
+
+    A Warden is always supplied by the Container-owned EventBus binding. There
+    is deliberately no process-global fallback: model re-entry must not select
+    a Warden from another application composition.
+    """
+    try:
+        verdict = await warden.scan(message, "tool_result")
+    except EventSecurityUnavailable:
+        raise
+    except Exception as exc:
+        raise EventSecurityUnavailable("event re-entry Warden scan failed") from exc
+    if not verdict.clean:
+        raise EventPayloadBlocked(verdict.flags)
+
+
 async def webhook_action(trigger: Trigger, event: Event) -> None:
     url = trigger.action_config.get("url", "")
     method = trigger.action_config.get("method", "POST").upper()
@@ -88,20 +118,29 @@ async def webhook_action(trigger: Trigger, event: Event) -> None:
     logger.info("Webhook %s %s → %d", method, url, resp.status_code)
 
 
-async def conductor_chat_action(trigger: Trigger, event: Event) -> None:
+async def conductor_chat_action(trigger: Trigger, event: Event, *, warden: Warden) -> None:
     base_url = trigger.action_config.get("conductor_url", "http://localhost:8100")
     api_key = trigger.action_config.get("api_key", "")
     model = trigger.action_config.get("model", "auto")
     message_template = trigger.action_config.get("message", "")
 
-    message = (
+    rendered = (
         _render_template(message_template, event.payload)
         if message_template
-        else (
-            f"[Trigger: {trigger.name}] Event {event.event_type} from {event.source}: "
-            f"{event.payload}"
-        )
+        else (f"Event {event.event_type} from {event.source}: {event.payload}")
     )
+    # Keep handler-owned metadata visibly separate from the event payload. The
+    # whole representation is scanned before it is handed to Conductor, so a
+    # blocked preview cannot become a fresh, unscanned instruction channel.
+    message = (
+        "[maistro event re-entry; provenance=handler_metadata]\n"
+        f"source={event.source!r}; event_type={event.event_type!r}; "
+        f"trigger={trigger.name!r}\n"
+        "[untrusted event payload; boundary=tool_result]\n"
+        f"{rendered}\n"
+        "[/untrusted event payload]"
+    )
+    await _scan_model_reentry(message, warden=warden)
 
     payload: dict[str, Any] = {
         "model": model,
@@ -222,9 +261,30 @@ async def log_action(trigger: Trigger, event: Event) -> None:
     )
 
 
+def handlers_for_warden(warden: Warden) -> dict[str, Any]:
+    """Return built-in handlers bound to one Container security composition.
+
+    The event bus is Container-owned, so this closure carries the triggering
+    application's Warden instead of consulting process-global mutable state.
+    """
+
+    async def bound_conductor_chat(trigger: Trigger, event: Event) -> None:
+        await conductor_chat_action(trigger, event, warden=warden)
+
+    return {
+        "webhook": webhook_action,
+        "conductor_chat": bound_conductor_chat,
+        "coinswarm": coinswarm_action,
+        "ha": ha_action,
+        "ntfy": ntfy_action,
+        "log": log_action,
+    }
+
+
+# ``conductor_chat`` is intentionally absent: it can only be registered after
+# binding the application Container's Warden with ``handlers_for_warden``.
 BUILTIN_HANDLERS = {
     "webhook": webhook_action,
-    "conductor_chat": conductor_chat_action,
     "coinswarm": coinswarm_action,
     "ha": ha_action,
     "ntfy": ntfy_action,

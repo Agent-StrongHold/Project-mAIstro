@@ -41,7 +41,7 @@ import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import stores
 from config import get_settings
@@ -112,14 +112,20 @@ def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[t
 
 
 def _warden() -> Warden:
-    """One detector for the process."""
-    global _warden_instance
-    if _warden_instance is None:
-        _warden_instance = Warden()
-    return _warden_instance
+    """Return the Warden owned by the application Container.
 
+    This service used to cache a bare detector, which silently dropped any
+    configured Container layers. Missing composition is surfaced as a scanner
+    outage so callers fail closed instead of degrading to pattern-only scans.
+    """
+    from services.engine import WardenCompositionUnavailable, get_engine
 
-_warden_instance: Warden | None = None
+    try:
+        return cast(Warden, get_engine().warden)
+    except Exception as exc:
+        if isinstance(exc, WardenCompositionUnavailable):
+            raise AgentScannerUnavailable(str(exc)) from exc
+        raise AgentScannerUnavailable("canonical Warden composition unavailable") from exc
 
 
 async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
@@ -136,7 +142,10 @@ async def scan_config(config: object, *, boundary: str = "user_input") -> dict:
             raise ScanBudgetExceeded(f"config holds more than {MAX_SCAN_NODES} values")
         if len(text) > MAX_SCAN_TEXT:
             raise ScanBudgetExceeded(f"{path} is longer than {MAX_SCAN_TEXT} characters")
-        verdict = await warden.scan(text, boundary)
+        try:
+            verdict = await warden.scan(text, boundary)
+        except Exception as exc:
+            raise AgentScannerUnavailable("the security scan could not run") from exc
         if not verdict.clean:
             findings.extend(f"{path}: {flag}" for flag in verdict.flags)
     return {"findings": findings, "status": "clean" if not findings else "flagged"}
