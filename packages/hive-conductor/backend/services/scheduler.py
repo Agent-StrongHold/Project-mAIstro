@@ -143,6 +143,94 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
     return run_id
 
 
+def _definition_authority() -> tuple[_ScheduleRunner, Any] | None:
+    """The runner and Container that own canonical definitions, if configured.
+
+    ``None`` is standalone mode: no Container, and the Hive row is all there
+    is. A Container that cannot hold or scope a definition is a server
+    misconfiguration, refused as for manual fire rather than left to diverge.
+    """
+    runner = _runner or _ScheduleRunner()
+    container = runner._canonical_container()
+    if container is None:
+        return None
+    if getattr(container, "schedule_store", None) is None or (
+        getattr(container, "project_scope_store", None) is None
+    ):
+        raise ScheduleAdmissionUnavailable(
+            "the configured Container is missing its schedule/project store wiring, "
+            "so canonical schedule definitions cannot be written"
+        )
+    return runner, container
+
+
+async def _scoped_definition(
+    runner: _ScheduleRunner, sid: str, schedule: Any, container: Any
+) -> Schedule | None:
+    definition = runner._as_definition(sid, schedule)
+    if definition is None:
+        return None
+    workspace_id, project_id = await runner._canonical_scope(schedule, container)
+    return definition.model_copy(update={"workspace_id": workspace_id, "project_id": project_id})
+
+
+async def put_canonical_definition(sid: str, schedule: Any) -> None:
+    """Write the canonical definition a ``/v1/schedules`` row describes.
+
+    Called before the Hive row is written, so the canonical store is the
+    authority and the row its projection. ``put`` keeps recorded cursors and
+    clears ``next_due_at`` only on a cron/timezone change. A row naming no
+    template has no canonical definition, so any earlier one is removed.
+    Raises ``ValueError`` for a definition the canonical model refuses.
+    """
+    authority = _definition_authority()
+    if authority is None:
+        return
+    runner, container = authority
+    definition = await _scoped_definition(runner, sid, schedule, container)
+    if definition is None:
+        await container.schedule_store.delete(sid)
+        return
+    await container.schedule_store.put(definition)
+
+
+async def delete_canonical_definition(sid: str) -> None:
+    """Remove the canonical definition before its Hive projection goes."""
+    authority = _definition_authority()
+    if authority is None:
+        return
+    await authority[1].schedule_store.delete(sid)
+
+
+async def backfill_canonical_definitions() -> int:
+    """Put each Hive row the canonical store has never seen; return how many.
+
+    One-shot, before the first tick: rows created before the routes wrote
+    canonically. A row already present is never re-put, so the cursors
+    ``record_fire`` recorded are not rewound by a stale projection.
+    """
+    import stores
+
+    runner = _runner or _ScheduleRunner()
+    container = runner._canonical_container()
+    store = getattr(container, "schedule_store", None) if container is not None else None
+    if store is None or getattr(container, "project_scope_store", None) is None:
+        return 0
+    written = 0
+    for sid, schedule in list(stores.schedules.items()):
+        try:
+            if await store.get(sid) is not None:
+                continue
+            definition = await _scoped_definition(runner, sid, schedule, container)
+            if definition is None:
+                continue
+            await store.put(definition)
+            written += 1
+        except Exception as exc:
+            logger.warning("Failed to backfill canonical schedule %s: %s", sid, exc)
+    return written
+
+
 class _ScheduleRunner:
     def __init__(self) -> None:
         self._running = True
@@ -158,6 +246,7 @@ class _ScheduleRunner:
 
     async def run(self) -> None:
         self._last_check = datetime.now(UTC)
+        await backfill_canonical_definitions()
         while self._running:
             await asyncio.sleep(30)
             try:

@@ -129,6 +129,18 @@ async def _writable_schedule(
     return current
 
 
+async def _write_canonical(schedule: Schedule) -> None:
+    """Write the canonical definition before its Hive projection (#1199)."""
+    from services.scheduler import ScheduleAdmissionUnavailable, put_canonical_definition
+
+    try:
+        await put_canonical_definition(schedule.id, schedule)
+    except ScheduleAdmissionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("", response_model=list[Schedule])
 async def list_schedules(request: Request) -> list[Schedule]:
     allowed = await dag_run_inspection.authorized_workspace_ids(_actor(request))
@@ -196,6 +208,7 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
         created_at=t,
         updated_at=t,
     )
+    await _write_canonical(schedule)
     stores.schedules[sid] = schedule
     return schedule
 
@@ -229,14 +242,31 @@ async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: R
     updates = body.model_dump(exclude_none=True)
     t = _now()
     updates["updated_at"] = t
-    schedule = schedule.model_copy(update=updates)
-    stores.schedules[schedule_id] = schedule
-    return schedule
+    await _write_canonical(schedule.model_copy(update=updates))
+    # Re-read after the await: a tick may have projected new cursors onto the
+    # row, and a concurrent delete must not be resurrected by this write.
+    current = stores.schedules.get(schedule_id)
+    if current is None:
+        await _delete_canonical(schedule_id)
+        raise HTTPException(status_code=404, detail="schedule not found")
+    updated: Schedule = current.model_copy(update=updates)
+    stores.schedules[schedule_id] = updated
+    return updated
+
+
+async def _delete_canonical(schedule_id: str) -> None:
+    from services.scheduler import ScheduleAdmissionUnavailable, delete_canonical_definition
+
+    try:
+        await delete_canonical_definition(schedule_id)
+    except ScheduleAdmissionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
     await _writable_schedule(request, schedule_id, require_active=False)
+    await _delete_canonical(schedule_id)
     stores.schedules.pop(schedule_id, None)
 
 
