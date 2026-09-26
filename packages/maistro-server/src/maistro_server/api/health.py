@@ -200,32 +200,28 @@ async def readiness(
     }
     all_ok = all(c.status == "ok" for c in checks.values())
     detailed = _admin_diagnostics_authorized(credentials, settings)
-
-    if not all_ok:
-        if detailed:
-            result = DetailedHealthResponse(
-                status="degraded",
-                uptime_seconds=round(uptime, 1),
-                service="maistro-engine",
-                version=request.app.version,
-                checks=checks,
-                effective_resource_policy=settings.effective_resource_policy().as_dict(),
-                container_limits=read_effective_container_limits(CGROUP_ROOT).as_dict(),
-                strike_tracker=_strike_tracker_diagnostics(container),
-            )
-            return JSONResponse(content=result.model_dump(), status_code=503)
-        # Do not disclose which dependency, policy, or backend failed to an
-        # anonymous probe; operators use the secured metrics path instead.
-        return JSONResponse(content={"status": "not_ready"}, status_code=503)
-    if detailed:
-        return DetailedHealthResponse(
-            status="ok",
+    container_limits = read_effective_container_limits(CGROUP_ROOT).as_dict()
+    result = (
+        DetailedHealthResponse(
+            status="ok" if all_ok else "degraded",
             uptime_seconds=round(uptime, 1),
             service="maistro-engine",
             version=request.app.version,
             checks=checks,
             effective_resource_policy=settings.effective_resource_policy().as_dict(),
-            container_limits=read_effective_container_limits(CGROUP_ROOT).as_dict(),
+            container_limits=container_limits,
             strike_tracker=_strike_tracker_diagnostics(container),
         )
+        if detailed
+        else None
+    )
+
+    if not all_ok:
+        if result is not None:
+            return JSONResponse(content=result.model_dump(), status_code=503)
+        # Do not disclose which dependency, policy, or backend failed to an
+        # anonymous probe; operators use the secured metrics path instead.
+        return JSONResponse(content={"status": "not_ready"}, status_code=503)
+    if result is not None:
+        return result
     return {"status": "ok"}
