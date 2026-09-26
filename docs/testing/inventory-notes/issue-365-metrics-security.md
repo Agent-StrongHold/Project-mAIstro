@@ -509,3 +509,68 @@ Started from the preserved merge-conflict state (3 unmerged files vs develop
   durable-events, Gate C coincurve/3.14) were already reported green at
   `7cf1052ad` by the seventh verification and are superseded by the live
   alembic/formal evidence above where re-checked.
+
+## Ninth verification + ledger repair (repair lane, head 0f8f793d8)
+
+Ninth independent run. The prior deterministic verifier run (job
+`dfe355152de240aa80e8539a8e53ba11`) failed exactly one check:
+`check-suite-inventory.py` exiting 2 with `recorded suites with no collection
+recipe: tests`. The "develop sync conflict preserved in worktree" block from
+that round resolved as a no-op: the worktree arrived clean at `0f8f793d8`,
+which is itself the merge of the develop base `d2c74137d` into auto-365
+(merge commit `0f8f793d8`, no unmerged paths).
+
+### Root cause and repair of the ledger failure
+
+`issue-365-health-readiness-reconciliation.md` recorded an
+`inventory-delta` line `tests: +0`. `tests` (no trailing slash) is not a
+`RECIPES` key in `check-suite-inventory.py` — the root suite is keyed
+`tests/` — and the gate deliberately refuses any recorded suite it cannot
+collect. The line also recorded nothing: the root `tests/api/test_health.py`
+cutover it documented kept the same item count, and per the ledger's own
+design a change that moves no count records no delta. Repair: delete the
+`tests: +0` line (keeping the valid `packages/maistro-server/tests: +2`).
+No count moved; no inventory-delta for this note edit.
+
+### Freshly executed evidence at this head
+
+- `uv run python scripts/check-suite-inventory.py`: **exit 0, all 14 suites
+  match the recorded inventory** (full collection: core 11260, server 400,
+  root tests/ 3995, formal/ 664, etc.); the verifier's exact scoped
+  invocation `--suite packages/maistro-core/tests` also exits 0.
+- `uv run ruff check .`: pass. `uv run ruff format --check .`: 2584 files,
+  pass.
+- Vulture exact-debt-ledger CI-repair gate
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`): **exit 0** — 1403 reviewed identities →
+  1402 findings, baseline base d2c74137df82 → candidate 0f8f793d83bd, no
+  unbanked or unauthorized identities (the eighth round's ledger repair
+  still holds; no further amendment needed).
+- Focused pytest (core `test_metrics.py` + `resilience/test_slo.py` +
+  `security/test_resource_policy.py`; server `test_metrics.py`,
+  `test_health.py`, `test_rate_limit.py`,
+  `test_resource_policy_health.py`, `test_strike_tracker_health.py`; root
+  `tests/api/test_health.py`): **162 passed**.
+- Independent full-app acceptance probe (`maistro_server.main.app` via
+  TestClient, per-IP limiter raised probe-only via
+  `RATE_LIMIT_PER_MINUTE`/`RATE_LIMIT_BURST` env so the adversarial flood
+  is measured rather than throttled): **27/27 checks pass** —
+  anonymous `/metrics` → 401 generic body, zero metric families; arbitrary
+  user Bearer → 401; wrong-scope service key → 403, no families;
+  `X-Forwarded-*` alone → 401; scoped scraper → 200 Prometheus exposition
+  via `X-Service-Key`, `Authorization: Bearer sk-svc-…`, and through proxy
+  headers, payload contains no key material; `/health` and `/health/live`
+  exactly `{"status":"ok"}`; `/health/startup` only
+  `{status, startup_complete}`; `/health/ready` anonymous → 503 exactly
+  `{"status":"not_ready"}` with no dependency detail; user-scope →
+  status-only; admin → full detailed payload (checks,
+  effective_resource_policy, container_limits, strike_tracker).
+- #818 re-proven on the full app: 300 distinct random 24-char attacker
+  paths added exactly **1** new `http_requests_total` series
+  (`route="unrouted"`, status 404); no attacker-controlled text appears in
+  any label value; live label keys across the rendered registry are exactly
+  `dependency`, `le`, `method`, `outcome`, `route`, `status`.
+- Registry family backstop re-proven first-hand:
+  `MetricsRegistry(max_series_per_metric=10, max_metrics_per_registry=50)`
+  minted 200 dynamic families → 50 rendered, refusal count 150.0 in the
+  unlabeled `metrics_registry_overflow_total` (read via `collect_all()`).

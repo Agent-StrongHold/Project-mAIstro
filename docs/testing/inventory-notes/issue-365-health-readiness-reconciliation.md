@@ -1,7 +1,6 @@
 ---
 inventory-delta:
   packages/maistro-server/tests: +2
-  tests: +0
 ---
 
 # #365 / #1567 readiness-diagnostics reconciliation (develop sync)
