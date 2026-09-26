@@ -35,7 +35,8 @@ ADR-080 part (D) pins down the retrieval score as
 `(bm25_relevance + vector_similarity) * memory_weight`, replacing ADR-016's under-specified
 "weight x word-overlap" retrieval. `packages/maistro-core/src/maistro/memory/episodic/retrieval.py`
 exists today but its current ranking does not implement this hybrid formula — it needs the BM25
-(or pg_trgm) lexical term and the embedding vector term (per ADR-079's model registry) combined and
+(or pg_trgm) lexical term and the embedding vector term (sourced via whatever embedding model the
+model registry exposes — see ADR-079, Proposed, below) combined and
 scaled by the memory's current `weight` (which SPEC-240 makes time/feedback-dynamic).
 
 ## Goals
@@ -47,14 +48,18 @@ scaled by the memory's current `weight` (which SPEC-240 makes time/feedback-dyna
 - `lexical_fn` backed by BM25 or Postgres `pg_trgm` (whichever the existing episodic store already
   has indexing support for — check `memory/episodic/store.py` before choosing, to avoid introducing
   a second lexical index).
-- `vector_fn` backed by the embedding similarity already available via ADR-079's model registry.
+- `vector_fn` backed by the embedding similarity already available via the model registry
+  (ADR-079 — Proposed design context; the concrete contract is the existing `EmbeddingClient`
+  interface, not the ADR).
 
 ## Non-goals
 
 - Decay/reinforcement (SPEC-240, a dependency — retrieval reads `memory.weight`, which SPEC-240
   makes dynamic).
 - Consolidation (SPEC-241) and cross-scope consent (SPEC-242) — orthogonal.
-- Choosing or training a new embedding model — reuses whatever ADR-079 already registers.
+- Choosing or training a new embedding model — reuses whatever embedding the model registry
+  currently serves (per the existing `EmbeddingClient` wiring; ADR-079's registry model remains
+  Proposed).
 - Query expansion / reranking beyond the single hybrid score formula ADR-080 specifies.
 
 ## Decision
@@ -84,7 +89,8 @@ def rank(
 `lexical_fn`/`vector_fn` are injected (protocol-driven DI, matching SPEC-241's pattern) so the
 ranking formula is unit-testable without a real Postgres index or embedding call; the production
 wiring in `memory/episodic/retrieval.py` supplies real implementations backed by `pg_trgm`/BM25 and
-the ADR-079 embedding client.
+the existing `EmbeddingClient` (the concrete contract ADR-079's proposed registry would route to;
+ADR-079 itself is non-authoritative Proposed design context here).
 
 ## Acceptance criteria
 
@@ -118,3 +124,4 @@ the ADR-079 embedding client.
 - `packages/maistro-core/src/maistro/memory/episodic/store.py`
 - [ADR-080: Memory Dynamics](../adr/ADR-080-memory-dynamics.md)
 - [ADR-079: Model registry, routing, embeddings](../adr/ADR-079-model-registry-routing-embeddings.md)
+  (Proposed — design context; the normative embedding contract is `EmbeddingClient`)
