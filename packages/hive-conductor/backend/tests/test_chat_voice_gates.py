@@ -782,6 +782,45 @@ async def test_reachable_chat_workflow_route_passes_verified_principal(
 
 
 @pytest.mark.asyncio
+async def test_chat_workflow_route_refuses_an_unauthenticated_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[tuple[dict[str, Any], str]] = []
+
+    async def run(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        executed.append((args, user_id))
+        return {}
+
+    monkeypatch.setattr(chat, "_execute_workflow_with_approval", run)
+    anonymous = SimpleNamespace(state=SimpleNamespace(user=None))
+    with pytest.raises(HTTPException) as exc:
+        await chat.run_workflow(chat.RunWorkflowBody(dag_id="dag-1"), anonymous)
+    assert exc.value.status_code == 401
+    assert executed == []
+
+
+@pytest.mark.asyncio
+async def test_chat_workflow_route_accepts_username_principal_and_omits_empty_goal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A username-only principal still names a user, and no goal means no
+    fabricated goal rides the approval request."""
+
+    captured: list[tuple[dict[str, Any], str]] = []
+
+    async def run(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        captured.append((args, user_id))
+        return {"run_id": "run-route"}
+
+    monkeypatch.setattr(chat, "_execute_workflow_with_approval", run)
+    named = SimpleNamespace(state=SimpleNamespace(user={"username": "blake"}))
+    result = await chat.run_workflow(chat.RunWorkflowBody(dag_id="dag-2"), named)
+
+    assert result["run_id"] == "run-route"
+    assert captured == [({"dag_id": "dag-2"}, "blake")]
+
+
+@pytest.mark.asyncio
 async def test_chat_workflow_route_waits_on_shared_inbox_then_executes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -976,6 +1015,131 @@ async def test_reachable_workflow_approval_uses_canonical_inbox(
     assert seen[0].params["request_digest"] == chat_gate._workflow_request_digest(
         {"dag_id": "dag-1", "goal": "approved goal"}
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("approved", "actor", "with_authority", "expected_reason"),
+    [
+        (False, "admin-1", True, "approval_denied"),
+        (True, "", False, "missing_authority"),
+        (True, "", True, "missing_actor"),
+    ],
+)
+async def test_workflow_execution_refusals_name_their_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    approved: bool,
+    actor: str,
+    with_authority: bool,
+    expected_reason: str,
+) -> None:
+    """A denial, an unsigned approval, and an actor-less approval all refuse —
+    and the audit row names which one happened."""
+
+    import services.engine
+    import stores
+
+    from maistro.capabilities.authority import ApprovalAuthority
+    from maistro.capabilities.slots.approval import ApprovalDecision
+
+    authority = (
+        ApprovalAuthority(
+            kind="human",
+            principal="admin-1",
+            scope="run_workflow",
+            evidence_id="evidence-1",
+        )
+        if with_authority
+        else None
+    )
+
+    class _ApprovalProvider:
+        async def request(self, request: Any) -> ApprovalDecision:
+            return ApprovalDecision(
+                request_id=request.request_id,
+                approved=approved,
+                actor=actor,
+                authority=authority,
+            )
+
+    class _Capabilities:
+        async def resolve(self, _: str) -> _ApprovalProvider:
+            return _ApprovalProvider()
+
+    class _Engine:
+        capabilities = _Capabilities()
+
+    executed: list[Any] = []
+
+    async def execute(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        executed.append((args, kwargs))
+        return {}
+
+    _reset_audit()
+    monkeypatch.setattr(services.engine, "get_engine", lambda: _Engine())
+    monkeypatch.setattr(service, "_execute_tool", execute)
+    result = await service._execute_workflow_with_approval({"dag_id": "dag-1"}, "user-1")
+
+    assert result["blocked"] is True
+    assert result["approval_request_id"]
+    assert executed == []
+    rows = [
+        entry
+        for entry in stores.audit_log.values()
+        if entry["action"] == "chat_workflow_approval_refused"
+    ]
+    assert rows[-1]["detail"]["refusal_reason"] == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_unapproved_model_workflow_call_is_routed_through_the_approval_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model-authored run_workflow call never executes directly; it is
+    delegated to the approval seam even when it passed the text scan."""
+
+    delegated: list[tuple[dict[str, Any], str]] = []
+
+    async def approval_seam(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        delegated.append((args, user_id))
+        return {"run_id": "run-delegated", "status": "completed"}
+
+    monkeypatch.setattr(service, "_execute_workflow_with_approval", approval_seam)
+    result, _summary = await service._gated_execute_tool(
+        "run_workflow", {"dag_id": "dag-1"}, "user-1", "gate-wf"
+    )
+
+    assert result["run_id"] == "run-delegated"
+    assert delegated == [({"dag_id": "dag-1"}, "user-1")]
+
+
+@pytest.mark.asyncio
+async def test_approved_tool_call_carries_its_evidence_to_the_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def execute(
+        tool_name: str, args: dict[str, Any], user_id: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        calls.append({"tool": tool_name, "args": args, "user_id": user_id, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "_execute_tool", execute)
+    evidence = {"approval_id": "approval-1", "actor": "admin-1"}
+    result, _summary = await service._gated_execute_tool(
+        "restart_stack",
+        {"service": "api"},
+        "user-1",
+        "gate-ev",
+        approved=True,
+        approval_evidence=evidence,
+    )
+
+    assert result == {"ok": True}
+    assert calls[0]["tool"] == "restart_stack"
+    assert calls[0]["approved"] is True
+    assert calls[0]["approval_evidence"] is evidence
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,37 @@ def test_authority_surface_importable_from_package_root() -> None:
     assert verify_approval_authority(signed, approval_signing_secret())
 
 
+def test_verify_approval_authority_fails_closed_without_secret_or_signature() -> None:
+    """Either half of the HMAC pair missing means the authority proves nothing."""
+
+    from maistro.capabilities import (
+        ApprovalAuthority,
+        approval_signing_secret,
+        sign_approval_authority,
+        verify_approval_authority,
+    )
+
+    unsigned = ApprovalAuthority(
+        kind="human",
+        principal="principal-1",
+        scope="run_workflow",
+        evidence_id="request-1",
+    )
+    secret = approval_signing_secret()
+    signed = ApprovalAuthority(
+        kind="human",
+        principal="principal-1",
+        scope="run_workflow",
+        evidence_id="request-1",
+        signature=sign_approval_authority(unsigned, secret),
+    )
+
+    # A signature verified without the deployment secret proves nothing.
+    assert verify_approval_authority(signed, "") is False
+    # A deployment secret cannot vouch for an unsigned authority.
+    assert verify_approval_authority(unsigned, secret) is False
+
+
 def test_all_publishes_authority_names() -> None:
     import maistro.capabilities as capabilities
 
