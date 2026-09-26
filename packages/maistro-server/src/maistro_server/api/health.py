@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 import maistro.agents.circuit_breaker as circuit_breaker
 from maistro.config.settings import Settings, get_settings
 from maistro.http import shared_client_stats
+from maistro.security.container_limits import CGROUP_V2_ROOT, read_effective_container_limits
+from maistro_server.api.auth import resolve_token_principal, security_scheme
 from maistro_server.startup import StartupPhase, get_startup_phase
 
 router = APIRouter(tags=["health"])
+
+_start_time = time.monotonic()
+
+CGROUP_ROOT = CGROUP_V2_ROOT
 
 
 class ProbeResult(BaseModel):
@@ -28,6 +35,42 @@ class ProbeResult(BaseModel):
 class StartupHealthResponse(BaseModel):
     status: Literal["ok", "starting", "failed"]
     startup_complete: bool
+
+
+class DetailedHealthResponse(BaseModel):
+    status: str  # "ok", "degraded", "unhealthy"
+    uptime_seconds: float
+    service: str
+    version: str
+    checks: dict[str, ProbeResult]
+    effective_resource_policy: dict[str, int | float | bool]
+    container_limits: dict[str, int | float | str] | None
+    strike_tracker: dict[str, str | bool]
+
+
+def _admin_diagnostics_authorized(
+    credentials: HTTPAuthorizationCredentials | None, settings: Settings
+) -> bool:
+    """Detailed readiness diagnostics are operational configuration (#365).
+
+    They are served only when API auth is enabled and the caller presents a
+    valid admin-scoped token. Anonymous or lower-scoped probes — and any probe
+    against an auth-disabled deployment, where no authorization decision can
+    be made at all — get the minimal status-only contract.
+    """
+    if not settings.api_keys:
+        return False
+    token = credentials.credentials if credentials is not None else ""
+    principal = resolve_token_principal(token, settings)
+    return principal is not None and principal.is_admin
+
+
+def _strike_tracker_diagnostics(container: Any) -> dict[str, str | bool]:
+    """Report the configured strike tracker without touching its state."""
+    tracker = getattr(container, "strike_tracker", None)
+    if tracker is None:
+        return {"enabled": False, "backend": "none"}
+    return {"enabled": True, "backend": type(tracker).__name__}
 
 
 async def _check_postgres(settings: Settings) -> ProbeResult:
@@ -108,9 +151,19 @@ async def startup(request: Request, response: Response) -> StartupHealthResponse
 
 @router.get("/health/ready", response_model=None)
 async def readiness(
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
-) -> dict[str, str] | JSONResponse:
-    """Minimal public readiness response after dependency checks."""
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security_scheme)],
+) -> dict[str, str] | DetailedHealthResponse | JSONResponse:
+    """Minimal public readiness response after dependency checks.
+
+    Reconciliation of #365 (public health exposes only liveness/readiness)
+    with #1567 (operators can read what the process actually enforces): the
+    detailed diagnostic payload is served only to admin-scoped callers; every
+    other caller gets the status-only contract.
+    """
+    uptime = time.monotonic() - _start_time
+    container = getattr(request.app.state, "container", None)
     docker_result = (
         await _check_docker()
         if settings.sandbox.readiness_required
@@ -146,9 +199,33 @@ async def readiness(
         "http_pool": http_pool_result,
     }
     all_ok = all(c.status == "ok" for c in checks.values())
+    detailed = _admin_diagnostics_authorized(credentials, settings)
 
     if not all_ok:
+        if detailed:
+            result = DetailedHealthResponse(
+                status="degraded",
+                uptime_seconds=round(uptime, 1),
+                service="maistro-engine",
+                version=request.app.version,
+                checks=checks,
+                effective_resource_policy=settings.effective_resource_policy().as_dict(),
+                container_limits=read_effective_container_limits(CGROUP_ROOT).as_dict(),
+                strike_tracker=_strike_tracker_diagnostics(container),
+            )
+            return JSONResponse(content=result.model_dump(), status_code=503)
         # Do not disclose which dependency, policy, or backend failed to an
         # anonymous probe; operators use the secured metrics path instead.
         return JSONResponse(content={"status": "not_ready"}, status_code=503)
+    if detailed:
+        return DetailedHealthResponse(
+            status="ok",
+            uptime_seconds=round(uptime, 1),
+            service="maistro-engine",
+            version=request.app.version,
+            checks=checks,
+            effective_resource_policy=settings.effective_resource_policy().as_dict(),
+            container_limits=read_effective_container_limits(CGROUP_ROOT).as_dict(),
+            strike_tracker=_strike_tracker_diagnostics(container),
+        )
     return {"status": "ok"}

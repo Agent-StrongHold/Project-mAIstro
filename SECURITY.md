@@ -164,6 +164,28 @@ not add operational configuration or dependency details to public probes.
 label, and cardinality-backstop requirements are documented in
 [`docs/security/metrics-endpoint.md`](docs/security/metrics-endpoint.md).
 
+### Readiness diagnostics
+
+`GET /health/ready` reports the effective values under
+`effective_resource_policy`, including `unsafe_overrides_enabled`, so what a
+process is actually enforcing can be read rather than inferred from the
+environment it was supposed to have been given — but only when the request
+carries a valid admin-scoped bearer token against an auth-enabled deployment.
+Every other caller gets the status-only minimal contract, because `/health`
+is unauthenticated and exempt from rate limiting, and dependency/policy/backend
+detail helps an attacker size an attack.
+The same admin-gated response carries `container_limits`: the cgroup v2 memory,
+PID and CPU ceilings set at the hierarchy root. Under a private cgroup
+namespace, which is the Docker/containerd default on v2 hosts, that root is the
+container's own cgroup. `"unbounded"` means no limit is set at that level,
+though an enclosing cgroup may still impose one. `"unknown"` means nothing
+readable is there: cgroup v1, a non-namespaced host-root view, or unparseable
+content. Deployment capacity helps an attacker size a resource-exhaustion
+attempt, so `container_limits` — like the rest of the detailed payload — is
+withheld from non-admin callers, and an auth-disabled deployment serves the
+minimal contract to everyone. The engine reports these values but does not
+enforce them, and the supported Compose profiles do not set them yet (#862).
+
 ### Gaps against Stronghold's inventory
 
 Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have an equivalent for:

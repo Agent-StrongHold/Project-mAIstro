@@ -156,8 +156,8 @@ class Package:
 # above, because they are gated behind extras. Both are still swept in `all` mode,
 # so neither is exempt from the gate — only from the no-extras tier:
 #   maistro.cli       typer/rich  -> `tui` extra
-#   maistro.identity  bip-utils   -> `identity` extra (coincurve has no wheel for
-#                                    the Python the API image ships)
+#   maistro.identity  bip-utils   -> `identity` extra (the Conductor image pins
+#                                    CPython 3.13 for its native wheel set)
 #: The four files `maistro_design.systems.importer` reads for one system.
 #: Mirrors `importer.ESSENTIAL_FILES`; kept here rather than imported because
 #: this script must run before anything is installed.

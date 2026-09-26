@@ -139,9 +139,11 @@ class Conduit:
         turn_id: str | None = None,
     ) -> dict[str, Any]:
         last_user_msg = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                last_user_msg = msg.get("content", "")
+        last_user_index = len(messages)
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "user":
+                last_user_msg = messages[index].get("content", "")
+                last_user_index = index
                 break
 
         if not last_user_msg:
@@ -158,7 +160,11 @@ class Conduit:
         # is answered without a Run and refused without a scan — because the two
         # protect different things: one is a record, the other is the door.
         try:
-            gate_result = await self.container.gate.process_input(last_user_msg, auth=auth)
+            gate_result = await self.container.gate.process_input(
+                last_user_msg,
+                conversation_context=messages[:last_user_index],
+                auth=auth,
+            )
         except Exception:
             logger.exception("Gate scan failed; refusing the turn")
             return _stop_response(
