@@ -5,7 +5,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import stores
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from models.schemas import Schedule
 from pydantic import BaseModel, ConfigDict, field_validator
 from services import dag_run_inspection, workspace_authority
@@ -53,6 +53,24 @@ def _check_max_runs(value: int | None) -> int | None:
     if value is not None and value < 1:
         raise ValueError("max_runs must be at least 1 when set")
     return value
+
+
+def _check_fire_id(value: str | None) -> str | None:
+    """A manual fire's identity is an opaque token, bounded, and non-empty.
+
+    An empty or whitespace token would mint `"manual:" + ""` as an occurrence
+    identity shared by every such request — the opposite of the stable
+    per-logical-request identity it exists to be.  The length bound keeps a
+    stray paste from smuggling unbounded data into durable Run provenance.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("fire_id must be a non-empty token when set")
+    if len(stripped) > 200:
+        raise ValueError("fire_id must be at most 200 characters")
+    return stripped
 
 
 def _actor(request: Request) -> str:
@@ -222,8 +240,29 @@ async def delete_schedule(schedule_id: str, request: Request) -> None:
     stores.schedules.pop(schedule_id, None)
 
 
+class ManualFireBody(BaseModel):
+    """Optional body of `POST /{id}/run` — the manual fire's stable identity.
+
+    `fire_id` is the occurrence identity of the hand fire (#1120): a caller
+    retrying the same logical request sends the same token and reconciles to
+    the Run the first call created, instead of minting a second one.  Opaque to
+    the server.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    fire_id: str | None = None
+
+    _bound = field_validator("fire_id")(_check_fire_id)
+
+
 @router.post("/{schedule_id}/run", response_model=Schedule)
-async def run_schedule(schedule_id: str, request: Request) -> Schedule:
+async def run_schedule(
+    schedule_id: str,
+    request: Request,
+    body: ManualFireBody | None = None,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Schedule:
     """Fire the schedule now, for real.
 
     This used to stamp `last_run` and return — no Run created, no cursor
@@ -233,12 +272,27 @@ async def run_schedule(schedule_id: str, request: Request) -> Schedule:
 
     A fire that cannot happen is a 409 rather than a silent stamp: the caller
     asked for work to start, and it did not.
+
+    The fire's occurrence identity is the caller's `fire_id` (this body) or
+    `Idempotency-Key` header — the standard retry identity (#1120).  Two calls
+    carrying the same identity are one logical firing: the retry reconciles to
+    the Run the first call created and no second Run exists.  A call carrying
+    no identity is its own deliberate firing, with a server-minted token.
     """
     await _writable_schedule(request, schedule_id)
     from services.scheduler import ScheduleAdmissionUnavailable, ScheduleNotFireable, fire_now
 
+    raw = (body.fire_id if body is not None else None) or idempotency_key
+    # The header is held to the body's `fire_id` contract (#1120): stripped,
+    # opaque, and bounded, because the token becomes durable Run provenance
+    # and half of a unique occurrence claim. A blank header is no identity —
+    # the server mints one — rather than a 422, matching the absent case.
     try:
-        await fire_now(schedule_id)
+        fire_id = _check_fire_id(raw) if raw and raw.strip() else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        await fire_now(schedule_id, fire_id=fire_id)
     except ScheduleNotFireable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ScheduleAdmissionUnavailable as exc:

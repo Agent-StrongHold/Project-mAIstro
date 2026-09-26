@@ -87,6 +87,7 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # 036 already existed on the historical 035 branch when the consumer and
     # task migrations landed, and develop's chain kept growing while this
     # branch was open (039 for #1531, then 040 for #1079, each taking the
+<<<<<<< HEAD
     # parent this revision had claimed). Merging that state into the #1057
     # branch — which had already taken 040's child slot with
     # ``041_task_identity_provenance`` — forked the chain again, so it now
@@ -98,6 +99,23 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     assert revision.down_revision == "042_task_receipt_dispatch_inputs"
     assert directory.get_heads() == ["036_audit_log_org_scope"]
     walked = {item.revision for item in directory.walk_revisions("base", revision.revision)}
+=======
+    # parent this revision had claimed). It therefore follows the current
+    # develop chain tip (040, the tip of 035 -> ... -> 038 -> 039 -> 040) so
+    # every deployment's ordinary ``upgrade head`` applies the audit scope
+    # migration rather than leaving it on a competing branch.
+    assert revision.down_revision == "040"
+    # #1120's manual-fire occurrence migration (042) re-parented onto this
+    # revision when the develop chain grew again while that branch was open —
+    # the same extension this revision's own docstring records for itself.
+    # The contract under test is not that the audit migration IS the tip
+    # (any later migration on any open branch would break that); it is that
+    # a plain ``upgrade head`` still applies it: exactly one head, with the
+    # audit scope migration on that head's chain.
+    heads = directory.get_heads()
+    assert len(heads) == 1
+    walked = {item.revision for item in directory.walk_revisions("base", heads[0])}
+>>>>>>> b906cc577fbb209d949d94606671c51ac57d4b2b
     assert revision.revision in walked
 
 
