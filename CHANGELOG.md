@@ -650,6 +650,21 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Expired task idempotency claims are now purged (#325, partial).**
+  `purge_expired` existed on every `task_idempotency` backend, but nothing in
+  production called it, so every `POST /tasks` left a row behind forever. The
+  claim path shared by all three backends now runs the purge itself, just
+  before claiming. It runs at most once every 300 s per store (monotonic
+  clock; the first run comes one interval after the store is built), deletes
+  at most 500 rows per run, and never waits for a purge already running. A run
+  that deletes a full 500 rows means a backlog, so the next claim purges again
+  without waiting. A failed purge is logged and counted in
+  `maistro_task_idempotency_purge_failures_total`; it never fails the
+  admission. The PostgreSQL purge now re-checks `expires_at` on each
+  row it deletes, so a claim another replica just renewed survives. A
+  PostgreSQL test covers that race. The retention inventory lists
+  `task_idempotency` as `ttl_purge`.
+
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
   with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,
