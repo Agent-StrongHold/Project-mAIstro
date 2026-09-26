@@ -14,7 +14,6 @@ of their own.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -29,7 +28,11 @@ from maistro.projects.scope import (
     ProjectScopeDenied,
     ProjectScopedResource,
 )
-from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
+from maistro.sqlite_schema import (
+    connection_write_lock,
+    execute_schema_script,
+    serialized_schema_upgrade,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -106,8 +109,12 @@ class SqliteProjectScopeStore:
         # connection's first DML statement even without an explicit `BEGIN`,
         # so an unlocked writer left mid-statement would make a locked one's
         # `BEGIN IMMEDIATE` raise "cannot start a transaction within a
-        # transaction" the moment their awaits interleaved.
-        self._write_lock = asyncio.Lock()
+        # transaction" the moment their awaits interleaved. Keyed by the
+        # connection rather than minted per store (#38): the Run store on this
+        # same connection takes the identical lock, so its `create_run` scope
+        # validation cannot interleave with this store's `delete` ownership
+        # check -- the orphaned-Run window the M1-A2 review found.
+        self._write_lock = connection_write_lock(conn)
 
     def set_run_owner(self, owns_runs: Callable[[str], Awaitable[bool]]) -> None:
         """Register the predicate `delete()` consults for Run ownership."""
@@ -405,33 +412,45 @@ class SqliteProjectScopeStore:
         return updated
 
     async def delete(self, project_id: str) -> None:
-        """Delete an empty non-root Project while retaining integrity checks."""
+        """Delete an empty non-root Project while retaining integrity checks.
 
-        project = await self._require(project_id)
-        if project.is_root:
-            raise ProjectIntegrityError("Root Project cannot be deleted")
-        if await self._exists(
-            "SELECT 1 FROM canonical_projects WHERE parent_project_id = ? LIMIT 1",
-            (project_id,),
-        ):
-            raise ProjectNotEmpty("Project has child Projects")
-        if await self._exists(
-            "SELECT 1 FROM canonical_project_resources WHERE project_id = ? LIMIT 1",
-            (project_id,),
-        ):
-            raise ProjectNotEmpty("Project has scoped resources")
-        if await self._exists(
-            "SELECT 1 FROM canonical_project_memberships WHERE project_id = ? LIMIT 1",
-            (project_id,),
-        ):
-            raise ProjectNotEmpty("Project has ProjectMembership records")
-        # The Run tables belong to `runs.sqlite_store`, so this store asks
-        # rather than joining: deleting a Project out from under its Run history
-        # is the rule, and only the Run store can answer whether it applies.
-        # PostgreSQL expresses the same rule as a foreign key.
-        if self._owns_runs is not None and await self._owns_runs(project_id):
-            raise ProjectNotEmpty("Project has canonical Runs")
+        Every refusal shares the write-critical section with the DELETE, the
+        Run-ownership one included (#38): the check and the deletion are one
+        check-then-act pair over tables another store on this connection
+        writes, and a `create_run` committing between an unlocked check and a
+        locked DELETE left a Run filed under a Project that no longer existed
+        -- the M1-A2 review's orphaned-Run interleaving. Inside the section the
+        pair is atomic against every writer that takes the same per-connection
+        lock; `BEGIN IMMEDIATE` holds SQLite's write lock before the reads, so
+        a second process's `create_run` -- which opens its own transaction
+        before its scope validation -- serializes the same way.
+        """
+
         async with self._serialized_write():
+            project = await self._require(project_id)
+            if project.is_root:
+                raise ProjectIntegrityError("Root Project cannot be deleted")
+            if await self._exists(
+                "SELECT 1 FROM canonical_projects WHERE parent_project_id = ? LIMIT 1",
+                (project_id,),
+            ):
+                raise ProjectNotEmpty("Project has child Projects")
+            if await self._exists(
+                "SELECT 1 FROM canonical_project_resources WHERE project_id = ? LIMIT 1",
+                (project_id,),
+            ):
+                raise ProjectNotEmpty("Project has scoped resources")
+            if await self._exists(
+                "SELECT 1 FROM canonical_project_memberships WHERE project_id = ? LIMIT 1",
+                (project_id,),
+            ):
+                raise ProjectNotEmpty("Project has ProjectMembership records")
+            # The Run tables belong to `runs.sqlite_store`, so this store asks
+            # rather than joining: deleting a Project out from under its Run
+            # history is the rule, and only the Run store can answer whether it
+            # applies. PostgreSQL expresses the same rule as a foreign key.
+            if self._owns_runs is not None and await self._owns_runs(project_id):
+                raise ProjectNotEmpty("Project has canonical Runs")
             await self._conn.execute(
                 "DELETE FROM canonical_projects WHERE project_id = ?",
                 (project_id,),

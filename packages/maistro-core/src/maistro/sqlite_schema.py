@@ -25,6 +25,26 @@ def _connection_lock(conn: Any) -> asyncio.Lock:
         return lock
 
 
+def connection_write_lock(conn: Any) -> asyncio.Lock:
+    """The one in-process write lock every store on this connection shares.
+
+    `serialized_schema_upgrade` already keys schema work by connection so two
+    tasks cannot interleave transactions on one aiosqlite connection. The
+    durable stores sharing that connection need the same identity for their
+    *data* writes (#38): `SqliteProjectScopeStore.delete` refuses a Project
+    that owns Runs, and `SqliteRunStore.create_run` validates the Graph's
+    Project before inserting -- two check-then-act pairs over the same tables
+    from two stores. Private locks per store serialize each store against
+    itself and leave the cross-store pair racing (a Run committed after the
+    ownership check, then a Project deleted out from under it: the M1-A2
+    review's orphaned-Run interleaving). Keying by connection makes the pair
+    one critical section in-process; each side's `BEGIN IMMEDIATE` is what a
+    second process sharing the file additionally needs, as #1147 established
+    for the move-cycle window.
+    """
+    return _connection_lock(conn)
+
+
 @asynccontextmanager
 async def serialized_schema_upgrade(conn: Any) -> AsyncIterator[None]:
     """Serialize one schema upgrade within and across processes.

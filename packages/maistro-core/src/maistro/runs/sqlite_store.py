@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from collections.abc import Mapping
@@ -58,7 +57,11 @@ from maistro.runs.store import (
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
 )
-from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
+from maistro.sqlite_schema import (
+    connection_write_lock,
+    execute_schema_script,
+    serialized_schema_upgrade,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -342,8 +345,13 @@ class SqliteRunStore:
         # decorator's declared return type is `Coroutine`, which pyright does
         # not accept where the `RunStore` protocol asks for the `CoroutineType`
         # a plain `async def` produces — so the store silently stopped
-        # satisfying its own protocol.
-        self._write_lock = asyncio.Lock()
+        # satisfying its own protocol. Keyed by the connection rather than
+        # minted per store (#38): the Project scope store on this same
+        # connection takes the identical lock for its `delete` ownership
+        # check, so a `create_run` committing between that check and the
+        # Project's DELETE -- the M1-A2 review's orphaned-Run interleaving --
+        # has no window left to commit through.
+        self._write_lock = connection_write_lock(conn)
         # Staged payload updates, applied and committed together by
         # `_flush`. Only ever non-empty inside one `_write_lock` holder.
         self._pending: list[tuple[tuple[str, str], str, str, str]] = []
@@ -371,70 +379,73 @@ class SqliteRunStore:
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> Run:
         async with self._write_lock:
-            await self._validate_graph_scope(graph)
-            if parent_node_run_id is not None and parent_run_id is None:
-                raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-            if parent_run_id is not None:
-                parent = await self._require_run(parent_run_id)
-                validate_child_scope(
-                    parent,
-                    workspace_id=graph.workspace_id,
-                    project_id=graph.project_id,
+            # The write transaction opens *before* the scope validation read,
+            # not at the first INSERT -- #1147's rule, applied to the Run side
+            # of #38's delete race. `BEGIN IMMEDIATE` takes SQLite's write lock
+            # first, so a second process's Project delete either completes
+            # before this validation reads -- and this Run is refused for a
+            # Project that no longer exists -- or waits until after this
+            # commit, when the delete's own ownership check refuses it. Either
+            # order leaves the Run and the Project agreeing with each other.
+            await self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                await self._validate_graph_scope(graph)
+                await self._validate_new_run_links(
+                    graph,
+                    parent_run_id=parent_run_id,
+                    parent_node_run_id=parent_node_run_id,
                     allow_cross_project=allow_cross_project,
                 )
-                if parent_node_run_id is not None:
-                    parent_node_run = await self._require_node_run(parent_node_run_id)
-                    if parent_node_run.run_id != parent_run_id:
-                        raise RunIntegrityError(
-                            "parent_node_run_id does not belong to parent_run_id",
-                        )
-            run = Run(
-                workspace_id=graph.workspace_id,
-                project_id=graph.project_id,
-                graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
-                parent_run_id=parent_run_id,
-                parent_node_run_id=parent_node_run_id,
-                persona_id=persona_id,
-                actor_principal_id=actor_principal_id,
-                provenance=dict(provenance or {}),
-                retention_expires_at=retention_expires_at,
-            )
-            # Before the insert, not after it: one commit, so there is no window
-            # in which a process death leaves a CREATED Run whose provenance
-            # names a receipt that was already queued.
-            run = admit_in_state(run, initial_status)
-            try:
-                await self._conn.execute(
-                    """INSERT INTO canonical_runs
-                       (run_id, workspace_id, project_id, parent_run_id,
-                        parent_node_run_id, status, payload)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        run.run_id,
-                        run.workspace_id,
-                        run.project_id,
-                        run.parent_run_id,
-                        run.parent_node_run_id,
-                        run.status.value,
-                        json_of(run),
-                    ),
+                run = Run(
+                    workspace_id=graph.workspace_id,
+                    project_id=graph.project_id,
+                    graph=GraphSnapshot.from_graph(graph.model_copy(deep=True)),
+                    parent_run_id=parent_run_id,
+                    parent_node_run_id=parent_node_run_id,
+                    persona_id=persona_id,
+                    actor_principal_id=actor_principal_id,
+                    provenance=dict(provenance or {}),
+                    retention_expires_at=retention_expires_at,
                 )
-            except sqlite3.IntegrityError as exc:
-                # Rolled back before raising, whatever the conflict: the failed
-                # INSERT opened a transaction, and leaving it for the next
-                # caller to inherit would make an unrelated write commit inside
-                # this one. A delegation-key conflict re-raises into
-                # `_reserve_child`'s adopt-the-winner recovery, which must not
-                # inherit the loser's open write transaction either -- the
-                # recovery's next write (or its uncertain-transport pause)
-                # would otherwise hold the database write lock indefinitely.
+                # Before the insert, not after it: one commit, so there is no
+                # window in which a process death leaves a CREATED Run whose
+                # provenance names a receipt that was already queued.
+                run = admit_in_state(run, initial_status)
+                try:
+                    await self._conn.execute(
+                        """INSERT INTO canonical_runs
+                           (run_id, workspace_id, project_id, parent_run_id,
+                            parent_node_run_id, status, payload)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            run.run_id,
+                            run.workspace_id,
+                            run.project_id,
+                            run.parent_run_id,
+                            run.parent_node_run_id,
+                            run.status.value,
+                            json_of(run),
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    # A delegation-key conflict re-raises into `_reserve_child`'s
+                    # adopt-the-winner recovery, which must not inherit the
+                    # loser's open write transaction either -- the recovery's
+                    # next write (or its uncertain-transport pause) would
+                    # otherwise hold the database write lock indefinitely. The
+                    # boundary below rolls back before any of these raises.
+                    occurrence = occurrence_key(run.provenance)
+                    if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
+                        raise
+                    raise DuplicateOccurrence(*occurrence) from exc
+                await self._conn.commit()
+                return run
+            except BaseException:
+                # Rolled back before raising, whatever the conflict: this path
+                # opened the transaction, and leaving it for the next caller to
+                # inherit would make an unrelated write commit inside this one.
                 await self._conn.rollback()
-                occurrence = occurrence_key(run.provenance)
-                if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
-                    raise
-                raise DuplicateOccurrence(*occurrence) from exc
-            await self._conn.commit()
-            return run
+                raise
 
     async def get_run(self, run_id: str) -> Run | None:
         row = await self._fetchone(
@@ -1192,6 +1203,38 @@ class SqliteRunStore:
             )
         if project.workspace_id != graph.workspace_id:
             raise RunIntegrityError("Graph Project does not belong to the Graph Workspace")
+
+    async def _validate_new_run_links(
+        self,
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> None:
+        """Refuse a child Run whose parent links disagree with its scope.
+
+        Extracted from `create_run` unchanged. It runs inside the caller's
+        write transaction, so the parent rows it reads cannot change before
+        the INSERT that depends on them commits (#38's delete race).
+        """
+
+        if parent_node_run_id is not None and parent_run_id is None:
+            raise RunIntegrityError("parent_node_run_id requires parent_run_id")
+        if parent_run_id is not None:
+            parent = await self._require_run(parent_run_id)
+            validate_child_scope(
+                parent,
+                workspace_id=graph.workspace_id,
+                project_id=graph.project_id,
+                allow_cross_project=allow_cross_project,
+            )
+            if parent_node_run_id is not None:
+                parent_node_run = await self._require_node_run(parent_node_run_id)
+                if parent_node_run.run_id != parent_run_id:
+                    raise RunIntegrityError(
+                        "parent_node_run_id does not belong to parent_run_id",
+                    )
 
     async def _require_run(self, run_id: str) -> Run:
         run = await self.get_run(run_id)
