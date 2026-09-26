@@ -118,6 +118,44 @@ re-run by name and pass. `ruff check` / `ruff format --check` clean;
 import-not-found errors under `cli/` (optional `bootstrap` extra not
 installed; files untouched by this branch).
 
+## Develop-sync round (merge ca4caec7d, lane L1204, head ac37487de)
+
+The mandated develop sync (merge origin/develop `ca4caec7d`) forked the chain
+again: develop's `042_manual_fire_occurrence_identity` took
+`036_audit_log_org_scope` as its parent while this branch was open, leaving
+`039_quota_usage_event_identity` and `042` as two heads over the same parent —
+the exact "multiple head revisions" failure resolved three times before.
+Resolution follows the same convention in the opposite direction:
+`039_quota_usage_event_identity` re-parents onto `042` (the develop chain
+tip), restoring the single linear head; `042`'s docstring records the
+reversal, and the `test_audit_scope_migration` conflict resolved to develop's
+durable form (exactly one head, with the audit migration on the head's walked
+path — both sides' assertions hold under the new parentage). Proven on a fresh
+pgvector:pg18 database: `alembic upgrade head` applies
+`040 -> 036_audit_log_org_scope -> 042 -> 039_quota_usage_event_identity` and
+ends single-headed. Post-merge validation, all on that merged tree: full
+`packages/maistro-core/tests` 11009 passed / 116 skipped / 1 xfailed with the
+PG conformance legs live (including
+`test_retrying_one_event_does_not_double_count[memory|sqlite|postgres]`),
+`tests/migrations` 96 passed, `packages/maistro-rsi/tests` 779 passed, mypy
+clean across 721 source files, ruff check/format clean,
+`check-vulture-baseline` (exact-debt-ledger) exit 0, both inventory gates
+pass.
+
+One cross-lane residual, measured and not fixable inside this lane:
+`check-ac-state --run-tests --ratchet` now measures `design_coverage` 33.607
+against the folded floor 38.0924 (held jointly by the `auto-1204`, `auto-1158`
+and `auto-1138` notes, two of which landed here from develop). The fall is a
+corpus-composition effect of the mandated merge — develop's WIP corpus adds
+taken-but-unproven ADR decisions (93 of 156 taken ADRs now score zero, e.g.
+ADR-065 0/26, ADR-081226-69ee 0/13), each new zero decision diluting the
+corpus mean by ~0.64 points. The mechanism's own remedy for a landed corpus
+whose recorded floor no longer holds is a reviewed grant in
+`quality/ratchet-authorizations.json` (owner-reviewed; reads at the base so a
+commit cannot grant itself), which this lane is prohibited from writing. The
+#1204 surfaces are unaffected: every quota/usage criterion of this issue
+remains proven on the merged tree by the runs above.
+
 ## CI-repair round (lane L1204, head 03b48facc)
 
 CI at the develop-merge head failed four checks; all four are addressed with
