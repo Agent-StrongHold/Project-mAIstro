@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -141,67 +143,177 @@ def test_activate_dag_missing_404(admin_client: Any) -> None:
     assert admin_client.post("/v1/dags/missing-dag/activate").status_code == 404
 
 
-def _completed_result(run_id: str = "run-canonical-1") -> dict[str, Any]:
+def _canonical_container(monkeypatch: pytest.MonkeyPatch, workspace_id: str) -> Any:
+    from maistro.graph.durable_runs import CanonicalDurableRunStore, InMemoryGraphContinuationStore
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+    from maistro.workspaces.store import InMemoryWorkspaceStore
+
+    # One scope universe per test: the canonical WorkspaceStore, its Root
+    # Project store, and Run admission all hang off the monkeypatched
+    # Container, so `authorize_hive_dag_scope` and `run_registered_dag`
+    # authorize and admit against the same state the test seeds.
+    projects = InMemoryProjectScopeStore()
+    workspace_store = InMemoryWorkspaceStore(project_store=projects)
+    asyncio.run(projects.create_root(workspace_id))
+    run_store = InMemoryRunStore(project_store=projects)
+    container = SimpleNamespace(
+        config=SimpleNamespace(workspace_id=workspace_id),
+        project_scope_store=projects,
+        workspace_store=workspace_store,
+        run_store=run_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+        a2a_delegator=None,
+        guest_peers=None,
+    )
+    import services.engine as engine
+
+    monkeypatch.setattr(
+        engine,
+        "get_engine",
+        lambda: SimpleNamespace(_agent_port=SimpleNamespace(container=container)),
+    )
+    return container
+
+
+def _route_dag(
+    dag_id: str,
+    *,
+    kind: str,
+    config: dict[str, Any] | None = None,
+    inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
-        "status": "completed",
-        "run_id": run_id,
-        "cycles": 1,
-        "node_results": {
-            "n1": {
-                "role": "worker",
-                "success": True,
-                "response": "did the thing",
-                "model": "model-a",
-            }
-        },
-        "annotations": {},
+        "id": dag_id,
+        "name": dag_id,
+        "description": "route integration",
+        "workspace_id": "route-workspace",
+        "nodes": [{"id": "n1", "kind": kind, "config": config or {}, "inputs": inputs or {}}],
+        "edges": [],
+        "entry_node": "n1",
     }
 
 
-def test_run_dag_success_uses_canonical_run_id(
+def _install_route_workspace(workspace_id: str, user_id: str) -> None:
+    """Create the Workspace in the canonical authority the route admits against.
+
+    The route authorizes through ``workspace_authority``'s canonical store,
+    which (under the test container monkeypatch) is the container's own
+    ``workspace_store``; creating the identity, the owner membership, and the
+    Root Project there is what makes a selection -- or an owner-resolution
+    fallback -- resolvable for the authenticated principal.
+    """
+    from services.workspace_authority import canonical_store_for_tests
+
+    asyncio.run(
+        canonical_store_for_tests().create(
+            creator_user_id=user_id,
+            workspace_id=workspace_id,
+            name=workspace_id,
+        )
+    )
+
+
+def test_created_dag_run_uses_one_canonical_run_for_history_projection(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.graph_runner as graph_runner
+    """The shipped role-shaped editor DAG is a valid registered descriptor."""
+    import stores
+    from services.dag_run_store import get_dag_run_store
 
-    async def ok(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
-        return _completed_result()
+    from maistro.runs import RunStatus
 
-    monkeypatch.setattr(graph_runner, "execute_dag", ok)
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
     dag_id = _seed(admin_client)
-    workspace_id = _workspace(admin_client)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
+    saved = stores.dags[dag_id]
+    assert all(node["kind"] == "hive.legacy_node" for node in saved["nodes"])
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run?workspace_id={workspace_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+
+    run_id = body["run_id"]
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    projection = get_dag_run_store().get_run(run_id)
+    assert canonical is not None
+    assert projection is not None
+    assert projection["canonical_run_id"] == canonical.run_id == run_id
+    assert projection["status"] == canonical.status.value
+    assert [
+        run.run_id for run in asyncio.run(container.run_store.list_by_status(RunStatus.FAILED))
+    ] == [run_id]
+
+
+def test_run_dag_uses_one_canonical_run_for_history_projection(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The HTTP button reaches the registered path and both stores name one Run."""
+    import services.graph_runner as graph_runner
+    import stores
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = "route-workspace"
+    dag_id = "route-canonical-success"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    stores.dags[dag_id] = _route_dag(dag_id, kind="transform.alias_keys")
+
+    async def legacy_path_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the DAG route must not call graph_runner.execute_dag")
+
+    monkeypatch.setattr(graph_runner, "execute_dag", legacy_path_must_not_run)
+    # This DAG carries the authorized Workspace itself, matching the shipped
+    # no-query UI button.
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["execution_id"] == "run-canonical-1"
-    assert body["run_id"] == "run-canonical-1"
-    assert body["result"]["run_id"] == "run-canonical-1"
 
-    from services.dag_run_store import get_dag_run_store
+    run_id = body["run_id"]
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    projection = get_dag_run_store().get_run(run_id)
+    assert canonical is not None
+    assert canonical.run_id == run_id
+    assert canonical.workspace_id == workspace_id
+    assert canonical.status.value == "completed"
+    # Exactly one canonical Run exists for this execution: admission and
+    # traversal share the admitted identity, and no second Run was minted.
+    from maistro.runs import RunStatus
 
-    projection = get_dag_run_store().get_run("run-canonical-1")
+    assert [
+        run.run_id for run in asyncio.run(container.run_store.list_by_status(RunStatus.COMPLETED))
+    ] == [run_id]
     assert projection is not None
-    assert projection["canonical_run_id"] == "run-canonical-1"
-    assert projection["status"] == "completed"
+    assert projection["canonical_run_id"] == canonical.run_id
+    assert projection["workspace_id"] == workspace_id
+    assert projection["status"] == canonical.status.value
     assert projection["event_count"] == 1
 
 
 def test_activate_then_run_dag_with_a_selected_workspace_succeeds(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Replicates the PM-workflow e2e spec's "activate and run a DAG" step
-    (tests/e2e/pm-workflow.spec.ts #06) at the HTTP layer: create, activate,
-    then run with an explicit Workspace selection. Before #766's Workspace
-    scope selection was wired into the e2e spec, this same sequence without a
-    ``workspace_id`` got a 403 (see `test_run_dag_missing_scope_fails_before_execution`
-    above) — this is the corresponding success path the fix restores."""
+    """The PM-workflow e2e "activate and run a DAG" step, executed for real.
+
+    Replicates tests/e2e/pm-workflow.spec.ts #06 at the HTTP layer: create the
+    shipped CRUD shape (role nodes, no stored scope), activate it, then run
+    with an explicit Workspace selection. The route registers the snapshot,
+    admits one canonical Run in the selected Workspace, and answers with that
+    Run's identity even though the role node has no LLM behind it in tests.
+    """
     import services.graph_runner as graph_runner
+    from services.dag_run_store import get_dag_run_store
 
-    async def ok(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
-        return _completed_result("run-activate-then-run")
+    async def legacy_path_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the DAG route must not call graph_runner.execute_dag")
 
-    monkeypatch.setattr(graph_runner, "execute_dag", ok)
+    monkeypatch.setattr(graph_runner, "execute_dag", legacy_path_must_not_run)
 
+    container = _canonical_container(monkeypatch, "route-workspace")
+    _install_route_workspace("activate-ws", "admin")
     create = admin_client.post("/v1/dags", json={"name": "E2E Run Test", "description": "test"})
     assert create.status_code == 201
     dag_id = create.json()["id"]
@@ -210,101 +322,243 @@ def test_activate_then_run_dag_with_a_selected_workspace_succeeds(
     assert activate.status_code == 200
     assert activate.json()["status"] == "active"
 
-    workspace_id = _workspace(admin_client)
-    run = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
+    run = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": "activate-ws"})
     assert run.status_code == 200
     body = run.json()
     assert body["execution_id"]
 
-
-def test_run_dag_canonical_failure_stays_failed(
-    admin_client: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import services.graph_runner as graph_runner
-
-    failed = {
-        "status": "failed",
-        "run_id": "run-failed-1",
-        "cycles": 1,
-        "node_results": {"n1": {"role": "worker", "success": False, "response": "node failed"}},
-        "error": "node failed",
-    }
-
-    async def fail(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise graph_runner.CanonicalDagExecutionError(failed)
-
-    monkeypatch.setattr(graph_runner, "execute_dag", fail)
-    dag_id = _seed(admin_client)
-    workspace_id = _workspace(admin_client)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "failed"
-    assert body["execution_id"] == "run-failed-1"
-    assert body["run_id"] == "run-failed-1"
-    assert "node failed" in body["error"]
-
-    from services.dag_run_store import get_dag_run_store
-
-    projection = get_dag_run_store().get_run("run-failed-1")
+    canonical = asyncio.run(container.run_store.get_run(body["run_id"]))
+    assert canonical is not None
+    assert canonical.workspace_id == "activate-ws"
+    projection = get_dag_run_store().get_run(body["run_id"])
     assert projection is not None
-    assert projection["canonical_run_id"] == "run-failed-1"
-    assert projection["status"] == "failed"
-    assert projection["node_states"]["worker.n1"] == "failed"
+    assert projection["canonical_run_id"] == canonical.run_id
 
 
 def test_run_dag_pre_admission_failure_has_no_fake_execution_id(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import services.graph_runner as graph_runner
+    """A rejected registration fails before a Run is admitted or named."""
+    import stores
 
-    async def boom(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise ValueError("cyclic DAG rejected before execution")
+    from maistro.runs import RunStatus
 
-    monkeypatch.setattr(graph_runner, "execute_dag", boom)
-    dag_id = _seed(admin_client)
-    workspace_id = _workspace(admin_client)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    # An unknown node kind is rejected by registry validation, before
+    # run_registered_dag can admit a Run.
+    dag_id = "route-invalid-kind"
+    stores.dags[dag_id] = _route_dag(dag_id, kind="no.such_kind")
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
     assert response.status_code == 200
     body = response.json()
     # The exception kind, never its text: messages carry paths and provider
     # replies, which stay in the server log (CodeQL py/stack-trace-exposure).
     assert body == {"status": "failed", "error": "ValueError: execution failed; see server logs"}
+    assert not asyncio.run(container.run_store.list_by_status(RunStatus.QUEUED))
 
 
 def test_run_dag_projection_failure_does_not_rewrite_execution(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import services.dag_run_store as history
-    import services.graph_runner as graph_runner
-
-    async def ok(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
-        return _completed_result("run-with-history-failure")
+    import stores
 
     def unavailable() -> Any:
         raise RuntimeError("history unavailable")
 
-    monkeypatch.setattr(graph_runner, "execute_dag", ok)
     monkeypatch.setattr(history, "get_dag_run_store", unavailable)
 
-    dag_id = _seed(admin_client)
-    workspace_id = _workspace(admin_client)
-    response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_id})
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    dag_id = "route-history-failure"
+    stores.dags[dag_id] = _route_dag(dag_id, kind="transform.alias_keys")
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["run_id"] == "run-with-history-failure"
+
+    canonical = asyncio.run(container.run_store.get_run(body["run_id"]))
+    assert canonical is not None
+    assert canonical.status.value == "completed"
+
+
+def test_run_dag_cannot_project_a_failed_canonical_node_as_completed(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stores
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = "route-workspace"
+    dag_id = "route-canonical-failure"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    # An empty Jira base URL makes the canonical node fail during execution,
+    # after the durable executor has created its NodeRun.
+    stores.dags[dag_id] = _route_dag(dag_id, kind="jira.poll")
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run?workspace_id={workspace_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    run_id = body["run_id"]
+
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    projection = get_dag_run_store().get_run(run_id)
+    assert canonical is not None
+    assert canonical.status.value == "failed"
+    node_runs = asyncio.run(container.run_store.list_node_runs(run_id))
+    # Terminal Run reconciliation settles the open NodeRun as cancelled after
+    # the node failure; the Run's failed status remains the lifecycle authority.
+    assert [node_run.status.value for node_run in node_runs] == ["cancelled"]
+    assert projection is not None
+    assert projection["canonical_run_id"] == run_id
+    assert projection["status"] == "failed"
+    assert projection["node_states"], projection
+    assert all(state != "completed" for state in projection["node_states"].values())
+
+
+@pytest.mark.asyncio
+async def test_projection_preserves_a_waiting_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import routes.dags as dags_routes
+    from services.dag_run_store import DagRunStore
+
+    store = DagRunStore()
+    # The route's helper imports the accessor lazily, so patch the module that
+    # owns that seam rather than creating a second projection implementation.
+    import services.dag_run_store as history
+
+    monkeypatch.setattr(history, "get_dag_run_store", lambda: store)
+    await dags_routes._record_run_projection(
+        dag_id="dag-waiting",
+        user_id="admin",
+        result={
+            "status": "waiting",
+            "run_id": "run-waiting",
+            "workspace_id": "ws-waiting",
+            "project_id": "project-waiting",
+            "node_results": {"n1": {"role": "worker", "success": False}},
+        },
+    )
+
+    projection = store.get_run("run-waiting")
+    assert projection is not None
+    assert projection["status"] == "waiting"
+    assert projection["finished_at"] is None
+    assert projection["node_states"]["worker.n1"] == "running"
+
+    await dags_routes._record_run_projection(
+        dag_id="dag-paused",
+        user_id="admin",
+        result={
+            "status": "paused",
+            "run_id": "run-paused",
+            "workspace_id": "ws-paused",
+            "project_id": "project-paused",
+            "node_results": {"n1": {"role": "worker", "success": False}},
+        },
+    )
+    paused = store.get_run("run-paused")
+    assert paused is not None
+    assert paused["status"] == "paused"
+    assert paused["finished_at"] is None
+    assert paused["node_states"]["worker.n1"] == "running"
+
+
+def test_run_dag_without_selection_uses_the_owners_workspace(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-query run of an unscoped CRUD DAG admits into the owner's Workspace.
+
+    The shipped button sends no workspace query and CRUD-created DAGs carry
+    none. Before #736 the route then fell back to the deployment default
+    (``canonical-default``) -- an unrelated scope -- even though the
+    authenticated owner had exactly one authorized Workspace. The container
+    still names the deployment default, proving resolution ignored it.
+    """
+    import stores
+    from services.dag_run_store import get_dag_run_store
+
+    container = _canonical_container(monkeypatch, "canonical-default")
+    # Isolated to exactly one canonical Workspace, owned by the admin
+    # principal the route authenticates.
+    _install_route_workspace("owned-ws", "admin")
+    dag_id = _seed(admin_client)
+    assert not stores.dags[dag_id].get("workspace_id")
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run")
+    assert response.status_code == 200
+    body = response.json()
+    run_id = body["run_id"]
+
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    assert canonical is not None
+    assert canonical.workspace_id == "owned-ws"
+    projection = get_dag_run_store().get_run(run_id)
+    assert projection is not None
+    assert projection["canonical_run_id"] == canonical.run_id
+    assert projection["workspace_id"] == "owned-ws"
+
+
+def test_run_dag_parks_a_hitl_node_as_paused_not_finished(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real HITL node parks the canonical Run; the projection must not
+    terminalize it. Unlike the fabricated-input unit test above, this drives
+    the pause through the HTTP route and the durable executor.
+    """
+    import stores
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = "route-workspace"
+    container = _canonical_container(monkeypatch, workspace_id)
+    _install_route_workspace(workspace_id, "admin")
+    dag_id = "route-canonical-paused"
+    stores.dags[dag_id] = _route_dag(
+        dag_id, kind="human.ask_question", inputs={"question": "Ship it?"}
+    )
+
+    response = admin_client.post(f"/v1/dags/{dag_id}/run?workspace_id={workspace_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "paused"
+    run_id = body["run_id"]
+
+    canonical = asyncio.run(container.run_store.get_run(run_id))
+    assert canonical is not None
+    assert canonical.status.value == "paused"
+    projection = get_dag_run_store().get_run(run_id)
+    assert projection is not None
+    assert projection["canonical_run_id"] == run_id
+    assert projection["status"] == "paused"
+    assert projection["finished_at"] is None
+    assert projection["node_states"]
+    assert all(state != "completed" for state in projection["node_states"].values())
 
 
 def test_run_dag_missing_scope_fails_before_execution(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Nothing resolvable: no selection, no stored DAG scope, no owned Workspace.
+
+    The deployment default is not a substitute for an authorized scope
+    (#736): the route must fail closed before any execution path runs.
+    """
     import services.graph_runner as graph_runner
 
     async def should_not_run(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise AssertionError("execution admitted without Workspace scope")
 
     monkeypatch.setattr(graph_runner, "execute_dag", should_not_run)
+    # A fresh container whose canonical WorkspaceStore owns nothing for the
+    # authenticated principal, so no owner-membership fallback can resolve.
+    _canonical_container(monkeypatch, "canonical-default")
     dag_id = _seed(admin_client)
     response = admin_client.post(f"/v1/dags/{dag_id}/run")
     assert response.status_code == 403
@@ -313,28 +567,35 @@ def test_run_dag_missing_scope_fails_before_execution(
 def test_run_dag_carries_distinct_authorized_scopes(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Two authorized selections execute two Runs in their own Workspaces."""
     import services.graph_runner as graph_runner
+    import stores
 
-    captured: list[Any] = []
+    from maistro.runs import RunStatus
 
-    async def ok(_dag_data: Any, **kwargs: Any) -> dict[str, Any]:
-        captured.append(kwargs["scope"])
-        return _completed_result(f"run-{len(captured)}")
+    async def legacy_path_must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the DAG route must not call graph_runner.execute_dag")
 
-    monkeypatch.setattr(graph_runner, "execute_dag", ok)
-    dag_id = _seed(admin_client)
-    workspace_a = _workspace(admin_client)
-    workspace_b = _workspace(admin_client)
-    assert (
-        admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_a}).status_code
-        == 200
-    )
-    assert (
-        admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace_b}).status_code
-        == 200
-    )
-    assert [scope.workspace_id for scope in captured] == [workspace_a, workspace_b]
-    assert captured[0].project_id != captured[1].project_id
+    monkeypatch.setattr(graph_runner, "execute_dag", legacy_path_must_not_run)
+
+    container = _canonical_container(monkeypatch, "route-workspace")
+    _install_route_workspace("scope-ws-a", "admin")
+    _install_route_workspace("scope-ws-b", "admin")
+    dag_id = "route-scopes"
+    stores.dags[dag_id] = _route_dag(dag_id, kind="transform.alias_keys")
+
+    run_ids = []
+    for workspace in ("scope-ws-a", "scope-ws-b"):
+        response = admin_client.post(f"/v1/dags/{dag_id}/run", json={"workspace_id": workspace})
+        assert response.status_code == 200
+        run_ids.append(response.json()["run_id"])
+
+    runs = asyncio.run(container.run_store.list_by_status(RunStatus.COMPLETED))
+    assert sorted(run.run_id for run in runs) == sorted(run_ids)
+    by_workspace = {run.workspace_id: run.run_id for run in runs}
+    assert set(by_workspace) == {"scope-ws-a", "scope-ws-b"}
+    # Each Workspace's Root Project is its own scope.
+    assert len({run.project_id for run in runs}) == 2
 
 
 def test_run_dag_missing_dag_returns_404(admin_client: Any) -> None:
