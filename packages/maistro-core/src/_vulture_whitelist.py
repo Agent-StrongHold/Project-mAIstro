@@ -9,6 +9,7 @@ Invocation execution API.
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.state import PersistedStore
 
 # OpenTelemetry API keywords mirrored by the Protocol signature in
 # maistro.observability.telemetry_safety.TelemetryTracer. The keywords are
@@ -27,4 +28,11 @@ _VULTURE_WHITELIST = (
     ResolvedBinding.resolved_at,
     Invocation._validate_invocation,
     InvocationExecutionService.invoke,
+    # PersistedStore's atomic username-claim transactions (#1061). The durable
+    # backend is reached from packages/hive-conductor's username_registry via
+    # getattr(backend, ...) duck-typing, so no scanned call site names these
+    # methods; they are the production allocation/rollback boundary, not dead
+    # code.
+    PersistedStore.delete_raw_with_unique_claims,
+    PersistedStore.put_raw_with_unique_claims,
 )
