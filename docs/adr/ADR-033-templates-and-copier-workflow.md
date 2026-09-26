@@ -33,9 +33,18 @@ history:
 
 ## Context
 
-ADR-030 establishes that all three products are templated peers rebasing from `maistro-engine`. We need to choose the templating mechanism and define the rebase workflow. The candidates considered were Cookiecutter, Copier, git subtree, and git submodule.
+**Historical (written under ADR-030's four-repo model):** ADR-030 originally established
+that all three products were templated peers rebasing from `maistro-engine`. That model was
+reversed by the monorepo consolidation (see [ADR-019](ADR-019-canonical-source-split.md)):
+`Project_mAIstro` and `AgentTuring` were absorbed into this repo, so the rebase workflow below
+is retained as the historical rationale for the tooling choice, not as the active integration
+path. The candidates considered at the time were Cookiecutter, Copier, git subtree, and git
+submodule.
 
-The three products genuinely differ in shape — single-tenant multi-user vs. autonoetic singleton vs. multi-tenant — so parameter substitution matters more than file embedding. That favors a generator-style approach (Cookiecutter or Copier) over an embedding approach (subtree or submodule).
+The three products genuinely differed in shape — single-tenant multi-user vs. autonoetic
+singleton vs. multi-tenant — so parameter substitution mattered more than file embedding.
+That favored a generator-style approach (Cookiecutter or Copier) over an embedding approach
+(subtree or submodule).
 
 ## Decision
 
