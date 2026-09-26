@@ -8,14 +8,19 @@ lookup must both be served by one index. PostgreSQL kept the old shape,
 so the two durable backends of one contract drifted. This recreates the
 PostgreSQL index in the SQLite shape; admission uniqueness is unaffected
 (``uq_capability_invocation_active_effect`` keeps ``node_run_id``).
+
+Renumbered from 042 after the #1120 merge: develop's manual-fire
+occurrence migration took the id 042 while this branch was open, so this
+revision re-parents onto it to keep the chain single-headed — the same
+renumbering this chain has done every time develop took a parent id.
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "042"
-down_revision = "036_audit_log_org_scope"
+revision = "043"
+down_revision = "042"
 branch_labels = None
 depends_on = None
 
