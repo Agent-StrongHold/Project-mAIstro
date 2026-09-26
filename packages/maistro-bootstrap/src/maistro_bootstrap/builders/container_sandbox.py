@@ -53,6 +53,12 @@ _MEMORY_LIMIT = "2g"
 _PIDS_LIMIT = "512"
 _WORKSPACE_TMPFS = "size=2g,rw,nosuid,nodev"
 _TMP_TMPFS = "size=512m,rw,nosuid,nodev"
+# The runtime mounts a writable tmpfs at /dev/shm (and an mqueue filesystem at
+# /dev/mqueue where POSIX queues are supported) *outside* the reach of
+# `--read-only` — those are runtime mounts, not image content, so a live probe
+# could previously write both (#80). Pin each as a tiny read-only,
+# non-executable stub so the only writable scope is the two tmpfs mounts above.
+_PINNED_RO_TMPFS = "size=64k,ro,nosuid,nodev,noexec"
 _BASELINE_DIR = "/tmp/.maistro-baseline"
 
 # Every command that can run candidate-influenced code executes as this
@@ -187,14 +193,25 @@ class ContainerBuilderSandbox:
                     # Default-deny egress (#77): no interface beyond loopback, so
                     # external, DNS, link-local and private paths all fail.
                     "--network=none",
-                    # A read-only image root leaves only the explicit workspace
-                    # and scratch tmpfs mounts writable. Candidate code cannot
-                    # turn an image path into durable host state.
+                    # A read-only image root — plus the /dev/shm and
+                    # /dev/mqueue stubs below, which --read-only alone does not
+                    # cover — leaves only the explicit workspace and scratch
+                    # tmpfs mounts writable. Candidate code cannot turn an
+                    # image path or a runtime tmpfs default into durable
+                    # host state.
                     "--read-only",
                     "--tmpfs",
                     f"{_WORKDIR}:{_WORKSPACE_TMPFS}",
                     "--tmpfs",
                     f"/tmp:{_TMP_TMPFS}",
+                    # Docker's implicit /dev/shm and /dev/mqueue mounts are
+                    # writable regardless of --read-only: they are runtime
+                    # tmpfs, not image layers. Replace both with read-only
+                    # stubs so the writable scope stays exactly workspace + /tmp.
+                    "--tmpfs",
+                    f"/dev/shm:{_PINNED_RO_TMPFS}",
+                    "--tmpfs",
+                    f"/dev/mqueue:{_PINNED_RO_TMPFS}",
                     # Nobody in this container runs as root -- not PID 1, not any
                     # exec -- and no capability survives the drop (CHOWN returns
                     # solely for the one-shot root bootstrap below; caps granted

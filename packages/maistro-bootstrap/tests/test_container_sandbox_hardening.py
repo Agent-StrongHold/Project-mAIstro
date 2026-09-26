@@ -209,6 +209,34 @@ def test_container_creation_pins_the_unprivileged_user(
     assert "--tmpfs" in run
 
 
+def test_container_creation_pins_implicit_runtime_tmpfs_read_only(
+    recorder: _Recording, tmp_path: Path
+) -> None:
+    """#80: `--read-only` does not cover the runtime's implicit mounts — Docker
+    ordinarily mounts a writable tmpfs at /dev/shm and an mqueue filesystem at
+    /dev/mqueue regardless, and a live probe could write both. Creation must
+    pin each as a read-only, non-executable stub, and every tmpfs outside the
+    workspace/scratch pair must be created read-only."""
+    with ContainerBuilderSandbox(tmp_path):
+        pass
+
+    run = _run_call(recorder)
+    specs = [run[i + 1] for i, flag in enumerate(run) if flag == "--tmpfs"]
+    pinned: set[str] = set()
+    for spec in specs:
+        target, _, opts = spec.partition(":")
+        flags = set(opts.split(","))
+        if target in ("/workspace", "/tmp"):
+            assert "rw" in flags, f"scratch mount lost writability: {spec}"
+            continue
+        assert "ro" in flags and "rw" not in flags, f"writable non-scratch tmpfs: {spec}"
+        assert "noexec" in flags and "nosuid" in flags and "nodev" in flags, spec
+        pinned.add(target)
+    assert {"/dev/shm", "/dev/mqueue"} <= pinned, (
+        f"implicit runtime tmpfs not pinned read-only: {sorted(pinned)}"
+    )
+
+
 def test_the_only_root_exec_is_the_pre_seed_chown(recorder: _Recording, tmp_path: Path) -> None:
     """Exactly one exec may run as root: the `chown` of the empty workspace,
     which must happen *before* the seed extract (no repo content, no candidate

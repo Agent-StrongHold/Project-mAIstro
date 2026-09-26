@@ -308,7 +308,14 @@ def test_container_environment_is_credential_default_deny(tmp_path: Path) -> Non
 
 
 def test_rootfs_and_writable_scope_are_explicit(tmp_path: Path) -> None:
-    """The live Docker config, not permissions in the image, sets the scope."""
+    """The live Docker config, not permissions in the image, sets the scope.
+
+    `--read-only` alone is not the writable-scope contract: the runtime mounts
+    writable tmpfs at /dev/shm and an mqueue filesystem at /dev/mqueue outside
+    the image layers (the D-04 live regression this suite missed). Those are
+    pinned read-only at create time, and the mount table itself is enumerated
+    so a future implicit Docker default cannot reopen scratch silently.
+    """
     _repo_with_file(tmp_path)
     with ContainerBuilderSandbox(tmp_path) as sb:
         inspect = subprocess.run(
@@ -328,6 +335,33 @@ def test_rootfs_and_writable_scope_are_explicit(tmp_path: Path) -> None:
         assert rc != 0
         assert sb.run_argv_status(["touch", "/workspace/allowed"])[0] == 0
         assert sb.run_argv_status(["touch", "/tmp/scratch"])[0] == 0
+        # The runtime's implicit scratch surfaces must refuse an agent write:
+        # /dev/shm, /dev/mqueue (the pinned pair), /dev, and procfs.
+        for escape in (
+            "/dev/shm/l80-proof",
+            "/dev/mqueue/l80-proof",
+            "/dev/l80-proof",
+            "/proc/l80-proof",
+        ):
+            assert sb.run_argv_status(["touch", escape])[0] != 0, escape
+        # The whole write scope, not just the named paths: every rw mount
+        # outside {/tmp, /workspace} — including ones a future runtime adds
+        # implicitly — must refuse an agent probe write.
+        rc, mounts = sb.run_argv_status(["cat", "/proc/mounts"])
+        assert rc == 0
+        writable_elsewhere = []
+        for line in mounts.splitlines():
+            fields = line.split()
+            if len(fields) < 4 or "rw" not in fields[3].split(","):
+                continue
+            if fields[1] in ("/tmp", "/workspace"):
+                continue
+            probe = f"{fields[1].rstrip('/')}/l80-scope-probe"
+            if sb.run_argv_status(["touch", probe])[0] == 0:
+                writable_elsewhere.append(fields[1])
+        assert writable_elsewhere == [], (
+            f"agent-writable mounts outside /tmp and /workspace: {writable_elsewhere}"
+        )
 
 
 def test_process_namespace_devices_and_host_socket_are_not_reachable(tmp_path: Path) -> None:
