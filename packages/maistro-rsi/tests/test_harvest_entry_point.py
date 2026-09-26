@@ -504,6 +504,7 @@ class TestTheEvolveCommandWiresTheMutatorBoundary:
 
     @pytest.mark.ac("SPEC-092526-c41d/AC-1")
     @pytest.mark.ac("SPEC-092526-c41d/AC-9")
+    @pytest.mark.contract("boundary")
     def test_a_hostile_mutation_prompt_is_refused_before_the_model(
         self, tmp_path: Path, stubbed_evolution, capsys
     ) -> None:

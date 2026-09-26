@@ -38,6 +38,7 @@ class StubWarden:
 
 
 @pytest.mark.ac("SPEC-092526-c41d/AC-2")
+@pytest.mark.contract("boundary")
 @pytest.mark.parametrize(
     "payload",
     [
@@ -102,6 +103,7 @@ async def test_refusal_happens_before_the_model_callable() -> None:
 
 @pytest.mark.ac("SPEC-092526-c41d/AC-4")
 @pytest.mark.ac("SPEC-092526-c41d/AC-5")
+@pytest.mark.contract("behavioral")
 @pytest.mark.asyncio
 async def test_missing_warden_policy_fails_closed_and_records_truthful_outcome() -> None:
     records: list[dict[str, object]] = []

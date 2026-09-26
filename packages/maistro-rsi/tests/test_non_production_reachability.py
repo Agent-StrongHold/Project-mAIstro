@@ -180,6 +180,7 @@ def route_requires_isolation(path: Path, function_name: str = "start_run") -> bo
 
 
 @pytest.mark.ac("SPEC-092526-c41d/AC-8")
+@pytest.mark.contract("boundary")
 def test_no_engine_product_package_imports_the_rsi_surface() -> None:
     """The shipped engine products cannot reach maistro_rsi at all.
 
