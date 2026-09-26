@@ -650,6 +650,19 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Run retention throttles and reports backlog per Workspace
+  ([#1175](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1175)).**
+  `RunRetentionSweeper` used to keep one last-sweep time for all Workspaces.
+  The Turing plane shares one sweeper across every per-user Workspace, so a
+  busy Workspace used up the interval and a quiet Workspace's expired Runs
+  were almost never swept. The sweeper now keeps a last-sweep time per
+  scope, in an LRU-bounded map, and still runs only one sweep at a time.
+  `maistro_retention_backlog_remaining{mode}` now counts the scopes whose
+  last completed sweep left a backlog. Before, the last sweep to finish
+  overwrote the value, so one Workspace draining hid another's backlog. A
+  failed sweep leaves the count unchanged. The label is still the mode,
+  never a Workspace id (#818).
+
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
   with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,

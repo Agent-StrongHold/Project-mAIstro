@@ -14,7 +14,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from maistro.graph import Graph, Node
 from maistro.observability.metrics import retention_backlog_remaining, retention_purged_total
+from maistro.projects.scope_store import InMemoryProjectScopeStore
+from maistro.runs import retention
+from maistro.runs.model import RunStatus
 from maistro.runs.retention import (
     DEFAULT_CHAT_RETENTION_SECONDS,
     UNBOUNDED_RETENTION,
@@ -26,12 +30,20 @@ from maistro.runs.retention_scope import (
     GlobalRetentionScope,
     WorkspaceRetentionScope,
 )
-from maistro.runs.store import PurgeOutcome
+from maistro.runs.store import InMemoryRunStore, PurgeOutcome
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 SCOPE = WorkspaceRetentionScope(workspace_id="workspace-1")
 OTHER = WorkspaceRetentionScope(workspace_id="workspace-2")
 GLOBAL = GlobalRetentionScope(authorized_by="operator")
+
+
+@pytest.fixture(autouse=True)
+def _no_standing_backlog() -> None:
+    """The backlog ledger is process-wide by design; each test starts empty."""
+    retention._BACKLOGGED_SCOPES.clear()
+    for mode in ("workspace", "global"):
+        retention_backlog_remaining.set(0.0, mode=mode)
 
 
 class SpyStore:
@@ -354,9 +366,9 @@ async def test_a_batch_limited_scope_reports_its_backlog() -> None:
     assert _backlog("global") == 0.0
 
 
-async def test_a_failed_sweep_withdraws_the_standing_backlog_report() -> None:
-    """A failed sweep must not leave the gauge describing a purge that no
-    longer stands."""
+async def test_a_failed_sweep_leaves_its_scopes_backlog_standing() -> None:
+    """A failed sweep committed nothing, so it neither drained the backlog a
+    completed sweep observed nor may it erase that observation."""
     good = RunRetentionSweeper(
         SpyStore(purged=1, backlog=True),
         RetentionPolicy(sweep_interval_seconds=0),
@@ -373,4 +385,119 @@ async def test_a_failed_sweep_withdraws_the_standing_backlog_report() -> None:
 
     assert await failing.maybe_sweep(now=NOW) == 0
 
+    assert _backlog("workspace") == 1.0
+
+
+# ── per-Workspace throttle and backlog (#1175) ───────────────────
+
+
+async def _workspaces() -> tuple[InMemoryRunStore, dict[str, str]]:
+    projects = InMemoryProjectScopeStore()
+    project_ids: dict[str, str] = {}
+    for workspace in (SCOPE.workspace_id, OTHER.workspace_id):
+        root = await projects.create_root(workspace)
+        project = await projects.create(
+            workspace_id=workspace, parent_project_id=root.project_id, name="Retained"
+        )
+        project_ids[workspace] = project.project_id
+    return InMemoryRunStore(project_store=projects), project_ids
+
+
+async def _expired_run(store: InMemoryRunStore, workspace: str, project_id: str) -> str:
+    graph = Graph(
+        workspace_id=workspace,
+        project_id=project_id,
+        name="Retained graph",
+        nodes=[Node(node_id="node-1", node_type="agent")],
+    )
+    run = await store.create_run(graph, retention_expires_at=NOW - timedelta(seconds=1))
+    await store.transition_run(run.run_id, RunStatus.QUEUED)
+    await store.transition_run(run.run_id, RunStatus.RUNNING)
+    await store.transition_run(run.run_id, RunStatus.COMPLETED)
+    return run.run_id
+
+
+async def test_a_busy_workspace_does_not_starve_a_quiet_one() -> None:
+    """One sweeper serves every per-user Workspace on the Turing plane. A
+    sweep of A must not spend B's interval, and B draining must not erase
+    A's standing backlog from the shared gauge."""
+    store, projects = await _workspaces()
+    a_runs = [await _expired_run(store, SCOPE.workspace_id, projects[SCOPE.workspace_id])]
+    a_runs.append(await _expired_run(store, SCOPE.workspace_id, projects[SCOPE.workspace_id]))
+    b_run = await _expired_run(store, OTHER.workspace_id, projects[OTHER.workspace_id])
+    sweeper = RunRetentionSweeper(store, RetentionPolicy(sweep_interval_seconds=300, batch_limit=1))
+
+    assert await sweeper.maybe_sweep(now=NOW, scope=SCOPE) == 1
+    assert _backlog("workspace") == 1.0
+
+    assert await sweeper.maybe_sweep(now=NOW, scope=OTHER) == 1
+    assert await store.get_run(b_run) is None
+    assert _backlog("workspace") == 1.0
+
+    # A is still inside its own interval.
+    assert await sweeper.maybe_sweep(now=NOW, scope=SCOPE) == 0
+    assert _backlog("workspace") == 1.0
+
+    assert await sweeper.sweep_now(now=NOW, scope=SCOPE) == 1
+    assert [await store.get_run(run_id) for run_id in a_runs] == [None, None]
     assert _backlog("workspace") == 0.0
+
+
+async def test_backlogged_scopes_are_counted_per_mode() -> None:
+    for scope in (SCOPE, OTHER, GLOBAL):
+        sweeper = RunRetentionSweeper(
+            SpyStore(purged=1, backlog=True),
+            RetentionPolicy(sweep_interval_seconds=0),
+            scope=scope,
+        )  # type: ignore[arg-type]
+        await sweeper.sweep_now(now=NOW)
+
+    assert _backlog("workspace") == 2.0
+    assert _backlog("global") == 1.0
+
+
+async def test_a_failed_sweep_does_not_clear_another_scopes_backlog() -> None:
+    store = SpyStore(purged=1, backlog=True)
+    sweeper = RunRetentionSweeper(store, RetentionPolicy(sweep_interval_seconds=0))  # type: ignore[arg-type]
+    await sweeper.maybe_sweep(now=NOW, scope=SCOPE)
+
+    store._fail_with = RuntimeError("down")
+    assert await sweeper.maybe_sweep(now=NOW, scope=OTHER) == 0
+
+    assert _backlog("workspace") == 1.0
+
+
+async def test_an_unscoped_refusal_leaves_the_backlog_alone() -> None:
+    await RunRetentionSweeper(
+        SpyStore(purged=1, backlog=True),
+        RetentionPolicy(sweep_interval_seconds=0),
+        scope=SCOPE,
+    ).sweep_now(now=NOW)  # type: ignore[arg-type]
+    unscoped = RunRetentionSweeper(SpyStore(), RetentionPolicy(sweep_interval_seconds=0))  # type: ignore[arg-type]
+
+    assert await unscoped.maybe_sweep(now=NOW) == 0
+
+    assert isinstance(unscoped.last_error, RetentionScopeRequired)
+    assert _backlog("workspace") == 1.0
+
+
+async def test_the_throttle_forgets_the_least_recently_swept_scope() -> None:
+    """The throttle is bounded: Workspaces are caller-created, so remembering
+    every one ever swept would be a leak. An evicted scope is merely due again."""
+    third = WorkspaceRetentionScope(workspace_id="workspace-3")
+    store = SpyStore()
+    sweeper = RunRetentionSweeper(
+        store, RetentionPolicy(sweep_interval_seconds=3600), max_tracked_scopes=2
+    )  # type: ignore[arg-type]
+
+    for scope in (SCOPE, OTHER, third, OTHER, third):
+        await sweeper.maybe_sweep(now=NOW, scope=scope)
+    assert [call[0] for call in store.calls] == [SCOPE, OTHER, third]
+
+    await sweeper.maybe_sweep(now=NOW, scope=SCOPE)
+    assert [call[0] for call in store.calls] == [SCOPE, OTHER, third, SCOPE]
+
+
+def test_the_throttle_bound_must_be_positive() -> None:
+    with pytest.raises(ValueError):
+        RunRetentionSweeper(SpyStore(), max_tracked_scopes=0)  # type: ignore[arg-type]
