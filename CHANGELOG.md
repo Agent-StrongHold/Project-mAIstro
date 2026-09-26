@@ -28,14 +28,16 @@ or placeholder-only section.
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
   /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer
-  mounted (404). The respond route needed only authentication and wrote Home
-  Assistant state; its in-memory store (`_PENDING_CONFIRMS`) had no production
-  producer, so it could never hold a real confirmation. Nothing in production
-  imported `services/ha_tools.py` either (its `ha_confirm`/`ha_control` tool
+  mounted: the GETs answer 404, and the POST answers 405 wherever the SPA is
+  served (its GET-only catch-all owns every path), 404 otherwise. The respond
+  route needed only authentication and wrote Home Assistant state; its
+  in-memory store (`_PENDING_CONFIRMS`) had no production producer, so it
+  could never hold a real confirmation. Nothing in production imported
+  `services/ha_tools.py` either (its `ha_confirm`/`ha_control` tool
   definitions were never offered to a model), so the module is deleted with
-  `send_confirm` and the store. Human approval has one model:
-  a waiting human NodeRun answered through `/v1/hitl`; any future HA push
-  confirmation must be a notification transport for that NodeRun.
+  `send_confirm` and the store. Human approval has one model: a waiting human
+  NodeRun answered through `/v1/hitl`; any future HA push confirmation must be
+  a notification transport for that NodeRun.
 - **Tool-result governance is pinned across real Agent strategies (#1202,
   partial).** A regression suite drives the shipped ReAct, Artificer and
   BuildersLearning strategies through `Agent.handle` with a real Warden and
@@ -503,6 +505,15 @@ or placeholder-only section.
 
 ### Changed
 
+- **Terminal BACKLOG.md items must carry closure evidence (#101, partial).**
+  `scripts/check-backlog-consistency.py` now fails an `Implemented` item with
+  no PR/issue link or existing repo file, a cited repo path that no longer
+  exists, and an `Abandoned` item with no reason. The 21 items closed before
+  the rule are frozen with their status in a legacy set that can only shrink,
+  so a new closure cannot pass without a link or file. The gate checks that
+  evidence is present, not that it proves the claim; a reviewer still judges
+  that.
+
 - **A chat turn that cannot get its canonical Run is refused with a retryable
   503 instead of answered ungoverned (#1108, partial).**
   Owner decision 2026-09-23, amending ADR-082326-c126 and superseding #223 AC4.
@@ -649,6 +660,21 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **Expired task idempotency claims are now purged (#325, partial).**
+  `purge_expired` existed on every `task_idempotency` backend, but nothing in
+  production called it, so every `POST /tasks` left a row behind forever. The
+  claim path shared by all three backends now runs the purge itself, just
+  before claiming. It runs at most once every 300 s per store (monotonic
+  clock; the first run comes one interval after the store is built), deletes
+  at most 500 rows per run, and never waits for a purge already running. A run
+  that deletes a full 500 rows means a backlog, so the next claim purges again
+  without waiting. A failed purge is logged and counted in
+  `maistro_task_idempotency_purge_failures_total`; it never fails the
+  admission. The PostgreSQL purge now re-checks `expires_at` on each
+  row it deletes, so a claim another replica just renewed survives. A
+  PostgreSQL test covers that race. The retention inventory lists
+  `task_idempotency` as `ttl_purge`.
 
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
