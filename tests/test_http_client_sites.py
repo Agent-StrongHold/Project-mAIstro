@@ -64,18 +64,9 @@ ALLOWED: dict[str, str] = {
     "packages/maistro-core/src/maistro/http.py": (
         "the pool itself — this is the one place a client is constructed"
     ),
-    "packages/maistro-evolve/src/maistro_evolve/providers/openai_compatible.py": (
-        "maistro-evolve does not depend on maistro-core, and taking that dependency "
-        "to pool one call site would couple a standalone optimizer to the whole core "
-        "runtime; sets explicit httpx.Limits instead"
-    ),
     "packages/hive-conductor/backend/routes/containers.py": (
         "unix-domain-socket transport to the Docker socket — no TLS handshake to "
         "amortize, and the transport cannot be shared with TCP call sites"
-    ),
-    "packages/maistro-design/src/maistro_design/providers/open_design.py": (
-        "injectable client_factory used as a MockTransport seam; the caller closes "
-        "what the factory returns, which would close a shared client"
     ),
 }
 
