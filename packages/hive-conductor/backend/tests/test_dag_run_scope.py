@@ -660,7 +660,7 @@ async def test_a_record_without_any_run_identity_is_returned_verbatim() -> None:
     from services.dag_run_inspection import _canonical_projection
 
     record = {"status": "running", "name": "Local only"}
-    assert await _canonical_projection(dict(record)) == record
+    assert await _canonical_projection(dict(record), "user") == record
 
 
 async def test_projection_reads_stay_local_when_the_spine_has_no_store(
@@ -669,10 +669,10 @@ async def test_projection_reads_stay_local_when_the_spine_has_no_store(
     import services.engine as engine_mod
     from services.dag_run_inspection import _canonical_projection
 
-    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=None))
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=None))
     record = {"id": "r-standalone", "status": "running"}
 
-    assert await _canonical_projection(dict(record)) == record
+    assert await _canonical_projection(dict(record), "user") == record
 
 
 async def test_projection_never_invents_a_run_the_spine_never_saw(
@@ -681,14 +681,11 @@ async def test_projection_never_invents_a_run_the_spine_never_saw(
     import services.engine as engine_mod
     from services.dag_run_inspection import _canonical_projection
 
-    from maistro.projects.scope_store import InMemoryProjectScopeStore
-    from maistro.runs import InMemoryRunStore
-
-    empty = InMemoryRunStore(project_store=InMemoryProjectScopeStore())
-    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=empty))
+    reader, _runs, _workspaces = _canonical_spine()
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
     record = {"id": "r-ghost", "canonical_run_id": "canonical-never-was", "status": "running"}
 
-    assert await _canonical_projection(dict(record)) == record
+    assert await _canonical_projection(dict(record), "user") == record
 
 
 async def test_projection_reads_stay_local_when_the_spine_is_down(
@@ -709,4 +706,67 @@ async def test_projection_reads_stay_local_when_the_spine_is_down(
     monkeypatch.setattr(engine_mod, "get_engine", _engine_down)
     record = {"id": "r-spine-down", "status": "running"}
 
-    assert await _canonical_projection(dict(record)) == record
+    assert await _canonical_projection(dict(record), "user") == record
+
+
+def _canonical_spine() -> tuple[Any, Any, Any]:
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+    from maistro.runs.scoped_reads import ScopedRunReader
+    from maistro.workspaces import InMemoryWorkspaceStore
+
+    projects = InMemoryProjectScopeStore()
+    runs = InMemoryRunStore(project_store=projects)
+    workspaces = InMemoryWorkspaceStore(project_store=projects)
+    return ScopedRunReader(runs, workspaces, projects), runs, workspaces
+
+
+async def _cancelled_canonical_run(runs: Any, workspaces: Any, owner: str) -> Any:
+    from maistro.graph import Graph, Node
+    from maistro.runs.model import RunStatus
+
+    workspace = await workspaces.create(creator_user_id=owner, name=owner)
+    root = await workspaces.project_store.root_for_workspace(workspace.workspace_id)
+    graph = Graph(
+        workspace_id=workspace.workspace_id,
+        project_id=root.project_id,
+        name="overlay",
+        nodes=[Node(node_id="n", node_type="agent")],
+    )
+    run = await runs.create_run(graph, actor_principal_id=owner)
+    return await runs.transition_run(run.run_id, RunStatus.CANCELLED, error="stopped")
+
+
+async def test_projection_overlays_a_canonical_run_the_caller_may_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    reader, runs, workspaces = _canonical_spine()
+    run = await _cancelled_canonical_run(runs, workspaces, "user")
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
+    record = {"id": "r-mine", "canonical_run_id": run.run_id, "status": "running"}
+
+    projected = await _canonical_projection(dict(record), "user")
+
+    assert projected["status"] == "cancelled"
+    assert projected["error"] == "stopped"
+
+
+async def test_projection_never_overlays_a_foreign_canonical_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A projection row naming another Workspace's canonical Run gets none of
+    its status, result or error: the overlay reads through the same
+    membership-scoped seam as every other canonical Run read (#1152)."""
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    reader, runs, workspaces = _canonical_spine()
+    await workspaces.create(creator_user_id="user", name="mine")
+    foreign = await _cancelled_canonical_run(runs, workspaces, "someone-else")
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
+    record = {"id": "r-mine", "canonical_run_id": foreign.run_id, "status": "running"}
+
+    assert await _canonical_projection(dict(record), "user") == record

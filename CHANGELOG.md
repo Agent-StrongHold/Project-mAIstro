@@ -25,6 +25,21 @@ or placeholder-only section.
 
 ### Security
 
+- **Canonical Run reads have a Workspace-membership-scoped seam (#1152,
+  partial).** `maistro.runs.scoped_reads.ScopedRunReader`, wired as
+  `Container.run_reader` over the Container's own Run, Workspace and Project
+  scope stores, reads a Run, its NodeRuns and its Attempts only for a member
+  of the Run's Workspace whose Project belongs to it. The initiating
+  principal is provenance, not a gate. Missing and foreign ids, a blank
+  principal, and a NodeRun or Attempt id from another Run all raise the same
+  `RunNotVisible`, and membership is resolved before the Run lookup. Hive's
+  DAG-run inspection now reads its canonical lifecycle overlay through this
+  reader, so a projection row naming another Workspace's Run no longer
+  borrows that Run's status, result or error; the list path batches those
+  reads through `ScopedRunReader.get_runs`. maistro-server `/v1/runs`, Hive
+  Canvas eval, Hive DAG-run cancel (which still acts on the unscoped
+  `run_store`), `actor_principal_id` validation, accounting identity and
+  delegation identity are still open.
 - **Retired the process-local Home Assistant confirmation store and
   `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
   /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer

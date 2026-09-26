@@ -9,6 +9,8 @@ Invocation execution API.
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import Invocation, InvocationExecutionService
+from maistro.container import Container
+from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.state import PersistedStore
 
 # OpenTelemetry API keywords mirrored by the Protocol signature in
@@ -35,4 +37,9 @@ _VULTURE_WHITELIST = (
     # code.
     PersistedStore.delete_raw_with_unique_claims,
     PersistedStore.put_raw_with_unique_claims,
+    # The scoped canonical Run read seam (#1152) is consumed by Hive's
+    # backend (services/engine.py, services/dag_run_inspection.py), which
+    # this `packages/*/src` scan does not walk.
+    Container.run_reader,
+    ScopedRunReader.get_runs,
 )

@@ -65,6 +65,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -198,6 +199,9 @@ class Container:
     #: so the only Workspaces that survived a restart were the Conductor's own.
     workspace_store: WorkspaceStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
+    #: The product read seam over `run_store` (#1152): Workspace membership
+    #: decides who may read a Run tree, and foreign ids answer like missing ones.
+    run_reader: ScopedRunReader = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
     # `config.workspace_id` remains the default for a submission that names none.
@@ -1885,6 +1889,7 @@ async def create_container(
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         run_store=run_store,
+        run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
