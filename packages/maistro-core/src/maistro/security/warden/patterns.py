@@ -228,7 +228,15 @@ SCRIPT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
     (regex.compile(r"<iframe\b", regex.IGNORECASE), "script pattern: <iframe> tag"),
     (regex.compile(r"<object\b", regex.IGNORECASE), "script pattern: <object> tag"),
     (regex.compile(r"<embed\b", regex.IGNORECASE), "script pattern: <embed> tag"),
-    (regex.compile(r"\beval\s*\(", regex.IGNORECASE), "script pattern: eval()"),
+    # DevSkim note: this entry's label must stay on its own line. While the
+    # label shares a line with the tuple's closing bracket, the eval-review
+    # rule's pattern (eval( + non-comma run + close paren) matches across the
+    # label and the bracket and flags the scanner that exists to block it.
+    # The same-line suppression below covers the label line itself.
+    (
+        regex.compile(r"\beval\s*\(", regex.IGNORECASE),
+        "script pattern: eval()",  # DevSkim: ignore DS189424 until 2027-12-31
+    ),
     (regex.compile(r"\bFunction\s*\(", regex.IGNORECASE), "script pattern: Function()"),
     (regex.compile(r"\bXMLHttpRequest\b", regex.IGNORECASE), "script pattern: XMLHttpRequest"),
     (regex.compile(r"\bnew\s+WebSocket\s*\(", regex.IGNORECASE), "script pattern: WebSocket"),

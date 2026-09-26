@@ -220,6 +220,13 @@ const STYLE_PROPERTIES = new Set([
   "-webkit-text-fill-color",
 ]);
 
+// The SVG namespace string is the W3C-fixed XML namespace identifier that
+// DOMParser stamps on parsed SVG elements. It is a namespaced name, not a
+// network address: nothing ever fetches it, and TLS is meaningless for it.
+// DevSkim's insecure-URL rule pattern-matches the scheme prefix and cannot
+// tell the difference, so it is suppressed for this single literal.
+const SVG_NAMESPACE_URI = "http://www.w3.org/2000/svg"; // DevSkim: ignore DS137138 until 2027-12-31
+
 const NETWORK_OR_CODE_CSS = /(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()/i;
 // Every scheme that can name a fetchable/executable resource, not just the
 // HTTP pair: SVG paint/transform attributes are the only non-style values
@@ -295,7 +302,7 @@ function attributeAllowed(
   }
   if (name.includes(":")) return false;
 
-  const isSvg = element.namespaceURI === "http://www.w3.org/2000/svg";
+  const isSvg = element.namespaceURI === SVG_NAMESPACE_URI;
   const allowed = isSvg ? SVG_ATTRIBUTES : HTML_ATTRIBUTES;
   if (!allowed.has(name)) return false;
   if (name === "style") return true;
@@ -312,7 +319,7 @@ function attributeAllowed(
 function scrubTree(root: ParentNode, context: SanitizationContext): void {
   for (const child of Array.from(root.children)) {
     const tag = child.localName.toLowerCase();
-    const isSvg = child.namespaceURI === "http://www.w3.org/2000/svg";
+    const isSvg = child.namespaceURI === SVG_NAMESPACE_URI;
     const tagAllowed = isSvg ? SVG_TAGS.has(tag) : HTML_TAGS.has(tag);
 
     if (!tagAllowed) {
