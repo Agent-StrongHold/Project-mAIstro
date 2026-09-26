@@ -299,7 +299,9 @@ into another surface; **KEEP** — outside the Workspace (installer, auth).
 PROJECT onto canonical services and re-register under the declared permission table:
 `/v1/tasks`, `/v1/work-items`, `/v1/program`, `/v1/dag-runs`, `/v1/dag-metrics`,
 `/v1/memory`, `/v1/messages`, `/v1/quotas`, `/v1/widgets`, `dashboard_layout`,
-`/v1/topology`, `/v1/eval-judge`, `/v1/confirms`, `/v1/cli`, `/v1/setup-checklist`.
+`/v1/topology`, `/v1/eval-judge`, `/v1/cli`, `/v1/setup-checklist`.
+RETIRED: `/v1/confirms` (#48) — unreachable process-local HA confirmation store; human
+approval is a waiting human NodeRun answered through `/v1/hitl`.
 KEEP with scoped entries: `/v1/auth`, `/v1/setup`, `/v1/install`, `/v1/hitl` (scoping via
 #1058/#1110), `/v1/workspaces`, `/v1/dags`, `/v1/schedules`, `/v1/credentials`,
 `/v1/capabilities`, `/v1/providers`, `/v1/harness`, `/v1/ws`, `/v1/profile`, `/v1/audit`
