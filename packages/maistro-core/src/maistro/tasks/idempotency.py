@@ -544,20 +544,9 @@ class _ClaimFlow:
                 if await self._insert(scope_key, fresh):
                     return Claimed(fresh.claim_token)
                 continue
-            kind = _assess(record, fingerprint=fingerprint, now_us=now_us)
-            if kind == "mismatch":
-                raise IdempotencyKeyMismatch(
-                    "this idempotency key already admitted a different request payload; "
-                    "a replay must repeat the original payload or use a new key"
-                )
-            if kind == "replayed":
-                return Replayed(record)
-            if kind == "pending":
-                return Pending(record)
-            if kind == "ambiguous":
-                # The caller resolves this by discovery; handing back the claim
-                # is the store saying "beyond my sight", not an answer.
-                return Ambiguous(record)
+            classified = self._classify_claim(record, fingerprint=fingerprint, now_us=now_us)
+            if classified is not None:
+                return classified
             if await self._take_over(scope_key, fresh, now_us):
                 return Claimed(fresh.claim_token)
         # The guard kept refusing, which for a correct backend means the row
@@ -565,6 +554,31 @@ class _ClaimFlow:
         # answer keeps the caller's own retry loop (and its takeover) armed.
         record = await self._read(scope_key)
         return Pending(record) if record is not None else Pending(fresh)
+
+    def _classify_claim(
+        self, record: AdmissionRecord, *, fingerprint: str, now_us: int
+    ) -> Replayed | Pending | Ambiguous | None:
+        """Read-side assessment of an existing claim row.
+
+        The one assessment this does not answer is ``takeover`` — that verdict
+        belongs to the write-side guard, so it returns ``None`` and the caller
+        proceeds to ``_take_over``.
+        """
+        kind = _assess(record, fingerprint=fingerprint, now_us=now_us)
+        if kind == "mismatch":
+            raise IdempotencyKeyMismatch(
+                "this idempotency key already admitted a different request payload; "
+                "a replay must repeat the original payload or use a new key"
+            )
+        if kind == "replayed":
+            return Replayed(record)
+        if kind == "pending":
+            return Pending(record)
+        if kind == "ambiguous":
+            # The caller resolves this by discovery; handing back the claim
+            # is the store saying "beyond my sight", not an answer.
+            return Ambiguous(record)
+        return None
 
     async def _insert(self, scope_key: str, record: AdmissionRecord) -> bool:
         raise NotImplementedError

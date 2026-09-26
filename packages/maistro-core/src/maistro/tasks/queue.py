@@ -49,6 +49,7 @@ from maistro.tasks.idempotency import (
     Ambiguous,
     Claimed,
     IdempotencyPendingTimeout,
+    Pending,
     Replayed,
     TaskIdempotencyStore,
     admission_scope_key,
@@ -320,58 +321,24 @@ class TaskQueue:
         )
         waited = 0
         while True:
-            now = datetime.now(UTC)
             outcome = await store.claim(
                 scope_key,
                 fingerprint=fingerprint,
                 request=request_json,
-                now=now,
+                now=datetime.now(UTC),
                 replay_window=DEFAULT_REPLAY_WINDOW,
             )
-            if isinstance(outcome, Replayed):
-                await logger.ainfo(
-                    "task_admission_replayed",
-                    task_id=outcome.record.task_id,
-                    run_id=outcome.record.run_id,
-                    explicit_key=key is not None,
-                )
-                return await self._replay_receipt(outcome.record)
-            if isinstance(outcome, Ambiguous):
-                resolved = await self._resolve_ambiguous(store, scope_key, outcome.record)
-                if isinstance(resolved, Claimed):
-                    # Discovery found no Run: the announced receipt was never
-                    # minted durably, and the resolved claim is ours.
-                    return await self._admit_claimed(
-                        store,
-                        scope_key,
-                        resolved,
-                        request,
-                        key,
-                        user_id=owner,
-                        workspace_id=workspace_id,
-                    )
-                if resolved is not None:
-                    await logger.ainfo(
-                        "task_admission_replayed",
-                        task_id=resolved.task_id,
-                        run_id=resolved.run_id,
-                        explicit_key=key is not None,
-                        via="discovery",
-                    )
-                    return await self._replay_receipt(resolved)
-                # Unresolvable here (an admitter without discovery): treat as
-                # pending — minting over it would be the duplicate the issue
-                # forbids, and the bounded wait fails visibly instead.
-            if isinstance(outcome, Claimed):
-                return await self._admit_claimed(
-                    store,
-                    scope_key,
-                    outcome,
-                    request,
-                    key,
-                    user_id=owner,
-                    workspace_id=workspace_id,
-                )
+            response = await self._claim_outcome_response(
+                store,
+                scope_key,
+                outcome,
+                request,
+                key,
+                owner=owner,
+                workspace_id=workspace_id,
+            )
+            if response is not None:
+                return response
             # Pending: a twin is mid-admission. Its lease lapses long before
             # this loop's bound, so a dead twin's claim is taken over by the
             # next iteration rather than waited on forever.
@@ -382,6 +349,69 @@ class TaskQueue:
                     "resolved within the bounded wait"
                 )
             await asyncio.sleep(PENDING_POLL)
+
+    async def _claim_outcome_response(
+        self,
+        store: TaskIdempotencyStore,
+        scope_key: str,
+        outcome: Claimed | Replayed | Pending | Ambiguous,
+        request: TaskCreate,
+        key: str | None,
+        *,
+        owner: str,
+        workspace_id: str | None,
+    ) -> TaskResponse | None:
+        """Answer one claim outcome, or ``None`` when the loop must wait.
+
+        ``Ambiguous`` is decided here by discovery: a minted Run resolves to
+        its receipt, a never-minted one to a fresh admission, and an admitter
+        without the discovery seam stays unanswered — minting over it would be
+        the duplicate the issue forbids, so the caller's bounded wait fails
+        visibly instead.
+        """
+        if isinstance(outcome, Replayed):
+            await logger.ainfo(
+                "task_admission_replayed",
+                task_id=outcome.record.task_id,
+                run_id=outcome.record.run_id,
+                explicit_key=key is not None,
+            )
+            return await self._replay_receipt(outcome.record)
+        if isinstance(outcome, Ambiguous):
+            resolved = await self._resolve_ambiguous(store, scope_key, outcome.record)
+            if isinstance(resolved, Claimed):
+                # Discovery found no Run: the announced receipt was never
+                # minted durably, and the resolved claim is ours.
+                return await self._admit_claimed(
+                    store,
+                    scope_key,
+                    resolved,
+                    request,
+                    key,
+                    user_id=owner,
+                    workspace_id=workspace_id,
+                )
+            if resolved is not None:
+                await logger.ainfo(
+                    "task_admission_replayed",
+                    task_id=resolved.task_id,
+                    run_id=resolved.run_id,
+                    explicit_key=key is not None,
+                    via="discovery",
+                )
+                return await self._replay_receipt(resolved)
+            return None
+        if isinstance(outcome, Claimed):
+            return await self._admit_claimed(
+                store,
+                scope_key,
+                outcome,
+                request,
+                key,
+                user_id=owner,
+                workspace_id=workspace_id,
+            )
+        return None
 
     async def _admit_claimed(
         self,

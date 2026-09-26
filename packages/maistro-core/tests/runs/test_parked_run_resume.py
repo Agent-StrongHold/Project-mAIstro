@@ -481,24 +481,28 @@ async def test_a_resumed_schedule_attempt_is_leased_and_reclaimed_after_worker_d
         # Poll for a renewal instead of sleeping a fixed multiple of the TTL:
         # PostgreSQL round trips can consume most of a short test window, while
         # the explicit recovery clock below makes expiry itself deterministic.
-        # The deadline is generous wall-clock rather than a multiple of the
-        # heartbeat interval: on a coverage-instrumented CI runner, leaked
-        # background threads and disk stalls can starve this loop's cooperative
-        # tasks for whole seconds while loop.time() keeps advancing, so a tight
-        # budget can expire without the heartbeat ever getting a turn (seen as
-        # a flaky "not renewed by the heartbeat" on the no-services coverage
-        # job -- same head, adjacent pass and fail runs).
-        loop = asyncio.get_running_loop()
+        # The budget is completed poll iterations, not wall-clock: on a
+        # coverage-instrumented CI runner, leaked background threads and disk
+        # stalls can starve this loop's cooperative tasks (the heartbeat with
+        # them) for whole seconds while any clock keeps advancing, so a
+        # wall-clock deadline can expire without the heartbeat ever getting a
+        # turn (seen as a flaky "not renewed by the heartbeat" on the
+        # no-services coverage job and again on the coverage (PostgreSQL)
+        # job's sqlite leg, adjacent pass and fail runs on the same head).
+        # Each completed iteration proves the loop was scheduled; once it is,
+        # the heartbeat's lapsed timer fires within a few iterations, so an
+        # exhausted budget means the heartbeat genuinely never renewed.
         live = await store.get_attempt(resumed.attempt_id)
-        renewal_deadline = loop.time() + 15.0
+        polls_left = 150
         while (
             live is None
             or live.execution_lease is None
             or live.execution_lease.expires_at is None
             or live.execution_lease.expires_at <= lease.expires_at
         ):
-            if loop.time() >= renewal_deadline:
+            if polls_left <= 0:
                 pytest.fail("a live resumed Attempt was not renewed by the heartbeat")
+            polls_left -= 1
             await asyncio.sleep(0.05)
             live = await store.get_attempt(resumed.attempt_id)
         live_lease = live.execution_lease
