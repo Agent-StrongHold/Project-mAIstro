@@ -63,6 +63,17 @@ class TestScanDesignOutput:
             # Leading-escape spelling: a CSS parser reads `\75rl(` as `url(`
             # (#817 repair: the shared decoder used to read `ul(` here).
             (r"<style>.x { background: \75rl(https://evil.example/leak) }</style>", "CSS"),
+            # Renderer-parity round-19 finding: var()/env()/data: declaration
+            # values are blocked unconditionally by the browser boundary
+            # (NETWORK_OR_CODE_CSS), so the shared output scan must classify
+            # them too (AC-4). The visual-artifact layer owns these families,
+            # so assert its reason name directly.
+            ('<div style="color:var(--attacker-controlled)">x</div>', "css-network-or-code"),
+            ('<div style="padding:env(safe-area-inset-top)">x</div>', "css-network-or-code"),
+            (
+                '<div style="background:data:text/html;base64,PHNjcmlwdD4=">x</div>',
+                "css-network-or-code",
+            ),
             ("<svg><foreignObject><div>active</div></foreignObject></svg>", "SVG element"),
             ("<math><mi>x</mi></math>", "visual artifact active-element"),
         ],

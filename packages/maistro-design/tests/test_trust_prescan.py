@@ -54,6 +54,12 @@ HOSTILE_CORPUS = (
     # flag them exactly like the output boundary does.
     '<div style="behavior: url(#default#time2)">y</div>',
     '<div style="-moz-binding: url(http://evil.example/x.xml)">y</div>',
+    # Renderer-parity round-19 finding: the browser boundary blocks var()/env()
+    # and data: declaration values unconditionally (NETWORK_OR_CODE_CSS); the
+    # pre-scan used to recommend upgrade for exactly these.
+    '<div style="color:var(--attacker-controlled)">y</div>',
+    '<div style="padding:env(safe-area-inset-top)">y</div>',
+    '<div style="background:data:text/html;base64,PHNjcmlwdD4=">y</div>',
 )
 CLEAN_BRIEF = "A calm spring bake-sale poster"
 # Prose that names the CSS `behavior` property as an English heading must not

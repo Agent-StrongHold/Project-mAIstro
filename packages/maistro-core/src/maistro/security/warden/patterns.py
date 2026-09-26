@@ -106,6 +106,14 @@ VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
             r"paint\s*\(|expression\s*\(|@import\b|"
             r"(?:-moz-binding|behavior)\s*:\s*(?:url\s*\(|expression\s*\(|"
             r"(?:\"|')?\s*(?:https?:|//|\.{0,2}/))|"
+            # var()/env() resolve to attacker-influenced custom properties and
+            # OS values, and `data:` in a declaration value is a payload URL:
+            # the browser boundary (NETWORK_OR_CODE_CSS in
+            # visualArtifactRenderer.tsx) blocks all three unconditionally, so
+            # the synchronous scanner must classify them the same way or the
+            # trust pre-scan would recommend upgrading content the renderer
+            # blocks (#817 round-19 parity finding).
+            r"var\s*\(|env\s*\(|data\s*:|"
             r"(?:javascript|vbscript)\s*:)",
             regex.IGNORECASE,
         ),
