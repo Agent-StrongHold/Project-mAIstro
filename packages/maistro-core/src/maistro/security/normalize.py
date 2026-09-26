@@ -9,7 +9,7 @@ inside "ignore" defeats a word-boundary regex while the model reads the word
 unimpeded. Every scanner therefore folds its input through this module first,
 so a bypass fixed for one boundary is fixed for all of them.
 
-Three folds, applied in order where applicable:
+Four folds, applied in order where applicable:
 
 1. NFKD — compatibility decomposition (fullwidth forms, ligatures, composed
    accents) so ``ｉｇｎｏｒｅ`` and ``ﬁ`` match their ASCII spellings.
@@ -23,15 +23,20 @@ Three folds, applied in order where applicable:
    returned/redacted canonical text at step 2 and scans a separate same-length
    homoglyph-folded detection view, so legitimate non-Latin prose is not
    rewritten while confusable secrets are still detected.
+4. Bounded leetspeak folding — only ASCII word-like tokens containing both a
+   letter and an approved digit/symbol are folded. The deliberately small map
+   (0/o, 1/i, 3/e, 4/a, 5/s, 7/t, @/a, $/s) avoids rewriting ordinary numbers
+   while making common instruction overrides share one canonical view.
 
-Additionally, this module provides a helper to convert JSON-serializable values
-to a deterministic string for security scanning, ensuring that mapping keys are
-included in the scanned representation.
+Additionally, this module converts JSON-serializable values to deterministic
+strings for security scanning, so mapping keys cannot be omitted from the
+model-visible representation.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from typing import Any
 
@@ -106,13 +111,46 @@ def fold_homoglyphs(text: str) -> str:
     return text.translate(_HOMOGLYPHS)
 
 
-def normalize_for_detection(text: str) -> str:
-    """The full Warden fold: NFKD, then invisibles out, then homoglyphs folded.
+_LEETSPEAK = str.maketrans(
+    {
+        "0": "o",
+        "1": "i",
+        "3": "e",
+        "4": "a",
+        "5": "s",
+        "7": "t",
+        "@": "a",
+        "$": "s",
+    }
+)
+_LEET_TOKEN_RE = re.compile(r"[A-Za-z0-9@$]+")
 
-    Order matters: NFKD first so compatibility forms decompose before the
-    other folds look at them.
+
+def fold_bounded_leetspeak(text: str) -> str:
+    """Fold common leetspeak only inside mixed letter/leet tokens.
+
+    A token made solely of digits is left unchanged. This keeps dates, IDs,
+    and measurements from becoming detection text while handling forms such as
+    ``1gnore 4ll prev1ous 1nstruct1ons``.
     """
-    return fold_homoglyphs(strip_invisibles(unicodedata.normalize("NFKD", text)))
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group()
+        if not any(ch.isalpha() for ch in token) or not any(ch in "013457@$" for ch in token):
+            return token
+        return token.translate(_LEETSPEAK)
+
+    return _LEET_TOKEN_RE.sub(replace, text)
+
+
+def normalize_for_detection(text: str) -> str:
+    """Canonical Warden fold: Unicode, invisibles, homoglyphs, then leetspeak.
+
+    The leetspeak step is intentionally bounded to mixed ASCII tokens; callers
+    that need the user's original text must retain ``text`` separately.
+    """
+    canonical = fold_homoglyphs(strip_invisibles(unicodedata.normalize("NFKD", text)))
+    return fold_bounded_leetspeak(canonical)
 
 
 def normalize_for_redaction(text: str) -> str:
