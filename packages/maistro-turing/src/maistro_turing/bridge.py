@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from maistro.security._types import WardenVerdict
 
 if TYPE_CHECKING:
     # maistro-core does not ship a py.typed marker yet, so these imports are
@@ -68,7 +71,17 @@ class TuringMemory(Protocol):
 
 @runtime_checkable
 class TuringSecurity(Protocol):
-    """What Turing needs from the security system."""
+    """What Turing needs from the canonical security system.
+
+    ``scan_user_input`` accepts the canonical bounded ordered trust-analysis
+    context (``WardenContext`` items, plain strings, or role mappings) so a
+    payload split across prior session turns is detected at the completing
+    turn instead of being scanned one string at a time.
+    """
+
+    async def scan_user_input(
+        self, content: str, *, context: Sequence[Any] | None = None
+    ) -> dict[str, Any]: ...
 
     async def scan_self_write(self, content: str, *, kind: str = "") -> dict[str, Any]: ...
 
@@ -202,40 +215,67 @@ class TuringMemoryBridge:
 
 
 class TuringSecurityBridge:
-    """Wraps maistro-core warden for Turing's self-write and tool-result scans."""
+    """Adapt the canonical Warden without changing its policy semantics."""
 
-    def __init__(self, warden: Any = None) -> None:
+    def __init__(
+        self,
+        warden: Any,
+        *,
+        audit_hook: Callable[[Any, str, str], Awaitable[None]] | None = None,
+    ) -> None:
+        if warden is None:
+            raise RuntimeError("canonical Warden is required for Turing security")
         self._warden = warden
+        self._audit_hook = audit_hook
+
+    async def _scan(
+        self,
+        content: str,
+        boundary: str,
+        *,
+        failure: str,
+        context: Sequence[Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            # The context is only forwarded when non-empty, so wardens and
+            # test doubles implementing the pre-#1158 single-string seam keep
+            # working on first turns; the canonical Warden aggregates it.
+            if context:
+                result = self._warden.scan(content, boundary, context=context)
+            else:
+                result = self._warden.scan(content, boundary)
+            if inspect.isawaitable(result):
+                result = await result
+            return await self._finish_scan(result, content, boundary)
+        except Exception:
+            # A protected boundary cannot become an implicit allow when the
+            # canonical detector is unavailable or malformed.
+            logger.exception("warden scan failed for %s", failure)
+            result = WardenVerdict(clean=False, blocked=True, flags=("warden_unavailable",))
+            return await self._finish_scan(result, content, boundary)
+
+    async def _finish_scan(self, result: Any, content: str, boundary: str) -> dict[str, Any]:
+        if self._audit_hook is not None:
+            try:
+                await self._audit_hook(result, content, boundary)
+            except Exception:
+                logger.exception("security audit failed for %s", boundary)
+                return {"verdict": "blocked", "flags": ["security_audit_unavailable"]}
+        return {
+            "verdict": "blocked" if not result.clean else "allowed",
+            "flags": list(getattr(result, "flags", [])),
+        }
+
+    async def scan_user_input(
+        self, content: str, *, context: Sequence[Any] | None = None
+    ) -> dict[str, Any]:
+        return await self._scan(content, "user_input", failure="user input", context=context)
 
     async def scan_self_write(self, content: str, *, kind: str = "") -> dict[str, Any]:
-        if self._warden is None:
-            return {"verdict": "allowed", "flags": []}
-        try:
-            result = self._warden.scan(content, "user_input")
-            if inspect.isawaitable(result):
-                result = await result
-            return {
-                "verdict": "blocked" if not result.clean else "allowed",
-                "flags": list(getattr(result, "flags", [])),
-            }
-        except Exception:
-            logger.exception("warden scan failed for self-write")
-            return {"verdict": "allowed", "flags": []}
+        return await self._scan(content, "user_input", failure="self-write")
 
     async def scan_tool_result(self, content: str, *, tool_name: str = "") -> dict[str, Any]:
-        if self._warden is None:
-            return {"verdict": "allowed", "flags": []}
-        try:
-            result = self._warden.scan(content, "tool_result")
-            if inspect.isawaitable(result):
-                result = await result
-            return {
-                "verdict": "blocked" if not result.clean else "allowed",
-                "flags": list(getattr(result, "flags", [])),
-            }
-        except Exception:
-            logger.exception("warden scan failed for tool result")
-            return {"verdict": "allowed", "flags": []}
+        return await self._scan(content, "tool_result", failure="tool result")
 
 
 class TuringProviderBridge:

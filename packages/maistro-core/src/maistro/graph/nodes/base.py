@@ -230,11 +230,18 @@ class BaseNode(Generic[InputT, OutputT]):
                 status="failed",
                 error_code=type(exc).__name__,
                 error_message=str(exc)[:512],
+                metadata=_failure_metadata(exc),
             )
 
     async def _execute(self, inputs: InputT, ctx: NodeContext) -> OutputT:
         """Subclasses implement this. Return the typed output (or raise)."""
         raise NotImplementedError(f"{type(self).__name__}._execute not implemented")
+
+
+def _failure_metadata(exc: Exception) -> dict[str, Any]:
+    """Metadata a raising node attaches to its failed NodeResult, if a mapping."""
+    carried = getattr(exc, "result_metadata", None)
+    return dict(carried) if isinstance(carried, Mapping) else {}
 
 
 class NodeCompositionError(RuntimeError):

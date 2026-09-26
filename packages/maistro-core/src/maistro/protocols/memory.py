@@ -10,6 +10,7 @@ from maistro.types.memory import REINFORCE_DELTA
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from maistro.memory.user_model.types import UserModelFact
     from maistro.types.memory import (
         DecaySweep,
         EpisodicMemory,
@@ -33,6 +34,8 @@ class LearningStore(Protocol):
         user_text: str,
         *,
         agent_id: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
         org_id: str = "",
         max_results: int = 10,
     ) -> list[Learning]:
@@ -67,9 +70,15 @@ class LearningStore(Protocol):
         ...
 
     async def get_promoted(
-        self, task_type: str | None = None, *, org_id: str = ""
+        self,
+        task_type: str | None = None,
+        *,
+        org_id: str = "",
+        team_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[Learning]:
-        """Get promoted learnings for system prompt injection."""
+        """Get promoted learnings for system prompt injection within scope."""
         ...
 
     async def list_all(self, org_id: str = "", limit: int = 200) -> list[Learning]:
@@ -404,4 +413,39 @@ class AuditLog(Protocol):
         limit: int = 100,
     ) -> list[AuditEntry]:
         """Retrieve audit entries with optional filtering."""
+        ...
+
+
+@runtime_checkable
+class UserModelStore(Protocol):
+    """Durable, owner-keyed lineages of UserModelFact revisions (#1047).
+
+    Facts are never decayed or updated in place: every change appends a
+    revision, and a tombstoned lineage can never be written again.
+    """
+
+    async def append_revision(self, fact: UserModelFact) -> UserModelFact:
+        """Append the next revision; it must directly follow the current one."""
+        ...
+
+    async def current(self, lineage_or_fact_key: str) -> UserModelFact | None:
+        """The latest revision of a lineage, found by its id or any statement key it held."""
+        ...
+
+    async def history(self, lineage_id: str) -> list[UserModelFact]:
+        """Every retained revision of a lineage, oldest first."""
+        ...
+
+    async def list_for_user(self, owner_user_id: str) -> list[UserModelFact]:
+        """Current revisions of one owner's live lineages; never another owner's."""
+        ...
+
+    async def tombstone(
+        self, lineage_id: str, *, acting_user_id: str, reason: str
+    ) -> UserModelFact:
+        """Delete a lineage's content for good, keeping who deleted it and why."""
+        ...
+
+    async def is_tombstoned(self, lineage_or_fact_key: str) -> bool:
+        """Whether the lineage (by id or any statement key it held) was tombstoned."""
         ...

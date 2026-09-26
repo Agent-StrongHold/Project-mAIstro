@@ -14,6 +14,10 @@ from pydantic import BaseModel
 from maistro.graph import Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
+    GraphContinuation,
+    HitlAuthorization,
+    HitlAuthorizationRequired,
+    HitlDelegationEvidence,
     InMemoryGraphContinuationStore,
     resume_durable_graph,
     run_durable_graph,
@@ -21,21 +25,30 @@ from maistro.graph.durable_runs import (
 from maistro.graph.durable_runs.hitl import (
     HitlDeadlineElapsed,
     HitlDeadlinePending,
+    HitlEvidenceConsumer,
+    HitlEvidenceValidator,
     HitlSettlementError,
+    earliest_hitl_deadline,
     expire_hitl_pauses,
     hitl_deadline,
+    require_hitl_authorization,
     settlement_time,
 )
 from maistro.graph.durable_runs.stores import (
     InMemoryDurableRunStore,
     SqliteDurableRunStore,
+    answer_record,
 )
 from maistro.graph.durable_runs.types import DurableRunRecord
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext, get_node, pause_until
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
-from maistro.runs.lifecycle import transition_attempt, transition_node_run
+from maistro.runs.lifecycle import (
+    settle_open_node_run,
+    transition_attempt,
+    transition_node_run,
+)
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, RunStatus
 
 from .._canonical_helpers import durable_record
@@ -45,6 +58,29 @@ pytestmark = [pytest.mark.contract("behavioral")]
 _DEADLINE = datetime(2026, 8, 30, 20, 0, tzinfo=UTC)
 _BEFORE = _DEADLINE - timedelta(seconds=1)
 _AFTER = _DEADLINE + timedelta(seconds=1)
+
+
+async def _allow_test_membership(_principal: str, _workspace_id: str) -> bool:
+    return True
+
+
+def _test_authorization() -> HitlAuthorization:
+    return HitlAuthorization(
+        effective_principal="test-hitl-operator",
+        workspace_ids=frozenset(
+            {
+                "test-workspace",
+                "ws-hitl-reconcile",
+                "ws-hitl-settlement",
+                "ws-1097",
+                "owned-workspace",
+                "foreign-workspace",
+                "ws-hitl-answer-reconcile",
+                "ws-hitl-legacy-sweep",
+            }
+        ),
+        membership_check=_allow_test_membership,
+    )
 
 
 class _Empty(BaseModel):
@@ -66,13 +102,31 @@ class _CanonicalAsk(BaseNode[_Empty, _Empty]):
         return _Empty()
 
 
+class _AnswerThenComplete(BaseNode[_Empty, _Empty]):
+    kind: ClassVar[str] = "test.hitl_settlement.answer_then_complete"
+    kind_category: ClassVar[str] = "hitl"
+    input_schema: ClassVar[type[BaseModel]] = _Empty
+    output_schema: ClassVar[type[BaseModel]] = _Empty
+
+    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Empty:
+        if ((ctx.metadata or {}).get("hitl_answers") or {}).get(ctx.node_id) is None:
+            pause_until(
+                "awaiting_human_answer",
+                resume_at=_DEADLINE,
+                metadata={"question": "Ship it?", "timeout_seconds": 1},
+            )
+        return _Empty()
+
+
 class _LosingTimeoutStore(InMemoryDurableRunStore):
     async def timeout_hitl(
         self,
         run_id: str,
         node_id: str,
         *,
+        authorization: HitlAuthorization,
         at: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> DurableRunRecord:
         raise ValueError("another decision won")
 
@@ -100,7 +154,11 @@ def _yielded_attempt(node_run: NodeRun) -> Attempt:
     )
 
 
-def _paused_record(run_id: str) -> DurableRunRecord:
+def _paused_record(
+    run_id: str,
+    *,
+    workspace_id: str = "test-workspace",
+) -> DurableRunRecord:
     node_run = _paused_node_run(run_id)
     attempt = _yielded_attempt(node_run)
     record = durable_record(
@@ -112,6 +170,7 @@ def _paused_record(run_id: str) -> DurableRunRecord:
         run_id=run_id,
         status=RunStatus.PAUSED,
         active_node_id="ask",
+        workspace_id=workspace_id,
         node_runs=(node_run,),
         metadata={
             "initial_inputs": {},
@@ -225,7 +284,7 @@ async def test_deadline_survives_restart_and_timeout_preserves_attempt(tmp_path:
     del first_store
 
     reopened = SqliteDurableRunStore(db)
-    expired = await expire_hitl_pauses(reopened, now=_AFTER)
+    expired = await expire_hitl_pauses(reopened, now=_AFTER, authorization=_test_authorization())
 
     assert [record.run_id for record in expired] == ["restart-timeout"]
     settled = expired[0]
@@ -285,7 +344,9 @@ async def test_pre_index_sqlite_pause_is_backfilled_and_expires_after_restart(
         conn.commit()
 
     store = SqliteDurableRunStore(db)
-    expired = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    expired = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert [record.run_id for record in expired] == ["pre-index-timeout"]
     assert expired[0].status is RunStatus.TIMED_OUT
@@ -297,7 +358,9 @@ async def test_cancel_survives_restart_without_fabricating_an_answer(tmp_path: P
     original = _paused_record("restart-cancel")
     await store.create(original)
 
-    cancelled = await store.cancel_hitl("restart-cancel", "ask", at=_BEFORE)
+    cancelled = await store.cancel_hitl(
+        "restart-cancel", "ask", at=_BEFORE, authorization=_test_authorization()
+    )
 
     _assert_settlement(
         cancelled,
@@ -318,7 +381,9 @@ async def test_cancelling_one_human_frontier_member_cascades_open_siblings() -> 
     store = InMemoryDurableRunStore()
     await store.create(_paused_frontier_record("cancel-frontier"))
 
-    cancelled = await store.cancel_hitl("cancel-frontier", "ask", at=_BEFORE)
+    cancelled = await store.cancel_hitl(
+        "cancel-frontier", "ask", at=_BEFORE, authorization=_test_authorization()
+    )
 
     assert [node.status for node in cancelled.node_runs] == [
         RunStatus.CANCELLED,
@@ -338,21 +403,55 @@ async def test_timeout_is_refused_before_or_without_a_durable_deadline() -> None
     await store.create(without_deadline)
 
     with pytest.raises(HitlDeadlinePending, match="pending until"):
-        await store.timeout_hitl("deadline-pending", "ask", at=_BEFORE)
+        await store.timeout_hitl(
+            "deadline-pending", "ask", at=_BEFORE, authorization=_test_authorization()
+        )
     with pytest.raises(HitlDeadlinePending, match="has no deadline"):
-        await store.timeout_hitl("deadline-absent", "ask", at=_AFTER)
+        await store.timeout_hitl(
+            "deadline-absent", "ask", at=_AFTER, authorization=_test_authorization()
+        )
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_settlement_requires_object_authorization_before_target_lookup(
+    backend: str, tmp_path: Path
+) -> None:
+    store = (
+        InMemoryDurableRunStore()
+        if backend == "memory"
+        else SqliteDurableRunStore(tmp_path / "unscoped-hitl.db")
+    )
+    await store.create(_paused_record("unscoped-settlement"))
+
+    with pytest.raises(HitlAuthorizationRequired, match="authorization is required"):
+        await store.list_hitl_due(
+            now=_AFTER,
+            authorization=None,  # type: ignore[arg-type]
+        )
+    with pytest.raises(HitlAuthorizationRequired, match="authorization is required"):
+        await store.cancel_hitl(
+            "unscoped-settlement",
+            "ask",
+            at=_BEFORE,
+            authorization=None,  # type: ignore[arg-type]
+        )
+
+    unchanged = await store.get("unscoped-settlement")
+    assert unchanged is not None and unchanged.status is RunStatus.PAUSED
 
 
 async def test_settlement_refuses_missing_runs_and_nodes_outside_the_frontier() -> None:
     store = InMemoryDurableRunStore()
     with pytest.raises(KeyError, match="no such run"):
-        await store.timeout_hitl("missing", "ask", at=_AFTER)
+        await store.timeout_hitl("missing", "ask", at=_AFTER, authorization=_test_authorization())
     with pytest.raises(KeyError, match="no such run"):
-        await store.cancel_hitl("missing", "ask", at=_BEFORE)
+        await store.cancel_hitl("missing", "ask", at=_BEFORE, authorization=_test_authorization())
 
     await store.create(_paused_record("wrong-frontier-node"))
     with pytest.raises(ValueError, match="waiting on frontier"):
-        await store.cancel_hitl("wrong-frontier-node", "review", at=_BEFORE)
+        await store.cancel_hitl(
+            "wrong-frontier-node", "review", at=_BEFORE, authorization=_test_authorization()
+        )
 
 
 @pytest.mark.parametrize(
@@ -371,6 +470,15 @@ def test_malformed_durable_deadlines_fail_closed(raw_deadline: object, message: 
 
     with pytest.raises(HitlSettlementError, match=message):
         hitl_deadline(record, "ask")
+
+
+async def test_deadline_projection_skips_malformed_active_pause() -> None:
+    record = _with_pause_entry(
+        _paused_record("malformed-projection"),
+        {"kind": "hitl", "metadata": {}, "resume_at": "2026-08-30T20:00:00"},
+    )
+
+    assert earliest_hitl_deadline(record) is None
 
 
 def test_missing_pause_is_only_compatible_with_the_legacy_answer_path() -> None:
@@ -392,16 +500,24 @@ async def test_late_answer_is_refused_before_the_sweep_observes_expiry() -> None
     await store.create(_paused_record("late-answer"))
 
     with pytest.raises(HitlDeadlineElapsed, match="deadline elapsed"):
-        await store.submit_hitl_answer("late-answer", "ask", {"answer": "yes"}, at=_AFTER)
+        await store.submit_hitl_answer(
+            "late-answer", "ask", {"answer": "yes"}, at=_AFTER, authorization=_test_authorization()
+        )
 
     still_paused = await store.get("late-answer")
     assert still_paused is not None
     assert still_paused.status is RunStatus.PAUSED
     assert still_paused.hitl_answers == {}
 
-    [timed_out] = await expire_hitl_pauses(store, now=_AFTER)
+    [timed_out] = await expire_hitl_pauses(store, now=_AFTER, authorization=_test_authorization())
     with pytest.raises(ValueError, match="not paused"):
-        await store.submit_hitl_answer("late-answer", "ask", {"answer": "again"}, at=_AFTER)
+        await store.submit_hitl_answer(
+            "late-answer",
+            "ask",
+            {"answer": "again"},
+            at=_AFTER,
+            authorization=_test_authorization(),
+        )
     assert await store.get("late-answer") == timed_out
 
 
@@ -411,8 +527,10 @@ async def test_concurrent_answer_and_cancel_persist_exactly_one_winner() -> None
     await store.create(_paused_record("one-winner"))
 
     results = await asyncio.gather(
-        store.submit_hitl_answer("one-winner", "ask", {"answer": "yes"}, at=_BEFORE),
-        store.cancel_hitl("one-winner", "ask", at=_BEFORE),
+        store.submit_hitl_answer(
+            "one-winner", "ask", {"answer": "yes"}, at=_BEFORE, authorization=_test_authorization()
+        ),
+        store.cancel_hitl("one-winner", "ask", at=_BEFORE, authorization=_test_authorization()),
         return_exceptions=True,
     )
 
@@ -435,9 +553,17 @@ async def test_elapsed_deadline_wins_answer_timeout_cancel_race() -> None:
     await store.create(_paused_record("deadline-winner"))
 
     results = await asyncio.gather(
-        store.submit_hitl_answer("deadline-winner", "ask", {"answer": "yes"}, at=_AFTER),
-        store.cancel_hitl("deadline-winner", "ask", at=_AFTER),
-        store.timeout_hitl("deadline-winner", "ask", at=_AFTER),
+        store.submit_hitl_answer(
+            "deadline-winner",
+            "ask",
+            {"answer": "yes"},
+            at=_AFTER,
+            authorization=_test_authorization(),
+        ),
+        store.cancel_hitl("deadline-winner", "ask", at=_AFTER, authorization=_test_authorization()),
+        store.timeout_hitl(
+            "deadline-winner", "ask", at=_AFTER, authorization=_test_authorization()
+        ),
         return_exceptions=True,
     )
 
@@ -454,6 +580,171 @@ async def test_elapsed_deadline_wins_answer_timeout_cancel_race() -> None:
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-4")
+async def test_two_workspace_late_race_cannot_settle_foreign_pause() -> None:
+    """A scoped caller wins only its own deadline race, never a foreign Run."""
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("owned-race", workspace_id="owned-workspace"))
+    await store.create(_paused_record("foreign-race", workspace_id="foreign-workspace"))
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+
+    results = await asyncio.gather(
+        store.submit_hitl_answer(
+            "owned-race",
+            "ask",
+            {"answer": "late"},
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        store.timeout_hitl(
+            "owned-race",
+            "ask",
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        store.submit_hitl_answer(
+            "foreign-race",
+            "ask",
+            {"answer": "late"},
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        store.cancel_hitl(
+            "foreign-race",
+            "ask",
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(not isinstance(result, BaseException) for result in results) == 1
+    owned = await store.get("owned-race")
+    foreign = await store.get("foreign-race")
+    assert owned is not None and owned.status is RunStatus.TIMED_OUT
+    assert foreign is not None and foreign.status is RunStatus.PAUSED
+
+
+async def _canonical_two_workspace_fixture() -> tuple[Any, Any, Any, Any]:
+    """Two real `human.approve_draft` Runs, paused in two canonical Workspaces."""
+    projects = InMemoryProjectScopeStore()
+    run_store = InMemoryRunStore(project_store=projects)
+    store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    paused: dict[str, Any] = {}
+    for workspace_id in ("ws-1058-member", "ws-1058-foreign"):
+        root = await projects.create_root(workspace_id)
+        project = await projects.create(
+            workspace_id=workspace_id,
+            parent_project_id=root.project_id,
+            name=f"two-workspace settlement {workspace_id}",
+        )
+        graph = Graph(
+            workspace_id=workspace_id,
+            project_id=project.project_id,
+            name="approval",
+            nodes=[
+                Node(
+                    node_id="ask",
+                    node_type="human.approve_draft",
+                    inputs={"draft": {"ticket": "PROJ-1"}, "timeout_seconds": 100},
+                )
+            ],
+        )
+        admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+        paused[workspace_id] = await run_durable_graph(
+            graph,
+            store=store,
+            node_resolver=lambda node_id, current_graph: get_node("human.approve_draft")(),
+            run_id=admitted.run_id,
+            run_store=run_store,
+        )
+    return store, run_store, paused["ws-1058-member"], paused["ws-1058-foreign"]
+
+
+async def test_canonical_mutations_refuse_a_foreign_workspace_authorization() -> None:
+    """Object authorization binds at the canonical spine, not only its copies.
+
+    The in-memory and SQLite stores each carry their own membership
+    predicate; the spine-backed `CanonicalDurableRunStore` must refuse the
+    same foreign settlement through its `_mutate_hitl` boundary, and an
+    expiry tick scoped to the member Workspace must never settle the foreign
+    Run. Removing the `permits` predicate there must fail this test.
+    """
+    store, _run_store, member, foreign = await _canonical_two_workspace_fixture()
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"ws-1058-member"}),
+        membership_check=_allow_test_membership,
+    )
+
+    mutations = [
+        lambda: store.submit_hitl_answer(
+            foreign.run_id,
+            "ask",
+            {"answer": "late"},
+            at=_AFTER,
+            authorization=authorization,
+        ),
+        lambda: store.timeout_hitl(foreign.run_id, "ask", at=_AFTER, authorization=authorization),
+        lambda: store.cancel_hitl(foreign.run_id, "ask", at=_AFTER, authorization=authorization),
+    ]
+    for mutate in mutations:
+        with pytest.raises(KeyError, match="outside the authorized Workspace"):
+            await mutate()
+
+    unsettled = await store.get(foreign.run_id)
+    assert unsettled is not None and unsettled.status is RunStatus.PAUSED
+
+    deadline = hitl_deadline(foreign, "ask")
+    assert deadline is not None
+    expired = await expire_hitl_pauses(
+        store, now=deadline + timedelta(seconds=1), authorization=authorization
+    )
+    assert [record.run_id for record in expired] == [member.run_id]
+
+    still_paused = await store.get(foreign.run_id)
+    assert still_paused is not None and still_paused.status is RunStatus.PAUSED
+    timed_out = await store.get(member.run_id)
+    assert timed_out is not None and timed_out.status is RunStatus.TIMED_OUT
+
+
+async def test_inmemory_mutations_refuse_a_foreign_workspace_authorization() -> None:
+    """The store-level predicate itself, not a deadline, refuses the mutation.
+
+    Settled before the pause deadline so no `HitlDeadlineElapsed` can mask the
+    refusal: only the Workspace membership predicate can produce this
+    KeyError. Removing it from the in-memory store must fail this test.
+    """
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("foreign-direct", workspace_id="foreign-workspace"))
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+
+    mutations = [
+        lambda: store.submit_hitl_answer(
+            "foreign-direct",
+            "ask",
+            {"answer": "yes"},
+            at=_BEFORE,
+            authorization=authorization,
+        ),
+        lambda: store.timeout_hitl("foreign-direct", "ask", at=_AFTER, authorization=authorization),
+        lambda: store.cancel_hitl("foreign-direct", "ask", at=_BEFORE, authorization=authorization),
+    ]
+    for mutate in mutations:
+        with pytest.raises(KeyError, match="outside the authorized Workspace"):
+            await mutate()
+
+    record = await store.get("foreign-direct")
+    assert record is not None and record.run.status is RunStatus.PAUSED
+
+
 async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> None:
     db = tmp_path / "hitl-race.db"
     answer_store = SqliteDurableRunStore(db)
@@ -461,8 +752,16 @@ async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> 
     await answer_store.create(_paused_record("sqlite-one-winner"))
 
     results = await asyncio.gather(
-        answer_store.submit_hitl_answer("sqlite-one-winner", "ask", {"answer": "yes"}, at=_BEFORE),
-        cancel_store.cancel_hitl("sqlite-one-winner", "ask", at=_BEFORE),
+        answer_store.submit_hitl_answer(
+            "sqlite-one-winner",
+            "ask",
+            {"answer": "yes"},
+            at=_BEFORE,
+            authorization=_test_authorization(),
+        ),
+        cancel_store.cancel_hitl(
+            "sqlite-one-winner", "ask", at=_BEFORE, authorization=_test_authorization()
+        ),
         return_exceptions=True,
     )
 
@@ -471,6 +770,104 @@ async def test_sqlite_instances_serialize_answer_cancel_race(tmp_path: Path) -> 
     persisted = await SqliteDurableRunStore(db).get("sqlite-one-winner")
     assert persisted is not None
     assert persisted.status in {RunStatus.QUEUED, RunStatus.CANCELLED}
+
+
+async def test_sqlite_rejects_revoked_membership_inside_settlement(tmp_path: Path) -> None:
+    """A rejected live membership leaves the target pause unchanged."""
+    store = SqliteDurableRunStore(tmp_path / "hitl-membership-race.db")
+    await store.create(_paused_record("sqlite-membership-race"))
+    checks: list[tuple[str, str]] = []
+
+    async def membership(principal: str, workspace_id: str) -> bool:
+        checks.append((principal, workspace_id))
+        return False
+
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"test-workspace"}),
+        membership_check=membership,
+    )
+    with pytest.raises(KeyError, match="outside the authorized Workspace"):
+        await store.cancel_hitl(
+            "sqlite-membership-race",
+            "ask",
+            at=_BEFORE,
+            authorization=authorization,
+        )
+
+    persisted = await store.get("sqlite-membership-race")
+    assert len(checks) == 1
+    assert persisted is not None and persisted.status is RunStatus.PAUSED
+
+
+async def test_sqlite_holds_settlement_transaction_while_authorizing(tmp_path: Path) -> None:
+    """There is no revocation-to-write gap after canonical target resolution."""
+    db = tmp_path / "hitl-authorization-transaction.db"
+    store = SqliteDurableRunStore(db)
+    await store.create(_paused_record("sqlite-authorization-transaction"))
+    competing_writer_was_blocked = False
+
+    async def membership(_principal: str, _workspace_id: str) -> bool:
+        nonlocal competing_writer_was_blocked
+        with (
+            sqlite3.connect(db, timeout=0) as competing_connection,
+            pytest.raises(sqlite3.OperationalError, match="locked"),
+        ):
+            competing_connection.execute("BEGIN IMMEDIATE")
+        competing_writer_was_blocked = True
+        return True
+
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"test-workspace"}),
+        membership_check=membership,
+    )
+    settled = await store.cancel_hitl(
+        "sqlite-authorization-transaction",
+        "ask",
+        at=_BEFORE,
+        authorization=authorization,
+    )
+
+    assert competing_writer_was_blocked
+    assert settled.status is RunStatus.CANCELLED
+
+
+async def test_settlement_waits_for_membership_revocation_then_refuses() -> None:
+    """A shared authority lock makes a racing revocation win before settlement."""
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("membership-revocation-race"))
+    membership_lock = asyncio.Lock()
+    await membership_lock.acquire()
+    revoked = False
+
+    async def membership(_principal: str, _workspace_id: str) -> bool:
+        return not revoked
+
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"test-workspace"}),
+        membership_check=membership,
+        membership_mutation_lock=membership_lock,
+    )
+    settlement = asyncio.create_task(
+        store.cancel_hitl(
+            "membership-revocation-race",
+            "ask",
+            at=_BEFORE,
+            authorization=authorization,
+        )
+    )
+    await asyncio.sleep(0)
+    assert not settlement.done()
+
+    revoked = True
+    membership_lock.release()
+    with pytest.raises(KeyError, match="outside the authorized Workspace"):
+        await settlement
+
+    persisted = await store.get("membership-revocation-race")
+    assert persisted is not None and persisted.status is RunStatus.PAUSED
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-1")
@@ -516,7 +913,9 @@ async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
 
     monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
     with pytest.raises(RuntimeError, match="injected crash"):
-        await store.timeout_hitl(paused.run_id, "ask", at=_AFTER)
+        await store.timeout_hitl(
+            paused.run_id, "ask", at=_AFTER, authorization=_test_authorization()
+        )
 
     interrupted = await run_store.get_run(paused.run_id)
     assert interrupted is not None and interrupted.status is RunStatus.PAUSED
@@ -537,6 +936,324 @@ async def test_reconcile_repairs_crash_after_terminal_continuation_persistence(
     assert repaired.run.finished_at == _AFTER
     assert repaired.node_runs[0].finished_at == _AFTER
     assert await reopened.reconcile_persistence() == 0
+
+
+@pytest.mark.ac("SPEC-083026-73c1/AC-3")
+@pytest.mark.ac("SPEC-083026-73c1/AC-5")
+async def test_reconcile_repairs_crash_after_answer_before_run_mirror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An accepted answer must remain resumable after a split canonical write."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root("ws-hitl-answer-reconcile")
+    project = await projects.create(
+        workspace_id="ws-hitl-answer-reconcile",
+        parent_project_id=root.project_id,
+        name="HITL",
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = CanonicalDurableRunStore(run_store, continuations)
+    graph = Graph(
+        workspace_id="ws-hitl-answer-reconcile",
+        project_id=project.project_id,
+        name="crash after answer evidence",
+        nodes=[Node(node_id="ask", node_type=_AnswerThenComplete.kind)],
+    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    paused = await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+    original_transition_run = run_store.transition_run
+    crash = True
+
+    async def crash_before_run_mirror(run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal crash
+        if crash and target is RunStatus.QUEUED:
+            crash = False
+            raise RuntimeError("injected crash after HITL answer write")
+        return await original_transition_run(run_id, target, **kwargs)
+
+    monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await store.submit_hitl_answer(
+            paused.run_id,
+            "ask",
+            {"answer": "yes"},
+            at=_BEFORE,
+            authorization=_test_authorization(),
+        )
+
+    interrupted = await run_store.get_run(paused.run_id)
+    assert interrupted is not None and interrupted.status is RunStatus.PAUSED
+    [interrupted_node] = await run_store.list_node_runs(paused.run_id)
+    assert interrupted_node.status is RunStatus.QUEUED
+
+    resumed = await resume_durable_graph(
+        paused.run_id,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_store=run_store,
+    )
+    assert resumed.status is RunStatus.COMPLETED
+    assert [attempt.status for attempt in resumed.attempts] == [
+        AttemptStatus.COMPLETED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert [attempt.ordinal for attempt in resumed.attempts] == [1, 2]
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.COMPLETED
+
+
+async def _paused_hitl_run(
+    workspace_id: str,
+    *,
+    store_type: type[CanonicalDurableRunStore] = CanonicalDurableRunStore,
+) -> tuple[
+    CanonicalDurableRunStore,
+    InMemoryRunStore,
+    InMemoryGraphContinuationStore,
+    DurableRunRecord,
+]:
+    """A canonical store holding one Run paused on a human question."""
+    projects = InMemoryProjectScopeStore()
+    root = await projects.create_root(workspace_id)
+    project = await projects.create(
+        workspace_id=workspace_id,
+        parent_project_id=root.project_id,
+        name="HITL",
+    )
+    run_store = InMemoryRunStore(project_store=projects)
+    continuations = InMemoryGraphContinuationStore()
+    store = store_type(run_store, continuations)
+    graph = Graph(
+        workspace_id=workspace_id,
+        project_id=project.project_id,
+        name="answered but interrupted",
+        nodes=[Node(node_id="ask", node_type=_AnswerThenComplete.kind)],
+    )
+    admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    paused = await run_durable_graph(
+        graph,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_id=admitted.run_id,
+        run_store=run_store,
+    )
+    return store, run_store, continuations, paused
+
+
+async def _write_answer_residue(
+    store: CanonicalDurableRunStore,
+    continuations: InMemoryGraphContinuationStore,
+    run_id: str,
+    *,
+    answers: object = None,
+) -> None:
+    """Land the accepted-answer continuation without touching the spine.
+
+    This is the crash window the answered-HITL reconciler exists for: the
+    continuation write committed, the process died before either canonical
+    mirror ran. ``answers`` replaces the evidence metadata, so a caller can
+    simulate a foreign or buggy writer; the default writes the record the
+    real answer path produces.
+    """
+    record = await store.get(run_id)
+    assert record is not None
+    answered = answer_record(record, "ask", {"answer": "yes"}, at=_BEFORE)
+    if answers is not None:
+        graph_state = answered.graph_state.model_copy(
+            update={"metadata": {**answered.graph_state.metadata, "hitl_answers": answers}}
+        )
+        continuation = GraphContinuation.of(answered).model_copy(
+            update={"graph_state": graph_state}
+        )
+    else:
+        continuation = GraphContinuation.of(answered)
+    await continuations.update(continuation)
+
+
+async def test_reconcile_requeues_a_node_still_paused_behind_its_answer() -> None:
+    """An answer that outran every canonical mirror un-pauses the node.
+
+    The other crash test lands with the NodeRun already queued, because the
+    answer path transitions the node before the spine mirror that crashed.
+    The narrower window — death between the continuation write and the node
+    transition — is what this drives: the reconciler must requeue the node at
+    its accepted-answer instant, queue the Run, and leave a resume that
+    continues the same physical Attempt history rather than restarting it.
+    """
+    store, run_store, continuations, paused = await _paused_hitl_run("ws-hitl-answer-requeue")
+    await _write_answer_residue(store, continuations, paused.run_id)
+
+    assert await store.reconcile_run(paused.run_id) is True
+
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.QUEUED
+    [node_run] = await run_store.list_node_runs(paused.run_id)
+    assert node_run.status is RunStatus.QUEUED
+    assert node_run.updated_at == _BEFORE
+
+    resumed = await resume_durable_graph(
+        paused.run_id,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_store=run_store,
+    )
+    assert resumed.status is RunStatus.COMPLETED
+    assert [attempt.status for attempt in resumed.attempts] == [
+        AttemptStatus.COMPLETED,
+        AttemptStatus.COMPLETED,
+    ]
+    assert [attempt.ordinal for attempt in resumed.attempts] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        pytest.param("a bare string, not a mapping", id="non-mapping-answer"),
+        pytest.param({"ask": {"answered_at": 3}}, id="non-string-instant"),
+        pytest.param({"ask": {"answered_at": "yesterday, probably"}}, id="unparseable-instant"),
+        pytest.param({"ask": {"answered_at": "2026-08-30T19:59:59"}}, id="naive-instant"),
+    ],
+)
+async def test_reconcile_refuses_answer_evidence_it_cannot_trust(answers: object) -> None:
+    """Only store-authored, time-zone-true instants may revive a paused Run.
+
+    Evidence that a caller wrote into the continuation — or that lost its
+    zone on the way through a serializer — is not a decision the spine ever
+    made. The reconciler must leave such a Run exactly as it found it:
+    paused, with the human's answer still pending.
+    """
+    store, run_store, continuations, paused = await _paused_hitl_run("ws-hitl-untrusted-evidence")
+    await _write_answer_residue(store, continuations, paused.run_id, answers=answers)
+
+    assert await store.reconcile_run(paused.run_id) is False
+
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.PAUSED
+    [node_run] = await run_store.list_node_runs(paused.run_id)
+    assert node_run.status is RunStatus.PAUSED
+    assert node_run.updated_at != _BEFORE
+
+
+async def test_reconcile_refuses_answer_evidence_when_the_record_cannot_be_assembled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record that vanishes mid-reconcile must not be fabricated back.
+
+    Between the spine read that admitted this Run to the reconciler and the
+    assembled read the answered-HITL repair performs, a concurrent purge can
+    take the record away. Repairing from a half-read record would mirror
+    transitions the store can no longer account for, so the split survives
+    for the next tick instead.
+    """
+    store, run_store, continuations, paused = await _paused_hitl_run("ws-hitl-record-vanished")
+    await _write_answer_residue(store, continuations, paused.run_id)
+
+    async def record_vanished_mid_reconcile(run_id: str) -> DurableRunRecord | None:
+        return None
+
+    monkeypatch.setattr(store, "get", record_vanished_mid_reconcile)
+
+    assert await store.reconcile_run(paused.run_id) is False
+
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.PAUSED
+
+
+async def test_reconcile_refuses_answer_evidence_for_already_settled_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evidence for nodes that have all settled must reopen nothing.
+
+    A contradictory store pairing — answer evidence on the continuation,
+    every evidenced node already terminal on the record — is what a repair
+    that raced its own completion leaves behind. Replaying the requeue would
+    resurrect settled work, so the reconciler reports no change.
+    """
+    store, run_store, continuations, paused = await _paused_hitl_run("ws-hitl-settled-evidence")
+    await _write_answer_residue(store, continuations, paused.run_id)
+    assembled = await store.get(paused.run_id)
+    assert assembled is not None
+    [node_run] = assembled.node_runs
+    settled = assembled.model_copy(
+        update={"node_runs": (settle_open_node_run(node_run, RunStatus.CANCELLED, at=_AFTER),)}
+    )
+
+    async def already_settled(run_id: str) -> DurableRunRecord | None:
+        return settled
+
+    monkeypatch.setattr(store, "get", already_settled)
+
+    assert await store.reconcile_run(paused.run_id) is False
+
+    canonical = await run_store.get_run(paused.run_id)
+    assert canonical is not None and canonical.status is RunStatus.PAUSED
+    [untouched] = await run_store.list_node_runs(paused.run_id)
+    assert untouched.status is RunStatus.PAUSED
+
+
+async def test_resume_repair_falls_back_to_the_bounded_sweep_on_legacy_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store predating targeted resume repair still gets its residue fixed.
+
+    The reconcile affordance is duck-typed: stores older than it expose only
+    the bounded sweep. Resume must route the pre-flight repair through that
+    sweep — one Run's worth, not the whole queue — rather than skipping the
+    repair and resuming on top of a contradictory spine.
+    """
+
+    class _PreReconcileCanonicalStore(CanonicalDurableRunStore):
+        """A canonical store from before the targeted repair affordance."""
+
+        reconcile_run: None = None  # shadows the subclass's newer affordance
+
+    store, run_store, _, paused = await _paused_hitl_run(
+        "ws-hitl-legacy-sweep", store_type=_PreReconcileCanonicalStore
+    )
+    original_transition_run = run_store.transition_run
+    crash = True
+
+    async def crash_before_run_mirror(run_id: str, target: RunStatus, **kwargs: Any) -> Any:
+        nonlocal crash
+        if crash and target is RunStatus.QUEUED:
+            crash = False
+            raise RuntimeError("injected crash after HITL answer write")
+        return await original_transition_run(run_id, target, **kwargs)
+
+    monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        await store.submit_hitl_answer(
+            paused.run_id,
+            "ask",
+            {"answer": "yes"},
+            at=_BEFORE,
+            authorization=_test_authorization(),
+        )
+
+    swept: list[int] = []
+    original_sweep = store.reconcile_persistence
+
+    async def spy_reconcile_persistence(*, limit: int = 100) -> int:
+        swept.append(limit)
+        return await original_sweep(limit=limit)
+
+    monkeypatch.setattr(store, "reconcile_persistence", spy_reconcile_persistence)
+
+    resumed = await resume_durable_graph(
+        paused.run_id,
+        store=store,
+        node_resolver=lambda node_id, current_graph: _AnswerThenComplete(),
+        run_store=run_store,
+    )
+    assert resumed.status is RunStatus.COMPLETED
+    assert swept == [1]
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-1")
@@ -625,7 +1342,7 @@ async def _crash_after_continuation_timeout(
 
     monkeypatch.setattr(run_store, "transition_run", crash_before_run_mirror)
     with pytest.raises(RuntimeError, match="injected crash"):
-        await store.timeout_hitl(run_id, "ask", at=_AFTER)
+        await store.timeout_hitl(run_id, "ask", at=_AFTER, authorization=_test_authorization())
     monkeypatch.setattr(run_store, "transition_run", original_transition_run)
     interrupted = await run_store.get_run(run_id)
     assert interrupted is not None and interrupted.status is RunStatus.PAUSED
@@ -644,7 +1361,7 @@ async def test_reconcile_reaches_settlement_residue_behind_a_full_terminal_prefi
     run_store, continuations, project_id = await _canonical_spine()
     store = CanonicalDurableRunStore(run_store, continuations)
     settled = await _canonical_pause(store, run_store, project_id)
-    await store.timeout_hitl(settled.run_id, "ask", at=_AFTER)
+    await store.timeout_hitl(settled.run_id, "ask", at=_AFTER, authorization=_test_authorization())
     residue = await _canonical_pause(store, run_store, project_id)
     await _crash_after_continuation_timeout(store, run_store, residue.run_id, monkeypatch)
 
@@ -721,14 +1438,21 @@ async def test_expiry_repairs_a_pause_whose_run_mirror_never_landed() -> None:
     stale_run = await run_store.get_run(stale_id)
     assert stale_run is not None and stale_run.status is RunStatus.RUNNING
 
-    first = await expire_hitl_pauses(store, now=_AFTER, limit=1)
-    second = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    first = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
+    second = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert {record.run_id for record in first + second} == {stale_id, valid.run_id}
     for run_id in (stale_id, valid.run_id):
         settled = await run_store.get_run(run_id)
         assert settled is not None and settled.status is RunStatus.TIMED_OUT
-    assert await expire_hitl_pauses(store, now=_AFTER, limit=1) == []
+    assert (
+        await expire_hitl_pauses(store, now=_AFTER, limit=1, authorization=_test_authorization())
+        == []
+    )
 
 
 async def test_expiry_pages_past_a_projection_that_cannot_be_repaired() -> None:
@@ -740,13 +1464,17 @@ async def test_expiry_pages_past_a_projection_that_cannot_be_repaired() -> None:
     # Cancelled on the canonical side while the continuation still says PAUSED.
     await run_store.transition_run(stale.run_id, RunStatus.CANCELLED)
 
-    settled = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    settled = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert [record.run_id for record in settled] == [valid.run_id]
     cancelled = await run_store.get_run(stale.run_id)
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
 
 
+@pytest.mark.ac("SPEC-083026-73c1/AC-1")
+@pytest.mark.ac("SPEC-083026-73c1/AC-5")
 async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() -> None:
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("ws-hitl-settlement")
@@ -774,7 +1502,9 @@ async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() 
     )
     original_attempts = paused.attempts
 
-    settled = await store.timeout_hitl(paused.run_id, "ask", at=_AFTER)
+    settled = await store.timeout_hitl(
+        paused.run_id, "ask", at=_AFTER, authorization=_test_authorization()
+    )
 
     _assert_settlement(
         settled,
@@ -796,7 +1526,9 @@ async def test_canonical_projection_mirrors_timeout_without_rewriting_attempt() 
         run_id=cancel_run.run_id,
         run_store=run_store,
     )
-    cancel_settled = await store.cancel_hitl(cancel_paused.run_id, "ask", at=_BEFORE)
+    cancel_settled = await store.cancel_hitl(
+        cancel_paused.run_id, "ask", at=_BEFORE, authorization=_test_authorization()
+    )
     assert cancel_settled.status is RunStatus.CANCELLED
 
 
@@ -806,12 +1538,594 @@ async def test_expiry_tick_is_bounded_and_ignores_unelapsed_pauses() -> None:
     await store.create(_paused_record("first"))
     await store.create(_paused_record("second"))
 
-    assert await expire_hitl_pauses(store, now=_BEFORE) == []
-    expired = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    assert await expire_hitl_pauses(store, now=_BEFORE, authorization=_test_authorization()) == []
+    expired = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert len(expired) == 1
     remaining = await store.list_by_status(RunStatus.PAUSED)
     assert len(remaining) == 1
+
+
+async def test_scoped_expiry_requires_effective_principal_and_keeps_foreign_run_paused() -> None:
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("owned-expiry", workspace_id="owned-workspace"))
+    await store.create(_paused_record("foreign-expiry", workspace_id="foreign-workspace"))
+
+    with pytest.raises(KeyError, match="outside the requested Workspace"):
+        await store.cancel_hitl(
+            "owned-expiry",
+            "ask",
+            at=_BEFORE,
+            workspace_id="foreign-workspace",
+            authorization=_test_authorization(),
+        )
+
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+    expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
+
+    assert [record.run_id for record in expired] == ["owned-expiry"]
+    foreign = await store.get("foreign-expiry")
+    assert foreign is not None and foreign.status is RunStatus.PAUSED
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected"),
+    [
+        (
+            lambda: HitlAuthorization(
+                effective_principal=" ",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+            ),
+            "effective principal",
+        ),
+    ],
+)
+def test_scoped_hitl_expiry_rejects_missing_principal(factory, expected):
+    with pytest.raises(ValueError, match=expected):
+        factory()
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected"),
+    [
+        # A blank member in the candidate page cannot stand in for scope.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="member-user",
+                workspace_ids=frozenset({"owned-workspace", " "}),
+                membership_check=_allow_test_membership,
+            ),
+            "blank Workspace id",
+        ),
+        (
+            lambda: HitlAuthorization(
+                effective_principal="member-user",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+                action=" ",
+            ),
+            "requires an action",
+        ),
+        # Evidence callbacks without evidence are an authority claim with no
+        # authority behind it.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="member-user",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+                evidence_consumer=_consume_nothing,
+            ),
+            "callbacks require delegation evidence",
+        ),
+        # Delegation evidence must name the principal it authorizes.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="other-service",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+                delegation_evidence=HitlDelegationEvidence(
+                    issuer="did:key:issuer",
+                    subject="service",
+                    workspace_ids=frozenset({"owned-workspace"}),
+                    actions=frozenset({"hitl.settle"}),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                    token_id="token-1",
+                ),
+                evidence_validator=_accept_evidence,
+                evidence_consumer=_consume_nothing,
+            ),
+            "subject must match the effective principal",
+        ),
+        # And it cannot be widened past its own Workspace claims.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="service",
+                workspace_ids=frozenset({"owned-workspace", "foreign-workspace"}),
+                membership_check=_allow_test_membership,
+                delegation_evidence=HitlDelegationEvidence(
+                    issuer="did:key:issuer",
+                    subject="service",
+                    workspace_ids=frozenset({"owned-workspace"}),
+                    actions=frozenset({"hitl.settle"}),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                    token_id="token-1",
+                ),
+                evidence_validator=_accept_evidence,
+                evidence_consumer=_consume_nothing,
+            ),
+            "does not cover the requested Workspaces",
+        ),
+        # A delegation must be bound to live validation and consumption, not
+        # just to its static claims.
+        (
+            lambda: HitlAuthorization(
+                effective_principal="service",
+                workspace_ids=frozenset({"owned-workspace"}),
+                membership_check=_allow_test_membership,
+                delegation_evidence=HitlDelegationEvidence(
+                    issuer="did:key:issuer",
+                    subject="service",
+                    workspace_ids=frozenset({"owned-workspace"}),
+                    actions=frozenset({"hitl.settle"}),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                    token_id="token-1",
+                ),
+                evidence_consumer=_consume_nothing,
+            ),
+            "requires validation and consumption",
+        ),
+    ],
+)
+def test_hitl_authorization_construction_fails_closed(factory, expected):
+    """Every construction path runs the same evidence validation."""
+    with pytest.raises(ValueError, match=expected):
+        factory()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"issuer": " "}, "requires an issuer"),
+        ({"subject": " "}, "requires a subject"),
+        ({"workspace_ids": frozenset()}, "requires Workspace scope"),
+        ({"workspace_ids": frozenset({" "})}, "requires Workspace scope"),
+        ({"actions": frozenset()}, "requires an action scope"),
+        ({"actions": frozenset({" "})}, "requires an action scope"),
+        ({"token_id": " "}, "requires a token id"),
+        ({"expires_at": datetime.now(UTC).replace(tzinfo=None)}, "must include a timezone"),
+    ],
+)
+def test_delegation_evidence_requires_complete_claims(overrides, expected):
+    """An opaque or partial token shape is not delegation authority."""
+    claims = {
+        "issuer": "did:key:issuer",
+        "subject": "service",
+        "workspace_ids": frozenset({"owned-workspace"}),
+        "actions": frozenset({"hitl.settle"}),
+        "expires_at": datetime.now(UTC) + timedelta(minutes=5),
+        "token_id": "token-1",
+    }
+    claims.update(overrides)
+    with pytest.raises(ValueError, match=expected):
+        HitlDelegationEvidence(**claims)
+
+
+def test_delegated_hitl_requires_typed_evidence() -> None:
+    with pytest.raises(TypeError, match="typed evidence"):
+        HitlAuthorization(
+            effective_principal="service",
+            workspace_ids=frozenset({"owned-workspace"}),
+            membership_check=_allow_test_membership,
+            delegation_evidence="opaque text",  # type: ignore[arg-type]
+            evidence_validator=_accept_evidence,
+            evidence_consumer=_consume_nothing,
+        )
+
+
+def test_require_hitl_authorization_rejects_an_absent_caller() -> None:
+    """No durable backend may treat the authorization argument as optional."""
+    with pytest.raises(HitlAuthorizationRequired):
+        require_hitl_authorization(None)
+
+
+async def _accept_evidence(_evidence: HitlDelegationEvidence) -> bool:
+    return True
+
+
+async def _consume_nothing(_evidence: HitlDelegationEvidence) -> None:
+    return None
+
+
+def _delegated_authorization(
+    *,
+    evidence: HitlDelegationEvidence,
+    validator: HitlEvidenceValidator,
+    consumer: HitlEvidenceConsumer,
+) -> HitlAuthorization:
+    return HitlAuthorization(
+        effective_principal="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+        delegation_evidence=evidence,
+        evidence_validator=validator,
+        evidence_consumer=consumer,
+    )
+
+
+@pytest.mark.parametrize(
+    ("build", "expected_validator_calls"),
+    [
+        pytest.param(
+            lambda evidence: HitlDelegationEvidence(
+                issuer=evidence.issuer,
+                subject=evidence.subject,
+                workspace_ids=evidence.workspace_ids,
+                actions=evidence.actions,
+                expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                token_id=evidence.token_id,
+            ),
+            # An expired delegation is refused by its own claims; the issuer
+            # registry is not even consulted.
+            [],
+            id="expired-evidence",
+        ),
+        pytest.param(lambda evidence: evidence, ["token-deny"], id="validator-denial"),
+    ],
+)
+async def test_permits_denies_stale_or_unvalidated_delegation(
+    build, expected_validator_calls
+) -> None:
+    """A delegation that is expired, or denied by its issuer, settles nothing."""
+    evidence = HitlDelegationEvidence(
+        issuer="did:key:issuer",
+        subject="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        actions=frozenset({"hitl.settle"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        token_id="token-deny",
+    )
+    calls: list[str] = []
+
+    async def validate(token: HitlDelegationEvidence) -> bool:
+        calls.append(token.token_id)
+        return False
+
+    async def consume(token: HitlDelegationEvidence) -> None:
+        calls.append(f"consumed:{token.token_id}")
+
+    authorization = _delegated_authorization(
+        evidence=build(evidence), validator=validate, consumer=consume
+    )
+
+    assert not await authorization.permits("owned-workspace", consume_evidence=True)
+    assert calls == expected_validator_calls
+
+
+async def test_permits_denies_when_validation_raises() -> None:
+    """An unavailable delegation registry is a denial, never a bypass."""
+
+    async def unavailable(token: HitlDelegationEvidence) -> bool:
+        raise RuntimeError("delegation registry unreachable")
+
+    evidence = HitlDelegationEvidence(
+        issuer="did:key:issuer",
+        subject="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        actions=frozenset({"hitl.settle"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        token_id="token-unavailable",
+    )
+    authorization = _delegated_authorization(
+        evidence=evidence, validator=unavailable, consumer=_consume_nothing
+    )
+
+    assert not await authorization.permits("owned-workspace", consume_evidence=True)
+
+
+async def test_permits_denies_workspaces_outside_the_candidate_page() -> None:
+    """The candidate page is scope, not a blanket grant."""
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+
+    assert not await authorization.permits("foreign-workspace")
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite", "canonical"])
+async def test_list_hitl_due_requires_authorization_and_a_positive_limit(
+    backend: str, tmp_path: Path
+) -> None:
+    """Every backend fails closed without evidence and does no work at limit 0."""
+    store: Any
+    if backend == "memory":
+        store = InMemoryDurableRunStore()
+    elif backend == "sqlite":
+        store = SqliteDurableRunStore(tmp_path / "hitl-due-guard.db")
+    else:
+        store, _run_store, _member, _foreign = await _canonical_two_workspace_fixture()
+    authorization = _test_authorization()
+
+    with pytest.raises(HitlAuthorizationRequired):
+        await store.list_hitl_due(
+            authorization=None,  # type: ignore[arg-type]
+            now=_AFTER,
+        )
+    assert await store.list_hitl_due(authorization=authorization, now=_AFTER, limit=0) == []
+
+
+async def test_expiry_tick_without_workspace_scope_settles_nothing() -> None:
+    """An authorization with no Workspace page cannot enumerate candidates."""
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("unscoped-expiry"))
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset(),
+        membership_check=_allow_test_membership,
+    )
+
+    assert await expire_hitl_pauses(store, now=_AFTER, authorization=authorization) == []
+    persisted = await store.get("unscoped-expiry")
+    assert persisted is not None and persisted.status is RunStatus.PAUSED
+
+
+async def test_answering_a_machine_wait_pause_is_refused() -> None:
+    """An explicit non-HITL pause is not answerable through the human seam.
+
+    A machine wait shares the pause metadata shape, so kind — not shape — is
+    what the durable answer rule checks before stamping any verdict.
+    """
+    store = InMemoryDurableRunStore()
+    machine_wait = _with_pause_entry(
+        _paused_record("machine-wait-answer"),
+        {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
+    )
+    await store.create(machine_wait)
+
+    with pytest.raises(ValueError, match="not awaiting human input"):
+        await store.submit_hitl_answer(
+            "machine-wait-answer",
+            "ask",
+            {"answer": "go"},
+            at=_BEFORE,
+            authorization=_test_authorization(),
+        )
+
+    persisted = await store.get("machine-wait-answer")
+    assert persisted is not None and persisted.run.status is RunStatus.PAUSED
+
+
+async def test_canonical_due_listing_skips_workspaces_membership_denies() -> None:
+    """Due discovery revalidates membership even for a listed Workspace."""
+    store, _run_store, member, foreign = await _canonical_two_workspace_fixture()
+
+    async def deny_membership(_principal: str, _workspace_id: str) -> bool:
+        return False
+
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"ws-1058-member", "ws-1058-foreign"}),
+        membership_check=deny_membership,
+    )
+    deadline = hitl_deadline(member, "ask")
+    assert deadline is not None
+
+    assert (
+        await store.list_hitl_due(authorization=authorization, now=deadline + timedelta(seconds=1))
+        == []
+    )
+    for record in (member, foreign):
+        persisted = await store.get(record.run_id)
+        assert persisted is not None and persisted.status is RunStatus.PAUSED
+
+
+async def test_canonical_mutations_refuse_an_explicitly_foreign_workspace() -> None:
+    """The Workspace a caller names must be the one the Run lives in."""
+    store, _run_store, member, _foreign = await _canonical_two_workspace_fixture()
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"ws-1058-member", "ws-1058-foreign"}),
+        membership_check=_allow_test_membership,
+    )
+
+    with pytest.raises(KeyError, match="outside the requested Workspace"):
+        await store.cancel_hitl(
+            member.run_id,
+            "ask",
+            at=_BEFORE,
+            workspace_id="ws-1058-foreign",
+            authorization=authorization,
+        )
+
+    persisted = await store.get(member.run_id)
+    assert persisted is not None and persisted.status is RunStatus.PAUSED
+
+
+async def test_sqlite_due_listing_pages_past_denied_candidates(tmp_path: Path) -> None:
+    """The due index widens past rows the authorization filter removes.
+
+    Two foreign due Runs sit ahead of the owned one in deadline order; each
+    full page that yields no visible row forces a wider re-read, which must
+    skip already-seen run ids rather than duplicating them.
+    """
+    store = SqliteDurableRunStore(tmp_path / "hitl-due-paging.db")
+    base = datetime(2026, 8, 30, 19, 0, tzinfo=UTC)
+
+    def _created_at(record: DurableRunRecord, moment: datetime) -> DurableRunRecord:
+        return record.model_copy(
+            update={"run": record.run.model_copy(update={"created_at": moment})}
+        )
+
+    for index, run_id in enumerate(("foreign-due-1", "foreign-due-2", "owned-due")):
+        workspace_id = "foreign-workspace" if run_id.startswith("foreign") else "owned-workspace"
+        await store.create(
+            _created_at(
+                _with_pause_entry(
+                    _paused_record(run_id, workspace_id=workspace_id),
+                    {
+                        "kind": "hitl",
+                        "metadata": {},
+                        "resume_at": (base + timedelta(seconds=index + 1)).isoformat(),
+                    },
+                ),
+                base + timedelta(seconds=index),
+            )
+        )
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+
+    due = await store.list_hitl_due(
+        authorization=authorization, now=base + timedelta(seconds=10), limit=1
+    )
+
+    assert [record.run_id for record in due] == ["owned-due"]
+
+
+class _PagingDueStore:
+    """Minimal due-listing double that ignores Workspace scope on purpose.
+
+    ``expire_hitl_pauses`` must not trust the backend's page to be scoped: it
+    re-filters every page by its own Workspace page and keeps widening while
+    full pages yield only out-of-scope rows.
+    """
+
+    def __init__(self, pages: list[list[DurableRunRecord]]) -> None:
+        self._pages = pages
+        self._records = {record.run_id: record for page in pages for record in page}
+        self.requests: list[int] = []
+
+    async def list_hitl_due(
+        self,
+        *,
+        authorization: HitlAuthorization,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
+        require_hitl_authorization(authorization)
+        self.requests.append(limit)
+        index = min(len(self.requests) - 1, len(self._pages) - 1)
+        return self._pages[index]
+
+    async def timeout_hitl(
+        self,
+        run_id: str,
+        node_id: str,
+        *,
+        authorization: HitlAuthorization,
+        at: datetime | None = None,
+        workspace_id: str | None = None,
+    ) -> DurableRunRecord:
+        require_hitl_authorization(authorization)
+        return self._records[run_id]
+
+
+async def test_expiry_rejects_foreign_candidates_from_an_unscoped_backend_page() -> None:
+    """Candidate pages are re-filtered by the authorization, not trusted."""
+    foreign = _paused_record("page-foreign", workspace_id="foreign-workspace")
+    owned = _paused_record("page-owned", workspace_id="owned-workspace")
+    store = _PagingDueStore([[foreign], [foreign, owned]])
+    authorization = HitlAuthorization(
+        effective_principal="member-user",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+    )
+
+    expired = await expire_hitl_pauses(store, limit=1, now=_AFTER, authorization=authorization)
+
+    assert [record.run_id for record in expired] == ["page-owned"]
+    # The first full page held only foreign work, so the walk widened once.
+    assert store.requests == [1, 2]
+
+
+async def test_delegated_hitl_validates_and_consumes_bound_evidence() -> None:
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("delegated-evidence", workspace_id="owned-workspace"))
+    evidence = HitlDelegationEvidence(
+        issuer="did:key:issuer",
+        subject="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        actions=frozenset({"hitl.settle"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        token_id="hitl-token-1",
+    )
+    validations: list[str] = []
+    consumed: list[str] = []
+
+    async def validate(token: HitlDelegationEvidence) -> bool:
+        validations.append(token.token_id)
+        return token.token_id == "hitl-token-1"
+
+    async def consume(token: HitlDelegationEvidence) -> None:
+        consumed.append(token.token_id)
+
+    authorization = HitlAuthorization(
+        effective_principal="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+        delegation_evidence=evidence,
+        evidence_validator=validate,
+        evidence_consumer=consume,
+    )
+    settled = await store.cancel_hitl(
+        "delegated-evidence",
+        "ask",
+        at=_BEFORE,
+        authorization=authorization,
+    )
+
+    assert settled.status is RunStatus.CANCELLED
+    assert validations == ["hitl-token-1"]
+    assert consumed == ["hitl-token-1"]
+
+
+async def test_delegated_expiry_does_not_consume_evidence_during_discovery() -> None:
+    """Due-list visibility must leave one-use authority for timeout settlement."""
+    store = InMemoryDurableRunStore()
+    await store.create(_paused_record("delegated-expiry", workspace_id="owned-workspace"))
+    evidence = HitlDelegationEvidence(
+        issuer="did:key:issuer",
+        subject="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        actions=frozenset({"hitl.settle"}),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        token_id="hitl-expiry-token",
+    )
+    validations: list[str] = []
+    consumed: list[str] = []
+
+    async def validate(token: HitlDelegationEvidence) -> bool:
+        validations.append(token.token_id)
+        return True
+
+    async def consume(token: HitlDelegationEvidence) -> None:
+        consumed.append(token.token_id)
+
+    authorization = HitlAuthorization(
+        effective_principal="service",
+        workspace_ids=frozenset({"owned-workspace"}),
+        membership_check=_allow_test_membership,
+        delegation_evidence=evidence,
+        evidence_validator=validate,
+        evidence_consumer=consume,
+    )
+
+    expired = await expire_hitl_pauses(store, now=_AFTER, authorization=authorization)
+
+    assert [record.run_id for record in expired] == ["delegated-expiry"]
+    assert (await store.get("delegated-expiry")).status is RunStatus.TIMED_OUT
+    assert validations == ["hitl-expiry-token", "hitl-expiry-token"]
+    assert consumed == ["hitl-expiry-token"]
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
@@ -841,7 +2155,9 @@ async def test_expiry_deadline_query_skips_an_ineligible_paused_prefix(
     expired = _paused_record("expired-hitl").model_copy(update={"resume_at": None})
     await store.create(expired)
 
-    settled = await expire_hitl_pauses(store, now=_AFTER, limit=1)
+    settled = await expire_hitl_pauses(
+        store, now=_AFTER, limit=1, authorization=_test_authorization()
+    )
 
     assert [record.run_id for record in settled] == ["expired-hitl"]
     assert await store.get("expired-hitl") is not None
@@ -849,7 +2165,12 @@ async def test_expiry_deadline_query_skips_an_ineligible_paused_prefix(
 
 
 async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:
-    assert await expire_hitl_pauses(InMemoryDurableRunStore(), now=_AFTER, limit=0) == []
+    assert (
+        await expire_hitl_pauses(
+            InMemoryDurableRunStore(), now=_AFTER, limit=0, authorization=_test_authorization()
+        )
+        == []
+    )
 
     wait_store = InMemoryDurableRunStore()
     wait_record = _with_pause_entry(
@@ -857,11 +2178,16 @@ async def test_expiry_tick_ignores_nonhuman_pauses_and_lost_races() -> None:
         {"kind": "wait", "metadata": {}, "resume_at": _DEADLINE.isoformat()},
     )
     await wait_store.create(wait_record)
-    assert await expire_hitl_pauses(wait_store, now=_AFTER) == []
+    assert (
+        await expire_hitl_pauses(wait_store, now=_AFTER, authorization=_test_authorization()) == []
+    )
 
     losing_store = _LosingTimeoutStore()
     await losing_store.create(_paused_record("lost-expiry-race"))
-    assert await expire_hitl_pauses(losing_store, now=_AFTER) == []
+    assert (
+        await expire_hitl_pauses(losing_store, now=_AFTER, authorization=_test_authorization())
+        == []
+    )
 
 
 async def test_expiry_scan_pages_past_a_long_ineligible_prefix() -> None:
@@ -894,7 +2220,9 @@ async def test_expiry_scan_pages_past_a_long_ineligible_prefix() -> None:
     )
     await store.create(expired)
 
-    settled = await expire_hitl_pauses(store, now=_AFTER, limit=5)
+    settled = await expire_hitl_pauses(
+        store, now=_AFTER, limit=5, authorization=_test_authorization()
+    )
 
     assert [record.run_id for record in settled] == ["expired-behind-the-prefix"]
 
@@ -949,7 +2277,11 @@ async def test_a_malformed_answer_re_pauses_without_moving_the_deadline() -> Non
 
     malformed_at = original_deadline - timedelta(seconds=50)
     await store.submit_hitl_answer(
-        paused.run_id, "ask", {"reviewer_note": "still deciding"}, at=malformed_at
+        paused.run_id,
+        "ask",
+        {"reviewer_note": "still deciding"},
+        at=malformed_at,
+        authorization=_test_authorization(),
     )
     resumed = await store.get(paused.run_id)
     assert resumed is not None
@@ -973,17 +2305,25 @@ async def test_repeated_malformed_answers_at_t_minus_1s_cannot_extend_the_deadli
     for offset in (timedelta(seconds=90), timedelta(seconds=30), timedelta(seconds=1)):
         malformed_at = original_deadline - offset
         await store.submit_hitl_answer(
-            current.run_id, "ask", {"reviewer_note": "not yet"}, at=malformed_at
+            current.run_id,
+            "ask",
+            {"reviewer_note": "not yet"},
+            at=malformed_at,
+            authorization=_test_authorization(),
         )
         current = await store.get(current.run_id)
         assert current is not None
         assert current.status is RunStatus.PAUSED
         assert hitl_deadline(current, "ask") == original_deadline
 
-    expired = await expire_hitl_pauses(store, now=original_deadline - timedelta(seconds=1))
+    expired = await expire_hitl_pauses(
+        store, now=original_deadline - timedelta(seconds=1), authorization=_test_authorization()
+    )
     assert expired == []
 
-    expired = await expire_hitl_pauses(store, now=original_deadline + timedelta(seconds=1))
+    expired = await expire_hitl_pauses(
+        store, now=original_deadline + timedelta(seconds=1), authorization=_test_authorization()
+    )
     assert [record.run_id for record in expired] == [paused.run_id]
     settled = await run_store.get_run(paused.run_id)
     assert settled is not None and settled.status is RunStatus.TIMED_OUT
@@ -1005,6 +2345,7 @@ async def test_a_valid_answer_before_the_preserved_deadline_still_settles() -> N
         "ask",
         {"reviewer_note": "later"},
         at=original_deadline - timedelta(seconds=50),
+        authorization=_test_authorization(),
     )
     still_paused = await store.get(paused.run_id)
     assert still_paused is not None
@@ -1012,7 +2353,11 @@ async def test_a_valid_answer_before_the_preserved_deadline_still_settles() -> N
     assert hitl_deadline(still_paused, "ask") == original_deadline
 
     await store.submit_hitl_answer(
-        paused.run_id, "ask", {"verdict": "approved"}, at=original_deadline - timedelta(seconds=10)
+        paused.run_id,
+        "ask",
+        {"verdict": "approved"},
+        at=original_deadline - timedelta(seconds=10),
+        authorization=_test_authorization(),
     )
     settled = await resume_durable_graph(
         paused.run_id, store=store, node_resolver=_resolver, run_store=run_store
@@ -1028,8 +2373,14 @@ class _OverEagerIndexStore(InMemoryDurableRunStore):
     therefore re-derived from the pause itself before anything is settled.
     """
 
-    async def list_hitl_due(self, *, now: datetime, limit: int = 100) -> list[DurableRunRecord]:
-        del now, limit
+    async def list_hitl_due(
+        self,
+        *,
+        authorization: HitlAuthorization,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[DurableRunRecord]:
+        del authorization, now, limit
         return list(self._rows.values())
 
 
@@ -1044,7 +2395,7 @@ async def test_an_index_hit_whose_pause_is_not_elapsed_is_not_timed_out() -> Non
     store = _OverEagerIndexStore()
     await store.create(_paused_record("hitl-index-not-elapsed"))
 
-    assert await expire_hitl_pauses(store, now=_BEFORE) == []
+    assert await expire_hitl_pauses(store, now=_BEFORE, authorization=_test_authorization()) == []
 
     record = await store.get("hitl-index-not-elapsed")
     assert record is not None
@@ -1069,7 +2420,7 @@ async def test_an_index_hit_with_no_readable_pause_is_skipped_not_settled() -> N
         )
     )
 
-    assert await expire_hitl_pauses(store, now=_AFTER) == []
+    assert await expire_hitl_pauses(store, now=_AFTER, authorization=_test_authorization()) == []
 
     stored = await store.get("hitl-index-unreadable")
     assert stored is not None
