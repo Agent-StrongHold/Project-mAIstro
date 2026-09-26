@@ -1,7 +1,25 @@
+---
 inventory-delta:
-  packages/maistro-core/tests: +3
+  packages/maistro-design/tests: +14
 ---
 # #817 round 14 — develop sync resolution (920fb384e + ca4caec7d) and log-redaction idempotence repair
+
+## Ledger repair note (recorded at 13775de35)
+
+This note's front matter was malformed from birth: the opening `---` delimiter
+was missing, so `check-suite-inventory.py` never parsed its delta and the
+design-suite movement from the behavior/-moz-binding value anchor went
+unrecorded (the verifier's `check-suite-inventory.py --suite
+packages/maistro-design/tests` failed with `expected 310, collected 324`).
+`--update` recorded the missing `packages/maistro-design/tests: +14`.
+
+The original front matter also claimed `packages/maistro-core/tests: +3`.
+That number was wrong: it counted the three net assertion lines added to
+`test_install_is_idempotent`, not pytest node IDs — assertions inside existing
+tests do not move collection, and the core gate has matched at 11132 before
+and after the change. The core delta is therefore correctly absent from the
+ledger, and the stale uncounted remnant block is removed here rather than
+left as dead body text implying a core movement that never happened.
 
 ## What this round changed
 
@@ -83,3 +101,18 @@ and `test_trust_prescan.py::test_behavior_prose_gets_no_blocking_flag_and_stays_
   not run locally (no backend up); tsc + eslint + the 8/8 boundary spec cover
   the merged frontend files' compile-time and boundary behavior. CI's
   `hive-conductor-e2e-ui` job exercises the routed journeys.
+
+## Round-15 repair validation (inventory-ledger round at 13775de35)
+
+- `uv run ruff check .` / `uv run ruff format --check .` — clean.
+- `uv run pytest packages/maistro-design/tests -q` — 324 passed.
+- `uv run pytest packages/maistro-core/tests/security -q` — 1325 passed, 19 skipped.
+- `.venv/bin/python -m pytest packages/hive-conductor/backend/tests/test_design_renderers.py -q` — 7 passed.
+- Live 10-case hostile probe through `scan_and_record` vs `scan_design_text`
+  (script tag, event handler, script-capable SVG, `data:text/html`, CSS `url()`,
+  CSS `@import`, `behavior:`/`-moz-binding:` payloads, CSS hex-escape `\75rl(`,
+  prompt injection): every case SKULL + `banish` + explicit shared flags on the
+  pre-scan, blocked at the output boundary, output flags a subset of pre-scan
+  flags (AC-1..AC-4); clean control stays T3/`upgrade`/0 flags.
+- `scripts/check-suite-inventory.py` — ok: 13 suite(s) match the recorded
+  inventory (design suite at 324 after the recorded +14).
