@@ -11,7 +11,55 @@ axe against the page's main landmark without excluding color contrast.
 The `+0` delta is intentional: these browser-only `*.spec.ts` journeys are not
 collected by pytest, so their node count is not part of the inventory ledger
 (the suite's 23 collected nodes are the pre-existing `test_pm_workflow_api.py`
-API tests).
+API tests). The routed `/decks` journey added in repair round 12 grows the
+browser corpus, not the pytest ledger, so the delta stays `+0`.
+
+## Executed evidence (repair round 12, routed /decks coverage + Deck focus fixes)
+
+Round 11's verification pass returned NEEDS-REPAIR with four actionable
+findings (the fifth, `test_pm_workflow_api.py` fixture errors, is
+pre-environmental and out of lane). This round fixes all four in source and
+re-executes the affected journeys against a live server:
+
+- `DeckBuilder.tsx` contentEditable carried a bare `outline: "none"` with no
+  focus-visibility rationale (axe does not scan WCAG 2.4.7). Fixed for real:
+  focus is tracked in React state and the focused editor draws a 2px accent
+  outline (inline styles cannot express `:focus-visible`). The routed journey
+  now asserts the computed outline is drawn while focused.
+- Writing that assertion exposed a genuine focus-management defect: on
+  presentation exit, `presentationReturnRef` held the *detached* Present
+  button node (the editor unmounts while presenting), so the restore effect
+  silently no-op'd and keyboard focus fell to `body`. The component now keeps
+  a live ref on the Present button plus a restore-intent ref (so the editor's
+  first mount never steals focus) and re-resolves the node after remount.
+  The routed journey asserts `Present` is focused again after Escape.
+- The routed `/decks` surface had zero browser coverage and the spec comment
+  in `deck-sanitization.spec.ts` claimed journeys covered it. Added a
+  keyboard-only journey to `design-studio-keyboard.spec.ts` that goes to
+  `/decks` directly, Tab-walks from the page top to the ordered-page listbox,
+  selects/adds/reorders slides with Enter on native buttons, checks the
+  visible focus indicator, runs two full-page axe scans (editor and
+  presentation dialog, shell included, no `disableRules`), drives slide
+  advance with ArrowRight/ArrowLeft/PageDown/PageUp and the Previous/Next
+  slide buttons against the "Slide N of M" live region, and exits with
+  Escape to the restored focus. The sanitization comment now names the spec
+  that really covers `/decks`.
+- Executed: `npm run build` (tsc + vite) clean; `npm run lint` 0 errors
+  (90 pre-existing warnings); `uv run ruff check .` and
+  `uv run ruff format --check .` clean; `uv run pytest
+  packages/hive-conductor/backend/tests -q -k design` → **82 passed**.
+- Live e2e, executed this round: backend `uvicorn main:app` on 127.0.0.1:8102
+  serving the freshly rebuilt `frontend/dist` (`/v1/setup/status` →
+  `setup_complete: true`; `GET /decks` → 200).
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts` →
+  **8/8 passed (13.8s, includes the new routed journey)**;
+  `deck-sanitization.spec.ts` → **7/7 passed (3.0s)** via the
+  `tests/Dockerfile.playwright`-shaped staging dir with the real (changed)
+  `DeckBuilder.tsx` copied in — the sanitizer boundary still holds.
+- Vulture per-identity gate re-checked for the CI-repair clause:
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → exit 0, 1414 reviewed identities, 0 unclassified, no
+  ledger amendment needed.
 
 ## Executed evidence (verification round 10, independent revalidation at merged head 1dfccece)
 

@@ -178,3 +178,96 @@ test("fixed-page and Deck editors expose keyboard workflows and deterministic tr
   await page.getByRole("button", { name: "Exit (Esc)" }).press("Enter");
   await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
 });
+
+test("routed /decks surface is keyboard-complete for page navigation, reordering, and presentation", async () => {
+  // #769 lifted the M0 containment, so the Deck editor is reachable at its
+  // own route. This journey walks the routed surface directly (not the
+  // Design-Studio embedded instance) using keyboard-only interaction.
+  await page.goto("/decks", { waitUntil: "domcontentloaded" });
+  await expect(page).toHaveURL(/\/decks$/);
+  await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
+
+  // Slide selection must be reachable in the real tab order: Tab from the top
+  // of the page until the first ordered-page option is focused, then activate
+  // it with Enter like a screen-reader user would.
+  const slide1 = page.getByRole("option", { name: "Slide 1" });
+  for (
+    let step = 0;
+    step < 120 && !(await slide1.evaluate((element) => document.activeElement === element));
+    step += 1
+  ) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(slide1).toBeFocused();
+  await expect(slide1).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Slide 1 selected." })).toBeVisible();
+
+  // Ordered-page operations are native buttons, never drag gestures.
+  await page.getByRole("button", { name: "+ Add slide" }).press("Enter");
+  await expect(page.getByRole("option", { name: "Slide 2" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("status").filter({ hasText: "Slide 2 added and selected." })).toBeVisible();
+  await page.getByRole("button", { name: "Move earlier" }).press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Slide moved to position 1." })).toBeVisible();
+  await page.getByRole("button", { name: "Move later" }).press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Slide moved to position 2." })).toBeVisible();
+
+  // Presentation opens on the selected page, so select Slide 1 again through
+  // the keyboard before presenting.
+  await page.getByRole("option", { name: "Slide 1" }).press("Enter");
+  await expect(page.getByRole("status").filter({ hasText: "Slide 1 selected." })).toBeVisible();
+
+  // The editable slide canvas draws a visible keyboard focus indicator
+  // (WCAG 2.4.7, which axe does not scan): focused, its computed outline
+  // must be drawn.
+  const editor = page.getByRole("textbox", { name: /Edit slide \d+ content/ });
+  for (
+    let step = 0;
+    step < 12 && !(await editor.evaluate((element) => document.activeElement === element));
+    step += 1
+  ) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(editor).toBeFocused();
+  const focusIndicator = await editor.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { outlineStyle: style.outlineStyle, outlineWidth: Number.parseFloat(style.outlineWidth) };
+  });
+  expect(focusIndicator.outlineStyle).not.toBe("none");
+  expect(focusIndicator.outlineWidth).toBeGreaterThan(0);
+
+  // The routed editor surface is axe-clean, shell included.
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+  // Presentation mode: deterministic focus-in, arrow/page-key slide advance
+  // with button equivalents, a live position announcement, Escape exit, and
+  // focus restored to the control that opened the dialog.
+  const present = page.getByRole("button", { name: "Present" });
+  await present.press("Enter");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("button", { name: "Exit (Esc)" })).toBeFocused();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+  const position = dialog.getByText(/Slide \d of \d/);
+  await expect(position).toHaveText("Slide 1 of 2");
+  await page.keyboard.press("ArrowRight");
+  await expect(position).toHaveText("Slide 2 of 2");
+  await expect(dialog.getByRole("button", { name: "Next slide" })).toBeDisabled();
+  await page.keyboard.press("PageDown");
+  await expect(position).toHaveText("Slide 2 of 2");
+  await page.keyboard.press("ArrowLeft");
+  await expect(position).toHaveText("Slide 1 of 2");
+  await expect(dialog.getByRole("button", { name: "Previous slide" })).toBeDisabled();
+  await page.keyboard.press("PageUp");
+  await expect(position).toHaveText("Slide 1 of 2");
+  await dialog.getByRole("button", { name: "Next slide" }).press("Enter");
+  await expect(position).toHaveText("Slide 2 of 2");
+  await dialog.getByRole("button", { name: "Previous slide" }).press("Enter");
+  await expect(position).toHaveText("Slide 1 of 2");
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Deck editor" })).toBeVisible();
+  await expect(present).toBeFocused();
+});

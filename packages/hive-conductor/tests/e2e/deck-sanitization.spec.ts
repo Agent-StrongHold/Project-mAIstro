@@ -7,8 +7,8 @@
  * localhost page: it isolates the untrusted-markup boundary from auth, setup
  * state, and routing, and proves the real component, React event path, browser
  * HTML parser, presentation mode, and HTML export against attacker payload
- * families. The keyboard/truthfulness journeys cover the routed /decks and
- * /cli/canvas surfaces on top of this boundary proof.
+ * families. The keyboard journeys (design-studio-keyboard.spec.ts) cover
+ * the routed /decks and /cli/canvas surfaces on top of this boundary proof.
  */
 
 import { build } from "esbuild";
