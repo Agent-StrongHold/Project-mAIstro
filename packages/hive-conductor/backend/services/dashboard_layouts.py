@@ -201,6 +201,33 @@ def effective(principal: str) -> LayoutRecord:
     return record if seeded is None else record.model_copy(update={"layout": seeded})
 
 
+def with_widget(layout: dict[str, Any], widget: dict[str, Any], tab_name: str) -> dict[str, Any]:
+    """`layout` with `widget` appended to `tab_name` (or the active tab). Pure.
+
+    Pure so a caller that loses a revision race can re-apply the same edit to
+    the layout that won, rather than saving over it.
+    """
+    result = dict(layout)
+    if result.get("tabs"):
+        tabs = [dict(tab) for tab in result["tabs"]]
+        target_idx = result.get("activeTab", 0)
+        if tab_name:
+            for i, tab in enumerate(tabs):
+                if tab.get("name", "").lower() == tab_name.lower():
+                    target_idx = i
+                    break
+            else:
+                tabs.append({"name": tab_name, "widgets": []})
+                target_idx = len(tabs) - 1
+        tabs[target_idx]["widgets"] = [*tabs[target_idx].get("widgets", []), widget]
+        result["tabs"] = tabs
+    else:
+        existing = result.pop("widgets", [])
+        result["tabs"] = [{"name": tab_name or "Overview", "widgets": [*existing, widget]}]
+        result["activeTab"] = 0
+    return result
+
+
 def save(
     principal: str, layout: dict[str, Any], *, expected_revision: int | None = None
 ) -> LayoutRecord:
