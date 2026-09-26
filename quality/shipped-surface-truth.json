@@ -313,6 +313,16 @@
       "effect_owner": "build_llm_port LLM completion (SSE)"
     },
     {
+      "source": "packages/hive-conductor/backend/routes/chat.py",
+      "method": "POST",
+      "route": "/workflows/run",
+      "handler": "run_workflow",
+      "disposition": "canonical",
+      "production_enabled": true,
+      "reason": "runs a chat-selected DAG only after the canonical approval inbox settles the request (#1094)",
+      "effect_owner": "maistro.capabilities approval decision -> services.dag_run_store + services.graph_runner.execute_dag"
+    },
+    {
       "source": "packages/hive-conductor/backend/routes/cli.py",
       "method": "POST",
       "route": "/sessions",

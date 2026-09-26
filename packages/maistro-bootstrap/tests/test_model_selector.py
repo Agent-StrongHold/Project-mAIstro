@@ -68,7 +68,9 @@ def test_run_benchmark_allows_only_the_module_cli(monkeypatch, capsys) -> None:
             calls.append({"url": url, "json": kwargs.get("json", {})})
             raise AssertionError("no sweep expected for an empty model list")
 
-    monkeypatch.setattr(model_selector.httpx, "Client", _Client)
+    # The probe rides the shared guarded sync seam (ADR-102), so the test
+    # intercepts that seam rather than httpx.Client directly.
+    monkeypatch.setattr(model_selector, "sync_client", lambda **kwargs: _Client())
     fake_main = ModuleType("__main__")
     fake_main.__file__ = str(Path(model_selector.__file__).resolve())
     monkeypatch.setitem(sys.modules, "__main__", fake_main)

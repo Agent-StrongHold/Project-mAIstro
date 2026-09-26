@@ -33,6 +33,9 @@ from typing import Any
 
 import httpx
 
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
+
 logger = logging.getLogger(__name__)
 
 _ENV_KEYS = (
@@ -116,6 +119,19 @@ def _base_url() -> str:
         or os.environ.get("LITELLM_PROXY_URL")
         or ""
     ).rstrip("/")
+
+
+def _post(
+    url: str,
+    *,
+    json: dict[str, Any],
+    headers: dict[str, str],
+    timeout: float,
+) -> httpx.Response:
+    """Post through the shared guarded sync transport."""
+    configure_outbound_policy(_base_url())
+    with sync_client(timeout=timeout) as client:
+        return client.post(url, json=json, headers=headers)
 
 
 def _api_key() -> str:
@@ -515,7 +531,7 @@ class LiteLLMCallable:
         for _attempt in range(4):  # 1 try + up to 3 429-retries
             self._throttle_if_near_limit()
 
-            resp = httpx.post(
+            resp = _post(
                 f"{_base_url()}{os.environ.get('LLM_CHAT_PATH', '/v1/chat/completions')}",
                 json=body,
                 headers={"Authorization": f"Bearer {_api_key()}"},

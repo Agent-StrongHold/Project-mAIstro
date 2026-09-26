@@ -10,6 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from maistro.http import aclose_shared_clients, get_shared_client, set_test_transport
 from maistro_design.providers import OpenDesignConfig, OpenDesignProvider
 from maistro_design.renderers import RendererRegistry, RenderSlot
 from maistro_design.trust import TrustTier
@@ -65,6 +66,32 @@ async def test_discover_down_on_connect_error_does_not_raise() -> None:
 
     result = await _provider(handler).discover()  # absence, never propagates
     assert not result.available
+
+
+async def test_default_client_factory_borrows_pool_without_closing_it() -> None:
+    """The pooled default survives both the health and render contexts."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, text="<main>ok</main>")
+
+    await aclose_shared_clients()
+    set_test_transport(httpx.MockTransport(handler))
+    try:
+        provider = OpenDesignProvider(OpenDesignConfig(token="tok"))
+        assert (await provider.discover()).available
+        pooled = get_shared_client(timeout=1.5)
+        assert not pooled.is_closed
+
+        await provider.render("PROMPT", _skill(RenderSlot.REFLOWABLE_WEB))
+
+        assert calls == ["/api/health", "/api/chat"]
+        assert get_shared_client(timeout=1.5) is pooled
+        assert not pooled.is_closed
+    finally:
+        set_test_transport(None)
+        await aclose_shared_clients()
 
 
 # ─── render: ingest by slot ─────────────────────────────────────────────────────
