@@ -88,6 +88,10 @@ MEASURED_ROOTS = (
     "packages/maistro-turing/src/maistro_turing",
     "packages/maistro-turing/backend",
     "packages/maistro-design/src/maistro_design",
+    # #1096: the registry linker's caller-influenced GitHub fetch is exactly
+    # the kind of change this gate exists to score, so the last producer-less
+    # package joins here alongside the quality.yml producer that measures it.
+    "packages/maistro-registry/src/maistro_registry",
     "packages/hive-conductor/backend",
     # The gates themselves (#257). Every one of #160's five mandates is
     # enforced by a file in here, and until this entry they were the only
