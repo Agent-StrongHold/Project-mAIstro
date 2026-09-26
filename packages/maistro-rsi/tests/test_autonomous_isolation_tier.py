@@ -13,22 +13,35 @@ These tests pin the refusal at both entries the finding named:
 - the library boundary (`LocalRsiLoop.run`) — because `LocalRsiConfig` is a
   public constructor a programmatic caller can reach without the CLI.
 
-The rule itself is data-driven from `maistro.sandbox.policy` (`MODE_FLOORS`,
-`tier_satisfies`), so the last test also pins the linkage: if the canonical
-autonomous floor ever drops to Tier 3 the refusal disappears *because the
-policy changed*, and this suite says which test to re-read — not a hardcoded
-string drifting away from the ADR it cites.
+The rule itself is driven by the ADR-093 floors mirrored in
+`maistro_rsi.isolation_floor` — a mirror, not an import, because importing
+`maistro.sandbox.policy` from the loop executes `maistro/sandbox/__init__.py`
+and drags ~220 unprotected maistro-core modules into the promotion closure
+that `scripts/check-promotion-surface.py` guards. So this suite pins both
+halves: the refusal's behavior, and the mirror's parity with the canonical
+`maistro.sandbox.policy` (`MODE_FLOORS`, `tier_satisfies`) — if the canonical
+autonomous floor or ladder ever changes, these tests fail until the mirror
+follows deliberately.
 """
 
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
-from maistro.sandbox.policy import MODE_FLOORS, ExecutionMode, tier_satisfies
+from maistro.sandbox.policy import (
+    MODE_FLOORS,
+    ExecutionMode,
+    tier_satisfies,
+)
+from maistro.sandbox.policy import (
+    IsolationTier as CanonicalIsolationTier,
+)
 from maistro_rsi import __main__ as entry
+from maistro_rsi import isolation_floor as mirror
 from maistro_rsi.contained_validation import ContainmentUnavailable
 from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop, autonomous_isolation_refusal
 
@@ -145,3 +158,28 @@ class TestPolicyLinkage:
         # question — it neither clears nor damns a backend it cannot name.
         assert autonomous_isolation_refusal("local") is None
         assert autonomous_isolation_refusal("vm") is None
+
+
+class TestMirrorParity:
+    def test_mirror_is_the_canonical_policy(self) -> None:
+        """`maistro_rsi.isolation_floor` exists only because the promotion
+        closure forbids the loop importing `maistro.sandbox.policy` (its
+        package initializer drags ~220 unprotected maistro-core modules onto
+        the promotion path — the exact regression repair round 5 fixed). A
+        mirror that drifts is a guard enforcing a floor ADR-093 no longer
+        declares, so every comparison the guard can make must agree with the
+        canonical policy, tier for tier, and the mirrored autonomous floor
+        must *be* the canonical one.
+
+        A tier the canonical ladder adds but the mirror lacks raises
+        ValueError here rather than passing — that is the point.
+        """
+        canonical_tiers = get_args(CanonicalIsolationTier)
+
+        assert MODE_FLOORS[ExecutionMode.AUTONOMOUS] == mirror.AUTONOMOUS_FLOOR
+        assert tuple(mirror.TIER_ORDER) == tuple(canonical_tiers)
+        for available in canonical_tiers:
+            for required in canonical_tiers:
+                assert mirror.tier_satisfies(available, required) == tier_satisfies(
+                    available, required
+                ), f"mirror disagrees with the canonical ladder at {available!r} vs {required!r}"

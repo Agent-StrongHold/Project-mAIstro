@@ -358,8 +358,11 @@ def _refuse_unattendable_isolation(args: argparse.Namespace) -> int | None:
     starts is Tier 3, so the run refuses to start rather than executing
     unsupervised candidate code behind a shared kernel. The comparison itself
     lives in `maistro_rsi.local_loop.autonomous_isolation_refusal`, driven by
-    the canonical `maistro.sandbox.policy` floors, so a future Tier-2+ backend
-    under the same flag passes without this dispatcher being edited.
+    the ADR-093 floors mirrored in `maistro_rsi.isolation_floor` (a mirror
+    because importing `maistro.sandbox.policy` would pull ~220 unprotected
+    maistro-core modules into the promotion closure; the mirror is pinned to
+    the canonical policy by test), so a future Tier-2+ backend under the same
+    flag passes without this dispatcher being edited.
     """
     from maistro_rsi.local_loop import autonomous_isolation_refusal
 

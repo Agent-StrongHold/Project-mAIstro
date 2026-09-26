@@ -44,12 +44,6 @@ from typing import Any
 
 import structlog
 
-from maistro.sandbox.policy import (
-    ExecutionMode,
-    IsolationTier,
-    floor_for_mode,
-    tier_satisfies,
-)
 from maistro.security.warden.detector import Warden
 from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
@@ -64,6 +58,11 @@ from maistro_rsi.harvest_boundary import (
     JsonlAuditSink,
     WardenGuardedCallable,
     WardenHarvestBoundary,
+)
+from maistro_rsi.isolation_floor import (
+    AUTONOMOUS_FLOOR,
+    IsolationTier,
+    tier_satisfies,
 )
 from maistro_rsi.merge import greedy_merge
 from maistro_rsi.protocols import ApplyPatchFn, MicroVmSandbox
@@ -670,23 +669,26 @@ def autonomous_isolation_refusal(isolation: str) -> str | None:
     blocked``) rather than executing unsupervised adversarial code behind a
     shared kernel.
 
-    Data-driven off `MODE_FLOORS` rather than hardcoded: the guard compares
-    the tier the backend *is* against the floor the canonical policy
-    declares, so a future Tier-2+ backend wired to the same flag passes
-    without this check being edited, and the refusal always names the floor
-    it enforced.
+    Driven off the ADR-093 floors mirrored in ``maistro_rsi.isolation_floor``
+    rather than hardcoded here: the guard compares the tier the backend *is*
+    against the declared autonomous floor, so a future Tier-2+ backend wired
+    to the same flag passes without this check being edited, and the refusal
+    always names the floor it enforced. The mirror exists because importing
+    the canonical ``maistro.sandbox.policy`` would drag ~220 unprotected
+    maistro-core modules into the promotion closure (see that module's
+    docstring); ``test_autonomous_isolation_tier.py`` pins the mirror to the
+    canonical policy so neither drifts.
     """
     tier = _CLI_ISOLATION_TIERS.get(isolation)
     if tier is None:
         return None
-    floor = floor_for_mode(ExecutionMode.AUTONOMOUS)
-    if tier_satisfies(tier, floor):
+    if tier_satisfies(tier, AUTONOMOUS_FLOOR):
         return None
     return (
         f"isolation={isolation!r} selects a Tier-3 container backend, below the "
-        f"ADR-093 decision-6 autonomous floor ({floor!r}: a user-space kernel or "
-        "better). An unattended multi-cycle RSI run refuses to start behind a "
-        "shared kernel — run the builders session interactively (its floor is "
+        f"ADR-093 decision-6 autonomous floor ({AUTONOMOUS_FLOOR!r}: a user-space "
+        "kernel or better). An unattended multi-cycle RSI run refuses to start behind "
+        "a shared kernel — run the builders session interactively (its floor is "
         "Tier 3 with a human confirming gated actions), or back the loop with a "
         "gVisor-or-better sandbox backend."
     )
