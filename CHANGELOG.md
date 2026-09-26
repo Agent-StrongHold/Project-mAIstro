@@ -296,6 +296,19 @@ or placeholder-only section.
 
 ### Added
 
+- **`GET /health/ready` reports the serving container's cgroup ceilings
+  (#75, partial).** A new `container_limits` field reads cgroup v2
+  `memory.max`, `pids.max` and `cpu.max` at the hierarchy root, which under
+  a private cgroup namespace is the container's own cgroup. It reports
+  `memory_max_bytes`, `pids_max` and `cpu_max_cores`. Each value is a
+  number, `"unbounded"` when no limit is set at that level (an enclosing
+  cgroup may still impose one), or `"unknown"` when nothing readable is
+  there: cgroup v1, a host-root view, or unparseable content. Because the
+  `/health` prefix is public and rate-limit exempt, the field is `null`
+  unless the caller presents an admin bearer token (or API auth is
+  disabled). It never changes readiness status. Compose profiles still
+  declare no ceilings (#862).
+
 - **Proposed ADR for the durable cross-Workspace user model (#1047, partial).**
   ADR-092526-4391 (Proposed) records the owner's decisions on #1047. The user model is a
   separate `UserModelFact` record that does not decay. It has revision lineage,
@@ -353,6 +366,7 @@ or placeholder-only section.
   includes `security_violations`, `usage_events`, `task_idempotency` and
   `security_rate_limits`. Nothing is written down
   as retained forever unless someone decided it.
+
 - **Stable Workspace Agent identity and per-user default Workspace
   ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
   ADR-092326-7ed7).** Hive's `services/workspace_agent.py`
@@ -368,6 +382,7 @@ or placeholder-only section.
   `POST /v1/workspaces/default` (gated by `workspaces.write`) returns the
   caller's default Workspace with its Workspace Agent id. Chat turns do not
   consume either resolver yet; that is the next #1037 slice.
+
 - **Every maistro-core node kind is proven to get the Container's own
   authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
   resolves each registered core kind that declares an authority through a real
