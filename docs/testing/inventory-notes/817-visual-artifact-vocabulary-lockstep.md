@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +2
+  packages/maistro-core/tests: +3
 ---
 # 817-visual-artifact-vocabulary-lockstep
 
@@ -19,3 +19,10 @@ New
   must be classified with its declared reason, and the visual layer may only
   ever emit declared reasons, so an admin-facing trust recommendation cannot
   contradict what the renderer blocks (AC-4).
+- 1 cross-language mirror case: `test_typescript_renderer_mirror_equals_declared_vocabulary`
+  parses the browser boundary's `VISUAL_ARTIFACT_BLOCK_REASONS` `as const`
+  array in `packages/hive-conductor/frontend/src/lib/visualArtifactRenderer.tsx`
+  and asserts equality (same names, same order) with Warden's declared
+  tuple. Previously that mirror was anchored only by a source comment;
+  the equality is now enforced by test, so neither side can drift without
+  a red run (AC-4/AC-5 residual from round-16 review).
