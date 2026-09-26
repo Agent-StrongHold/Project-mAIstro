@@ -3,12 +3,11 @@ id: SPEC-070226-af02
 title: "P1 Resilience: depth/compaction/retry enforcement with control-scope steering"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-038
   - maistro-engine#ADR-062
-  - maistro-engine#ADR-066
 implements:
   - maistro-engine#ADR-066
 related:
@@ -24,16 +23,23 @@ tests:
 layer: Reliability
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-af02: P1 Resilience — depth/compaction/retry enforcement with control-scope steering
 
 ## Context
 
-ADR-066 specifies P1 (Phase 1) resilience: depth limits on task retries, compaction (merging similar
-retry attempts into one cohesive signal), and a control-scope enforcement mechanism to steer
-remediation choices (escalate vs. retry vs. fail-fast). ADR-038's reliability taxonomy provides
-the classification (Shallow, P1, P2, P3); this SPEC realizes the P1 enforcement.
+ADR-066 remains Proposed and is retained as historical design context only; it is not shipped
+authority for this SPEC. This SPEC defines the P1 (Phase 1) resilience behavior: depth limits on
+task retries, compaction (merging similar retry attempts into one cohesive signal), and a
+control-scope enforcement mechanism to steer remediation choices (escalate vs. retry vs. fail-fast).
+ADR-038's reliability taxonomy provides the classification (Shallow, P1, P2, P3); this SPEC realizes
+the P1 enforcement under its Accepted substrate decisions.
 
 Primitives already exist (retry/backoff primitives in maistro.resilience); this SPEC wires them into
 the graph executor, conduit, and observability pipeline.
@@ -243,7 +249,7 @@ Events are tagged with `source: "resilience.p1"` for filtering.
 
 ## References
 
-- [ADR-066: P1 Resilience and Control](../adr/ADR-066-p1-resilience-and-control.md)
+- Historical design context only (Proposed, not normative): [ADR-066: P1 Resilience and Control](../adr/ADR-066-p1-resilience-and-control.md)
 - [ADR-038: Reliability Taxonomy](../adr/ADR-038-reliability-taxonomy.md)
 - [ADR-062: Graph Execution Protocol](../adr/ADR-062-graph-execution-protocol.md)
 - [ADR-037: Observability](../adr/ADR-037-observability-taxonomy.md)

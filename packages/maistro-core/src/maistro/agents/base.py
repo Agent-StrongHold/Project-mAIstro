@@ -12,6 +12,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maistro.observability.correlation import current_execution_context
+from maistro.security.normalize import to_scan_string
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.warden.detector import WardenContext, prior_message_context
 from maistro.types.agent import AgentResponse
@@ -767,7 +768,7 @@ class Agent:
         async def execute(tool_name: str, tool_args: dict[str, Any]) -> str:
             raw_result = await self._authorize_and_invoke(tool_name, tool_args, auth, tool_defs)
             sanitized = await self._sanitize_tool_result(
-                tool_name, str(raw_result), auth, context=list(tool_context)
+                tool_name, to_scan_string(raw_result), auth, context=list(tool_context)
             )
             tool_context.append(WardenContext(sanitized))
             return sanitized
