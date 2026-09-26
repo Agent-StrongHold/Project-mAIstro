@@ -4,13 +4,17 @@ criteria autorun-1..6."""
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import httpx
 import pytest
 
+from maistro.config.settings import get_settings
 from maistro.http import sync_client as _real_sync_client
 from maistro.security.outbound import (
     OutboundBlockedError,
+    configure_outbound_policy,
     current_outbound_policy,
     reset_outbound_policy,
 )
@@ -1328,66 +1332,132 @@ class TestProposerWardenCorrelation:
 # --- the guarded sync seam (ADR-102 AC-1) -----------------------------------------
 #
 # Every other test here stubs `_post`, which proves the proposers but not the
-# seam. These two drive the real body: the endpoint the helper registers is the
-# endpoint the central guard then permits, and the request rides
-# `maistro.http.sync_client`, not a private client.
+# seam. These drive the real body against a real loopback server: the request
+# rides `maistro.http.sync_client` (not a private client), an origin the
+# operator configured is reachable, and — the #1096 repair — `_post` never
+# registers the URL it was handed, so no caller can authorize a destination
+# simply by naming it. (`httpx.MockTransport` is useless here: a fabricated
+# response opens no socket, so the guarded transport never runs — the same
+# blind spot that hid the original bypass.)
 
 
-def _guarded_mock_transport(monkeypatch: pytest.MonkeyPatch, handler):
-    def factory(**kwargs):
-        return _real_sync_client(transport=httpx.MockTransport(handler), **kwargs)
+def _loopback_gateway() -> HTTPServer:
+    """A real HTTP server on an ephemeral loopback port, speaking completions."""
 
-    monkeypatch.setattr(autorun_module, "sync_client", factory)
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = b'{"choices":[{"message":{"content":"h"}}]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
-def test_post_registers_its_endpoint_and_sends_through_the_guarded_seam(
+def test_post_reaches_an_operator_configured_origin_through_the_guarded_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_outbound_policy()
+    server = _loopback_gateway()
     try:
-        seen: dict[str, str] = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["url"] = str(request.url)
-            seen["auth"] = request.headers.get("Authorization", "")
-            return httpx.Response(200, json={"choices": [{"message": {"content": "h"}}]})
-
-        _guarded_mock_transport(monkeypatch, handler)
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        monkeypatch.setattr(autorun_module, "sync_client", _real_sync_client)
+        # The operator's own configuration is what makes a loopback gateway
+        # reachable — the same registration `make_llm_proposer` performs from
+        # settings. `_post` itself contributes nothing to the policy.
+        configure_outbound_policy(origin)
 
         response = _post(
-            "http://gw.test:4000/v1/chat/completions",
+            f"{origin}/v1/chat/completions",
             json={},
             headers={"Authorization": "Bearer sk-test"},
-            timeout=1.0,
+            timeout=2.0,
         )
 
         assert response.status_code == 200
-        assert seen["url"] == "http://gw.test:4000/v1/chat/completions"
-        assert seen["auth"] == "Bearer sk-test"
-        # The helper registered the operator endpoint itself: before the call
-        # the policy was empty, so this allowance is `_post`'s own doing.
-        assert current_outbound_policy().allows("http://gw.test:4000/v1/chat/completions")
+        assert response.json()["choices"][0]["message"]["content"] == "h"
     finally:
         reset_outbound_policy()
+        server.shutdown()
+
+
+def test_post_never_authorizes_the_url_it_is_handed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the #1096 seam probe.
+
+    The old `_post` called `configure_outbound_policy(url)` on its argument,
+    so an executed probe against `http://127.0.0.1:<port>` returned status 200
+    with the private origin allowlisted — caller input had authorized itself
+    before the transport could refuse it. A URL nobody configured must be
+    refused, and the refusal must leave the policy exactly as it started.
+    """
+    reset_outbound_policy()
+    server = _loopback_gateway()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        monkeypatch.setattr(autorun_module, "sync_client", _real_sync_client)
+        assert not current_outbound_policy().allows(origin)
+
+        with pytest.raises(OutboundBlockedError):
+            _post(f"{origin}/v1/chat/completions", json={}, headers={}, timeout=2.0)
+
+        assert not current_outbound_policy().allows(origin)
+    finally:
+        reset_outbound_policy()
+        server.shutdown()
 
 
 def test_registration_is_exact_and_the_guard_stays_active_for_everything_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`_post`'s allowance covers exactly the endpoint it was given.
+    """Registering one configured origin must not widen the policy.
 
-    Registering the gateway origin must not widen the policy: a private
-    destination is still refused by the same guarded client the helper builds,
-    in this same process, without any socket being opened.
+    An allowance is a full origin, compared exactly: allowing a configured
+    gateway leaves every other destination — private ones included — refused
+    by the same guarded client the helper builds, in this same process,
+    without any socket being opened.
     """
     reset_outbound_policy()
     try:
         monkeypatch.setattr(autorun_module, "sync_client", _real_sync_client)
-        assert not current_outbound_policy().allows("http://gw.test:4000/v1/chat/completions")
+        configure_outbound_policy("http://gw.test:4000")
+        assert current_outbound_policy().allows("http://gw.test:4000/v1/chat/completions")
+        assert not current_outbound_policy().allows("http://gw.test:4001/v1/chat/completions")
         with (
             pytest.raises(OutboundBlockedError),
             _real_sync_client(timeout=1.0) as client,
         ):
             client.post("http://127.0.0.1:9/v1/chat/completions", json={})
+    finally:
+        reset_outbound_policy()
+
+
+def test_proposer_registers_the_configured_gateway_origin(monkeypatch) -> None:
+    """The proposer's allowance comes from settings, where it is operator
+    configuration — registered where the settings object is read (#1096),
+    never from the URL `_post` happens to be handed."""
+    reset_outbound_policy()
+    try:
+        settings = get_settings()
+
+        def _boom(*args: object, **kwargs: object) -> httpx.Response:
+            raise ConnectionError("no gateway in this test")
+
+        monkeypatch.setattr(autorun_module, "_post", _boom)
+        proposer = make_llm_proposer()
+        context = _context("root hyp")
+
+        # The gateway being unreachable degrades to the template; the policy
+        # registration happened before any of that, at the settings read.
+        assert proposer(context) == template_proposer(context)
+        assert current_outbound_policy().allows(settings.litellm.base_url)
     finally:
         reset_outbound_policy()

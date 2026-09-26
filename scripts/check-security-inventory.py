@@ -327,6 +327,82 @@ def _sibling_unguarded_httpx_calls() -> list[str]:
     return findings
 
 
+def _self_authorized_fetch_helpers() -> list[str]:
+    """Return helpers that allowlist the very URL they are asked to fetch.
+
+    ``configure_outbound_policy(x)`` followed by ``client.post(x, ...)`` in
+    the same function is a bypass by construction: the allowance fires before
+    the transport's validation, so any destination the caller can name —
+    private ones included — arrives pre-authorized. The #1096 seam probe
+    reached a loopback server with status 200 through exactly this shape in
+    ``maistro-rsi``'s ``_post``. Legitimate sites never match: they authorize
+    an operator-configured expression (``_base_url()``, ``self._base_url``,
+    ``self.config.base_url``) and fetch a *different* expression derived from
+    it, so identity between the two names is the defect, not a style.
+    """
+    findings: list[str] = []
+    for root in _SIBLING_SRC_ROOTS:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            findings.extend(_self_authorized_fetches_in_file(path))
+    return findings
+
+
+def _self_authorized_fetches_in_file(path: Path) -> list[str]:
+    """Self-authorized fetches in one file — see `_self_authorized_fetch_helpers`."""
+    findings: list[str] = []
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return findings
+    location = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else str(path)
+    for func in ast.walk(tree):
+        if isinstance(func, ast.FunctionDef | ast.AsyncFunctionDef):
+            findings.extend(_self_authorized_fetches_in_function(location, func))
+    return findings
+
+
+def _self_authorized_fetches_in_function(
+    location: str, func: ast.FunctionDef | ast.AsyncFunctionDef
+) -> list[str]:
+    """Self-authorized fetches in one function — see `_self_authorized_fetch_helpers`."""
+    authorized: dict[str, int] = {}
+    fetched: set[str] = set()
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "configure_outbound_policy":
+            target = _request_target(node)
+            if isinstance(target, ast.Name):
+                authorized[target.id] = node.lineno
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in _HTTPX_OUTBOUND_METHODS:
+            target = _request_target(node)
+            if isinstance(target, ast.Name):
+                fetched.add(target.id)
+    return [
+        f"{location}:{lineno}: configure_outbound_policy('{name}') "
+        "authorizes the same URL this function fetches"
+        for name, lineno in sorted(authorized.items())
+        if name in fetched
+    ]
+
+
+def _request_target(call: ast.Call) -> ast.expr | None:
+    """The expression a call sends the request to, when it is identifiable.
+
+    The first positional argument for ``client.post(url, ...)``; the ``url``
+    keyword for keyword-callers. ``None`` when neither form is present — the
+    check stays quiet rather than guessing.
+    """
+    if call.args:
+        return call.args[0]
+    for keyword in call.keywords:
+        if keyword.arg == "url":
+            return keyword.value
+    return None
+
+
 # A Docker Engine client speaks over a Unix-domain socket, not an outbound HTTP
 # network destination. It remains explicit here so the repo-wide constructor
 # census does not silently classify trusted admin socket management as SSRF.
@@ -457,6 +533,7 @@ class Findings:
     unchecked_rows: list[str] = field(default_factory=list)
     unguarded_httpx_calls: list[str] = field(default_factory=list)
     unguarded_httpx_constructors: list[str] = field(default_factory=list)
+    self_authorized_fetches: list[str] = field(default_factory=list)
 
     def total(self) -> int:
         return sum(
@@ -471,6 +548,7 @@ class Findings:
                 self.unchecked_rows,
                 self.unguarded_httpx_calls,
                 self.unguarded_httpx_constructors,
+                self.self_authorized_fetches,
             )
         )
 
@@ -901,6 +979,7 @@ def main() -> int:
     check_counted_claims(text, findings)
     findings.unguarded_httpx_calls.extend(_sibling_unguarded_httpx_calls())
     findings.unguarded_httpx_constructors.extend(_repo_unguarded_httpx_constructors())
+    findings.self_authorized_fetches.extend(_self_authorized_fetch_helpers())
 
     if findings.total() == 0:
         rows = len(_inventory_rows(text))
@@ -946,6 +1025,12 @@ def main() -> int:
             "Private httpx constructors outside the central seam",
             findings.unguarded_httpx_constructors,
             "borrow sync_client/shared_client or document a non-network transport exemption",
+        ),
+        (
+            "Helpers that allowlist the URL they fetch",
+            findings.self_authorized_fetches,
+            "authorize only operator-configured origins where the settings object is read; "
+            "let the guarded transport validate the request URL",
         ),
     ):
         if not bucket:

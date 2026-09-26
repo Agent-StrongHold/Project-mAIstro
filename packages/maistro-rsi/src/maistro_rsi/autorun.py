@@ -201,8 +201,17 @@ def _post(
     headers: dict[str, str],
     timeout: float,
 ) -> httpx.Response:
-    """Post through the central guarded sync transport."""
-    configure_outbound_policy(url)
+    """Post through the central guarded sync transport.
+
+    `_post` deliberately does **not** register `url` in the outbound policy:
+    it accepts an arbitrary URL, and a helper that allowlists whatever it is
+    handed would authorize any destination its caller can name before the
+    transport could refuse it — the #1096 seam probe reached a loopback server
+    with status 200 exactly that way. Operator-configured origins are
+    allowlisted by their owner, where the settings object is read
+    (`make_llm_proposer`); everything else is validated by the guarded
+    transport (`SyncGuardedTransport` via `maistro.http.sync_client`).
+    """
     with sync_client(timeout=timeout) as client:
         return client.post(url, json=json, headers=headers)
 
@@ -229,6 +238,12 @@ def make_llm_proposer(
     def _propose(context: HtrContext) -> str:
         nonlocal consecutive_fallbacks
         settings = get_settings()
+        # The LiteLLM gateway is operator configuration — a settings field,
+        # not a caller argument — so this is where its exact origin is
+        # registered (#1096, matching `HomeAssistantIntegration` and the
+        # bootstrap builders). `_post` takes arbitrary URLs and must never
+        # self-authorize; the guarded transport validates everything else.
+        configure_outbound_policy(settings.litellm.base_url)
         lineage = set(context.insights)
         combined = list(context.insights) + [
             lesson for lesson in prior_learnings if lesson not in lineage
