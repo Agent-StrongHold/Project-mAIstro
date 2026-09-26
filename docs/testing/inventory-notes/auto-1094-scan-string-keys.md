@@ -58,3 +58,60 @@ yielded mapping keys; this closes the same gap in the core-agent seam.
 - `scripts/check-gates-ran.py` without `--check-runs`: usage error only
   (integration-time gate needing GitHub check-run JSON), matching prior
   findings; not a code defect.
+
+## Repair round (develop sync to 031bd0746; fail-closed tool seam)
+
+Merging `origin/develop@031bd0746` ("fail closed at the Agent tool seam
+without Sentinel or auth") made two #1094 regression tests deny their tool
+calls before the executor ran (`sentinel=None, auth=None` now refuses), so
+their serialization assertions saw `"Error: Permission denied ..."` instead
+of the tool result:
+
+- `test_strategy.py::test_hostile_mapping_key_survives_repr_hiding_result`
+  now runs under `_grant("write_file", warden=<recording double>)` — a real
+  `Sentinel` grant whose Warden records scanned text. Assertions: the
+  injection survives repr-hiding into the model-visible string AND the gate
+  scanned exactly that string. `_grant` gained a keyword-only `warden=`
+  parameter (default keeps the real `Warden`).
+- `test_base.py::test_hostile_mapping_key_reaches_the_tool_result_boundary`
+  now wires `RealSentinel(warden=warden, permission_table={...})` and an
+  `AuthContext` with the granting role, matching the in-file precedent.
+- Out-of-scope-but-blocking: `test_log_redaction.py::test_install_is_idempotent`
+  (untouched since initial release; pre-existing at develop base — neither
+  the module nor its test changed on this branch) asserted on the global
+  wrap count, which pytest's logging plugin breaks by attaching
+  `LogCaptureHandler`s to the named logger mid-test. The test now asserts
+  the actual idempotency property: the fixture's already-wrapped handler is
+  not double-wrapped. No production change.
+
+No test counts changed (0 added, 0 removed); inventory delta unchanged.
+
+Re-validation at this head:
+
+- `uv run ruff check .` / `ruff format --check .`: pass.
+- Verifier's exact failing selection (check-3 argv) → 131 passed.
+- `packages/maistro-core/tests/agents` + `tests/security` → 2111 passed,
+  19 skipped.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`: exit 0, no unbanked identities; no ledger
+  amendment needed.
+- Conductor acceptance tests: `test_chat_voice_gates.py -k
+  "scan_config_visits_nested_airtable_field_name_keys or
+  airtable_field_name_in_nested_mapping_key_is_withheld or
+  run_workflow_is_privileged_and_requires_scoped_approval or
+  workflow_forged_evidence_never_reaches_handler"` → 4 passed.
+- Mutations reproduced at this head (each applied to the tree, executed,
+  then reverted by exact byte restore from backup; `git diff --stat` and
+  per-file `diff` verified only the four intended files changed):
+  - keys dropped (`to_scan_string` → `str()` in
+    `ArtificerStrategy._truncate_result`) →
+    `test_hostile_mapping_key_survives_repr_hiding_result` FAILED;
+  - `TOOL_EFFECTS["run_workflow"]` `TOOL_EFFECT_MUTATE` →
+    `TOOL_EFFECT_NETWORK` (`chat_gate.py:259`) →
+    `test_run_workflow_is_privileged_and_requires_scoped_approval` FAILED;
+  - mapping-key yield removed from `_text_leaves`
+    (`agent_materialization.py`) →
+    `test_scan_config_visits_nested_airtable_field_name_keys` FAILED
+    (`test_airtable_field_name_in_nested_mapping_key_is_withheld` still
+    passed — it guards the exact-`json.dumps` scan path, independent of the
+    config traversal).

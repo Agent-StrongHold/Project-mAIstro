@@ -424,9 +424,13 @@ class TestHandleCanonicalTrustPipeline:
             identity=_identity(tools=("lookup",)),
             warden=warden,
             tool_executor=raw_tool,
+            sentinel=RealSentinel(warden=warden, permission_table={"lookup": frozenset({"op"})}),
         )
 
-        await agent.handle(messages=[{"role": "user", "content": "lookup"}], auth=_Auth())
+        await agent.handle(
+            messages=[{"role": "user", "content": "lookup"}],
+            auth=AuthContext(user_id="u1", roles=frozenset({"op"}), org_id="org-1"),
+        )
 
         assert "{...}" not in strategy.tool_result
         assert injection in strategy.tool_result
