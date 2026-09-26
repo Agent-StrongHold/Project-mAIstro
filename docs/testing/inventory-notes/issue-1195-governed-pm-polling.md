@@ -176,3 +176,62 @@ this round executed every finding check and gate from scratch at head
   and `check-vulture-baseline.py packages/*/src --min-confidence 60
   --exclude '*/third_party/*'` (unclassified: 0 — no ledger amendment
   needed). No production or test code changed; evidence-only commit.
+
+## Develop-sync round (origin/develop d2c74137d merged, head faf6bf522)
+
+The branch arrived mid-merge with the develop sync conflict preserved in the
+worktree (MERGE_HEAD `51058d899`, one conflicted file). Resolution:
+
+- `container.py`: the single conflict was two unrelated functions competing
+  for the same slot — our `_wire_capability_effects` (the #1195 durable
+  effect-authority seam) and develop's `_identity_lifecycle_stores`
+  (identity-extra tolerance). Both are called by `create_container`
+  (identity stores at container.py:1943, capability effects at :1963), so
+  both were kept; no behavior from either side was dropped.
+- The completed merge was committed, then origin/develop (`d2c74137d`, +52
+  commits) merged cleanly on top (merge commit `faf6bf522`, tree clean).
+
+Every finding check and gate re-executed from scratch at the merged head,
+trusting nothing from the pre-merge rounds:
+
+- All six prior findings re-confirmed fixed by direct code read:
+  `_wire_capability_effects` selects the durable SQLite/PostgreSQL
+  Binding+Invocation+Event authorities (`new_sqlite_effect_context` /
+  `new_postgres_effect_context`) and seeds the provisioning-seam bindings;
+  `Invocation` carries workspace/project and `_correlate_scope` refuses a
+  scope mismatch against the resolved Binding (invocation.py:171-195);
+  `Binding.disabled` resolves to `BindingDisabled` in `binding_store._resolve`
+  before any provider resolution or HTTP; node inputs carry `binding_id` plus
+  business parameters only — secrets attach via `CredentialRouting` inside
+  the provider (`providers/pm_polling.py:_provider_and_credential`);
+  `check_direct_effects.py` counts `get` and matches PM URL boundaries with
+  the two sanctioned provider calls dispositioned `CANONICAL_INVOCATION` and
+  the ten hive-conductor PM sites dispositioned
+  `MIGRATE_TO_GOVERNED_INVOCATION`.
+- Duplicate-effect refusal re-confirmed in all three backends:
+  `InMemoryInvocationStore.create` (invocation.py), `SqliteInvocationStore`
+  (invocation_store.py:106,201) and `PgInvocationStore`
+  (pg_invocation_store.py:88) all raise `UnsafeEffectRetry` on a repeat of
+  an active/completed effect identity; `ResolvedBinding.from_provider`
+  refuses a provider that contradicts the Binding's pinned `provider_name`.
+- AC7 negative probe re-executed at the merged head: temporary
+  `graph/nodes/_rogue_probe.py` with `shared_client().get` against
+  `https://acme.atlassian.net/rest/api/2/search` made the gate exit 1
+  ("NEW ...::probe::PM_POLLING_EFFECT:pm-polling-http#1 is an unclassified
+  direct-effect call site"); after removal the clean tree exits 0 (61 sites,
+  all dispositioned).
+- Tests: `test_pm_polling_nodes.py` 8 passed; capabilities package 349
+  passed; `tests/graph` 1467 passed + 97 skipped;
+  `test_container_wiring` + `test_container_sqlite_backend` 47 passed;
+  `tests/test_check_direct_effects.py` 26 passed.
+- Gates: ruff check + `ruff format --check` (2587 files) clean; mypy across
+  all six package src trees (724 files, success); `check-direct-effects`,
+  `check-security-inventory` (exit 0), `check-credential-authority`,
+  `check_enumerations`, `check-reachability`,
+  `check-reachability-dispositions`, `check-convergence-matrix`,
+  `check-ratchet-provenance`, and `check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` (1403 findings, all
+  banked per-identity; unclassified 0, never_allowlist 0 — no ledger
+  amendment needed) — all exit 0.
+- No production or test code changed this round beyond the conflict
+  resolution inside the merge commits; evidence-only commit.
