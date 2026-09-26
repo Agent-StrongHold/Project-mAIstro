@@ -1,7 +1,4 @@
 ---
-inventory-delta:
-  packages/maistro-core/tests: +0/-0 (rewritten in place: 1)
-  packages/maistro-server/tests: +0/-0 (rewritten in place: 1)
 ---
 
 # auto-131 develop-sync merge revalidation (job 94d95063)
