@@ -249,3 +249,32 @@ in depth); the file was restored byte-identical (sha256
 `5ee978f6…cc0ed86` before and after) and `git status` clean. PR #1443 body
 and every branch commit message were re-scanned: no
 fixes/closes/resolves keywords, so no premature issue closure.
+
+## Independent verifier re-validation (head `3041114b`)
+
+Driver check logs exist and are green at this head (`uv sync --locked`,
+`ruff check .`, `ruff format --check .`, 33 door+timeout tests,
+`check-suite-inventory` 2767 ok). The verifier re-executed the battery itself,
+trusting no prior record: 33/33 door+timeout tests; `check-suite-inventory.py
+--suite packages/hive-conductor/backend/tests` ok; `ruff check .` clean;
+canonical mypy clean (715 files, all six package sources); full
+hive-conductor backend suite 2761 passed / 6 skipped;
+`packages/maistro-core/tests/runs` 876 passed / 209 skipped; adjacent scope
+suites (`test_workspace_authority`, `test_workspace_authority_durable`,
+`test_privilege_middleware_installed`, `test_production_workspace_scope`)
+28 passed / 5 pre-existing skips. The mutation experiment was re-executed
+independently in a throwaway `git archive` copy under /tmp (the assigned tree
+untouched, authentication intact): (1) neutering the route's workspace
+membership check fails
+`test_hitl_mutation_rechecks_membership_at_the_store_boundary` (an
+unauthorized answer reaches 200); (2) a no-op `authorize_project` in
+`_require_project_access` fails
+`test_project_reviewer_isolated_from_sibling_hitl_work` (a denied-Project
+answer settles 200); (3) removing the Project-permission filter from
+`authorized_project_ids` fails the same isolation test via the `/pending`
+disclosure path. The store boundary still live-rechecks membership with
+`consume_evidence=True` inside `_mutate_hitl`, so route-check removals are
+caught even where a second layer holds. PR #1443 body ("Refs #1110") and all
+branch commit messages re-scanned: no fixes/closes/resolves keywords. The
+prior develop-sync conflict is confirmed resolved in history (`ffe469131`);
+worktree clean at the assigned head before and after this docs-only record.
