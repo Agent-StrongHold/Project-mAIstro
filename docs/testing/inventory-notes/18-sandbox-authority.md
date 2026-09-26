@@ -401,3 +401,52 @@ Verdict unchanged from the previous round: the branch is green and its
 claims hold; what remains (#79 runner-side lease threading, child-issue
 closure states, bootstrap data-plane convergence) is above this lane and
 goes to deep review / owner coordination.
+
+## Verification round (2026-09-26, head `38a666ee3`) — support-matrix truthfulness repair
+
+The prior verify round's one code-tree defect: `SANDBOX-SUPPORT-MATRIX.md`
+still described a bubblewrap-only world and called the container tier
+"refused (no container backend is shipped)" while the branch ships and
+registers `ContainerSandboxBackend`. Repaired in place; every claim
+re-derived from production code, not from the old text:
+
+- the tier table now carries both shipped Tier-3 rungs — the transitional
+  `container` rung (ADR-093 decision 2) above `bubblewrap` per
+  `policy._TIER_ORDER` — with the probe's real requirement (`docker info` /
+  `podman info` reachable, not a `which` check);
+- the policy table states per-host outcomes: `TRUSTED_TOOL` /
+  `BROWSER_AUTOMATION` run on the container backend where a runtime is
+  reachable (`test_selector.py::test_container_satisfies_trusted_tool` pins
+  the selection) and refuse on bubblewrap-only hosts; `vm`-tier policies
+  refuse on both;
+- the `DEV_ONLY` cell was corrected against measured behaviour — it selects
+  the strongest registered tier (this host: container); the fake itself is
+  opt-in and never automatic;
+- the egress table gained the container column (`--network=none` /
+  `--network=host`; scoped refused via `supports_scoped_egress = False`);
+- a new "What the container backend does" section records the shipped
+  hardening (socket-less argv-driven runtime, read-only root, cap-drop,
+  no-new-privileges, fixed uid, runtime-enforced budgets, single authorized
+  writable root via #1198, `sanitize_env` + fence env via #79, #1197 capture
+  ceiling), and the Verification section names both conformance lanes.
+
+Executed evidence at the repaired head:
+
+- live selector spot-check on this host (`tiers=('container',)`):
+  `TRUSTED_TOOL`/`BROWSER_AUTOMATION` -> `ContainerSandboxBackend`;
+  `UNTRUSTED_CODE`/`BENCHMARK_EVAL` -> `NoSuitableBackendError`;
+  `DEV_ONLY` -> container tier;
+- `test_container.py` 17 passed, 0 skipped against the live Docker daemon;
+- core sandbox + tools/sandbox + sandbox_paths + attempt_executor +
+  conductor sandbox-mode gating: 208 passed / 36 skipped (every skip
+  bwrap-userns-bound, honestly keyed);
+- `ruff check .` and `ruff format --check .` clean (2578 files);
+- `scripts/check-sandbox-authority.py` exit 0;
+- `scripts/check-suite-inventory.py --suite packages/maistro-core/tests`:
+  matches the recorded inventory.
+
+Residuals (unchanged, above this lane): bubblewrap live escape tests remain
+unverifiable on this userns-restricted host (coverage present, honest
+skips); #76/#80/#1197/#1198 are OPEN and the epic criterion binds at #18
+closure; the branch is 1 commit behind `origin/develop` (`9e9f5037e`), which
+touches none of this lane's surfaces.

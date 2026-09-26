@@ -18,8 +18,17 @@ untrusted code badly — it is a host on which untrusted code does not run.
 |---|---|---|---|---|
 | 1 | Hardware VM | *none yet* | `/dev/kvm` readable/writable **and** one of `firecracker`, `cloud-hypervisor`, `qemu-system-x86_64` on `PATH` | Detected, not implemented — see below |
 | 2 | User-space kernel | *none yet* | `runsc` on `PATH` | Detected, not implemented |
-| 3 | OS sandbox | `BubblewrapSandboxBackend` | `bwrap` on `PATH` **and able to build a namespace** — see below | **Shipped** |
+| 3 | OS sandbox / hardened container | `ContainerSandboxBackend` | Docker or Podman CLI on `PATH` **and** a *reachable* runtime — the probe runs `docker info`/`podman info`, not a `which` check | **Shipped** (transitional rung, ADR-093 decision 2) |
+| 3 | OS sandbox / hardened container | `BubblewrapSandboxBackend` | `bwrap` on `PATH` **and able to build a namespace** — see below | **Shipped** |
 | — | Fake | `FakeSandboxBackend` | none | Dev/test only, never registered automatically |
+
+Both Tier-3 rows are one ADR tier with two shipped rungs. In the selector's
+ladder (`policy._TIER_ORDER`: `vm` > `gvisor` > `container` > `bubblewrap` >
+`fake`) the hardened container outranks bubblewrap, so a Docker/Podman host
+runs its tool-sandbox code execution on `ContainerSandboxBackend`. It is
+retained *transitionally* by ADR-093 decision 2: the runtime is driven by CLI
+argv from the host process, no sandbox ever receives the host Docker socket,
+and it is not a stronger trust boundary than the ADR grants Tier 3.
 
 Tiers 1 and 2 are *probed* but have no backend. That is deliberate and is the
 honest state: `detect_host_capabilities()` will report `vm` or `gvisor` where
@@ -30,19 +39,26 @@ cannot construct. The result is a refusal, not a silent downgrade.
 
 From `maistro.sandbox.policy`:
 
-| Policy | Minimum tier | Runs on a Tier-3-only host? |
-|---|---|---|
-| `UNTRUSTED_CODE` | `vm` | **No** — refused |
-| `BENCHMARK_EVAL` | `vm` | **No** — refused |
-| `TRUSTED_TOOL` | `container` | No — refused (no container backend is shipped) |
-| `BROWSER_AUTOMATION` | `container` | No — refused |
-| `DEV_ONLY` | `fake` | Only when the process opted into the fake |
+| Policy | Minimum tier | Bubblewrap-only host | Host with a reachable Docker/Podman runtime |
+|---|---|---|---|
+| `UNTRUSTED_CODE` | `vm` | **Refused** | **Refused** |
+| `BENCHMARK_EVAL` | `vm` | **Refused** | **Refused** |
+| `TRUSTED_TOOL` | `container` | Refused | **Runs** — on `ContainerSandboxBackend` (`test_selector.py::test_container_satisfies_trusted_tool` pins the selection) |
+| `BROWSER_AUTOMATION` | `container` | Refused | **Runs** — on `ContainerSandboxBackend` |
+| `DEV_ONLY` | `fake` | Runs on any registered tier | Runs on any registered tier |
 
-On a host with only bubblewrap, every policy above `bubblewrap` refuses. This
+The `fake` backend itself is dev/test-only, opt-in, and never registered
+automatically; a `DEV_ONLY` workload simply accepts whatever the host's ladder
+registered, strongest first. A host with no backend at all refuses it too.
+
+On a host with only bubblewrap, every policy above `bubblewrap` refuses. Where
+a container runtime is reachable, the shipped container rung satisfies the two
+`container`-tier policies while the `vm`-tier policies still refuse. This
 reads as restrictive because it is: ADR-093's Tier 3 is "a guardrail against
 accidents and prompt-injection mistakes, **not** a security boundary against
 hostile code", so a Tier-3 host is not permitted to run the workloads whose
-stated reason for existing is containment of hostile code.
+stated reason for existing is containment of hostile code — hardened container
+defaults narrow the accident surface; they do not move the trust boundary.
 
 ## Execution-mode floors (ADR-093 decision 6)
 
@@ -72,16 +88,18 @@ Default-deny. A sandbox gets no interface unless its policy carries an
 `EgressGrant`, which must name a reason — so a grant cannot be made by accident
 and an audit line always has a subject.
 
-| Mode | Meaning | Bubblewrap |
-|---|---|---|
-| `deny` | No interface. The default. | `--unshare-all`, nothing shared back |
-| `scoped` | An allowlist of destinations | **Refused** — cannot filter |
-| `host` | The host's namespace, whole | `--share-net` |
+| Mode | Meaning | Bubblewrap | Container |
+|---|---|---|---|
+| `deny` | No interface. The default. | `--unshare-all`, nothing shared back | `--network=none` |
+| `scoped` | An allowlist of destinations | **Refused** — cannot filter | **Refused** — cannot filter (`supports_scoped_egress = False`) |
+| `host` | The host's namespace, whole | `--share-net` | `--network=host` |
 
-`scoped` is refused rather than approximated. Bubblewrap has exactly two
-network states, so reading "scoped" as "on" would grant unrestricted egress
-while the audit record said scoped. A backend declares
-`supports_scoped_egress`, and the refusal happens before a sandbox exists.
+`scoped` is refused rather than approximated. Neither shipped backend can
+filter: bubblewrap has exactly two network states, and the container backend
+likewise only selects between no interface and the host's whole namespace, so
+reading "scoped" as "on" would grant unrestricted egress while the audit
+record said scoped. A backend declares `supports_scoped_egress`, and the
+refusal happens before a sandbox exists.
 
 Both outcomes are logged — `sandbox_egress_granted` with the reason and
 allowlist, `sandbox_egress_denied` otherwise — because a reader needs to tell
@@ -157,6 +175,31 @@ the workdir and refuses anything that escapes it. Those calls run on the host �
 they are how work gets in and results come out — so an unchecked path would be
 a host write with no sandbox involved.
 
+## What the container backend does
+
+`ContainerSandboxBackend` (`maistro.sandbox.backends.container`) runs one
+ephemeral, socket-less container per sandbox — the transitional Tier-3 rung of
+ADR-093 decision 2, wired into the same selector, policy ladder, egress-grant
+and fence machinery as every other backend, with no second policy surface:
+
+- **Socket-less.** The host process drives the runtime by CLI argv. No
+  container receives the host Docker socket, ambient environment, or an
+  unvalidated host mount — the exact misconfiguration class ADR-093 names as
+  the reason the shared-kernel model was demoted.
+- **Hardened by default.** Read-only root (`--read-only`), `--cap-drop=ALL`,
+  `no-new-privileges`, a fixed non-root uid (65532), and a `noexec,nosuid`
+  tmpfs `/tmp`.
+- **Budgets enforced by the runtime** (`--memory`, `--cpus`, `--pids-limit`),
+  plus the shared host-side capture ceiling of #1197 on stdout/stderr.
+- **One writable host path:** a single authorized workspace root bound at
+  `/work`; more than one `writable_paths` entry is refused, and host-side
+  `write_file`/`read_file` resolve beneath that authorized root via
+  `write_beneath`/`read_beneath` (#1198).
+- **Environment** comes only from `sanitize_env(config.env)` plus the canonical
+  fence variables (#79) — never the caller's ambient environment.
+- **Network** follows the same egress-grant table above: deny (default) is
+  `--network=none`, `host` is `--network=host`, `scoped` is refused.
+
 ## Verification
 
 - Flag construction is asserted on **every** host, because the flags are the
@@ -171,10 +214,15 @@ a host write with no sandbox involved.
   covers the classes ADR-093 and SPEC-190 name — filesystem, process,
   namespace, device, host socket, credential, privilege — plus resource
   exhaustion and cleanup, and every expectation in it was measured against a
-  live sandbox before it was written down. The bubblewrap lane in CI *is* the
-  designated conformance lane: Tiers 1 and 2 have no backend to conform, so
-  there is nothing a hardware-capable runner would additionally exercise until
-  one ships.
+  live sandbox before it was written down. Each shipped rung has its own
+  conformance lane: `test_escape_conformance.py` is the bubblewrap lane, and
+  `packages/maistro-core/tests/sandbox/backends/test_container.py` is the
+  container lane — argv-pure assertions on any host, live-daemon assertions
+  (default-deny network, env allowlist, output bounds, fence propagation,
+  cleanup) wherever a runtime is reachable, skipped with the probe's reason
+  where it is not. Tiers 1 and 2 have no backend to conform, so there is
+  nothing a hardware-capable runner would additionally exercise until one
+  ships.
 
   What it establishes, concretely: the host's `/etc/passwd` and `/home` are not
   there to read; `/usr` is read-only; `/proc/1/root` is the sandbox's root and
