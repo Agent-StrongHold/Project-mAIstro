@@ -160,6 +160,46 @@ def _no_runtime_materialization_source():
     materialization.reset_runtime_source()
 
 
+@pytest.fixture
+def registered_dag_spine(monkeypatch: pytest.MonkeyPatch):
+    """Opt-in real RunStore/projection for registered-DAG execution tests.
+
+    No production fallback is installed. Unconfigured-engine tests still fail
+    closed; only tests requesting this fixture get the canonical spine.
+    """
+    from types import SimpleNamespace
+
+    from services import dag_agents
+
+    from maistro.capabilities.effect_context import new_in_memory_effect_context
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.providers.registry import InMemoryProviderRegistry
+    from maistro.providers.router import CostAwareRouter
+    from maistro.runs import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    project = asyncio.run(projects.create_root("w1"))
+    runs = InMemoryRunStore(project_store=projects)
+    providers = InMemoryProviderRegistry()
+    container = SimpleNamespace(
+        project_id=project.project_id,
+        project_store=projects,
+        run_store=runs,
+        graph_run_store=CanonicalDurableRunStore(runs, InMemoryGraphContinuationStore()),
+        a2a_delegator=None,
+        guest_peers=None,
+        capability_effects=new_in_memory_effect_context(),
+        provider_registry=providers,
+        llm_router=CostAwareRouter(providers),
+    )
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
+    return container
+
+
 def _set_canonical_workspace_members(workspace_id: str, roles: dict[str, str]) -> None:
     """Apply a legacy route-test member map through canonical Workspace authority."""
     from models.workspace import WorkspaceRole

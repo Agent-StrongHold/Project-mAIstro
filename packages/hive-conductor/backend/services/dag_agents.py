@@ -21,7 +21,6 @@ from maistro.graph.dag_registry import DagRegistry
 from maistro.graph.definitions import Graph
 from maistro.graph.durable_runs import (
     DurableRunStore,
-    InMemoryDurableRunStore,
     RunStatus,
     run_durable_graph,
 )
@@ -89,7 +88,7 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     did rather than failing to start.
 
     `run_store` is deliberately the container's **canonical** RunStore. This
-    module also holds an `InMemoryDurableRunStore`, whose name is one word away
+    container also holds a `DurableRunStore`, whose name is one word away
     and whose methods share nothing; build_node_resolver's own docstring records
     that passing the wrong one type-checks and then raises AttributeError after
     the delegation has already been dispatched.
@@ -117,24 +116,15 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     )
 
 
-# The last-resort store, for a Conductor booted without a Container. It is
-# process-local and that is the defect, not the design: a restart empties the
-# HITL queue and two workers disagree about what is paused. It survives only
-# because a standalone Conductor has no canonical spine to project onto, and
-# it is reached only when `_container()` returns nothing.
-_fallback_run_store = InMemoryDurableRunStore()
-
-
 def get_canonical_run_store() -> DurableRunStore:
     """Return the graph store projected onto the canonical execution spine.
 
-    HITL is not available against the standalone compatibility store. Refusing
-    that path is important: a pending human decision must never be written to
-    process-local state that the canonical Run API and a restarted worker
-    cannot see.
+    All shipped Graph work requires the canonical spine, not just HITL.
+    A standalone engine may resolve definitions, but may not execute them into
+    a process-local document store invisible to recovery and Run inspection.
     """
     container = _container()
-    if container is None:
+    if container is None or container.run_store is None:
         raise RuntimeError("canonical graph execution spine is unavailable")
     # An attribute load, not getattr(): check-wiring-reads.py (#236) walks
     # attribute loads, so a getattr("graph_run_store") read is invisible to it
@@ -147,17 +137,8 @@ def get_canonical_run_store() -> DurableRunStore:
 
 
 def get_run_store() -> DurableRunStore:
-    """Return the graph store used by registered-DAG execution.
-
-    The no-container branch remains a deliberately isolated compatibility path
-    for non-HITL standalone DAG tests and deployments. Product HITL routes use
-    :func:`get_canonical_run_store` and therefore cannot accidentally expose or
-    mutate this process-local state.
-    """
-    try:
-        return get_canonical_run_store()
-    except RuntimeError:
-        return _fallback_run_store
+    """Return the canonical graph projection; never fall back to local execution."""
+    return get_canonical_run_store()
 
 
 def get_registry() -> DagRegistry:
@@ -198,35 +179,33 @@ async def run_registered_dag(
     descriptor = get_registry().get(dag_id)
     if descriptor is None:
         raise KeyError(f"No DAG registered for {dag_id!r}")
+    # Refuse before request configuration, admission, node resolution or work.
+    store = get_run_store()
+    container = _container()
+    if container is None or container.run_store is None:
+        raise RuntimeError("canonical graph execution spine is unavailable")
+    run_store = container.run_store
     template = descriptor_to_template(descriptor, workspace_id=workspace_id)
     graph = template.instantiate(project_id=project_id)
     if configure is not None:
         configure(graph)
-    container = _container()
-    run_store = container.run_store if container is not None else None
-    if run_store is None and any(node.node_type.startswith("human.") for node in graph.nodes):
-        raise RuntimeError("canonical graph execution spine is required for human work")
     # Admission first, then execution. Traversal consumes an admitted Run
     # rather than creating one (#44): the create and the first traversal
     # checkpoint are writes to two stores, so a crash between them would leave
     # a canonical Run RUNNING with nothing to resume it. Admitting here leaves
-    # a QUEUED Run instead, which #251's consumer tick can pick up. Without a
-    # Container there is no spine, and execution takes the pre-convergence
-    # path rather than failing to start.
-    admitted_run_id = None
-    if run_store is not None:
-        admitted = await run_store.create_run(
-            graph,
-            initial_status=RunStatus.QUEUED,
-            actor_principal_id=user_id,
-            parent_run_id=parent_run_id,
-            parent_node_run_id=parent_node_run_id,
-            provenance={**dict(provenance or {}), "executor": "durable_graph"},
-        )
-        admitted_run_id = admitted.run_id
+    # a QUEUED Run instead, which #251's consumer tick can pick up.
+    admitted = await run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=user_id,
+        parent_run_id=parent_run_id,
+        parent_node_run_id=parent_node_run_id,
+        provenance={**dict(provenance or {}), "executor": "durable_graph"},
+    )
+    admitted_run_id = admitted.run_id
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
+        store=store,
         node_resolver=_resolve_nodes_with(),
         actor_principal_id=user_id,
         run_id=admitted_run_id,
