@@ -742,3 +742,60 @@ Driver checks from job `582e29468ba9` were re-run locally, not trusted:
 
 No production or test file changed this round (fresh validation evidence
 only); no new tests added, so no inventory-delta change.
+
+## Independent verification 16 (auto-817 @ 2956f618e0ea470be95c396e8121db8ec9ab73ab, verifier+writer lane)
+
+Fresh validation at the lane's exact head `2956f618e` (the round-15 note
+pre-dates the `2956f618e` CI-repair commit, so no prior round section records
+evidence AT this head; the repair lane's own result.json does, and this round
+re-derives it independently). Read-only probes; the only tracked change in
+this round is this note.
+
+- **Driver deterministic checks confirmed**: `uv sync` env resolved; ruff
+  check clean; ruff format clean (2573 files); lane battery 281 passed;
+  renderer 7 passed; suite inventories ok (hive-conductor backend 2815,
+  maistro-core 11137, maistro-design 331).
+- **Lane suites re-executed by this round**: `packages/maistro-design/tests`
+  → 331 passed; `packages/maistro-core/tests/security` → 1330 passed /
+  19 skipped; `test_design_renderers.py` → 7 passed (pdf+pptx+docx all raise
+  `TrustBannedError` before backend dispatch); the four #817 test files →
+  154 passed.
+- **Independent probe at this head (own corpus, not the suite)**: the issue's
+  exact scenario `<script>...</script>` → `skull / banish / 0.9` with explicit
+  shared flags (`script pattern: <script> tag`, `visual artifact
+  active-element`) — no `upgrade` (AC-1/AC-2). Output boundary blocked all
+  seven probes: `@import "https://..."`, `@import url(...)`, `data:text/html`
+  link, `onerror` handler, CSS `url(//...)`, script-in-SVG, escaped `\75rl(`
+  — the repaired `@import` arm is reachable end-to-end (AC-3). Pre-scan
+  blocking flags ≡ output-boundary flags on every probe; clean brief stays
+  `t3 / upgrade / ()` (AC-4, no over-blocking).
+- **Browser corpus re-executed in real Chromium** (image rebuilt from this
+  worktree's live sources via `tests/Dockerfile.playwright`, context
+  = this head): `deck-sanitization.spec.ts` → **8/8 passed (3.6s)**,
+  including the payload families, CSS obfuscation, the
+  `recommendVisualArtifactTrust` parity block (blocked → `review`, never
+  `upgrade`), and zero attacker-server requests (AC-3 browser side, AC-5).
+- **Gates re-executed**: `ruff check .` clean; `check-suite-inventory.py`
+  ok (13/13, incl. `tests/: 3754`, `formal/: 664`);
+  `check-merge-markers.py` ok; vulture CI-exact argv
+  (`packages/*/src --min-confidence 60 --exclude '*/third_party/*'`)
+  → rc=0, 1412 → 1412 vs base `ca4caec7d3`.
+- **Closure-keyword review re-executed:** supplied PR #1389 body says
+  "Refs #817" only (draft: false, claim-stake wording); none of the branch
+  commits `ca4caec..2956f618e` uses fixes/closes/resolves — no premature
+  closure. Develop-sync block: worktree clean at `2956f618e`, no
+  merge in progress, `ca4caec` already an ancestor via `775d54ac2`/`3925106f2`
+  — nothing to redo.
+- **Stop condition re-checked:** `maistro_design/scan.py` imports its
+  vocabulary from `maistro.security.warden.patterns` (one Python authority);
+  `deckSanitizer.ts` remains a deprecated shim; `design_render.py` and the
+  engine call the shared `scan_design_text`/`scan_blocking_patterns`.
+- **Remaining UNVERIFIED:** hosted GitHub CI rollup for PR #1389 at
+  `2956f618e` (push forbidden); the DB-backed
+  `check-ac-state.py --run-tests --ratchet --mandate ca4caec` battery was not
+  re-run this round (repair-lane CI-exact reproduction at this same head
+  recorded exit 0 / design coverage 38.0924; this round's targeted suites and
+  inventories are green).
+
+No production or test file changed this round (fresh validation evidence
+only); no new tests added, so no inventory-delta change.
