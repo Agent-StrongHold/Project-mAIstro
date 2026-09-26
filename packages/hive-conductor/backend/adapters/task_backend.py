@@ -232,7 +232,7 @@ class MaistroServerTaskBackend:
 
     def _sync_client(self) -> httpx.Client:
         with self._sync_lock:
-            if self._sync is None or self._sync.is_closed:
+            if self._sync is None:
                 self._sync = sync_client(timeout=30.0)
             return self._sync
 

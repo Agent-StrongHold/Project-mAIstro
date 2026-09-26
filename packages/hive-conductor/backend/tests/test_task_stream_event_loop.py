@@ -46,7 +46,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path.startswith("/tasks/"):
-            time.sleep(self.server.stall_s)
+            # Only the first probe stalls; the stream's later polls answer at once.
+            stall, self.server.stall_s = self.server.stall_s, 0.0
+            time.sleep(stall)
             self._send(200, _TASK_BODY)
         elif self.path.startswith("/tasks"):
             self._send(200, {"items": [_TASK_BODY], "next_cursor": None, "count": 1})
