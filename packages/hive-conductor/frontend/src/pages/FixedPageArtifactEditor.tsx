@@ -2,8 +2,10 @@ import { useCallback, useState, type ClipboardEvent, type DragEvent } from "reac
 import {
   createSanitizedVisualArtifactFragment,
   escapeVisualArtifactText,
+  recommendVisualArtifactTrust,
   SanitizedVisualArtifact,
   sanitizeVisualArtifactMarkup,
+  type VisualArtifactTrustRecommendation,
 } from "../lib/visualArtifactRenderer";
 
 export type FixedPageMode =
@@ -52,23 +54,33 @@ function insertAtSelection(target: HTMLElement, fragment: DocumentFragment): voi
 export type FixedPageArtifactEditorProps = {
   mode: FixedPageMode;
   initialMarkup?: string;
-  onMarkupChange?: (markup: string) => void;
+  /** Verdict recorded when this artifact was last loaded/edited; survives remounts. */
+  initialTrustRecommendation?: VisualArtifactTrustRecommendation;
+  onMarkupChange?: (markup: string, trustRecommendation: VisualArtifactTrustRecommendation) => void;
 };
 
 export default function FixedPageArtifactEditor({
   mode,
   initialMarkup,
+  initialTrustRecommendation,
   onMarkupChange,
 }: FixedPageArtifactEditorProps) {
-  const [markup, setMarkup] = useState(() =>
-    sanitizeVisualArtifactMarkup(initialMarkup ?? DEFAULT_MARKUP[mode]),
+  const sourceMarkup = initialMarkup ?? DEFAULT_MARKUP[mode];
+  const [markup, setMarkup] = useState(() => sanitizeVisualArtifactMarkup(sourceMarkup));
+  const [trustRecommendation, setTrustRecommendation] = useState(() =>
+    initialTrustRecommendation ?? recommendVisualArtifactTrust(sourceMarkup),
   );
 
   const commitMarkup = useCallback(
     (nextMarkup: string) => {
+      // The verdict is derived from the raw incoming content, before the
+      // boundary sanitizes it, so hostile persisted/edited markup can never
+      // earn "upgrade" merely because the render already sanitized it.
+      const recommendation = recommendVisualArtifactTrust(nextMarkup);
+      setTrustRecommendation(recommendation);
       const safeMarkup = sanitizeVisualArtifactMarkup(nextMarkup);
       setMarkup(safeMarkup);
-      onMarkupChange?.(safeMarkup);
+      onMarkupChange?.(safeMarkup, recommendation);
     },
     [onMarkupChange],
   );
@@ -120,7 +132,11 @@ export default function FixedPageArtifactEditor({
   };
 
   return (
-    <section aria-label={`${MODE_LABELS[mode]} editor`} data-testid="fixed-page-editor">
+    <section
+      aria-label={`${MODE_LABELS[mode]} editor`}
+      data-testid="fixed-page-editor"
+      data-trust-recommendation={trustRecommendation}
+    >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <div>
           <strong>{MODE_LABELS[mode]} preview</strong>
@@ -133,6 +149,8 @@ export default function FixedPageArtifactEditor({
       <SanitizedVisualArtifact
         contentEditable
         suppressContentEditableWarning
+        role="textbox"
+        aria-multiline="true"
         aria-label={`${MODE_LABELS[mode]} visual preview`}
         onPaste={handlePaste}
         onDrop={handleDrop}

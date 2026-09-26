@@ -7,6 +7,7 @@ export {
   sanitizeVisualArtifactMarkup,
   scanVisualArtifactMarkup,
   VISUAL_ARTIFACT_BLOCK_REASONS,
+  writeSanitizedVisualArtifact,
   type VisualArtifactBlockReason,
   type VisualArtifactScan,
   type VisualArtifactTrustRecommendation,

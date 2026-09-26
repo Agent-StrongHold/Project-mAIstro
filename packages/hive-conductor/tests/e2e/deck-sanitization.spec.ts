@@ -565,6 +565,13 @@ test("all built-in Deck templates remain renderable through the sanitizer", asyn
 test("poster, infographic, and flyer use the shared boundary for preview, edit, and export", async () => {
   for (const mode of ["poster", "infographic", "flyer"] as const) {
     await loadFixedFresh(mode);
+    // The production component derives its verdict from the raw incoming
+    // content, so hostile persisted markup ships as "review", never "upgrade"
+    // (#817: the recommendation cannot contradict what the boundary blocked).
+    await expect(page.getByTestId("fixed-page-editor")).toHaveAttribute(
+      "data-trust-recommendation",
+      "review",
+    );
     const preview = page.locator('[contenteditable="true"]');
     await expect(preview).toContainText("Safe fixed page");
     await expect(preview.locator("script, img, iframe, foreignObject")).toHaveCount(0);
@@ -598,13 +605,19 @@ test("poster, infographic, and flyer use the shared boundary for preview, edit, 
   await expect(safeTemplate).toContainText("One clear idea");
   await expect(safeTemplate.locator("svg circle")).toHaveCount(2);
   expectNoExecutableMarkup(await safeTemplate.innerHTML());
+  // The safe built-in template stays eligible for the upgrade recommendation.
+  await expect(page.getByTestId("fixed-page-editor")).toHaveAttribute(
+    "data-trust-recommendation",
+    "upgrade",
+  );
 });
 
 test("the structured fixed-page editor Design Studio mounts keeps hostile prompt text inert", async () => {
-  // #817 round-19: the corpus above exercises FixedPageArtifactEditor, which
-  // is the hardened raw-markup editor; DesignStudio.tsx actually mounts the
-  // structured FixedPageEditor for poster/infographic/flyer modes. This test
-  // proves the component production really renders: hostile markup typed into
+  // #817 round-19: the corpus above exercises FixedPageArtifactEditor, the
+  // hardened raw-markup editor DesignStudio.tsx mounts for artifact preview.
+  // DesignStudio.tsx also opens the structured FixedPageEditor from the
+  // brief-driven editor path. This test proves the structured component
+  // production really renders: hostile markup typed into
   // (or generated into) its text layers can only ever be inert escaped text,
   // in the canvas preview and in the HTML export alike.
   attackerRequests = [];

@@ -19,17 +19,15 @@ DOM, presented, or exported. The boundary is
   `VISUAL_ARTIFACT_BLOCK_REASONS` vocabulary for trust/pre-scan consumers.
   `recommendVisualArtifactTrust` applies that result and returns `review` for
   blocked content, never `upgrade`; it is advisory and not an authorization
-  grant. Inert unsupported attributes/properties are dropped during
-  sanitization rather than treated as security blocks, so ordinary presentation
-  markup such as `class` remains eligible.
+  grant. The `maistro-design` pre-scan uses the same four visual blocking
+  reason names when creating trust-review records, so the admin recommendation
+  cannot upgrade markup the browser boundary blocks.
 
-The allowlist retains typography, layout, gradients, inert SVG geometry, and
-presentation attributes such as `class` and `id`. It rejects scripts, handlers,
-forms, links/navigation, images and other active HTML, `foreignObject`, external
-SVG references, dangerous URLs including `data:text/html`, and CSS/network/code
-primitives such as `url()`, `@import`, `var()`, `expression()`, and `image-set()`.
-Unknown inert attributes and unsupported presentation properties are removed
-without being added to the shared blocking vocabulary.
+The allowlist retains typography, layout, gradients, and inert SVG geometry.
+It rejects scripts, handlers, forms, links/navigation, images and other active
+HTML, `foreignObject`, external SVG references, dangerous URLs including
+`data:text/html`, and CSS/network/code primitives such as `url()`, `@import`,
+`var()`, `expression()`, and `image-set()`.
 
 ## Consumers
 
@@ -37,21 +35,20 @@ without being added to the shared blocking vocabulary.
   persisted slide state, content-editable preview, presentation mode, rich
   paste/drop, and HTML export. `deckSanitizer.ts` remains compatibility exports
   only and contains no second policy.
-- The structured `FixedPageEditor` (`pages/FixedPageEditor.tsx`) is the
-  fixed-page editor DesignStudio.tsx actually mounts for Poster, Infographic,
-  Flyer, Social, Card, Cover, Diagram, and Custom Canvas modes. It never
-  parses raw markup: layer text renders as escaped React children and is
-  re-escaped by `escapeHtml` in the HTML export, colors come from color
-  inputs, and geometry is numeric — hostile prompt text stays inert by
-  construction. The deck-sanitization browser proof mounts it and asserts that
-  inertness directly.
 - `FixedPageArtifactEditor` is the hardened raw-markup fixed-page editor built
-  on this boundary (it sanitizes its initial persisted value, edit/paste/drop
-  updates, preview, and export). It is exercised by the deck-sanitization
-  browser proof; DesignStudio.tsx does not currently mount it.
-- Server-side Design renderers call `maistro_design.scan_design_text` before
-  dispatching content to PDF/PPTX/DOCX/PNG backends, reusing the returned-output
-  boundary rather than maintaining a renderer-specific scanner.
+  on this boundary. DesignStudio.tsx mounts it for Poster, Infographic, Flyer,
+  Social, Card, Cover, Diagram, and Custom Canvas modes; it sanitizes its
+  initial persisted value, edit/paste/drop updates, preview, and export, and
+  records the pre-scan verdict (`data-trust-recommendation`) beside the
+  sanitized markup so a hostile artifact is never re-read as trusted content
+  across remounts.
+- The structured `FixedPageEditor` (`pages/FixedPageEditor.tsx`) remains the
+  brief-driven editor DesignStudio.tsx opens from the catalog. It never parses
+  raw markup: layer text renders as escaped React children and is re-escaped
+  by `escapeHtml` in the HTML export, colors come from color inputs, and
+  geometry is numeric — hostile prompt text stays inert by construction. The
+  deck-sanitization browser proof mounts it and asserts that inertness
+  directly.
 
 The browser proof in
 `packages/hive-conductor/tests/e2e/deck-sanitization.spec.ts` mounts the real

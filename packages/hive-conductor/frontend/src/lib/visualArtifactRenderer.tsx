@@ -387,6 +387,23 @@ export function createSanitizedVisualArtifactFragment(markup: string): DocumentF
   return template.content;
 }
 
+/**
+ * Write sanitized markup into a live host element through the reviewed
+ * boundary. Editing surfaces call this after an edit/undo so an unsafe
+ * transient DOM cannot survive between the edit and React's state commit.
+ * This is the only sanctioned executable sink outside the React component
+ * above; model-authored strings must not be assigned to the DOM anywhere
+ * else (#768 one-sink contract, enforced by visual-artifact-boundary.spec.ts).
+ * The unknown input type is intentional: stored JSON can outlive the
+ * TypeScript model, so a malformed value must fail closed at this boundary
+ * too.
+ */
+export function writeSanitizedVisualArtifact(host: HTMLElement, markup: unknown): void {
+  // Fail closed on non-string input (stored JSON can outlive the TS model):
+  // an unusable value renders as empty, never as raw markup.
+  host.innerHTML = typeof markup === "string" ? sanitizeVisualArtifactMarkup(markup) : "";
+}
+
 type SanitizedVisualArtifactProps = Omit<
   HTMLAttributes<HTMLDivElement>,
   "children" | "dangerouslySetInnerHTML"
