@@ -74,6 +74,19 @@ class RaisingWarden:
         raise RuntimeError("warden exploded")
 
 
+class ContextWarden:
+    """Warden double that records the #1158 analysis-context kwarg."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def scan(
+        self, content: str, boundary: str = "", *, context: Any = None
+    ) -> FakeWardenResult:
+        self.calls.append({"content": content, "boundary": boundary, "context": context})
+        return FakeWardenResult(True, False, [])
+
+
 class FakeLLMClient:
     def __init__(self, content: str = "hello") -> None:
         self._content = content
@@ -211,6 +224,27 @@ class TestTuringSecurityBridge:
         result = await bridge.scan_user_input("content")
         assert result == {"verdict": "allowed", "flags": []}
         assert warden.scan_calls == [("content", "user_input")]
+
+    async def test_scan_user_input_forwards_context_to_warden(self) -> None:
+        """The #1158 seam: a caller-supplied bounded ordered context reaches
+        the canonical Warden unchanged, and an absent context stays absent so
+        pre-#1158 warden seams keep working."""
+        from maistro.security.warden.detector import WardenContext
+
+        warden = ContextWarden()
+        bridge = TuringSecurityBridge(warden=warden)
+        context = [
+            WardenContext(
+                content="prior turn", provenance="untrusted", boundary="conversation:user"
+            )
+        ]
+
+        result = await bridge.scan_user_input("current", context=context)
+
+        assert result == {"verdict": "allowed", "flags": []}
+        assert warden.calls == [
+            {"content": "current", "boundary": "user_input", "context": context}
+        ]
 
     async def test_scan_tool_result_delegates_to_warden(self) -> None:
         warden = FakeWarden(verdict="allowed", flags=[])

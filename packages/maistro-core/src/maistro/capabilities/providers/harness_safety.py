@@ -24,7 +24,12 @@ from typing import Any, Protocol, runtime_checkable
 from maistro.agents.spec.agent_spec import AgentSpec
 from maistro.capabilities.slots.harness_runner import HarnessInputBlocked, HarnessRunner
 from maistro.capabilities.types import ProviderHealth
-from maistro.security.warden.detector import Warden
+from maistro.security.warden.detector import (
+    Warden,
+    WardenContext,
+    context_from_messages,
+    message_to_scan_text,
+)
 
 
 @runtime_checkable
@@ -47,26 +52,8 @@ class AllowAllGate:
 
 
 def _message_text(message: dict[str, Any]) -> str:
-    """Serialize the WHOLE message for scanning, not just ``content``.
-
-    An OpenAI-style message can carry prompt-injection text or executable
-    arguments in ``tool_calls``, attachments, or any other structured field
-    while ``content`` stays empty — scanning content alone handed the foreign
-    harness the unscanned remainder (Codex, #262). JSON-serializing the full
-    dict puts every string the harness will see in front of Warden.
-    """
-    import json
-
-    content = message.get("content", "")
-    content_text = content if isinstance(content, str) else str(content)
-    extra_fields = {k: v for k, v in message.items() if k not in ("content", "role")}
-    if not extra_fields:
-        return content_text
-    try:
-        serialized = json.dumps(extra_fields, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        serialized = str(extra_fields)
-    return f"{content_text}\n{serialized}" if content_text else serialized
+    """Compatibility wrapper for the shared full-message scan serialization."""
+    return message_to_scan_text(message)
 
 
 class SafeHarnessRunner:
@@ -126,13 +113,27 @@ class SafeHarnessRunner:
 
     # --- internals ---
     async def _scan_inbound(self, messages: list[dict[str, Any]]) -> None:
-        for message in messages:
-            verdict = await self._warden.scan(_message_text(message), "user_input")
+        # Scan each untrusted turn with the bounded ordered prefix. Trusted
+        # system/developer messages remain labels, never attacker-controlled
+        # text concatenated into the detector's analysis input.
+        contexts = context_from_messages(messages)
+        prior: list[WardenContext] = []
+        for context in contexts:
+            if context.provenance == "trusted":
+                prior.append(context)
+                continue
+            scan_kwargs = {"context": prior} if prior else {}
+            verdict = await self._warden.scan(
+                context.content,
+                "user_input",
+                **scan_kwargs,
+            )
             # Match the native agent path (agents/base.py): any UNCLEAN verdict is
             # refused, not just a hard `blocked` one — single-pattern injections
             # come back clean=False/blocked=False and must not reach the harness.
             if not verdict.clean:
                 raise HarnessInputBlocked(verdict.flags)
+            prior.append(context)
 
     async def _gate_list(self, items: list[Any]) -> list[Any]:
         allowed: list[Any] = []
