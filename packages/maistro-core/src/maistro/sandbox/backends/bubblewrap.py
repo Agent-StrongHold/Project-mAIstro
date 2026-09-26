@@ -36,7 +36,7 @@ from uuid import uuid4
 from maistro.sandbox.capture import capture_process
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
 from maistro.sandbox.network import EgressMode, resolve_grant
-from maistro.sandbox.paths import validate_host_root
+from maistro.sandbox.paths import read_beneath, validate_host_root, write_beneath
 from maistro.sandbox.protocol import (
     OUTPUT_LIMIT_EXIT_CODE,
     ExecResult,
@@ -306,34 +306,24 @@ class BubblewrapSandboxBackend:
     # --- files -------------------------------------------------------------
 
     async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
-        target = self._resolve(instance, path)
-        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_bytes, content)
+        """Write through the host-side transfer boundary (#1198).
 
-    async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
-        target = self._resolve(instance, path)
-        return await asyncio.to_thread(target.read_bytes)
-
-    def _resolve(self, instance: SandboxInstance, path: str) -> Path:
-        """Map a sandbox path onto the host, refusing to escape the workdir.
-
-        The file operations run on the *host* side — they are how a caller gets
-        work in and results out — so a sandbox path of `../../etc/passwd` would
-        otherwise be a host write with no sandbox involved at all.
+        These calls run on the *host* — they are how work gets in and results
+        come out — so their containment check is a security boundary. It is
+        enforced at `open` time, not before it: `write_beneath` walks directory
+        file descriptors with `O_NOFOLLOW`, so a symlink swapped into the path
+        between a check and the open is refused by the kernel (ELOOP) instead
+        of followed. A resolve-then-open implementation here had exactly that
+        check-to-open window, and a host write through it needed no sandbox
+        escape at all — only a race it could win.
         """
         _config, workdir = self._require(instance)
-        relative = Path(path)
-        if relative.is_absolute():
-            try:
-                relative = relative.relative_to("/work")
-            except ValueError:
-                raise ValueError(
-                    f"path {path!r} is outside the sandbox; writable root is '/work'"
-                ) from None
-        resolved = (workdir / relative).resolve()
-        if not resolved.is_relative_to(workdir.resolve()):
-            raise ValueError(f"path {path!r} escapes the sandbox workdir")
-        return resolved
+        await asyncio.to_thread(write_beneath, workdir, path, content)
+
+    async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
+        """Read through the same O_NOFOLLOW boundary as `write_file` (#1198)."""
+        _config, workdir = self._require(instance)
+        return await asyncio.to_thread(read_beneath, workdir, path)
 
     def _require(self, instance: SandboxInstance) -> tuple[SandboxConfig, Path]:
         entry = self._instances.get(instance.id)

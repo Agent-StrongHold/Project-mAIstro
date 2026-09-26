@@ -109,6 +109,27 @@ AUTHORIZED_SEAM_POSTURE: dict[Path, tuple[tuple[str, str], ...]] = {
     ),
 }
 
+#: Posture CEILINGS for the authorized seams: vocabulary that must never appear
+#: anywhere in the file. The floor pins above stop a seam from weakening below
+#: its documented containment; this list stops it from *widening* past the
+#: canonical authority — a seam that grows privileged mode, host networking, a
+#: mount of the host daemon socket, an unconfined device or a host namespace
+#: share has stopped being a data-plane seam and become a second backend
+#: again, one the conformance suite (#80) never reviewed. The exemption stays
+#: narrow: it authorizes the file's *existing* tar data-plane launcher and
+#: nothing beyond it (#18).
+AUTHORIZED_SEAM_CEILING: dict[Path, tuple[str, ...]] = {
+    BOOTSTRAP_BUILDER: (
+        "docker.sock",  # the socket-mount ADR-093 prohibits outright
+        "--privileged",
+        "--network=host",  # egress widening past the pinned #77 default
+        "--cap-add=ALL",  # widening past the pinned single-cap set
+        "--pid=host",
+        "--userns=host",
+        "--device",  # no unconfined device reaches candidate code
+    ),
+}
+
 BACKEND_CLASSES = frozenset(
     {
         "BubblewrapSandboxBackend",
@@ -287,7 +308,9 @@ def check_facade() -> Iterator[Violation]:
 
 
 def check_authorized_seam_posture() -> Iterator[Violation]:
+    seen: set[Path] = set()
     for seam, needles in AUTHORIZED_SEAM_POSTURE.items():
+        seen.add(seam)
         if not seam.is_file():
             yield Violation(
                 seam,
@@ -307,6 +330,21 @@ def check_authorized_seam_posture() -> Iterator[Violation]:
                     f"{what} is no longer pinned in this authorized seam "
                     f"({needle!r} not found): it has silently weakened below "
                     "its documented containment",
+                )
+    for seam, forbidden in AUTHORIZED_SEAM_CEILING.items():
+        if seam in seen and not seam.is_file():
+            continue  # the floor check above already reported the absence
+        source = seam.read_text(encoding="utf-8")
+        for needle in forbidden:
+            if needle in source:
+                yield Violation(
+                    seam,
+                    0,
+                    "authorized-seam-widened",
+                    f"authorized seam grew {needle!r}: that vocabulary widens "
+                    "it past the canonical authority — a widening seam is a "
+                    "second backend and belongs behind maistro.sandbox, not "
+                    "beside it (#18)",
                 )
 
 

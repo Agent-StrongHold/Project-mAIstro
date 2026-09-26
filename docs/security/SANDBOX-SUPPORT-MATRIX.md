@@ -60,6 +60,16 @@ hostile code", so a Tier-3 host is not permitted to run the workloads whose
 stated reason for existing is containment of hostile code — hardened container
 defaults narrow the accident surface; they do not move the trust boundary.
 
+**The sandbox MCP tool is an `UNTRUSTED_CODE` consumer.**
+`maistro.tools.sandbox.server` runs model-chosen shell, which ADR-093's
+context classifies as untrusted model-generated code — not a first-party API
+call — so `create_sandbox` there selects `UNTRUSTED_CODE` and refuses with
+`NoSuitableBackendError` on every host shipped today. That is deliberate: an
+earlier wiring handed this path the `TRUSTED_TOOL` profile and served
+model-chosen commands from a container with the host network namespace (#77
+violated, measured live). It refuses until a Tier-1/2 backend ships behind
+the protocol — the same honest disposition as the legacy evolve/RSI seams.
+
 ## Execution-mode floors (ADR-093 decision 6)
 
 Selection always prefers the strongest backend available; the *floor* decides
@@ -170,10 +180,12 @@ gigabytes. They are now rlimits, set between `fork` and `exec` so they land on
 sandboxed process keeps the caller's controlling terminal and can push
 characters into it with `TIOCSTI`.
 
-Host-side file transfer (`write_file` / `read_file`) resolves every path inside
-the workdir and refuses anything that escapes it. Those calls run on the host —
-they are how work gets in and results come out — so an unchecked path would be
-a host write with no sandbox involved.
+Host-side file transfer (`write_file` / `read_file`) is confined at `open`
+time, not before it (#1198): both backends walk directory file descriptors
+with `O_NOFOLLOW` (`read_beneath`/`write_beneath`), so a symlink swapped into
+a path after a check is refused by the kernel (ELOOP) rather than followed.
+Resolution alone is not enough — the check-to-open window was a real escape,
+closed and race-tested in `test_host_transfer_race.py`.
 
 ## What the container backend does
 

@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from maistro.sandbox import (
+    UNTRUSTED_CODE,
+    HostCapabilities,
+    NoSuitableBackendError,
+    SandboxConfig,
+    SandboxInstance,
+    SandboxSelector,
+    WorkloadPolicy,
+    build_selector,
+    paths,
+)
+from maistro.sandbox.network import EgressMode
 from maistro.tools.sandbox import server
 from maistro.tools.sandbox.server import (
     _check_path,
@@ -283,3 +296,87 @@ async def test_sandbox_destroy_missing_container() -> None:
     result = await sandbox_destroy("/missing")
     assert result["success"] is False
     assert result["error_code"] == "sandbox_not_found"
+
+
+# --- the policy the tool sandbox actually selects (#18, round 3) ---------------
+#
+# sandbox_exec runs model-chosen shell. ADR-093's context names the tool
+# sandbox as a place untrusted, model-generated code runs, so this seam must
+# select UNTRUSTED_CODE — not TRUSTED_TOOL, which is for first-party API
+# calls and granted this path the host network namespace (a #77 violation the
+# 2026-09 review measured live: tier=container, network_mode=host).
+
+
+class _SpawnRecordingBackend:
+    """Enough backend for create_sandbox: record the config it spawns."""
+
+    tier = "vm"
+
+    def __init__(self, configs: list[SandboxConfig]) -> None:
+        self._configs = configs
+
+    async def spawn(self, *, config: SandboxConfig) -> SandboxInstance:
+        self._configs.append(config)
+        return SandboxInstance(
+            id="rec-1", backend="recording", isolation_tier=self.tier, metadata={}
+        )
+
+
+class _RecordingSelector:
+    """Real clamping via the real build_config; selection is recorded."""
+
+    def __init__(self) -> None:
+        self.selected: list[WorkloadPolicy] = []
+        self.configs: list[SandboxConfig] = []
+
+    def select(self, policy: WorkloadPolicy) -> tuple[str, Any]:
+        self.selected.append(policy)
+        return "vm", _SpawnRecordingBackend(self.configs)
+
+    def build_config(self, policy: WorkloadPolicy, **overrides: Any) -> SandboxConfig:
+        return SandboxSelector().build_config(policy, **overrides)
+
+
+def _authorized_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    workspace = tmp_path / "authorized-root" / "ws"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(paths, "AUTHORIZED_HOST_ROOTS", (tmp_path / "authorized-root",))
+    return workspace
+
+
+async def test_create_sandbox_selects_the_untrusted_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = _authorized_workspace(monkeypatch, tmp_path)
+    selector = _RecordingSelector()
+
+    with patch.object(server, "build_selector", return_value=selector):
+        sandbox = await server.create_sandbox(str(workspace))
+
+    assert selector.selected == [UNTRUSTED_CODE]
+    config = selector.configs[0]
+    # Default-deny egress (#77): the tool never receives a network namespace.
+    assert config.egress.mode is EgressMode.DENY
+    assert not UNTRUSTED_CODE.network_allowed
+    # Exactly one authorized writable host root, and no ambient env (#78).
+    assert config.writable_paths == [str(workspace)]
+    assert config.env == {}
+    assert sandbox._instance.backend == "recording"
+
+
+async def test_create_sandbox_refuses_without_a_vm_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Untrusted code refuses on Tier-3-only hosts — the honest disposition.
+
+    The selector fails closed rather than serving model-chosen shell from a
+    hardened container relabelled into a trust class ADR-093 never granted it.
+    """
+    workspace = _authorized_workspace(monkeypatch, tmp_path)
+    empty = build_selector(capabilities=HostCapabilities(tiers=(), notes={}))
+
+    with (
+        patch.object(server, "build_selector", return_value=empty),
+        pytest.raises(NoSuitableBackendError, match="min_tier='vm'"),
+    ):
+        await server.create_sandbox(str(workspace))

@@ -450,3 +450,14 @@ unverifiable on this userns-restricted host (coverage present, honest
 skips); #76/#80/#1197/#1198 are OPEN and the epic criterion binds at #18
 closure; the branch is 1 commit behind `origin/develop` (`9e9f5037e`), which
 touches none of this lane's surfaces.
+
+## Round 3 (2026-09-26, head `fcb87d4475` repair round)
+
+The NEEDS-REPAIR verdict recorded against this head produced four code-level
+findings; all four are repaired in this round, with mutation evidence, in
+[18-transfer-race-policy-disposition.md](18-transfer-race-policy-disposition.md):
+the bubblewrap check-to-open symlink race (#1198), the MCP tool sandbox's
+`TRUSTED_TOOL` mislabel (now `UNTRUSTED_CODE`, default-deny egress), a ceiling
+on the bootstrap data-plane seam's gate exemption, and the two container.py
+B108 SAST findings that failed the live SAST job. Recorded deltas live in the
+round-3 note's front matter.

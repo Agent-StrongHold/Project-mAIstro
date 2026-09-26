@@ -20,7 +20,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from maistro.observability.metrics import sandbox_containers_active
-from maistro.sandbox import TRUSTED_TOOL, build_selector
+from maistro.sandbox import UNTRUSTED_CODE, build_selector
 from maistro.sandbox.paths import validate_host_root
 from maistro.sandbox.protocol import SandboxInstance
 from maistro.security.dangerous_tools import is_blocked_path, is_dangerous_command
@@ -62,12 +62,28 @@ class CanonicalSandbox:
 
 
 async def create_sandbox(workspace: str) -> CanonicalSandbox:
-    """Create the tool sandbox through the one selector/policy authority."""
+    """Create the tool sandbox through the one selector/policy authority.
+
+    The workload is classified honestly (#18, round 3): `sandbox_exec` runs
+    model-chosen shell, and ADR-093's context names the tool sandbox as a
+    place *untrusted, model-generated code* runs — it is not a first-party
+    API call like Jira or web search, which is what `TRUSTED_TOOL` exists
+    for. Labeling this path `TRUSTED_TOOL` granted the host network namespace
+    to model-chosen commands (#77 violated) and skipped the mode floors
+    (ADR-093 decision 6).
+
+    So the policy is `UNTRUSTED_CODE`: VM tier, default-deny egress, and the
+    autonomous floor for the unstated mode. On any host without a Tier-1/2
+    backend behind the protocol — every host shipped today — the selector
+    raises :class:`NoSuitableBackendError` and the tool refuses. That is the
+    disposition the support matrix records for untrusted workloads, not a
+    Tier-3 container relabelled into a trust class the ADR does not grant it.
+    """
     authorized = validate_host_root(workspace, create=True)
     selector = build_selector()
-    _tier, backend = selector.select(TRUSTED_TOOL)
+    _tier, backend = selector.select(UNTRUSTED_CODE)
     config = selector.build_config(
-        TRUSTED_TOOL,
+        UNTRUSTED_CODE,
         writable_paths=[str(authorized)],
         env={},
     )

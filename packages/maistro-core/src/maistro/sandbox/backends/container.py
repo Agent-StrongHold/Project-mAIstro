@@ -81,7 +81,13 @@ class ContainerSandboxBackend:
         else:
             parent = self._root
             if parent is None:
-                parent = validate_host_root("/tmp/maistro-workspace", create=True)
+                # The default root is the authorized /tmp/maistro-workspace
+                # (AUTHORIZED_HOST_ROOTS) — a fixed, deliberately-authorized
+                # root, not an arbitrary temp directory picked by this module.
+                parent = validate_host_root(
+                    "/tmp/maistro-workspace",  # nosec B108 # nosemgrep:hardcoded-tmp-directory
+                    create=True,
+                )
             workdir = Path(tempfile.mkdtemp(prefix=f"{sid}-", dir=parent))
             remove_root = True
 
@@ -106,6 +112,9 @@ class ContainerSandboxBackend:
             "/work",
             "--read-only",
             "--tmpfs",
+            # nosec B108 # nosemgrep:hardcoded-tmp-directory — the tmpfs mount
+            # point INSIDE the container, not a host path; `noexec,nosuid` is
+            # the hardening, and removing the mount is what would be insecure.
             "/tmp:rw,noexec,nosuid,size=64m",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
