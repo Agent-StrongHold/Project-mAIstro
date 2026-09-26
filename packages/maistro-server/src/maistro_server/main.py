@@ -20,6 +20,7 @@ import maistro.agents.conductor as conductor
 import maistro.config.settings as settings_module
 import maistro.memory.store as memory_store
 import maistro.persistence as persistence
+from maistro.agents.types import ConductorOutput
 from maistro.config.database import resolve_database_url, to_asyncpg_dsn
 from maistro.config.settings import Settings, get_settings
 from maistro.container import POSTGRES_SCHEMES, create_container
@@ -29,6 +30,7 @@ from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
 from maistro.tasks.execution import TaskAttemptExecutor
+from maistro.tasks.models import TaskCreate
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
@@ -56,6 +58,7 @@ from maistro_server.startup import StartupPhase, get_startup_phase, set_startup_
 
 if TYPE_CHECKING:
     from maistro.agents.base import Agent
+    from maistro.capabilities.model_chat import ModelChatEgress
 
 logger = structlog.get_logger()
 
@@ -224,8 +227,8 @@ def _model_bindings() -> list[ModelBindingConfig]:
     return list(yaml_config.model_bindings)
 
 
-async def _build_container(settings: Settings, pg_pool: Any) -> Any:
-    """The process's one Container, with a roster it can actually route to.
+async def _build_container(settings: Settings, pg_pool: Any) -> tuple[Any, ModelChatEgress]:
+    """The process's one Container and the governed egress it comes with.
 
     `Conduit.route_request` answers "No agents available." when `agents` is
     empty, and this server has never built any. `run_task` needs no roster,
@@ -235,6 +238,14 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
 
     `ConductorAgent` is that floor: the same executor, reached through the
     pipeline instead of around it.
+
+    The egress is returned rather than rebuilt per caller because both doors
+    into the conductor LLM path need the same authority (#718): the chat door
+    through `ConductorAgent`, and the `/tasks` worker through its executor.
+    Two constructions over one Container would still share its effect
+    context, but one construction keeps the deployment's gateway endpoint —
+    and the fail-closed Binding scope its credential registers in — a single
+    decision this composition point owns.
 
     **`agents_dir` is deliberately not read here.** It is on `AgentConfig` and
     `create_agents` would consume it, but that factory needs an LLM client and
@@ -274,7 +285,7 @@ async def _build_container(settings: Settings, pg_pool: Any) -> Any:
         },
     )
     await logger.ainfo("container_wired", agents=sorted(container.agents))
-    return container
+    return container, governed_egress
 
 
 @asynccontextmanager
@@ -329,7 +340,7 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # and vice versa, which is an advertised handle that silently stops
     # resolving. The pool opened above is handed over rather than left for the
     # container to open a second one against the same server.
-    container = await _build_container(settings, spine_pool)
+    container, governed_egress = await _build_container(settings, spine_pool)
     app.state.container = container
     run_store = container.run_store
     if spine_pool is None:
@@ -364,9 +375,23 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
             api_key=settings.task_progress_webhook_api_key,
         )
 
+    async def runner_executor(task: TaskCreate) -> ConductorOutput:
+        # #718: the `/tasks` worker is the server's second door into the
+        # conductor LLM path, and it crosses the same canonical effect
+        # authority the chat door's `ConductorAgent` does — the egress built
+        # with this Container, not a per-caller recording callback. Without
+        # it, every task this queue completes leaves no Invocation and no
+        # quota evidence, while per-provider rows present as complete.
+        return await conductor.run_task(
+            task,
+            governed_egress=governed_egress,
+            workspace_id=settings.workspace_id,
+            project_id="agent-runtime",
+        )
+
     _runner = TaskRunner(
         queue,
-        executor=conductor.run_task,
+        executor=runner_executor,
         progress_webhook=progress_wh,
         # Same store the admitter files Runs in, so a task's NodeRun and
         # Attempt land under the Run `POST /tasks` already returned (#143).

@@ -54,3 +54,27 @@ ConductorAgent and hive-strategy wiring but not this gap.
 Repair shape (per the issue's stop condition): supply the canonical effect
 authority to the TaskRunner executor the same way `ConductorAgent` does —
 not a per-caller recording callback.
+
+## Resolution (this change)
+
+Both unwired entries named above now supply the canonical effect authority the
+way `ConductorAgent` does — the authority, not a per-caller recording callback:
+
+- `maistro_server/main.py` — `_build_container` returns
+  `(container, governed_egress)` and the lifespan's `runner_executor` closure
+  hands that egress (plus the deployment's Workspace) to `conductor.run_task`,
+  so every admitted `/tasks` completion records Invocation/quota evidence.
+- `hive-conductor` — `EmbeddedRuntime` carries a `governed_egress` built once
+  over the Container's effect authorities and the same gateway endpoint the
+  roster's model clients got; `MaistroCoreBridge` exposes it; demo mode's
+  `LocalTaskBackend` executor is a governed closure over `run_task`. Production
+  hive mode was already covered: `MaistroServerTaskBackend` submits through
+  maistro-server's `/tasks`, which the server fix governs. A stub port (no
+  bridge, no Container) keeps the raw call — that process has no canonical
+  authority to cross and no ledger to write to.
+
+Evidence: `test_taskrunner_quota_ledger.py` drives the real lifespan's executor
+against a real Container and observes ledger movement plus the missing-usage
+unreported marker; the hive adapter/engine tests pin the egress construction
+and the demo executor's kwargs. Deltas recorded in
+`718-taskrunner-conductor-ledger.md`.
