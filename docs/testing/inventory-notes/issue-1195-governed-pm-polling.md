@@ -138,3 +138,41 @@ scratch at head `a3b5e357e` (trusting nothing but the commands run here):
   and `check-vulture-baseline.py packages/*/src --min-confidence 60
   --exclude '*/third_party/*'` (unclassified: 0) — all exit 0.
 - No production or test code changed in this round; evidence-only update.
+
+## Repair-round re-execution at head 92922e050 (timeout block resolved)
+
+The prior repair job died on its wall-clock deadline before executing anything;
+this round executed every finding check and gate from scratch at head
+`92922e050` and commits the evidence the missing round owed:
+
+- All six prior audit findings re-confirmed fixed by direct code read and
+  executed checks: production `bindings.put` callers
+  (`container._wire_capability_effects` seeds the provisioning seam at
+  container.py:1486; `bootstrap_model_bindings` at container.py:1853); durable
+  Binding/Invocation/Event authorities behind
+  `new_sqlite_effect_context`/`new_postgres_effect_context`; `Invocation`
+  scope correlation validated against the resolved Binding (invocation.py
+  184-195); `Binding.disabled` -> `BindingDisabled` fail-closed at
+  binding_store.py:135 before any provider resolution or HTTP;
+  `check_direct_effects` matches GET and PM URL boundaries;
+  `check-security-inventory` recomputes counted claims (exit 0).
+- AC7 negative probe re-executed at this head: temporary
+  `graph/nodes/_rogue_probe.py` with `shared_client().get` against
+  `https://acme.atlassian.net/rest/api/2/search` made the gate exit 1 with
+  unclassified `...::probe::PM_POLLING_EFFECT:pm-polling-http#1`; after
+  removal the clean tree exits 0 (61 sites, all dispositioned).
+- Gates re-run green: ruff check + format --check (2530 files), canonical
+  mypy across all six package src trees (714 files, success — this
+  environment first needed `uv sync --extra bootstrap` for the
+  `maistro_bootstrap` imports in `cli/_builders_tui.py`/`cli/_install.py`;
+  without that extra mypy reports 5 import-not-found errors unrelated to
+  this issue's surfaces), capabilities 339 passed, PM polling nodes 8
+  passed, invocation-store/layer-reach + graph seeds 24 passed,
+  sync_kinds/branch/gap/wait suites 59 passed, parked-run-resume + metrics
+  70 passed 1 skipped, `tests/test_check_direct_effects.py` 26 passed,
+  `check-direct-effects`, `check-security-inventory`, `check-reachability`,
+  `check-reachability-dispositions(-provenance)`, `check-ratchet-provenance`,
+  `check-convergence-matrix`, `check-m1-convergence-freeze --base b906cc57`,
+  and `check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'` (unclassified: 0 — no ledger amendment
+  needed). No production or test code changed; evidence-only commit.
