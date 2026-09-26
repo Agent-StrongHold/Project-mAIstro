@@ -1,229 +1,149 @@
-"""I4: Dangerous Command/Tool Detection — Hypothesis property-based tests."""
+"""I4: dangerous-command, tool, and host-path conformance.
+
+The expected cases come from the independently governed security oracle, not
+from maistro-core's pattern declarations. This distinction makes deletion and
+weakening mutations observable.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import json
+from pathlib import Path
+
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
 
-from maistro.security.dangerous_tools import is_blocked_path, is_dangerous_command, is_dangerous_tool
-from maistro.security.patterns import (
-    BLOCKED_HOST_PATHS,
-    DANGEROUS_COMMAND_PATTERNS,
-    DANGEROUS_TOOL_NAMES,
-)
+from maistro.tools.sandbox.microvm import MicroVMSandbox, MicroVMRunSpec
+
+import maistro.security.dangerous_tools as dangerous_tools
 
 
-class DangerousCommandMachine(RuleBasedStateMachine):
-    def __init__(self):
-        super().__init__()
-        self.safe_commands_passed = 0
-        self.dangerous_commands_caught = 0
-
-    @rule(
-        cmd=st.sampled_from(
-            [
-                "ls -la",
-                "cat file.txt",
-                "echo hello",
-                "grep pattern file",
-                "sort data.csv",
-                "wc -l readme.md",
-                "head -n 10 log.txt",
-                "tail -f output.log",
-                "mkdir newdir",
-                "cp a.txt b.txt",
-            ]
-        )
-    )
-    def check_safe_command(self, cmd):
-        result = is_dangerous_command(cmd)
-        assert result == []
-        self.safe_commands_passed += 1
-
-    @rule(
-        cmd=st.sampled_from(
-            [
-                "rm -rf /",
-                "rm -rf ~",
-                "sudo apt install",
-                "chmod 777 /etc/passwd",
-                "cat file | bash",
-                "eval('malicious')",
-                "dd if=/dev/zero",
-                "nmap -sV target",
-                "kill -9 1234",
-                "DROP TABLE users",
-            ]
-        )
-    )
-    def check_dangerous_command(self, cmd):
-        result = is_dangerous_command(cmd)
-        assert len(result) > 0
-        self.dangerous_commands_caught += 1
-
-    @invariant()
-    def all_results_consistent(self):
-        assert self.safe_commands_passed >= 0
-        assert self.dangerous_commands_caught >= 0
+_ORACLE_PATH = Path(__file__).parents[1] / "fixtures" / "security_oracle.json"
+_ORACLE = json.loads(_ORACLE_PATH.read_text(encoding="utf-8"))
+DANGEROUS_COMMANDS = _ORACLE["dangerous_commands"]
+SAFE_COMMANDS = _ORACLE["safe_commands"]
+DANGEROUS_TOOLS = _ORACLE["dangerous_tools"]
+SAFE_TOOLS = _ORACLE["safe_tools"]
+BLOCKED_PATHS = _ORACLE["blocked_paths"]
+ALLOWED_PATHS = _ORACLE["allowed_paths"]
 
 
-TestDangerousCommandMachine = DangerousCommandMachine.TestCase
+@pytest.mark.parametrize("case", DANGEROUS_COMMANDS, ids=lambda case: case["id"])
+def test_dangerous_commands_match_oracle(case: dict[str, object]) -> None:
+    """Every governed adversarial example is denied with the expected evidence."""
+    matches = dangerous_tools.is_dangerous_command(case["input"])
+    assert len(matches) == case["expected_matches"], case["id"]
 
 
-@given(
-    cmd=st.sampled_from(
-        [
-            "rm -rf /",
-            "rm -rf ~/important",
-            "sudo su",
-            "sudo chmod 000 /",
-            "chmod 777 /etc/shadow",
-            "echo data | bash",
-            "echo data | sh",
-            "eval(os.system('rm -rf /'))",
-            "dd if=/dev/zero of=/dev/sda",
-            "nmap -sS 10.0.0.0/24",
-            "iptables -A INPUT -j DROP",
-            "systemctl stop sshd",
-            "systemctl disable firewalld",
-            "kill -9 1",
-            "docker rm -f $(docker ps -aq)",
-            "docker system prune -a",
-            "git push origin main --force",
-            "git reset --hard HEAD~10",
-            "DROP TABLE users",
-            "DROP DATABASE production",
-            "TRUNCATE TABLE logs",
-        ]
-    )
-)
-@settings(max_examples=50)
-def test_dangerous_commands_detected(cmd):
-    matches = is_dangerous_command(cmd)
-    assert len(matches) > 0, f"Command not detected as dangerous: {cmd}"
-
-
-@given(
-    cmd=st.sampled_from(
-        [
-            "ls -la",
-            "cat file.txt",
-            "echo hello world",
-            "grep -r pattern src/",
-            "sort data.csv",
-            "wc -l readme.md",
-            "head -n 10 log.txt",
-            "mkdir -p new/directory",
-            "cp source.txt dest.txt",
-            "mv old.txt new.txt",
-            "python script.py",
-            "node server.js",
-            "git status",
-            "git log --oneline",
-            "npm test",
-            "pytest tests/",
-        ]
-    )
-)
-@settings(max_examples=30)
-def test_safe_commands_empty(cmd):
-    assert is_dangerous_command(cmd) == []
-
-
-@given(
-    tool=st.sampled_from(
-        [
-            "exec",
-            "spawn",
-            "shell",
-            "sessions_spawn",
-            "sessions_send",
-            "fs_delete",
-            "fs_move",
-            "apply_patch",
-            "sandbox_destroy",
-        ]
-    )
-)
-@settings(max_examples=10)
-def test_dangerous_tool_names_detected(tool):
-    assert is_dangerous_tool(tool)
-
-
-@given(tool=st.sampled_from(["read", "write", "search", "list", "get", "put", "fetch", "render", "display", "compute"]))
-@settings(max_examples=10)
-def test_safe_tool_names_pass(tool):
-    assert not is_dangerous_tool(tool)
-
-
-@given(tool=st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L",))))
-@settings(max_examples=50)
-def test_dangerous_tool_case_insensitive(tool):
-    result_lower = is_dangerous_tool(tool)
-    result_upper = is_dangerous_tool(tool.upper())
-    assert result_lower == result_upper
-
-
-@given(
-    path=st.sampled_from(
-        ["/etc", "/proc", "/sys", "/dev", "/root", "/boot", "/var/run/docker.sock", "/run/docker.sock"]
-    )
-)
-@settings(max_examples=10)
-def test_blocked_paths_rejected(path):
-    assert is_blocked_path(path)
-
-
-@given(
-    path=st.sampled_from(
-        [
-            "/etc/passwd",
-            "/etc/shadow",
-            "/etc/hosts",
-            "/proc/1/status",
-            "/sys/kernel/params",
-            "/dev/sda",
-            "/root/.ssh/id_rsa",
-            "/boot/vmlinuz",
-        ]
-    )
-)
-@settings(max_examples=10)
-def test_blocked_subdirs_rejected(path):
-    assert is_blocked_path(path)
-
-
-@given(path=st.sampled_from(["/home/user/project", "/workspace/src", "/tmp/build", "/var/log/app", "/opt/tools/bin"]))
-@settings(max_examples=10)
-def test_non_blocked_paths_allowed(path):
-    assert not is_blocked_path(path)
-
-
-@given(path=st.sampled_from(["/etc/", "/proc/", "/sys/", "/dev/", "/root/"]))
-@settings(max_examples=10)
-def test_trailing_slash_handled(path):
-    assert is_blocked_path(path)
-
-
-def test_all_dangerous_patterns_are_compiled():
-    for p in DANGEROUS_COMMAND_PATTERNS:
-        assert hasattr(p, "search"), f"Pattern {p.pattern} is not compiled"
-
-
-def test_all_tool_names_lowercase():
-    for name in DANGEROUS_TOOL_NAMES:
-        assert name == name.lower(), f"Tool name not lowercase: {name}"
-
-
-def test_all_blocked_paths_absolute():
-    for path in BLOCKED_HOST_PATHS:
-        assert path.startswith("/"), f"Blocked path not absolute: {path}"
-
-
-@given(cmd=st.text(min_size=1, max_size=50, alphabet=st.characters(whitelist_categories=("L", "N"))))
+@given(command=st.sampled_from([case["input"] for case in DANGEROUS_COMMANDS]))
 @settings(max_examples=100)
-def test_random_safe_commands(cmd):
-    result = is_dangerous_command(cmd)
-    if result:
-        assert any(p.search(cmd) for p in DANGEROUS_COMMAND_PATTERNS)
+def test_dangerous_command_property(command: str) -> None:
+    """Property exploration repeatedly exercises the independent deny oracle."""
+    assert dangerous_tools.is_dangerous_command(command)
+
+
+@pytest.mark.parametrize("command", SAFE_COMMANDS)
+def test_safe_commands_match_oracle(command: str) -> None:
+    assert dangerous_tools.is_dangerous_command(command) == []
+
+
+def test_command_rule_deletion_cannot_pass() -> None:
+    """A runtime deletion of any detector changes an independently measured case."""
+    original = dangerous_tools.DANGEROUS_COMMAND_PATTERNS
+    assert len(original) == 22
+
+    for index in range(len(original)):
+        mutated = original[:index] + original[index + 1 :]
+        dangerous_tools.DANGEROUS_COMMAND_PATTERNS = mutated
+        try:
+            changed = any(
+                len(dangerous_tools.is_dangerous_command(case["input"])) != case["expected_matches"]
+                for case in DANGEROUS_COMMANDS
+            )
+            assert changed, f"deleting detector {index} did not change the oracle"
+        finally:
+            dangerous_tools.DANGEROUS_COMMAND_PATTERNS = original
+
+
+# Benign contexts that must not launder a governed dangerous command into a
+# permitted one. The detector rules are unanchored, so a composition preserves
+# every effective match; a shadowing mutation (an allowlist or safe-prefix short
+# circuit evaluated before the deny rules) drops them and fails these cases.
+_COMPOSITIONS = {
+    "after-echo": "echo setup; {command}",
+    "after-and": "cd /tmp && {command}",
+    "before-comment": "{command} # trailing note",
+}
+
+
+@pytest.mark.parametrize("case", DANGEROUS_COMMANDS, ids=lambda case: case["id"])
+@pytest.mark.parametrize("label", sorted(_COMPOSITIONS))
+def test_composition_cannot_launder_dangerous_command(case: dict[str, object], label: str) -> None:
+    """A dangerous command stays denied inside a benign surrounding context."""
+    composed = _COMPOSITIONS[label].format(command=case["input"])
+    assert dangerous_tools.is_dangerous_command(composed), (label, case["id"])
+
+
+@pytest.mark.parametrize("case", DANGEROUS_COMMANDS, ids=lambda case: case["id"])
+def test_enforcement_path_refuses_oracle_commands(case: dict[str, object]) -> None:
+    """The production sandbox executor refuses every governed dangerous command.
+
+    This drives `MicroVMSandbox.exec` — the SPEC-190 `SandboxExec` seam — rather
+    than calling `is_dangerous_command` directly, so a detector that became
+    unreachable from production (the executor dropping its deny check) is a
+    measured failure: the sentinel launcher would run and this model would
+    observe the command executing.
+    """
+    executed: list[str] = []
+
+    async def sentinel_launcher(spec: MicroVMRunSpec) -> tuple[int, str]:
+        executed.append(spec.command)
+        return 0, f"executed: {spec.command}"
+
+    sandbox = MicroVMSandbox(sentinel_launcher, workspace="/tmp/maistro-workspace")
+    exit_code, output = asyncio.run(sandbox.exec(str(case["input"])))
+
+    assert executed == [], f"dangerous command reached the microVM launcher: {case['id']}"
+    assert exit_code != 0, case["id"]
+    assert "blocked" in output.lower(), case["id"]
+
+
+@pytest.mark.parametrize("command", SAFE_COMMANDS)
+def test_enforcement_path_runs_oracle_safe_commands(command: str) -> None:
+    """The deny path is not a shadow that blocks every command: governed benign
+    commands still reach the launcher."""
+    executed: list[str] = []
+
+    async def recording_launcher(spec: MicroVMRunSpec) -> tuple[int, str]:
+        executed.append(spec.command)
+        return 0, f"ran: {spec.command}"
+
+    sandbox = MicroVMSandbox(recording_launcher, workspace="/tmp/maistro-workspace")
+    exit_code, output = asyncio.run(sandbox.exec(command))
+
+    assert executed == [command]
+    assert (exit_code, output) == (0, f"ran: {command}")
+
+
+@pytest.mark.parametrize("tool", DANGEROUS_TOOLS)
+def test_dangerous_tool_oracle(tool: str) -> None:
+    assert dangerous_tools.is_dangerous_tool(tool)
+    assert dangerous_tools.is_dangerous_tool(tool.upper())
+
+
+@pytest.mark.parametrize("tool", SAFE_TOOLS)
+def test_safe_tool_oracle(tool: str) -> None:
+    assert not dangerous_tools.is_dangerous_tool(tool)
+
+
+@pytest.mark.parametrize("path", BLOCKED_PATHS)
+def test_blocked_path_oracle(path: str) -> None:
+    assert dangerous_tools.is_blocked_path(path)
+    assert dangerous_tools.is_blocked_path(f"{path}/child")
+
+
+@pytest.mark.parametrize("path", ALLOWED_PATHS)
+def test_allowed_path_oracle(path: str) -> None:
+    assert not dangerous_tools.is_blocked_path(path)
