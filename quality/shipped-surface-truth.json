@@ -1854,6 +1854,56 @@
       "effect_owner": "project scope store"
     },
     {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "POST",
+      "route": "",
+      "handler": "create_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "creates a Workspace BacklogItem (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "PATCH",
+      "route": "/{item_id}",
+      "handler": "update_backlog_item",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "compare-and-set edit of a BacklogItem on expected_version (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "PUT",
+      "route": "/{item_id}/parent",
+      "handler": "set_backlog_item_parent",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "re-parents a BacklogItem within its Workspace, versioned (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "PUT",
+      "route": "/{item_id}/dependencies/{depends_on_item_id}",
+      "handler": "add_backlog_item_dependency",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "records an acyclic same-Workspace dependency edge (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
+      "source": "packages/maistro-server/src/maistro_server/api/backlog.py",
+      "method": "DELETE",
+      "route": "/{item_id}/dependencies/{depends_on_item_id}",
+      "handler": "remove_backlog_item_dependency",
+      "disposition": "domain-state",
+      "production_enabled": true,
+      "reason": "removes a dependency edge (contributor or owner)",
+      "effect_owner": "Workspace BacklogItem store"
+    },
+    {
       "source": "packages/maistro-server/src/maistro_server/api/runs.py",
       "method": "POST",
       "route": "/{run_id}/cancel",

@@ -819,6 +819,30 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "No DELETE, and restore full-scans the table. SqliteUsageLog is not wired into any production path yet."
+    },
+    {
+      "table": "workspace_backlog_dependencies",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/backlog/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#98",
+      "notes": "Dependency edges between two BacklogItems; removed by explicit remove_dependency and cascaded when an item row goes. No item or Workspace-delete path purges them yet; the PostgreSQL slice of #98 decides retention with the item table."
+    },
+    {
+      "table": "workspace_backlog_items",
+      "backends": [
+        "sqlite"
+      ],
+      "owner_module": "packages/maistro-core/src/maistro/workspaces/backlog/sqlite_store.py",
+      "data_class": "configuration",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#98",
+      "notes": "One row per Workspace BacklogItem. No delete path yet, and Workspace deletion does not purge them; the PostgreSQL slice of #98 decides retention (likely bounded_by_parent on canonical_workspaces)."
     }
   ]
 }
