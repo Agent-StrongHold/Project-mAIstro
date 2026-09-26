@@ -108,6 +108,13 @@ async def _write_record(factory: Any, values: dict[str, Any]) -> None:
         )
 
 
+# How long `cancel()` waits for a cancelled execution's CancelledError handlers
+# to finish before declaring that cancellation did not settle. Bounded, because
+# an executor that ignores cancellation must not hold a caller's HTTP request
+# open forever — the same policy bound `TaskRunner.CANCELLED_SETTLE_TIMEOUT`
+# applies when shutdown settles its workers.
+CANCELLATION_SETTLE_TIMEOUT = 5.0
+
 # Maximum number of tasks stored in memory before pruning terminal tasks
 MAX_TASK_STORE_SIZE = 10_000
 # Prune down to this size when limit is hit
@@ -150,6 +157,15 @@ class TaskQueue:
         # in any order, and a slow `queued` merge landing after `completed`
         # would silently regress the persisted row to an older status.
         self._last_write: dict[str, asyncio.Task[None]] = {}
+        # The asyncio.Task physically executing each claimed task's work, by
+        # task id. The queue owns receipts, not workers — the TaskRunner owns
+        # those — but a cancellation that cannot reach the running coroutine
+        # only rewrites the receipt: the work the caller cancelled kept
+        # running to completion behind a CANCELLED status (#1242). The runner
+        # registers each dispatched execution here and unregisters it from the
+        # execution's own done callback, so `cancel()` has somewhere real to
+        # deliver the stop.
+        self._executions: dict[str, asyncio.Task[None]] = {}
 
     def _persist(self, task: TaskResponse) -> None:
         """Schedule a best-effort TaskRecord upsert when a DB is configured.
@@ -562,12 +578,48 @@ class TaskQueue:
             self._persist(task)
             self._notify(task_id)
 
-    async def cancel(self, task_id: str) -> bool:
-        """Cancel the canonical Run before updating its task receipt.
+    def register_execution(self, task_id: str, execution: asyncio.Task[None]) -> None:
+        """Record which asyncio.Task is executing a claimed task's work.
 
-        The receipt is a projection. For admitted work, cancellation must
-        first reach the Run/Attempt service so an in-flight provider receives
-        the same signal as a queued task that has not started yet.
+        Called by the runner when it dispatches. The matching unregister runs
+        from the execution's own done callback, so the registry can never hold
+        a finished handle for longer than one loop turn.
+        """
+        self._executions[task_id] = execution
+
+    def unregister_execution(self, task_id: str, execution: asyncio.Task[None]) -> None:
+        """Drop the handle for work that has finished, by identity."""
+        if self._executions.get(task_id) is execution:
+            del self._executions[task_id]
+
+    async def cancel(
+        self, task_id: str, *, settle_timeout: float = CANCELLATION_SETTLE_TIMEOUT
+    ) -> bool:
+        """Cancel a task: stop the work, then terminalize the receipt.
+
+        Terminalizing the receipt alone answered a cancellation with success
+        while the runner's coroutine ran on — the executor kept consuming
+        compute and writing into the workspace, and its result was then
+        attached to a receipt that already said CANCELLED (#1242). Two halves
+        now stop the work before the API may report a stop:
+
+        * For admitted work the canonical Run is cancelled first (#1320):
+          the Run/Attempt service fences the Run CANCELLED and signals the
+          in-process owner of the physical Attempt, so an in-flight provider
+          receives the same signal as a queued task that has not started yet.
+          The receipt is a projection and follows afterwards.
+        * The runner registers the asyncio.Task executing each claimed task,
+          so the cancellation also reaches work this queue dispatched itself —
+          including deployments with no admitter, where no Run exists to carry
+          the signal. The response waits — bounded by ``settle_timeout`` — for
+          the CancelledError handlers to finish rather than returning while
+          cancellation is still in flight.
+
+        Returns False when the task is unknown, the Run refused the
+        cancellation, the receipt refused the CANCELLED transition (the work
+        already reached a terminal state on its own), or the local execution
+        did not settle within ``settle_timeout``. In every case the caller
+        must not report a successful cancellation.
         """
         task = self._tasks.get(task_id)
         if task is None:
@@ -578,7 +630,23 @@ class TaskQueue:
             and not await self._admitter.cancel_run(task.run_id)
         ):
             return False
-        return await self.update_status(task_id, TaskStatus.CANCELLED)
+        if not await self.update_status(task_id, TaskStatus.CANCELLED):
+            return False
+        execution = self._executions.get(task_id)
+        if execution is not None and not execution.done():
+            execution.cancel()
+            _, pending = await asyncio.wait({execution}, timeout=settle_timeout)
+            if pending:
+                await logger.awarning(
+                    "task_cancellation_did_not_settle",
+                    task_id=task_id,
+                    timeout=settle_timeout,
+                )
+                # The receipt records the cancellation request, but the
+                # physical execution is still alive. Do not let the API claim
+                # success while the work can still mutate the workspace.
+                return False
+        return True
 
     def remove(self, task_id: str) -> bool:
         """Drop a terminal task from the in-memory store (POC cleanup)."""
@@ -654,9 +722,21 @@ class TaskQueue:
         try:
             yield task
         except BaseException as exc:
-            await self.update_status(task_id, TaskStatus.FAILED)
-            self.set_result(task_id, TaskResult(error=str(exc)))
-            await logger.aexception("task_failed", task_id=task_id)
+            if isinstance(exc, asyncio.CancelledError):
+                # A cancellation is never a failure to record here. Requested
+                # or shutdown, the worker's CancelledError handler above this
+                # claim owns the receipt: it distinguishes the two and, for a
+                # shutdown, records the failure with the message that path has
+                # always used. Recording here as well would write
+                # `str(CancelledError())` — the empty string — onto the receipt
+                # first and log a spurious `task_failed` error for a deliberate
+                # stop, and for a requested cancellation it would fight the
+                # CANCELLED receipt the caller already acted on (#1242).
+                raise
+            transitioned = await self.update_status(task_id, TaskStatus.FAILED)
+            if transitioned:
+                self.set_result(task_id, TaskResult(error=str(exc)))
+                await logger.aexception("task_failed", task_id=task_id)
             raise
         finally:
             self._claimed.discard(task_id)

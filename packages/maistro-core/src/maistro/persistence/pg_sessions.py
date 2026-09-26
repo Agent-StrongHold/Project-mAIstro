@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
 from maistro.observability.correlation import observed_provenance
@@ -17,7 +16,7 @@ _SESSION_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 
 
 async def _purge_through(
-    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, cutoff: float
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, ttl_seconds: float
 ) -> str:
     """Delete expired messages and the turn markers that admitted them.
 
@@ -27,16 +26,26 @@ async def _purge_through(
     alone, so every caller wraps this -- the two `execute` calls here are one
     unit or they are a bug.
 
+    The cutoff is derived from the database clock (`now()`), the same clock
+    that stamps `sessions.timestamp` and `session_turns.timestamp` at insert.
+    Comparing a client `time.time()` against server-stamped rows made every
+    retention decision hostage to clock drift between the two hosts: a client
+    ahead of the server by more than the TTL purged rows the server still
+    considered fresh -- a retention sweep deleting live conversation, which
+    is what the concurrent retention test caught as a run-to-run flake.
+    `make_interval` keeps the TTL parameterized per call, including the
+    explicit-zero "purge through now" contract.
+
     The returned command tag counts messages only: `purge_expired` reports how
     much conversation it removed, and markers are bookkeeping.
     """
     status: str = await conn.execute(
-        "DELETE FROM sessions WHERE timestamp <= to_timestamp($1)",
-        cutoff,
+        "DELETE FROM sessions WHERE timestamp <= now() - make_interval(secs => $1)",
+        ttl_seconds,
     )
     await conn.execute(
-        "DELETE FROM session_turns WHERE timestamp <= to_timestamp($1)",
-        cutoff,
+        "DELETE FROM session_turns WHERE timestamp <= now() - make_interval(secs => $1)",
+        ttl_seconds,
     )
     return status
 
@@ -64,15 +73,15 @@ class PgSessionStore:
         max_msg = max_messages or self._max_messages
         # `or` here would swallow an explicit 0; see purge_expired below.
         ttl = self._ttl_seconds if ttl_seconds is None else ttl_seconds
-        cutoff = time.time() - ttl
 
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT role, content FROM sessions
-                   WHERE session_id = $1 AND timestamp > to_timestamp($2)
+                   WHERE session_id = $1
+                     AND timestamp > now() - make_interval(secs => $2)
                    ORDER BY seq DESC LIMIT $3""",
                 session_id,
-                cutoff,
+                ttl,
                 max_msg,
             )
         rows = list(reversed(rows))
@@ -155,10 +164,11 @@ class PgSessionStore:
                 )
 
             # Purge inline while the append transaction is still open. A normal
-            # positive TTL cannot delete the just-inserted rows because their
-            # server timestamp is newer than this cutoff; an explicit zero or
-            # negative TTL intentionally means "purge through now".
-            await _purge_through(conn, time.time() - self._ttl_seconds)
+            # positive TTL cannot delete the just-inserted rows because the
+            # database stamps them inside this transaction -- newer than any
+            # cutoff the same clock derives; an explicit zero or negative TTL
+            # intentionally means "purge through now".
+            await _purge_through(conn, self._ttl_seconds)
 
     async def purge_expired(self, ttl_seconds: int | None = None) -> int:
         """Delete messages older than the TTL. Returns the number removed."""
@@ -175,7 +185,7 @@ class PgSessionStore:
         # transactions, so a cancellation or a failure between them commits it
         # (Codex, #327). `append_messages` was already inside one.
         async with self._pool.acquire() as conn, conn.transaction():
-            status = await _purge_through(conn, time.time() - ttl)
+            status = await _purge_through(conn, ttl)
         # asyncpg returns a command tag such as "DELETE 12".
         try:
             return int(str(status).rsplit(" ", 1)[-1])
