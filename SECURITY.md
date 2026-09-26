@@ -114,6 +114,10 @@ docstring for what it cannot check):
 
 ### Product-path evidence for scanner limits
 
+The operational interpretation of these controls — including why `/health/ready`
+does not substitute for product-path scanner evidence — is documented in
+[`docs/security/WARDEN-RESOURCE-LIMIT-HEALTH.md`](docs/security/WARDEN-RESOURCE-LIMIT-HEALTH.md).
+
 These limits are exercised through the output security boundary, not only by
 inspecting constants. `packages/maistro-core/tests/security/test_sentinel_policy.py`
 uses the Sentinel output gate with the real `Warden`: its pathological-regex
