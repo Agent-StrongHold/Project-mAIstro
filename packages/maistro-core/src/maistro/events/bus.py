@@ -123,6 +123,24 @@ class TriggerActionFailure(Exception):
         super().__init__(f"{len(failures)} trigger action handler(s) failed: {detail}")
 
 
+class EventSubscriberFailure(Exception):
+    """A compatibility subscriber failed after the event was recorded.
+
+    Subscribers are notification adapters, not rollback hooks. Every subscriber
+    is still attempted, but a failure is reported to the caller instead of
+    being logged as success. This is especially important for the canonical
+    persistence bridge: its failure must leave the caller with an explicit
+    retry/failure disposition rather than an acknowledged event.
+    """
+
+    def __init__(
+        self, failures: list[tuple[Callable[[Event], Coroutine[Any, Any, None]], Exception]]
+    ) -> None:
+        self.failures = failures
+        detail = "; ".join(repr(exc) for _subscriber, exc in failures)
+        super().__init__(f"{len(failures)} event subscriber(s) failed: {detail}")
+
+
 def _project_legacy_event(event: Event | LegacyEventProjector) -> Event:
     """Return the trigger-bus projection without treating it as canonical."""
     if isinstance(event, Event):
@@ -137,7 +155,13 @@ def _project_legacy_event(event: Event | LegacyEventProjector) -> Event:
 
 
 class EventBus:
-    """In-memory compatibility event bus with trigger matching."""
+    """In-memory compatibility event bus with trigger matching.
+
+    ``emit`` records the projection and attempts every trigger and subscriber.
+    Handler failures raise :class:`TriggerActionFailure`; subscriber failures
+    raise :class:`EventSubscriberFailure`. Neither failure rolls back the
+    recorded projection or successful trigger actions.
+    """
 
     def __init__(self, max_history: int = 1000) -> None:
         self._triggers: list[Trigger] = []
@@ -229,11 +253,15 @@ class EventBus:
             if fired_trigger is not None:
                 fired.append(fired_trigger)
 
+        subscriber_failures: list[
+            tuple[Callable[[Event], Coroutine[Any, Any, None]], Exception]
+        ] = []
         for sub in self._subscribers:
             try:
                 await sub(projected)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Subscriber failed for event %s", projected.event_id)
+                subscriber_failures.append((sub, exc))
 
         if fired:
             logger.info(
@@ -245,6 +273,8 @@ class EventBus:
 
         if failures:
             raise TriggerActionFailure(failures) from failures[0][1]
+        if subscriber_failures:
+            raise EventSubscriberFailure(subscriber_failures) from subscriber_failures[0][1]
 
         return fired
 

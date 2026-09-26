@@ -231,6 +231,21 @@ class AttemptLifecycleReconciler:
         await self._announce(persisted, parked, cancellation)
         return parked
 
+    async def announce(
+        self,
+        attempt: Attempt,
+        node_run: NodeRun,
+        *,
+        cancellation: CancellationCause = CancellationCause.RECOVERED,
+    ) -> None:
+        """Publish an already-applied disposition without changing lifecycle state.
+
+        Recovery ticks use this separate seam so compatibility delivery can fail
+        after one Attempt while the tick continues reconciling the rest of its
+        store-reclaimed batch.
+        """
+        await self._announce(attempt, node_run, cancellation)
+
     async def _announce(
         self,
         attempt: Attempt,
