@@ -93,14 +93,18 @@ async def _workspace(owner: str, name: str) -> str:
 
 
 @pytest.fixture
-def run_store():
-    from services.dag_agents import get_run_store
+def run_store(monkeypatch: pytest.MonkeyPatch):
+    from services import dag_agents
 
-    store = get_run_store()
-    before = set(store._rows)
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    # The attention projection reads through `services.dag_agents.get_run_store`,
+    # which #1113 bound to the Container's canonical projection — there is no
+    # process-local fallback store to discover anymore. These tests seed an
+    # in-memory store explicitly, so bind it to that one test seam.
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(dag_agents, "get_run_store", lambda: store)
     yield store
-    for run_id in set(store._rows) - before:
-        store._rows.pop(run_id, None)
 
 
 def _ids(body: dict[str, Any]) -> list[str]:

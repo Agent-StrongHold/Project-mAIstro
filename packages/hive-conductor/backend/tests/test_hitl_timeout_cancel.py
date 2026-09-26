@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -116,14 +117,8 @@ def reviewer_client():
 
 @pytest.fixture
 def seeded(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Seeded]:
-    from services import dag_agents
-
-    # This fixture seeds the legacy document-shaped store directly. Bind it to
-    # the route only as an explicit test seam; production `_store()` refuses
-    # this store and requires the Container's canonical projection.
-    store = dag_agents.get_run_store()
-    assert isinstance(store, InMemoryDurableRunStore)
-    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: store)
     created: list[str] = []
 
     async def _seed(run_id: str, *, deadline: datetime) -> None:
@@ -158,17 +153,33 @@ def test_hitl_endpoint_fails_closed_without_canonical_spine(
     admin_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A degraded Conductor must not present ephemeral human work as durable."""
+    from services.workspace_authority import create_workspace
+
+    # `/pending` filters by the caller's Workspaces before it reaches the
+    # store; give admin one so the request reaches the outage instead of
+    # answering an empty list from an empty membership set.
+    asyncio.run(
+        create_workspace(
+            creator_user_id="admin",
+            name="No-spine HITL timeout-cancel",
+            persona_template_id="default",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+    )
+
     from services import dag_agents
 
     def _unavailable() -> Any:
-        raise RuntimeError("canonical graph execution spine is unavailable")
+        raise dag_agents.GraphExecutionUnavailableError("canonical Graph execution is unavailable")
 
-    monkeypatch.setattr(dag_agents, "get_canonical_run_store", _unavailable)
+    monkeypatch.setattr(dag_agents, "get_run_store", _unavailable)
 
     response = admin_client.get("/v1/hitl/pending")
 
     assert response.status_code == 503
-    assert "canonical execution spine" in response.json()["detail"]
+    assert "unavailable" in response.json()["detail"]
 
 
 async def test_cancel_endpoint_requests_canonical_settlement(seeded: _Seeded) -> None:
@@ -239,10 +250,11 @@ async def test_expiry_endpoint_only_settles_authorized_workspace_projects(
 
     # This test seeds the legacy document-shaped store directly. Bind it to the
     # route only as an explicit test seam; production `_store()` refuses this
-    # store and requires the Container's canonical projection.
-    store = dag_agents.get_run_store()
-    assert isinstance(store, InMemoryDurableRunStore)
-    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
+    # store and requires the Container's canonical projection (#1113: the
+    # no-spine fallback store is gone, so the seam is the patched resolution
+    # itself, not a process-global singleton).
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(dag_agents, "get_run_store", lambda: store)
 
     deadline = datetime.now(UTC) - timedelta(minutes=1)
     reviewer_workspace = await create_workspace(

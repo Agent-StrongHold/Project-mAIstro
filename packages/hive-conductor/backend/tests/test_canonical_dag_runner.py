@@ -2,12 +2,42 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from services.dag_execution_scope import DagExecutionScope
 
-from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+def _canonical_test_container() -> tuple[Any, Any]:
+    """Use the same two-store seam as production, without a database."""
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.runs import InMemoryRunStore
+
+    class _Projects:
+        async def get(self, project_id: str) -> Any:
+            # Projects live in the authorized scope's Workspace: the canonical
+            # RunStore validates Graph scope at admission (#766/#1113), so the
+            # fake must agree with the DagExecutionScope fixture.
+            return SimpleNamespace(project_id=project_id, workspace_id="test-workspace")
+
+        async def root_for_workspace(self, workspace_id: str) -> Any:
+            return SimpleNamespace(project_id="root-project", workspace_id=workspace_id)
+
+    run_store = InMemoryRunStore(project_store=_Projects())
+    graph_store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    return (
+        SimpleNamespace(
+            config=SimpleNamespace(workspace_id="w"),
+            project_scope_store=_Projects(),
+            run_store=run_store,
+            graph_run_store=graph_store,
+        ),
+        graph_store,
+    )
 
 
 @pytest.fixture
@@ -175,9 +205,11 @@ async def test_required_node_failure_terminalizes_canonical_run_failed(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     result = await runner.execute_dag(
@@ -204,9 +236,11 @@ async def test_fanout_runs_under_one_canonical_run(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     result = await runner.execute_dag(
@@ -238,9 +272,11 @@ async def test_run_scout_executes_under_the_same_canonical_run(
     monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     result = await runner.execute_dag(
@@ -355,14 +391,17 @@ async def test_scope_uses_only_the_authorized_immutable_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
     class _Container:
         run_store = "the-canonical-run-store"
+        graph_run_store = "the-canonical-graph-store"
 
     scope = DagExecutionScope(
         workspace_id="ws-authorized", project_id="root-project", user_id="user-1"
     )
     monkeypatch.setattr(runner, "_container", lambda: _Container())
+    monkeypatch.setattr(dag_agents, "_container", lambda: _Container())
 
     workspace, project, run_store = await runner._scope(
         {"workspace_id": "legacy-injection", "project_id": "legacy-project"},
@@ -450,6 +489,29 @@ async def test_execute_dag_rejects_a_user_id_that_does_not_match_the_scope(
         )
 
 
+@pytest.mark.asyncio
+async def test_execute_dag_returns_unavailable_without_the_canonical_spine(
+    monkeypatch: pytest.MonkeyPatch, execution_scope: DagExecutionScope
+) -> None:
+    import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
+
+    monkeypatch.setattr(runner, "_container", lambda: None)
+    monkeypatch.setattr(dag_agents, "_container", lambda: None)
+
+    result = await runner.execute_dag(
+        {"id": "unavailable", "nodes": [_safe_node("a")], "edges": []},
+        scope=execution_scope,
+    )
+
+    assert result == {
+        "status": "unavailable",
+        "run_id": None,
+        "error": "canonical Graph execution is unavailable",
+        "node_results": {},
+    }
+
+
 def test_request_credentials_reach_nodes_as_scoped_env_keys() -> None:
     """The legacy adapter consumed USER_CRED_* env keys; admission must still
     forward request-time credentials under that contract without persisting
@@ -524,9 +586,11 @@ async def test_a_metrics_recording_failure_never_fails_the_completed_run(
     import logging
 
     import services.canonical_dag_runner as runner
+    import services.dag_agents as dag_agents
 
-    store = InMemoryDurableRunStore()
-    monkeypatch.setattr(runner, "_container", lambda: None)
+    container, store = _canonical_test_container()
+    monkeypatch.setattr(runner, "_container", lambda: container)
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
     monkeypatch.setattr(runner, "get_run_store", lambda: store)
 
     def _metrics_down(_record: Any) -> int:

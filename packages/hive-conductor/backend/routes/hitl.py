@@ -84,22 +84,21 @@ class HumanAnswer(BaseModel):
 
 
 def _store() -> Any:
-    """The canonical graph store holding pending human work.
+    """The durable graph store holding pending human work.
 
-    A standalone Conductor can still execute legacy non-HITL DAGs through its
-    compatibility store, but it must not offer a second HITL execution
-    authority. A missing canonical spine is an unavailable capability, not an
-    empty pending queue.
+    Answering, cancelling, expiring, or even listing human pauses is Graph
+    lifecycle work: it reads and settles canonical Runs. Without the core
+    bridge there is no store to answer from, and the honest response is the
+    documented 503 — the same contract the settings and install surfaces use —
+    not a 500 from an unhandled refusal, and never a process-local fallback
+    store (#1113).
     """
-    from services.dag_agents import get_canonical_run_store
+    from services.dag_agents import GraphExecutionUnavailableError, get_run_store
 
     try:
-        return get_canonical_run_store()
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="canonical execution spine is required for human work",
-        ) from exc
+        return get_run_store()
+    except GraphExecutionUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _request_user_id(request: Request) -> str:

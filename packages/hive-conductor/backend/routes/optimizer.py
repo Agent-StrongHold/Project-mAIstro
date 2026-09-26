@@ -81,15 +81,32 @@ async def trigger_optimizer(
         dag_data = stores.dags.get(dag_id)
         if dag_data:
             from services.benchmark_eval import evaluate_dag_run
-            from services.graph_runner import execute_dag
+            from services.graph_runner import CanonicalDagExecutionError, execute_dag
             from services.validation_gate import validate_and_filter_proposals
 
-            # Run current DAG to get REAL baseline score (not historical)
+            # Run current DAG to get REAL baseline score (not historical). A
+            # no-spine result is a capability answer, not a zero-score
+            # experiment: continuing would let failed model variants look like
+            # cheaper improvements against a fabricated baseline.
             try:
                 baseline_result = await execute_dag(dict(dag_data), scope=scope)
                 task = dag_data.get("description", dag_data.get("name", ""))
                 baseline_eval = await evaluate_dag_run(baseline_result, task)
                 baseline = float(baseline_eval.get("total", 0))
+            except CanonicalDagExecutionError as exc:
+                if exc.result.get("status") == "unavailable":
+                    result.update(
+                        {
+                            "status": "unavailable",
+                            "error": str(exc),
+                            "proposals": [],
+                            "validated": False,
+                            "baseline_score": None,
+                            "proposals_tested": 0,
+                        }
+                    )
+                    return result
+                baseline = 0.0
             except Exception:
                 baseline = 0.0
 

@@ -25,19 +25,20 @@ from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
 
 @pytest.fixture(autouse=True)
 def _bind_compatibility_store_to_explicit_hitl_test_seam(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep these legacy route fixtures isolated from the production fallback.
+    """Keep these legacy route fixtures isolated from the canonical spine.
 
-    The route now asks for the canonical graph store. These tests seed the
-    document-shaped store directly, so bind it explicitly rather than making
-    the route silently rediscover that compatibility store.
+    The route resolves the graph store through ``services.dag_agents.get_run_store``,
+    which #1113 made refuse any process without the Container's canonical
+    projection. These tests seed a document-shaped in-memory store directly,
+    so bind it to that one seam explicitly rather than resurrecting a shipped
+    fallback store for them.
     """
     from services import dag_agents
 
-    monkeypatch.setattr(
-        dag_agents,
-        "get_canonical_run_store",
-        lambda: dag_agents._fallback_run_store,
-    )
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr(dag_agents, "get_run_store", lambda: store)
 
 
 def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
@@ -104,7 +105,7 @@ def _paused_record(
 
 
 @pytest.fixture
-def seeded(admin_client):
+def seeded(admin_client, monkeypatch):
     """Seed the app's own durable store, and clear what this test added.
 
     `admin_client` rather than `authed_client`: answering a pause resumes the
@@ -114,9 +115,10 @@ def seeded(admin_client):
     `test_an_unscoped_principal_cannot_answer` -- and these use a principal
     that holds the scope.
     """
-    from services.dag_agents import get_run_store
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
 
-    store = get_run_store()
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: store)
     created: list[str] = []
 
     async def _seed(run_id: str, **kwargs: Any) -> None:
@@ -441,6 +443,7 @@ async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, m
     client, store, seed = seeded
     import routes.hitl as hitl_routes
 
+    real_is_member = hitl_routes.is_member
     for run_id, action in (("hitl-answer-revoked", "answer"), ("hitl-cancel-revoked", "cancel")):
         await seed(run_id)
         checks: list[bool] = []
@@ -453,10 +456,18 @@ async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, m
             return membership_revoked
 
         monkeypatch.setattr(hitl_routes, "is_member", membership_revoked_factory(checks))
-        if action == "answer":
-            response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
-        else:
-            response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
+        try:
+            if action == "answer":
+                response = client.post(f"/v1/hitl/{run_id}/ask/answer", json={"answer": "yes"})
+            else:
+                response = client.post(f"/v1/hitl/{run_id}/ask/cancel")
+        finally:
+            # Restore only this loop's patch. A blanket `monkeypatch.undo()`
+            # would also drop the `seeded` fixture's `get_run_store` injection,
+            # and since #1113 removed the process-local fallback store the
+            # route would answer the next request with the no-spine 503
+            # instead of its own membership verdict.
+            monkeypatch.setattr(hitl_routes, "is_member", real_is_member)
         assert response.status_code == 404
         assert len(checks) == 2
         record = await store.get(run_id)
@@ -531,11 +542,12 @@ def blocked_answer_clients():
             stores.users.pop(username, None)
 
 
-async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client) -> None:
+async def test_hitl_routes_are_scoped_to_the_callers_workspaces(scoped_client, monkeypatch) -> None:
     """A scoped writer cannot list, answer, or cancel another workspace's pause."""
-    from services.dag_agents import get_run_store
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
 
-    store = get_run_store()
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: store)
     assert scoped_client.get("/v1/hitl/pending").json() == []
 
     mine = await create_workspace(
@@ -855,13 +867,15 @@ async def test_a_hostile_answer_is_scanned_before_it_reaches_graph_state(seeded)
 
 @pytest.mark.ac("ADR-090726-9a4e/AC-5")
 async def test_blocked_answers_name_each_verified_requester_without_settling_approval(
-    blocked_answer_clients,
+    blocked_answer_clients, monkeypatch
 ) -> None:
     """A rejected attempt keeps Alice and Bob distinguishable without approval attribution."""
-    from services.dag_agents import get_run_store
     from services.workspace_authority import canonical_store_for_tests
 
-    store = get_run_store()
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+
+    store = InMemoryDurableRunStore()
+    monkeypatch.setattr("services.dag_agents.get_run_store", lambda: store)
     run_ids = {}
     secret_by_user = {}
     for username, client in blocked_answer_clients.items():
@@ -1001,3 +1015,53 @@ async def test_a_stale_pause_entry_for_a_resumed_node_is_not_offered(seeded) -> 
     assert response.json()["node_id"] == "ask"
     # ...while the stale entry is refused with the same detail as a missing Run.
     assert client.get("/v1/hitl/hitl-stale-pause/review").status_code == 404
+
+
+async def test_no_spine_hitl_surfaces_report_unavailable(admin_client, monkeypatch) -> None:
+    """With no canonical spine, the HITL door reports the outage (#1113).
+
+    The `seeded` fixture injects a durable store; this test deliberately does
+    not, so the routes run against the honest test-process state: no
+    Container, hence no canonical Run/graph-continuation store. Since #1113
+    removed the process-local fallback, every surface that settles Graph work
+    must answer the documented 503 -- not a 500 from an unhandled refusal,
+    and never a success minted by a private lifecycle.
+    """
+    from services import dag_agents
+    from services.workspace_authority import create_workspace
+
+    # `/pending` filters by the caller's Workspaces before it reaches the
+    # store; give admin one so the request actually reaches the outage rather
+    # than answering an empty list from an empty membership set.
+    await create_workspace(
+        creator_user_id="admin",
+        name="No-spine HITL",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+
+    # The module's autouse fixture binds a test store to the route seam for
+    # the legacy document-store fixtures; this test is about the opposite —
+    # the honest no-spine resolution. Re-bind the seam to the production
+    # refusal: without a Container `get_run_store` raises
+    # GraphExecutionUnavailableError, which the route maps to the 503 (#1113).
+    def _no_spine() -> Any:
+        raise dag_agents.GraphExecutionUnavailableError()
+
+    monkeypatch.setattr(dag_agents, "get_run_store", _no_spine)
+
+    response = admin_client.get("/v1/hitl/pending")
+    assert response.status_code == 503
+    assert "unavailable" in response.json()["detail"]
+
+    for method, url, kwargs in (
+        ("get", "/v1/hitl/some-run/ask", {}),
+        ("post", "/v1/hitl/some-run/ask/cancel", {}),
+        ("post", "/v1/hitl/some-run/ask/answer", {"json": {"answer": "yes"}}),
+        ("post", "/v1/hitl/expire", {}),
+    ):
+        response = getattr(admin_client, method)(url, **kwargs)
+        assert response.status_code == 503, url
+        assert "unavailable" in response.json()["detail"], url

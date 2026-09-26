@@ -403,11 +403,20 @@ async def run_champion(
             status_code=403, detail="DAG Workspace scope is not authorized"
         ) from exc
     try:
-        from services.graph_runner import execute_champion
+        from services.graph_runner import CanonicalDagExecutionError, execute_champion
 
         result = await execute_champion(scope=scope)
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
+    except CanonicalDagExecutionError as exc:
+        logger.warning("Champion Graph execution unavailable: %s", exc)
+        run_id = exc.result.get("run_id")
+        return {
+            "status": exc.result.get("status", "failed"),
+            "execution_id": run_id,
+            "run_id": run_id,
+            "result": exc.result,
+        }
     except Exception as exc:
         logger.warning("Champion execution failed", exc_info=exc)
         return {"status": "failed", "error": _public_failure(exc)}

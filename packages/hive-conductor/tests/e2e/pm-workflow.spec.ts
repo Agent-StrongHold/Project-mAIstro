@@ -97,7 +97,9 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     expect(dag.nodes.length).toBe(2);
   });
 
-  test("06 — PM can activate and run a DAG", async ({ page }) => {
+  test("06 — PM can activate a DAG, and a run attempt reports the no-spine contract", async ({
+    page,
+  }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-run-dag");
     const workspaceId = await createWorkspace(page, "E2E Run Test Workspace");
@@ -113,15 +115,22 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
     const activated = await activateResp.json();
     expect(activated.status).toBe("active");
 
+    // This harness boots hive without the maistro-core bridge, so there is no
+    // canonical Run spine to admit the execution into. #1113 retired the
+    // process-local fallback lifecycle that used to execute here: the route
+    // must report the degraded capability explicitly — HTTP 200, status
+    // `unavailable`, no execution identity minted — rather than fabricate a
+    // successful run against a private store.
     const runResp = await page.request.post(`/v1/dags/${dag.id}/run`, {
       data: { workspace_id: workspaceId },
     });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
-    expect(run.execution_id).toBeTruthy();
+    expect(run.status).toBe("unavailable");
+    expect(run.execution_id).toBeNull();
   });
 
-  test("07 — PM can give thumbs feedback on a run", async ({ page }) => {
+  test("07 — feedback is refused for a run the spine never admitted", async ({ page }) => {
     await loginAsPM(page);
     await elevateDagWrites(page, "e2e-feedback-dag");
     const workspaceId = await createWorkspace(page, "E2E Feedback Test Workspace");
@@ -134,17 +143,23 @@ test.describe("PM Workflow — Full UI Walkthrough", () => {
 
     const activateResp = await page.request.post(`/v1/dags/${dag.id}/activate`);
     expect(activateResp.status()).toBe(200);
+
+    // No canonical spine in this harness (#1113): the run attempt admits no
+    // Run, so no run identity exists to attach feedback to.
     const runResp = await page.request.post(`/v1/dags/${dag.id}/run`, {
       data: { workspace_id: workspaceId },
     });
     expect(runResp.status()).toBe(200);
     const run = await runResp.json();
-    expect(run.execution_id).toBeTruthy();
+    expect(run.status).toBe("unavailable");
+    expect(run.execution_id).toBeNull();
 
-    const fbResp = await page.request.post(`/v1/dag-runs/${run.execution_id}/feedback`, {
+    // Feedback against a run id no spine ever admitted is a 404, not a
+    // silently accepted thumbs-up into a private store.
+    const fbResp = await page.request.post("/v1/dag-runs/e2e-never-admitted/feedback", {
       data: { thumb: "up", comment: "Nailed it!", dag_id: dag.id },
     });
-    expect([200, 404]).toContain(fbResp.status());
+    expect(fbResp.status()).toBe(404);
   });
 
   test("08 — PM can trigger optimizer and see proposals", async ({ page }) => {

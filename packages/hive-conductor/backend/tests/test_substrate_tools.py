@@ -76,6 +76,50 @@ async def test_tool_run_workflow_executes_through_an_authorized_scope(
 
 
 @pytest.mark.asyncio
+async def test_tool_run_workflow_reports_unavailable_when_the_run_is_not_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A canonical Run that did not complete is a status, not a crash (#1113).
+
+    `execute_dag` fails closed by raising `CanonicalDagExecutionError`; the
+    workflow tool must project that truth — including the no-spine
+    `unavailable` shape — instead of reading `node_results` off an exception
+    or reporting a generic tool failure.
+    """
+    import services.graph_runner as graph_runner
+    import stores
+    from services.graph_runner import CanonicalDagExecutionError
+    from services.substrate_tools import tool_run_workflow
+
+    dag_id = f"substrate-unavailable-{uuid4()}"
+    stores.dags[dag_id] = _dag(dag_id)
+    await _workspace("substrate-run-ws", member_user_id="u1")
+
+    async def unavailable_execute(_dag_data: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise CanonicalDagExecutionError(
+            {
+                "status": "unavailable",
+                "run_id": None,
+                "error": "canonical Graph execution is unavailable",
+                "node_results": {},
+            }
+        )
+
+    monkeypatch.setattr(graph_runner, "execute_dag", unavailable_execute)
+
+    try:
+        result = await tool_run_workflow(
+            {"dag_id": dag_id, "workspace_id": "substrate-run-ws"}, user_id="u1"
+        )
+    finally:
+        stores.dags.pop(dag_id, None)
+
+    assert result["status"] == "unavailable"
+    assert result["run_id"] is None
+    assert "canonical Graph execution" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_tool_run_workflow_refuses_an_unauthorized_workspace() -> None:
     import stores
     from services.dag_execution_scope import DagWorkspaceSelectionError

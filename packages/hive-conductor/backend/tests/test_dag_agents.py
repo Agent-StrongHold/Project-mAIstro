@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -12,12 +14,49 @@ _BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from services.dag_agents import get_registry, run_registered_dag  # noqa: E402
+from services.dag_agents import (  # noqa: E402
+    GraphExecutionUnavailableError,
+    get_registry,
+    run_registered_dag,
+)
 
 from maistro.capabilities.effect_context import new_in_memory_effect_context  # noqa: E402
 from maistro.graph.durable_runs import RunStatus  # noqa: E402
 from maistro.providers.registry import InMemoryProviderRegistry  # noqa: E402
 from maistro.providers.router import CostAwareRouter  # noqa: E402
+
+
+def _canonical_test_container() -> Any:
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.runs import InMemoryRunStore
+
+    class _Projects:
+        async def get(self, project_id: str) -> Any:
+            return SimpleNamespace(project_id=project_id, workspace_id="w1")
+
+        async def root_for_workspace(self, workspace_id: str) -> Any:
+            return SimpleNamespace(project_id="root-project", workspace_id=workspace_id)
+
+    project_scope_store = _Projects()
+    run_store = InMemoryRunStore(project_store=project_scope_store)
+    provider_registry = InMemoryProviderRegistry()
+    return SimpleNamespace(
+        config=SimpleNamespace(workspace_id="w1"),
+        project_scope_store=project_scope_store,
+        a2a_delegator=object(),
+        guest_peers=object(),
+        run_store=run_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+        # #1079 production composition: the resolver forwards these exact
+        # Container-owned authorities; the stub models the real contract.
+        capability_effects=new_in_memory_effect_context(),
+        provider_registry=provider_registry,
+        llm_router=CostAwareRouter(provider_registry),
+    )
+
 
 _SYNTH_DAG = {
     "id": "synth-noop",
@@ -51,25 +90,17 @@ def test_run_registered_dag_unknown_id_raises_key_error() -> None:
         asyncio.run(run_registered_dag("no-such-dag", workspace_id="w1", project_id="p1"))
 
 
-def test_standalone_registered_human_work_is_refused() -> None:
-    registry = get_registry()
-    registry.register(
-        {
-            "id": "synth-human",
-            "name": "Synth Human",
-            "entry_node": "ask",
-            "nodes": [{"id": "ask", "kind": "human.ask_question", "config": {}}],
-            "edges": [],
-        }
-    )
-    try:
-        with pytest.raises(RuntimeError, match="canonical graph execution spine"):
-            asyncio.run(run_registered_dag("synth-human", workspace_id="w1", project_id="p1"))
-    finally:
-        registry.deregister("synth-human")
+@pytest.fixture()
+def canonical_container() -> Any:
+    return _canonical_test_container()
 
 
-def test_run_registered_dag_produces_provenanced_completed_run(synth_dag_id: str) -> None:
+def test_run_registered_dag_produces_provenanced_completed_run(
+    synth_dag_id: str, canonical_container: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import services.dag_agents as dag_agents
+
+    monkeypatch.setattr(dag_agents, "_container", lambda: canonical_container)
     graph, record = asyncio.run(
         run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1", user_id="u1")
     )
@@ -82,7 +113,13 @@ def test_run_registered_dag_produces_provenanced_completed_run(synth_dag_id: str
     assert record.run.graph.materialize().source_template == graph.source_template
 
 
-def test_configure_hook_touches_the_instantiated_graph_only(synth_dag_id: str) -> None:
+def test_configure_hook_touches_the_instantiated_graph_only(
+    synth_dag_id: str, canonical_container: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import services.dag_agents as dag_agents
+
+    monkeypatch.setattr(dag_agents, "_container", lambda: canonical_container)
+
     def configure(graph) -> None:
         graph.nodes[0].inputs["extra"] = "value"
 
@@ -215,58 +252,29 @@ def test_the_synth_dag_node_gets_the_durable_graph_store_from_the_container(
     assert node._run_store is not container.run_store
 
 
-def test_without_a_bridge_the_synth_dag_node_is_refused_not_degraded(monkeypatch) -> None:
-    """The fallback resolver has no graph store to give, so it refuses the kind
-    outright (#1193) rather than building a node that reports success for a
-    sub-graph nothing ran."""
+@pytest.mark.ac("ADR-082526-3ca6/AC-5")
+def test_without_a_bridge_graph_nodes_are_unavailable(monkeypatch) -> None:
+    """Stub/degraded mode must not resolve executable Graph nodes (#1113).
+
+    AC-5 as amended by the M1 convergence: a no-spine process refuses before
+    composing any node rather than resolving against a private fallback."""
     import services.dag_agents as dag_agents
     import services.engine as engine_module
-
-    from maistro.graph.nodes import NodeCompositionError
 
     port = type("_Port", (), {"container": None})()
     monkeypatch.setattr(
         engine_module, "get_engine", lambda: type("_Engine", (), {"_agent_port": port})()
     )
 
-    with pytest.raises(NodeCompositionError, match="graph_run_store"):
-        dag_agents._resolve_nodes_with()("s", _SYNTH_DAG_NODE)
+    with pytest.raises(GraphExecutionUnavailableError, match="canonical Graph execution"):
+        dag_agents._resolve_nodes_with()
 
 
 @pytest.mark.ac("ADR-082526-3ca6/AC-5")
-def test_without_a_bridge_the_path_still_resolves_nodes(monkeypatch) -> None:
-    """A Conductor running standalone must behave as it did, not fail to start."""
-    import services.dag_agents as dag_agents
-    import services.engine as engine_module
-
-    port = type("_Port", (), {"container": None})()
-    monkeypatch.setattr(
-        engine_module, "get_engine", lambda: type("_Engine", (), {"_agent_port": port})()
-    )
-
-    resolver = dag_agents._resolve_nodes_with()
-    assert resolver is dag_agents._fallback_node_resolver
-    node = resolver("d", _DELEGATE_DAG)
-    assert node._a2a_delegator is None
-
-
-def test_hitl_store_requires_the_canonical_graph_spine(monkeypatch) -> None:
-    """HITL must not expose the standalone process-local compatibility store."""
-    import services.dag_agents as dag_agents
-    import services.engine as engine_module
-
-    port = type("_Port", (), {"container": None})()
-    monkeypatch.setattr(
-        engine_module, "get_engine", lambda: type("_Engine", (), {"_agent_port": port})()
-    )
-
-    with pytest.raises(RuntimeError, match="canonical graph execution spine"):
-        dag_agents.get_canonical_run_store()
-
-
-@pytest.mark.ac("ADR-082526-3ca6/AC-5")
-def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -> None:
-    """Resolving a node must not be the thing that breaks a DAG execution."""
+def test_an_unavailable_engine_does_not_select_a_private_graph_store(monkeypatch) -> None:
+    # AC-5 as amended: #1113 retires the second execution universe, so an
+    # engine failure fails closed before any Graph work instead of silently
+    # resolving a private lifecycle.
     import services.dag_agents as dag_agents
     import services.engine as engine_module
 
@@ -274,7 +282,22 @@ def test_an_engine_that_raises_falls_back_rather_than_propagating(monkeypatch) -
         raise RuntimeError("engine unavailable")
 
     monkeypatch.setattr(engine_module, "get_engine", _boom)
-    assert dag_agents._resolve_nodes_with() is dag_agents._fallback_node_resolver
+    with pytest.raises(GraphExecutionUnavailableError):
+        dag_agents.get_run_store()
+
+
+@pytest.mark.ac("ADR-082526-3ca6/AC-5")
+def test_registered_dag_fails_closed_without_the_canonical_spine(
+    monkeypatch, synth_dag_id: str
+) -> None:
+    import services.dag_agents as dag_agents
+
+    monkeypatch.setattr(dag_agents, "_container", lambda: None)
+    with pytest.raises(GraphExecutionUnavailableError) as captured:
+        asyncio.run(run_registered_dag(synth_dag_id, workspace_id="w1", project_id="p1"))
+
+    assert captured.value.result["status"] == "unavailable"
+    assert captured.value.result["run_id"] is None
 
 
 @pytest.mark.ac("ADR-082526-3ca6/AC-4")
@@ -290,6 +313,44 @@ def test_ordinary_node_kinds_are_unaffected_by_the_wiring(monkeypatch) -> None:
 
 
 @pytest.mark.ac("ADR-082826-d9f5/AC-1")
+def test_a_registered_dag_is_visible_to_a_second_hive_composition(
+    monkeypatch: pytest.MonkeyPatch, synth_dag_id: str
+) -> None:
+    """A second Hive composition can read the run after the first is gone."""
+
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    root = asyncio.run(projects.create_root("w-replica"))
+    run_store = InMemoryRunStore(project_store=projects)
+    continuation = InMemoryGraphContinuationStore()
+    first_graph_store = CanonicalDurableRunStore(run_store, continuation)
+    first = _StubContainer(runs=run_store, graph_runs=first_graph_store)
+    _with_container(monkeypatch, first)
+
+    _graph, record = asyncio.run(
+        run_registered_dag(synth_dag_id, workspace_id="w-replica", project_id=root.project_id)
+    )
+
+    # Simulate the next Hive process/replica creating its own projection object
+    # over the same canonical persistence, rather than the old private store.
+    second = _StubContainer(
+        runs=run_store,
+        graph_runs=CanonicalDurableRunStore(run_store, continuation),
+    )
+    _with_container(monkeypatch, second)
+    visible = asyncio.run(second.graph_run_store.get(record.run_id))
+
+    assert visible is not None
+    assert visible.run_id == record.run_id
+    assert visible.run.status is RunStatus.COMPLETED
+
+
 def test_a_registered_dag_is_findable_on_the_canonical_spine(monkeypatch, synth_dag_id) -> None:
     """The defect #44 exists to remove, at the surface that had it.
 

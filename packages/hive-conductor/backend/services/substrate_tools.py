@@ -21,7 +21,7 @@ async def tool_run_workflow(
     from stores import dags as dag_store
 
     from services.dag_execution_scope import authorize_hive_dag_scope
-    from services.graph_runner import execute_dag
+    from services.graph_runner import CanonicalDagExecutionError, execute_dag
 
     dag_id = args.get("dag_id") or args.get("id", "")
     name = args.get("name", "")
@@ -38,7 +38,17 @@ async def tool_run_workflow(
         workspace_id=str(args.get("workspace_id") or ""), user_id=user_id
     )
     start = time.monotonic()
-    result = await execute_dag(dag_data, scope=scope)
+    try:
+        result = await execute_dag(dag_data, scope=scope)
+    except CanonicalDagExecutionError as exc:
+        # A missing canonical spine is a capability answer, not a generic tool
+        # failure (#1113): the degraded status reaches chat verbatim.
+        return {
+            "status": exc.result.get("status", "failed"),
+            "dag_id": dag_id,
+            "error": str(exc),
+            "run_id": exc.result.get("run_id"),
+        }
     elapsed = int((time.monotonic() - start) * 1000)
     nr = result.get("node_results", {})
     return {
@@ -166,7 +176,7 @@ async def tool_hill_climb(
     from stores import dags as dag_store
 
     from services.dag_execution_scope import authorize_hive_dag_scope
-    from services.graph_runner import execute_dag
+    from services.graph_runner import CanonicalDagExecutionError, execute_dag
 
     dag_id = args.get("dag_id", "")
     max_attempts = min(args.get("max_attempts", 3), 5)
@@ -182,7 +192,21 @@ async def tool_hill_climb(
 
     best_score, best_result, attempts = 0, None, []
     for attempt in range(1, max_attempts + 1):
-        result = await execute_dag(dag_data, scope=scope)
+        try:
+            result = await execute_dag(dag_data, scope=scope)
+        except CanonicalDagExecutionError as exc:
+            # A missing canonical spine is a supported degraded capability, not
+            # a generic tool failure and never a zero-score hill-climb (#1113).
+            return {
+                "status": exc.result.get("status", "failed"),
+                "dag_id": dag_id,
+                "error": str(exc),
+                "run_id": exc.result.get("run_id"),
+                "attempts": attempts,
+                "best_score": best_score,
+                "target": target_score,
+                "passed": False,
+            }
         output = "\n".join(
             r.get("response", "")
             for r in result.get("node_results", {}).values()

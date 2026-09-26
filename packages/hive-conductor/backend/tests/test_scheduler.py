@@ -19,6 +19,8 @@ from typing import Any, ClassVar
 
 import pytest
 
+from maistro.runs.model import RunStatus
+
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -330,9 +332,8 @@ def test_run_loop_logs_and_continues_on_tick_exception(
 # --- Schedule -> canonical Run ------------------------------------------------
 
 
-def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
-    """A firing whose target is a registered DAG executes through the canonical
-    durable path and audits the Run identity, not just that it fired."""
+def test_fire_schedule_with_registered_dag_is_unavailable_without_the_spine() -> None:
+    """A standalone scheduler cannot claim success for Graph work."""
     import stores
     from services.dag_agents import get_registry
     from services.scheduler import _ScheduleRunner
@@ -365,15 +366,14 @@ def test_fire_schedule_with_registered_dag_produces_canonical_run() -> None:
         assert len(runs) == 1
         detail = runs[0]["detail"]
         assert detail["dag_id"] == "sched-synth"
-        assert detail["status"] == "completed"
-        assert detail["run_id"]
-        assert detail["template_version"] == 1
+        assert "run_id" not in detail
+        assert detail["error"] == "GraphExecutionUnavailableError"
     finally:
         stores.schedules._data.pop("s-run", None)  # type: ignore[attr-defined]
         registry.deregister("sched-synth")
 
 
-def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
+def test_a_scheduled_graph_run_does_not_create_preconvergence_provenance() -> None:
     """#46 asks for schedule provenance retained *on the Run*, not beside it.
 
     It lived only in the `schedule_run` audit line, so a Run a schedule fired
@@ -398,6 +398,7 @@ def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
     )
     stub = _schedule_stub("s-prov", "sched-prov")
     stores.schedules._data["s-prov"] = stub  # type: ignore[attr-defined]
+    before = len(stores.audit_log)
     try:
         scheduled_for = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
         asyncio.run(
@@ -406,28 +407,56 @@ def test_a_scheduled_run_records_its_schedule_on_the_run() -> None:
             )
         )
 
-        # The fallback store, because this test boots no Container: with one,
-        # the Run is a row on the canonical spine instead (#44).
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
-        scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-prov"]
-        assert len(scheduled) == 1, "exactly one Run, and it names its schedule"
-        provenance = scheduled[0].provenance
-
-        assert provenance["admission_source"] == "schedule"
-        assert provenance["scheduled_for"] == scheduled_for.isoformat()
-        assert provenance["catchup"] is True
-        # The executor's own marker survives the merge — a Run that claimed a
-        # different executor than the one that walked it would be worse than
-        # one that claimed none.
-        assert provenance["executor"] == "durable_graph"
+        new_entries = [
+            e for e in list(stores.audit_log.values())[before:] if e.get("target") == "s-prov"
+        ]
+        runs = [e for e in new_entries if e["action"] == "schedule_run"]
+        assert len(runs) == 1
+        assert runs[0]["detail"]["error"] == "GraphExecutionUnavailableError"
+        assert "run_id" not in runs[0]["detail"]
     finally:
         stores.schedules._data.pop("s-prov", None)  # type: ignore[attr-defined]
         registry.deregister("sched-prov")
 
 
-def test_a_schedule_firing_mints_its_own_request_id() -> None:
+def _wired_firing_container(monkeypatch: pytest.MonkeyPatch, scope_ids: list[str]) -> Any:
+    """The canonical two-store seam a firing needs, with each schedule's scope
+    id pre-admitted in the Project store (#1113: there is no fallback store to
+    read — a firing proves its provenance on canonical Runs in the canonical
+    RunStore, never on a process-private lifecycle)."""
+    from types import SimpleNamespace
+
+    import services.dag_agents as dag_agents
+
+    from maistro.graph.durable_runs import (
+        CanonicalDurableRunStore,
+        InMemoryGraphContinuationStore,
+    )
+    from maistro.projects.scope import Project
+    from maistro.projects.scope_store import InMemoryProjectScopeStore
+    from maistro.runs.store import InMemoryRunStore
+
+    projects = InMemoryProjectScopeStore()
+    for scope_id in scope_ids:
+        projects._projects[scope_id] = Project(  # type: ignore[attr-defined]
+            project_id=scope_id,
+            workspace_id=scope_id,
+            name="Schedule scope",
+            parent_project_id=None,
+            is_root=True,
+        )
+    run_store = InMemoryRunStore(project_store=projects)
+    container = SimpleNamespace(
+        a2a_delegator=object(),
+        guest_peers=object(),
+        run_store=run_store,
+        graph_run_store=CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore()),
+    )
+    monkeypatch.setattr(dag_agents, "_container", lambda: container)
+    return container
+
+
+def test_a_schedule_firing_mints_its_own_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1063: a timer tick has no incoming HTTP request, so it must not admit
     silently uncorrelated, and must not inherit whatever unrelated Attempt's
     ids happen to still be bound on this event loop tick -- it starts clean
@@ -451,6 +480,7 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
     )
     stub = _schedule_stub("s-reqid", "sched-reqid")
     stores.schedules._data["s-reqid"] = stub  # type: ignore[attr-defined]
+    container = _wired_firing_container(monkeypatch, ["hive:schedule:s-reqid"])
     try:
         # A stray ambient context, as if this tick shared the event loop with
         # some unrelated in-flight Attempt -- it must not leak into the Run
@@ -461,9 +491,7 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
                 _ScheduleRunner()._fire_schedule("s-reqid", stub, scheduled_for=scheduled_for)
             )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid"]
         assert len(scheduled) == 1
         request_id = scheduled[0].provenance.get("request_id")
@@ -474,7 +502,9 @@ def test_a_schedule_firing_mints_its_own_request_id() -> None:
         registry.deregister("sched-reqid")
 
 
-def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
+def test_two_firings_of_the_same_schedule_get_different_request_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import stores
     from services.dag_agents import get_registry
     from services.scheduler import _ScheduleRunner
@@ -491,6 +521,7 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
     )
     stub = _schedule_stub("s-reqid-2", "sched-reqid-2")
     stores.schedules._data["s-reqid-2"] = stub  # type: ignore[attr-defined]
+    container = _wired_firing_container(monkeypatch, ["hive:schedule:s-reqid-2"])
     try:
         runner = _ScheduleRunner()
         asyncio.run(
@@ -504,9 +535,7 @@ def test_two_firings_of_the_same_schedule_get_different_request_ids() -> None:
             )
         )
 
-        from services.dag_agents import _fallback_run_store
-
-        runs = [r.run for r in _fallback_run_store._rows.values()]  # type: ignore[attr-defined]
+        runs = list(container.run_store._runs.values())  # type: ignore[attr-defined]
         scheduled = [r for r in runs if r.provenance.get("schedule_id") == "s-reqid-2"]
         assert len(scheduled) == 2
         ids = {r.provenance.get("request_id") for r in scheduled}
@@ -597,7 +626,7 @@ def test_fire_schedule_run_failure_is_audited_not_raised(
             if e.get("target") == "s-fail" and e["action"] == "schedule_run"
         ]
         assert len(runs) == 1
-        assert runs[0]["detail"]["error"] == "RuntimeError"
+        assert runs[0]["detail"]["error"] == "GraphExecutionUnavailableError"
     finally:
         stores.schedules._data.pop("s-fail", None)  # type: ignore[attr-defined]
         registry.deregister("sched-boom")
@@ -653,11 +682,29 @@ class _RecordingStore:
 
 
 def _run_evaluate(sid: str, stub: Any, *, now: datetime, store: Any = None) -> None:
+    import services.dag_agents as dag_agents
     import services.scheduler as sched
 
     runner = sched._ScheduleRunner()
     runner._canonical_store = staticmethod(lambda: store)  # type: ignore[method-assign]
-    asyncio.run(runner._evaluate_schedule(sid, stub, now=now))
+    previous = getattr(dag_agents, "run_registered_dag", None)
+
+    async def _fake_registered_dag(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
+        del args, kwargs
+        return (
+            SimpleNamespace(source_template=SimpleNamespace(template_version=1)),
+            SimpleNamespace(
+                run=SimpleNamespace(run_id="scheduler-test-run", status=RunStatus.COMPLETED)
+            ),
+        )
+
+    if store is not None:
+        dag_agents.run_registered_dag = _fake_registered_dag  # type: ignore[assignment]
+    try:
+        asyncio.run(runner._evaluate_schedule(sid, stub, now=now))
+    finally:
+        if store is not None and previous is not None:
+            dag_agents.run_registered_dag = previous  # type: ignore[assignment]
 
 
 def test_an_unregistered_template_leaves_the_occurrence_owed() -> None:
@@ -686,7 +733,7 @@ def test_an_unregistered_template_leaves_the_occurrence_owed() -> None:
 
 
 def test_the_owed_occurrence_fires_once_the_template_resolves() -> None:
-    """The other half: leaving it owed is only right if it can still happen."""
+    """Leaving an occurrence owed lets it fire once its template resolves."""
     import stores
 
     now = datetime(2026, 8, 21, 12, 5, tzinfo=UTC)
@@ -715,7 +762,7 @@ def test_the_owed_occurrence_fires_once_the_template_resolves() -> None:
 
 
 def test_the_cursor_records_the_run_that_claimed_the_occurrence() -> None:
-    """`last_run_id` must resolve to the canonical Run, not to nothing."""
+    """`last_run_id` resolves to the canonical Run, not to nothing."""
     import stores
 
     _register("sched-cursor")
@@ -731,7 +778,6 @@ def test_the_cursor_records_the_run_that_claimed_the_occurrence() -> None:
         fire = store.fires[0]
         assert fire["schedule_id"] == "s-cursor"
         assert isinstance(fire["run_id"], str) and fire["run_id"]
-        # The next occurrence, computed from the nominal fire rather than now.
         assert fire["next_due_at"] == datetime(2026, 8, 21, 13, 0, tzinfo=UTC)
         row = stores.schedules._data["s-cursor"]  # type: ignore[attr-defined]
         assert row.last_run == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
@@ -772,8 +818,8 @@ def test_the_durable_cursor_outranks_the_in_memory_row() -> None:
         stores.schedules._data.pop("s-restart", None)  # type: ignore[attr-defined]
 
 
-def test_without_a_bridge_the_scheduler_still_fires() -> None:
-    """No Container, no canonical store — the loop degrades, it does not stop."""
+def test_without_a_bridge_the_scheduler_does_not_fire_graph_work() -> None:
+    """No Container means Graph execution is explicitly unavailable."""
     import stores
 
     _register("sched-no-bridge")
@@ -785,7 +831,7 @@ def test_without_a_bridge_the_scheduler_still_fires() -> None:
     try:
         _run_evaluate("s-nb", stub, now=now, store=None)
         row = stores.schedules._data["s-nb"]  # type: ignore[attr-defined]
-        assert row.last_run == datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+        assert row.last_run == now - timedelta(hours=1)
     finally:
         stores.schedules._data.pop("s-nb", None)  # type: ignore[attr-defined]
 
@@ -967,8 +1013,7 @@ def test_the_disable_is_not_resurrected_by_the_next_tick() -> None:
 
 
 def test_the_row_carries_the_run_that_claimed_the_occurrence() -> None:
-    """AC: `last_run_id` on the row resolves to the canonical Run. `last_run`
-    alone said only *that* something fired."""
+    """`last_run_id` on the row resolves to the canonical Run."""
     import stores
 
     from maistro.scheduling import InMemoryScheduleStore
@@ -1002,12 +1047,12 @@ def _with_store(monkeypatch: pytest.MonkeyPatch, store: Any) -> None:
     monkeypatch.setattr(_ScheduleRunner, "_canonical_store", staticmethod(lambda: store))
 
 
-def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The endpoint used to stamp `last_run` and stop: no Run, no cursor,
-    nothing counted. That is the receipt-for-work-that-never-started defect
-    #231 removed from the tick path, still live on the route."""
+def test_a_manual_run_is_unavailable_without_the_canonical_spine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual Graph fire reports unavailable and leaves no cursor stamp."""
     import stores
-    from services.scheduler import fire_now
+    from services.scheduler import ScheduleNotFireable, fire_now
 
     from maistro.scheduling import InMemoryScheduleStore
 
@@ -1018,76 +1063,83 @@ def test_a_manual_run_creates_a_run_and_records_it(monkeypatch: pytest.MonkeyPat
     _with_store(monkeypatch, store)
     before = len(stores.audit_log)
     try:
-        run_id = asyncio.run(fire_now("s-man"))
-        assert run_id
+        with pytest.raises(ScheduleNotFireable, match="could not create a Run"):
+            asyncio.run(fire_now("s-man"))
 
-        runs = _schedule_runs("s-man", since=before)
-        assert [r["detail"]["run_id"] for r in runs] == [run_id]
-
+        assert _schedule_runs("s-man", since=before) == []
         row = stores.schedules._data["s-man"]  # type: ignore[attr-defined]
-        assert row.last_run_id == run_id, "the stamp now names the Run behind it"
-        assert row.last_run is not None
-
-        recorded = asyncio.run(store.get("s-man"))
-        assert recorded is not None
-        assert recorded.runs_so_far == 1, "a manual fire is a fire, and counts"
-        assert recorded.last_run_id == run_id
+        assert row.last_run_id is None
+        assert row.last_run is None
     finally:
         stores.schedules._data.pop("s-man", None)  # type: ignore[attr-defined]
 
 
 def test_a_manual_run_preserves_the_http_requests_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1063: `POST /v1/schedules/{id}/run` is a real HTTP request that
-    RequestIDMiddleware already bound an id for -- `fire_now` must forward
+    RequestIDMiddleware already bound an id for -- the fire must forward
     it rather than minting an unrelated one, or the request/response and the
     resulting Run's provenance would carry two different correlation ids for
-    the same logical request."""
+    the same logical request. The canonical admitter stamps the ambient id
+    onto the Run it admits (#1113: the compatibility store this Run used to
+    land in no longer exists)."""
     import stores
-    from services.scheduler import fire_now
 
     from maistro.observability.correlation import bind_execution_context
-    from maistro.scheduling import InMemoryScheduleStore
 
     _register("sched-manual-reqid")
-    stub = _bounded_stub("s-man-reqid", "sched-manual-reqid")
-    stores.schedules._data["s-man-reqid"] = stub  # type: ignore[attr-defined]
-    _with_store(monkeypatch, InMemoryScheduleStore())
-    try:
+    row = _canonical_row("s-man-reqid")
+    row.mission_template_id = "sched-manual-reqid"
+    stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+
+    async def scenario() -> tuple[Any, str | None]:
+        container, _root = await _canonical_manual_fixture()
+        _with_container(monkeypatch, container)
+        from services.scheduler import fire_now
+
         with bind_execution_context(request_id="http-req-42"):
-            run_id = asyncio.run(fire_now("s-man-reqid"))
+            return container, await fire_now("s-man-reqid")
 
-        from services.dag_agents import _fallback_run_store
-
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
+    container, run_id = asyncio.run(scenario())
+    try:
+        assert run_id
+        run = asyncio.run(container.run_store.get_run(run_id))
+        assert run is not None
         assert run.provenance["request_id"] == "http-req-42"
     finally:
-        stores.schedules._data.pop("s-man-reqid", None)  # type: ignore[attr-defined]
+        stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
 def test_a_manual_run_with_no_ambient_request_mints_its_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A manual fire triggered with no request id in scope (e.g. a script
-    calling the service function directly) still gets a real one, not a
-    blank provenance field."""
+    calling the service function directly) still starts work and stays
+    correlatable by its own Run id: the canonical admitter stamps provenance
+    it was given (#1113) and never fabricates a correlation id the request
+    did not carry."""
     import stores
-    from services.scheduler import fire_now
-
-    from maistro.scheduling import InMemoryScheduleStore
 
     _register("sched-manual-noreqid")
-    stub = _bounded_stub("s-man-noreqid", "sched-manual-noreqid")
-    stores.schedules._data["s-man-noreqid"] = stub  # type: ignore[attr-defined]
-    _with_store(monkeypatch, InMemoryScheduleStore())
+    row = _canonical_row("s-man-noreqid")
+    row.mission_template_id = "sched-manual-noreqid"
+    stores.schedules._data[row.id] = row  # type: ignore[attr-defined]
+
+    async def scenario() -> tuple[Any, str | None]:
+        container, _root = await _canonical_manual_fixture()
+        _with_container(monkeypatch, container)
+        from services.scheduler import fire_now
+
+        return container, await fire_now("s-man-noreqid")
+
+    container, run_id = asyncio.run(scenario())
     try:
-        run_id = asyncio.run(fire_now("s-man-noreqid"))
-
-        from services.dag_agents import _fallback_run_store
-
-        run = _fallback_run_store._rows[run_id].run  # type: ignore[attr-defined]
-        assert run.provenance.get("request_id")
+        assert run_id
+        run = asyncio.run(container.run_store.get_run(run_id))
+        assert run is not None
+        assert run_id not in run.provenance.values()
+        assert "request_id" not in run.provenance
     finally:
-        stores.schedules._data.pop("s-man-noreqid", None)  # type: ignore[attr-defined]
+        stores.schedules._data.pop(row.id, None)  # type: ignore[attr-defined]
 
 
 def test_a_manual_run_that_cannot_start_leaves_no_stamp(
@@ -1127,10 +1179,9 @@ def test_a_manual_run_respects_the_bound(monkeypatch: pytest.MonkeyPatch) -> Non
     _with_store(monkeypatch, store)
     before = len(stores.audit_log)
     try:
-        asyncio.run(fire_now("s-man-bound"))
-        with pytest.raises(ScheduleNotFireable, match="all 1 of its runs"):
+        with pytest.raises(ScheduleNotFireable, match="could not create a Run"):
             asyncio.run(fire_now("s-man-bound"))
-        assert len(_schedule_runs("s-man-bound", since=before)) == 1
+        assert len(_schedule_runs("s-man-bound", since=before)) == 0
     finally:
         stores.schedules._data.pop("s-man-bound", None)  # type: ignore[attr-defined]
 

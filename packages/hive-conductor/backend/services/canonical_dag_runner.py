@@ -24,7 +24,12 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from services.dag_agents import _container, get_run_store
+from services.dag_agents import (
+    GraphExecutionUnavailableError,
+    _canonical_execution_stores,
+    _container,
+    get_run_store,
+)
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
@@ -333,12 +338,12 @@ async def _scope(
         raise DagWorkspaceSelectionError("workspace_id does not match authorized scope")
     if project_id is not None and project_id != scope.project_id:
         raise DagWorkspaceSelectionError("project_id does not match authorized scope")
-    container = _container()
-    return (
-        scope.workspace_id,
-        scope.project_id,
-        container.run_store if container is not None else None,
-    )
+    # Scope is executable only when both canonical stores are wired. The
+    # authorized scope names *where* the Run lives; it is never authority to
+    # run without the canonical spine (#1113) — no compatibility store, no
+    # success outside Run/NodeRun/Attempt.
+    canonical_run_store, _graph_run_store = _canonical_execution_stores()
+    return scope.workspace_id, scope.project_id, canonical_run_store
 
 
 def _node_env(
@@ -424,7 +429,7 @@ def _recovery_resolver(run: Run):
 async def recover_stranded_dag_runs(*, limit: int = 100) -> int:
     """Recover only canonical Runs admitted by the shipped legacy DAG adapter."""
     container = _container()
-    if container is None or container.graph_run_store is None:
+    if container is None or container.run_store is None or container.graph_run_store is None:
         return 0
     return await recover_queued_graph_runs(
         store=container.graph_run_store,
@@ -453,7 +458,7 @@ async def wake_due_dag_runs(*, limit: int = 100) -> int:
     bus exactly as ``recover_abandoned_attempts`` reports them (#62).
     """
     container = _container()
-    if container is None or container.graph_run_store is None:
+    if container is None or container.run_store is None or container.graph_run_store is None:
         return 0
     return await resume_due_graph_runs(
         store=container.graph_run_store,
@@ -529,12 +534,16 @@ async def execute_dag(
     if user_id and user_id != scope.user_id:
         raise DagWorkspaceSelectionError("user_id does not match authorized scope")
     user_id = scope.user_id
-    resolved_workspace, resolved_project, canonical_run_store = await _scope(
-        dag_data,
-        scope=scope,
-        workspace_id=workspace_id,
-        project_id=project_id,
-    )
+    try:
+        resolved_workspace, resolved_project, canonical_run_store = await _scope(
+            dag_data,
+            scope=scope,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
+        graph_run_store = get_run_store()
+    except GraphExecutionUnavailableError as exc:
+        return exc.result
     graph = graph_from_legacy_dag(
         dag_data,
         workspace_id=resolved_workspace,
@@ -550,19 +559,16 @@ async def execute_dag(
         "execution_mode": execution_mode,
     }
 
-    admitted_run_id = None
-    if canonical_run_store is not None:
-        admitted = await canonical_run_store.create_run(
-            graph,
-            initial_status=RunStatus.QUEUED,
-            actor_principal_id=user_id or None,
-            provenance=provenance,
-        )
-        admitted_run_id = admitted.run_id
+    admitted = await canonical_run_store.create_run(
+        graph,
+        initial_status=RunStatus.QUEUED,
+        actor_principal_id=user_id or None,
+        provenance=provenance,
+    )
 
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
+        store=graph_run_store,
         node_resolver=_resolver(
             raw_by_id,
             task_desc=task_desc,
@@ -579,7 +585,7 @@ async def execute_dag(
             ),
         ),
         actor_principal_id=user_id or None,
-        run_id=admitted_run_id,
+        run_id=admitted.run_id,
         run_store=canonical_run_store,
         provenance=provenance,
     )
