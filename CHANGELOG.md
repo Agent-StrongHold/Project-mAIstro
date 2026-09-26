@@ -25,6 +25,28 @@ or placeholder-only section.
 
 ### Security
 
+- **Retired the process-local Home Assistant confirmation store and
+  `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
+  /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer
+  mounted: the GETs answer 404, and the POST answers 405 wherever the SPA is
+  served (its GET-only catch-all owns every path), 404 otherwise. The respond
+  route needed only authentication and wrote Home Assistant state; its
+  in-memory store (`_PENDING_CONFIRMS`) had no production producer, so it
+  could never hold a real confirmation. Nothing in production imported
+  `services/ha_tools.py` either (its `ha_confirm`/`ha_control` tool
+  definitions were never offered to a model), so the module is deleted with
+  `send_confirm` and the store. Human approval has one model: a waiting human
+  NodeRun answered through `/v1/hitl`; any future HA push confirmation must be
+  a notification transport for that NodeRun.
+- **Tool-result governance is pinned across real Agent strategies (#1202,
+  partial).** A regression suite drives the shipped ReAct, Artificer and
+  BuildersLearning strategies through `Agent.handle` with a real Warden and
+  Sentinel (BuildersLearning delegates to ReAct on that path). It checks that
+  a PII-bearing or prompt-injection tool result reaches the model as the same
+  redacted text or Sentinel refusal, and never raw, for each of them.
+  Direct and PlanExecute are not covered yet. Test-only; no runtime behavior
+  changes.
+
 - **Hive schedules are bound to their owner's Workspace (#1201, partial).**
   `POST /v1/schedules` now requires a `workspace_id` selection (optional
   `project_id`), admits it through the same canonical Workspace/Project
@@ -261,6 +283,59 @@ or placeholder-only section.
 
 ### Added
 
+- **Durable user model: `UserModelFact` and self-consented promotion
+  (#1047, partial).** New `maistro.memory.user_model` package: a frozen,
+  revisioned `UserModelFact` owned by the canonical user id (evidence refs,
+  confidence, `active`/`under_review`/`superseded`/`tombstoned` state,
+  validity window, sensitivity, reusable flag, correction provenance, persona
+  hints), a `UserModelStore` protocol, and an in-memory store.
+  `promote_evidence` is the only write path from episodic memory: it
+  promotes only the acting user's own memory (cross-user still needs SPEC-242
+  consent), audits every attempt, refuses to recreate a tombstoned lineage or
+  revive a corrected statement, and puts contradicted facts under review with
+  a new revision instead of overwriting them. `correct_fact` and
+  `forget_fact` are the owner's explicit revise/delete paths. The decision
+  is recorded in ADR-092526-4391 (Proposed). Durable SQLite/PostgreSQL
+  stores, the migration, and recall follow in later PRs.
+
+- **`GET /health/ready` reports the serving container's cgroup ceilings
+  (#75, partial).** A new `container_limits` field reads cgroup v2
+  `memory.max`, `pids.max` and `cpu.max` at the hierarchy root, which under
+  a private cgroup namespace is the container's own cgroup. It reports
+  `memory_max_bytes`, `pids_max` and `cpu_max_cores`. Each value is a
+  number, `"unbounded"` when no limit is set at that level (an enclosing
+  cgroup may still impose one), or `"unknown"` when nothing readable is
+  there: cgroup v1, a host-root view, or unparseable content. Because the
+  `/health` prefix is public and rate-limit exempt, the field is `null`
+  unless the caller presents an admin bearer token (or API auth is
+  disabled). It never changes readiness status. Compose profiles still
+  declare no ceilings (#862).
+
+- **Proposed ADR for the durable cross-Workspace user model (#1047, partial).**
+  ADR-092526-4391 (Proposed) records the owner's decisions on #1047. The user model is a
+  separate `UserModelFact` record that does not decay. It has revision lineage,
+  sensitivity and shareability, a validity window, and tombstones that block
+  re-promotion. Promoting a Workspace-, Project- or Agent-scoped fact into the
+  same user's model is automatic self-consent with an audit entry, and the ADR
+  proposes that amendment to SPEC-242; cross-user and team/org/global widening still need a `ConsentTask`.
+  Decision only: no store, migration or runtime behaviour changes yet.
+
+- **Workspace Attention read: `GET /v1/workspaces/{workspace_id}/attention`
+  (#1049, partial).** Computes the Workspace's Attention items on every read
+  from canonical sources — human-paused NodeRuns in the durable run store and
+  failed Runs behind the scoped Run-inspection door — and persists nothing.
+  Each item carries its source id, class, rank, a human-readable reason, the
+  evidence behind it, and the existing HITL answer route. A persisted HITL
+  deadline within 24 hours makes an item `time_sensitive`; every other human
+  pause and failed Run is `queued`, and age alone never raises a class. A
+  pause whose deadline has already passed stays `queued` without an answer
+  link, since the store refuses late answers. A summary (`counts_by_class`,
+  `highest_class`, `rising`, `truncated`) lets a UI show what is waiting
+  without inventing importance. Items are capped at 200 after ordering. Failed
+  Runs come from the bounded Recent Runs projection window. Non-members get the same 404 a missing
+  Workspace gets; reading requires `dags.write`, the scope `/v1/hitl/pending`
+  takes, since items carry the paused node's question.
+
 - **Every parked Graph pause reason must name a reachable production waker
   (#1192, partial).** A new architecture test maps each
   `PAUSE_RESUME_CONDITIONS` reason to its production waker or to a known-gap
@@ -290,9 +365,10 @@ or placeholder-only section.
   entry, an entry names a table nothing creates, a deletion path does not
   import, or `security_violations` or `usage_events` is dropped. A table with
   no production-driven purge is recorded as `undecided` against #325. This
-  includes `security_violations`, `usage_events`, `task_idempotency`,
-  `security_rate_limits` and PostgreSQL `sessions`. Nothing is written down
+  includes `security_violations`, `usage_events`, `task_idempotency` and
+  `security_rate_limits`. Nothing is written down
   as retained forever unless someone decided it.
+
 - **Stable Workspace Agent identity and per-user default Workspace
   ([#1037](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1037),
   ADR-092326-7ed7).** Hive's `services/workspace_agent.py`
@@ -308,6 +384,7 @@ or placeholder-only section.
   `POST /v1/workspaces/default` (gated by `workspaces.write`) returns the
   caller's default Workspace with its Workspace Agent id. Chat turns do not
   consume either resolver yet; that is the next #1037 slice.
+
 - **Every maistro-core node kind is proven to get the Container's own
   authorities through `Container.node_resolver()` (#44, #1082).** A new sweep
   resolves each registered core kind that declares an authority through a real
@@ -443,6 +520,82 @@ or placeholder-only section.
 
 ### Changed
 
+- **Terminal BACKLOG.md items must carry closure evidence (#101, partial).**
+  `scripts/check-backlog-consistency.py` now fails an `Implemented` item with
+  no PR/issue link or existing repo file, a cited repo path that no longer
+  exists, and an `Abandoned` item with no reason. The 21 items closed before
+  the rule are frozen with their status in a legacy set that can only shrink,
+  so a new closure cannot pass without a link or file. The gate checks that
+  evidence is present, not that it proves the claim; a reviewer still judges
+  that.
+
+- **A chat turn that cannot get its canonical Run is refused with a retryable
+  503 instead of answered ungoverned (#1108, partial).**
+  Owner decision 2026-09-23, amending ADR-082326-c126 and superseding #223 AC4.
+  `Container.route_request` raises the new `maistro.runs.chat_refusal.ChatTurnRefused`
+  when no chat admitter is wired, admission fails (after compensating any Run it
+  persisted), there is no Run store, or the spine fails (with any error) before
+  the dispatch started — the `except RunIntegrityError: return await dispatch()`
+  fallback is gone, and an error the dispatch itself raised is never turned
+  into a retryable refusal, so
+  nothing reaches the model outside a Run/NodeRun/Attempt. maistro-server
+  `/v1/chat/completions` maps it to `503` + `Retry-After` for both
+  `stream=false` and `stream=true` (admission is refused before the
+  `StreamingResponse` is built; a refusal inside the stream emits an
+  `unavailable` SSE error event), the app's `HTTPException` handler now
+  keeps route-supplied headers, and CORS exposes `Retry-After` to browser clients. Post-dispatch spine failures still return the
+  answer once as `ChatDispatchUnrecorded`. Hive `/chat/complete`,
+  `/chat/stream`, `/voice/intent` and Workspace Agent chat are not yet covered.
+
+- **Hive conversation-only chat and voice turns run as canonical chat Runs
+  (#1037).**
+  `/v1/chat/complete`, `/v1/chat/stream` and `/v1/voice/intent` now admit
+  every model-reaching turn as a Run over the one-node chat Graph in the
+  turn's Workspace (the named one when the caller can see it, else the
+  caller's default Workspace), call the conversation-only model from inside
+  that Run's Attempt stamped with the Workspace Agent, and close the Run
+  through the Container (FAILED on a model error). Responses carry `run_id`
+  and the Workspace Agent id under `agent` additively (`run_id` on the
+  stream's `done` event for `/stream`). A turn that cannot be admitted is
+  refused with `503` and `Retry-After` before the model is called -- which
+  includes a Hive running on the stub engine with no maistro-core runtime
+  (`MAISTRO_ROUTER_API_KEY` unset or the bridge failed to start): chat and
+  voice now need the runtime. Tools stay disabled; session ids are recorded
+  as Run provenance only.
+
+- **Hive and maistro-server now share one durable Workspace owner (#37,
+  ADR-092326-97c4).** The shipped `docker-compose.yml` gives `hive-conductor`
+  the same `DATABASE_URL`/`DB_*` as `maistro-engine` and starts it only after
+  PostgreSQL and the (self-migrating) engine are healthy, so Hive's embedded
+  Container uses the `canonical_workspaces` tables maistro-server serves. On
+  that durable path Hive's `stores.workspaces` mirror is imported once
+  (journal-idempotent, never resurrecting a Workspace or membership deleted or
+  revoked canonically) and is no longer written or replayed; a configured
+  database whose Container failed to start now fails Workspace authorization
+  closed instead of reviving the mirror. The no-database dev path is unchanged.
+  Hive's whole embedded Container (Runs, sessions, learnings, schedules) now
+  uses that shared database too, not only its Workspace store.
+  Hive's `/health/ready` now counts that store: with a database configured
+  and no Container it answers 503 with `ready: false`, so Compose stops
+  reporting an instance whose Workspace API only fails. The Hive image now
+  ships the agent roster (`agents/` → `/app/backend/agents`), which the
+  embedded bridge requires to start at all. `create_container()` no longer
+  refuses to build when the `identity` extra is missing (the Python 3.14 Hive
+  image cannot install it): it leaves the identity lifecycle stores unwired,
+  and the Container's identity methods still raise the ImportError that names
+  the extra.
+
+- **`sessions` and `session_turns` are recorded as TTL-purged on both
+  backends (#325).**
+  The retention inventory said PostgreSQL session rows accumulate, but
+  `PgSessionStore.append_messages` (the store the PostgreSQL container wires)
+  already deletes expired messages and turn markers inside each writing
+  append transaction, as `SqliteSessionStore` does after commit. The purge is
+  driven by appends, so expired rows persist until the next one. Both entries are now
+  `ttl_purge` with the append path as their deletion path, backed by a SQLite
+  and PostgreSQL-gated regression that ages real rows past the TTL and proves
+  the next append removes them from both tables.
+
 - **A declared correlation field must have a production producer (#63).** A
   fitness test scans production code (`packages/*/src` and the hive, turing
   and canvas backends) for `bind_execution_context(...)` keywords. It fails
@@ -523,6 +676,93 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Expired task idempotency claims are now purged (#325, partial).**
+  `purge_expired` existed on every `task_idempotency` backend, but nothing in
+  production called it, so every `POST /tasks` left a row behind forever. The
+  claim path shared by all three backends now runs the purge itself, just
+  before claiming. It runs at most once every 300 s per store (monotonic
+  clock; the first run comes one interval after the store is built), deletes
+  at most 500 rows per run, and never waits for a purge already running. A run
+  that deletes a full 500 rows means a backlog, so the next claim purges again
+  without waiting. A failed purge is logged and counted in
+  `maistro_task_idempotency_purge_failures_total`; it never fails the
+  admission. The PostgreSQL purge now re-checks `expires_at` on each
+  row it deletes, so a claim another replica just renewed survives. A
+  PostgreSQL test covers that race. The retention inventory lists
+  `task_idempotency` as `ttl_purge`.
+
+- **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
+  The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
+  with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,
+  when the recursion depth cap is hit, shape review does not approve, the
+  synthesized config cannot be dispatched (unregistered, disallowed or
+  duplicated kinds, an unusable entry, no Workspace/Project scope), or the
+  child Run ends FAILED, CANCELLED or TIMED_OUT — the last naming the child
+  Run. It used to complete with `success=False` (or, for an undispatchable
+  config, `success=True` and "not executed") inside its output, letting the
+  parent Run report success for work that never happened. A child that
+  COMPLETED, or is parked WAITING/PAUSED, still completes the node. A failed
+  node whose child was dispatched still spends its recursion level, so a
+  `max_attempts` retry or a `continue_on_failure` successor starts one level
+  deeper rather than spawning again at the same depth. Note the stricter
+  outcome for production-composed nodes: with no governed permission source
+  wired, the #1165 fail-closed Sentinel never approves a shape, so a Run
+  containing `agent.synth_dag` now fails rather than completing with a
+  refusal inside its output.
+- **Canvas job leases are fenced per claim, and stalled or cancelled jobs
+  settle correctly (#735, follow-up to PR #1535).** A worker's completion write
+  and lease heartbeat are now fenced on the claim's attempt number, not just
+  the worker id. Before, every instance defaulted to `canvas-worker-1`, so a
+  stale call could overwrite a newer claim of the same job. Completion and
+  reaper writes are now a compare-and-set on `running`, so a user
+  cancellation that lands mid-call or during failure reconciliation is no
+  longer overwritten as `done`/`failed`. A fenced write against another org's
+  job reports "not found", not "lease lost", so it no longer reveals that the
+  job exists. Lease expiry is reported as
+  `Generation failed: canvas worker lease expired before the job completed.`
+  instead of a generic provider error. A claimed job is bounded by the new
+  `max_execution_seconds` (default 1800, on `CanvasJobRunner`,
+  `build_canvas_runtime` and `build_canvas_router`, and as
+  `execution_timeout_s` on `CanvasExecutor`). The canonical runtime enforces
+  it as a retryable timeout, not a user cancellation, and lease renewal stops
+  once it passes. The shutdown handler no longer waits indefinitely on a
+  runner task that ignores cancellation. Admission recovery and
+  `claim_next_pending` enforce `max_attempts`, so a job whose worker keeps
+  dying before its first stage can no longer run past its retry limit. An
+  over-budget `pending` receipt is reaped and failed through canonical
+  reconciliation. Recovery writes are a compare-and-set on the state they
+  read, and a job's attempt counter never moves backwards.
+
+- **The Reactor persists through the Conductor's one State writer and
+  configured state database (#1135, #1178).** `maistro.reactor.Reactor` now takes the Foundation's `State`
+  (`state=`): `state_submit` goes through `State.submit`, `state_query`
+  through `State.open_reader`, and `reactor_log` is created by the
+  `reactor_log_001` State migration. Hive's Foundation passes its State
+  (built from `CONDUCTOR_STATE_DB`) instead of hard-coding
+  `data_dir/state.db`, so the Reactor no longer opens a second raw SQLite
+  writer or writes to a different file than the rest of the Conductor.
+  `state_db_path=` is deprecated and refused alongside `state=`.
+  `state_submit` is now fire-and-forget like `State.submit` (a failing write
+  is logged by the writer, not raised into the handler, and is visible to
+  `state_query` once committed). Deployments that set a non-default
+  `CONDUCTOR_STATE_DB` previously left `reactor_log` rows in a separate
+  `data_dir/state.db`; those rows are not migrated.
+
+- **develop CI is green again: MinIO without registry auth, and the
+  credential-authority self-checks judge against a real base.** MinIO archived
+  its community server, so `quay.io/minio/minio` now answers 401 and dl.min.io
+  answers 410 for every release binary; the `object storage (MinIO)` and
+  `coverage (MinIO)` jobs now build the same pinned
+  `RELEASE.2025-04-22T22-12-26Z` from source through the Go module proxy
+  (checksum-verified against sum.golang.org, no secret) and run the binary on
+  the runner. Separately, the three `tests/test_credential_authority.py`
+  checks that audit the real repository (#1470) did not request the
+  `real_repository_ratchet_base` fixture, so on every push to `develop` their
+  baseline resolved to HEAD and `SelfReferentialBaseline` failed them (and the
+  quality coverage gate that reruns the suite). They now opt in like the other
+  shipped-state gate self-checks and compare against the revision the push
+  replaces.
+
 - **The DAG Builder's Run socket now matches `POST /v1/dags/{id}/run`
   (#766).**
   A run started over `/v1/ws/dags/{id}/run` now records the same Recent Runs
@@ -534,6 +774,21 @@ or placeholder-only section.
   never the raw exception message, and the traceback goes to the server log.
   The shipped-surface ledger now lists the socket as `canonical` instead of
   `unresolved`.
+
+- **A Graph Run stranded RUNNING by a crash between its continuation write and
+  the canonical mirror is now settled or resumed (#1151).** The persistence
+  reconcile that starts every due and queued tick now repairs a RUNNING Run
+  whose continuation is already COMPLETED, FAILED or (non-HITL) CANCELLED. A
+  COMPLETED Run carries the completed NodeRun's result; a FAILED or CANCELLED
+  one states that its original error was not persisted rather than passing a
+  NodeRun's error off as the Run's cause. It acts only once the Run's spine has
+  been quiet and the same terminal continuation version has been observed for
+  60 seconds, so a walker between its two writes is never mistaken for a
+  crash. A continuation still QUEUED under a RUNNING Run whose resume claim has
+  elapsed (judged at the tick's own evaluation time) is rewritten to mirror
+  RUNNING, so the due tick resumes it; a live claim is left alone. Canonical RUNNING Runs are
+  swept with a cursor that advances across ticks, so a stranded Run behind any
+  number of other RUNNING Runs is reached in a bounded number of ticks.
 
 - **Hive now ticks the Container's canonical recovery seams (#62).**
   `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
@@ -974,7 +1229,10 @@ or placeholder-only section.
   `RuntimeDeadlineExceeded`; a cancel or deadline whose own record then
   fails arrives as the cancellation, never as a bare store error the
   pre-dispatch fallback would answer again; a dispatch that caught the
-  deadline and answered late still arrives as `RuntimeDeadlineExceeded`; an
+  deadline and answered late still arrives as `RuntimeDeadlineExceeded`, even
+  when its TIMED_OUT record then fails (the deadline is found on either link
+  of the exception chain, and the store error is chained as its explicit
+  cause so it shows in the traceback); an
   answer behind a Run already fenced CANCELLED ends the turn cancelled rather
   than being handed back; and a failure before the dispatch still propagates
   unchanged without reaching the model.

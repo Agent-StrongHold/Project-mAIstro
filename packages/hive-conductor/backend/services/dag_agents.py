@@ -192,29 +192,39 @@ _fallback_run_store = InMemoryDurableRunStore()
 _fallback_run_store._rows = _fallback_graph_store._rows
 
 
-def get_run_store() -> DurableRunStore:
-    """The durable store backing registered-DAG execution.
+def get_canonical_run_store() -> DurableRunStore:
+    """Return the graph store projected onto the canonical execution spine.
 
-    The Container's `graph_run_store` when there is one -- a `DurableRunStore`
-    in interface only, whose Run, NodeRuns and Attempts are rows on the
-    canonical spine (#44). Standalone mode uses the same canonical adapter over
-    an in-memory RunStore; a deployment without a Container is process-local,
-    but it does not create a graph-only lifecycle that can contradict a Run.
+    HITL is not available against the standalone compatibility store. Refusing
+    that path is important: a pending human decision must never be written to
+    process-local state that the canonical Run API and a restarted worker
+    cannot see.
     """
     container = _container()
     if container is None:
-        # Legacy HITL callers still receive the compatibility facade. Shipped
-        # DAG execution does not call this fallback; it selects the canonical
-        # graph store explicitly above.
-        return _fallback_run_store
+        raise RuntimeError("canonical graph execution spine is unavailable")
     # An attribute load, not getattr(): check-wiring-reads.py (#236) walks
     # attribute loads, so a getattr("graph_run_store") read is invisible to it
     # and the Container field would report as wired-but-unread. Naming it here
     # is what holds this wiring in place.
     store = container.graph_run_store
     if store is None:
-        raise RuntimeError("canonical DAG execution spine is unavailable")
+        raise RuntimeError("canonical graph execution spine is unavailable")
     return store  # type: ignore[no-any-return]
+
+
+def get_run_store() -> DurableRunStore:
+    """Return the graph store used by registered-DAG execution.
+
+    The no-container branch remains a deliberately isolated compatibility path
+    for non-HITL standalone DAG tests and deployments. Product HITL routes use
+    :func:`get_canonical_run_store` and therefore cannot accidentally expose or
+    mutate this process-local state.
+    """
+    try:
+        return get_canonical_run_store()
+    except RuntimeError:
+        return _fallback_run_store
 
 
 def get_registry() -> DagRegistry:
@@ -273,11 +283,16 @@ async def run_registered_dag(
         run_store = container.run_store
         graph_store = container.graph_run_store
         if run_store is None or graph_store is None:
-            raise RuntimeError("canonical DAG execution spine is unavailable")
+            raise RuntimeError("canonical graph execution spine is unavailable")
     else:
         # Standalone mode still uses the canonical Run -> NodeRun -> Attempt
         # store. It is process-local because no durable backend was configured,
-        # but it is not the retired graph-only lifecycle.
+        # but it is not the retired graph-only lifecycle. Human work is the one
+        # exception: a pending human decision must never be written to
+        # process-local state that the canonical Run API and a restarted worker
+        # cannot see.
+        if any(node.node_type.startswith("human.") for node in graph.nodes):
+            raise RuntimeError("canonical graph execution spine is required for human work")
         await _fallback_project_scope.ensure(workspace_id, project_id)
         run_store = _fallback_canonical_run_store
         graph_store = _fallback_graph_store

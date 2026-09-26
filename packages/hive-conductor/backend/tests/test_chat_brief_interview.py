@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 import stores
 
-pytestmark = [pytest.mark.contract("behavioral")]
+pytestmark = [pytest.mark.contract("behavioral"), pytest.mark.usefixtures("chat_run_spine")]
 
 
 @pytest.fixture(autouse=True)
@@ -211,24 +211,25 @@ def test_the_non_streaming_route_carries_the_same_brief(admin_client, authed_cli
     assert llm.calls == 0
 
 
-def test_a_workspace_the_caller_is_not_a_member_of_is_refused(
+def test_a_workspace_the_caller_cannot_touch_opens_no_interview_there(
     admin_client: Any, authed_client: Any, llm: Any
 ) -> None:
-    """A Workspace selection is an authorization boundary before anything
-    answers: a non-member may not open an interview in — or chat into — a
-    Workspace they cannot touch, because the turn would be admitted as a
-    canonical Run in someone else's Workspace (#1037)."""
+    """A Workspace the caller cannot touch is a boundary, not a refusal.
+
+    ADR-092326-7ed7 resolves a selection the caller cannot see as no
+    selection, so the turn is still answered — but never *there*: no
+    interview opens in the foreign Workspace and the model answers in the
+    caller's default Workspace, so no Run is admitted into someone else's
+    Workspace (#1037). Filing nothing in the named Workspace itself is
+    covered by test_chat_run_admission.py::
+    test_named_workspace_the_caller_is_not_a_member_of_files_nothing_there.
+    """
     ws = _workspace(admin_client, share_with_user=False)
-    r = authed_client.post(
-        "/v1/chat/stream",
-        json={
-            "messages": [{"role": "user", "content": "let's make a new video"}],
-            "model": "m",
-            "workspace_id": ws,
-        },
-    )
-    assert r.status_code == 403
-    assert llm.calls == 0
+    events = _stream(authed_client, "let's make a new video", ws)
+
+    assert [e["type"] for e in events] == ["done"]
+    assert "becomes a Goal" not in events[0]["content"]
+    assert llm.calls == 1
 
 
 @pytest.mark.ac("SPEC-091726-7c2a/AC-6")

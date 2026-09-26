@@ -4,6 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 from main import app
 
+# Model-reaching turns are admitted as canonical chat Runs (#1037).
+pytestmark = pytest.mark.usefixtures("chat_run_spine")
+
 client = TestClient(app)
 
 
@@ -34,6 +37,13 @@ def test_health() -> None:
     data = r.json()
     assert data["status"] == "ok"
     assert "uptime_seconds" in data
+    assert data["identity"]["status"] in {
+        "operational",
+        "disabled",
+        "misconfigured",
+        "unavailable",
+    }
+    assert "identity_required" in data
 
 
 @pytest.mark.ac("SPEC-176/AC-1")
@@ -43,6 +53,7 @@ def test_health_ready() -> None:
     body = r.json()
     assert body["ready"] is True
     assert "checks" in body
+    assert "identity" in body["checks"]
 
 
 def test_health_reports_degraded_when_no_llm_configured(
@@ -94,6 +105,48 @@ def test_health_ready_reports_llm_check_without_flipping_ready(
     body = client.get("/health/ready").json()
     assert body["checks"]["llm"] is False
     assert body["ready"] is True
+
+
+def test_health_survives_identity_probe_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A probe implementation failure is degraded liveness, not a 500: /health
+    stays 200 "ok" and reports the stable health_probe_failed status with
+    identity_required=True, so the UI cannot offer a guaranteed-to-fail
+    identity action while the probe itself is broken."""
+    import services.identity_health as identity_health_module
+
+    def _broken_probe() -> dict:
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(identity_health_module, "identity_health", _broken_probe)
+
+    r = client.get("/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "ok"
+    assert data["identity"] == {
+        "status": "misconfigured",
+        "reason": "health_probe_failed",
+    }
+    assert data["identity_required"] is True
+
+
+def test_health_ready_marks_identity_false_when_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing identity check must not flip readiness: it is reported as a
+    false `checks["identity"]` while the API stays in rotation on its own
+    keys (api + workspace authority)."""
+    import services.identity_health as identity_health_module
+
+    def _broken_probe() -> dict:
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(identity_health_module, "identity_health", _broken_probe)
+
+    r = client.get("/health/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["checks"]["identity"] is False
 
 
 def test_unauthenticated_api_returns_401() -> None:

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import stores
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from models.schemas import ChatCompletionRequest, ChatMessage, ChatSession, ChatSessionSummary
 from pydantic import BaseModel, ConfigDict
 from services.brief_chat import brief_turn
@@ -14,7 +15,6 @@ from services.chat_completion import build_llm_port
 from services.chat_completion import conversation_only as _conversation_only
 from services.chat_execution import (
     execute_conversation_turn,
-    request_workspace_id,
 )
 from services.chat_gate import (
     REASON_BUDGET_EXCEEDED,
@@ -23,9 +23,9 @@ from services.chat_gate import (
     gate_untrusted,
     openai_refusal,
 )
+from services.chat_runs import admit_turn, cancel_unstarted, execute_turn
 from services.owned_records import chat_sessions_for
 from services.program_hyperagent import user_id_from_request
-from services.workspace_authority import is_member
 
 router = APIRouter(tags=["chat"])
 
@@ -149,17 +149,6 @@ async def _gate_messages(req: ChatCompletionRequest, request: Request, surface: 
     return openai_refusal(decision)
 
 
-async def _authorize_selected_workspace(req: ChatCompletionRequest, request: Request) -> None:
-    """Authorize an explicit Workspace before canonical admission or model work."""
-    workspace_id = request_workspace_id(req)
-    if workspace_id is None:
-        return
-    user = getattr(request.state, "user", None) or {}
-    user_id = str(user.get("id") or user.get("username") or "")
-    if not await is_member(user_id, workspace_id):
-        raise HTTPException(status_code=403, detail="only a workspace member can chat in it")
-
-
 async def _contained_response(
     req: ChatCompletionRequest,
     request: Request,
@@ -199,10 +188,34 @@ async def _interview_turn(req: ChatCompletionRequest, request: Request) -> Any:
     return await brief_turn(user_id_from_request(request), workspace_id, last_user)
 
 
+def _conversation_messages(req: ChatCompletionRequest) -> list[dict]:
+    messages = list(req.messages)
+    if not any(message.get("role") == "system" for message in messages):
+        messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
+    return messages
+
+
+async def _admit(req: ChatCompletionRequest, request: Request, messages: list[dict]):
+    extra = req.model_extra or {}
+    return await admit_turn(
+        request,
+        messages,
+        workspace_id=extra.get("workspace_id"),
+        session_id=extra.get("session_id"),
+    )
+
+
+def _model_call(req: ChatCompletionRequest, messages: list[dict]):
+    async def call() -> dict:
+        llm = build_llm_port()
+        return await llm.complete(_conversation_only(req.model_copy(update={"messages": messages})))
+
+    return call
+
+
 @router.post("/complete")
 async def complete(req: ChatCompletionRequest, request: Request) -> dict[str, Any]:
     """Non-streaming conversational completion; model-driven tools are M0-disabled."""
-    await _authorize_selected_workspace(req, request)
     if _dashboard_edit_requested(req):
         # Do not send the dashboard builder prompt to a model at all. The SPA
         # interprets textual ```widget_update``` blocks, so tool disabling alone
@@ -223,15 +236,9 @@ async def complete(req: ChatCompletionRequest, request: Request) -> dict[str, An
         )
         response["brief"] = interview.payload()
         return response
-    messages = list(req.messages)
-    if not any(message.get("role") == "system" for message in messages):
-        messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
-
-    async def _dispatch() -> dict[str, Any]:
-        llm = build_llm_port()
-        return await llm.complete(_conversation_only(req.model_copy(update={"messages": messages})))
-
-    return await execute_conversation_turn(req, request, messages, _dispatch)
+    messages = _conversation_messages(req)
+    turn = await _admit(req, request, messages)
+    return await execute_turn(turn, messages, _model_call(req, messages))
 
 
 @router.post("/stream")
@@ -246,9 +253,6 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
     """
     import json
 
-    from fastapi.responses import StreamingResponse
-
-    await _authorize_selected_workspace(req, request)
     if _dashboard_edit_requested(req):
         return StreamingResponse(
             _contained_done_event(req, request, list(req.messages), _disabled_dashboard_response()),
@@ -270,33 +274,50 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def event_gen() -> AsyncIterator[str]:
+    # Admitted before the response exists, so a turn that cannot be admitted
+    # is a 503 rather than a 200 stream that then fails (#1037, #1108).
+    messages = _conversation_messages(req)
+    turn = await _admit(req, request, messages)
+    run_id = turn.run.run_id
+
+    started = False
+
+    async def event_gen():
+        nonlocal started
+        started = True
         try:
-            messages = list(req.messages)
-            if not any(message.get("role") == "system" for message in messages):
-                messages.insert(0, {"role": "system", "content": _CONVERSATION_SYSTEM_PROMPT})
-
-            async def _dispatch() -> dict[str, Any]:
-                llm = build_llm_port()
-                return await llm.complete(
-                    _conversation_only(req.model_copy(update={"messages": messages}))
-                )
-
-            result = await execute_conversation_turn(req, request, messages, _dispatch)
+            result = await execute_turn(turn, messages, _model_call(req, messages))
             choice = (result.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
-            event: dict[str, Any] = {"type": "done", "content": content}
-            if result.get("run_id"):
-                event["run_id"] = result["run_id"]
-            yield f"data: {json.dumps(event)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'content': content, 'run_id': run_id})}\n\n"
         except Exception as exc:
-            yield f"data: {json.dumps({'type': 'done', 'content': f'Error: {type(exc).__name__}'})}\n\n"
+            content = f"Error: {type(exc).__name__}"
+            yield f"data: {json.dumps({'type': 'done', 'content': content, 'run_id': run_id})}\n\n"
 
-    return StreamingResponse(
+    async def on_finished() -> None:
+        if not started:
+            await cancel_unstarted(turn)
+
+    return _RunStreamingResponse(
         event_gen(),
+        on_finished=on_finished,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+class _RunStreamingResponse(StreamingResponse):
+    """A stream that settles its admitted Run even if its body never runs."""
+
+    def __init__(self, content, *, on_finished, **kwargs) -> None:
+        super().__init__(content, **kwargs)
+        self._on_finished = on_finished
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._on_finished()
 
 
 def _brief_events(
@@ -309,7 +330,7 @@ def _brief_events(
 
     The deterministic reply replaces the model callback, not the canonical
     Run: the turn is admitted and terminalized through the same seam as every
-    contained answer before anything is streamed (#1037).
+    other contained answer before anything is streamed (#1037).
     """
     import json
 
@@ -322,16 +343,6 @@ def _brief_events(
         if response.get("run_id"):
             event["run_id"] = response["run_id"]
         yield f"data: {json.dumps(event)}\n\n"
-
-    return gen()
-
-
-def _single_done_event(content: str) -> AsyncIterator[str]:
-    """One `done` SSE frame for a response with no canonical runtime."""
-    import json
-
-    async def gen() -> AsyncIterator[str]:
-        yield f"data: {json.dumps({'type': 'done', 'content': content})}\n\n"
 
     return gen()
 

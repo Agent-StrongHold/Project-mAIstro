@@ -179,50 +179,61 @@ jobs:
   # aioboto3 from the import system rather than uninstalling it — so both halves
   # are checked in one environment.
   #
-  # Started as a step rather than under `services:`, for two reasons found the
+  # Started as a step rather than under `services:`, for reasons found the
   # hard way. The official `minio/minio` image needs `server /data` as a
   # command, and a `services:` block has no `command:` key at all — only
-  # `image`, `env`, `ports`, `options` and `credentials`. And the first version
-  # of this job named `bitnami/minio:latest`, which does not resolve: Bitnami
-  # retired their public tags, so every run died on `manifest unknown` before
-  # reaching a single test. An image name is not verified by being plausible.
-  # The move to the upstream image was not the end of it either: `minio/minio`
-  # on Docker Hub stopped serving anonymous pulls (`pull access denied`), so
-  # the image below names quay.io — where MinIO publishes the same RELEASE tag
-  # ci.yml pins — rather than `:latest`, so this job and ci.yml's conformance
-  # job exercise the same server build.
+  # `image`, `env`, `ports`, `options` and `credentials`. The first version of
+  # this job named `bitnami/minio:latest`, which stopped resolving when Bitnami
+  # retired their public tags (`manifest unknown` before a single test). An
+  # image name is not verified by being plausible. The upstream image did not
+  # last either: Docker Hub stopped serving `minio/minio` anonymously, and once
+  # MinIO archived the community server quay.io answered 401 and dl.min.io 410
+  # for the release binaries. So the step builds the RELEASE ci.yml pins from
+  # source via the Go module proxy (checksum-verified against sum.golang.org)
+  # and runs it on the runner, so this job and ci.yml's conformance job still
+  # exercise the same server build.
   coverage-archive:
     name: coverage (MinIO)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          # minio's go.mod names this toolchain; the module cache is not ours
+          # to key (no go.sum in this repo), so setup-go's cache stays off.
+          go-version: "1.24.2"
+          cache: false
       - name: Start MinIO
         run: |
           set -euo pipefail
-          image=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
-          # Pull before `docker run`, retrying the fetch alone. quay.io answered
-          # `502 Bad Gateway` on one PR run and `unauthorized: Unknown service
-          # key` on one merge-group run in a single night (2026-09-15), each
-          # before a test had run, and each cost a queue round: the automation
-          # that watches these PRs cannot re-run a job (403). Only the network
-          # step is retried, the same shape as scripts/prepull-base-images.sh;
-          # a MinIO that starts and never answers still fails once, below.
-          for attempt in 1 2 3 4; do
-            if docker pull "$image"; then
+          # Build the pinned RELEASE from source rather than pulling an image.
+          # MinIO archived the community server: quay.io now answers 401 for
+          # `minio/minio` and dl.min.io answers 410 for every release binary,
+          # so no anonymous prebuilt artifact remains. The source still does,
+          # through the Go module proxy, and `go install` checks every module
+          # it fetches against sum.golang.org, so the pin is content-verified
+          # without a secret. This pseudo-version is RELEASE.2025-04-22T22-12-26Z
+          # (commit 0d7408fc9969), the same server build the image pin named.
+          version=v0.0.0-20250422221226-0d7408fc9969
+          # Retry the fetch-and-build alone: a proxy hiccup is not a storage
+          # bug, and the automation that watches these PRs cannot re-run a
+          # job (403). A MinIO that starts and never answers still fails once.
+          for attempt in 1 2 3; do
+            if go install "github.com/minio/minio@${version}"; then
               break
             fi
-            if [ "$attempt" -eq 4 ]; then
-              echo "::error::could not pull $image after 4 attempts" >&2
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::could not build minio@${version} after 3 attempts" >&2
               exit 1
             fi
-            echo "::warning::pull of $image failed (attempt $attempt/4); retrying" >&2
+            echo "::warning::go install of minio@${version} failed (attempt $attempt/3); retrying" >&2
             sleep $((attempt * 5))
           done
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            "$image" server /data
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+            nohup "$(go env GOPATH)/bin/minio" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:9000 >"$RUNNER_TEMP/minio.log" 2>&1 &
           # Poll the health endpoint rather than sleeping a fixed amount: a
           # fixed sleep is either slower than it needs to be or racy, and the
           # race surfaces as a connection error that reads exactly like the
@@ -235,7 +246,7 @@ jobs:
             sleep 2
           done
           echo "::error::MinIO did not become ready within 60s"
-          docker logs minio
+          cat "$RUNNER_TEMP/minio.log"
           exit 1
       - uses: actions/setup-python@v7
         with:
@@ -353,6 +364,10 @@ jobs:
       # while its PostgreSQL leg was passing — in the other job, where it
       # skipped. A list of suites is a list of what gets measured, so a new
       # PostgreSQL store means an edit here, every time.
+      #
+      # The claim-driven `task_idempotency` purge (#325) is one file, not the
+      # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
+      # race, are the only ones under `tasks` that need a server.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -365,7 +380,8 @@ jobs:
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
-            packages/maistro-core/tests/scheduling -v --tb=short
+            packages/maistro-core/tests/scheduling \
+            packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py -v --tb=short
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in
@@ -390,7 +406,15 @@ jobs:
   coverage-gate:
     name: Coverage gate (publish-set floor + diff coverage)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 -> 30 on 2026-09-26: capacity, not scope. The `combine` step below
+    # runs six suites serially after the publish-set floor, and they are
+    # essentially the whole job: on #1591 (run 36207106537) it took 11m07s of
+    # 11m25s, of which the root `tests/` suite (the `--source=scripts`
+    # producer) was 7m49s and hive-conductor 2m16s with its requirements
+    # install. #1576 took ~14 min and #1581 was cancelled at 15 twice; a
+    # cancelled gate never reports, so it blocks the PR without measuring
+    # anything. The suites, sources, floor and diff thresholds are unchanged.
+    timeout-minutes: 30
     needs: [coverage-unit, coverage-archive, coverage-postgres]
     env:
       # The combine step re-runs the root suite as the `scripts` producer, and

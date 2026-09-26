@@ -155,6 +155,11 @@ def _canonical_summary(
             "project_id": run.project_id,
             "dag_id": summary.get("dag_id") or run.graph.graph_id,
             "status": run.status.value,
+            # Terminal evidence rides with the summary, not only the detail:
+            # list consumers (attention, history) read the canonical Run's own
+            # error/result rather than a projection that never saw the failure.
+            **({"error": run.error} if run.error else {}),
+            **({"result": run.result} if run.result is not None else {}),
             "started_at": _timestamp(run.started_at) or _timestamp(run.created_at),
             "finished_at": _timestamp(run.finished_at),
             "event_count": int(summary.get("event_count") or 0),
