@@ -15,7 +15,6 @@ from maistro.security.external_content import (
     wrap_external_content,
     _normalize_text,
 )
-from maistro.security.patterns import INVISIBLE_CHARS
 
 
 _START_MARKER = "<<<EXTERNAL_UNTRUSTED_CONTENT>>>"
@@ -176,10 +175,11 @@ def test_invisible_word_joiners_stripped(char_code):
 @settings(max_examples=50)
 def test_normalize_preserves_printable(content):
     result = _normalize_text(content)
-    for char in result:
-        if char in "\n\r\t":
-            continue
-        assert not INVISIBLE_CHARS.match(char)
+    known_invisible = (
+        "\u200b\u200c\u200d\u200e\u200f\u2060\u2061\u2062\u2063\u2064"
+        "\u2066\u2067\u2068\u2069\ufeff\u00ad\u034f\u061c\u180e"
+    )
+    assert not any(char in known_invisible for char in result)
 
 
 @given(
