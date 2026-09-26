@@ -783,7 +783,13 @@ class Agent:
         tool_defs: list[dict[str, Any]] | None,
     ) -> Any:
         if self._sentinel is None or auth is None:
-            return await self._invoke_raw_tool(tool_name, tool_args)
+            _logging.getLogger("maistro.agent").warning(
+                "Denied tool '%s' for agent '%s': no %s to authorize it",
+                tool_name,
+                self.identity.name,
+                "Sentinel" if self._sentinel is None else "caller auth",
+            )
+            return f"Error: Permission denied for tool '{tool_name}'"
         verdict = await self._sentinel.pre_call(
             tool_name, tool_args, auth, self._tool_schema(tool_name, tool_defs)
         )
