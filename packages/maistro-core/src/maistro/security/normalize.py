@@ -23,6 +23,10 @@ The detection view applies entity/CSS escape decoding before these folds:
    returned/redacted canonical text at step 2 and scans a separate same-length
    homoglyph-folded detection view, so legitimate non-Latin prose is not
    rewritten while confusable secrets are still detected.
+4. Bounded leetspeak folding — only ASCII word-like tokens containing both a
+   letter and an approved digit/symbol are folded. The deliberately small map
+   (0/o, 1/i, 3/e, 4/a, 5/s, 7/t, @/a, $/s) avoids rewriting ordinary numbers
+   while making common instruction overrides share one canonical view.
 """
 
 from __future__ import annotations
@@ -130,15 +134,50 @@ def fold_homoglyphs(text: str) -> str:
     return text.translate(_HOMOGLYPHS)
 
 
+_LEETSPEAK = str.maketrans(
+    {
+        "0": "o",
+        "1": "i",
+        "3": "e",
+        "4": "a",
+        "5": "s",
+        "7": "t",
+        "@": "a",
+        "$": "s",
+    }
+)
+_LEET_TOKEN_RE = re.compile(r"[A-Za-z0-9@$]+")
+
+
+def fold_bounded_leetspeak(text: str) -> str:
+    """Fold common leetspeak only inside mixed letter/leet tokens.
+
+    A token made solely of digits is left unchanged. This keeps dates, IDs,
+    and measurements from becoming detection text while handling forms such as
+    ``1gnore 4ll prev1ous 1nstruct1ons``.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group()
+        if not any(ch.isalpha() for ch in token) or not any(ch in "013457@$" for ch in token):
+            return token
+        return token.translate(_LEETSPEAK)
+
+    return _LEET_TOKEN_RE.sub(replace, text)
+
+
 def normalize_for_detection(text: str) -> str:
     """Decode markup/CSS escapes, then apply the full Warden detection fold.
 
     Entity and CSS escape decoding happen first so protocol/function tokens are
     compared as a browser/CSS parser would see them. NFKD then decomposes
-    compatibility forms before the other folds look at them.
+    compatibility forms before the other folds look at them. The leetspeak
+    step is intentionally bounded to mixed ASCII tokens; callers that need the
+    user's original text must retain ``text`` separately.
     """
     decoded = _decode_css_escapes(html.unescape(text))
-    return fold_homoglyphs(strip_invisibles(unicodedata.normalize("NFKD", decoded)))
+    canonical = fold_homoglyphs(strip_invisibles(unicodedata.normalize("NFKD", decoded)))
+    return fold_bounded_leetspeak(canonical)
 
 
 def normalize_for_redaction(text: str) -> str:

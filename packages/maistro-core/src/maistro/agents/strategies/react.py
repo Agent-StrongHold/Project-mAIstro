@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from maistro.quota.usage_report import reported_usage
+from maistro.security.warden.detector import WardenContext
 from maistro.types.agent import ReasoningResult
+
+_TOOL_CONTEXT_MAX_TURNS = 8
 
 if TYPE_CHECKING:
     from maistro.protocols.llm import LLMClient
@@ -65,6 +69,10 @@ class ReactStrategy:
         # reported nothing is stored as one that cost nothing (#717).
         reported_calls = 0
         security_pipeline = bool(kwargs.get("security_pipeline", False))
+        # Keep the analysis context separate from the model message list. Tool
+        # output is untrusted; assistant/system messages must not become part of
+        # the detector's authority-labelled input.
+        tool_context: deque[WardenContext] = deque(maxlen=_TOOL_CONTEXT_MAX_TURNS)
 
         tool_choice = "required" if self.force_tool_first else "auto"
 
@@ -111,8 +119,10 @@ class ReactStrategy:
                     warden=warden,
                     sentinel=kwargs.get("sentinel"),
                     auth=kwargs.get("auth"),
+                    context=list(tool_context),
                     security_pipeline=security_pipeline,
                 )
+                tool_context.append(WardenContext(tool_result_str))
 
                 tool_history.append(
                     {
@@ -219,17 +229,26 @@ class ReactStrategy:
         sentinel: Any,
         auth: Any,
         warden: Any,
+        context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
     ) -> str:
-        """Keep standalone strategy calls safe; Agent owns production policy."""
+        """Apply the shared output gate with bounded prior tool context.
+
+        Inside the Agent security pipeline the governed executor has already
+        scanned the result with its own bounded context and redacted it, so
+        this gate only serves standalone strategy callers.
+        """
         if security_pipeline:
             return tool_result_str
+        scan_kwargs: dict[str, Any] = {"context": context} if context else {}
         if sentinel is not None and auth is not None:
-            sanitized: str = await sentinel.post_call(tool_name, tool_result_str, auth)
+            sanitized: str = await sentinel.post_call(
+                tool_name, tool_result_str, auth, **scan_kwargs
+            )
             return sanitized
 
         if warden is not None:
-            verdict = await warden.scan(tool_result_str, "tool_result")
+            verdict = await warden.scan(tool_result_str, "tool_result", **scan_kwargs)
             if not verdict.clean:
                 tool_result_str = (
                     f"[BLOCKED: tool result contained suspicious content: "
@@ -253,6 +272,7 @@ class ReactStrategy:
         warden: Any,
         sentinel: Any,
         auth: Any,
+        context: list[WardenContext] | None = None,
         security_pipeline: bool = False,
     ) -> tuple[dict[str, Any], str]:
         """Process a single tool call end-to-end: parse args, sentinel pre-call,
@@ -292,6 +312,7 @@ class ReactStrategy:
             sentinel=sentinel,
             auth=auth,
             warden=warden,
+            context=context,
             security_pipeline=security_pipeline,
         )
         return tool_args, tool_result_str

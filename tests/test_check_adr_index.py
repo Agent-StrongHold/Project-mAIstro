@@ -175,7 +175,7 @@ def test_fix_leaves_the_reviewed_columns_alone(sandbox) -> None:
         if (m := row.match(line))
     }
     assert before == after
-    assert len(after) == 87
+    assert len(after) == 88
 
 
 def test_fix_is_idempotent(sandbox) -> None:

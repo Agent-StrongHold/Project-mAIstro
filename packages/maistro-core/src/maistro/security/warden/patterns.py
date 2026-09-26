@@ -175,6 +175,15 @@ REJECT_PATTERNS: list[tuple[regex.Pattern[str], str]] = [
         "Direct instruction override",
     ),
     (
+        # Applied to Warden's compact secondary view, which is only produced
+        # for bounded single-character runs (for example ``i g n o r e ...``).
+        regex.compile(
+            r"ignore(?:all)?previous(?:instructions|prompts|rules)",
+            regex.IGNORECASE,
+        ),
+        "Direct instruction override (obfuscated)",
+    ),
+    (
         regex.compile(
             r"disregard\s+(all\s+)?(prior|above|previous|system)",
             regex.IGNORECASE,
