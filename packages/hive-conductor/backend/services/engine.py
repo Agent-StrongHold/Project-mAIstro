@@ -450,10 +450,10 @@ class EngineService:
         if self._backend is None:
             return
         # When scoped to a user, stream only that user's own task. The backend's
-        # get() enforces ownership (empty-owner tasks fail closed), so a None
+        # get_async() enforces ownership (empty-owner tasks fail closed), so a None
         # result means "not yours / not found" — yield nothing rather than
         # leaking another principal's in-flight events.
-        if user_id is not None and self._backend.get(task_id, user_id=user_id) is None:
+        if user_id is not None and await self._backend.get_async(task_id, user_id=user_id) is None:
             return
         async for event in self._backend.iter_events(task_id):
             yield event

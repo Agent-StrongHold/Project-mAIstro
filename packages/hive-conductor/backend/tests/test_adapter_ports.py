@@ -34,7 +34,7 @@ def test_noop_telemetry_exposes_noop_context_managers() -> None:
 def test_task_backend_protocol_defines_expected_boundary_methods() -> None:
     from adapters.task_backend import TaskBackend
 
-    expected = {"submit", "get", "list_tasks", "cancel", "iter_events", "stop"}
+    expected = {"submit", "get", "get_async", "list_tasks", "cancel", "iter_events", "stop"}
     assert expected.issubset(set(TaskBackend.__dict__))
 
 

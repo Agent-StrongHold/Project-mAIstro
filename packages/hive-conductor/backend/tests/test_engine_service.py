@@ -388,6 +388,30 @@ async def test_maistro_server_task_backend_get_missing_returns_none(
     assert backend.get("missing") is None
 
 
+async def test_maistro_server_task_backend_get_async_maps_404_and_errors() -> None:
+    import httpx
+    from adapters.task_backend import MaistroServerTaskBackend
+
+    from maistro.http import override_transport
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404 if request.url.path == "/tasks/missing" else 500)
+
+    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    with override_transport(httpx.MockTransport(_handler)):
+        assert await backend.get_async("missing") is None
+        with pytest.raises(httpx.HTTPStatusError):
+            await backend.get_async("broken")
+
+
+async def test_maistro_server_task_backend_stop_without_sync_calls_is_safe() -> None:
+    from adapters.task_backend import MaistroServerTaskBackend
+
+    backend = MaistroServerTaskBackend(base_url="http://maistro-server", api_key=None)
+    await backend.stop()
+    await backend.stop()
+
+
 # --- submit_task ---------------------------------------------------------
 
 
@@ -587,6 +611,32 @@ async def test_iter_task_events_yields_then_terminates() -> None:
     assert statuses == ["running", "completed"]
 
 
+async def test_iter_task_events_scoped_probe_is_awaited_and_fails_closed() -> None:
+    from services.engine import EngineService, TaskRecord
+
+    probed: list[tuple[str, Any]] = []
+
+    async def _events(tid: str) -> AsyncIterator[dict[str, Any]]:
+        yield {"id": tid, "status": "completed", "progress": 1.0, "current_step": "done"}
+
+    class _B:
+        def get(self, tid: str, *, user_id: Any = None) -> Any:
+            raise AssertionError("sync get must not run on the event loop")
+
+        async def get_async(self, tid: str, *, user_id: Any = None) -> Any:
+            probed.append((tid, user_id))
+            return TaskRecord(_fake_task(task_id=tid)) if user_id == "owner" else None
+
+        def iter_events(self, tid: str) -> Any:
+            return _events(tid)
+
+    svc = EngineService()
+    svc._backend = _B()
+    assert [e["id"] async for e in svc.iter_task_events("t-1", user_id="owner")] == ["t-1"]
+    assert [e async for e in svc.iter_task_events("t-1", user_id="intruder")] == []
+    assert probed == [("t-1", "owner"), ("t-1", "intruder")]
+
+
 async def test_iter_task_events_returns_when_task_disappears() -> None:
     from services.engine import EngineService
 
@@ -658,3 +708,20 @@ def test_agent_port_exposes_the_bound_runtime() -> None:
     svc._agent_port = port
 
     assert svc.agent_port is port
+
+
+async def test_local_task_backend_get_async_scopes_to_the_owner() -> None:
+    from adapters.task_backend import LocalTaskBackend
+
+    from maistro.tasks.models import TaskCreate
+
+    async def _executor(*_: Any, **__: Any) -> None:
+        return None
+
+    backend = LocalTaskBackend(executor=_executor)
+    rec = await backend.submit(TaskCreate(description="ship it"), user_id="owner")
+
+    got = await backend.get_async(rec.id, user_id="owner")
+    assert got is not None and got.id == rec.id
+    assert await backend.get_async(rec.id, user_id="intruder") is None
+    assert await backend.get_async("missing") is None

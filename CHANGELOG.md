@@ -650,6 +650,17 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Conductor task websocket no longer blocks the event loop on its
+  ownership check (#1180, partial).** `EngineService.iter_task_events` ran its
+  ownership check through `MaistroServerTaskBackend.get`, a synchronous
+  `httpx.Client` GET (30s timeout) on the loop thread, so one slow
+  maistro-server response stalled every coroutine in the worker. The
+  `TaskBackend` port gains `async get_async`, which the stream now awaits over
+  the pooled async client, so a stalled probe no longer pins the loop and
+  cancelling the stream takes effect immediately. The remaining synchronous
+  `get`/`list_tasks` (threadpool routes only) reuse one owned,
+  outbound-guarded client closed by `stop()` instead of building one per call.
+
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
   with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,
