@@ -43,16 +43,6 @@
   ],
   "backend_surfaces": [
     {
-      "source": "packages/hive-conductor/backend/main.py",
-      "method": "POST",
-      "route": "/{confirm_id}/respond",
-      "handler": "respond_to_confirm",
-      "disposition": "canonical",
-      "production_enabled": true,
-      "reason": "answers a HITL confirm and resumes the paused canonical Run",
-      "effect_owner": "services.confirm_response.respond_confirm (Run continuation)"
-    },
-    {
       "source": "packages/hive-conductor/backend/routes/agents.py",
       "method": "DELETE",
       "route": "/{agent_id}",

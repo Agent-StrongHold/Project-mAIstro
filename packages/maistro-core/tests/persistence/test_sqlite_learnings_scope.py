@@ -216,12 +216,22 @@ async def test_ensure_schema_upgrades_a_pre_org_id_database() -> None:
         await store.ensure_schema()
 
         # The pre-existing row must survive the migration and stay readable by
-        # the scope it actually belongs to. A row written before `org_id`
-        # existed carries no provenance, so it backfills to `""` — which means
-        # a single-tenant deployment (the only kind that can have written it)
-        # keeps reading it exactly as before.
-        texts = [lr.learning for lr in await store.find_relevant("deploy", org_id="")]
-        assert "legacy row" in texts
+        # the scope it actually belongs to. A row written before `org_id`,
+        # `team_id` or `source_query` existed carries unknown values. The new
+        # columns remain NULL in storage rather than fabricating scope or
+        # provenance.
+        cursor = await conn.execute(
+            "SELECT source_query, team_id FROM learnings WHERE learning = 'legacy row'"
+        )
+        assert await cursor.fetchone() == (None, None)
+        info_cursor = await conn.execute("PRAGMA table_info(learnings)")
+        columns = {row[1] for row in await info_cursor.fetchall()}
+        assert {"source_query", "team_id"} <= columns
+
+        legacy = await store.find_relevant("deploy", org_id="")
+        assert [lr.learning for lr in legacy] == ["legacy row"]
+        assert legacy[0].source_query == ""
+        assert legacy[0].team_id == ""
 
         # It must NOT become readable by an org. Unknown provenance is the
         # reason to withhold it, not a reason to publish it to everyone.

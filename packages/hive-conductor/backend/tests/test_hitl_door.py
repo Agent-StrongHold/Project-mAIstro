@@ -1,8 +1,11 @@
 """The HITL door: pending human work can be seen and answered (#244).
 
-Driven over HTTP against the real durable store the app uses, not a mock: the
+Driven over HTTP against the store interface, not a mocked method: the
 issue's acceptance asks for the answer to be asserted end to end, and a mocked
 store would prove only that the route calls the method the test told it to.
+The production route is bound to the canonical graph store; these compatibility
+fixtures bind their legacy store explicitly because the suite boots without a
+Container.
 """
 
 from __future__ import annotations
@@ -18,6 +21,23 @@ from maistro.graph.definitions import Graph, Node
 from maistro.graph.execution_state import GraphExecutionState
 from maistro.runs.lifecycle import transition_node_run, transition_run
 from maistro.runs.model import GraphSnapshot, NodeRun, Run, RunStatus
+
+
+@pytest.fixture(autouse=True)
+def _bind_compatibility_store_to_explicit_hitl_test_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these legacy route fixtures isolated from the production fallback.
+
+    The route now asks for the canonical graph store. These tests seed the
+    document-shaped store directly, so bind it explicitly rather than making
+    the route silently rediscover that compatibility store.
+    """
+    from services import dag_agents
+
+    monkeypatch.setattr(
+        dag_agents,
+        "get_canonical_run_store",
+        lambda: dag_agents._fallback_run_store,
+    )
 
 
 def _paused_node_run(run_id: str, node_id: str, ordinal: int) -> NodeRun:
@@ -384,8 +404,6 @@ async def test_hitl_mutation_rechecks_membership_at_the_store_boundary(seeded, m
         assert len(checks) == 2
         record = await store.get(run_id)
         assert record is not None and record.run.status is RunStatus.PAUSED
-
-        monkeypatch.undo()
 
 
 async def test_pending_rechecks_membership_before_disclosing_payload(seeded, monkeypatch) -> None:

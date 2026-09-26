@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Declared by the `identity` extra, not the base dependencies — bip-utils pulls
-# coincurve, which has no wheel for the Python the API image ships. Raise loudly
-# and name the fix rather than degrading silently to a partial identity module.
+# Declared by the `identity` extra, not the base dependencies. Deployments that
+# select this capability must install the extra; raise loudly and name the fix
+# rather than degrading silently to a partial identity module.
 try:
     from bip_utils import (
         Base58Encoder,

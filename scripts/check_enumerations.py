@@ -154,7 +154,6 @@ ROUTE_EXEMPT = {
     "/v1/work-items": "the user's own drafts (suggest/clarify/confirm)",
     "/v1/memory": "the user's own memory entries (CRUD + reinforce/decay/contradict)",
     "/v1/program": "onboarding coaching (guidance/interview/pulse)",
-    "/v1/confirms": "the human half of the agent-confirmation flow — it IS the control",
     "/v1/dag-runs": "run feedback/ratings; execution itself is scoped at /v1/dags",
     "/v1/dashboard": "personal UI layout",
     "/v1/profile": "the user's own profile",

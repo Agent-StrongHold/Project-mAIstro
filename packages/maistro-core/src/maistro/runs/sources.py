@@ -56,17 +56,61 @@ SCHEDULE_CATCHUP_KEY = "catchup"
 #: replayed.
 SCHEDULE_INPUTS_KEY = "schedule_inputs"
 
+#: What kind of firing produced the Run: a nominal recurrence or a manual fire.
+#:
+#: A manual fire (#1120) is a deliberate user action, not a cron occurrence, and
+#: a Run that looks exactly like a scheduled tick erases the difference — which
+#: matters for audit ("why did this run outside its cron window?") and for
+#: semantics (a manual fire must not be mistaken for a nominal one when reading
+#: `scheduled_for`). Both kinds carry the key, so its absence means the Run
+#: predates the distinction rather than that it was fired by either.
+SCHEDULE_TRIGGER_KEY = "schedule_trigger"
+
+#: `schedule_trigger` for a Run a recurring evaluation fired.
+SCHEDULE_TRIGGER_RECURRING = "recurring"
+
+#: `schedule_trigger` for a Run a caller asked for by hand (#1120).
+SCHEDULE_TRIGGER_MANUAL = "manual"
+
+#: The manual fire's stable occurrence identity token (#1120).
+#:
+#: A nominal occurrence is identified by its cron time, and `(schedule_id,
+#: scheduled_for)` claims it. A manual fire has no cron time — minting a fresh
+#: `datetime.now()` per request makes the identity different on every retry,
+#: which is exactly how a double submit becomes two Runs. So a manual fire
+#: claims `(schedule_id, schedule_fire_id)` instead: an opaque token the caller
+#: keeps stable across retries of the same logical request (and the server
+#: mints when the caller does not supply one, making each request its own
+#: deliberate firing). Opaque, not a timestamp, on purpose — it is an identity,
+#: not an instant; the instant a fire was requested stays in `scheduled_for`.
+SCHEDULE_FIRE_ID_KEY = "schedule_fire_id"
+
+#: Namespace separating a manual fire's claim from a nominal occurrence's.
+#:
+#: Both claims live in one index as `(schedule_id, token)`. The prefix is what
+#: keeps a caller who passes `schedule_fire_id` equal to some cron time's ISO
+#: string from claiming that nominal occurrence — the two identity spaces never
+#: intersect, so a manual fire can never consume a scheduled tick's slot.
+MANUAL_OCCURRENCE_PREFIX = "manual:"
+
 
 def occurrence_key(provenance: dict[str, object] | None) -> tuple[str, str] | None:
     """The occurrence a scheduled Run claims, or None if it claims none.
 
-    `(schedule_id, scheduled_for)` is the identity of a *firing* — the cursor
-    never was (#220). A schedule's cursor says where enumeration resumes; two
-    tickers reading it before either writes enumerate the same occurrences and
-    both create Runs for them, and a crash between creating a Run and stamping
-    the cursor re-enumerates the same occurrence on the next tick.
+    A nominal occurrence claims `(schedule_id, scheduled_for)` — the identity
+    of a *firing* — the cursor never was (#220). A schedule's cursor says where
+    enumeration resumes; two tickers reading it before either write enumerate
+    the same occurrences and both create Runs for them, and a crash between
+    creating a Run and stamping the cursor re-enumerates the same occurrence on
+    the next tick.
 
-    `catchup` is deliberately **not** part of the key. A backfill and an
+    A manual fire claims `(schedule_id, "manual:" + fire_id)` instead (#1120).
+    Its identity is the caller's stable request token, not an instant: minting
+    `datetime.now()` per request is how a retried click became a second Run.
+    The prefix keeps the two identity spaces disjoint, so a manual token can
+    never collide with — and thereby consume — a nominal occurrence's slot.
+
+    `catchup` is deliberately **not** part of either key. A backfill and an
     on-time fire for the same nominal time are the same occurrence — that they
     were noticed at different moments is why the flag exists, not a reason to
     run the work twice.
@@ -78,10 +122,13 @@ def occurrence_key(provenance: dict[str, object] | None) -> tuple[str, str] | No
     if not provenance:
         return None
     schedule_id = provenance.get(SCHEDULE_ID_KEY)
-    scheduled_for = provenance.get(SCHEDULED_FOR_KEY)
-    if not (isinstance(schedule_id, str) and isinstance(scheduled_for, str)):
+    if not isinstance(schedule_id, str) or not schedule_id:
         return None
-    if not (schedule_id and scheduled_for):
+    fire_id = provenance.get(SCHEDULE_FIRE_ID_KEY)
+    if isinstance(fire_id, str) and fire_id:
+        return schedule_id, f"{MANUAL_OCCURRENCE_PREFIX}{fire_id}"
+    scheduled_for = provenance.get(SCHEDULED_FOR_KEY)
+    if not isinstance(scheduled_for, str) or not scheduled_for:
         return None
     return schedule_id, scheduled_for
 
@@ -90,11 +137,16 @@ __all__ = [
     "ADMISSION_SOURCE",
     "CHAT_SOURCE",
     "EPHEMERAL_ADMISSION_SOURCES",
+    "MANUAL_OCCURRENCE_PREFIX",
     "SCHEDULED_FOR_KEY",
     "SCHEDULE_CATCHUP_KEY",
+    "SCHEDULE_FIRE_ID_KEY",
     "SCHEDULE_ID_KEY",
     "SCHEDULE_INPUTS_KEY",
     "SCHEDULE_SOURCE",
+    "SCHEDULE_TRIGGER_KEY",
+    "SCHEDULE_TRIGGER_MANUAL",
+    "SCHEDULE_TRIGGER_RECURRING",
     "TASK_QUEUE_SOURCE",
     "occurrence_key",
 ]
