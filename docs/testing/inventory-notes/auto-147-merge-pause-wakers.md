@@ -26,7 +26,7 @@ touch the same seam and the merge took each side's file whole:
 
 Three architecture tests failed at the merged head, each asserting the
 develop-half of the split against a tree that ships the auto-147 half:
-`test_parked_status_follows_the_executor`, 
+`test_parked_status_follows_the_executor`,
 `test_the_hitl_answer_path_cannot_wake_a_waiting_delegation`, and
 `test_every_mixed_human_frontier_is_released` (the last indirectly: a
 PAUSED-parking reason with no waker entry breaks the mixed-frontier
