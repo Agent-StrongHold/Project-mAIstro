@@ -4,7 +4,8 @@ A run promotes N commits onto the in-container ``rsi-baseline``; each commit
 edits one target file. Rather than one sprawling branch or one PR per commit,
 group the commits by the file they edit — one focused, reviewable PR per file
 improved this session. This module is the pure logic (grouping, branch naming,
-PR text, manifest I/O); the git/gh orchestration is ``tools/harvest_rsi_prs.sh``.
+PR text, manifest projection); the git/gh orchestration is
+``tools/harvest_rsi_prs.sh``.
 
 The run exports, into a host-mounted dir, one ``git format-patch`` file per
 promotion plus a ``manifest.json`` mapping each patch to the source file it
@@ -23,10 +24,8 @@ retest step can be added). Tracked in ADR-070126-6386.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -78,14 +77,19 @@ def pr_body(file: str, patches: list[PromotedPatch]) -> str:
     return "\n".join(lines)
 
 
-def load_manifest(path: str | Path) -> list[PromotedPatch]:
-    """Read the export manifest.json into PromotedPatch records."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def manifest_records(data: list[dict[str, object]]) -> list[PromotedPatch]:
+    """Project one already-read manifest into the typed harvest records.
+
+    Callers read and parse ``manifest.json`` themselves so the parsed value can
+    pass the Warden harvest boundary *before* it becomes harvest records; the
+    production harvester deliberately projects the admitted value instead of
+    re-reading the file here, which would reopen a scan/use TOCTOU gap.
+    """
     return [
         PromotedPatch(
-            patch_file=entry["patch_file"],
-            file=entry["file"],
-            subject=entry.get("subject", ""),
+            patch_file=str(entry["patch_file"]),
+            file=str(entry["file"]),
+            subject=str(entry.get("subject", "")),
         )
         for entry in data
     ]
