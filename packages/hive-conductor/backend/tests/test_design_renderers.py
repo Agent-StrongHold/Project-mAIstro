@@ -74,8 +74,15 @@ async def test_renderers_reject_hostile_markup_before_backend_dispatch() -> None
 
     svc = DesignRenderService()
     hostile = '<svg><image href="data:text/html,<script>alert(1)</script>" /></svg>'
+    # Every sink enforces the boundary before any backend import runs, so a
+    # hostile payload is rejected even on a deployment without the optional
+    # document backends installed.
     with pytest.raises(TrustBannedError):
         await svc.render_to_pdf(hostile, {})
+    with pytest.raises(TrustBannedError):
+        await svc.render_to_pptx(hostile, {})
+    with pytest.raises(TrustBannedError):
+        await svc.render_to_docx(hostile, {})
 
 
 async def test_render_to_png_raises_501_not_notimplementederror() -> None:

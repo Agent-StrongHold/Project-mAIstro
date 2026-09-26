@@ -140,6 +140,23 @@ async def test_scan_layer1_blocks_script_injection_from_shared_vocabulary() -> N
         ),
         # Hex escape at end of string decodes without a terminator.
         (r"background:\75", "background:u"),
+        # A non-hex escape yields the literal character: `\s` is `s`.
+        (r"back\slash", "backslash"),
+        # An at-rule's leading `@` survives the leetspeak fold: rewriting
+        # `@import` to `aimport` hid the at-rule from the CSS network
+        # vocabulary while the reviewed TS sink still blocked it.
+        (
+            '@import "https://evil.example/x.css";',
+            '@import "https://evil.example/x.css";',
+        ),
+        # A null codepoint decodes to the inert U+FFFD escape text, never to
+        # a raw NUL the scanners would have to treat as a token break.
+        (r"payload\0here", r"payload\ufffdhere"),
+        # Out-of-range and surrogate codepoints decode to the same inert
+        # escape text, and the optional whitespace terminator is consumed
+        # exactly as a CSS parser consumes it.
+        (r"\110000 x", r"\ufffdx"),
+        (r"\d800 x", r"\ufffdx"),
     ],
 )
 def test_detection_view_decodes_css_hex_escapes_like_a_css_parser(

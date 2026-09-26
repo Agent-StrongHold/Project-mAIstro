@@ -159,9 +159,18 @@ def fold_bounded_leetspeak(text: str) -> str:
 
     def replace(match: re.Match[str]) -> str:
         token = match.group()
-        if not any(ch.isalpha() for ch in token) or not any(ch in "013457@$" for ch in token):
+        # An `@` at the start of a token is an at-rule (`@import`, `@media`),
+        # not leetspeak. Folding it to `a` rewrote `@import` into `aimport`
+        # in the detection view, and the CSS network/code vocabulary — which
+        # matches the at-rule verbatim — could never fire: `@import
+        # "https://evil.example/x.css"` carried no `url(` token for the other
+        # arm to catch and passed every scanner while the reviewed TS sink
+        # blocked it (#817). Mid-token `@` (`m@il`, `h@cker`) still folds.
+        body = token[1:] if token[0] == "@" else token
+        if not any(ch.isalpha() for ch in body) or not any(ch in "013457@$" for ch in body):
             return token
-        return token.translate(_LEETSPEAK)
+        folded = body.translate(_LEETSPEAK)
+        return token[: len(token) - len(body)] + folded
 
     return _LEET_TOKEN_RE.sub(replace, text)
 
