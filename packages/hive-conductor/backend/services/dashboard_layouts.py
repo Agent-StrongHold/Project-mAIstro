@@ -210,10 +210,12 @@ def with_widget(layout: dict[str, Any], widget: dict[str, Any], tab_name: str) -
     result = dict(layout)
     if result.get("tabs"):
         tabs = [dict(tab) for tab in result["tabs"]]
-        target_idx = result.get("activeTab", 0)
+        active = result.get("activeTab", 0)
+        in_range = isinstance(active, int) and 0 <= active < len(tabs)
+        target_idx = active if in_range else 0
         if tab_name:
             for i, tab in enumerate(tabs):
-                if tab.get("name", "").lower() == tab_name.lower():
+                if str(tab.get("name") or "").lower() == tab_name.lower():
                     target_idx = i
                     break
             else:

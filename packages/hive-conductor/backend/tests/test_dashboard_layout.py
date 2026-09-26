@@ -162,3 +162,17 @@ def test_with_widget_appends_to_the_named_tab_without_mutating_the_input() -> No
         "tabs": [{"name": "Overview", "widgets": [{"id": "a"}, widget]}],
         "activeTab": 0,
     }
+
+
+def test_with_widget_falls_back_to_the_first_tab_when_active_tab_is_not_one() -> None:
+    from services.dashboard_layouts import with_widget
+
+    widget = {"id": "w", "type": "kpi", "title": "T"}
+    tabs = [{"name": None, "widgets": []}, {"name": "B", "widgets": []}]
+
+    for active in (5, -1, "1", None):
+        result = with_widget({"tabs": tabs, "activeTab": active}, widget, "")
+        assert result["tabs"][0]["widgets"] == [widget], active
+        assert result["tabs"][1]["widgets"] == [], active
+    named = with_widget({"tabs": tabs, "activeTab": 0}, widget, "b")
+    assert named["tabs"][1]["widgets"] == [widget]
