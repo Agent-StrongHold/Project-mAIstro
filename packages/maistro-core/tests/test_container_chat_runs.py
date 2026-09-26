@@ -267,6 +267,34 @@ async def test_terminalized_concurrent_chat_burst_is_swept() -> None:
     assert all(run.status in TERMINAL_RUN_STATUSES for run in terminal_chat_runs)
 
 
+async def test_stalled_admissions_cannot_grow_the_store_past_the_window() -> None:
+    """Admission alone, never executed, must not grow the store past the bound.
+
+    The repro: three turns through `_admit_chat_turn` that never reach an
+    executor leave three RUNNING Runs with nothing under them, over a window
+    of two. The sweep may not skip every non-terminal Run — a stalled turn
+    will never terminalize on its own, and a window that shields it grows
+    without limit exactly when the process is misbehaving.
+    """
+    container = await _container()
+    container.chat_admitter = ChatRunAdmitter(
+        container.run_store,
+        workspace_id=container.config.workspace_id,
+        project_store=container.project_scope_store,
+        max_retained=2,
+    )
+
+    admitted = [
+        await container._admit_chat_turn([{"role": "user", "content": f"turn {index}"}])
+        for index in range(3)
+    ]
+
+    assert all(run.status is RunStatus.RUNNING for run in admitted)
+    assert container.chat_admitter.retained <= 2
+    stored = [run for run in admitted if await container.run_store.get_run(run.run_id) is not None]
+    assert [run.run_id for run in stored] == [admitted[1].run_id, admitted[2].run_id]
+
+
 def _chat_runs(container: Container):
     """Every Run in the container's store. Private access on purpose: the point
     is to see the Run the caller was *not* handed, because the turn raised."""

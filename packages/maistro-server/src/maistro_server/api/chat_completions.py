@@ -238,6 +238,12 @@ async def _admit_turn(
             auth=_auth_context(auth),
             session_id=request.session_id,
             request_id=request_id,
+            # A dispatch follows in this process — `_route` below — so the
+            # Run is shielded from the chat retention window until the turn
+            # closes. Without the shield, a burst could evict this Run in the
+            # gap between its admission (here, for the response header) and
+            # its first Attempt, turning a live turn into a refusal.
+            dispatch_pending=True,
         )
     except ChatTurnRefused as exc:
         logger.warning("chat_completions_turn_refused", reason=exc.detail)
@@ -336,6 +342,10 @@ async def _close_if_open(run: Run) -> None:
         from maistro.runs.service import RunExecutionService
         from maistro.runtime import PythonExecutionRuntime
 
+        # Released before the cancel rather than after: the mark shields a
+        # Run only until its dispatch settles, and an abandoned stream is
+        # past that — this close is the settlement, whichever write wins.
+        _container._release_chat_dispatch(run)
         await RunExecutionService(
             store=_container.run_store,
             runtime=PythonExecutionRuntime(),
