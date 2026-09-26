@@ -224,6 +224,13 @@ const NETWORK_OR_CODE_ATTRIBUTE = /(?:url\s*\(|(?:javascript|vbscript|data|blob|
 // grammar.
 const OBFUSCATED_CSS = /\\|\/\*/;
 
+// The W3C SVG namespace identifier, fixed by the DOM specification. It is an
+// opaque namespace constant that is never fetched, so DevSkim's insecure-URL
+// rule (DS137837) is suppressed on the single line that spells it out;
+// scrubbing compares namespaceURI against this constant to pick the SVG vs
+// HTML allowlist.
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg"; // devskim: ignore DS137837
+
 export const VISUAL_ARTIFACT_BLOCK_REASONS = [
   "active-element",
   "event-handler",
@@ -298,7 +305,7 @@ function attributeAllowed(
     return false;
   }
 
-  const isSvg = element.namespaceURI === "http://www.w3.org/2000/svg";
+  const isSvg = element.namespaceURI === SVG_NAMESPACE;
   const allowed = isSvg ? SVG_ATTRIBUTES : HTML_ATTRIBUTES;
   if (!allowed.has(name)) {
     context.reasons.add("unsupported-attribute");
@@ -318,7 +325,7 @@ function attributeAllowed(
 function scrubTree(root: ParentNode, context: SanitizationContext): void {
   for (const child of Array.from(root.children)) {
     const tag = child.localName.toLowerCase();
-    const isSvg = child.namespaceURI === "http://www.w3.org/2000/svg";
+    const isSvg = child.namespaceURI === SVG_NAMESPACE;
     const tagAllowed = isSvg ? SVG_TAGS.has(tag) : HTML_TAGS.has(tag);
 
     if (!tagAllowed) {
