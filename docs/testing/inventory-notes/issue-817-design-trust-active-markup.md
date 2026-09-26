@@ -692,3 +692,53 @@ via `git rev-parse` before validation started).
 
 No production or test file changed this round (fresh validation evidence
 only); no new tests added, so no inventory-delta change.
+
+## Independent verification 15 (auto-817 @ b37ae79e56fc, verifier+writer lane)
+
+Executed fresh at this round's exact head `b37ae79e56fc4d9dca61948db376049013c36eca`
+(clean worktree before and after; develop base `ca4caec7d319` confirmed as
+ancestor via `git merge-base`, so the prior develop-sync block is resolved).
+Driver checks from job `582e29468ba9` were re-run locally, not trusted:
+
+- **Lane gates re-executed:** `ruff check .` clean; `ruff format --check .`
+  2573 files; lane suite (log-redaction, detector, visual vocabulary,
+  test_design/test_scan/test_trust_prescan) → **269 passed**;
+  `test_design_renderers.py` → **7 passed**; suite inventories (hive-conductor
+  backend 2815, maistro-core 11132, maistro-design 324) all match — the
+  round-14 check-7 drift is resolved by the recorded +14 delta (b37ae79e5).
+- **AGENTS.md mypy battery incl. `packages/maistro-design/src`** → **739
+  files, no issues**. (Scoped per-package mypy that omits sibling `src`
+  dirs reports `import-untyped` artifacts on `maistro.security.*` imports;
+  the canonical all-sources invocation is the meaningful gate.)
+- **CI-exact vulture** (`scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`) → **rc=0, 1412 → 1412**
+  at this head (covers the baseline-script change from 13775de35).
+- **Independent 10-case probe at this head** (own corpus, not the test
+  suite): script, event-handler attr, script-in-SVG, `data:text/html`,
+  CSS `url()`, escaped `\75rl(`, `@import`, `behavior: url(...)`,
+  `-moz-binding: url(...)`, prompt injection → every case `skull / banish`
+  pre-scan with explicit shared-vocabulary flags AND `scan_design_text`
+  blocked; clean brief → `t3 / upgrade / passed` (AC-1/2/3/4).
+- **Browser corpus re-executed in real Chromium** (playwright 1.60 /
+  chromium-1223, CI-layout mirror built in /tmp: sources copied WITHOUT
+  `frontend/node_modules`, single test node_modules, `E2E_SRC_ROOT` at the
+  mirror): `deck-sanitization.spec.ts` → **8/8 passed (3.5s)**, including
+  the exact shared reason-name assertions (`event-handler`,
+  `css-network-or-code`, `active-element` — the cross-language vocabulary
+  pin) and the poster/infographic/flyer shared-boundary journey (AC-3
+  browser side, AC-5). Independently reproduced the round-13 double-React
+  harness pitfall from the worktree layout (entry react vs shadowed
+  frontend react → hooks crash → placeholder timeout); confirmed
+  environmental, not a code regression.
+- **Closure-keyword review:** PR #1389 body says "Refs #817" only; none of
+  the 52 branch commits uses fixes/closes/resolves — no premature closure.
+- **Stop condition re-checked:** `maistro_design` consumes
+  `maistro.security.warden.patterns` only; `deckSanitizer.ts` is a
+  deprecated shim over `visualArtifactRenderer.tsx` (single frontend
+  boundary); `design_render.py`/engine call the shared
+  `scan_design_text`/`scan_blocking_patterns`.
+- **Remaining UNVERIFIED:** GitHub CI status rollup for PR #1389 (live
+  GitHub not consulted per no-mutation scope); all local equivalents green.
+
+No production or test file changed this round (fresh validation evidence
+only); no new tests added, so no inventory-delta change.
