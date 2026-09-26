@@ -480,6 +480,79 @@ class TestCreateAgentsFilesystem:
         assert agents["alpha"]._agent_resolver("alpha") is agents["alpha"]
         assert agents["beta"]._agent_resolver("alpha") is agents["alpha"]
 
+    async def test_roster_allow_lists_reach_the_container_delegator(self, tmp_path: Path) -> None:
+        """The production roster must make the wired in-process path admissible."""
+        from maistro.a2a.delegate import A2ADelegator, DelegationMode
+        from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
+
+        _write_agent_dir(
+            tmp_path,
+            "planner",
+            manifest_extra={"delegation": {"sub_agents": ["researcher"]}},
+        )
+        _write_agent_dir(tmp_path, "researcher")
+        delegator = A2ADelegator()
+
+        await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=delegator))
+
+        task_id = delegator.delegate_task(
+            "planner",
+            "research X",
+            "researcher",
+            delegation_mode=DelegationMode.ALLOW_LIST,
+        )
+        assert delegator.get_task_status(task_id) is not None
+
+        # Direct task/chat admissions use a reserved system principal rather
+        # than an empty ``from_agent``; the same roster bounds its targets.
+        direct_task_id = delegator.delegate_task(
+            DIRECT_SUBMISSION_AGENT,
+            "research X",
+            "researcher",
+            delegation_mode=DelegationMode.ALLOW_LIST,
+        )
+        assert delegator.get_task_status(direct_task_id) is not None
+
+    async def test_delegator_without_registration_surface_is_refused(self, tmp_path: Path) -> None:
+        """A configured delegator that cannot accept capabilities is refused loudly.
+
+        Reaching the factory with a delegator whose ``register_agent_capability``
+        is not callable is a composition fault, not an empty roster: the
+        roster's allow-lists would silently never project into the receipt
+        service, and every in-process delegation would be refused downstream.
+        """
+        _write_agent_dir(tmp_path, "planner")
+
+        class _OpaqueDelegator:
+            register_agent_capability = None  # present but not callable
+
+        with pytest.raises(ConfigError, match="cannot register agent capabilities"):
+            await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=_OpaqueDelegator()))
+
+    async def test_empty_roster_registers_no_direct_submission_principal(
+        self, tmp_path: Path
+    ) -> None:
+        """The reserved direct-submission principal is bounded by the loaded roster.
+
+        With no agents loaded there is nothing to bound the principal to, so it
+        must stay unregistered: a direct admission naming any target remains a
+        real refusal instead of an implicit allow-everything.
+        """
+        from maistro.a2a.delegate import A2ADelegator, DelegationMode
+        from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
+
+        delegator = A2ADelegator()
+        agents = await create_agents(**_create_agents_kwargs(tmp_path, a2a_delegator=delegator))
+        assert agents == {}
+
+        with pytest.raises(ValueError, match="no delegation capabilities"):
+            delegator.delegate_task(
+                DIRECT_SUBMISSION_AGENT,
+                "research X",
+                "planner",
+                delegation_mode=DelegationMode.ALLOW_LIST,
+            )
+
     async def test_persist_registry_invoked_when_engine_present(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
