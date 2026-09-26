@@ -73,6 +73,15 @@ class HarnessEnvironment:
         self.provider.reset()
 
     async def run_graph(self, **kwargs: Any) -> HyperagentOutput:
+        """Drive a fresh `GraphRun` and capture its events (ADR-065/SPEC-224).
+
+        This is a test fixture, not an execution path. It shares a name with
+        the pre-durable top-level `run_graph`, which is retired (#1154), but it
+        never was that function: it builds Graph-domain traversal in-process to
+        exercise strategies, scoring and event emission, and claims no
+        canonical Run/NodeRun/Attempt evidence and no restart recovery.
+        Production Graph work goes through `maistro.graph.durable_runs`.
+        """
         task_description = kwargs.pop("task_description", "test task")
         # This is a test-harness default — the string is consumed by GraphTask
         # which never writes to it directly; sandbox writes are gated by
