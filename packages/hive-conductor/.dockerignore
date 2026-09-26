@@ -1,5 +1,16 @@
 frontend/node_modules
 frontend/dist
+# The Playwright e2e image installs its own pinned @playwright/test inside the
+# container (tests/Dockerfile.playwright `npm install`). When a developer has
+# run the suite locally, `tests/e2e/node_modules` holds a different
+# @playwright/test, and `COPY tests/e2e/ /tests/tests/e2e/` ships it into the
+# image next to the pinned one -- Node then resolves specs against the local
+# copy while the runner uses the pinned copy, and every spec dies with
+# "Playwright Test did not expect test() to be called here" / "No tests found".
+# Same for `test-results/`: local failure artifacts have no business in a
+# build context. Both are gitignored; mirror that here.
+tests/e2e/node_modules
+tests/e2e/test-results
 **/__pycache__
 *.pyc
 .pytest_cache

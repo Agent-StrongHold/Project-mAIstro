@@ -19,13 +19,14 @@ from maistro.agents.artificer.strategy import ArtificerStrategy
 from maistro.agents.base import Agent
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.strategies.react import ReactStrategy
+from maistro.container import create_container
 from maistro.prompts.store import InMemoryPromptManager
 from maistro.security._types import AuthContext
 from maistro.security.sentinel.policy import Sentinel
 from maistro.security.warden.detector import Warden
 from maistro.testing.faux_provider import FauxProvider, FauxResponse
-from maistro.testing.harness import create_test_environment
 from maistro.types.agent import AgentIdentity
+from maistro.types.config import AgentConfig
 
 _DENIED = "Error: Permission denied for tool 'lookup'"
 _RAW = "raw lookup result"
@@ -119,13 +120,13 @@ async def test_agent_executes_tool_on_explicit_role_grant() -> None:
 
 async def test_route_request_without_auth_cannot_execute_tools() -> None:
     provider = _provider()
-    env = create_test_environment(provider=provider)
+    container = await create_container(AgentConfig(router_api_key="test-key"))
     tool = _RecordingTool()
-    agent = _agent(env.container.sentinel, tool, provider, name="lookup_agent")
-    env.container.agents["lookup_agent"] = agent
-    env.container.intent_registry.register("lookup_agent", "lookup_agent")
+    agent = _agent(container.sentinel, tool, provider, name="lookup_agent")
+    container.agents["lookup_agent"] = agent
+    container.intent_registry.register("lookup_agent", "lookup_agent")
 
-    await env.container.route_request(
+    await container.route_request(
         [{"role": "user", "content": "Look up 42."}], intent_hint="lookup_agent"
     )
 
