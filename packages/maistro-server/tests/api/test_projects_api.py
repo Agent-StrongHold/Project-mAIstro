@@ -460,6 +460,101 @@ async def test_a_non_owner_delegated_regrant_cannot_clear_an_existing_deny(api) 
     assert memberships[0].grants == {"read"}
 
 
+async def test_a_non_owner_delegated_regrant_preserves_owner_issued_authority(api) -> None:
+    """The same upsert logic applies to the whole canonical row (#1148): a
+    non-owner's delegated POST adds authority the requester can delegate, but
+    must not replace owner-issued grants, delegable authority, or role.
+    Reproduced from review: owner-issued grants=['publish'],
+    delegable_grants=['publish'] were erased by a delegated POST carrying only
+    grants=['read'], returning 201 grants=['read'], delegable_grants=[] with no
+    owner revocation anywhere."""
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await workspaces.set_membership(
+        workspace.workspace_id,
+        user_id="bob",
+        role=WorkspaceRole.CONTRIBUTOR,
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="bob",
+            grants={"publish", "read"},
+            delegable_grants={"read"},
+        )
+    )
+    # Owner grants "cara" publish authority, delegation of it, and a role.
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            role="editor",
+            grants={"publish"},
+            delegable_grants={"publish"},
+        )
+    )
+
+    _as_user(app, "bob")
+    response = client.post(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/memberships",
+        json={"principal_id": "cara", "grants": ["read"], "delegable_grants": ["read"]},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert set(body["grants"]) == {"publish", "read"}
+    assert set(body["delegable_grants"]) == {"publish", "read"}
+    assert body["role"] == "editor"
+    memberships = await projects.memberships_for(root.project_id, principal_id="cara")
+    assert len(memberships) == 1
+    assert memberships[0].grants == {"publish", "read"}
+    assert memberships[0].delegable_grants == {"publish", "read"}
+    assert memberships[0].role == "editor"
+
+
+async def test_a_non_owner_delegated_post_cannot_grant_beyond_own_delegation(api) -> None:
+    """Merging must not become an escalation path: an action absent from the
+    stored row still requires the requester to hold it as delegable."""
+    app, client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await workspaces.set_membership(
+        workspace.workspace_id,
+        user_id="bob",
+        role=WorkspaceRole.CONTRIBUTOR,
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="bob",
+            grants={"publish", "read"},
+            delegable_grants={"read"},
+        )
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"read"},
+        )
+    )
+
+    _as_user(app, "bob")
+    response = client.post(
+        f"/workspaces/{workspace.workspace_id}/projects/{root.project_id}/memberships",
+        json={"principal_id": "cara", "grants": ["read", "publish"]},
+    )
+
+    assert response.status_code == 403
+    memberships = await projects.memberships_for(root.project_id, principal_id="cara")
+    assert memberships[0].grants == {"read"}
+
+
 @pytest.mark.parametrize("field", ["name", "parent_project_id"])
 async def test_blank_project_create_identity_fields_are_rejected_before_route_logic(
     api, field: str

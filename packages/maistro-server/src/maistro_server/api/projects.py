@@ -264,6 +264,9 @@ async def add_project_membership(
     await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
 
     denies = body.denies
+    grants = body.grants
+    delegable_grants = body.delegable_grants
+    role = body.role
     if not requester_membership.can_administer:
         if body.denies:
             raise HTTPException(
@@ -271,7 +274,7 @@ async def add_project_membership(
                 detail="Workspace owner permission required to issue Project denies",
             )
         # Holding an action is not enough to grant it. Every action this record
-        # would confer must already be explicitly delegable at this scope.
+        # would *add* must already be explicitly delegable at this scope.
         for action in sorted(body.grants):
             try:
                 await require_delegable_grant(
@@ -283,20 +286,28 @@ async def add_project_membership(
             except PermissionError as exc:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         # set_membership upserts the one canonical row per (project, principal)
-        # -- a non-owner's request must not be read as "clear whatever denies
-        # already exist" just because it says nothing about them, or a
-        # delegated re-grant would silently launder away an owner-issued deny.
+        # -- a non-owner's request must not be read as "replace whatever
+        # exists" just because it restates part of it, or a delegated re-grant
+        # would silently launder away owner-issued denies, grants, delegable
+        # authority, and role (#1148: revocation is owner-only and explicit).
+        # A non-owner may only *add* authority they can themselves delegate;
+        # everything already on the row survives until the owner revokes it.
         existing = await project_store.memberships_for(project_id, principal_id=body.principal_id)
-        denies = existing[0].denies if existing else set()
+        if existing:
+            current = existing[0]
+            denies = current.denies
+            grants = current.grants | body.grants
+            delegable_grants = current.delegable_grants | body.delegable_grants
+            role = current.role
 
     membership = ProjectMembership(
         workspace_id=workspace_id,
         project_id=project_id,
         principal_id=body.principal_id,
-        role=body.role,
-        grants=body.grants,
+        role=role,
+        grants=grants,
         denies=denies,
-        delegable_grants=body.delegable_grants,
+        delegable_grants=delegable_grants,
     )
     try:
         return await project_store.set_membership(membership)
