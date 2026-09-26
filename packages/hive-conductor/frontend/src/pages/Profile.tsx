@@ -88,6 +88,21 @@ export default function Profile() {
         </div>
       </div>
 
+      {user.session_policy && (
+        <div className="card" style={{ marginBottom: 12, borderLeft: "3px solid var(--accent)" }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--accent)", marginBottom: 8 }}>SESSION HEALTH</div>
+          <div style={{ fontFamily: "var(--hand)", fontSize: 14, lineHeight: 1.6, color: "var(--ink)" }}>
+            Expires after {Math.round(user.session_policy.idle_timeout_seconds / 60)} minutes of inactivity,
+            and no later than {Math.round(user.session_policy.absolute_ttl_seconds / 86400)} days after sign-in.
+          </div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 6 }}>
+            Effective expiry: {new Date(user.session_policy.effective_expires_at).toLocaleString()}
+          </div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--pencil)", marginTop: 3 }}>
+            Workspace restoration and UI preferences do not extend authentication.
+          </div>
+        </div>
+      )}
       {/* What this browser keeps for this account (#1418, #1419): the four
           conveniences, their current values, and a way to forget them. */}
       <div className="card" style={{ marginBottom: 12 }}>
