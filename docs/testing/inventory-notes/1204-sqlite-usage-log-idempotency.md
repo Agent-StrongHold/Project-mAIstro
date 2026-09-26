@@ -117,3 +117,41 @@ re-run by name and pass. `ruff check` / `ruff format --check` clean;
 (13 suites) pass; mypy shows only the pre-existing five `maistro_bootstrap`
 import-not-found errors under `cli/` (optional `bootstrap` extra not
 installed; files untouched by this branch).
+
+## CI-repair round (lane L1204, head 03b48facc)
+
+CI at the develop-merge head failed four checks; all four are addressed with
+evidence from this round (PG via a dedicated pgvector:pg18 container, port
+18499):
+
+- **exact-debt-ledger**: the #1204 wiring (`container.py`'s
+  `usage_log_persistence.restore()` call) made the name `restore` referenced
+  tree-wide, so vulture dropped five identities — `SqliteUsageLog.restore`
+  plus the four RSI `restore` methods (`local_loop`, `protocols`,
+  `sandbox/local`, `sandbox/microvm`). The five were pruned from
+  `quality/vulture-baseline.json` (1410 = 1410);
+  `check-vulture-baseline.py` exits 0.
+- **Quality gate / radon**: the shutdown-flush block this issue added to
+  `Container.aclose` pushed it to C(11) vs the trusted base's B. Extracted
+  into `_flush_usage_log_on_shutdown()`; `check-radon-baseline.py` 69 = 69,
+  xenon 69 <= 77, mypy --strict clean (with the `bootstrap` extra installed),
+  pyright 21 = baseline 21, and every other runnable quality-gate step passes.
+- **Quality gate / acceptance-state ratchet**: the lane's added tests raised
+  design coverage to 38.0924 vs the trusted floor 33.9095 — an unbanked
+  improvement, which this strict ratchet treats as a failure. Banked to
+  `quality/ac-state-notes/auto-1204.json` (per-branch note, #585);
+  `check-ac-state.py --run-tests --ratchet` exits 0.
+- **Quality gate / reachability dispositions**: `quota-verification` still
+  dispositioned `maistro.quota.sqlite_usage_log` as unreachable (CONNECT);
+  the checker itself reports it became reachable and demands the prune —
+  done; `check-reachability-dispositions.py` passes.
+
+Re-verification on this tree: persistence suite 629 passed with
+`MAISTRO_TEST_PG_DSN` live (includes
+`test_retrying_one_event_does_not_double_count[memory|sqlite|postgres]`,
+3 passed re-run by name); the four pivotal usage-log tests plus the container
+flush/restore lifecycle pass; migration-chain, pinned-store, audit-scope and
+pg-wiring suites 44 passed against a sacrificial database;
+`packages/maistro-core/tests` 10227 passed / 674 skipped / 1 xfailed
+(no PG exported — same shape as CI's `test` job); RSI + evolve 1366 passed;
+formal/ 421 passed; suite inventory 13/13; ruff check and format clean.

@@ -379,6 +379,24 @@ class Container:
 
             self.capabilities = default_capability_registry()
 
+    async def _flush_usage_log_on_shutdown(self) -> None:
+        """Write the usage log's retained events to its SQLite persistence.
+
+        The final flush of the write-behind `SqliteUsageLog` (#1204): a
+        container wired with `usage_log_persistence` must not drop the events
+        recorded since the last periodic snapshot just because the process is
+        going down. Idempotent by the durable event identity, so a shutdown
+        racing a periodic flush cannot double-persist. A failure here must not
+        block the rest of the shutdown, which is why the exception is only
+        logged.
+        """
+        if self.usage_log_persistence is None:
+            return
+        try:
+            await self.usage_log_persistence.snapshot(self.usage_log)
+        except Exception:
+            logger.exception("container: the usage log did not flush cleanly")
+
     async def aclose(self) -> None:
         """Release what this container took. Idempotent.
 
@@ -413,11 +431,7 @@ class Container:
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
-        if self.usage_log_persistence is not None:
-            try:
-                await self.usage_log_persistence.snapshot(self.usage_log)
-            except Exception:
-                logger.exception("container: the usage log did not flush cleanly")
+        await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool
 
