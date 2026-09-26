@@ -14,6 +14,8 @@ from maistro.observability.correlation import current_execution_context
 from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.types.agent import AgentResponse
 
+logger = _logging.getLogger("maistro.agent")
+
 _TOOL_SCHEMAS: dict[str, dict[str, object]] = {
     "read_file": {
         "description": "Read the contents of a file. Returns the file content as a string.",
@@ -775,17 +777,28 @@ class Agent:
 
     async def _sanitize_tool_result(self, tool_name: str, result: str, auth: Any) -> str:
         """Sanitize tool output before it can re-enter any strategy context."""
-        if self._sentinel is not None and auth is not None:
-            return str(await self._sentinel.post_call(tool_name, result, auth))
-        if self._warden is not None:
-            verdict = await self._warden.scan(result, "tool_result")
-            if not verdict.clean:
-                return (
-                    "[BLOCKED: tool result contained suspicious content: "
-                    f"{', '.join(verdict.flags)}]"
-                )
-        sanitized, _ = scan_and_redact(result)
-        return sanitized
+        try:
+            if self._sentinel is not None and auth is not None:
+                return str(await self._sentinel.post_call(tool_name, result, auth))
+            if self._warden is not None:
+                verdict = await self._warden.scan(result, "tool_result")
+                if not verdict.clean:
+                    return (
+                        "[BLOCKED: tool result contained suspicious content: "
+                        f"{', '.join(verdict.flags)}]"
+                    )
+            sanitized, _ = scan_and_redact(result)
+            return sanitized
+        except ImportError:
+            # The PII filter is a security dependency, not an optional
+            # convenience (#74). An unavailable one must never put an
+            # unsanitized tool result back into the model context. The
+            # "Error: " prefix keeps the BaseAgent failure predicates
+            # (tool_had_failures, Outcome/RCA success counts) treating this as
+            # a failed tool call — the same blocking-marker contract the
+            # standalone strategies ship in ReactStrategy/DirectStrategy.
+            logger.error("Output sanitization unavailable; blocking tool result")
+            return "Error: [BLOCKED: output sanitization unavailable]"
 
     async def _extract_rca(
         self,

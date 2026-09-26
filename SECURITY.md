@@ -129,15 +129,36 @@ covers the no-tail window invariant and runs the accelerated-versus-stdlib corpu
 comparison in `test_warden_regex_equivalence.py` (the root dev extra installs
 `google-re2`, while the fallback cases force `re`).
 
+The same ReDoS defenses are exercised on the canonical execution paths, not
+just at the Sentinel API: `packages/maistro-core/tests/orchestrator/
+test_output_security_gate.py` runs the real `Warden` behind
+`build_output_security_gate` through `MasterOrchestrator.execute` — a
+catastrophic reject pattern is cut off by the per-search timeout while the
+canonical Run/NodeRun/Attempt projection records only the static refusal, a
+multi-window pathological body proves every reject search sees at most
+`_SCAN_WINDOW_CHARS`, and a multi-window benign body completes with the
+heuristic fallback scans likewise windowed. The agent seam carries the same
+guarantee in `packages/maistro-core/tests/agents/test_base.py`
+(`TestGovernedExecutorProductPathSecurity`): it runs the production governed
+tool executor — the only effect boundary, since `BaseAgent` always sets
+`security_pipeline=True` — with the real Sentinel, real Warden, and real PII
+filter.
+
 The PII hot path is likewise exercised at the product boundary: normalized
 secret cases call `Sentinel.post_call`, `DirectStrategy`, and `ReactStrategy` in
 `packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py`.
 `test_sentinel_policy.py::test_post_call_pii_match_value_is_masked_on_product_path`
 proves the raw credential is absent from both the Sentinel result and the
 `PIIMatch` metadata; the existing property suite independently asserts the
-masked-value contract. Missing PII-filter imports are tested on both strategies
-and now return a blocking marker rather than unsanitized model/tool output
-(`packages/maistro-core/tests/agents/strategies/test_direct.py` and `test_react.py`).
+masked-value contract; and the governed-executor tests above prove the raw AWS
+key never crosses into model context or the user-facing response through
+`Agent.handle`. Missing PII-filter imports are tested on both strategies and
+now return a blocking marker rather than unsanitized model/tool output
+(`packages/maistro-core/tests/agents/strategies/test_direct.py` and
+`test_react.py`), and the production seam fails the same way:
+`test_governed_executor_sanitization_unavailable_fails_closed_and_feeds_rca`
+proves the governed executor returns the blocking marker, the BaseAgent failure
+predicates fire, and the RCA pipeline records the failed tool call.
 
 ### Configurable limits and their enforced floors
 
