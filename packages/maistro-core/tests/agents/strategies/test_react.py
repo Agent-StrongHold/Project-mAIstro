@@ -195,8 +195,7 @@ async def test_reason_no_tool_executor_returns_not_available() -> None:
         **_grant("read_file"),
     )
 
-    assert result.tool_history[0]["result"] == "Tool '{}' not available".format("") or True
-    assert "not available" in result.tool_history[0]["result"]
+    assert result.tool_history[0]["result"] == "Tool 'read_file' not available"
 
 
 async def test_reason_tool_args_too_large_returns_error_without_blocking() -> None:

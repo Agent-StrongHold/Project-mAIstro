@@ -1,15 +1,17 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +16
+  packages/maistro-core/tests: +17
 ---
 # claude-ws-1165-fail-closed-at-the-agent-tool-seam-when-2d3e
 
 Fail-closed tool authorization at the Agent seam and in the standalone
-ReAct/Artificer strategies (#1165) adds 16 maistro-core node IDs, all in
+ReAct/Artificer strategies (#1165) adds 17 maistro-core node IDs, all in
 `tests/agents/test_agent_seam_fail_closed.py`: four `Agent.handle` denial cases
 (no Sentinel, no auth, empty table, explicit deny), one explicit-grant
-execution case, one `route_request`-without-auth case, and ten standalone
-strategy cases (the same five outcomes for ReAct and Artificer).
+execution case, one `route_request`-without-auth case, ten standalone
+strategy cases (the same five outcomes for ReAct and Artificer), and one
+direct check that the Agent's no-Sentinel Warden/PII sanitization fallback
+still redacts.
 
 No test was removed. Two ReAct tests that exercised the no-Sentinel
 sanitization fallback through a tool that now never runs were renamed and

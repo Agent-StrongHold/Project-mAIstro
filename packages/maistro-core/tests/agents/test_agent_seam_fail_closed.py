@@ -181,3 +181,11 @@ async def test_standalone_strategy_fails_closed(
 
     assert (tool.calls == [("lookup", {"id": "42"})]) is executed
     assert _tool_results(provider) == [_RAW if executed else _DENIED]
+
+
+async def test_agent_without_sentinel_still_sanitizes_tool_text() -> None:
+    agent = _agent(None, _RecordingTool(), _provider())
+
+    sanitized = await agent._sanitize_tool_result("lookup", "mail someone@example.com", None)
+
+    assert sanitized == "mail [REDACTED:email]"
