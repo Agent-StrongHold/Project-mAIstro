@@ -349,22 +349,98 @@ async def test_admit_hands_back_exactly_the_scanned_serialization() -> None:
     assert refused.value.result.outcome == "blocked"
 
 
+@pytest.mark.ac("SPEC-092526-c41d/AC-3")
 @pytest.mark.ac("SPEC-092526-c41d/AC-4")
-def test_sync_scan_with_an_async_sink_inside_a_loop_still_refuses() -> None:
-    """A sync seam handed an async sink cannot await it — and must not swallow
-    the failure into a clean verdict. The refusal names the real cause."""
+def test_sync_scan_inside_a_loop_records_the_refusal_on_an_async_sink() -> None:
+    """A sync seam called inside a running loop cannot block it to await an
+    async audit sink — but the refusal must still be recorded. The in-loop
+    path schedules the sink write on the live loop instead of dropping it as
+    an un-awaited coroutine (repair probe at this seam previously returned
+    audit_calls=0 plus "coroutine was never awaited")."""
     import asyncio
+    import warnings
 
-    async def async_sink(_record: dict[str, object]) -> None:  # pragma: no cover - never awaited
-        return None
+    recorded: list[dict[str, object]] = []
+
+    async def async_sink(record: dict[str, object]) -> None:
+        recorded.append(record)
 
     async def exercise() -> None:
         boundary = WardenHarvestBoundary(StubWarden(), audit_sink=async_sink)
         result = boundary.scan_sync("benign")
         assert result.admitted is False
         assert result.outcome == "warden_unavailable"
+        for _ in range(3):
+            await asyncio.sleep(0)  # let the scheduled audit write settle
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        asyncio.run(exercise())
+
+    assert len(recorded) == 1
+    assert recorded[0]["admitted"] is False
+    assert recorded[0]["outcome"] == "warden_unavailable"
+    assert recorded[0]["boundary"] == "rsi_harvest_input"
+
+
+@pytest.mark.ac("SPEC-092526-c41d/AC-4")
+def test_sync_scan_inside_a_loop_with_a_broken_sink_reports_audit_unavailable() -> None:
+    """A sink that fails inside the in-loop refusal path must be reported
+    truthfully as audit_unavailable, never silently as a recorded refusal."""
+    import asyncio
+
+    def broken_sink(_record: dict[str, object]) -> None:
+        raise RuntimeError("audit sink down")
+
+    async def exercise() -> None:
+        boundary = WardenHarvestBoundary(StubWarden(), audit_sink=broken_sink)
+        result = boundary.scan_sync("benign")
+        assert result.admitted is False
+        assert result.outcome == "audit_unavailable"
+        assert result.audit["outcome"] == "audit_unavailable"
 
     asyncio.run(exercise())
+
+
+def test_sync_scan_inside_a_loop_delivers_to_a_sync_sink_inline() -> None:
+    """A synchronous sink keeps its inline delivery semantics on the
+    in-loop path: the refusal is recorded before scan_sync returns."""
+    import asyncio
+
+    recorded: list[dict[str, object]] = []
+
+    async def exercise() -> None:
+        boundary = WardenHarvestBoundary(StubWarden(), audit_sink=recorded.append)
+        result = boundary.scan_sync("benign")
+        assert result.admitted is False
+        assert result.outcome == "warden_unavailable"
+        assert len(recorded) == 1  # delivered synchronously, nothing scheduled
+
+    asyncio.run(exercise())
+
+
+def test_scheduled_async_audit_failure_is_contained_and_refusal_stands() -> None:
+    """An async sink that fails when its scheduled write finally runs must
+    not surface as an un-retrieved task exception nor reopen the refusal."""
+    import asyncio
+
+    attempted: list[bool] = []
+
+    async def failing_sink(_record: dict[str, object]) -> None:
+        attempted.append(True)
+        raise RuntimeError("audit sink down late")
+
+    async def exercise() -> None:
+        boundary = WardenHarvestBoundary(StubWarden(), audit_sink=failing_sink)
+        result = boundary.scan_sync("benign")
+        assert result.admitted is False
+        assert result.outcome == "warden_unavailable"
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+
+    assert attempted == [True]  # the write ran and drained its own failure
 
 
 @pytest.mark.ac("SPEC-092526-c41d/AC-2")

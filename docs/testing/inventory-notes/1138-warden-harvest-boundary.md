@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-rsi/tests: +55
+  packages/maistro-rsi/tests: +58
 ---
 # Issue #1138 Warden harvest boundary
 
@@ -433,3 +433,32 @@ adr-index, promotion-surface, execution-lifecycles, model-egress, mypy
 776 maistro-rsi tests, 359 ac-state/gate self-tests. The retagging changes
 no production code and no assertion: same tests, same seams, now bound to
 criteria the corpus declares.
+
+Audit-sink repair round at merge head `6845c399b` (develop base
+`150916f93`; prior verifier round proved the defect with an executed probe).
+The finding: `scan_sync` invoked inside a running event loop with an async
+audit sink (the `event_store_audit_sink` shape) called the sink, raised
+`RuntimeError("async audit sinks require an async composition root")` from
+`_record_audit`, and let `contextlib.suppress` swallow it — the sink coroutine
+was never awaited, so the blocked/not-admitted outcome had NO recorded audit
+record (probe: `admitted=False outcome=warden_unavailable audit_calls=0`
+plus `RuntimeWarning: coroutine 'sink' was never awaited`). AC-3 ("records a
+truthful blocked/not-admitted outcome") therefore failed on that supported
+sink shape. Fix in `harvest_boundary.py`: `_record_audit` now schedules the
+async sink write on the live loop via `_schedule_audit_write` (strong task
+references in `_audit_tasks` so the weakly-referenced task cannot be
+garbage-collected mid-write; `_drain_audit_write` logs late write failures
+instead of leaking un-retrieved task exceptions), and `scan_sync`'s in-loop
+refusal path mirrors `scan()`'s semantics exactly — a sink failure converts
+the outcome to truthful `audit_unavailable` rather than being suppressed.
+Tests: the stale `test_sync_scan_with_an_async_sink_inside_a_loop_still_refuses`
+(whose `# pragma: no cover - never awaited` documented the bug as expected
+behavior) is replaced by four cases — async-sink refusal IS recorded after the
+loop settles with `RuntimeWarning` escalated to error (none fires), a broken
+sync sink reports `audit_unavailable` truthfully, a sync sink keeps inline
+delivery, and a late async sink failure is contained without reopening the
+refusal (net +3 node IDs, delta +55 -> +58). Post-fix probe re-executed
+out-of-tree: `admitted=False outcome=warden_unavailable audit_calls=1
+runtime_warnings=[]`. Admission semantics are unchanged: same scan order,
+same fail-closed outcomes, refusal before any model callable; only the
+dropped-audit defect changed.

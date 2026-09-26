@@ -13,13 +13,12 @@ separate gates owned by :mod:`maistro_rsi.quarantine` and the harvest command.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
 import inspect
 import json
 import logging
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
@@ -221,6 +220,17 @@ def _correlation_payload(correlation: HarvestCorrelation, digest: str) -> dict[s
     return {key: value for key, value in data.items() if value is not None}
 
 
+async def _drain_audit_write(write: Awaitable[object]) -> None:
+    """Run one scheduled audit write, keeping its failure from surfacing
+    as an un-retrieved task exception. The admission decision is already
+    made (and refused) by the time this runs; a failed write is logged, not
+    swallowed silently."""
+    try:
+        await write
+    except Exception:
+        logger.warning("RSI harvest audit write failed after admission", exc_info=True)
+
+
 class WardenHarvestBoundary:
     """Fail-closed Warden admission for RSI harvested content."""
 
@@ -249,6 +259,10 @@ class WardenHarvestBoundary:
             else None
         )
         self._policy_version = policy_version
+        # Strong references for audit tasks scheduled by the synchronous
+        # adapter: the event loop keeps only weak task references, so an
+        # unreferenced pending write can be garbage-collected mid-flight.
+        self._audit_tasks: set[asyncio.Task[None]] = set()
 
     async def scan(self, value: Any) -> HarvestAdmission:
         content = serialize_harvest_input(value)
@@ -305,10 +319,17 @@ class WardenHarvestBoundary:
                 return executor.submit(asyncio.run, self.scan(value)).result()
         content = serialize_harvest_input(value)
         digest = _digest(content)
-        audit = self._audit_record("warden_unavailable", False, digest, None)
-        with contextlib.suppress(Exception):
+        outcome: AdmissionOutcome = "warden_unavailable"
+        audit = self._audit_record(outcome, False, digest, None)
+        try:
             self._record_audit(audit)
-        return HarvestAdmission(False, "warden_unavailable", digest, None, audit)
+        except Exception:
+            # Parity with scan(): an admission that cannot be audited is not
+            # an admitted admission. The content stays refused either way.
+            logger.warning("RSI harvest audit unavailable; refusing content")
+            outcome = "audit_unavailable"
+            audit = self._audit_record(outcome, False, digest, None)
+        return HarvestAdmission(False, outcome, digest, None, audit)
 
     def _audit_record(
         self,
@@ -342,9 +363,24 @@ class WardenHarvestBoundary:
         if self._audit_sink is not None:
             result = self._audit_sink(dict(record))
             if inspect.isawaitable(result):
-                raise RuntimeError("async audit sinks require an async composition root")
+                self._schedule_audit_write(result)
             return
         logger.info("RSI harvest Warden admission", extra={"audit": record})
+
+    def _schedule_audit_write(self, write: object) -> None:
+        """Deliver an async audit sink write from the synchronous adapter.
+
+        This path is only reached from ``scan_sync`` inside a running event
+        loop, so the blocked/not-admitted outcome can still be recorded:
+        schedule the sink coroutine on that loop instead of dropping it as
+        an un-awaited coroutine (which loses the refusal evidence and leaks
+        a RuntimeWarning). A strong reference is kept until the write
+        settles; the loop itself only holds weak task references.
+        """
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(_drain_audit_write(cast("Awaitable[object]", write)))
+        self._audit_tasks.add(task)
+        task.add_done_callback(self._audit_tasks.discard)
 
 
 def _messages_for_scan(messages: Any, *, skip_system: bool) -> Any:
