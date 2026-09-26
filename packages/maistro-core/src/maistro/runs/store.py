@@ -275,13 +275,15 @@ class PurgeOutcome:
     Dispositions, and why each is what it is:
 
     - ``runs`` / ``node_runs`` / ``attempts`` — owned spine rows, deleted.
-    - ``continuations`` — owned resumable state (the graph-continuation and
-      durable-graph-run tables), deleted. The reference is logical — no foreign
-      key — so nothing would notice it dangling, and a recovery scan would pick
-      the orphan up and try to resume a Run whose identity no longer exists.
-      The append-only Event log and the producer-provenance tables are kept
-      uncounted: nothing in retention reads those counts, so they stayed
-      write-only and were removed.
+    - ``continuations`` — owned resumable state in ``graph_continuations``,
+      deleted. The reference is logical — no foreign key — so nothing would
+      notice it dangling, and a recovery scan would pick the orphan up and try
+      to resume a Run whose identity no longer exists.
+
+    Attribution history — the Event log, task and effect receipts, session
+    turns, producer provenance — is preserved and uncounted. The per-table
+    policy, including what the purge does not reach, is the inventory in
+    `maistro.runs.retention_scope` (``RUN_REFERENCING_TABLES``).
 
     ``backlog_remaining`` is the difference between "the scope is drained"
     and "the batch ran out" — the one bit a bare count could never carry, and

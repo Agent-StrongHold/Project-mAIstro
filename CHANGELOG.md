@@ -650,6 +650,20 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Run purge's dependent-reference inventory names every `run_id` table
+  (#1175, partial).** `maistro.runs.retention_scope` now records a policy for
+  `capability_invocations`, `capability_approvals` and `task_idempotency`
+  (preserved as receipt history; `task_idempotency` is bounded by its own
+  replay window, whose sweep is not yet driven) and
+  for `durable_graph_runs` (not reached by the canonical purge; retention
+  still undecided), and exports the inventory as `RUN_REFERENCING_TABLES`. A
+  new test scans the Alembic chains (including loop-built `add_column`),
+  `.sql` migrations, runtime DDL and ORM models for tables with a `run_id`
+  column and fails on any the inventory omits. The
+  `PurgeOutcome` docstring no longer claims the purge deletes
+  `durable_graph_runs`, and the inventory no longer claims event or
+  occurrence-claim counts the purge does not produce.
+
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
   with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,

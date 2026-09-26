@@ -131,8 +131,8 @@ _PURGE_CANDIDATES_GLOBAL_SQL = """SELECT run_id, payload FROM canonical_runs r
 #: - *_RETAINED_TABLES is append-only provenance — the canonical Event log
 #:   (migration 030). Its `run_id` names what an event was about; deleting or
 #:   rewriting it would destroy the audit record of work whose deletion is
-#:   itself an auditable act. Kept, and counted into the outcome so retention
-#:   reports what it left behind. (Task receipts and session turns are
+#:   itself an auditable act. Kept and left uncounted: the residue stays
+#:   inspectable in the log itself. (Task receipts and session turns are
 #:   attribution history of the same class, owned by other modules' stores;
 #:   they are out of this transaction's boundary and the inventory in
 #:   `retention_scope` records their disposition.)
@@ -182,8 +182,8 @@ _PURGE_COUNT_ATTEMPTS_SQL = (
 #: - canonical_event_log is append-only provenance (migration 030). Its
 #:   `run_id` names what an event was about; deleting or rewriting it would
 #:   destroy the audit record of work whose deletion is itself an auditable
-#:   act. Kept, and counted into the outcome so retention reports what it
-#:   left behind. (Task receipts and session turns are attribution history of
+#:   act. Kept and left uncounted: the residue stays inspectable in the log
+#:   itself. (Task receipts and session turns are attribution history of
 #:   the same class, owned by other modules' stores; they are outside this
 #:   transaction's boundary.)
 #:
