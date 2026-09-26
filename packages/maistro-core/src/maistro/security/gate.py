@@ -21,8 +21,9 @@ import logging
 from typing import TYPE_CHECKING
 
 from maistro.observability.metrics import maistro_security_block_total
-from maistro.security._types import ClarifyingQuestion, GateResult
+from maistro.security._types import ClarifyingQuestion, GateResult, WardenVerdict
 from maistro.security.request_analyzer import analyze_request_sufficiency
+from maistro.security.warden.detector import context_from_messages
 from maistro.security.warden.sanitizer import sanitize
 
 if TYPE_CHECKING:
@@ -97,8 +98,7 @@ class Gate:
                 )
 
         sanitized = sanitize(content)
-
-        verdict = await self._warden.scan(sanitized, "user_input")
+        verdict = await self._scan_with_context(sanitized, conversation_context)
 
         if not verdict.clean:
             strike_number = 0
@@ -172,6 +172,21 @@ class Gate:
         return GateResult(
             sanitized_text=sanitized,
             warden_verdict=verdict,
+        )
+
+    async def _scan_with_context(
+        self,
+        sanitized: str,
+        conversation_context: list[dict[str, str]] | None,
+    ) -> WardenVerdict:
+        """Scan the current turn with explicitly labelled prior messages."""
+        scan_context = context_from_messages(conversation_context or [])
+        if not scan_context:
+            return await self._warden.scan(sanitized, "user_input")
+        return await self._warden.scan(
+            sanitized,
+            "user_input",
+            context=scan_context,
         )
 
 

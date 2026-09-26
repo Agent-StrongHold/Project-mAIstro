@@ -114,8 +114,11 @@ This amends [SPEC-242](../specs/SPEC-242-memory-cross-scope-consent.md).
 When a fact scoped to a **Workspace, Project or AGENT** is promoted into the **same authenticated
 user's** user model, the promotion is **automatic self-consent**. No `ConsentTask` is created, and
 the promotion writes an **audit entry** (owner decision). The owner named Workspace- and
-Agent-scoped facts. Project is included because a Project lives inside a Workspace and carries the
-same owner (proposed).
+Agent-scoped facts. Project-scoped facts are included on the same basis (proposed): what makes a
+promotion self-consent is that the source fact's authenticated owner is the target user, as the
+conditions below require. Project or Workspace membership never establishes it. A `Project` has no
+owner field, and a collaborative Workspace or Project has memberships for several principals, so
+containment says nothing about whose fact it is.
 
 The entry records the user id, the new fact id and revision, the source scope and Workspace/Project
 id, the promoting agent or service, the provenance references, and the time. The entry is written
@@ -176,8 +179,8 @@ Workspace-scoped records, and B cannot see it.
 
 ### Negative / Trade-offs
 
-- There is a new record type, store protocol, PostgreSQL and SQLite store pair, and migration to
-  build and maintain, in addition to episodic memory.
+- There is a new record type, store protocol, PostgreSQL store and migration to build and
+  maintain, in addition to episodic memory.
 - The self-consent check depends on getting the canonical user id right. If the promotion path
   accepts a user id from anywhere other than the authenticated principal, it becomes a cross-user
   leak. Implementations must test the two-user isolation case.

@@ -543,16 +543,6 @@
       "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
     },
     {
-      "key": "packages/maistro-core/src/maistro/security/gate.py::Gate",
-      "path": "packages/maistro-core/src/maistro/security/gate.py",
-      "line": 30,
-      "name": "Gate",
-      "classname": null,
-      "rank": "C",
-      "complexity": 11,
-      "rationale": "Phase 18 code-health sweep backlog; tracked under SPEC-264 pending a per-function remediation spec."
-    },
-    {
       "key": "packages/maistro-core/src/maistro/security/gate.py::Gate.process_input",
       "path": "packages/maistro-core/src/maistro/security/gate.py",
       "line": 48,
