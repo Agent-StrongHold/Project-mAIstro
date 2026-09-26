@@ -1409,22 +1409,24 @@ async def _tool_create_dashboard_widget(
     # preset without storing it, so editing the empty record and saving it
     # replaced every preset widget with the one just added (#340). The save is
     # against the revision read, so a UI save in between is re-read, not erased.
-    for attempt in range(2):
-        record = dashboard_layouts.effective(user_id)
+    def add_to(record: dashboard_layouts.LayoutRecord) -> None:
         layout = dashboard_layouts.with_widget(record.layout, widget, tab_name)
+        dashboard_layouts.save(user_id, layout, expected_revision=record.revision)
+
+    try:
         try:
-            dashboard_layouts.save(user_id, layout, expected_revision=record.revision)
-            break
-        except dashboard_layouts.LayoutConflictError as exc:
-            if attempt:
-                logger.warning("dashboard widget lost the revision race for %s: %s", user_id, exc)
-                return {
-                    "created": False,
-                    "error": f"the layout kept changing while the widget was added: {exc}",
-                }
-        except dashboard_layouts.LayoutError as exc:
-            logger.error("dashboard widget was not persisted for %s: %s", user_id, exc)
-            return {"created": False, "error": f"the widget was not saved: {exc}"}
+            add_to(dashboard_layouts.effective(user_id))
+        except dashboard_layouts.LayoutConflictError:
+            add_to(dashboard_layouts.effective(user_id))
+    except dashboard_layouts.LayoutConflictError as exc:
+        logger.warning("dashboard widget lost the revision race for %s: %s", user_id, exc)
+        return {
+            "created": False,
+            "error": f"the layout kept changing while the widget was added: {exc}",
+        }
+    except dashboard_layouts.LayoutError as exc:
+        logger.error("dashboard widget was not persisted for %s: %s", user_id, exc)
+        return {"created": False, "error": f"the widget was not saved: {exc}"}
 
     return {
         "created": True,

@@ -58,12 +58,13 @@ def _ui_principal(authed_client: Any) -> str:
     """The key the UI's PUT stores under, so the Agent edits the same layout."""
     import stores
 
+    before = set(stores.dashboard_layouts.keys())
     r = authed_client.put(
         "/v1/dashboard/layout",
         json={"tabs": [{"name": "Overview", "widgets": []}], "activeTab": 0},
     )
     assert r.status_code == 200
-    (principal,) = list(stores.dashboard_layouts.keys())
+    (principal,) = set(stores.dashboard_layouts.keys()) - before
     return str(principal)
 
 
