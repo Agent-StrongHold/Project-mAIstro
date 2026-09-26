@@ -115,6 +115,9 @@ test("intent routing is edited through a disclosure button and Escape returns fo
   await page.goto("/agents", { waitUntil: "domcontentloaded" });
   const mapTab = page.getByRole("button", { name: "Intent Map", exact: true });
   await expect(mapTab).toBeVisible({ timeout: 15000 });
+  // The select only offers the roster once it has loaded; before that its one
+  // option is the row's current agent and ArrowDown would change nothing.
+  await expect(page.getByText("Coder", { exact: true })).toBeVisible();
   await mapTab.focus();
   await page.keyboard.press("Enter");
 
@@ -176,7 +179,18 @@ test("a running RSI run's Stop is its own button and Enter sends the stop", asyn
   await expect(row).toBeVisible({ timeout: 15000 });
   await expect(row).toHaveAttribute("aria-pressed", "false");
 
+  // Stop first, with the row unselected: if the stop bubbled into the row it
+  // would select it.
   await row.focus();
+  await page.keyboard.press("Tab");
+  const stop = page.getByRole("button", { name: `Stop run ${RUN_ID}`, exact: true });
+  await expect(stop).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => stops).toEqual(["POST"]);
+  await expect(row).toHaveAttribute("aria-pressed", "false");
+
+  await page.keyboard.press("Shift+Tab");
+  await expect(row).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(row).toHaveAttribute("aria-pressed", "true");
 
@@ -184,16 +198,5 @@ test("a running RSI run's Stop is its own button and Enter sends the stop", asyn
   const nested = await new AxeBuilder({ page }).withRules(["nested-interactive"]).analyze();
   expect(nested.violations).toEqual([]);
   await scanMain();
-
-  await page.keyboard.press("Tab");
-  const stop = page.getByRole("button", { name: `Stop run ${RUN_ID}`, exact: true });
-  await expect(stop).toBeFocused();
-  const [request] = await Promise.all([
-    page.waitForRequest((r) => r.url().endsWith(`/v1/rsi/runs/${RUN_ID}/stop`)),
-    page.keyboard.press("Enter"),
-  ]);
-  expect(request.method()).toBe("POST");
   expect(stops).toEqual(["POST"]);
-  // The stop is its own action: it must not also toggle the row.
-  await expect(row).toHaveAttribute("aria-pressed", "true");
 });
