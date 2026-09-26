@@ -799,3 +799,67 @@ this round is this note.
 
 No production or test file changed this round (fresh validation evidence
 only); no new tests added, so no inventory-delta change.
+
+## Independent verification 17 (auto-817 @ d5febf7e569b, repair round: develop sync + gates)
+
+This round's assignment was the preserved develop-sync block plus gate
+re-validation. Executed at the fresh merge head `d5febf7e5` (merge of
+`origin/develop` `c791724a8051` into `6ca41ab19`; conflict-free — the
+round-14 union repair had already absorbed every overlapping hunk, so the
+merge fast-content was clean and committed as-is). The develop base
+`c791724a8051` is now an ancestor of the branch head; the develop-sync block
+is resolved. No production or test file changed this round; the only tracked
+changes are this note (and the merge itself).
+
+- **Develop sync:** `git merge origin/develop` at clean tree → no conflicts,
+  committed `d5febf7e5`. Diff `6ca41ab19..d5febf7e5` touches only develop's
+  own files (agents seam fail-closed #1593, a11y keyboard #1590, their tests
+  and notes) — zero overlap with #817 surfaces.
+- **Lane gates re-executed at d5febf7e5:** `ruff check .` clean; `ruff
+  format --check .` 2577 files; `packages/maistro-design/tests` → 331
+  passed; `packages/maistro-core/tests/security/warden` → 111 passed
+  (includes `test_visual_artifact_vocabulary.py` TS/Python lockstep);
+  `packages/maistro-core/tests/security` → 1331 passed / 19 skipped;
+  `packages/maistro-core/tests/agents` (merge-touched) → 793 passed;
+  `test_design_renderers.py` → 7 passed. AGENTS.md mypy battery incl.
+  `packages/maistro-design/src` → 739 files, no issues.
+- **Independent 13-case probe** (own corpus, not the suite): script tag,
+  event-handler attr, script-in-SVG, `data:text/html`, CSS `url()`, escaped
+  `\75rl(`, `@import`, `behavior: url(...)`, `-moz-binding: url(...)`,
+  prompt injection, iframe, `javascript:` URL → every case pre-scan
+  `skull / banish` with explicit shared-vocabulary flags AND
+  `scan_design_text` blocking flags (AC-1/2/3); clean brief stays
+  `t3 / upgrade / ()` (AC-4, no over-blocking).
+- **Browser corpus in real Chromium**: `deck-sanitization.spec.ts` →
+  **8/8 passed (3.7s)** via the local `tests/e2e` harness with
+  `E2E_SRC_ROOT=<worktree>/packages/hive-conductor` and
+  `E2E_NODE_PATHS=<worktree>/packages/hive-conductor/frontend/node_modules`.
+  Harness note: pointing `E2E_NODE_PATHS` at `tests/e2e/node_modules` (its
+  own react copy) reproduces the duplicate-React "Invalid hook call /
+  reading 'useState'" mount failure round 12 documented as environmental —
+  the entry resolves bare `react` from `nodePaths` while `frontend/src/**`
+  resolves from `frontend/node_modules`; the frontend path is the one that
+  yields a single React. Payload families, CSS obfuscation,
+  `recommendVisualArtifactTrust` parity (blocked → `review`, never
+  `upgrade`), and zero attacker-server requests all green (AC-5).
+- **Vulture CI-exact argv** (`scripts/check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'`) →
+  **rc=0, 1411 → 1411** vs base `c791724a8051` (develop's own 1412→1411
+  identity change rides along in the base; no branch-specific drift, no
+  ledger amendment needed).
+- **Prior `devskim = failure` finding dispositioned stale** (read-only `gh`
+  queries, no mutations): at the exact prior head `6ca41ab19` the hosted
+  workflows report **10/10 success including DevSkim** (run set
+  2026-09-26T13:35:58Z); the only non-success runs on the branch are two
+  *cancelled* `quality`/`CI` runs at superseded merge head `834019512`.
+  Run id `108414464052` returns 404 (expired/pruned). No devskim toolchain
+  exists locally (no dotnet), so hosted evidence is the authoritative one
+  and it is green.
+- **Other gates:** `check-merge-markers.py` ok post-merge; CI-exact
+  `check-suite-inventory.py` (no args) → 13/13 suites match (an accidental
+  `--compact` fold of `baseline.json` made mid-round was reverted by
+  rewriting the file from `HEAD` content before any commit; the no-arg check
+  confirms the restored state).
+
+No production or test file changed this round (merge + fresh validation
+evidence only); no new tests added, so no inventory-delta change.
