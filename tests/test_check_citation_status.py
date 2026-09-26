@@ -27,7 +27,6 @@ sys.path.insert(0, str(ROOT / "packages" / "maistro-registry" / "src"))
 
 from maistro_registry.citations import (  # noqa: E402
     ACTIVE_AUTHORITY_STATUSES,
-    ACTIVE_SOURCE_STATUSES,
     GOVERNING_FIELDS,
     CitationBaseline,
     CitationProblem,
@@ -112,15 +111,28 @@ def test_a_proposed_source_may_rest_on_a_proposed_decision() -> None:
 
 
 @pytest.mark.parametrize("source_status", sorted(Status, key=str))
-def test_only_active_sources_claim_live_authority(source_status: Status) -> None:
-    assert {Status.AC_DEFINED, Status.IN_PROGRESS} <= ACTIVE_SOURCE_STATUSES
+@pytest.mark.parametrize("target_status", sorted(Status, key=str))
+def test_only_active_sources_claim_live_authority(
+    source_status: Status, target_status: Status
+) -> None:
+    # Independent policy oracle: changing production's status sets must not
+    # silently change the expected answers in this exhaustive truth table.
+    active_source = source_status in {
+        Status.ACCEPTED,
+        Status.FULLY_SPECCED,
+        Status.AC_DEFINED,
+        Status.IN_PROGRESS,
+        Status.TESTS_PASSING,
+        Status.IMPLEMENTED,
+    }
+    active_target = target_status in {Status.ACCEPTED, Status.IMPLEMENTED}
 
-    target = _doc("ADR-002", Status.PROPOSED)
+    target = _doc("ADR-002", target_status)
     source = _doc("ADR-001", source_status, substrate=[_ref("ADR-002")])
 
     problems = check_citations([source, target])
 
-    assert bool(problems) is (source_status in ACTIVE_SOURCE_STATUSES)
+    assert bool(problems) is (active_source and not active_target)
 
 
 @pytest.mark.parametrize("field_name", GOVERNING_FIELDS)
@@ -281,6 +293,10 @@ def test_supersession_transition_requires_the_new_active_replacement() -> None:
     assert "Proposed" in before[0].reason
     assert after[0].target == _ref("ADR-002")
     assert "ADR-003" in after[0].reason
+
+    retargeted = _doc("ADR-001", Status.ACCEPTED, substrate=[_ref("ADR-003")])
+    assert check_citations([retargeted, superseded, proposed])
+    assert check_citations([retargeted, superseded, _doc("ADR-003", Status.ACCEPTED)]) == []
 
 
 def test_a_citation_to_a_document_that_does_not_exist_is_left_to_the_linker() -> None:
@@ -505,6 +521,76 @@ def test_the_matrix_explicitly_qualified_notes_stay_exempt(
     proposed = _doc("ADR-002", Status.PROPOSED)
 
     assert module._matrix_problems([accepted, proposed]) == [], qualifier
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "historical ADR-002; ADR-003",
+        "ADR-003; historical ADR-002",
+        "historical ADR-002; governs ADR-003",
+        "historical ADR-002, governing ADR-003",
+        "historical ADR-002 (ADR-003)",
+        "(historical ADR-002) ADR-003",
+        "historical ADR-002 and ADR-003",
+        "ADR-003 with historical context",
+        "historical background for ADR-003",
+    ],
+)
+@pytest.mark.parametrize(
+    "target_status", [Status.PROPOSED, Status.DEPRECATED, Status.SUPERSEDED, Status.ACCEPTED]
+)
+def test_matrix_relation_does_not_exempt_unqualified_neighbor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    note: str,
+    target_status: Status,
+) -> None:
+    """Drive the CI entry point, not just the parser, with mixed relation scopes."""
+    module = _gate_module()
+    matrix = tmp_path / "matrix.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Governing ADR/spec |\n"
+        "|---|---|\n"
+        f"| Demo | ADR-001 ({note}) |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+    monkeypatch.setattr(module, "LEDGER", tmp_path / "absent-ledger.json")
+    corpus = [
+        _doc("ADR-001", Status.ACCEPTED),
+        _doc("ADR-002", Status.PROPOSED),
+        _doc("ADR-003", target_status, superseded_by=[_ref("ADR-004")]),
+        _doc("ADR-004", Status.ACCEPTED),
+    ]
+    monkeypatch.setattr(module, "_corpus", lambda: corpus)
+
+    problems = module._matrix_problems(corpus)
+    if target_status is Status.ACCEPTED:
+        assert problems == []
+        assert module.main([]) == 0
+    else:
+        assert [p.target for p in problems] == [_ref("ADR-003")]
+        assert target_status.value in problems[0].reason
+        assert module.main([]) == 1
+        output = capsys.readouterr().out
+        assert "matrix#Demo.governing -> maistro-engine#ADR-003" in output
+        if target_status is Status.SUPERSEDED:
+            assert "ADR-004" in output
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "historical ADR-002; proposed in SPEC-003",
+        "historical ADR-002 (proposed in SPEC-003)",
+        "tournament contracts Proposed in ADR-002, SPEC-003",
+    ],
+)
+def test_matrix_explicit_relations_and_comma_lists_remain_historical(note: str) -> None:
+    """A comma-only list shares its relation; new clauses need their own."""
+    assert _gate_module()._governing_ids(f"ADR-001 ({note})") == ["ADR-001"]
 
 
 def test_the_matrix_unqualified_parenthetical_superseded_names_replacement(

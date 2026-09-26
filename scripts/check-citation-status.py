@@ -41,13 +41,14 @@ MATRIX = ROOT / "docs" / "architecture" / "CONVERGENCE-MATRIX.md"
 MATRIX_MARKER = "<!-- matrix:disposition -->"
 _DECISION_ID = re.compile(r"\b(?:ADR|SPEC)-[0-9][0-9A-Za-z-]*")
 
-#: A note that names its own relation. Only these are exempt from the status
-#: gate: ``(supersedes ADR-046)`` is a statement about the past, and ``(proposed
-#: in ADR-123)`` points at where a decision is being worked out rather than
-#: claiming its authority. A bare ``(ADR-002)`` asserts nothing, so the ID it
-#: holds is read as exactly what the governing column says it is -- governing.
-_HISTORICAL_NOTE = re.compile(
-    r"\b(?:supersed\w*|historical|formerly|previously|replac\w+|proposed\s+in)\b",
+#: Only a directly qualified reference (or comma-only list) is historical.
+#: A keyword elsewhere in the note cannot exempt an unrelated citation:
+#: ``(historical ADR-002; ADR-003)`` still puts ADR-003 forward as authority.
+#: Commas allow the corpus's ``(proposed in ADR-002, SPEC-003)`` provenance
+#: list; any intervening prose, semicolon or parenthesis ends that relation.
+_HISTORICAL_REFERENCE = re.compile(
+    r"\b(?:supersedes|historical|formerly|previously|replaces|proposed\s+in)\s+"
+    rf"{_DECISION_ID.pattern}(?:\s*,\s*{_DECISION_ID.pattern})*",
     re.IGNORECASE,
 )
 
@@ -72,15 +73,14 @@ def _parenthetical_notes(text: str) -> list[str]:
 def _governing_ids(cell: str) -> list[str]:
     """Decision IDs the cell puts forward as authority.
 
-    Every ID counts unless a note around it explicitly names a historical,
-    supersession or provenance relation. Silently dropping IDs from an
-    unqualified parenthetical would let a Proposed decision govern shipped
-    behaviour from behind punctuation the gate never looks past.
+    Every ID counts unless directly qualified by a historical, supersession
+    or provenance relation inside a balanced note. Remove only the qualified
+    references, never the surrounding note: it may also contain live authority.
+    Unrecognised or ambiguous syntax is governing (fail closed).
     """
     visible = cell
     for note in _parenthetical_notes(cell):
-        if _HISTORICAL_NOTE.search(note):
-            visible = visible.replace(f"({note})", " ")
+        visible = visible.replace(f"({note})", f"({_HISTORICAL_REFERENCE.sub(' ', note)})")
     return _DECISION_ID.findall(visible)
 
 
@@ -98,9 +98,9 @@ def _corpus() -> list[FrontMatter]:
 def _matrix_references(text: str) -> list[tuple[str, str, str]]:
     """Read direct authorities from the matrix disposition table.
 
-    An ID counts as governing unless it sits inside a note that names its own
-    relation -- ``(supersedes ADR-046)``, ``(proposed in ADR-123)``. Bare
-    parentheticals are not a hiding place: ``(ADR-002)`` is checked like any
+    An ID counts as governing unless directly qualified inside a note --
+    ``(supersedes ADR-046)``, ``(proposed in ADR-123)``. Bare references,
+    including neighbours of historical references, are checked like any
     other authority. The disposition gate owns table shape and existence; this
     gate owns the status of each authority the cell puts forward.
     """
