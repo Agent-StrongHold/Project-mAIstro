@@ -286,21 +286,34 @@ export default function RSI() {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Runs</h2>
         {runs.length === 0 && <p className="text-sm text-slate-500">No runs yet.</p>}
         {runs.map((r) => (
-          <button
-            key={r.run_id}
-            onClick={() => setSelectedRun(r.run_id)}
-            className={`w-full rounded-lg border p-3 text-left text-sm transition ${
-              selectedRun === r.run_id ? "border-sky-500 bg-sky-950/40" : "border-white/10 bg-slate-900/60 hover:bg-slate-800/60"
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <span className={`font-mono text-xs ${STATUS_TONE[r.status] ?? "text-slate-400"}`}>{r.status}</span>
-              <span className="text-slate-500">{r.run_id}</span>
-              <span className="ml-auto text-slate-300">{r.promotions}/{r.cycles} promoted</span>
-              {r.status === "running" && <span className="text-xs text-red-300" onClick={(e) => { e.stopPropagation(); fetch(`${API}/runs/${r.run_id}/stop`, { method: "POST" }); }}><Square className="h-3.5 w-3.5" /></span>}
-            </div>
-            {r.last_error && <p className="mt-1 truncate text-xs text-red-400">{r.last_error}</p>}
-          </button>
+          <div key={r.run_id} className="flex items-stretch gap-2">
+            <button
+              type="button"
+              aria-pressed={selectedRun === r.run_id}
+              onClick={() => setSelectedRun(r.run_id)}
+              className={`min-w-0 flex-1 rounded-lg border p-3 text-left text-sm transition ${
+                selectedRun === r.run_id ? "border-sky-500 bg-sky-950/40" : "border-white/10 bg-slate-900/60 hover:bg-slate-800/60"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span className={`font-mono text-xs ${STATUS_TONE[r.status] ?? "text-slate-400"}`}>{r.status}</span>{" "}
+                <span className="text-slate-500">{r.run_id}</span>{" "}
+                <span className="ml-auto text-slate-300">{r.promotions}/{r.cycles} promoted</span>
+              </div>
+              {r.last_error && <p className="mt-1 truncate text-xs text-red-400">{r.last_error}</p>}
+            </button>
+            {r.status === "running" && (
+              <button
+                type="button"
+                aria-label={`Stop run ${r.run_id}`}
+                title={`Stop run ${r.run_id}`}
+                onClick={() => { fetch(`${API}/runs/${r.run_id}/stop`, { method: "POST" }); }}
+                className="rounded-lg border border-white/10 bg-slate-900/60 px-3 text-red-300 hover:bg-slate-800/60"
+              >
+                <Square className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            )}
+          </div>
         ))}
       </section>
 

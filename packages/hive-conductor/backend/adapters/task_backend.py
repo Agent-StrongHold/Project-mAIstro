@@ -15,11 +15,10 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
-import httpx
-
-from maistro.http import shared_client
+from maistro.http import shared_client, sync_client
 from maistro.observability.correlation import current_execution_context
 from maistro.observability.middleware import REQUEST_ID_HEADER
+from maistro.security.outbound import configure_outbound_policy
 from maistro.tasks.http_contract import (
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
@@ -212,6 +211,10 @@ class MaistroServerTaskBackend:
     ) -> None:
         self._base = base_url.rstrip("/")
         self._key = api_key or ""
+        # This endpoint is supplied by deployment configuration. Keep its
+        # exact origin reachable while the shared transports guard everything
+        # else, including redirect hops.
+        configure_outbound_policy(self._base)
         # Production compose supplies a service-only proof key to both Hive and
         # maistro-server. Explicit constructor injection keeps focused tests and
         # non-compose deployments deterministic.
@@ -264,7 +267,7 @@ class MaistroServerTaskBackend:
             return TaskRecord(task)
 
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None:
-        with httpx.Client(timeout=30.0) as client:
+        with sync_client(timeout=30.0) as client:
             r = client.get(f"{self._base}/tasks/{task_id}", headers=self._headers())
             if r.status_code == 404:
                 return None
@@ -272,7 +275,7 @@ class MaistroServerTaskBackend:
             return TaskRecord(TaskResponse.model_validate(r.json()))
 
     def list_tasks(self, *, user_id: str | None = None) -> list[TaskRecord]:
-        with httpx.Client(timeout=30.0) as client:
+        with sync_client(timeout=30.0) as client:
             r = client.get(f"{self._base}/tasks", headers=self._headers(), params={"limit": 200})
             r.raise_for_status()
             body = r.json()

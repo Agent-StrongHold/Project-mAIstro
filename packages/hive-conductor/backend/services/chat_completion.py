@@ -36,6 +36,7 @@ from services.agent_materialization import (
 )
 from services.airtable_cache import get_airtable_base_tables_json, get_airtable_records_json
 from services.chat_gate import (
+    _workflow_request_digest,
     gate_tool_dispatch,
     gate_untrusted,
     new_gate_id,
@@ -1852,29 +1853,197 @@ _TOOL_HANDLERS["hill_climb"] = tool_hill_climb
 _TOOL_HANDLERS["mutate_workflow"] = tool_mutate_workflow
 
 
-async def _execute_tool(tool_name: str, args: dict[str, Any], user_id: str) -> dict[str, Any]:
+def _serialize_tool_result(result: object) -> str:
+    """Serialize exactly the payload that the next model turn receives."""
+    return json.dumps(result)
+
+
+async def _execute_tool(
+    tool_name: str,
+    args: dict[str, Any],
+    user_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: dict[str, Any] | None = None,
+    approval_request: Any | None = None,
+    approval_decision: Any | None = None,
+) -> dict[str, Any]:
     """Execute a PM tool for real. No stubs. Calls Jira REST API directly.
 
     The #315 dispatch policy is enforced here rather than in each caller, so
     every path that reaches a handler has crossed the same authorization:
     privileged effects (destroy/mutate) need an approval the model cannot
-    mint, and networked effects need a principal. Handler-level tests that
-    monkeypatch this function replace the policy with the fake, exactly as
-    they replaced the dispatch before.
+    mint, and networked effects need a principal. ``approved`` and its evidence
+    are trusted caller inputs, never model arguments; approval covers this
+    dispatch only, not effects a workflow may initiate downstream.
     """
-    refusal = gate_tool_dispatch(tool_name, user_id)
+    workflow_id = (
+        str(args.get("dag_id") or args.get("id") or "") if tool_name == "run_workflow" else None
+    )
+    request_digest = _workflow_request_digest(args) if tool_name == "run_workflow" else None
+    approval_record = (
+        {
+            "request_id": approval_request.request_id,
+            "action": approval_request.action,
+            "principal": approval_request.requester,
+            "workflow_id": approval_request.params.get("workflow_id"),
+            "request_digest": approval_request.params.get("request_digest"),
+            "actor": approval_decision.actor,
+            "authority_kind": (
+                approval_decision.authority.kind if approval_decision.authority else None
+            ),
+            "authority_scope": (
+                approval_decision.authority.scope if approval_decision.authority else None
+            ),
+            "source": "capability_approval",
+        }
+        if approval_request is not None and approval_decision is not None
+        else (dict(approval_evidence) if approval_evidence else None)
+    )
+    refusal = gate_tool_dispatch(
+        tool_name,
+        user_id,
+        approved=approved,
+        approval_evidence=approval_evidence,
+        approval_request=approval_request,
+        approval_decision=approval_decision,
+        workflow_id=workflow_id or None,
+        request_digest=request_digest,
+    )
     if refusal is not None:
         return {
             "error": f"tool '{tool_name}' was not run: {refusal.reason}",
             "blocked": True,
+            **({"workflow_id": workflow_id} if workflow_id else {}),
         }
     jira_pat = _get_jira_pat(user_id)
     handler = _TOOL_HANDLERS.get(tool_name, _tool_poll_jira)
-    return await handler(args, user_id, jira_pat)
+    result = await handler(args, user_id, jira_pat)
+    if tool_name == "run_workflow":
+        # This records the canonical execution identity without granting its
+        # approval to any node-level effect inside the graph.
+        log_audit(
+            "chat_workflow_execution",
+            user_id or "anonymous",
+            target=str(result.get("run_id") or workflow_id or ""),
+            detail={
+                "workflow_id": workflow_id,
+                "run_id": result.get("run_id"),
+                "principal": user_id or "anonymous",
+                "approval_evidence": approval_record,
+                "approval_scope": "tool_dispatch_only",
+                "status": result.get("status"),
+                "refusal_reason": result.get("error"),
+            },
+            severity="warning" if result.get("error") else "info",
+        )
+    return result
+
+
+async def _execute_workflow_with_approval(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Request workflow approval through the canonical capability provider.
+
+    The request remains pending in the shared approval inbox while the caller
+    waits. Resolving it through the capabilities API supplies the typed,
+    cryptographically bound decision used by the chat dispatch gate; no
+    chat-local approval store or execution authority is involved.
+    """
+    from maistro.capabilities.approval_store import redact_approval_value
+    from maistro.capabilities.slots.approval import ApprovalRequest
+    from services.engine import get_engine
+
+    workflow_id = str(args.get("dag_id") or args.get("id") or "")
+    request_digest = _workflow_request_digest(args)
+    provider = await get_engine().capabilities.resolve("approval")
+    if provider is None or not hasattr(provider, "request"):
+        # Refusal must be observable even when the canonical capability is not
+        # installed; otherwise an operator cannot distinguish a denied action
+        # from a wiring outage.
+        log_audit(
+            "chat_workflow_approval_refused",
+            user_id or "anonymous",
+            target=workflow_id,
+            detail={
+                "principal": user_id or "anonymous",
+                "workflow_id": workflow_id,
+                "request_digest": request_digest,
+                "refusal_reason": "approval_capability_unavailable",
+                "effect": "mutate",
+            },
+            severity="warning",
+        )
+        return {
+            "error": "workflow approval capability unavailable",
+            "blocked": True,
+            "workflow_id": workflow_id,
+        }
+    approval_request = ApprovalRequest(
+        action="run_workflow",
+        params={
+            "workflow_id": workflow_id,
+            "request_digest": request_digest,
+            "request": redact_approval_value(args),
+        },
+        tier="policy",
+        requester=user_id,
+        rationale="Chat requested durable workflow execution",
+    )
+    log_audit(
+        "chat_workflow_approval_requested",
+        user_id or "anonymous",
+        target=workflow_id,
+        detail={
+            "request_id": approval_request.request_id,
+            "principal": user_id or "anonymous",
+            "workflow_id": workflow_id,
+            "request_digest": request_digest,
+            "effect": "mutate",
+        },
+    )
+    decision = await provider.request(approval_request)
+    if not decision.approved or not decision.actor:
+        log_audit(
+            "chat_workflow_approval_refused",
+            user_id or "anonymous",
+            target=workflow_id,
+            detail={
+                "request_id": approval_request.request_id,
+                "principal": user_id or "anonymous",
+                "workflow_id": workflow_id,
+                "request_digest": request_digest,
+                "actor": decision.actor,
+                "authority_kind": (decision.authority.kind if decision.authority else None),
+                "refusal_reason": (
+                    "approval_denied"
+                    if not decision.approved
+                    else ("missing_authority" if decision.authority is None else "missing_actor")
+                ),
+            },
+            severity="warning",
+        )
+        return {
+            "error": "workflow execution refused by approval",
+            "blocked": True,
+            "workflow_id": workflow_id,
+            "approval_request_id": approval_request.request_id,
+        }
+    return await _execute_tool(
+        "run_workflow",
+        args,
+        user_id,
+        approval_request=approval_request,
+        approval_decision=decision,
+    )
 
 
 async def _gated_execute_tool(
-    tool_name: str, args: dict[str, Any], user_id: str, gate_id: str
+    tool_name: str,
+    args: dict[str, Any],
+    user_id: str,
+    gate_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """One model-authored tool call through the #315 boundaries.
 
@@ -1900,13 +2069,29 @@ async def _gated_execute_tool(
         )
 
     try:
-        result = await _execute_tool(tool_name, args, user_id)
+        if tool_name == "run_workflow" and not approved and approval_evidence is None:
+            result = await _execute_workflow_with_approval(args, user_id)
+        elif approved or approval_evidence is not None:
+            result = await _execute_tool(
+                tool_name,
+                args,
+                user_id,
+                approved=approved,
+                approval_evidence=approval_evidence,
+            )
+        else:
+            # Keep the ordinary loop's narrow call seam compatible with
+            # trusted test/internal adapters that replace the executor.
+            result = await _execute_tool(tool_name, args, user_id)
     except Exception as tool_exc:
         logger.warning("tool_execution_error name=%s error=%s", tool_name, tool_exc)
         result = {"error": f"Tool '{tool_name}' failed: {type(tool_exc).__name__}: {tool_exc}"}
 
+    # Scan the exact JSON representation appended below. This makes mapping
+    # keys and values share one canonical model-visible representation.
+    serialized_result = _serialize_tool_result(result)
     result_gate = await gate_untrusted(
-        result,
+        serialized_result,
         boundary="tool_result",
         surface="chat_tool_result",
         user_id=user_id,
@@ -1973,10 +2158,14 @@ async def run_chat_completion(
     req: ChatCompletionRequest,
     user_id: str = "",
     _llm: LLMPort | None = None,
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """PM Fleet chat — real tools, real data, real LLM synthesis."""
     try:
-        return await _run_chat_completion_inner(req, user_id, _llm)
+        return await _run_chat_completion_inner(
+            req, user_id, _llm, approval_evidence=approval_evidence
+        )
     except Exception as exc:
         logger.exception("run_chat_completion crashed: %s", exc)
         return {
@@ -1991,6 +2180,8 @@ async def _run_chat_completion_inner(
     req: ChatCompletionRequest,
     user_id: str = "",
     _llm: LLMPort | None = None,
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Inner implementation."""
     import time as _time
@@ -2058,7 +2249,13 @@ async def _run_chat_completion_inner(
                 args = {}
 
             logger.info("tool_call name=%s args=%s user=%s", name, args, user_id)
-            result, _summary = await _gated_execute_tool(name, args, user_id, gate_id)
+            result, _summary = await _gated_execute_tool(
+                name,
+                args,
+                user_id,
+                gate_id,
+                approval_evidence=approval_evidence,
+            )
             logger.info(
                 "tool_result name=%s keys=%s",
                 name,
@@ -2069,7 +2266,7 @@ async def _run_chat_completion_inner(
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(result),
+                    "content": _serialize_tool_result(result),
                 }
             )
 
@@ -2245,6 +2442,8 @@ def _registered_tool_names(tools: list[dict[str, Any]]) -> tuple[str, ...]:
 async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
     req: ChatCompletionRequest,
     user_id: str = "",
+    *,
+    approval_evidence: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming version — yields SSE events with real status updates."""
     s = get_settings()
@@ -2411,14 +2610,20 @@ async def run_chat_completion_streaming(  # noqa: C901  streaming state machine
                 # policy, executes, and scans the result at the tool_result
                 # boundary (#315) — indirect injection in a tool result is
                 # withheld before it reaches the next model turn.
-                result, summary = await _gated_execute_tool(name, args, user_id, gate_id)
+                result, summary = await _gated_execute_tool(
+                    name,
+                    args,
+                    user_id,
+                    gate_id,
+                    approval_evidence=approval_evidence,
+                )
             yield {"type": "tool_result", "tool": name, "summary": summary}
 
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": json.dumps(result),
+                    "content": _serialize_tool_result(result),
                 }
             )
 

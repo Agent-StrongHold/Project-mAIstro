@@ -455,17 +455,29 @@ export default function Agents() {
 
           {bStep === 1 && (
             <div style={{ maxWidth: 600, margin: "0 auto" }}>
-              <label style={lbl}>Choose a strategy</label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+              <div id={`${formId}-strategy`} style={lbl}>Choose a strategy</div>
+              <div role="radiogroup" aria-labelledby={`${formId}-strategy`} style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
                 {STRATEGIES.map((s) => (
-                  <div key={s.key} onClick={() => setBStrat(s.key)} style={{
-                    padding: 14, borderRadius: 6, cursor: "pointer",
+                  <label key={s.key} style={{
+                    display: "block", padding: 14, borderRadius: 6, cursor: "pointer",
                     border: bStrat === s.key ? `2px solid ${STRATEGY_COLORS[s.key]}` : "1.3px solid var(--rule)",
                     background: bStrat === s.key ? `${STRATEGY_COLORS[s.key]}11` : "var(--paper)",
                   }}>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 700, color: STRATEGY_COLORS[s.key] }}>{s.label}</div>
-                    <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>{s.desc}</div>
-                  </div>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "var(--hand)", fontSize: 15, fontWeight: 700, color: STRATEGY_COLORS[s.key] }}>
+                      <input
+                        type="radio"
+                        name={`${formId}-strategy`}
+                        value={s.key}
+                        checked={bStrat === s.key}
+                        onChange={() => setBStrat(s.key)}
+                        aria-labelledby={`${formId}-strategy-${s.key}-name`}
+                        aria-describedby={`${formId}-strategy-${s.key}`}
+                        style={{ accentColor: STRATEGY_COLORS[s.key], margin: 0 }}
+                      />
+                      <span id={`${formId}-strategy-${s.key}-name`}>{s.label}</span>
+                    </span>
+                    <span id={`${formId}-strategy-${s.key}`} style={{ display: "block", fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginTop: 4 }}>{s.desc}</span>
+                  </label>
                 ))}
               </div>
               <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between" }}>
@@ -597,27 +609,45 @@ export default function Agents() {
             {intents.map((row) => (
               <tr key={row.intent} style={{ borderBottom: "1px solid var(--rule)" }}>
                 <td style={{ padding: "8px 12px", fontFamily: "var(--hand)", fontSize: 13, fontWeight: 600 }}>{row.intent}</td>
-                <td style={{ padding: "8px 12px", cursor: "pointer" }} onClick={() => setEditIntent(editIntent === row.intent ? null : row.intent)}>
-                  {editIntent === row.intent ? (
+                <td style={{ padding: "8px 12px" }}>
+                  <button
+                    id={`${formId}-route-${row.intent}`}
+                    type="button"
+                    aria-expanded={editIntent === row.intent}
+                    aria-controls={editIntent === row.intent ? `${formId}-route-${row.intent}-select` : undefined}
+                    aria-label={`Edit routing for ${row.intent}: ${row.agent}`}
+                    onClick={() => setEditIntent(editIntent === row.intent ? null : row.intent)}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: "var(--accent)" }}
+                  >
+                    {row.agent}
+                  </button>
+                  {editIntent === row.intent && (
                     <select
+                      id={`${formId}-route-${row.intent}-select`}
+                      aria-label={`Agent for ${row.intent}`}
                       value={row.agent}
                       onChange={(e) => {
                         const ag = agents.find((a) => a.name === e.target.value);
                         setIntents((prev) => prev.map((r) => r.intent === row.intent
                           ? { ...r, agent: e.target.value, model: ag?.model ?? r.model, strategy: ag ? inferStrategy(ag) : r.strategy } : r));
-                        setEditIntent(null);
                       }}
-                      onBlur={() => setEditIntent(null)}
+                      onKeyDown={(e) => {
+                        if (e.key !== "Escape") return;
+                        e.preventDefault();
+                        setEditIntent(null);
+                        document.getElementById(`${formId}-route-${row.intent}`)?.focus();
+                      }}
+                      onBlur={(e) => {
+                        if (e.relatedTarget?.id !== `${formId}-route-${row.intent}`) setEditIntent(null);
+                      }}
                       autoFocus
-                      style={{ ...inp, height: 24, padding: "2px 6px" }}
+                      style={{ ...inp, display: "block", marginTop: 4, height: 24, padding: "2px 6px" }}
                     >
                       {agents.length > 0
                         ? agents.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)
                         : <option value={row.agent}>{row.agent}</option>
                       }
                     </select>
-                  ) : (
-                    <span style={{ color: "var(--accent)" }}>{row.agent}</span>
                   )}
                 </td>
                 <td style={{ padding: "8px 12px", color: "var(--pencil)" }}>{row.model}</td>
