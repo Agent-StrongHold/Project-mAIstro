@@ -281,6 +281,16 @@ or placeholder-only section.
 
 ### Added
 
+- **Proposed spec for Workspace work campaigns (#103, partial).**
+  SPEC-092626-1831 (Proposed), with its boundary decision ADR-092626-c1e7
+  (Proposed), records the campaign contract before any code: a
+  campaign is operator policy that narrows eligible BacklogItems and linked
+  Goals, with four autonomy modes, durable pin-next/pause/exclude/human-only
+  controls, human priority kept separate from the system selection score, and
+  audit keyed to actor and policy version. It grants no permissions and owns no
+  Goals. The priority combination rule and default mode stay open questions.
+  Documentation only: no store, route or runtime behaviour changes yet.
+
 - **`GET /health/ready` reports the serving container's cgroup ceilings
   (#75, partial).** A new `container_limits` field reads cgroup v2
   `memory.max`, `pids.max` and `cpu.max` at the hierarchy root, which under
