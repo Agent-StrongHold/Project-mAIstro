@@ -384,6 +384,33 @@ def test_migrate_or_index_one_quarantines_legacy_duplicates() -> None:
     assert registry.resolve("zara") is None
 
 
+def test_allocation_refuses_an_unindexed_legacy_row() -> None:
+    """A user row the claim index has never seen still owns its name.
+
+    Startup migration indexes rows that existed when the process booted;
+    rows that appear later through a path outside this registry (direct
+    store writes, a restored snapshot, a test seed) have no claim. resolve()
+    and is_claimed() self-heal that gap via migrate_or_index_one();
+    allocation must refuse the same legacy row rather than mint a second
+    identity under one login name in memory mode — the durable unique-index
+    transaction already refuses it. Found by the check battery running
+    test_api.py without the session-ordering that masks the gap in the full
+    suite: /v1/auth/register answered 200 for an already-seeded username.
+    """
+    users = ModelStore("users", HiveUser)
+    claims = JsonStore("username_claims")
+    users["seeded"] = _user("seeded", "testuser")
+    registry = UsernameRegistry(users, claims)
+
+    with pytest.raises(UsernameTakenError):
+        registry.create_users([_user("rival", "TESTUSER")])
+
+    # The legacy row kept its name, the rival was not created, and the
+    # index now records the row that allocation discovered.
+    assert "rival" not in users
+    assert claims["username:testuser"]["user_id"] == "seeded"
+
+
 def test_persistence_without_atomic_claims_refuses_allocation() -> None:
     """A backend that cannot run the claim transaction must not be used."""
 

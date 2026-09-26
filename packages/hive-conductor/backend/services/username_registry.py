@@ -226,6 +226,17 @@ class UsernameRegistry:
         records = [("users", user.id, user.model_dump_json()) for user in batch]
 
         with _LOCK:
+            # Rows that predate the index (startup migration ran before they
+            # existed, or they were written by a path outside this registry)
+            # are invisible to the claim check below. resolve() and
+            # is_claimed() already self-heal such rows through
+            # migrate_or_index_one(); allocation must not be the one lookup
+            # that misses them, or a re-registration of an existing legacy
+            # account creates a second identity under the same login name in
+            # memory mode. Durable mode's unique-index transaction refuses
+            # that duplicate; this brings the in-memory refusal to parity.
+            for name in normalized:
+                self.migrate_or_index_one(name)
             self._reject_existing_claims(claims)
             self._write_batch(claims, records, batch)
             for (_, key, raw), user in zip(claims, batch, strict=True):
