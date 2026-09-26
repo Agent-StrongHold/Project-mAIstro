@@ -17,12 +17,14 @@ A NOT NULL column with no default cannot be added to a populated table, so a
 live table missing an identity column such as `canvases.name` or
 `layers.canvas_id` fails the upgrade loudly rather than being given an invented
 value. An adopted table keeps the constraints it was created with, except that
-`layers` gains the unique constraint below when it has none over
-`(canvas_id, z_index)`.
+`layers` gains the unique constraint below when no unique index covers
+`(canvas_id, z_index)`. So on an adopted table a pre-existing non-deferrable
+uniqueness stays in force, and an existing foreign-key column that was
+created without its `REFERENCES` gains no foreign key or cascade.
 
 `UNIQUE (canvas_id, z_index)` is `DEFERRABLE INITIALLY DEFERRED`. PostgreSQL
 checks a non-deferrable unique constraint row by row, so the store's
-`reorder_layers` (one UPDATE per layer) and `delete_layer` (shift every higher
+`reorder_layers` (one UPDATE per layer) and `remove_layer` (shift every higher
 layer down by one) would collide on an intermediate state that is never
 committed. Deferred, the constraint still guards the committed order, which is
 what the store's docstring relies on it for.
@@ -142,12 +144,12 @@ def upgrade() -> None:
         DO $$
         BEGIN
             IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint c
-                WHERE c.conrelid = 'layers'::regclass
-                  AND c.contype = 'u'
+                SELECT 1 FROM pg_index i
+                WHERE i.indrelid = 'layers'::regclass
+                  AND i.indisunique
                   AND ARRAY(
                         SELECT a.attname::text FROM pg_attribute a
-                        WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+                        WHERE a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
                         ORDER BY a.attname
                       ) = ARRAY['canvas_id', 'z_index']
             ) THEN

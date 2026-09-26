@@ -288,9 +288,10 @@ or placeholder-only section.
   writes but no migration here ever created. It adopts rather than assumes an
   empty database: `CREATE TABLE IF NOT EXISTS` plus `ADD COLUMN IF NOT EXISTS`
   for every column, so a deployment whose tables were created outside the
-  repository gains any missing columns and keeps its rows. The
-  `(canvas_id, z_index)` uniqueness is deferred to commit, so layer reorder
-  and removal no longer collide on intermediate states. The five tables move
+  repository gains any missing columns and keeps its rows. On tables 044
+  creates, the `(canvas_id, z_index)` uniqueness is deferred to commit, so
+  layer reorder and removal no longer collide on intermediate states; an
+  adopted table keeps its own constraints and foreign keys as they were. The five tables move
   from `created_outside_this_repo` into the durable-table retention inventory.
   Operators: `alembic upgrade head` now touches these tables, and `downgrade`
   past 044 drops them, including rows an adopted table held before.

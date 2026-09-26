@@ -349,7 +349,7 @@
       "deletion_path": null,
       "issue": null,
       "parent": "canvases",
-      "notes": "ON DELETE CASCADE from canvases (migration 044). No delete of its own; canvases are never deleted today, so in practice it lives as long as the undecided parent."
+      "notes": "ON DELETE CASCADE from canvases (migration 044). No delete of its own; canvases are never deleted today, so in practice it lives as long as the undecided parent. The cascade exists where 044 created the column; an adopted table keeps whatever foreign key it had."
     },
     {
       "table": "consumer_cursors",
@@ -485,7 +485,7 @@
       "deletion_path": "maistro_canvas.canvas.store:PgCanvasStore.remove_layer",
       "issue": null,
       "parent": "layers",
-      "notes": "ON DELETE CASCADE from layers (migration 044): removed with its layer on an explicit layer removal, or with the canvas. No retention sweep of terminal receipts."
+      "notes": "ON DELETE CASCADE from layers (migration 044): removed with its layer on an explicit layer removal, or with the canvas. No retention sweep of terminal receipts. The cascade exists where 044 created the column; an adopted table keeps whatever foreign key it had."
     },
     {
       "table": "genomes",
@@ -575,7 +575,7 @@
       "deletion_path": "maistro_canvas.canvas.store:PgCanvasStore.remove_layer",
       "issue": null,
       "parent": "canvases",
-      "notes": "ON DELETE CASCADE from canvases (migration 044), or removed on an explicit layer removal."
+      "notes": "ON DELETE CASCADE from canvases (migration 044), or removed on an explicit layer removal. The cascade exists where 044 created the column; an adopted table keeps whatever foreign key it had."
     },
     {
       "table": "learnings",

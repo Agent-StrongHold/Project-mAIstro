@@ -243,6 +243,12 @@ async def _round_trip(url: str, *, reorder: bool = True) -> None:
             [{"layer_id": background.id}],
         )
 
+        overlay = await store.add_layer(canvas.id, name="title", layer_type="text", org_id=ORG)
+        await store.remove_layer(figure.id if reorder else background.id, org_id=ORG)
+        remaining = await store.list_layers(canvas.id, org_id=ORG)
+        assert [layer.z_index for layer in remaining] == [0, 1]
+        assert remaining[-1].id == overlay.id
+
         blob_id = await store.store_blob(b"pixels", format="png", metadata={"layer": "sky"})
     finally:
         await engine.dispose()
@@ -319,6 +325,26 @@ class TestTheChainRunsTheStore:
         assert unique == [(1,)], "an adopted table's own unique constraint is not duplicated"
         # The adopted non-deferrable constraint is kept, so a swap still collides there.
         await _round_trip(empty_database, reorder=False)
+
+    def test_an_adopted_unique_index_is_not_duplicated(self, empty_database: str) -> None:
+        _alembic(empty_database, "upgrade", PARENT_REVISION)
+        _execute(
+            empty_database,
+            """
+            CREATE TABLE canvases (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                                   width INTEGER NOT NULL, height INTEGER NOT NULL);
+            CREATE TABLE layers (id TEXT PRIMARY KEY, canvas_id TEXT NOT NULL,
+                                 name TEXT NOT NULL, z_index INTEGER NOT NULL DEFAULT 0);
+            CREATE UNIQUE INDEX layers_cz ON layers (canvas_id, z_index);
+            """,
+        )
+        _alembic(empty_database, "upgrade", "head")
+        rows = _execute(
+            empty_database,
+            "SELECT count(*) FROM pg_index WHERE indrelid = 'layers'::regclass"
+            " AND indisunique AND NOT indisprimary",
+        )
+        assert rows == [(1,)]
 
     def test_downgrade_removes_the_tables(self, empty_database: str) -> None:
         _alembic(empty_database, "upgrade", "head")
