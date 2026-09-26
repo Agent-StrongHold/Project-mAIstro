@@ -63,9 +63,9 @@ SYSTEM_AUTH = AuthContext(
 #: The identity a request that carried none is evaluated as (#1165 review).
 #:
 #: Role-less, so a fail-closed permission table denies it every tool: an
-#: absent identity is not a grant, and the strategies that gate
-#: ``Sentinel.pre_call`` on ``auth is not None`` must reach the table rather
-#: than skip it. ``user_id`` stays empty on purpose -- the strike paths key on
+#: absent identity is not a grant. The Agent tool seam denies ``auth=None``
+#: outright, so routing an identity-free turn as this principal lets the
+#: operator's table decide instead. ``user_id`` stays empty on purpose -- the strike paths key on
 #: it and skip when it is empty, exactly as they did for ``auth=None``, and
 #: `Container.route_request` refuses to arm strike tracking without a real
 #: identity in the first place.
