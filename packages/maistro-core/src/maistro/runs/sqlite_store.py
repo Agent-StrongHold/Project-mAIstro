@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -234,13 +235,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_effect
 -- Partial on `schedule_id IS NOT NULL`: only scheduled Runs claim an
 -- occurrence, and without the predicate every task and chat Run would collide
 -- on `(NULL, NULL)`.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_occurrence
+--
+-- This is an in-place schema migration as well as the fresh schema definition.
+-- `CREATE INDEX IF NOT EXISTS` does not replace the pre-034 index on an
+-- existing SQLite file, so a legacy file would keep claiming by
+-- `scheduled_for` and allow a retried manual fire to create another Run.
+DROP INDEX IF EXISTS idx_canonical_runs_occurrence;
+CREATE UNIQUE INDEX idx_canonical_runs_occurrence
     ON canonical_runs(
         json_extract(payload, '$.provenance.schedule_id'),
-        json_extract(payload, '$.provenance.scheduled_for')
+        COALESCE(
+            'manual:' || json_extract(payload, '$.provenance.schedule_fire_id'),
+            json_extract(payload, '$.provenance.scheduled_for')
+        )
     )
     WHERE json_extract(payload, '$.provenance.schedule_id') IS NOT NULL
-      AND json_extract(payload, '$.provenance.scheduled_for') IS NOT NULL;
+      AND COALESCE(
+            json_extract(payload, '$.provenance.schedule_fire_id'),
+            json_extract(payload, '$.provenance.scheduled_for')
+          ) IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_runs_delegation_key
     ON canonical_runs(json_extract(payload, '$.provenance.delegation_key'))
@@ -533,6 +546,27 @@ class SqliteRunStore:
                WHERE json_extract(payload, '$.provenance.effect_key') = ?
                LIMIT 1""",
             (effect_key,),
+        )
+        return model_of_json(Run, row[0]) if row is not None else None
+
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        occurrence = occurrence_key(dict(provenance or {}))
+        if occurrence is None:
+            return None
+        schedule_id, token = occurrence
+        # The same expression the unique claim index is built on, so a Run the
+        # index refuses is a Run this read finds (#1120).
+        row = await self._fetchone(
+            """SELECT payload FROM canonical_runs
+                WHERE json_extract(payload, '$.provenance.schedule_id') = ?
+                  AND COALESCE(
+                        'manual:' || json_extract(payload, '$.provenance.schedule_fire_id'),
+                        json_extract(payload, '$.provenance.scheduled_for')
+                      ) = ?""",
+            (schedule_id, token),
         )
         return model_of_json(Run, row[0]) if row is not None else None
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
@@ -472,6 +472,24 @@ class RunStore(Protocol):
         initial_status: RunStatus = RunStatus.CREATED,
     ) -> RunEffectClaim: ...
 
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        """The Run that already claims this provenance's occurrence, if any.
+
+        The read half of the occurrence claim (#220, #1120). A duplicate
+        admission is refused by `create_run`, but the refusal does not name the
+        Run that won — and the loser of a manual-fire race owes its caller the
+        same receipt the winner produced, which means resolving that Run. None
+        means nobody holds the claim (the common case: nothing was admitted
+        twice), not that the occurrence is free to double-fire — admission
+        still owns that decision. Understands both claim shapes: nominal
+        occurrences resolve by `scheduled_for`, manual fires by their
+        `schedule_fire_id` token.
+        """
+        ...
+
     async def get_run_for_occurrence(self, schedule_id: str, scheduled_for: str) -> Run | None:
         """Resolve the canonical Run claiming one scheduled occurrence."""
         ...
@@ -499,7 +517,6 @@ class RunStore(Protocol):
     ) -> Run: ...
 
     async def claim_delegation_transport_attempt(self, run_id: str) -> bool: ...
-
     async def transition_run(
         self,
         run_id: str,
@@ -816,6 +833,19 @@ class InMemoryRunStore:
         if canvas_job_id in self._canvas_job_claims:
             raise RunIntegrityError(f"a Run already claims Canvas job {canvas_job_id!r}")
         self._canvas_job_claims[canvas_job_id] = run.run_id
+
+    async def find_occurrence_run(
+        self,
+        provenance: Mapping[str, Any] | None,
+    ) -> Run | None:
+        occurrence = occurrence_key(dict(provenance or {}))
+        if occurrence is None:
+            return None
+        run_id = self._occurrences.get(occurrence)
+        if run_id is None:
+            return None
+        run = self._runs.get(run_id)
+        return run.model_copy(deep=True) if run is not None else None
 
     def _referenced_by_children(self) -> tuple[set[str], set[str]]:
         """The Run and NodeRun ids some other Run names as its parent."""
