@@ -82,6 +82,8 @@ class _Harness:
         benchmarks: list[str],
         llm_call: Any,
     ):
+        if llm_call is not None:
+            await llm_call([{"role": "user", "content": genome.id}])
         return [
             SimpleNamespace(
                 benchmark=benchmarks[0],
@@ -91,6 +93,19 @@ class _Harness:
                 metadata={},
             )
         ]
+
+
+class _ContextualCall:
+    def __init__(self) -> None:
+        self.contexts: list[NodeContext] = []
+
+    def for_context(self, ctx: NodeContext) -> Any:
+        self.contexts.append(ctx)
+
+        async def call(_messages: Any, **_kwargs: Any) -> str:
+            return "model response"
+
+        return call
 
 
 class _Tournament:
@@ -203,17 +218,28 @@ async def test_cycle_is_one_run_with_evaluation_battle_finalization_attempts(
     population = _Population([_Genome("g1"), _Genome("g2")])
     tournament = _Tournament()
     owner = await _container()
+    contextual_call = _ContextualCall()
 
     record = await run_canonical_evolution_cycle(
         population=population,
         tournament=tournament,
         config=_config(population_size=3, eval_batch_size=2),
         harness=_Harness(),
+        llm_call=contextual_call,
         cycle_number=1,
         container=owner,
     )
 
     assert record.run.status is RunStatus.COMPLETED
+    assert [ctx.node_id for ctx in contextual_call.contexts] == [
+        "evolve-evaluate-1",
+        "evolve-evaluate-2",
+        "evolve-finalize",
+    ]
+    assert all(ctx.run_id == record.run_id for ctx in contextual_call.contexts)
+    assert all(ctx.node_run_id and ctx.attempt_id for ctx in contextual_call.contexts)
+    assert all(ctx.project_id for ctx in contextual_call.contexts)
+    assert len({ctx.project_id for ctx in contextual_call.contexts}) == 1
     stored = await owner.run_store.get_run(record.run_id)
     assert stored is not None
     assert stored.status is RunStatus.COMPLETED
@@ -823,6 +849,106 @@ async def test_missing_has_more_successor_fails_before_recording_unroutable_batt
 
 
 @pytest.mark.asyncio
+async def test_failed_model_effect_does_not_publish_evaluation_mutation() -> None:
+    """A benchmark that swallows a provider error cannot make a score stick."""
+
+    class _FailureCall:
+        first_failure: BaseException | None = None
+
+        def for_context(self, _ctx: NodeContext) -> Any:
+            bound = self
+            bound.governed_model_call = self
+            return bound
+
+        async def __call__(self, _messages: Any, **_kwargs: Any) -> str:
+            self.first_failure = TimeoutError("provider timed out")
+            raise self.first_failure
+
+    class _FailureHarness:
+        async def evaluate_genome(
+            self, _genome: Any, _benchmarks: list[str], llm_call: Any
+        ) -> list[Any]:
+            with pytest.raises(TimeoutError):
+                await llm_call([{"role": "user", "content": "evaluate"}])
+            return [
+                SimpleNamespace(
+                    benchmark="proxy", score=0.0, cost_usd=0.0, duration_seconds=0.0, metadata={}
+                )
+            ]
+
+    class _FailureCycle:
+        harness = _FailureHarness()
+
+        @staticmethod
+        def _fold_score(*_args: Any) -> None:
+            raise AssertionError("failed model work must not reach score folding")
+
+    genome = _Genome("failed")
+    population = _Population([genome])
+    config = _config(population_size=1, eval_batch_size=1)
+
+    with pytest.raises(RuntimeError, match="model effect failed"):
+        await _evaluate_one(
+            _FailureCycle(),
+            population,
+            config,
+            _FailureCall(),
+            "failed",
+            NodeContext(
+                run_id="run-failed",
+                dag_id="graph-failed",
+                node_id="evolve-evaluate-1",
+                node_run_id="node-failed",
+                attempt_id="attempt-failed",
+                workspace_id="workspace-evolve",
+                project_id="project-evolve",
+            ),
+        )
+
+    assert genome.eval_scores == {}
+    assert genome.harness_params == {}
+
+
+@pytest.mark.asyncio
+async def test_replayed_battle_and_finalize_nodes_do_not_repeat_domain_mutations() -> None:
+    """Recovery of one logical NodeRun is at-most-once for domain mutations."""
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    for genome in population.list_all():
+        genome.eval_scores["proxy"] = 0.5
+    tournament = _Tournament()
+    cycle = _Cycle(harness=_Harness(), tournament=tournament)
+    work = _TournamentWork(cycle=cycle, population=population)
+    battle_inputs = _BattleInput(pairs=[("g1", "g2")], pair_index=0)
+    context = NodeContext(
+        run_id="run-recovery",
+        dag_id="graph-recovery",
+        node_id="evolve-battle-1",
+        node_run_id="battle-node-run",
+        attempt_id="attempt-1",
+    )
+
+    first = work.run_pair(battle_inputs, context)
+    second = work.run_pair(battle_inputs, context)
+    assert first == second
+    assert len(tournament.battles) == 1
+
+    config = _config(population_size=2, eval_batch_size=0)
+    finalize_ctx = NodeContext(
+        run_id="run-recovery",
+        dag_id="graph-recovery",
+        node_id="evolve-finalize",
+        node_run_id="finalize-node-run",
+        attempt_id="attempt-finalize-1",
+    )
+    finalized = await _finalize_cycle(cycle, population, config, None, finalize_ctx)
+    cycle_count = cycle._cycle_count
+    replayed_ctx = finalize_ctx.model_copy(update={"attempt_id": "attempt-finalize-2"})
+    replayed = await _finalize_cycle(cycle, population, config, None, replayed_ctx)
+    assert finalized == replayed
+    assert cycle._cycle_count == cycle_count
+
+
+@pytest.mark.asyncio
 async def test_multiple_battle_nodes_finish_before_finalization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1126,6 +1252,64 @@ async def test_finalize_fault_after_partial_mutation_blocks_automatic_retry() ->
     recovered_ctx = ctx.model_copy(update={"attempt_id": "attempt-after-recovery"})
     with pytest.raises(FinalizeReconciliationRequired):
         await _finalize_cycle(cycle, population, config, None, recovered_ctx)
+
+
+@pytest.mark.asyncio
+async def test_finalize_swallowed_model_failure_records_faulted_not_committed() -> None:
+    """#1087: a governed model effect that fails during finalization cannot
+    let the cycle commit even when the domain code swallows the provider
+    error. The finalize marker must record ``faulted`` -- so replay fails
+    closed -- rather than ``committed`` over failed physical work."""
+
+    class _ContextualCall:
+        """Bound call double mirroring _GovernedModelCall.for_context(): a
+        provider timeout sets first_failure and raises; domain code that
+        catches the exception still leaves the failure recorded."""
+
+        first_failure: BaseException | None = None
+
+        @property
+        def governed_model_call(self) -> Any:
+            return self
+
+        async def __call__(self, _messages: Any, **_kwargs: Any) -> str:
+            self.first_failure = TimeoutError("provider timed out")
+            raise self.first_failure
+
+    class _SwallowingSelfImproveCycle(_Cycle):
+        async def _self_improve_top(
+            self, population: _Population, config: Any, llm_call: Any
+        ) -> None:
+            try:
+                await llm_call([{"role": "user", "content": "improve"}])
+            except TimeoutError:
+                # The benchmark loop treats a provider error as a zero score
+                # and keeps going -- exactly the swallow #1087 must survive.
+                return
+
+    population = _Population([_Genome("g1"), _Genome("g2")])
+    for genome in population.list_all():
+        genome.eval_scores["proxy"] = 0.5
+    cycle = _SwallowingSelfImproveCycle(harness=_Harness(), tournament=_Tournament())
+    config = _config(population_size=2, eval_batch_size=2)
+    ctx = NodeContext(
+        run_id="run-1",
+        dag_id="dag-1",
+        node_id="evolve-finalize",
+        node_run_id="finalize-node-1",
+        attempt_id="attempt-1",
+    )
+
+    with pytest.raises(RuntimeError, match="Evolve model effect failed"):
+        await _finalize_cycle(cycle, population, config, _ContextualCall(), ctx)
+
+    marker = population.get_cycle_marker("finalize:finalize-node-1")
+    assert marker is not None
+    assert marker["status"] == "faulted"
+
+    recovered_ctx = ctx.model_copy(update={"attempt_id": "attempt-after-recovery"})
+    with pytest.raises(FinalizeReconciliationRequired):
+        await _finalize_cycle(cycle, population, config, _ContextualCall(), recovered_ctx)
 
 
 @pytest.mark.asyncio
