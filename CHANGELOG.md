@@ -25,6 +25,17 @@ or placeholder-only section.
 
 ### Security
 
+- **Retired the process-local Home Assistant confirmation store and
+  `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
+  /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer
+  mounted (404). The respond route needed only authentication and wrote Home
+  Assistant state; its in-memory store (`_PENDING_CONFIRMS`) had no production
+  producer, so it could never hold a real confirmation. Nothing in production
+  imported `services/ha_tools.py` either (its `ha_confirm`/`ha_control` tool
+  definitions were never offered to a model), so the module is deleted with
+  `send_confirm` and the store. Human approval has one model:
+  a waiting human NodeRun answered through `/v1/hitl`; any future HA push
+  confirmation must be a notification transport for that NodeRun.
 - **Tool-result governance is pinned across real Agent strategies (#1202,
   partial).** A regression suite drives the shipped ReAct, Artificer and
   BuildersLearning strategies through `Agent.handle` with a real Warden and
@@ -476,6 +487,24 @@ or placeholder-only section.
   `last_run_id`'s occurrence, `last_fired_at`, `next_due_at`).
 
 ### Changed
+
+- **A chat turn that cannot get its canonical Run is refused with a retryable
+  503 instead of answered ungoverned (#1108, partial).**
+  Owner decision 2026-09-23, amending ADR-082326-c126 and superseding #223 AC4.
+  `Container.route_request` raises the new `maistro.runs.chat_refusal.ChatTurnRefused`
+  when no chat admitter is wired, admission fails (after compensating any Run it
+  persisted), there is no Run store, or the spine fails (with any error) before
+  the dispatch started — the `except RunIntegrityError: return await dispatch()`
+  fallback is gone, and an error the dispatch itself raised is never turned
+  into a retryable refusal, so
+  nothing reaches the model outside a Run/NodeRun/Attempt. maistro-server
+  `/v1/chat/completions` maps it to `503` + `Retry-After` for both
+  `stream=false` and `stream=true` (admission is refused before the
+  `StreamingResponse` is built; a refusal inside the stream emits an
+  `unavailable` SSE error event), and the app's `HTTPException` handler now
+  keeps route-supplied headers. Post-dispatch spine failures still return the
+  answer once as `ChatDispatchUnrecorded`. Hive `/chat/complete`,
+  `/chat/stream`, `/voice/intent` and Workspace Agent chat are not yet covered.
 
 - **Hive conversation-only chat and voice turns run as canonical chat Runs
   (#1037).**
