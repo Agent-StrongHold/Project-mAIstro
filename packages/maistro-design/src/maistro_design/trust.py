@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from maistro_design.scan import scan_blocking_patterns
+from maistro_design.scan import scan_blocking_patterns, scan_visual_artifact_markup
 
 
 class TrustTier(StrEnum):
@@ -152,20 +152,26 @@ def scan_and_record(
     banish_list: InMemoryTrustBanishList | None = None,
     review_queue: InMemoryTrustReviewQueue | None = None,
 ) -> TrustTier:
-    """Pre-scan content with the banish list and the shared Design scanner; enqueue review.
+    """Pre-scan content with the banish list and the shared Design scanners; enqueue review.
 
     Returns the assigned TrustTier (T3 or SKULL). Uses the same
-    `scan_blocking_patterns` as the engine's output scan, so a record is only
-    recommended for upgrade when that scan would pass the content.
+    `scan_blocking_patterns` as the engine's output scan, plus the shared
+    visual-artifact vocabulary (`scan_visual_artifact_markup`) that the Design
+    Studio rendering boundary enforces (#768). A record is only recommended for
+    upgrade when both the output scan and the browser rendering boundary would
+    pass the content, so active elements, handler attributes, dangerous URLs,
+    and CSS/network primitives can never be recommended for trust upgrade
+    merely because this queue cannot build a DOM (#817).
     """
     findings = tuple(scan_blocking_patterns("content", content, None))
+    visual_reasons = scan_visual_artifact_markup(content)
     if banish_list and banish_list.is_banned(content):
         tier = TrustTier.SKULL
-        flags: tuple[str, ...] = ("banish_list_match", *findings)
+        flags: tuple[str, ...] = ("banish_list_match", *findings, *visual_reasons)
         confidence = 1.0
-    elif findings:
+    elif findings or visual_reasons:
         tier = TrustTier.SKULL
-        flags = findings
+        flags = (*findings, *visual_reasons)
         confidence = _BLOCKING_FINDING_CONFIDENCE
     else:
         tier = TrustTier.T3
