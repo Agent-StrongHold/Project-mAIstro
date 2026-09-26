@@ -423,6 +423,11 @@ class TestScanVisualArtifactMarkupVocabulary:
             # CSS property outside the presentation allowlist.
             ('<div style="behavior:url(#default#userdata)">x</div>', "unsupported-css-property"),
             ('<p style="column-rule:1px solid">x</p>', "unsupported-css-property"),
+            # CSS escapes/comments are rejected wholesale by the renderer's
+            # OBFUSCATED_CSS gate before CSSOM normalization; the pre-scan
+            # mirrors that so a hidden `url(` can never ride an `upgrade`.
+            ('<div style="color: red/* inline */">x</div>', "css-network-or-code"),
+            ('<div style="color: \\72 ed">x</div>', "css-network-or-code"),
         ],
     )
     def test_hostile_constructs_carry_the_renderer_reason(self, markup: str, expected: str):

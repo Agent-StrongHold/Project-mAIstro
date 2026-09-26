@@ -271,6 +271,13 @@ _STYLE_PROPERTIES = {
     "-webkit-text-fill-color",
 }
 
+# CSS escapes/comments can hide a blocked function from a lexical check (the
+# renderer's OBFUSCATED_CSS gate rejects them wholesale before CSSOM
+# normalization). The pre-scan mirrors that rejection so the same content can
+# never be recommended for trust upgrade (#817): `ur\6c(` must classify the
+# same as `url(`.
+_OBFUSCATED_CSS = re.compile(r"\\|/\*")
+
 # Regular expressions for detecting network/code in CSS values and attribute values
 _NETWORK_OR_CODE_CSS = re.compile(
     r"(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()",
@@ -342,6 +349,14 @@ class _VisualArtifactScanner(HTMLParser):
             self.reasons.add("dangerous-url")
 
     def _check_style(self, style_text: str) -> None:
+        # Parity with the renderer's OBFUSCATED_CSS gate: a backslash escape or
+        # a CSS comment can hide blocked constructs from the lexical checks
+        # below (`color: red/*..*/..url(..)`), so the browser boundary rejects
+        # the whole declaration set before normalization. The pre-scan must
+        # block the same content instead of upgrading it (#817).
+        if _OBFUSCATED_CSS.search(style_text):
+            self.reasons.add("css-network-or-code")
+            return
         # Parse simple CSS: property: value; pairs
         for declaration in style_text.split(";"):
             if not declaration.strip():

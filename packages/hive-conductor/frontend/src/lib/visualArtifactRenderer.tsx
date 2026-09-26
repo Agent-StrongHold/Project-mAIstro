@@ -226,10 +226,12 @@ const OBFUSCATED_CSS = /\\|\/\*/;
 
 // The W3C SVG namespace identifier, fixed by the DOM specification. It is an
 // opaque namespace constant that is never fetched, so DevSkim's insecure-URL
-// rule (DS137837) is suppressed on the single line that spells it out;
-// scrubbing compares namespaceURI against this constant to pick the SVG vs
-// HTML allowlist.
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg"; // devskim: ignore DS137837
+// rules are suppressed on the single line that spells it out; scrubbing
+// compares namespaceURI against this constant to pick the SVG vs HTML
+// allowlist. The rulepack reports the finding as DS137138 (verified against
+// DevSkim CLI 1.0.90); DS137837 is named alongside it so a rulepack
+// renumbering cannot resurrect the false positive.
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg"; // devskim: ignore DS137138,DS137837
 
 export const VISUAL_ARTIFACT_BLOCK_REASONS = [
   "active-element",

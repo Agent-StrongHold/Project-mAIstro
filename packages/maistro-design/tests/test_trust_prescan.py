@@ -106,6 +106,14 @@ RENDERER_BLOCKED_MARKUP = (
         '<div style="background-image:url(https://attacker.invalid/pixel)">network</div>',
         "css-network-or-code",
     ),
+    # The renderer's OBFUSCATED_CSS gate blocks the whole style attribute when
+    # it carries a CSS comment or backslash escape (visualArtifactRenderer.tsx
+    # sanitizeStyle); a lexical pre-scan that only splits declarations would
+    # call this safe and recommend `upgrade` for content the browser strips.
+    (
+        '<div style="color: red/*...*/">steganographic css</div>',
+        "css-network-or-code",
+    ),
 )
 
 
