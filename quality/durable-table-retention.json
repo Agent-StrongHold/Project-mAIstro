@@ -764,10 +764,10 @@
       ],
       "owner_module": "packages/maistro-core/src/maistro/tasks/idempotency.py",
       "data_class": "runtime_state",
-      "retention": "undecided",
-      "deletion_path": "maistro.tasks.idempotency:PgTaskIdempotencyStore.purge_expired",
+      "retention": "ttl_purge",
+      "deletion_path": "maistro.tasks.idempotency:_ClaimFlow.claim",
       "issue": "#325",
-      "notes": "purge_expired exists on every backend but nothing in production calls it, so expired claims on POST /tasks accumulate."
+      "notes": "Claims expire DEFAULT_REPLAY_WINDOW (24h) after creation. Every claim (POST /tasks via TaskQueue) drives purge_expired on the store it was made on, at most once per IDEMPOTENCY_PURGE_INTERVAL_SECONDS per store, and again on the next claim while a sweep fills its IDEMPOTENCY_PURGE_LIMIT batch; a failed purge is logged and counted in maistro_task_idempotency_purge_failures_total, never raised into admission."
     },
     {
       "table": "tasks",
