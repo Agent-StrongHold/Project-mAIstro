@@ -57,6 +57,7 @@ from maistro.runs.chat_execution import (
     ChatDispatch,
     ChatDispatchUnrecorded,
 )
+from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -494,6 +495,7 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
         run: Run | None = None,
     ) -> dict[str, Any]:
@@ -518,7 +520,9 @@ class Container:
                 messages,
                 auth=auth,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
+                dispatch_pending=True,
             )
 
         async def _dispatch() -> dict[str, Any]:
@@ -530,10 +534,7 @@ class Container:
                 # The Run names this turn for the session store, so a second
                 # Attempt under the same Run appends nothing rather than
                 # writing the user's message again (#327, ADR-083026-5fab).
-                # `None` when no Run was admitted: a container with no chat
-                # admitter has no identity to give, and an append with none is
-                # the unchanged one.
-                turn_id=run.run_id if run is not None else None,
+                turn_id=run.run_id,
             )
             return dispatched
 
@@ -558,6 +559,10 @@ class Container:
                 exc.run_id,
                 exc_info=True,
             )
+            # Past the dispatch gap in the other direction: the Run stays open
+            # for recovery, unshielded, so once its lease lapses the retention
+            # window treats it as the stall it is.
+            self._release_chat_dispatch(run)
             result = exc.response
         except BaseException as exc:
             # Attempt reconciliation already owns cancellation, so a client
@@ -570,12 +575,10 @@ class Container:
             raise
         else:
             await self._close_chat_run(run, result=chat_turn_outcome(result))
-        if run is not None:
-            # Additive. The OpenAI-compatible shape a caller parses is
-            # untouched; `run_id` is the handle for anyone who wants to follow
-            # the turn through the canonical spine, and is simply absent for a
-            # container with no chat admitter wired.
-            result["run_id"] = run.run_id
+        # Additive. The OpenAI-compatible shape a caller parses is untouched;
+        # `run_id` is the handle for anyone who wants to follow the turn
+        # through the canonical spine.
+        result["run_id"] = run.run_id
         return result
 
     def _require_auth_while_armed(self, auth: Any) -> None:
@@ -618,35 +621,43 @@ class Container:
         messages: list[dict[str, Any]],
         dispatch: ChatDispatch,
     ) -> dict[str, Any]:
-        """Route the turn, as a physical Attempt when there is a Run (#223).
+        """Route the turn as a physical Attempt under its Run (#223).
 
-        Without a Run there is nothing to hang a NodeRun on, so the dispatch
-        happens directly. That is the same rule admission follows and for the
-        same reason: a turn is never refused for want of a record. The Run is
-        the thing that may be missing here — the answer is not.
+        A turn with no Run, or no store to record its Attempt in, is refused
+        with `ChatTurnRefused` rather than dispatched ungoverned (#1108 owner
+        decision, amending ADR-082326-c126). So is any spine failure before
+        the dispatch started -- a Run deleted underneath the turn, a Graph
+        that is not the one node a turn admits, or the store being down --
+        because nothing reached the model and the caller can retry.
+        `route_request` closes the Run on the way out.
 
-        A failure to *record* the execution is likewise not a failure to
-        perform it. `RunIntegrityError` raised *before* the dispatch means this
-        process could not write the spine — a Run deleted underneath the turn,
-        or a Graph that is not the one node a turn admits — and turning that
-        into a refusal would trade an unrecorded answer for no answer at all.
-
-        It is also not a licence to perform it twice (#1108). The executor
-        raises `ChatDispatchUnrecorded` when the spine failed *after* the model
-        answered, carrying that answer; it travels through here untouched,
-        because what to do with a Run whose record is short is the caller's
-        decision, and a second `dispatch()` is never it.
+        The executor raises `ChatDispatchUnrecorded` when the spine failed
+        *after* the model answered, carrying that answer; it travels through
+        here untouched, because what to do with a Run whose record is short is
+        the caller's decision, and a second `dispatch()` is never it.
         """
         if run is None or self.run_store is None:
-            return await dispatch()
+            raise ChatTurnRefused("chat turn has no canonical Run to execute under")
         executor = ChatAttemptExecutor(self.run_store)
+        dispatched = False
+
+        async def _tracked() -> dict[str, Any]:
+            nonlocal dispatched
+            dispatched = True
+            return await dispatch()
+
         try:
-            return await executor.execute(run.run_id, messages, dispatch)
+            return await executor.execute(run.run_id, messages, _tracked)
         except ChatDispatchUnrecorded:
             raise
-        except RunIntegrityError:
-            logger.warning("chat turn could not be recorded as an Attempt", exc_info=True)
-            return await dispatch()
+        except Exception as exc:
+            # Decided by whether the dispatch started, not by the exception
+            # class. The dispatch itself can raise a `RunIntegrityError` (a
+            # stale fence inside the agent), and a driver error before the
+            # Attempt is no less pre-dispatch for being unwrapped.
+            if dispatched:
+                raise
+            raise ChatTurnRefused("chat turn could not be recorded as an Attempt") from exc
 
     async def _admit_chat_turn(
         self,
@@ -654,22 +665,33 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
-    ) -> Run | None:
-        """Admit this turn as a canonical Run, or None when none is wired.
+        dispatch_pending: bool = False,
+    ) -> Run:
+        """Admit this turn as a canonical Run, or refuse it (#1108).
 
-        A turn is never refused for want of a Run. The chat path has no receipt
-        to fall back on — refusing here would turn "this process cannot record
-        the turn" into "this process cannot answer", which is a worse failure
-        than an unrecorded answer and not the one #41 asked for.
+        A turn that cannot get its canonical Run -- no admitter wired, or
+        admission failing -- raises `ChatTurnRefused` so the door answers a
+        retryable 503 and nothing reaches the model (owner decision
+        2026-09-23, amending ADR-082326-c126). Whatever admission already
+        persisted is compensated first, so the refusal strands nothing.
+
+        `dispatch_pending` says a dispatch follows in this process: the Run is
+        shielded from the retention window until the turn closes, so the
+        window cannot evict it in the gap between admission and its first
+        Attempt. Only the dispatching seam sets it. An admission-only caller
+        leaves it False, because a Run nobody will dispatch is a stall, and
+        stalls are exactly what the window exists to forget.
         """
         if self.chat_admitter is None:
-            return None
+            raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
         run: Run | None = None
         try:
             run = await self.chat_admitter.admit(
                 messages,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
                 known_task_types=self.config.task_types,
                 actor_principal_id=getattr(auth, "user_id", None) or None,
@@ -679,6 +701,15 @@ class Container:
             # is admitted and about to be dispatched — rather than a fiction
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+            if dispatch_pending:
+                # Marked while the Run is still QUEUED, with no await between
+                # the QUEUED write and this mark, so there is no observable
+                # moment where the Run is RUNNING, Attempt-less, and unshielded
+                # — the retention window could otherwise not tell a turn about
+                # to dispatch from a stalled admission. Released when the turn
+                # closes. An admission-only caller never marks, so its
+                # abandoned Runs stay evictable.
+                self.chat_admitter.mark_dispatch_pending(run.run_id)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         except asyncio.CancelledError:
             # The client disconnected mid-admission. Without the shield the
@@ -686,11 +717,13 @@ class Container:
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
             await asyncio.shield(self._cancel_incomplete_admission(run))
+            self._release_chat_dispatch(run)
             raise
-        except Exception:
+        except Exception as exc:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
             await self._cancel_incomplete_admission(run)
-            return None
+            self._release_chat_dispatch(run)
+            raise ChatTurnRefused("chat turn could not be admitted as a Run") from exc
 
     async def _cancel_incomplete_admission(self, run: Run | None) -> None:
         """Compensate a chat Run whose admission never reached RUNNING (#338).
@@ -722,6 +755,7 @@ class Container:
                 RunStatus.CANCELLED,
                 error=ADMISSION_INCOMPLETE,
             )
+            await self._sweep_chat_runs()
         except Exception:
             logger.warning(
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
@@ -759,6 +793,7 @@ class Container:
         """
         if run is None:
             return True
+        self._release_chat_dispatch(run)
         if cancelled and (error is not None or result is not None):
             raise ValueError("cancelled chat closure cannot carry error or result")
         if cancelled:
@@ -772,7 +807,35 @@ class Container:
         except Exception:
             logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
             return False
+        await self._sweep_chat_runs()
         return True
+
+    def _release_chat_dispatch(self, run: Run | None) -> None:
+        """Drop the Run's dispatch shield once the turn is closing.
+
+        The shield exists for the gap between admission and the turn's first
+        Attempt; closure is past that gap in both directions — the Run
+        terminalizes here, or (dispatch unrecorded, #1108) stays open for
+        recovery with a lease that expires like any other. Housekeeping, on
+        the same terms as the sweep it protects: a failed release is logged,
+        never raised — it must not replace the turn's own outcome.
+        """
+        if run is None or self.chat_admitter is None:
+            return
+        try:
+            self.chat_admitter.release_dispatch_pending(run.run_id)
+        except Exception:
+            logger.warning("chat dispatch shield release failed", exc_info=True)
+
+    async def _sweep_chat_runs(self) -> None:
+        """Trim terminal chat Runs after the canonical seam closes one."""
+        if self.chat_admitter is None:
+            return
+        try:
+            await asyncio.shield(self.chat_admitter.sweep())
+        except Exception:
+            # Retention is housekeeping and must not replace the turn's answer.
+            logger.warning("chat Run retention sweep failed", exc_info=True)
 
     async def _terminalize(
         self,

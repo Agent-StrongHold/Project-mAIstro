@@ -371,6 +371,53 @@ async def test_a_stored_learning_comes_back(learning_store: Any) -> None:
     assert [item.learning for item in listed] == ["roll back before redeploying"]
 
 
+async def test_all_declared_learning_fields_survive_round_trip(learning_store: Any) -> None:
+    """A backend must not silently drop a declared Learning field (#1156)."""
+    expected = _learning(
+        source_query="how do I safely redeploy?",
+        org_id="org-round-trip",
+        team_id="team-round-trip",
+        agent_id="agent-round-trip",
+        user_id="user-round-trip",
+        scope="team",
+        hit_count=7,
+        status="active",
+        rca_category="safety",
+        rca_prevention="validate before deploy",
+        success_after_use=2,
+        failure_after_use=1,
+        run_id="run-round-trip",
+        node_run_id="node-round-trip",
+        attempt_id="attempt-round-trip",
+    )
+    await learning_store.store(expected)
+
+    [actual] = await learning_store.list_all(org_id="org-round-trip")
+
+    for field in (
+        "category",
+        "trigger_keys",
+        "learning",
+        "tool_name",
+        "source_query",
+        "org_id",
+        "team_id",
+        "agent_id",
+        "user_id",
+        "scope",
+        "hit_count",
+        "status",
+        "rca_category",
+        "rca_prevention",
+        "success_after_use",
+        "failure_after_use",
+        "run_id",
+        "node_run_id",
+        "attempt_id",
+    ):
+        assert getattr(actual, field) == getattr(expected, field), field
+
+
 async def test_store_returns_a_usable_id(learning_store: Any) -> None:
     """`mark_used` and `mark_outcome` take the ids `store` hands back, so an id
     that does not round-trip breaks reinforcement silently."""
@@ -407,6 +454,146 @@ async def test_nothing_relevant_is_an_empty_list(learning_store: Any) -> None:
     await learning_store.store(_learning(trigger_keys=["rollback"]))
 
     assert await learning_store.find_relevant("entirely unrelated text") == []
+
+
+async def test_relevant_learnings_match_case_insensitively(learning_store: Any) -> None:
+    """Keyword matching has the same case-folding behavior in every backend."""
+    await learning_store.store(_learning(trigger_keys=["DEPLOY"], learning="target"))
+
+    found = await learning_store.find_relevant("please deploy")
+
+    assert [item.learning for item in found] == ["target"]
+
+
+async def test_org_scope_is_exact_for_mutations(learning_store: Any) -> None:
+    """An empty org scope must not act as a wildcard in any backend."""
+    learning_id = await learning_store.store(
+        _learning(learning="org-a row", org_id="org-a", hit_count=1)
+    )
+
+    await learning_store.mark_outcome([learning_id], success=True, org_id="")
+    await learning_store.check_auto_promotions(threshold=1, org_id="")
+
+    [stored] = await learning_store.list_all(org_id="org-a")
+    assert stored.success_after_use == 0
+    assert stored.status == "active"
+
+
+async def test_agent_scoped_reads_still_see_the_org_shared_pool(learning_store: Any) -> None:
+    """`agent_id = ''` is the org-wide shared pool in every backend.
+
+    Both SQL twins shipped `(agent_id = ? OR agent_id = '')` while the
+    in-memory twin matched exactly — the same read answered differently per
+    backend. The shared predicate now carries one rule: an agent-scoped read
+    sees its own rows plus the shared pool, never another agent's.
+    """
+    await learning_store.store(_learning(learning="shared", agent_id="", trigger_keys=["deploy"]))
+    await learning_store.store(
+        _learning(learning="mine", agent_id="agent-a", trigger_keys=["deploy"])
+    )
+    await learning_store.store(
+        _learning(learning="theirs", agent_id="agent-b", trigger_keys=["deploy"])
+    )
+
+    found = await learning_store.find_relevant("please deploy", agent_id="agent-a")
+
+    assert sorted(item.learning for item in found) == ["mine", "shared"]
+
+
+async def test_relevant_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
+    """Every backend must apply the same three scope axes before ranking."""
+    await learning_store.store(
+        _learning(
+            learning="target",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other team",
+            org_id="org-a",
+            team_id="team-b",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other user",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-b",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other org",
+            org_id="org-b",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+
+    found = await learning_store.find_relevant(
+        "please deploy",
+        org_id="org-a",
+        team_id="team-a",
+        user_id="user-a",
+        agent_id="agent-a",
+    )
+
+    assert [item.learning for item in found] == ["target"]
+
+
+async def test_promoted_learnings_apply_org_team_and_user_scope(learning_store: Any) -> None:
+    """Prompt-ready learnings must use the same scope boundary as matching reads."""
+    await learning_store.store(
+        _learning(
+            learning="target",
+            tool_name="target-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other team",
+            tool_name="team-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-b",
+            user_id="user-a",
+            agent_id="agent-a",
+        )
+    )
+    await learning_store.store(
+        _learning(
+            learning="other user",
+            tool_name="user-tool",
+            status="promoted",
+            org_id="org-a",
+            team_id="team-a",
+            user_id="user-b",
+            agent_id="agent-a",
+        )
+    )
+
+    found = await learning_store.get_promoted(
+        org_id="org-a",
+        team_id="team-a",
+        user_id="user-a",
+        agent_id="agent-a",
+    )
+
+    assert [item.learning for item in found] == ["target"]
 
 
 async def test_marking_an_outcome_is_accepted(learning_store: Any) -> None:
