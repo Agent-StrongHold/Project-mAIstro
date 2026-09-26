@@ -626,3 +626,69 @@ every gate below was re-executed by this round, not carried over.
 
 No production or test file changed this round (fresh validation evidence
 only); no new tests added, so no inventory-delta change.
+
+## Independent repair-round verification 13 (auto-817 @ 2f787f977d26, verifier+writer lane)
+
+Executed fresh at this round's exact starting head `2f787f977d26768d4a32e7c4db52c2f0dfe8f02a`
+(develop base `31bddeb7b1ed`), clean worktree before and after. The job directory
+for this round carried **no check-*.log files**, so no driver check was trusted:
+every gate below was executed by this round at this head. Resolves the prior
+"verification worktree changed; evidence rejected" block (head verified exact
+via `git rev-parse` before validation started).
+
+- **Lane gates:** `ruff check .` clean; `ruff format --check .` 2556 files;
+  warden detector + visual vocabulary + design test_design/test_scan/
+  test_trust_prescan → **217 passed**; `test_design_renderers.py` → **7
+  passed**; suite inventory (maistro-core, maistro-design, hive-conductor
+  backend) all match; AGENTS.md mypy battery + `packages/maistro-design/src`
+  → **733 files, no issues**; CI-exact vulture
+  (`scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`) → **rc=0, 1414 → 1414**.
+- **SAST re-executed CI-exact** (security.yml command, semgrep 1.178.0 via
+  uvx: custom maistro-rules.yaml + p/security-audit + p/owasp-top-ten +
+  p/secrets, eval/cage excluded) → **rc=0, 364 rules / 1895 files / 0
+  findings** (report kept outside the tree).
+- **Pre-scan/output parity re-probed at this head** with an independent
+  17-case corpus: script tag, event-handler attr, svg onload, script-in-SVG,
+  svg `<use>` data URL, foreignObject, MathML, `data:text/html` iframe,
+  `javascript:` img, meta refresh, CSS `url()`, escaped `\\75rl(`, `@import`,
+  `expression()`, srcdoc, prompt injection → all `skull / banish / conf 0.9`
+  with explicit shared flags AND `scan_design_text` blocked on every case;
+  clean brief → `t3 / upgrade / conf 0.0 / passed` (AC-1/2/4; `upgrade` iff
+  the shared boundary passes).
+- **Render boundary probed:** `DesignRenderService._enforce_output_boundary`
+  raises `TrustBannedError` on 8/8 hostile render inputs (script, handler,
+  SVG script, data:text/html, CSS url()/`\\75rl`/@import/expression, meta
+  refresh) and passes clean markdown (AC-3 server side).
+- **Browser corpus re-executed in real Chromium with LIVE worktree sources**
+  (`auto817-playwright:latest` image; live `frontend/src` + `tests/e2e`
+  tar-copied to `/live` in-container, spec run from the image's `/tests` for
+  node_modules resolution, `E2E_SRC_ROOT=/live`, `--network none`, output
+  outside the worktree): `deck-sanitization.spec.ts` → **8/8 passed (3.5s)**,
+  including the reason-name assertions (`active-element`,
+  `css-network-or-code`), `recommend('<math><mi>x</mi></math>') → "review",
+  and `__deckPwned=0` / zero attacker requests (AC-3 browser side, AC-5).
+  **Harness pitfall recorded for future rounds:** bind-mounting the worktree's
+  whole `frontend/` over the image's `/tests/frontend` drags in the worktree's
+  `frontend/node_modules`, so esbuild resolves a *second* React copy for the
+  frontend sources (entry uses image react, sources use worktree react) →
+  "Invalid hook call / Cannot read properties of null (reading 'useState)'") →
+  DeckBuilder never mounts → placeholder assertion times out. Copy sources
+  without `node_modules` (as CI's Dockerfile COPY does) instead of bind
+  mounting; the failure is environmental, not a code regression (reproduced
+  with the image's own baked sources too).
+- **Stop condition re-checked:** `maistro_design` consumes
+  `maistro.security.warden.patterns` only (no private vocabulary);
+  `visualArtifactRenderer.tsx` re-declares `VISUAL_ARTIFACT_BLOCK_REASONS`
+  with the same four names and `test_visual_artifact_vocabulary.py` pins the
+  Python table to the declared tuple by construction; `design_render.py` and
+  the engine call the shared `scan_design_text`/`scan_blocking_patterns`.
+- **PR/branch CI rollup remains UNVERIFIED** (snapshot carries no GitHub
+  status claim; live GitHub not consulted per no-mutation scope). Prior
+  CI-failure findings at this head (integration-scope, test,
+  hive-conductor-e2e-ui, devskim, coverage gate) could not be reproduced
+  locally for the parts with local equivalents: ruff/format/mypy/pytest/
+  inventories/vulture/semgrep all green above.
+
+No production or test file changed this round (fresh validation evidence
+only); no new tests added, so no inventory-delta change.
