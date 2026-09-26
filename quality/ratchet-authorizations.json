@@ -275,6 +275,16 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1064",
       "reason": "PopulationStore.get_cycle_marker is record_cycle_marker's read half: _finalize_cycle checks it first on every call, replaying the cached committed output untouched rather than re-running finalize's many in-place mutations (cull/breed/self-improve/migrate/lineage) a second time. Reached the same way, through hive-conductor's evolution_graph.py, outside the packages/*/src Vulture scan set. Exercised directly by packages/maistro-evolve/tests and packages/hive-conductor/backend/tests/test_evolution_canonical_graph.py's finalize-replay tests."
+    },
+    "packages/maistro-server/src/maistro_server/api/a2a.py::unused function 'create_a2a_task'": {
+      "owner": "repair lane auto-1194 (maistro-implementer)",
+      "issue": "#1194",
+      "reason": "POST /a2a/tasks/create is the transport-admission half of #1194's remote-delegation replay contract: it durably admits one idempotent delegation through RunStore.claim_run_by_effect, so a retried POST with the same idempotency key adopts the child Run already claimed instead of filing a second one. Vulture reports it as an unused function at 60% confidence because FastAPI registers route handlers through the @router.post decorator, invisible to static call graphing - the exact banked class of every other entry under fastapi-route-handler in quality/vulture-baseline.json, where this identity is already banked on this branch. Exercised by the maistro-server a2a route tests. Trusted-base note: the identity is new debt authored on this branch, so per the ratchet's two-merge rule (scripts/ratchet_provenance.py::load_authorizations reads grants from the base) this grant takes effect once this branch's merge is itself the base - the same post-merge reconciliation the #1310 grant entries record."
+    },
+    "packages/maistro-server/src/maistro_server/api/a2a.py::unused function 'get_a2a_task_by_idempotency_key'": {
+      "owner": "repair lane auto-1194 (maistro-implementer)",
+      "issue": "#1194",
+      "reason": "GET /a2a/tasks/by-idempotency-key/{idempotency_key} is the receipt-recovery half of #1194's transport idempotency: a dispatching worker that lost its lease after an ambiguous POST polls this endpoint with the same key and receives the original receipt (find_run_by_effect), distinguishing 'never accepted' (404) from 'accepted, receipt lost' - so the same logical delegation cannot be filed twice after a lease loss without explicit new-work semantics. Vulture reports it as an unused function at 60% confidence because FastAPI registers route handlers through the @router.get decorator; already banked under fastapi-route-handler in quality/vulture-baseline.json on this branch. Trusted-base note: same two-merge rule as the create_a2a_task grant above - effective from the next base, per the #1310 post-merge reconciliation precedent."
     }
   },
   "model-egress": {

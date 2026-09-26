@@ -60,3 +60,34 @@ decisions, all in favour of one canonical contract:
   claimed 034/039/040 while this branch was open); per the convention in
   `036_audit_log_org_scope`, the audit-scope migration follows the new tip so
   `upgrade head` stays single-headed and applies it.
+
+## develop-merge reconciliation, second round (this repair)
+
+The branch merged develop `b906cc577` (#1120's manual-fire occurrence work).
+Conflict resolution, recorded for review:
+
+- All three Run stores (`store.py`, `pg_store.py`, `sqlite_store.py`): kept
+  both sides. #1194's effect-claim methods (`find_run_by_effect`,
+  `claim_run_by_effect`, `_require_locked_parent_scope`) and #1120's
+  `find_occurrence_run` are independent features over one protocol.
+- Alembic collision: develop took revision id `042` for the manual-fire
+  occurrence identity migration while this branch's Invocation-effect-index
+  migration also claimed `042`, both parented on `036_audit_log_org_scope`.
+  Renumbered this branch's migration `042` → `043` and re-parented it onto
+  `042` (develop's id stays stable, exactly the convention the prior rounds
+  recorded above). Heads collapse to a single `043`;
+  `test_audit_scope_migration.py` asserts the merged truth
+  (`down_revision == "041"`, exactly one head, audit migration on its chain)
+  and `test_capability_invocation_effect_index_migration.py` follows `043`.
+- Vulture per-identity ledger: the two new `fastapi-route-handler` identities
+  from this branch's own A2A transport endpoints
+  (`create_a2a_task`, `get_a2a_task_by_idempotency_key`) are banked in
+  `quality/vulture-baseline.json` (committed with the earlier repair) and the
+  reviewed grants are recorded in `quality/ratchet-authorizations.json`. Per
+  the ratchet's two-merge rule the grants are read from the trusted base, so
+  the gate turns green once this merge is itself the base — the same
+  post-merge reconciliation the #1310 grant entries record. No test delta.
+- `test_base_contract.py` test doubles no longer declare the abolished
+  `idempotent: ClassVar[bool]` second policy; catalog `idempotent` derives
+  from `replay_semantics` alone, which the unchanged catalog assertions still
+  prove.
