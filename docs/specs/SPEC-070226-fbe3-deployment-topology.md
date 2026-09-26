@@ -6,13 +6,12 @@ kind: spec
 status: Accepted
 created: 2026-07-02
 substrate:
-  - maistro-engine#ADR-081
   - maistro-engine#ADR-087
-  - maistro-engine#SPEC-230
-implements:
-  - maistro-engine#ADR-081
+implements: []
 related:
   - maistro-engine#ADR-077
+  - maistro-engine#ADR-081
+  - maistro-engine#SPEC-230
 supersedes: []
 blocks: []
 blocked-by: []
@@ -28,9 +27,11 @@ owners:
 
 ## Context
 
-Hive Conductor currently runs on localhost for development. ADR-081 specifies production deployment
+Hive Conductor currently runs on localhost for development. ADR-081 proposes production deployment
 topology: multi-instance high-availability (active-active or active-passive), persistent state
-backup, and recovery procedures for data loss / instance failure.
+backup, and recovery procedures for data loss / instance failure. ADR-081 remains Proposed and is
+retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-087).
 
 ## Goals
 

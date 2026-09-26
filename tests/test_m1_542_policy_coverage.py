@@ -131,14 +131,29 @@ def test_citation_adapter_covers_success_failure_and_unreadable_oracle(
 
     problem = SimpleNamespace(source="doc", field_name="field", target="target")
     identity = "doc.field -> target"
+    matrix_problem = SimpleNamespace(
+        source="matrix#Demo", field_name="governing", target="matrix-target"
+    )
+    matrix_identity = "matrix#Demo.governing -> matrix-target"
     checker = SimpleNamespace(
         _corpus=lambda: [Path("doc.md")],
         check_citations=lambda _corpus: [problem],
-        _load_baseline=lambda: SimpleNamespace(entries={identity}),
+        _matrix_problems=lambda _corpus: [matrix_problem],
+        _load_baseline=lambda: SimpleNamespace(entries={identity, matrix_identity}),
         LEDGER=tmp_path / "citation.json",
     )
-    _wire_adapter(module, monkeypatch, checker, _provenance({"known": [identity]}))
+    _wire_adapter(
+        module,
+        monkeypatch,
+        checker,
+        _provenance({"known": [identity, matrix_identity]}),
+    )
     assert module.main() == 0
+
+    # A matrix finding must participate in the trusted-base comparison too;
+    # otherwise the adapter would silently omit the second governance surface.
+    _wire_adapter(module, monkeypatch, checker, _provenance({"known": [identity]}))
+    assert module.main() == 1
 
     _wire_adapter(module, monkeypatch, checker, _provenance({"known": []}))
     assert module.main() == 1

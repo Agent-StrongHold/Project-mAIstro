@@ -422,7 +422,6 @@
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'samples_evaluated'",
         "packages/maistro-evolve/src/maistro_evolve/types.py::unused variable 'weighted_eval_score'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'ABILITY'",
-        "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'AC_DEFINED'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'BEHAVIORAL'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'BOUNDARY'",
         "packages/maistro-registry/src/maistro_registry/schema.py::unused variable 'CONNECTIVITY'",

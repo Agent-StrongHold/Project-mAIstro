@@ -8,9 +8,7 @@ created: 2026-06-21
 substrate:
   - maistro-engine#ADR-072
   - maistro-engine#ADR-073
-  - maistro-engine#ADR-083
-implements:
-  - maistro-engine#ADR-083
+implements: []
 related:
   - maistro-engine#SPEC-005
   - maistro-engine#ADR-050
@@ -18,6 +16,7 @@ related:
   - maistro-engine#ADR-070
   - maistro-engine#ADR-074
   - maistro-engine#ADR-093
+  - maistro-engine#ADR-083
 supersedes: []
 blocks: []
 blocked-by: []
@@ -39,9 +38,12 @@ A user can bring a skill into the engine from many places: the Medley/ClawHub re
 arbitrary **URL**, a **file upload**, or **pasted text**. The supply-chain threat is live and at
 scale — OpenClaw's ClawHavoc campaign put 1,184 malicious skills (~1 in 5 packages at peak) on its
 registry, 341+ shipping the AMOS infostealer (see `docs/security/AGENT-FRAMEWORK-FLAWS-LEDGER.md`
-entry 13). ADR-072 names malicious third-party code as the #1 adversary; ADR-083 says skills must be
-signed, trust-tiered, and sandboxed; SPEC-005 specifies the *publisher VC / signing / revocation*
-trust chain.
+entry 13). ADR-072 names malicious third-party code as the #1 adversary; ADR-083 remains Proposed
+and is retained as design context only — it is not shipped authority for this SPEC; its
+signed/trust-tiered/sandboxed direction is made concrete (and its trust-tier *promotion* policy
+deferred) here; SPEC-005 remains Proposed and is likewise retained as design context only —
+not shipped authority for this SPEC; its *publisher VC / signing / revocation* trust chain is
+design direction, cited here for lineage rather than as active authority.
 
 What is **not** yet specified is the **content-safety pipeline** that every import — signed or not,
 registry or pasted — must pass before it can become a usable tool, and the **per-use re-scan** that

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +28
+  tests/: +36
 ---
 # claude-m2-374-citation-status
 
@@ -9,14 +9,17 @@ stronger question: does an **active** document rest its authority on something
 that is not itself active — a Superseded ADR, a Deprecated one, or a decision
 still merely Proposed.
 
-**`tests/test_check_citation_status.py` (+28)**
+**`tests/test_check_citation_status.py` (+34)**
 
 *The rule, across status combinations.* Accepted and Implemented are authority;
-Proposed, Deprecated, Deferred and Denied are not. The asymmetry is the
-substance and has its own test: a **Proposed source may rest on a Proposed
-decision**, because a document that has not shipped governs nothing and so
-makes no false claim. Only active documents are held to the rule, since those
-are the ones a reader takes as describing what the system does now.
+Proposed, Fully Specced, AC Defined, In Progress, Tests Passing, Deprecated,
+Deferred, Denied and Will Not Implement are not. AC Defined and In Progress are
+still active *sources* and are checked, so unfinished work cannot silently claim
+Proposed authority. The asymmetry is the substance and has its own test: a
+**Proposed source may rest on a Proposed decision**, because a document that has
+not shipped governs nothing and so makes no false claim. Only active documents
+are held to the rule, since those are the ones a reader takes as describing what
+the system does now.
 
 *Which fields govern.* `substrate` and `implements` assert live authority and
 are checked. `related`, `blocks` and `blocked_by` are navigational and are not
@@ -28,10 +31,16 @@ supersession self-contradictory.
 *Supersession chains.* A Superseded citation names its active replacement, so
 the error does the lookup rather than reporting only that the target is
 Superseded. Chains are followed to their active end and reported where they
-actually broke, not at the citation three links away. A cycle is reported
-rather than looped — bounded by a seen-set, because a cycle has no depth at
-which it becomes legitimate. Two live claimants to one superseded decision is
-a fork nobody can follow, and fails.
+actually broke, not at the citation three links away. Every supersession branch
+is traversed, including branches hidden behind an immediate active replacement.
+A cycle is reported rather than looped — bounded by a path set, because a cycle
+has no depth at which it becomes legitimate. Two live claimants to one
+superseded decision is a fork nobody can follow, and fails. The same-status case
+is covered too: two Accepted (or two Implemented) replacements are still
+contradictory, rather than being collapsed into one set member. A transition
+test confirms that a replacement remains invalid while Proposed and becomes the
+named active replacement only after Accepted. The source-status matrix
+exercises every lifecycle state, not just the representative Proposed case.
 
 *One defect, one voice.* A citation to a document that does not exist is left
 to `linker.check_links`, which already reports dangling references.
@@ -48,15 +57,16 @@ and will be reworded, and keying on it would turn every improvement to an
 error message into a wave of phantom findings. A fixed citation must shrink
 the ledger in the same change.
 
-**47 pre-existing violations are baselined, not fixed.** Each is a governance
-judgement — "SPEC-182 implements ADR-058, which is Proposed" is answered either
-by accepting ADR-058 or by demoting the claim, and those say different things
-about what shipped. A blanket rewrite would launder 47 such judgements into one
-unreviewable diff. #374 therefore stays open; what this buys immediately is
-that no *new* one can land.
+*Corpus cleanup.* Superseded citations now name ADR-095 or ADR-019, while
+historical/deprecated or not-yet-authoritative references were moved from
+`substrate`/`implements` to `related`. The seven violations exposed when AC
+Defined and In Progress sources became checked were handled the same way. The
+citation baseline is now empty, so every active governing citation must resolve
+to an Accepted or Implemented authority.
 
-`cli lint` reports them and does not fail on them, for the same reason. Making
-it an error there is the right move once the ledger reaches zero.
+`cli lint` remains responsible for reference existence; the citation-status
+gate enforces the stronger lifecycle relationship and fails on any new
+exception.
 
 Five vulture entries pruned rather than banked: `Status.ACCEPTED`,
 `IMPLEMENTED`, `SUPERSEDED`, `FULLY_SPECCED` and `TESTS_PASSING` were enum

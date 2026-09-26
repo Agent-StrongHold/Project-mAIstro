@@ -9,15 +9,14 @@ substrate:
   - maistro-engine#ADR-038
   - maistro-engine#ADR-062
   - maistro-engine#ADR-070
-  - maistro-engine#ADR-071
-  - maistro-engine#SPEC-184
-implements:
-  - maistro-engine#ADR-071
+implements: []
 related:
   - maistro-engine#ADR-052
   - maistro-engine#ADR-056
   - maistro-engine#ADR-066
   - maistro-engine#SPEC-070226-b624
+  - maistro-engine#ADR-071
+  - maistro-engine#SPEC-184
 supersedes: []
 blocks: []
 blocked-by: []
@@ -40,10 +39,12 @@ history:
 
 ## Context
 
-ADR-071 specifies SuperPlanner as a general-purpose task planner that orchestrates agent waves
+ADR-071 proposes SuperPlanner as a general-purpose task planner that orchestrates agent waves
 (parallel branches of execution) using the Repertoire pattern (ADR-070). A wave is a set of
 concurrent, mutually-isolated sub-agents attempting the same task in parallel; only the best
-result (per a comparator) is retained, and the rest are discarded.
+result (per a comparator) is retained, and the rest are discarded. ADR-071 remains Proposed and
+is retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-038, ADR-062, ADR-070).
 
 SuperPlanner exists as a skeleton; this SPEC completes its implementation: wave provisioning,
 parallel execution with isolation, result aggregation, and integration with the graph executor

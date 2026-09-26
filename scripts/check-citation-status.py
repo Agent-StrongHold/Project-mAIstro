@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -29,15 +30,62 @@ from maistro_registry.citations import (  # noqa: E402
     CitationBaseline,
     CitationProblem,
     check_citations,
+    check_governing_references,
 )
+from maistro_registry.schema import FrontMatter  # noqa: E402
 from maistro_registry.validator import validate_file  # noqa: E402
 
 LEDGER = ROOT / "quality" / "citation-baseline.json"
 DOC_ROOTS = (ROOT / "docs" / "adr", ROOT / "docs" / "specs")
+MATRIX = ROOT / "docs" / "architecture" / "CONVERGENCE-MATRIX.md"
+MATRIX_MARKER = "<!-- matrix:disposition -->"
+_DECISION_ID = re.compile(r"\b(?:ADR|SPEC)-[0-9][0-9A-Za-z-]*")
+
+#: Only a directly qualified reference (or comma-only list) is historical.
+#: A keyword elsewhere in the note cannot exempt an unrelated citation:
+#: ``(historical ADR-002; ADR-003)`` still puts ADR-003 forward as authority.
+#: Commas allow the corpus's ``(proposed in ADR-002, SPEC-003)`` provenance
+#: list; any intervening prose, semicolon or parenthesis ends that relation.
+_HISTORICAL_REFERENCE = re.compile(
+    r"\b(?:supersedes|historical|formerly|previously|replaces|proposed\s+in)\s+"
+    rf"{_DECISION_ID.pattern}(?:\s*,\s*{_DECISION_ID.pattern})*",
+    re.IGNORECASE,
+)
 
 
-def _corpus() -> list[object]:
-    front_matters = []
+def _parenthetical_notes(text: str) -> list[str]:
+    """The balanced top-level parenthetical notes in one cell."""
+    notes: list[str] = []
+    depth = 0
+    start: int | None = None
+    for index, character in enumerate(text):
+        if character == "(":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif character == ")" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                notes.append(text[start + 1 : index])
+    return notes
+
+
+def _governing_ids(cell: str) -> list[str]:
+    """Decision IDs the cell puts forward as authority.
+
+    Every ID counts unless directly qualified by a historical, supersession
+    or provenance relation inside a balanced note. Remove only the qualified
+    references, never the surrounding note: it may also contain live authority.
+    Unrecognised or ambiguous syntax is governing (fail closed).
+    """
+    visible = cell
+    for note in _parenthetical_notes(cell):
+        visible = visible.replace(f"({note})", f"({_HISTORICAL_REFERENCE.sub(' ', note)})")
+    return _DECISION_ID.findall(visible)
+
+
+def _corpus() -> list[FrontMatter]:
+    front_matters: list[FrontMatter] = []
     for root in DOC_ROOTS:
         for path in sorted(root.glob("*.md")):
             result = validate_file(path)
@@ -45,6 +93,58 @@ def _corpus() -> list[object]:
             if front_matter is not None:
                 front_matters.append(front_matter)
     return front_matters
+
+
+def _matrix_references(text: str) -> list[tuple[str, str, str]]:
+    """Read direct authorities from the matrix disposition table.
+
+    An ID counts as governing unless directly qualified inside a note --
+    ``(supersedes ADR-046)``, ``(proposed in ADR-123)``. Bare references,
+    including neighbours of historical references, are checked like any
+    other authority. The disposition gate owns table shape and existence; this
+    gate owns the status of each authority the cell puts forward.
+    """
+    start = text.find(MATRIX_MARKER)
+    if start < 0:
+        return []
+
+    rows: list[list[str]] = []
+    in_table = False
+    for line in text[start:].splitlines():
+        if not line.lstrip().startswith("|"):
+            if in_table:
+                break
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not cells:
+            continue
+        in_table = True
+        rows.append(cells)
+
+    if len(rows) < 3:
+        return []
+    try:
+        subsystem_column = rows[0].index("Subsystem")
+        governing_column = rows[0].index("Governing ADR/spec")
+    except ValueError:
+        return []
+
+    references: list[tuple[str, str, str]] = []
+    for row in rows[2:]:
+        if len(row) <= max(subsystem_column, governing_column):
+            continue
+        source = f"matrix#{row[subsystem_column]}"
+        references.extend(
+            (source, "governing", f"maistro-engine#{identifier}")
+            for identifier in _governing_ids(row[governing_column])
+        )
+    return references
+
+
+def _matrix_problems(front_matters: list[FrontMatter]) -> list[CitationProblem]:
+    if not MATRIX.exists():
+        return []
+    return check_governing_references(_matrix_references(MATRIX.read_text()), front_matters)
 
 
 def _display(path: Path) -> str:
@@ -91,7 +191,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--update", action="store_true", help="bank the current state")
     args = parser.parse_args(argv)
 
-    problems = check_citations(_corpus())  # type: ignore[arg-type]
+    corpus = _corpus()
+    problems = [
+        *check_citations(corpus),
+        *_matrix_problems(corpus),
+    ]
 
     if args.update:
         _write_baseline(problems)

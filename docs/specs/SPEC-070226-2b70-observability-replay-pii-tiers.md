@@ -8,14 +8,13 @@ created: 2026-07-02
 substrate:
   - maistro-engine#ADR-037
   - maistro-engine#ADR-050
-  - maistro-engine#ADR-055
   - maistro-engine#SPEC-228
-implements:
-  - maistro-engine#ADR-055
+implements: []
 related:
   - maistro-engine#ADR-053
   - maistro-engine#ADR-056
   - maistro-engine#SPEC-223
+  - maistro-engine#ADR-055
 supersedes: []
 blocks: []
 blocked-by: []
@@ -49,8 +48,11 @@ proxies record every LLM call and tool call so orchestration code can be determi
 re-executed against recorded responses; and (2) PII sensitivity tiers — `normal`/`sensitive`/
 `secret` tags that route event payloads to different storage/retention regimes.
 
-This SPEC realizes both, and resolves ADR-055's five open questions with concrete choices
-(recorded there as recommendations; locked in here).
+ADR-055 remains Proposed and is retained as design context only; it is not shipped
+authority for this SPEC. The operative authority is this SPEC under its Accepted
+substrate (ADR-037, ADR-050). This SPEC realizes both capabilities, and resolves
+ADR-055's five open questions with concrete choices (recorded there as
+recommendations; locked in here).
 
 ## Goals
 

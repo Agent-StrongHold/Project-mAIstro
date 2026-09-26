@@ -6,13 +6,12 @@ kind: spec
 status: Accepted
 created: 2026-07-02
 substrate:
-  - maistro-engine#ADR-086
   - maistro-engine#ADR-037
-  - maistro-engine#SPEC-013
-implements:
-  - maistro-engine#ADR-086
+implements: []
 related:
   - maistro-engine#ADR-082
+  - maistro-engine#ADR-086
+  - maistro-engine#SPEC-013
 supersedes: []
 blocks: []
 blocked-by: []
@@ -38,9 +37,11 @@ owners:
 
 ## Context
 
-ADR-086 specifies a durable event log (PostgreSQL table of immutable events) and trigger+handler
+ADR-086 proposes a durable event log (PostgreSQL table of immutable events) and trigger+handler
 model: operators define triggers ("on agent.delegated, run X"), the reactor processes events,
-and handlers are replayed durably (idempotent, no lost events on crash).
+and handlers are replayed durably (idempotent, no lost events on crash). ADR-086 remains Proposed
+and is retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-037).
 
 The 1kHz reactor loop (SPEC-013) currently emits events in-memory; this SPEC persists them.
 

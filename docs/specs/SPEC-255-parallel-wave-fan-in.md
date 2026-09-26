@@ -12,8 +12,8 @@ substrate:
 related:
   - maistro-engine#ADR-054
   - maistro-engine#ADR-056
-implements:
   - maistro-engine#ADR-052
+implements: []
 supersedes: []
 blocks: []
 blocked-by: []
@@ -44,9 +44,11 @@ owners:
 
 ## Context
 
-ADR-052 requires intra-task parallel sub-agents ("waves") to run against isolated per-wave
+ADR-052 proposed intra-task parallel sub-agents ("waves") running against isolated per-wave
 branches inside the task's shadow workspace (ADR-049 / SPEC-254), with a fan-in step that
-auto-merges non-overlapping changes and bubbles real conflicts. Nothing implementing this exists.
+auto-merges non-overlapping changes and bubbles real conflicts. ADR-052 is Deprecated and is
+retained as design context only; it is not shipped authority for this SPEC — the operative
+authority is this SPEC under its Accepted substrate (ADR-010, ADR-018). Nothing implementing this exists.
 This SPEC scopes the two load-bearing, independently-testable pieces: fan-out width validation
 against the substrate-enforced hard cap, and the fan-in merge itself, built directly on
 `ShadowGitWorkspace` (SPEC-254) using real `git merge` so conflict detection is exact rather than
