@@ -1,10 +1,11 @@
 """`maistro.identity`'s missing-extra guard must fire, and must be actionable.
 
 `maistro.identity` needs secp256k1 (it derives BTC/ETH paths via
-`Bip32Slip10Secp256k1`), which means `bip-utils`, which means `coincurve` — a C
-extension whose wheels stop at cp313, while the API image's base ships a later
-Python. So the dependency is declared by the `identity` extra rather than as a
-base dependency, and both identity modules guard their imports to say so.
+`Bip32Slip10Secp256k1`), which means `bip-utils`, which means `coincurve`, a C
+extension. The Conductor image pins CPython 3.13 because that is the supported
+wheel set, while the dependency remains behind the `identity` extra for engine
+consumers that do not need it. Both identity modules guard their imports to say
+so.
 
 Those guards carried `# pragma: no cover - install-shape guard`: the branch that
 turns a bare `ModuleNotFoundError` into an actionable message was never

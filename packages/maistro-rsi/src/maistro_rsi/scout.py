@@ -21,7 +21,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from maistro.security.warden.detector import Warden
 from maistro_evolve.improvement import ImprovementKind
+from maistro_rsi.harvest_boundary import AuditSink, HarvestCorrelation, WardenHarvestBoundary
 
 LlmCall = Callable[..., dict[str, Any]]
 
@@ -146,6 +148,8 @@ def scout_shortlist(
     *,
     spec_gaps: str = "",
     max_items: int = 3,
+    audit_sink: AuditSink | None = None,
+    correlation: HarvestCorrelation | None = None,
 ) -> list[ScoutItem]:
     """Ask ``llm_call`` for a ranked shortlist of improvements to ``source``.
 
@@ -160,6 +164,15 @@ def scout_shortlist(
         {"role": "system", "content": _SCOUT_SYSTEM},
         {"role": "user", "content": _build_user_prompt(source, tests, uncovered, spec_gaps)},
     ]
+    if (
+        not WardenHarvestBoundary(Warden(), correlation=correlation, audit_sink=audit_sink)
+        .scan_sync(
+            {"source": source, "tests": tests, "uncovered": uncovered, "spec_gaps": spec_gaps},
+            allow_thread=True,
+        )
+        .admitted
+    ):
+        return []
     try:
         result = llm_call(messages, max_tokens=800)
     except Exception:
@@ -170,7 +183,14 @@ def scout_shortlist(
     )
 
 
-def scout_objective(source: str, llm_call: LlmCall, *, fallback: str) -> str:
+def scout_objective(
+    source: str,
+    llm_call: LlmCall,
+    *,
+    fallback: str,
+    audit_sink: AuditSink | None = None,
+    correlation: HarvestCorrelation | None = None,
+) -> str:
     """Back-compat single-instruction scout: the top improvement's instruction.
 
     One call, parsed leniently — a JSON shortlist yields its top item's
@@ -181,6 +201,12 @@ def scout_objective(source: str, llm_call: LlmCall, *, fallback: str) -> str:
         {"role": "system", "content": _SCOUT_SYSTEM},
         {"role": "user", "content": _build_user_prompt(source, "", "")},
     ]
+    if (
+        not WardenHarvestBoundary(Warden(), correlation=correlation, audit_sink=audit_sink)
+        .scan_sync({"source": source}, allow_thread=True)
+        .admitted
+    ):
+        return fallback
     try:
         result = llm_call(messages, max_tokens=400)
     except Exception:

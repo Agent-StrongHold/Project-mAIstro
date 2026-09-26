@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import contextlib
+import itertools
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
@@ -680,189 +681,297 @@ async def test_synth_depth_increments_for_the_node_after_a_synth_dag_node(
     assert captured_depths == [1]
 
 
-async def test_agent_synth_dag_refuses_to_spawn_once_depth_reaches_cap_via_durable_walk(
-    mem_store: DurableRunStore,
-) -> None:
-    """A real nested synth refuses once prior dispatch evidence reaches its cap."""
-    from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
+async def _child_runs_of(store: DurableRunStore, parent_run_id: str) -> list[DurableRunRecord]:
+    return [
+        record
+        for status in RunStatus
+        for record in await store.list_by_status(status)
+        if record.run.parent_run_id == parent_run_id
+    ]
 
-    def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
-        if node_id == "n1":
-            return _genuinely_dispatching_synth(mem_store)
-        return AgentSynthDagNode(max_depth=1)
 
-    dag = {
-        "id": "synth-depth-cap-dag",
-        "name": "synth-depth-cap",
-        "nodes": [
-            {"id": "n1", "kind": "agent.synth_dag", "inputs": {"objective": "add caching"}},
-            {"id": "n2", "kind": "agent.synth_dag", "inputs": {"objective": "nested work"}},
-        ],
-        "edges": [{"from_node": "n1", "to_node": "n2"}],
-        "entry_node": "n1",
+class _NeverRunIn(BaseModel):
+    pass
+
+
+class _NeverRunOut(BaseModel):
+    pass
+
+
+class _MustNotRunNode(BaseNode):
+    """Downstream of a failed synth node: the Run fails before reaching it."""
+
+    kind: ClassVar[str] = "test.after_failed_synth_dag"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _NeverRunIn
+    output_schema: ClassVar[type[BaseModel]] = _NeverRunOut
+
+    async def _execute(self, inputs: _NeverRunIn, ctx: NodeContext) -> _NeverRunOut:
+        raise AssertionError("a node downstream of a failed agent.synth_dag must not run")
+
+
+def _failed_synth_node_run(result: DurableRunRecord, node_id: str) -> str:
+    """#1193: a synth node that ran no work ends FAILED, and so does its Run."""
+    assert result.status == RunStatus.FAILED
+    node_run = next(nr for nr in result.node_runs if nr.node_id == node_id)
+    assert node_run.status is RunStatus.FAILED
+    assert node_run.result is None
+    assert node_run.error is not None
+    assert node_run.error.startswith("SynthDagFailed: ")
+    assert [nr.node_id for nr in result.node_runs if nr.node_id == "after"] == []
+    return node_run.error
+
+
+def _synth_walk(*nodes: dict[str, Any]) -> dict[str, Any]:
+    ids = [node["id"] for node in nodes]
+    return {
+        "id": "synth-failure-dag",
+        "name": "synth-failure",
+        "nodes": [*nodes, {"id": "after", "kind": _MustNotRunNode.kind}],
+        "edges": [{"from_node": a, "to_node": b} for a, b in itertools.pairwise([*ids, "after"])],
+        "entry_node": ids[0],
     }
 
-    result = await run_durable_dag(dag, store=mem_store, node_resolver=_local_resolver)
-    # A business-level refusal isn't an executor-level failure — n2's own
-    # output says so, but the walk still completes normally.
-    assert result.status == RunStatus.COMPLETED
-    await _assert_genuine_synth_child_run(mem_store, result)
-    n2_output = result.node_runs[-1].result
-    assert n2_output is not None
-    assert n2_output["success"] is False
-    assert n2_output["dispatched"] is False
-    assert "recursion depth cap reached" in n2_output["error"]
 
-
-async def test_refused_synth_dag_does_not_increment_depth_for_the_next_node(
+async def test_agent_synth_dag_at_the_depth_cap_fails_its_node_run_via_durable_walk(
     mem_store: DurableRunStore,
 ) -> None:
-    """A depth-cap refusal does not consume another recursion level."""
+    """A nested synth past its cap dispatches nothing, so its NodeRun ends
+    FAILED and the parent Run cannot report success (#1193). It used to
+    complete with `success=False` in its output and let the walk go on."""
     from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
-
-    captured_depths: list[int] = []
-
-    class _CaptureDepthIn(BaseModel):
-        pass
-
-    class _CaptureDepthOut(BaseModel):
-        pass
-
-    class _CaptureDepthNode(BaseNode):
-        kind: ClassVar[str] = "test.capture_synth_depth_after_refusal"
-        kind_category: ClassVar = "sync.transform"
-        input_schema: ClassVar[type[BaseModel]] = _CaptureDepthIn
-        output_schema: ClassVar[type[BaseModel]] = _CaptureDepthOut
-
-        async def _execute(self, inputs: _CaptureDepthIn, ctx: NodeContext) -> _CaptureDepthOut:
-            captured_depths.append(int((ctx.metadata or {}).get("synth_depth", 0)))
-            return _CaptureDepthOut()
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
             return _genuinely_dispatching_synth(mem_store)
         if node_id == "n2":
             return AgentSynthDagNode(max_depth=1)  # depth=1 here -> LEAF -> refuses
-        return _CaptureDepthNode()
+        return _MustNotRunNode()
 
-    dag = {
-        "id": "synth-depth-refusal-dag",
-        "name": "synth-depth-refusal",
-        "nodes": [
-            {"id": "n1", "kind": "agent.synth_dag", "inputs": {"objective": "add caching"}},
-            {"id": "n2", "kind": "agent.synth_dag", "inputs": {"objective": "nested work"}},
-            {"id": "n3", "kind": "test.capture_synth_depth_after_refusal"},
-        ],
-        "edges": [
-            {"from_node": "n1", "to_node": "n2"},
-            {"from_node": "n2", "to_node": "n3"},
-        ],
-        "entry_node": "n1",
-    }
+    dag = _synth_walk(
+        {"id": "n1", "kind": "agent.synth_dag", "inputs": {"objective": "add caching"}},
+        {"id": "n2", "kind": "agent.synth_dag", "inputs": {"objective": "nested work"}},
+    )
 
     result = await run_durable_dag(dag, store=mem_store, node_resolver=_local_resolver)
-    assert result.status == RunStatus.COMPLETED
+
     await _assert_genuine_synth_child_run(mem_store, result)
-    # n1 dispatched -> depth becomes 1 for n2. n2 refuses at the cap -> depth
-    # must stay 1 for n3, not bump to 2.
-    assert captured_depths == [1]
+    assert "recursion depth cap reached" in _failed_synth_node_run(result, "n2")
+    assert result.run.error is not None
+    assert "recursion depth cap reached" in result.run.error
+    # Only n1's child exists: the refusing node spawned nothing.
+    assert len(await _child_runs_of(mem_store, result.run_id)) == 1
 
 
-async def test_synth_dag_with_failed_subgraph_still_increments_depth_for_the_next_node(
-    mem_store: DurableRunStore,
-) -> None:
-    """Contrast with the refusal case above: here the synth node actually
-    dispatches its sub-graph as a canonical child Run (#520) -- but the
-    child's own execution fails. That's a real spawn attempt, not a declined
-    one, so depth must still burn a level for whatever runs next."""
+async def test_a_blocked_shape_fails_the_synth_node_run(mem_store: DurableRunStore) -> None:
+    """Shape review that does not approve is a node that did no work (#1193)."""
     from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
-    from maistro.graph.synth import SynthRequest, SynthResult
-    from maistro.graph.types import GraphConfig
-    from maistro.security.dag_shape.proportionality import ProportionalityVerdict
-
-    class _AlwaysJustified:
-        async def judge(self, shape: Any) -> ProportionalityVerdict:
-            return ProportionalityVerdict(justified=True, reason="fine")
-
-    class _FailingChildIn(BaseModel):
-        pass
-
-    class _FailingChildOut(BaseModel):
-        pass
-
-    class _FailingChildNode(BaseNode):
-        kind: ClassVar[str] = "test.synth_child_that_fails"
-        kind_category: ClassVar = "sync.transform"
-        input_schema: ClassVar[type[BaseModel]] = _FailingChildIn
-        output_schema: ClassVar[type[BaseModel]] = _FailingChildOut
-
-        async def _execute(self, inputs: _FailingChildIn, ctx: NodeContext) -> _FailingChildOut:
-            raise RuntimeError("sub-graph blew up")
-
-    with contextlib.suppress(ValueError):
-        register_node(_FailingChildNode)
-
-    class _FailingChildSynthesizer:
-        async def synthesize(self, request: SynthRequest) -> SynthResult:
-            config = GraphConfig(
-                nodes=[_FailingChildNode.kind],
-                edges=[],
-                entry=_FailingChildNode.kind,
-            )
-            return SynthResult(
-                graph_config=config,
-                rationale="one failing step",
-                synthesized_kinds=[_FailingChildNode.kind],
-            )
-
-    captured_depths: list[int] = []
-
-    class _CaptureDepthIn(BaseModel):
-        pass
-
-    class _CaptureDepthOut(BaseModel):
-        pass
-
-    class _CaptureDepthNode(BaseNode):
-        kind: ClassVar[str] = "test.capture_synth_depth_after_failed_subgraph"
-        kind_category: ClassVar = "sync.transform"
-        input_schema: ClassVar[type[BaseModel]] = _CaptureDepthIn
-        output_schema: ClassVar[type[BaseModel]] = _CaptureDepthOut
-
-        async def _execute(self, inputs: _CaptureDepthIn, ctx: NodeContext) -> _CaptureDepthOut:
-            captured_depths.append(int((ctx.metadata or {}).get("synth_depth", 0)))
-            return _CaptureDepthOut()
 
     def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
         if node_id == "n1":
-            from maistro.security.sentinel.policy import Sentinel
-            from maistro.security.warden.detector import Warden
-
+            # The bare node's fail-closed Sentinel (#1165) refuses the shape.
             return AgentSynthDagNode(
-                # COMPATIBILITY (#1165): the walk targets failed-subgraph depth
-                # accounting, not permission-table misses.
-                sentinel=Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True),
-                synthesizer=_FailingChildSynthesizer(),
-                proportionality_judge=_AlwaysJustified(),
-                run_store=InMemoryDurableRunStore(),
+                synthesizer=_SynthDepthChildSynthesizer(),
+                proportionality_judge=_AlwaysJustifySynthDepthChild(),
+                run_store=mem_store,
             )
-        return _CaptureDepthNode()
+        return _MustNotRunNode()
 
-    dag = {
-        "id": "synth-depth-failed-subgraph-dag",
-        "name": "synth-depth-failed-subgraph",
-        "nodes": [
-            {"id": "n1", "kind": "agent.synth_dag", "inputs": {"objective": "add caching"}},
-            {"id": "n2", "kind": "test.capture_synth_depth_after_failed_subgraph"},
-        ],
-        "edges": [{"from_node": "n1", "to_node": "n2"}],
-        "entry_node": "n1",
-    }
+    dag = _synth_walk(
+        {"id": "n1", "kind": "agent.synth_dag", "inputs": {"objective": "add caching"}}
+    )
 
     result = await run_durable_dag(dag, store=mem_store, node_resolver=_local_resolver)
+
+    assert "not justified" in _failed_synth_node_run(result, "n1")
+    assert await _child_runs_of(mem_store, result.run_id) == []
+
+
+async def test_a_kind_outside_the_allowlist_fails_the_synth_node_run_without_a_child(
+    mem_store: DurableRunStore,
+) -> None:
+    """An undispatchable config fails the node and creates no child Run (#1193).
+    It used to complete with `success=True` and "not executed"."""
+
+    def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
+        if node_id == "n1":
+            return _genuinely_dispatching_synth(mem_store)
+        return _MustNotRunNode()
+
+    dag = _synth_walk(
+        {
+            "id": "n1",
+            "kind": "agent.synth_dag",
+            "inputs": {"objective": "add caching", "available_kinds": ["test.some_other_kind"]},
+        }
+    )
+
+    result = await run_durable_dag(dag, store=mem_store, node_resolver=_local_resolver)
+
+    assert "outside the requested allowlist" in _failed_synth_node_run(result, "n1")
+    assert await _child_runs_of(mem_store, result.run_id) == []
+
+
+class _FailingChildIn(BaseModel):
+    pass
+
+
+class _FailingChildOut(BaseModel):
+    pass
+
+
+class _SynthFailingChildNode(BaseNode):
+    kind: ClassVar[str] = "test.synth_child_that_fails"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _FailingChildIn
+    output_schema: ClassVar[type[BaseModel]] = _FailingChildOut
+
+    async def _execute(self, inputs: _FailingChildIn, ctx: NodeContext) -> _FailingChildOut:
+        raise RuntimeError("sub-graph blew up")
+
+
+with contextlib.suppress(ValueError):
+    register_node(_SynthFailingChildNode)
+
+
+class _FailingChildSynthesizer:
+    async def synthesize(self, request: Any) -> Any:
+        from maistro.graph.synth import SynthResult
+        from maistro.graph.types import GraphConfig
+
+        config = GraphConfig(
+            nodes=[_SynthFailingChildNode.kind],
+            edges=[],
+            entry=_SynthFailingChildNode.kind,
+        )
+        return SynthResult(
+            graph_config=config,
+            rationale="one failing step",
+            synthesized_kinds=[_SynthFailingChildNode.kind],
+        )
+
+
+def _synth_with_failing_child(store: DurableRunStore) -> BaseNode:
+    from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
+    from maistro.security.sentinel.policy import Sentinel
+    from maistro.security.warden.detector import Warden
+
+    return AgentSynthDagNode(
+        # COMPATIBILITY (#1165): these walks target the failed-subgraph
+        # outcome, not permission-table misses.
+        sentinel=Sentinel(warden=Warden(), permission_table={}, allow_on_miss=True),
+        synthesizer=_FailingChildSynthesizer(),
+        proportionality_judge=_AlwaysJustifySynthDepthChild(),
+        run_store=store,
+    )
+
+
+async def test_synth_dag_with_failed_subgraph_fails_its_node_run_and_the_parent_run(
+    mem_store: DurableRunStore,
+) -> None:
+    """Owner decision on #1193, inverting the test that pinned the opposite:
+    the synth node dispatches its sub-graph as a canonical child Run (#520),
+    the child's own execution fails, and so the synth NodeRun ends FAILED —
+    naming the child Run — and the parent Run fails before the next node. It
+    used to complete with `success=False, dispatched=True` in its output and
+    let the parent Run report success."""
+
+    def _local_resolver(node_id: str, dag: dict[str, Any]) -> BaseNode:
+        if node_id == "n1":
+            return _synth_with_failing_child(mem_store)
+        return _MustNotRunNode()
+
+    dag = _synth_walk(
+        {"id": "n1", "kind": "agent.synth_dag", "inputs": {"objective": "add caching"}}
+    )
+
+    result = await run_durable_dag(dag, store=mem_store, node_resolver=_local_resolver)
+
+    error = _failed_synth_node_run(result, "n1")
+    # One child, and the default visit budget does not dispatch a second one.
+    (child,) = await _child_runs_of(mem_store, result.run_id)
+    assert child.status == RunStatus.FAILED
+    assert child.run.parent_node_run_id == result.node_runs[0].node_run_id
+    assert child.run_id in error
+    assert "sub-graph execution failed" in error
+
+
+def _failing_synth_graph(policies: dict[str, Any], *, then: str | None = None) -> Any:
+    from maistro.graph.definitions import Edge, Graph, Node
+
+    nodes = [
+        Node(
+            node_id="n1",
+            node_type="agent.synth_dag",
+            policies=policies,
+            inputs={"objective": "add caching"},
+        )
+    ]
+    edges = []
+    if then is not None:
+        nodes.append(Node(node_id="n2", node_type=then))
+        edges.append(Edge(edge_id="n1-n2", from_node="n1", to_node="n2"))
+    return Graph(
+        workspace_id="ws-synth-depth",
+        project_id="project-synth-depth",
+        name="failed synth depth",
+        nodes=nodes,
+        edges=edges,
+        metadata={"entry_node": "n1"},
+    )
+
+
+async def test_a_retried_synth_dag_after_a_failed_child_starts_one_level_deeper(
+    mem_store: DurableRunStore,
+) -> None:
+    """The dispatched child ran, so it spent a recursion level even though the
+    synth NodeRun failed (#1193): the retry's child starts one level deeper,
+    rather than every retry spawning again at the same depth."""
+    from maistro.graph.durable_runs import run_durable_graph
+
+    result = await run_durable_graph(
+        _failing_synth_graph({"max_attempts": 2}),
+        store=mem_store,
+        node_resolver=lambda node_id, graph: _synth_with_failing_child(mem_store),
+    )
+
+    assert result.status == RunStatus.FAILED
+    children = await _child_runs_of(mem_store, result.run_id)
+    depths = sorted(
+        child.graph_state.blackboard_snapshot["metadata"]["synth_depth"] for child in children
+    )
+    assert depths == [1, 2]
+
+
+async def test_a_failed_child_still_burns_depth_for_a_continue_on_failure_successor(
+    mem_store: DurableRunStore,
+) -> None:
+    """`continue_on_failure` accepts the failed synth NodeRun as domain output
+    and lets the walk go on; the level its dispatched child spent stays spent."""
+    from maistro.graph.durable_runs import run_durable_graph
+
+    captured_depths: list[int] = []
+
+    class _CaptureDepthNode(BaseNode):
+        kind: ClassVar[str] = "test.capture_synth_depth_after_failed_child"
+        kind_category: ClassVar = "sync.transform"
+        input_schema: ClassVar[type[BaseModel]] = _NeverRunIn
+        output_schema: ClassVar[type[BaseModel]] = _NeverRunOut
+
+        async def _execute(self, inputs: _NeverRunIn, ctx: NodeContext) -> _NeverRunOut:
+            captured_depths.append(int((ctx.metadata or {}).get("synth_depth", 0)))
+            return _NeverRunOut()
+
+    def _resolver(node_id: str, graph: Any) -> BaseNode:
+        if node_id == "n1":
+            return _synth_with_failing_child(mem_store)
+        return _CaptureDepthNode()
+
+    result = await run_durable_graph(
+        _failing_synth_graph({"continue_on_failure": True}, then=_CaptureDepthNode.kind),
+        store=mem_store,
+        node_resolver=_resolver,
+    )
+
     assert result.status == RunStatus.COMPLETED
-    n1_output = result.node_runs[0].result
-    assert n1_output is not None
-    assert n1_output["success"] is False  # the sub-graph itself failed
-    assert n1_output["dispatched"] is True  # but it WAS actually dispatched
-    assert captured_depths == [1]  # depth still burns a level for n2
+    assert captured_depths == [1]
