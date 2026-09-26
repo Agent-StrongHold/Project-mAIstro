@@ -27,6 +27,7 @@ import re
 import time
 from typing import Any
 
+from maistro.security.warden.detector import Warden
 from maistro_evolve.benchmarks.prompt_builder import (
     build_messages,
     build_model_config,
@@ -34,6 +35,11 @@ from maistro_evolve.benchmarks.prompt_builder import (
 )
 from maistro_evolve.benchmarks.scoring import judge_score
 from maistro_evolve.types import EvalResult, PipelineGenome
+from maistro_rsi.harvest_boundary import (
+    HarvestCorrelation,
+    WardenHarvestBoundary,
+    guarded_async_call,
+)
 
 # A small, hand-written sample of multi-file long-horizon tasks in the spirit
 # of SWE-Bench Pro's public set — enough to exercise the scoring path offline.
@@ -193,7 +199,44 @@ async def _judge_cross_file_consistency(
 
 async def run_swebench_pro(genome: PipelineGenome, llm_call: Any) -> EvalResult:
     start = time.monotonic()
+    if llm_call is not None:
+        boundary = WardenHarvestBoundary(
+            Warden(),
+            correlation=HarvestCorrelation(candidate_id=getattr(genome, "id", None)),
+        )
+
+        async def guarded_model_call(messages: Any, **kwargs: Any) -> Any:
+            return await guarded_async_call(
+                llm_call, messages, boundary, skip_system=True, **kwargs
+            )
+
+        model_call = guarded_model_call
+    else:
+        model_call = None
     system_prompt = build_system_prompt(genome)
+    if llm_call is not None:
+        # Scan the candidate-controlled genome fields, not the code-owned
+        # rubric that build_system_prompt adds around them. The resulting
+        # system prompt is then sent only after this admission decision.
+        genome_admission = await boundary.scan(
+            {
+                "topology": getattr(genome, "topology", None),
+                "eval_weights": getattr(genome, "eval_weights", None),
+            }
+        )
+        if not genome_admission.admitted:
+            return EvalResult(
+                benchmark="proxy_swebench_pro",
+                score=0.0,
+                duration_seconds=round(time.monotonic() - start, 3),
+                samples_evaluated=0,
+                metadata={
+                    "total_samples": len(SWEBENCH_PRO_SAMPLES),
+                    "fidelity": "proxy",
+                    "stub": False,
+                    "warden_admission": genome_admission.outcome,
+                },
+            )
     model_config = build_model_config(genome)
 
     code_system = (
@@ -219,9 +262,9 @@ async def run_swebench_pro(genome: PipelineGenome, llm_call: Any) -> EvalResult:
         messages = build_messages(code_system, user_msg)
 
         try:
-            if llm_call is not None:
+            if model_call is not None:
                 response = await asyncio.wait_for(
-                    llm_call(
+                    model_call(
                         messages,
                         temperature=model_config.get("temperature", 0.2),
                         max_tokens=model_config.get("max_tokens", 3072),
@@ -234,7 +277,7 @@ async def run_swebench_pro(genome: PipelineGenome, llm_call: Any) -> EvalResult:
                     total_score += static_score
                 else:
                     judged = await _judge_cross_file_consistency(
-                        sample["problem"], sample["files"], response, llm_call
+                        sample["problem"], sample["files"], response, model_call
                     )
                     total_score += max(static_score, judged)
                     total_cost += 0.0015
@@ -272,7 +315,7 @@ async def run_swebench_pro(genome: PipelineGenome, llm_call: Any) -> EvalResult:
             # score was silently eligible to be treated as real signal by
             # anything sharing this EvalHarness — exactly the gap that flag
             # exists to close.
-            "stub": llm_call is None,
+            "stub": model_call is None,
         },
     )
 
