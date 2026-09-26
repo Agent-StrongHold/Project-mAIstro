@@ -1,9 +1,12 @@
 """Persist short-lived elevation grants in the canonical database.
 
-Rebased onto the trunk chain (#72 merge): the revision ids up to 038 were
-already taken by the canonical migrations, so the elevation-grant table
-attaches at the end rather than branching off 035 (which would leave two
-heads and an undefined upgrade order).
+Rebased onto the trunk chain twice (#72 merge, then the 2026-09 develop
+sync): the revision ids up to 038 were already taken by the canonical
+migrations, so the table first attached as "039" — and when develop added
+its own `039` (canvas job admission key) on the same parent "038", that
+collision made `alembic history` fail outright ("042 overlaps with other
+requested revisions 039"). It now attaches after the develop chain tip
+`042`, keeping the chain linear with exactly one head.
 """
 
 from __future__ import annotations
@@ -11,8 +14,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "039"
-down_revision = "038"
+revision = "043"
+down_revision = "042"
 branch_labels = None
 depends_on = None
 
