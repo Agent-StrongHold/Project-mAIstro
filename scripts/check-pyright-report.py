@@ -89,7 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         baseline = _count(args.baseline, "baseline")
-        report = json.loads(args.report.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+        report = json.loads(
+            args.report.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
+        )
         errors = validate_report(report, args.exit_code)
     except (OSError, ValueError) as exc:
         print(f"::error::invalid Pyright evidence: {exc}")

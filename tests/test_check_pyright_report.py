@@ -107,7 +107,9 @@ def test_summary_must_agree_with_diagnostics(gate, tmp_path, key):
     assert invoke(gate, tmp_path, document) == 2
 
 
-@pytest.mark.parametrize("document", [None, [], False, {}, {"summary": {}, "generalDiagnostics": {}}])
+@pytest.mark.parametrize(
+    "document", [None, [], False, {}, {"summary": {}, "generalDiagnostics": {}}]
+)
 def test_report_requires_expected_containers(gate, tmp_path, document):
     assert invoke(gate, tmp_path, document) == 2
 
@@ -170,7 +172,9 @@ def test_unknown_metadata_and_multiline_messages_are_preserved_safely(gate, tmp_
 def test_cli_entry_point(gate, tmp_path, monkeypatch):
     path = tmp_path / "pyright.json"
     path.write_text(json.dumps(report()), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", [str(SCRIPT), str(path), "--baseline", "21", "--exit-code", "0"])
+    monkeypatch.setattr(
+        sys, "argv", [str(SCRIPT), str(path), "--baseline", "21", "--exit-code", "0"]
+    )
     with pytest.raises(SystemExit) as result:
         runpy.run_path(str(SCRIPT), run_name="__main__")
     assert result.value.code == 0
