@@ -1,14 +1,6 @@
 ---
-inventory-delta:
-  added: []
-  removed: []
-  changed:
-    - "packages/hive-conductor/frontend/src/pages/DesignStudio.tsx (merge resolution: hybrid of keyboard-complete shell + #768 shared visual-artifact boundary persistence/inline editor)"
-    - "packages/hive-conductor/frontend/src/pages/DeckBuilder.tsx (merge resolution: keyboard-complete Deck structure; all three executable sinks rerouted through the shared visualArtifactRenderer boundary)"
-    - "packages/hive-conductor/frontend/src/lib/deckSanitizer.ts (compat wrapper now also exports writeSanitizedVisualArtifact)"
-    - "packages/hive-conductor/frontend/src/pages/FixedPageArtifactEditor.tsx (contenteditable preview gets role=textbox/aria-multiline for accessible naming)"
-  tests-run:
-    - "uv run pytest packages/maistro-design/tests -x -q -> 297 passed"
+tests-run:
+  - "uv run pytest packages/maistro-design/tests -x -q -> 297 passed"
     - "uv run pytest packages/maistro-core/tests/runs packages/maistro-server/tests/api -q -> 1252 passed, 209 skipped"
     - "uv run pytest packages/maistro-rsi/tests -q -> 779 passed"
     - "npx playwright test visual-artifact-boundary.spec.ts -> 3 passed"
@@ -34,6 +26,22 @@ exactly two content conflicts:
 Everything else merged cleanly, including develop's `FixedPageEditor.tsx`
 (structured layer editor), its e2e additions, and the RSI/warden/harvest
 changes.
+
+No collected count moved in this merge resolution (the `inventory-delta:`
+key is therefore absent — the ledger's normal case for a change that moved no
+node IDs). The files whose resolution is recorded here:
+
+- `packages/hive-conductor/frontend/src/pages/DesignStudio.tsx` — merge
+  resolution: hybrid of keyboard-complete shell + #768 shared visual-artifact
+  boundary persistence/inline editor
+- `packages/hive-conductor/frontend/src/pages/DeckBuilder.tsx` — merge
+  resolution: keyboard-complete Deck structure; all three executable sinks
+  rerouted through the shared visualArtifactRenderer boundary
+- `packages/hive-conductor/frontend/src/lib/deckSanitizer.ts` — compat
+  wrapper now also exports `writeSanitizedVisualArtifact`
+- `packages/hive-conductor/frontend/src/pages/FixedPageArtifactEditor.tsx` —
+  contenteditable preview gets `role=textbox`/`aria-multiline` for accessible
+  naming
 
 ## Resolution decisions
 
@@ -94,3 +102,37 @@ flags=('css-network-or-code',)`.
 
 Residual: the PR's GitHub CI (devskim etc.) remains IN_PROGRESS per the prior
 round; no GitHub mutations are performed from this lane.
+
+## Repair round (2026-08-31 audit follow-up)
+
+The prior verify round failed `uv run python scripts/check-suite-inventory.py
+--suite packages/maistro-design/tests` with exit 2: this note's front matter
+used an `added: []` / `removed: []` / `changed:` schema the ledger cannot
+parse (`cannot read 'added: []' as '<suite>: <±count>'`). The merge resolution
+moved no collected node IDs, so the correct form is no `inventory-delta:` key
+at all — the ledger's documented normal case — with the file list kept in the
+body above.
+
+Re-validation at head baf36a384 (all executed in this worktree):
+
+- `uv run python scripts/check-suite-inventory.py` (full, as ci.yml runs it)
+  -> `ok: 13 suite(s) match the recorded inventory` (design 297, e2e 23).
+- `uv run pytest packages/maistro-design/tests -q` -> 297 passed.
+- `uv run ruff check .` / `uv run ruff format --check .` -> pass (2574 files).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` -> exit 0, unclassified 0.
+- Playwright in the CI-equivalent Docker image built from this tree
+  (`tests/Dockerfile.playwright`): visual-artifact-boundary (3) +
+  deck-sanitization (8) -> 11 passed; against the app image
+  (`packages/hive-conductor/Dockerfile`) published on localhost:48101:
+  design-studio-truthfulness (5) + design-studio-keyboard (4) -> 9 passed.
+- `scan_and_record` probes (job #817 parity): CSS
+  `background:url(...)`+comment -> skull/banish `css-network-or-code`;
+  script+foreignObject+`data:text/html`+onload SVG -> skull/banish; safe
+  poster markup -> t3/upgrade with empty flags.
+
+Note on local runs: `deck-sanitization.spec.ts` cannot run outside the Docker
+image on a dev checkout because `frontend/node_modules` (react 19.2.6) and
+`tests/e2e/node_modules` (react 19.2.0) would give the esbuild harness two
+React copies ("Invalid hook call"); the image copies only one. The Docker run
+is the CI shape and is the evidence that counts.
