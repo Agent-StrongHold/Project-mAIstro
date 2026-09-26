@@ -304,3 +304,36 @@ Not locally executed: `pytest formal/` (CI formal-conformance = SUCCESS
 separately; 663 passed at 7ef64ca72), `alembic upgrade head` on a fresh DB
 (container already at 042), and the still-IN_PROGRESS CI jobs (test,
 integration-scope, Coverage gate, docker-build) — all UNVERIFIED.
+
+## CI-repair round (L1114 repair @ e7e7c810e)
+
+Blocking CI finding resolved. The Quality gate's single failed step at this
+head is "acceptance-state ratchet + mandate" (run 36234390549, job
+108383422132; job log fetched read-only). Its only failure block in CI is the
+superseded-grant refusal: `design_coverage@33.9095` (#729) in
+`quality/ratchet-authorizations.json` is overtaken by three independently
+landed notes (auto-1138, auto-1158, auto-48), and the gate itself instructs
+pruning it (SPEC-083026-fcc9). Repair = prune that grant, nothing else.
+
+Evidence reproduced locally under CI-equivalent conditions (pgvector:pg18 on
+127.0.0.1:5688, `alembic upgrade head` to 042, `DATABASE_URL` +
+`MAISTRO_TEST_PG_DSN` exported):
+
+- `scripts/check-ac-state.py --run-tests --ratchet --mandate ca4caec7d319` →
+  rc=0: measured `design_coverage: 38.0924% (92 at zero)` — exactly on the
+  folded floor (equality passes), acceptance mandate OK (0 criteria touched),
+  chain mandate OK, no superseded/stale/removed grant findings.
+- Environment note: on a PG16 container the same command measured 37.6277 and
+  one ac-marked test fails
+  (`test_container_episodic_store.py::...::test_a_postgres_url_wires_the_postgres_store`,
+  hive-conductor durable-authority [postgres] params likewise) because the
+  container refuses servers below PG 17 (`MIN_POSTGRES_VERSION`, container.py).
+  PG18 reproduces CI's measurement exactly; the earlier "floor undercut" line
+  in this note was a PG16-environment artifact, not present in CI's own log.
+- 363 tasks tests pass against PG18 (0 skipped, `pg_pool` tests real);
+  ruff check + format clean; `check-vulture-baseline` rc=0 (1411 identities);
+  `check-ratchet-provenance` rc=0; `check-wiring-reads` rc=0;
+  suite inventory OK for maistro-core and maistro-server.
+
+No tests added or changed in this round (ledger-only repair); inventory count
+unchanged at +7 for this note.
