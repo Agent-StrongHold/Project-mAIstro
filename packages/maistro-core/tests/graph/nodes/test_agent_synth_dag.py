@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
+import pytest
 from pydantic import BaseModel
 
-from maistro.graph.nodes import BaseNode, NodeContext, get_node, list_kinds, register_node
+from maistro.graph.nodes import (
+    BaseNode,
+    NodeContext,
+    NodeResult,
+    get_node,
+    list_kinds,
+    register_node,
+)
 from maistro.graph.nodes.agent_synth_dag import AgentSynthDagNode
 from maistro.graph.synth import SynthRequest, SynthResult
 from maistro.graph.types import GraphConfig
@@ -36,6 +45,17 @@ def _ctx(**overrides: Any) -> NodeContext:
 def _result(nodes: list[str], rationale: str = "fine") -> SynthResult:
     config = GraphConfig(nodes=list(nodes), edges=[], entry=nodes[0])
     return SynthResult(graph_config=config, rationale=rationale, synthesized_kinds=list(nodes))
+
+
+def _synth_failure(result: NodeResult) -> str:
+    """The NodeResult of a synth node that did not run its work: FAILED, never
+    COMPLETED with a flag in its output (#1193). Returns the recorded reason."""
+    assert result.status == "failed"
+    assert result.success is False
+    assert result.error_code == "SynthDagFailed"
+    assert result.output is None
+    assert result.error_message is not None
+    return result.error_message
 
 
 class _CountingSynthesizer:
@@ -86,18 +106,16 @@ def test_via_registry_default_constructible() -> None:
     assert isinstance(instance, AgentSynthDagNode)
 
 
-async def test_default_rule_synthesizer_dry_run_approves() -> None:
+async def test_default_rule_synthesizer_config_fails_the_node_rather_than_completing() -> None:
+    """Role placeholders are not registered kinds, so the approved config cannot
+    run — and a node that ran nothing fails; it does not complete (#1193)."""
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     node = AgentSynthDagNode(sentinel=_compat_sentinel(), run_store=InMemoryDurableRunStore())
     result = await node.run({"objective": "add a caching layer"}, _ctx())
-    assert result.status == "completed"
-    assert result.output.success is True
-    assert result.output.synthesized_nodes == ["scout", "coder", "reviewer"]
-    # Role placeholders are not registered kinds, so the approved config is
-    # declined with the reason rather than dispatched.
-    assert result.output.dispatched is False
-    assert "not executed" in result.output.run_output
+    reason = _synth_failure(result)
+    assert "not executed" in reason
+    assert "scout" in reason
 
 
 async def test_depth_at_cap_refuses_without_synthesizing() -> None:
@@ -106,15 +124,14 @@ async def test_depth_at_cap_refuses_without_synthesizing() -> None:
     ctx = _ctx()
     ctx.metadata["synth_depth"] = 2  # depth == max_depth -> LEAF, cannot spawn
     result = await node.run({"objective": "x"}, ctx)
-    assert result.output.success is False
-    assert "recursion depth cap reached" in result.output.error
+    assert "recursion depth cap reached" in _synth_failure(result)
     assert synthesizer.calls == 0
 
 
 async def test_depth_below_cap_proceeds() -> None:
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
-    synthesizer = _CountingSynthesizer([_result(["scout", "coder"])])
+    synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
     node = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         synthesizer=synthesizer,
@@ -122,10 +139,11 @@ async def test_depth_below_cap_proceeds() -> None:
         max_depth=3,
         run_store=InMemoryDurableRunStore(),
     )
-    ctx = _ctx()
+    ctx = _scoped_ctx()
     ctx.metadata["synth_depth"] = 2  # ORCHESTRATOR role at max_depth=3
     result = await node.run({"objective": "x"}, ctx)
-    assert result.output.success is True
+    assert result.status == "completed"
+    assert result.output.dispatched is True
     assert synthesizer.calls == 1
 
 
@@ -144,8 +162,7 @@ async def test_hostile_rationale_blocks_without_revision_retry() -> None:
         proportionality_judge=_AlwaysJustified(),
     )
     result = await node.run({"objective": "do something"}, _ctx())
-    assert result.output.success is False
-    assert "blocked by security review" in result.output.error
+    assert "blocked by security review" in _synth_failure(result)
     assert synthesizer.calls == 1  # no revision retry for a safety block
 
 
@@ -153,7 +170,7 @@ async def test_needs_revision_retries_once_and_can_succeed() -> None:
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     first = _result(["scout", "architect", "coder"])
-    second = _result(["scout", "coder"])
+    second = _result([_ChildStep.kind])
     synthesizer = _CountingSynthesizer([first, second])
     judge = _RejectOnceThenApprove()
     node = AgentSynthDagNode(
@@ -163,12 +180,13 @@ async def test_needs_revision_retries_once_and_can_succeed() -> None:
         run_store=InMemoryDurableRunStore(),
     )
 
-    result = await node.run({"objective": "implement a feature"}, _ctx())
+    result = await node.run({"objective": "implement a feature"}, _scoped_ctx())
 
     assert synthesizer.calls == 2
     assert judge.calls == 2
-    assert result.output.success is True
-    assert result.output.synthesized_nodes == ["scout", "coder"]
+    assert result.status == "completed"
+    assert result.output.dispatched is True
+    assert result.output.synthesized_nodes == [_ChildStep.kind]
 
 
 async def test_needs_revision_second_pass_still_rejected_reports_remaining_feedback() -> None:
@@ -183,12 +201,12 @@ async def test_needs_revision_second_pass_still_rejected_reports_remaining_feedb
     result = await node.run({"objective": "trivial task"}, _ctx())
 
     assert synthesizer.calls == 2  # one original + exactly one bounded retry
-    assert result.output.success is False
-    assert "not justified after revision pass" in result.output.error
-    assert "add" in result.output.error
-    assert "scout" in result.output.error
-    assert "drop" in result.output.error
-    assert "architect" in result.output.error
+    reason = _synth_failure(result)
+    assert "not justified after revision pass" in reason
+    assert "add" in reason
+    assert "scout" in reason
+    assert "drop" in reason
+    assert "architect" in reason
 
 
 async def test_revision_note_fed_back_as_constraint() -> None:
@@ -280,6 +298,20 @@ with contextlib.suppress(ValueError):
     register_node(_ChildStep)
 
 
+class _FailingChildStep(BaseNode[_ChildIn, _ChildOut]):
+    kind: ClassVar[str] = "test.synthchild.fails"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _ChildIn
+    output_schema: ClassVar[type[BaseModel]] = _ChildOut
+
+    async def _execute(self, inputs: _ChildIn, ctx: NodeContext) -> _ChildOut:
+        raise RuntimeError("sub-graph blew up")
+
+
+with contextlib.suppress(ValueError):
+    register_node(_FailingChildStep)
+
+
 def _scoped_ctx() -> NodeContext:
     return _ctx(
         run_id="parent-run",
@@ -304,6 +336,7 @@ async def test_registered_kind_config_dispatches_a_canonical_child_run() -> None
 
     result = await node.run({"objective": "do one canonical step"}, _scoped_ctx())
 
+    assert result.status == "completed"
     assert result.output.success is True
     assert result.output.dispatched is True
     assert result.output.child_run_id
@@ -322,26 +355,125 @@ async def test_registered_kind_config_dispatches_a_canonical_child_run() -> None
     assert child.graph_state.blackboard_snapshot["metadata"]["synth_depth"] == 1
 
 
-async def test_role_shaped_config_with_a_store_is_declined_with_the_reason() -> None:
-    """AgentRole placeholders are not registered kinds; nothing runs silently."""
+async def _child_runs(store: Any) -> list[Any]:
+    from maistro.runs.model import RunStatus
+
+    return [run for status in RunStatus for run in await store.list_by_status(status)]
+
+
+async def test_role_shaped_config_with_a_store_fails_with_the_reason() -> None:
+    """AgentRole placeholders are not registered kinds; nothing runs silently,
+    and the node that ran nothing fails (#1193)."""
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
+    store = InMemoryDurableRunStore()
     node = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
         proportionality_judge=_AlwaysJustified(),
-        run_store=InMemoryDurableRunStore(),
+        run_store=store,
     )
 
     result = await node.run({"objective": "add a caching layer"}, _scoped_ctx())
 
-    assert result.output.success is True
-    assert result.output.dispatched is False
-    assert result.output.child_run_id == ""
-    assert "not executed" in result.output.run_output
-    assert "not registered" in result.output.run_output
+    reason = _synth_failure(result)
+    assert "not executed" in reason
+    assert "not registered" in reason
+    assert await _child_runs(store) == []
+    assert result.metadata == {}
 
 
-async def test_unscoped_context_is_declined_rather_than_inventing_scope() -> None:
+async def test_a_failed_child_run_fails_the_node_naming_the_child() -> None:
+    """A dispatched child that ends FAILED is the parent node's failure, with
+    the child Run named in the recorded reason (#1193)."""
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+    from maistro.runs.model import RunStatus
+
+    store = InMemoryDurableRunStore()
+    node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
+        synthesizer=_CountingSynthesizer([_result([_FailingChildStep.kind])]),
+        proportionality_judge=_AlwaysJustified(),
+        run_store=store,
+    )
+
+    result = await node.run({"objective": "x"}, _scoped_ctx())
+
+    reason = _synth_failure(result)
+    (child,) = await _child_runs(store)
+    assert child.run.status is RunStatus.FAILED
+    assert child.run.parent_run_id == "parent-run"
+    assert child.run_id in reason
+    assert "sub-graph execution failed" in reason
+    # The child ran, so the fold still charges its recursion level.
+    assert result.metadata == {"dispatched": True, "child_run_id": child.run_id}
+
+
+@pytest.mark.parametrize(
+    ("child_status", "fails"),
+    [
+        ("cancelled", True),
+        ("timed_out", True),
+        ("waiting", False),
+        ("paused", False),
+    ],
+)
+async def test_the_child_runs_final_status_decides_the_node(
+    monkeypatch: pytest.MonkeyPatch, child_status: str, fails: bool
+) -> None:
+    """Any settled child but COMPLETED fails the node; a child parked WAITING
+    or PAUSED is live work the sub-graph is entitled to, not a failure."""
+    import maistro.graph.durable_runs as durable_runs
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
+    from maistro.runs.model import RunStatus
+
+    async def _settled_child(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(run_id="child-run-x", status=RunStatus(child_status))
+
+    monkeypatch.setattr(durable_runs, "run_durable_graph", _settled_child)
+    node = AgentSynthDagNode(
+        sentinel=_compat_sentinel(),
+        synthesizer=_CountingSynthesizer([_result([_ChildStep.kind])]),
+        proportionality_judge=_AlwaysJustified(),
+        run_store=InMemoryDurableRunStore(),
+    )
+
+    result = await node.run({"objective": "x"}, _scoped_ctx())
+
+    if fails:
+        reason = _synth_failure(result)
+        assert "child-run-x" in reason
+        assert f"sub-graph execution {child_status}" in reason
+        assert result.metadata == {"dispatched": True, "child_run_id": "child-run-x"}
+    else:
+        assert result.status == "completed"
+        assert result.output.dispatched is True
+        assert result.output.child_run_id == "child-run-x"
+
+
+async def test_non_mapping_result_metadata_on_an_exception_is_ignored() -> None:
+    """The failure hook `SynthDagFailed` uses reads any exception's
+    `result_metadata`; one that is not a mapping must still yield a failed
+    NodeResult rather than escape `BaseNode.run`."""
+
+    class _OddError(RuntimeError):
+        result_metadata = "not a mapping"
+
+    class _Raises(BaseNode[_ChildIn, _ChildOut]):
+        kind: ClassVar[str] = "test.synthchild.odd_error"
+        input_schema: ClassVar[type[BaseModel]] = _ChildIn
+        output_schema: ClassVar[type[BaseModel]] = _ChildOut
+
+        async def _execute(self, inputs: _ChildIn, ctx: NodeContext) -> _ChildOut:
+            raise _OddError("boom")
+
+    result = await _Raises().run({}, _ctx())
+
+    assert result.status == "failed"
+    assert result.error_code == "_OddError"
+    assert result.metadata == {}
+
+
+async def test_unscoped_context_fails_rather_than_inventing_scope() -> None:
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     synthesizer = _CountingSynthesizer([_result([_ChildStep.kind])])
@@ -354,11 +486,10 @@ async def test_unscoped_context_is_declined_rather_than_inventing_scope() -> Non
 
     result = await node.run({"objective": "x"}, _ctx())
 
-    assert result.output.dispatched is False
-    assert "Workspace/Project scope" in result.output.run_output
+    assert "Workspace/Project scope" in _synth_failure(result)
 
 
-async def test_duplicate_kinds_are_declined_rather_than_dispatched() -> None:
+async def test_duplicate_kinds_fail_rather_than_dispatch() -> None:
     """Edges address child nodes by kind, so two nodes of one kind are ambiguous."""
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
@@ -377,11 +508,10 @@ async def test_duplicate_kinds_are_declined_rather_than_dispatched() -> None:
 
     result = await node.run({"objective": "x"}, _scoped_ctx())
 
-    assert result.output.dispatched is False
-    assert "duplicate node kinds" in result.output.run_output
+    assert "duplicate node kinds" in _synth_failure(result)
 
 
-async def test_an_entry_outside_the_synthesized_nodes_is_declined() -> None:
+async def test_an_entry_outside_the_synthesized_nodes_fails() -> None:
     """GraphConfig does not force entry into nodes; a stray one must not dispatch."""
     from maistro.graph.durable_runs import InMemoryDurableRunStore
 
@@ -396,13 +526,10 @@ async def test_an_entry_outside_the_synthesized_nodes_is_declined() -> None:
 
     result = await node.run({"objective": "x"}, _scoped_ctx())
 
-    assert result.output.dispatched is False
-    assert "entry node" in result.output.run_output
+    assert "entry node" in _synth_failure(result)
 
 
 def test_node_kind_resolves_later_nodes_and_refuses_unknown_ids() -> None:
-    import pytest
-
     from maistro.graph.definitions import Graph, Node
     from maistro.graph.nodes.agent_synth_dag import _node_kind
 
@@ -445,9 +572,9 @@ async def test_kinds_outside_the_requested_allowlist_are_refused() -> None:
         {"objective": "x", "available_kinds": ["test.synthchild.other"]}, _scoped_ctx()
     )
 
-    assert result.output.dispatched is False
-    assert "outside the requested allowlist" in result.output.run_output
-    assert _ChildStep.kind in result.output.run_output
+    reason = _synth_failure(result)
+    assert "outside the requested allowlist" in reason
+    assert _ChildStep.kind in reason
 
 
 async def test_an_empty_allowlist_leaves_the_registry_as_the_only_bound() -> None:
@@ -467,7 +594,7 @@ async def test_an_empty_allowlist_leaves_the_registry_as_the_only_bound() -> Non
     assert result.output.dispatched is True
 
 
-async def test_an_entry_node_needing_inputs_is_declined_not_dispatched() -> None:
+async def test_an_entry_node_needing_inputs_fails_not_dispatched() -> None:
     """A synthesized config carries no per-node inputs — `NodeConfig` has no
     such field — so a child whose entry requires one is a Run created to fail
     validation. Declining beats dispatching something guaranteed to break."""
@@ -497,8 +624,7 @@ async def test_an_entry_node_needing_inputs_is_declined_not_dispatched() -> None
 
     result = await node.run({"objective": "x"}, _scoped_ctx())
 
-    assert result.output.dispatched is False
-    assert "requires inputs" in result.output.run_output
+    assert "requires inputs" in _synth_failure(result)
 
 
 async def test_the_child_is_built_with_the_callers_wired_resolver() -> None:
@@ -565,18 +691,17 @@ async def test_bare_node_fails_closed_without_governed_permission() -> None:
 
     result = await bare.run({"objective": "x"}, _ctx())
 
-    assert result.output.success is False
-    assert result.output.child_run_id == ""
+    assert "not justified" in _synth_failure(result)
     assert synthesizer.calls == 2  # one original pass + the single bounded retry
 
     granted = AgentSynthDagNode(
         sentinel=_compat_sentinel(),
-        synthesizer=_CountingSynthesizer([_result(["scout", "coder"])]),
+        synthesizer=_CountingSynthesizer([_result([_ChildStep.kind])]),
         # Composition contract (#1193): the control must be buildable, i.e. it
-        # carries the stores the class declares as required. Dispatch is still
-        # declined here — this _ctx() is unscoped — so the assertion below
-        # isolates the permission decision exactly as before.
+        # carries the stores the class declares as required, and dispatchable,
+        # so the only difference from `bare` is the permission decision.
         run_store=InMemoryDurableRunStore(),
     )
-    ok = await granted.run({"objective": "x"}, _ctx())
-    assert ok.output.success is True
+    ok = await granted.run({"objective": "x"}, _scoped_ctx())
+    assert ok.status == "completed"
+    assert ok.output.dispatched is True
