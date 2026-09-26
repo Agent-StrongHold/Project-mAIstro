@@ -1,9 +1,12 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/tasks: +0 (existing suites re-run as evidence; no new test files)
+  packages/maistro-core/tests: +0
 ---
 
 # Issue 41 repair (round 13): restore the admission seams the develop merge dropped
+
+Delta note: `+0` against the gated `packages/maistro-core/tests` suite —
+existing suites re-run as evidence; no new test files were added in this round.
 
 Round scope: resolve the preserved develop sync conflict (base `0d8a90f`,
 origin/develop moved 8 commits past the previously merged tip) and repair the
