@@ -19,7 +19,8 @@ Container, so they are gone from this module rather than maintained beside it:
   500 — and never reaches an agent.
 - **The canonical Run.** One Run per turn (ADR-082326-c126), terminalized by
   `Container.route_request` however the turn ends, with `run_id` returned
-  additively.
+  additively. A turn that cannot get its Run is refused with a retryable 503
+  and never dispatched (#1108).
 
 What stays here is what is genuinely this endpoint's: the OpenAI request and
 response shapes, the SSE framing, the `X-Maistro-Run-Id` header, the
@@ -58,7 +59,8 @@ from pydantic import BaseModel, Field
 
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
-from maistro.runs.model import Run, RunStatus
+from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S, ChatTurnRefused
+from maistro.runs.model import Run
 from maistro.security._types import AuthContext
 from maistro_server.api.auth import RequireAuth
 from maistro_server.api.principal import AuthenticatedPrincipal
@@ -133,9 +135,7 @@ class ChatCompletionResponse(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     #: The canonical Run this turn was admitted as (#150). Additive: every
     #: field an OpenAI client reads is unchanged, and this one sits beside
-    #: them. Explicitly `null` rather than absent when no Run store is wired,
-    #: because "this deployment records no Run" and "I forgot to send it" are
-    #: different answers and a client should be able to tell them apart.
+    #: them. Always set on an answered turn: one with no Run is refused (#1108).
     run_id: str | None = None
 
 
@@ -193,11 +193,20 @@ def _auth_context(auth: AuthenticatedPrincipal | None) -> AuthContext | None:
     )
 
 
+def _unavailable(retry_after_s: int = CHAT_TURN_RETRY_AFTER_S) -> HTTPException:
+    """The retryable refusal a turn gets when it cannot be governed by a Run."""
+    return HTTPException(
+        status_code=503,
+        detail="Chat is temporarily unavailable; retry the request",
+        headers={"Retry-After": str(retry_after_s)},
+    )
+
+
 async def _admit_turn(
     request: ChatCompletionRequest,
     auth: AuthenticatedPrincipal | None,
-) -> Run | None:
-    """Admit this turn as a canonical Run, or None when none can be.
+) -> Run:
+    """Admit this turn as a canonical Run, or refuse it with a retryable 503.
 
     Admitted here rather than left to `Container.route_request` because the
     streaming branch names the Run in a response header, and headers go out
@@ -205,23 +214,23 @@ async def _admit_turn(
     over. The Run is then passed to `route_request`, which adopts it instead
     of admitting a second.
 
-    Never refuses the turn. The chat path has no receipt to fall back on, so
-    failing here would turn "this process cannot record the turn" into "this
-    process cannot answer" — the same rule the seam itself follows.
+    Through the seam's own admission, so this door refuses, and compensates a
+    half-admitted Run, exactly as `route_request` would. A turn that cannot get
+    its canonical Run is refused and never dispatched (#1108 owner decision,
+    amending ADR-082326-c126) — raised before the `StreamingResponse` exists,
+    so a streaming caller gets a real 503 too.
     """
-    if _container is None or _container.chat_admitter is None:
-        return None
+    if _container is None:
+        raise _unavailable()
     try:
-        run = await _container.chat_admitter.admit(
+        run: Run = await _container._admit_chat_turn(
             [m.model_dump() for m in request.messages],
-            actor_principal_id=auth.user_id if auth else None,
+            auth=_auth_context(auth),
         )
-        await _container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
-        running: Run = await _container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
-        return running
-    except Exception:
-        logger.exception("chat_completions_run_admission_failed")
-        return None
+    except ChatTurnRefused as exc:
+        logger.warning("chat_completions_turn_refused", reason=exc.detail)
+        raise _unavailable(exc.retry_after_s) from exc
+    return run
 
 
 async def _route(
@@ -387,6 +396,14 @@ async def _stream_turn(
         yield f"data: {json.dumps(error_event)}\n\n"
         yield "data: [DONE]\n\n"
         return
+    except ChatTurnRefused:
+        # Refused before dispatch, after the 200 headers went out: the only
+        # place left to say "retry" is the stream itself.
+        logger.warning("chat_completions_turn_refused", user_msg=user_msg[:100], exc_info=True)
+        error_event = {"error": {"type": "unavailable", "message": "Retry the request"}}
+        yield f"data: {json.dumps(error_event)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
     except Exception:
         logger.exception("chat_completions_error", user_msg=user_msg[:100])
         error_event = {"error": {"type": "internal_error", "message": "Internal server error"}}
@@ -445,6 +462,9 @@ async def chat_completions(
         # sanitizes the same way).
         logger.exception("chat_completions_llm_error", user_msg=user_msg[:100])
         raise HTTPException(status_code=502, detail="LLM provider error") from exc
+    except ChatTurnRefused as exc:
+        logger.warning("chat_completions_turn_refused", user_msg=user_msg[:100], exc_info=True)
+        raise _unavailable(exc.retry_after_s) from exc
     except Exception as exc:
         logger.exception("chat_completions_error", user_msg=user_msg[:100])
         raise HTTPException(status_code=500, detail="Internal server error") from exc
@@ -459,11 +479,7 @@ def _answer(
     *,
     finish_reason: str = "stop",
 ) -> ChatCompletionResponse:
-    """One assistant answer, with `run_id` alongside rather than instead.
-
-    `run_id` is null when no Run was admitted — see the field's own note for
-    why that is stated rather than omitted.
-    """
+    """One assistant answer, with `run_id` alongside rather than instead."""
     response = ChatCompletionResponse(
         model=request.model,
         choices=[

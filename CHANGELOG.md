@@ -40,7 +40,17 @@ or placeholder-only section.
   Canvas eval, Hive DAG-run cancel (which still acts on the unscoped
   `run_store`), `actor_principal_id` validation, accounting identity and
   delegation identity are still open.
-
+- **Retired the process-local Home Assistant confirmation store and
+  `/v1/confirms` (#48, partial).** `GET /v1/confirms`, `GET
+  /v1/confirms/pending` and `POST /v1/confirms/{id}/respond` are no longer
+  mounted (404). The respond route needed only authentication and wrote Home
+  Assistant state; its in-memory store (`_PENDING_CONFIRMS`) had no production
+  producer, so it could never hold a real confirmation. Nothing in production
+  imported `services/ha_tools.py` either (its `ha_confirm`/`ha_control` tool
+  definitions were never offered to a model), so the module is deleted with
+  `send_confirm` and the store. Human approval has one model:
+  a waiting human NodeRun answered through `/v1/hitl`; any future HA push
+  confirmation must be a notification transport for that NodeRun.
 - **Tool-result governance is pinned across real Agent strategies (#1202,
   partial).** A regression suite drives the shipped ReAct, Artificer and
   BuildersLearning strategies through `Agent.handle` with a real Warden and
@@ -286,6 +296,15 @@ or placeholder-only section.
 
 ### Added
 
+- **Proposed ADR for the durable cross-Workspace user model (#1047, partial).**
+  ADR-092526-4391 (Proposed) records the owner's decisions on #1047. The user model is a
+  separate `UserModelFact` record that does not decay. It has revision lineage,
+  sensitivity and shareability, a validity window, and tombstones that block
+  re-promotion. Promoting a Workspace-, Project- or Agent-scoped fact into the
+  same user's model is automatic self-consent with an audit entry, and the ADR
+  proposes that amendment to SPEC-242; cross-user and team/org/global widening still need a `ConsentTask`.
+  Decision only: no store, migration or runtime behaviour changes yet.
+
 - **Workspace Attention read: `GET /v1/workspaces/{workspace_id}/attention`
   (#1049, partial).** Computes the Workspace's Attention items on every read
   from canonical sources — human-paused NodeRuns in the durable run store and
@@ -484,6 +503,24 @@ or placeholder-only section.
 
 ### Changed
 
+- **A chat turn that cannot get its canonical Run is refused with a retryable
+  503 instead of answered ungoverned (#1108, partial).**
+  Owner decision 2026-09-23, amending ADR-082326-c126 and superseding #223 AC4.
+  `Container.route_request` raises the new `maistro.runs.chat_refusal.ChatTurnRefused`
+  when no chat admitter is wired, admission fails (after compensating any Run it
+  persisted), there is no Run store, or the spine fails (with any error) before
+  the dispatch started — the `except RunIntegrityError: return await dispatch()`
+  fallback is gone, and an error the dispatch itself raised is never turned
+  into a retryable refusal, so
+  nothing reaches the model outside a Run/NodeRun/Attempt. maistro-server
+  `/v1/chat/completions` maps it to `503` + `Retry-After` for both
+  `stream=false` and `stream=true` (admission is refused before the
+  `StreamingResponse` is built; a refusal inside the stream emits an
+  `unavailable` SSE error event), and the app's `HTTPException` handler now
+  keeps route-supplied headers. Post-dispatch spine failures still return the
+  answer once as `ChatDispatchUnrecorded`. Hive `/chat/complete`,
+  `/chat/stream`, `/voice/intent` and Workspace Agent chat are not yet covered.
+
 - **Hive conversation-only chat and voice turns run as canonical chat Runs
   (#1037).**
   `/v1/chat/complete`, `/v1/chat/stream` and `/v1/voice/intent` now admit
@@ -613,6 +650,24 @@ or placeholder-only section.
 
 ### Fixed
 
+- **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
+  The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
+  with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,
+  when the recursion depth cap is hit, shape review does not approve, the
+  synthesized config cannot be dispatched (unregistered, disallowed or
+  duplicated kinds, an unusable entry, no Workspace/Project scope), or the
+  child Run ends FAILED, CANCELLED or TIMED_OUT — the last naming the child
+  Run. It used to complete with `success=False` (or, for an undispatchable
+  config, `success=True` and "not executed") inside its output, letting the
+  parent Run report success for work that never happened. A child that
+  COMPLETED, or is parked WAITING/PAUSED, still completes the node. A failed
+  node whose child was dispatched still spends its recursion level, so a
+  `max_attempts` retry or a `continue_on_failure` successor starts one level
+  deeper rather than spawning again at the same depth. Note the stricter
+  outcome for production-composed nodes: with no governed permission source
+  wired, the #1165 fail-closed Sentinel never approves a shape, so a Run
+  containing `agent.synth_dag` now fails rather than completing with a
+  refusal inside its output.
 - **Canvas job leases are fenced per claim, and stalled or cancelled jobs
   settle correctly (#735, follow-up to PR #1535).** A worker's completion write
   and lease heartbeat are now fenced on the claim's attempt number, not just
