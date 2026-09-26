@@ -118,7 +118,17 @@ class QuotaBurnScheduler:
         )
         return ranked[0].model if ranked else None
 
-    async def record_attempt(self, model: str, input_tokens: int, output_tokens: int) -> None:
+    async def record_attempt(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        event_id: str | None = None,
+    ) -> None:
         await self._tracker.record_usage(
-            _provider_of(model), self._billing_cycle, input_tokens, output_tokens
+            _provider_of(model),
+            self._billing_cycle,
+            input_tokens,
+            output_tokens,
+            event_id=event_id,
         )
