@@ -48,26 +48,66 @@ class PgQuotaTracker:
         billing_cycle: str,
         input_tokens: int,
         output_tokens: int,
+        event_id: str | None = None,
     ) -> dict[str, object]:
-        """Record token usage."""
+        """Record one event, making retries harmless by ``event_id``.
+
+        The event ledger and aggregate update share one transaction so a crash
+        cannot leave a marker without its corresponding quota increment.
+        """
+        from uuid import uuid4
+
+        event_id = event_id or uuid4().hex
         ck = cycle_key(billing_cycle)
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """INSERT INTO quota_usage
-                   (provider, cycle_key, input_tokens, output_tokens,
-                    total_tokens, request_count)
-                   VALUES ($1, $2, $3, $4, $5, 1)
-                   ON CONFLICT (provider, cycle_key) DO UPDATE SET
-                     input_tokens = quota_usage.input_tokens + $3,
-                     output_tokens = quota_usage.output_tokens + $4,
-                     total_tokens = quota_usage.total_tokens + $5,
-                     request_count = quota_usage.request_count + 1
-                   RETURNING *""",
+        total = input_tokens + output_tokens
+        async with self._pool.acquire() as conn, conn.transaction():
+            inserted = await conn.fetchrow(
+                """INSERT INTO quota_usage_events
+                       (event_id, provider, cycle_key, input_tokens, output_tokens)
+                       VALUES ($1, $2, $3, $4, $5)
+                       ON CONFLICT (event_id) DO NOTHING
+                       RETURNING event_id""",
+                event_id,
                 provider,
                 ck,
                 input_tokens,
                 output_tokens,
-                input_tokens + output_tokens,
+            )
+            if inserted is None:
+                stored = await conn.fetchrow(
+                    """SELECT provider, cycle_key, input_tokens, output_tokens
+                           FROM quota_usage_events WHERE event_id = $1""",
+                    event_id,
+                )
+                if stored is None or (
+                    stored["provider"],
+                    stored["cycle_key"],
+                    stored["input_tokens"],
+                    stored["output_tokens"],
+                ) != (provider, ck, input_tokens, output_tokens):
+                    raise ValueError(f"event_id {event_id!r} was reused with different usage")
+            else:
+                await conn.execute(
+                    """INSERT INTO quota_usage
+                           (provider, cycle_key, input_tokens, output_tokens,
+                            total_tokens, request_count)
+                           VALUES ($1, $2, $3, $4, $5, 1)
+                           ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                             input_tokens = quota_usage.input_tokens + $3,
+                             output_tokens = quota_usage.output_tokens + $4,
+                             total_tokens = quota_usage.total_tokens + $5,
+                             request_count = quota_usage.request_count + 1""",
+                    provider,
+                    ck,
+                    input_tokens,
+                    output_tokens,
+                    total,
+                )
+            row = await conn.fetchrow(
+                """SELECT input_tokens, output_tokens, total_tokens, request_count
+                       FROM quota_usage WHERE provider = $1 AND cycle_key = $2""",
+                provider,
+                ck,
             )
         return {
             "provider": provider,
