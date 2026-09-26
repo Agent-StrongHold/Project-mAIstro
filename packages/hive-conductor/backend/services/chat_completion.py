@@ -1397,10 +1397,6 @@ async def _tool_create_dashboard_widget(
             "violations": violations,
         }
 
-    # `effective`, not `load`: before a first save the route hands the user their
-    # preset without storing it, so editing the empty record and saving it
-    # replaced every preset widget with the one just added (#340).
-    layout = dict(dashboard_layouts.effective(user_id).layout)
     widget = {
         "id": widget_id,
         "type": widget_type,
@@ -1409,27 +1405,25 @@ async def _tool_create_dashboard_widget(
         "config": config,
     }
 
-    if layout.get("tabs"):
-        tabs = [dict(tab) for tab in layout["tabs"]]
-        target_idx = layout.get("activeTab", 0)
-        if tab_name:
-            for i, tab in enumerate(tabs):
-                if tab.get("name", "").lower() == tab_name.lower():
-                    target_idx = i
-                    break
-            else:
-                tabs.append({"name": tab_name, "widgets": []})
-                target_idx = len(tabs) - 1
-        tabs[target_idx]["widgets"] = [*tabs[target_idx].get("widgets", []), widget]
-        layout["tabs"] = tabs
-    else:
-        existing = layout.get("widgets", [])
-        layout["tabs"] = [{"name": tab_name or "Overview", "widgets": [*existing, widget]}]
-        layout["activeTab"] = 0
-        layout.pop("widgets", None)
+    # `effective`, not `load`: before a first save the route hands the user their
+    # preset without storing it, so editing the empty record and saving it
+    # replaced every preset widget with the one just added (#340). The save is
+    # against the revision read, so a UI save in between is re-read, not erased.
+    def add_to(record: dashboard_layouts.LayoutRecord) -> None:
+        layout = dashboard_layouts.with_widget(record.layout, widget, tab_name)
+        dashboard_layouts.save(user_id, layout, expected_revision=record.revision)
 
     try:
-        dashboard_layouts.save(user_id, layout)
+        try:
+            add_to(dashboard_layouts.effective(user_id))
+        except dashboard_layouts.LayoutConflictError:
+            add_to(dashboard_layouts.effective(user_id))
+    except dashboard_layouts.LayoutConflictError as exc:
+        logger.warning("dashboard widget lost the revision race for %s: %s", user_id, exc)
+        return {
+            "created": False,
+            "error": f"the layout kept changing while the widget was added: {exc}",
+        }
     except dashboard_layouts.LayoutError as exc:
         logger.error("dashboard widget was not persisted for %s: %s", user_id, exc)
         return {"created": False, "error": f"the widget was not saved: {exc}"}
