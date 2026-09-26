@@ -64,7 +64,10 @@ def _redact_response(content: str) -> str:
                 ", ".join(m.pii_type for m in pii_matches),
             )
     except ImportError:
-        pass
+        # This is a security dependency, not an optional convenience. Never
+        # return an unsanitized provider response.
+        logger.error("PII filter unavailable; blocking model response")
+        return "[Response blocked: output sanitization unavailable]"
     return content
 
 

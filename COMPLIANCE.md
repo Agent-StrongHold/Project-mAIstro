@@ -22,8 +22,8 @@
 <!-- compliance-registry:begin -->
 | ID | Framework | Claim | Status | Owner | Scope | Last verification | Expires | Evidence |
 |---|---|---|---|---|---|---|---|---|
-| OWASP-AT-01 | OWASP Agentic Top 10 | Memory poisoning is bounded by content scanning, decay floors, and promotion gates. | partially_implemented | @engine-security | maistro-engine runtime; tenant policy remains Stronghold-owned | 2026-08-25 | 2027-08-25 | none |
-| OWASP-AT-02 | OWASP Agentic Top 10 | Tool calls are subject to the Sentinel policy and validator boundary. | partially_implemented | @engine-security | maistro-engine tool-call boundary | 2026-08-25 | 2027-08-25 | none |
+| OWASP-AT-01 | OWASP Agentic Top 10 | Memory poisoning is bounded by content scanning, decay floors, and promotion gates; Warden scan windows and timeouts bound pathological regex work on the product path. | partially_implemented | @engine-security | maistro-engine runtime; tenant policy remains Stronghold-owned | 2026-08-25 | 2027-08-25 | none |
+| OWASP-AT-02 | OWASP Agentic Top 10 | Tool calls are subject to the Sentinel policy and validator boundary; the post-call Warden scan that backs PII masking runs on the product path with bounded windows. | partially_implemented | @engine-security | maistro-engine tool-call boundary | 2026-08-25 | 2027-08-25 | none |
 | OWASP-AT-03 | OWASP Agentic Top 10 | Privilege escalation is constrained by the authorization tier ladder. | partially_implemented | @engine-security | maistro-engine authorization primitives; deployer identity is product-owned | 2026-08-25 | 2027-08-25 | none |
 | OWASP-AT-04 | OWASP Agentic Top 10 | Quota, rate-limit, and retry primitives limit resource overload. | partially_implemented | @engine-reliability | maistro-engine resource controls | 2026-08-25 | 2027-08-25 | none |
 | OWASP-AT-05 | OWASP Agentic Top 10 | Circuit breakers, fallback, and retry controls reduce cascading failures. | partially_implemented | @engine-reliability | maistro-engine resilience primitives | 2026-08-25 | 2027-08-25 | none |
@@ -51,6 +51,38 @@
 | SOC2-CONFIDENTIALITY | SOC 2 Type II | Soft scopes and log redaction exist; hard tenant confidentiality is product-owned. | partially_implemented | @engine-privacy | maistro-engine soft scopes and log output | 2026-08-25 | 2027-08-25 | none |
 | SOC2-PRIVACY | SOC 2 Type II | PII filtering and sensitivity tiers are mapped to privacy controls. | partially_implemented | @engine-privacy | maistro-engine PII and sensitivity primitives | 2026-08-25 | 2027-08-25 | none |
 <!-- compliance-registry:end -->
+
+## Product-path evidence for security claims
+
+The OWASP-AT-01 and OWASP-AT-02 rows above are exercised at the Sentinel output
+boundary and on the canonical execution paths, rather than inferred from
+Warden constants: the real Warden is invoked by the output gate against a
+catastrophic regex in overlapping windows, a multi-window benign result, a
+padded semantic instruction whose action and object cross a window boundary,
+and the product-path capture/object ordering regression — including the
+case an earlier complete-object mention must not suppress a later
+capture→object pair
+(`packages/maistro-core/tests/security/test_sentinel_policy.py`). The same
+defenses run behind `build_output_security_gate` through
+`MasterOrchestrator.execute` — timeout fail-closed, windowed reject and
+fallback searches, static refusal in the canonical Run projection, and the
+end-to-end refusal of that ordering evasion
+(`packages/maistro-core/tests/orchestrator/test_output_security_gate.py`) —
+and through the production governed tool executor in `Agent.handle`, since
+`BaseAgent` always sets `security_pipeline=True`
+(`packages/maistro-core/tests/agents/test_base.py`).
+The accelerated/fallback pattern contract includes a complete Warden verdict
+comparison in
+`packages/maistro-core/tests/security/test_warden_regex_equivalence.py`.
+PII/secret handling is also exercised on `Sentinel.post_call`, `DirectStrategy`,
+and `ReactStrategy`: `test_sentinel_policy.py` proves the raw credential is not
+present in either output or `PIIMatch` metadata, while the strategy tests prove
+a missing PII-filter dependency blocks output instead of returning it
+unsanitized; the governed-executor tests prove the same masking and fail-closed
+contract on the production agent seam, including the RCA pipeline recording the
+blocked tool call. These executed product paths — not the constants alone — are
+the evidence for the registry claims above; the constants remain implementation
+details.
 
 ## Maintenance
 

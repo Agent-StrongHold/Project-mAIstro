@@ -112,6 +112,67 @@ docstring for what it cannot check):
 | Circuit breaker defaults | N=5 failures / W=60s window / T=30s cooldown | ADR-038 §2 (implemented in `resilience/`) | Per-upstream-dependency failure isolation |
 | Secret-redaction entropy fallback | 4.0 bits/char, over runs of 32 chars or more | `security/redact.py` (`_ENTROPY_BITS_PER_CHAR_THRESHOLD`, `_MIN_SECRET_LENGTH`), ADR-064, installed by `security/log_redaction.py` | 30+ named patterns plus this fallback for unknown key formats, merged in a single span pass. Scrubs API keys, JWTs, private-key blocks, connection strings, etc. **Operative on both log pipelines** — every stdlib handler (Conductor + uvicorn) and the structlog processor chain (`maistro-server`), covering `%`-args and exception tracebacks. `/health` reports `log_redaction_active`. It does **not** cover anything that bypasses logging — `print()`, an HTTP response body, or a value written straight to disk |
 
+### Product-path evidence for scanner limits
+
+The operational interpretation of these controls — including why `/health/ready`
+does not substitute for product-path scanner evidence — is documented in
+[`docs/security/WARDEN-RESOURCE-LIMIT-HEALTH.md`](docs/security/WARDEN-RESOURCE-LIMIT-HEALTH.md).
+
+These limits are exercised through the output security boundary, not only by
+inspecting constants. `packages/maistro-core/tests/security/test_sentinel_policy.py`
+uses the Sentinel output gate with the real `Warden`: its pathological-regex
+cases prove both overlapping reject windows and the `regex` timeout fail closed,
+and its large-input cases record that heuristic and semantic fallback passes are
+at most `_SCAN_WINDOW_CHARS`;
+`test_post_call_real_warden_preserves_padded_semantic_signal` also proves a
+capture/full-conversation instruction cannot hide across those windows, while
+`test_post_call_real_warden_preserves_capture_ordering` pins both sides of
+the ordering contract: a complete-object phrase that merely precedes the
+capture verb (with no later object) stays clean, and an earlier benign
+complete-object mention cannot suppress a later capture→object pair — the
+evasion the pre-repair first-conversation carry allowed. The Warden test
+suite also
+covers the no-tail window invariant and runs the accelerated-versus-stdlib corpus
+comparison in `test_warden_regex_equivalence.py` (the root dev extra installs
+`google-re2`, while the fallback cases force `re`).
+
+The same ReDoS defenses are exercised on the canonical execution paths, not
+just at the Sentinel API: `packages/maistro-core/tests/orchestrator/
+test_output_security_gate.py` runs the real `Warden` behind
+`build_output_security_gate` through `MasterOrchestrator.execute` — a
+catastrophic reject pattern is cut off by the per-search timeout while the
+canonical Run/NodeRun/Attempt projection records only the static refusal, a
+multi-window pathological body proves every reject search sees at most
+`_SCAN_WINDOW_CHARS`, a multi-window benign body completes with the
+heuristic fallback scans likewise windowed, and
+`test_real_warden_semantic_capture_pair_after_earlier_object_is_refused`
+reproduces the #74 ordering false negative end to end: an output whose later
+capture→full-conversation pair follows an earlier benign object mention —
+flagged by the legacy single-regex rule, missed by the pre-repair windowed
+carry — now fails the canonical work item with the static refusal. The agent
+seam carries the same
+guarantee in `packages/maistro-core/tests/agents/test_base.py`
+(`TestGovernedExecutorProductPathSecurity`): it runs the production governed
+tool executor — the only effect boundary, since `BaseAgent` always sets
+`security_pipeline=True` — with the real Sentinel, real Warden, and real PII
+filter.
+
+The PII hot path is likewise exercised at the product boundary: normalized
+secret cases call `Sentinel.post_call`, `DirectStrategy`, and `ReactStrategy` in
+`packages/maistro-core/tests/security/sentinel/test_pii_evasion_normalization.py`.
+`test_sentinel_policy.py::test_post_call_pii_match_value_is_masked_on_product_path`
+proves the raw credential is absent from both the Sentinel result and the
+`PIIMatch` metadata; the existing property suite independently asserts the
+masked-value contract; and the governed-executor tests above prove the raw AWS
+key never crosses into model context or the user-facing response through
+`Agent.handle`. Missing PII-filter imports are tested on both strategies and
+now return a blocking marker rather than unsanitized model/tool output
+(`packages/maistro-core/tests/agents/strategies/test_direct.py` and
+`test_react.py`), and the production seam fails the same way:
+`test_governed_executor_sanitization_unavailable_fails_closed_and_feeds_rca`
+proves the governed executor returns the blocking marker, the BaseAgent failure
+predicates fire, and the RCA pipeline records the failed tool call.
+
 ### Configurable limits and their enforced floors
 
 Six of the caps above are deployment policy rather than code constants

@@ -13,15 +13,19 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from operator import gt, lt
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from maistro.security._types import WardenVerdict
 from maistro.security.normalize import normalize_for_detection
 from maistro.security.warden.heuristics import heuristic_scan
 from maistro.security.warden.patterns import REJECT_PATTERNS
-from maistro.security.warden.semantic import semantic_tool_poisoning_scan
+from maistro.security.warden.semantic import (
+    semantic_tool_poisoning_capture_positions,
+    semantic_tool_poisoning_signals,
+)
 
 if TYPE_CHECKING:
     import regex
@@ -35,21 +39,18 @@ logger = logging.getLogger("maistro.warden")
 # which the loop below records as a fail-closed flag.
 _PATTERN_TIMEOUT_S = 0.5
 
-# One window size for both scan phases (#74). They used to differ: the reject
-# phase windowed at 50KB with a 2KB overlap while the heuristic phase received
-# the whole document, so the two halves of one scan disagreed about how much
-# text a single pass may see.
+# One window size for all regex scan phases (#74). They used to differ: the
+# reject phase windowed at 50KB with a 2KB overlap while heuristic and semantic
+# phases received the whole document, so a stdlib fallback could process an
+# unbounded attacker-controlled string.
 #
-# That asymmetry matters because the phases are bounded differently. The reject
-# phase runs `regex` with a per-search timeout, so a catastrophic pattern is cut
-# off (`test_catastrophic_pattern_times_out_and_fails_closed`). The heuristic
-# phase runs `_regex`, whose stdlib fallback has **no timeout at all** — so a
-# pattern there is bounded only by the text it is handed. Handing it the whole
-# document removed the one bound it had.
+# The reject phase additionally runs `regex` with a per-search timeout, so a
+# catastrophic pattern is cut off (`test_catastrophic_pattern_times_out_and_fails_closed`).
+# The `_regex` fallback used by heuristic and semantic patterns has no timeout,
+# so those phases are bounded by the text handed to each call.
 #
 # The overlap exists so a pattern straddling a boundary is still seen whole. 2KB
-# is far more than the widest construct either phase matches — the density
-# window is 40 words and the base64 run needs 40 characters.
+# is far more than the widest construct in the heuristic and semantic detectors.
 _SCAN_WINDOW_CHARS = 50 * 1024
 _SCAN_OVERLAP_CHARS = 2 * 1024
 
@@ -329,10 +330,10 @@ def _detection_views(text: str) -> _DetectionViews:
 
 
 def _windows(text: str) -> Iterator[str]:
-    """`text` in overlapping windows — the same slicing for both scan phases.
+    """`text` in overlapping windows shared by every regex scan phase.
 
     A generator rather than a list so a 1MB body is not copied in full before
-    the first window is examined; both callers stop at the first flagged
+    the first window is examined; each scan phase stops at its first flagged
     window, so the tail is usually never materialised.
     """
     if len(text) <= _SCAN_WINDOW_CHARS:
@@ -395,6 +396,103 @@ def _scan_heuristics_windowed(content: str) -> tuple[bool, list[str]]:
     return False, []
 
 
+@dataclass
+class _SemanticWindowAggregate:
+    """Running Layer 2.5 state folded across scan windows (#74)."""
+
+    has_actions: bool = False
+    has_objects: bool = False
+    has_prescriptive: bool = False
+    first_capture: int | None = None
+    last_conversation: int | None = None
+
+    @property
+    def complete(self) -> bool:
+        """True once every signal has been seen; later windows add nothing."""
+        return self.has_actions and self.has_objects and self.has_prescriptive
+
+
+def _merge_position(
+    current: int | None,
+    window_position: int | None,
+    offset: int,
+    closer: Callable[[int, int], bool],
+) -> int | None:
+    """Fold a window-local match offset into the running global extreme.
+
+    ``closer(position, current)`` decides whether the new global position
+    replaces the running one (``lt`` keeps the earliest match, ``gt`` the
+    latest). Every semantic phrase is far shorter than the window overlap, so
+    a phrase fully contained in one window has its true global position at
+    ``offset + start``.
+    """
+    if window_position is None:
+        return current
+    position = offset + window_position
+    if current is None or closer(position, current):
+        return position
+    return current
+
+
+def _fold_semantic_window(window: str, offset: int, agg: _SemanticWindowAggregate) -> None:
+    """Merge one window's semantic signals into ``agg`` in place."""
+    window_actions, window_objects, window_prescriptive = semantic_tool_poisoning_signals(window)
+    agg.has_actions = agg.has_actions or window_actions
+    agg.has_objects = agg.has_objects or window_objects
+    agg.has_prescriptive = agg.has_prescriptive or window_prescriptive
+    window_first_capture, window_last_conversation = semantic_tool_poisoning_capture_positions(
+        window
+    )
+    agg.first_capture = _merge_position(agg.first_capture, window_first_capture, offset, lt)
+    agg.last_conversation = _merge_position(
+        agg.last_conversation, window_last_conversation, offset, gt
+    )
+
+
+def _scan_semantic_windowed(content: str) -> tuple[bool, list[str]]:
+    """Aggregate Layer 2.5 signals without handing fallback regex a full body.
+
+    Each semantic signal is local to one pattern match, so OR-ing the signals
+    across overlapping windows preserves the unwindowed detector's verdict
+    while bounding the stdlib fallback's input.
+
+    The capture→complete-object relationship is positional, not boolean: the
+    legacy rule flagged a capture verb followed *anywhere later* by a
+    complete-object phrase, which is exactly ``first capture start < last
+    conversation start`` over the whole text. Windows therefore aggregate the
+    per-window first-capture and last-conversation offsets into global
+    positions (every phrase is far shorter than the 2KB overlap, so each is
+    fully contained in at least one window and offset+start is its true
+    position). A boolean carry cannot express this: the pre-repair carry
+    stopped pairing after the *first* conversation phrase, so a payload that
+    opened with a benign complete-object mention suppressed every later
+    capture→object pair — reproduced through MasterOrchestrator.execute as a
+    clean Warden verdict on text the legacy rule flagged (#74).
+    """
+    agg = _SemanticWindowAggregate()
+    offset = 0
+    for window in _windows(content):
+        _fold_semantic_window(window, offset, agg)
+        if agg.complete:
+            break
+        offset += _SCAN_WINDOW_CHARS - _SCAN_OVERLAP_CHARS
+
+    has_ordered_capture = (
+        agg.first_capture is not None
+        and agg.last_conversation is not None
+        and agg.first_capture < agg.last_conversation
+    )
+    # No regex call ever sees the attacker-controlled padding between them.
+    has_actions = agg.has_actions or has_ordered_capture
+
+    flags: list[str] = []
+    if agg.has_prescriptive and has_actions:
+        flags.append("prescriptive_instruction+dangerous_action")
+    if agg.has_prescriptive and agg.has_objects:
+        flags.append("prescriptive_instruction+sensitive_object")
+    return bool(flags), flags
+
+
 def _scan_reject_patterns(scan_content: str) -> list[str]:
     """Run every reject pattern against ``scan_content``, collecting flag
     descriptions — and ``regex_error:`` markers for patterns that raise or time
@@ -450,12 +548,15 @@ class Warden:
         prior_context = _bounded_untrusted_context(context)
         scan_input = "\n".join((*prior_context, content))
 
-        # Full fold (Unicode, zero-width, homoglyph, and bounded leetspeak)
-        # runs before every detector. The compact structural view handles
-        # single-character runs while the primary view preserves ordinary
-        # prose; the literal views catch separators placed inside words or
-        # substituted for the spaces between them, including a mid-word turn
-        # boundary.
+        # Detection views (#66) on top of the #74 windowing: the full fold
+        # (Unicode, zero-width, homoglyph, and bounded leetspeak) runs before
+        # every detector, and every regex phase below then scans overlapping
+        # bounded windows of those views — no phase ever hands one `search` an
+        # unbounded attacker-controlled string. The compact structural view
+        # handles single-character runs while the primary view preserves
+        # ordinary prose; the literal views catch separators placed inside
+        # words or substituted for the spaces between them, including a
+        # mid-word turn boundary.
         content_views = _detection_views(normalize_for_detection(scan_input))
 
         reject_flags = _scan_reject_views((*content_views.structural, *content_views.literal))
@@ -478,9 +579,10 @@ class Warden:
             )
 
         # Semantic analysis operates on the canonical primary view. It sees
-        # untrusted context but never trusted system/developer instructions.
+        # untrusted context but never trusted system/developer instructions,
+        # and runs windowed like every other regex phase (#74).
         content_norm = content_views.structural[0]
-        poisoned, semantic_flags = semantic_tool_poisoning_scan(content_norm)
+        poisoned, semantic_flags = _scan_semantic_windowed(content_norm)
         if poisoned:
             flags.extend(semantic_flags)
             return WardenVerdict(

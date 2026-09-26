@@ -5,12 +5,12 @@
     {
       "id": "OWASP-AT-01",
       "framework": "OWASP Agentic Top 10",
-      "requirement": "Memory poisoning is bounded by content scanning, decay floors, and promotion gates.",
+      "requirement": "Memory poisoning is bounded by content scanning, decay floors, and promotion gates; Warden scan windows and timeouts bound pathological regex work on the product path.",
       "status": "partially_implemented",
       "owner": "@engine-security",
       "scope": "maistro-engine runtime; tenant policy remains Stronghold-owned",
       "control_refs": ["packages/maistro-core/src/maistro/security/warden/detector.py"],
-      "test_refs": ["packages/maistro-core/tests/security/warden/test_detector.py"],
+      "test_refs": ["packages/maistro-core/tests/security/warden/test_detector.py", "packages/maistro-core/tests/security/test_sentinel_policy.py", "packages/maistro-core/tests/security/test_warden_regex_equivalence.py"],
       "evidence": [],
       "last_verified": "2026-08-25",
       "expires": "2027-08-25",
@@ -19,7 +19,7 @@
     {
       "id": "OWASP-AT-02",
       "framework": "OWASP Agentic Top 10",
-      "requirement": "Tool calls are subject to the Sentinel policy and validator boundary.",
+      "requirement": "Tool calls are subject to the Sentinel policy and validator boundary; the post-call Warden scan that backs PII masking runs on the product path with bounded windows.",
       "status": "partially_implemented",
       "owner": "@engine-security",
       "scope": "maistro-engine tool-call boundary",

@@ -17,6 +17,8 @@ from maistro.security.sentinel.pii_filter import scan_and_redact
 from maistro.security.warden.detector import WardenContext, prior_message_context
 from maistro.types.agent import AgentResponse
 
+logger = _logging.getLogger("maistro.agent")
+
 # Bounded tool-result analysis context. Tool output is untrusted; a payload
 # split across individually-benign results is only visible when the later
 # fragment is scanned together with the bounded prefix of prior ones.
@@ -828,18 +830,29 @@ class Agent:
         individually-benign results detectable at the fragment that completes
         it, instead of only ever seeing one string at a time.
         """
-        scan_kwargs: dict[str, Any] = {"context": context} if context else {}
-        if self._sentinel is not None and auth is not None:
-            return str(await self._sentinel.post_call(tool_name, result, auth, **scan_kwargs))
-        if self._warden is not None:
-            verdict = await self._warden.scan(result, "tool_result", **scan_kwargs)
-            if not verdict.clean:
-                return (
-                    "[BLOCKED: tool result contained suspicious content: "
-                    f"{', '.join(verdict.flags)}]"
-                )
-        sanitized, _ = scan_and_redact(result)
-        return sanitized
+        try:
+            scan_kwargs: dict[str, Any] = {"context": context} if context else {}
+            if self._sentinel is not None and auth is not None:
+                return str(await self._sentinel.post_call(tool_name, result, auth, **scan_kwargs))
+            if self._warden is not None:
+                verdict = await self._warden.scan(result, "tool_result", **scan_kwargs)
+                if not verdict.clean:
+                    return (
+                        "[BLOCKED: tool result contained suspicious content: "
+                        f"{', '.join(verdict.flags)}]"
+                    )
+            sanitized, _ = scan_and_redact(result)
+            return sanitized
+        except ImportError:
+            # The PII filter is a security dependency, not an optional
+            # convenience (#74). An unavailable one must never put an
+            # unsanitized tool result back into the model context. The
+            # "Error: " prefix keeps the BaseAgent failure predicates
+            # (tool_had_failures, Outcome/RCA success counts) treating this as
+            # a failed tool call — the same blocking-marker contract the
+            # standalone strategies ship in ReactStrategy/DirectStrategy.
+            logger.error("Output sanitization unavailable; blocking tool result")
+            return "Error: [BLOCKED: output sanitization unavailable]"
 
     async def _extract_rca(
         self,

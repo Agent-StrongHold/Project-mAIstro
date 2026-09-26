@@ -38,8 +38,6 @@ _DANGEROUS_ACTIONS: list[PatternLike] = [
         r"allow\s+all\s+(?:egress|ingress|traffic|access)",
         r"(?:suppress|silently\s+remov|automatically\s+suppress)",
         r"default\s+to\s+(?:enabl|allow|open|permissive)",
-        r"(?:capture|export|include).*(?:full|complete|entire)\s+"
-        r"(?:conversation|history|body|request|response|content|record)",
         r"\.npmrc|\.env\b|\.aws|\.ssh",
         r"(?:do\s+not\s+flag|do\s+not\s+modify|do\s+not\s+restrict)",
     ]
@@ -65,6 +63,20 @@ _SENSITIVE_OBJECTS: list[PatternLike] = [
     ]
 ]
 
+# Keep the capture/full-conversation relationship bounded. The old single
+# pattern used ``.*`` and both made an unbounded fallback search and lost the
+# signal when a padded payload crossed Warden's scan-window boundary.
+_CAPTURE_ACTIONS: list[PatternLike] = [
+    compile_pattern(r"\b(?:capture|export|include)\b", re.IGNORECASE),
+]
+_FULL_CONVERSATION_OBJECTS: list[PatternLike] = [
+    compile_pattern(
+        r"\b(?:full|complete|entire)\s+(?:conversation|history|body|request|response|content|record)\b",
+        re.IGNORECASE,
+    ),
+]
+
+
 _PRESCRIPTIVE_PATTERNS: list[PatternLike] = [
     compile_pattern(p, re.IGNORECASE)
     for p in [
@@ -80,23 +92,48 @@ _PRESCRIPTIVE_PATTERNS: list[PatternLike] = [
 ]
 
 
-def semantic_tool_poisoning_scan(text: str) -> tuple[bool, list[str]]:
+def semantic_tool_poisoning_capture_positions(text: str) -> tuple[int | None, int | None]:
+    """First capture-verb start and last complete-object start in ``text``.
+
+    The legacy detector expressed this relationship as one unbounded
+    ``(?:capture|export|include).*(?:full|complete|entire)\\s+conversation``
+    search: a match exists exactly when some capture verb precedes some
+    complete-object phrase, i.e. when ``first capture start < last
+    conversation start``. Keeping the two searches bounded and comparing
+    positions reproduces that verdict without the ``.*`` hot path, including
+    the case an earlier standalone object phrase must not suppress: a later
+    capture→object pair is still an attack even when a benign complete-object
+    mention came first (issue #74 repair — the previous min-vs-min comparison
+    let a prepended object phrase hide every later pair).
+    """
     text_lower = text.lower()
-    flags: list[str] = []
+    first_capture: int | None = None
+    for pattern in _CAPTURE_ACTIONS:
+        for match in pattern.finditer(text_lower):
+            # Only each pattern's leftmost match can be the global first.
+            if first_capture is None or match.start() < first_capture:
+                first_capture = match.start()
+            break
+    last_conversation: int | None = None
+    for pattern in _FULL_CONVERSATION_OBJECTS:
+        for match in pattern.finditer(text_lower):
+            if last_conversation is None or match.start() > last_conversation:
+                last_conversation = match.start()
+    return first_capture, last_conversation
 
-    # NOTE: We deliberately do NOT short-circuit when code-syntax tokens
-    # (def/class/import/...) appear. Prefixing a poisoned payload with e.g.
-    # "import os" previously disabled this entire layer, letting tool-poisoning
-    # comments through. Benign code is protected from false positives by the
-    # flag logic below, which requires a *prescriptive instruction* combined
-    # with a dangerous action or sensitive object before flagging.
-    has_actions = any(p.search(text_lower) for p in _DANGEROUS_ACTIONS)
-    has_objects = any(p.search(text_lower) for p in _SENSITIVE_OBJECTS)
-    has_prescriptive = any(p.search(text_lower) for p in _PRESCRIPTIVE_PATTERNS)
 
-    if has_prescriptive and has_actions:
-        flags.append("prescriptive_instruction+dangerous_action")
-    if has_prescriptive and has_objects:
-        flags.append("prescriptive_instruction+sensitive_object")
+def semantic_tool_poisoning_signals(text: str) -> tuple[bool, bool, bool]:
+    """Return the three independent signals used by the semantic verdict."""
+    text_lower = text.lower()
+    return (
+        any(p.search(text_lower) for p in _DANGEROUS_ACTIONS),
+        any(p.search(text_lower) for p in _SENSITIVE_OBJECTS),
+        any(p.search(text_lower) for p in _PRESCRIPTIVE_PATTERNS),
+    )
 
-    return bool(flags), flags
+
+# NOTE: There is deliberately no whole-text ``semantic_tool_poisoning_scan``
+# composition here. The flag composition lives in the product path,
+# ``detector._scan_semantic_windowed``, which aggregates the bounded signals
+# below across overlapping scan windows; a whole-text variant duplicated that
+# policy with pre-#74 capture-ordering semantics and no product caller.

@@ -312,8 +312,44 @@ async def test_agent_pipeline_skips_standalone_tool_sanitization() -> None:
     assert sentinel.post_calls == []
 
 
-async def test_no_sentinel_fallback_pii_filter_import_error_passes_through_unredacted() -> None:
-    """If the pii_filter module is unavailable, the fallback leaves text unredacted."""
+async def test_reason_pii_filter_import_error_blocks_unredacted_result() -> None:
+    """A missing security dependency must fail closed, not leak tool output."""
+    provider = FauxProvider()
+    provider.seed_tool_call("read_file", {"path": "a.py"})
+    provider.seed(FauxResponse(content="ok"))
+    strategy = ReactStrategy(max_rounds=2)
+    tools = _tools_for("read_file")
+
+    async def _pii_executor(_name: str, _args: dict[str, Any]) -> str:
+        return "Contact me at someone@example.com please"
+
+    modname = "maistro.security.sentinel.pii_filter"
+    sys.modules.pop(modname, None)
+    sys.modules[modname] = None  # type: ignore[assignment]
+    try:
+        result = await strategy.reason(
+            [{"role": "user", "content": "x"}],
+            "m",
+            provider,
+            tools=tools,
+            tool_executor=_pii_executor,
+        )
+    finally:
+        del sys.modules[modname]
+
+    blocked = result.tool_history[0]["result"]
+    assert blocked == "Error: [BLOCKED: output sanitization unavailable]"
+    # Must satisfy BaseAgent failure predicates so RCA/Outcome treat it as failed.
+    assert blocked.startswith("Error") or "error" in blocked[:50].lower()
+
+
+async def test_no_sentinel_fallback_pii_filter_import_error_blocks_unredacted() -> None:
+    """Direct fallback seam: an unavailable pii_filter fails closed (#74).
+
+    Reconciled with origin/develop (031bd0746): the historical pass-through
+    contract predates the fail-closed ImportError handling and would leak
+    unredacted tool output, so the merged product path blocks instead.
+    """
     strategy = ReactStrategy()
 
     modname = "maistro.security.sentinel.pii_filter"
@@ -330,7 +366,7 @@ async def test_no_sentinel_fallback_pii_filter_import_error_passes_through_unred
     finally:
         del sys.modules[modname]
 
-    assert result == "Contact me at someone@example.com please"
+    assert result == "Error: [BLOCKED: output sanitization unavailable]"
 
 
 async def test_reason_warden_blocks_tool_result_without_sentinel() -> None:

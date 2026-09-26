@@ -370,6 +370,282 @@ async def test_post_call_pii_detected_is_redacted_and_flagged():
     assert audit.entries[0].verdict == "flagged"
 
 
+async def test_post_call_pii_match_value_is_masked_on_product_path():
+    from maistro.security.sentinel.pii_filter import scan_for_pii
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    result = await _sentinel().post_call("tool", f"key={secret}", _auth())
+    matches = scan_for_pii(f"key={secret}")
+
+    assert secret not in result
+    assert len(matches) == 1
+    assert matches[0].pii_type == "aws_key"
+    assert secret not in matches[0].value
+    assert matches[0].value.startswith("AKIA")
+    assert matches[0].value.endswith("(20 chars)")
+
+
+async def test_post_call_real_warden_times_out_pathological_regex(monkeypatch):
+    """The production output gate must inherit Warden's ReDoS timeout."""
+    import time
+
+    import regex
+
+    import maistro.security.warden.detector as detector
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(
+        detector,
+        "REJECT_PATTERNS",
+        [(regex.compile(r"(a+)+$"), "pathological test rule")],
+    )
+
+    started = time.monotonic()
+    result = await _sentinel(warden=Warden()).post_call("tool", "a" * 40_000 + "b", _auth())
+
+    assert result == "[Tool result blocked by Warden -- contained injection attempt]"
+    assert time.monotonic() - started < 10
+
+
+async def test_post_call_real_warden_windows_pathological_reject_input(monkeypatch):
+    """The hot path bounds reject-pattern input before the fallback times out."""
+    import regex
+
+    import maistro.security.warden.detector as detector
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(
+        detector,
+        "REJECT_PATTERNS",
+        [(regex.compile(r"(a+)+b$"), "pathological test rule")],
+    )
+    lengths: list[int] = []
+    original = detector._scan_reject_patterns
+
+    def record_window(text: str):
+        lengths.append(len(text))
+        return original(text)
+
+    monkeypatch.setattr(detector, "_scan_reject_patterns", record_window)
+    # Keep the first window cheap, then put the pathological suffix in the
+    # next overlapping window so the test proves both windowing and timeout.
+    text = "x" * detector._SCAN_WINDOW_CHARS + "a" * detector._SCAN_WINDOW_CHARS + "b"
+    outcome = await _sentinel(warden=Warden()).process_output("tool", text, _auth())
+
+    assert outcome.blocked is True
+    assert outcome.warden_verdict is not None
+    assert outcome.warden_verdict.flags == ("regex_error:pathological test rule",)
+    assert len(lengths) > 1
+    assert max(lengths) <= detector._SCAN_WINDOW_CHARS
+
+
+async def test_post_call_real_warden_windows_large_fallback_input(monkeypatch):
+    """The hot path never hands a fallback heuristic pass more than one window."""
+    import re
+
+    import maistro.security.warden._regex as regex_module
+    import maistro.security.warden.detector as detector
+    import maistro.security.warden.heuristics as heuristics
+    from maistro.security.warden.detector import Warden
+
+    # Rebuild the two live heuristic patterns after disabling RE2. This keeps
+    # the test on the supported stdlib fallback path rather than merely
+    # changing the accelerator availability flag after import.
+    monkeypatch.setattr(regex_module, "_RE2_AVAILABLE", False)
+    monkeypatch.setattr(
+        heuristics,
+        "_INSTRUCTION_TOKENS",
+        regex_module.compile_pattern(heuristics._INSTRUCTION_TOKENS.pattern, re.IGNORECASE),
+    )
+    monkeypatch.setattr(
+        heuristics,
+        "_BASE64_PATTERN",
+        regex_module.compile_pattern(heuristics._BASE64_PATTERN.pattern),
+    )
+
+    lengths: list[int] = []
+    original = detector.heuristic_scan
+
+    def record_window(text: str):
+        lengths.append(len(text))
+        return original(text)
+
+    monkeypatch.setattr(detector, "heuristic_scan", record_window)
+    text = "the quick brown fox jumps over the lazy dog. " * 3_000
+    result = await _sentinel(warden=Warden()).post_call("tool", text, _auth())
+
+    assert result.endswith("[... truncated, full result available in trace]")
+    assert len(lengths) > 1
+    assert max(lengths) <= detector._SCAN_WINDOW_CHARS
+
+
+async def test_post_call_real_warden_windows_semantic_fallback_input(monkeypatch):
+    """Layer 2.5 gets the same one-window bound on the stdlib fallback.
+
+    The semantic patterns also compile through `_regex.compile_pattern`, so
+    with RE2 unavailable the `capture`-verb search over an unwindowed body is
+    the same unbounded-fallback hazard the heuristic tier covers above. The
+    filler repeats capture verbs with no full-conversation suffix: benign
+    enough to keep Layers 1-2 quiet, but it makes the semantic phase run its
+    searches to completion over every window.
+    """
+    import re
+
+    import maistro.security.warden._regex as regex_module
+    import maistro.security.warden.detector as detector
+    import maistro.security.warden.semantic as semantic
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(regex_module, "_RE2_AVAILABLE", False)
+    for name in (
+        "_DANGEROUS_ACTIONS",
+        "_SENSITIVE_OBJECTS",
+        "_CAPTURE_ACTIONS",
+        "_FULL_CONVERSATION_OBJECTS",
+        "_PRESCRIPTIVE_PATTERNS",
+    ):
+        monkeypatch.setattr(
+            semantic,
+            name,
+            [
+                regex_module.compile_pattern(p.pattern, re.IGNORECASE)
+                for p in getattr(semantic, name)
+            ],
+        )
+
+    lengths: list[int] = []
+
+    def record_window(fn):
+        def wrapper(text: str):
+            lengths.append(len(text))
+            return fn(text)
+
+        return wrapper
+
+    monkeypatch.setattr(
+        detector,
+        "semantic_tool_poisoning_signals",
+        record_window(semantic.semantic_tool_poisoning_signals),
+    )
+    monkeypatch.setattr(
+        detector,
+        "semantic_tool_poisoning_capture_positions",
+        record_window(semantic.semantic_tool_poisoning_capture_positions),
+    )
+    text = "capture export include report " * 2_500
+    result = await _sentinel(warden=Warden()).post_call("tool", text, _auth())
+
+    assert result.endswith("[... truncated, full result available in trace]")
+    assert len(lengths) > 1
+    assert max(lengths) <= detector._SCAN_WINDOW_CHARS
+
+
+async def test_post_call_real_warden_preserves_padded_semantic_signal():
+    """Product output scanning must not lose a semantic action across windows."""
+    from maistro.security.warden.detector import Warden
+
+    # The action and target are deliberately separated by more than one scan
+    # window. The bounded semantic scanner must retain their relationship
+    # without passing the padded body to one fallback regex search.
+    text = "You should capture " + ("padding " * 7_000) + "full conversation"
+    outcome = await _sentinel(warden=Warden()).process_output("tool", text, _auth())
+
+    assert outcome.blocked is True
+    assert outcome.warden_verdict is not None
+    assert outcome.warden_verdict.clean is False
+    assert "prescriptive_instruction+dangerous_action" in outcome.warden_verdict.flags
+
+
+async def test_post_call_real_warden_preserves_capture_ordering():
+    """Only a capture verb followed by a complete object is the attack.
+
+    The legacy single-regex rule flagged ``capture ... full conversation`` —
+    some capture verb followed *somewhere later* by a complete-object phrase.
+    A complete object that merely precedes the capture verb, with no later
+    object, stays clean.
+
+    The pre-repair windowed carry was stricter: it compared the capture verb
+    against the *first* complete-object phrase, so a payload opening with a
+    benign complete-object mention suppressed every later capture→object
+    pair — an evasion reproduced through MasterOrchestrator.execute (issue
+    #74). The flagged cases below pin the repaired legacy-parity verdict.
+    """
+    from maistro.security.warden.detector import Warden
+
+    clean_texts = (
+        # Object before verb, and no complete object after the verb: the
+        # legacy rule finds no capture→object pair and Warden must agree.
+        "The full conversation was summarized before we capture anything else.",
+        "The full conversation "
+        + ("padding " * 7_000)
+        + "was summarized before we capture anything else.",
+    )
+    for text in clean_texts:
+        outcome = await _sentinel(warden=Warden()).process_output("tool", text, _auth())
+
+        assert outcome.blocked is False
+        assert outcome.warden_verdict is not None
+        assert outcome.warden_verdict.clean is True
+        assert outcome.warden_verdict.flags == ()
+    assert outcome.sanitized_text.endswith("[... truncated, full result available in trace]")
+
+    # An earlier complete-object mention must not hide a later capture→object
+    # pair: the capture verb precedes the *last* complete object, exactly what
+    # the legacy ``(?:capture|export|include).*(?:full|complete|entire)\\s+``
+    # rule matched.
+    attacked = (
+        "The full conversation should capture the entire record.",
+        "The full conversation " + ("padding " * 7_000) + "should capture the entire record.",
+    )
+    for text in attacked:
+        outcome = await _sentinel(warden=Warden()).process_output("tool", text, _auth())
+
+        assert outcome.blocked is True
+        assert outcome.warden_verdict is not None
+        assert outcome.warden_verdict.clean is False
+        assert "prescriptive_instruction+dangerous_action" in outcome.warden_verdict.flags
+
+
+async def test_post_call_real_warden_windows_large_fallback_semantic_input(monkeypatch):
+    """Layer 2.5 also stays inside the fallback regex window."""
+    import re
+
+    import maistro.security.warden._regex as regex_module
+    import maistro.security.warden.detector as detector
+    import maistro.security.warden.semantic as semantic
+    from maistro.security.warden.detector import Warden
+
+    monkeypatch.setattr(regex_module, "_RE2_AVAILABLE", False)
+    for name in (
+        "_DANGEROUS_ACTIONS",
+        "_SENSITIVE_OBJECTS",
+        "_CAPTURE_ACTIONS",
+        "_FULL_CONVERSATION_OBJECTS",
+        "_PRESCRIPTIVE_PATTERNS",
+    ):
+        patterns = getattr(semantic, name)
+        monkeypatch.setattr(
+            semantic,
+            name,
+            [regex_module.compile_pattern(pattern.pattern, re.IGNORECASE) for pattern in patterns],
+        )
+
+    lengths: list[int] = []
+    original = detector.semantic_tool_poisoning_signals
+
+    def record_window(text: str):
+        lengths.append(len(text))
+        return original(text)
+
+    monkeypatch.setattr(detector, "semantic_tool_poisoning_signals", record_window)
+    text = "the quick brown fox jumps over the lazy dog. " * 3_000
+    result = await _sentinel(warden=Warden()).post_call("tool", text, _auth())
+
+    assert result.endswith("[... truncated, full result available in trace]")
+    assert len(lengths) > 1
+    assert max(lengths) <= detector._SCAN_WINDOW_CHARS
+
+
 async def test_post_call_both_warden_dirty_and_pii_produces_single_audit_call():
     audit = _StubAuditLog()
     dirty = WardenVerdict(clean=False, flags=("x",))
