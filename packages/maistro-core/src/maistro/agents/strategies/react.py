@@ -288,11 +288,17 @@ class ReactStrategy:
 
         # NOTE: a parse error sets a placeholder result but does NOT block — the
         # original behavior falls through to execution with the (possibly empty)
-        # parsed args. Only a sentinel denial blocks execution.
+        # parsed args. Only an authorization denial blocks execution.
         tool_result: Any = error_result
         tool_blocked = False
 
-        if not security_pipeline and sentinel is not None and auth is not None:
+        if not security_pipeline and (sentinel is None or auth is None):
+            logger.warning(
+                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+            )
+            tool_result = f"Error: Permission denied for tool '{tool_name}'"
+            tool_blocked = True
+        elif not security_pipeline:
             tool_schema = _find_tool_schema(tools, tool_name)
             sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, tool_schema)
             if not sentinel_verdict.allowed:

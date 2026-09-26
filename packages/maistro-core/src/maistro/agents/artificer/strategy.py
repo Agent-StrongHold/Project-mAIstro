@@ -9,6 +9,7 @@ from collections import deque
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from maistro.security.normalize import to_scan_string
 from maistro.security.warden.detector import WardenContext
 from maistro.types.agent import ReasoningResult
 
@@ -325,8 +326,13 @@ class ArtificerStrategy:
         auth: Any,
         security_pipeline: bool,
     ) -> tuple[dict[str, Any], Any, bool]:
-        if security_pipeline or sentinel is None or auth is None:
+        if security_pipeline:
             return tool_args, None, False
+        if sentinel is None or auth is None:
+            logger.warning(
+                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+            )
+            return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
         sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
         if not sentinel_verdict.allowed:
             return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
@@ -336,7 +342,7 @@ class ArtificerStrategy:
 
     @staticmethod
     def _truncate_result(tool_result: Any) -> str:
-        result_str = tool_result if isinstance(tool_result, str) else str(tool_result)
+        result_str = tool_result if isinstance(tool_result, str) else to_scan_string(tool_result)
         if len(result_str) <= _MAX_RESULT_BYTES:
             return result_str
         omitted = len(result_str) - _MAX_RESULT_BYTES
