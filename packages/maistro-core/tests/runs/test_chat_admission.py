@@ -8,6 +8,8 @@ bound that is enforced by the admitter rather than hoped for from the store.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from maistro.projects.scope_store import InMemoryProjectScopeStore
@@ -26,7 +28,7 @@ from maistro.runs.chat_admission import (
     failure_category,
     last_user_message,
 )
-from maistro.runs.model import RunStatus
+from maistro.runs.model import AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.runs.task_kinds import DELEGATE_NODE_KIND
 
@@ -136,20 +138,97 @@ async def test_terminal_chat_runs_are_swept_behind_the_window(spine) -> None:
     assert surviving == admitted[-len(surviving) :]
 
 
-async def test_a_live_run_is_never_swept(spine) -> None:
-    """Work in flight keeps its identity however old it is."""
+async def test_an_executing_turn_is_never_swept(spine) -> None:
+    """A turn still inside its Attempt's lease keeps its identity.
+
+    The lease, not the Run's status, is what says a turn is alive: the chat
+    executor leases every Attempt it creates and renews it while the turn
+    runs (#1170), so an unexpired lease under a non-terminal Run is work in
+    flight, however many admissions arrive behind it.
+    """
     _projects, runs, root = spine
     admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
 
     live = await admitter.admit(_turn("still going"))
     await runs.transition_run(live.run_id, RunStatus.QUEUED)
     await runs.transition_run(live.run_id, RunStatus.RUNNING)
+    node_run = await runs.create_node_run(
+        live.run_id, node_id=live.graph.materialize().nodes[0].node_id
+    )
+    await runs.create_attempt(
+        node_run.node_run_id, lease_holder="chat", lease_ttl=timedelta(seconds=30)
+    )
     for index in range(8):
         done = await admitter.admit(_turn(f"turn {index}"))
         await runs.transition_run(done.run_id, RunStatus.QUEUED)
         await runs.transition_run(done.run_id, RunStatus.CANCELLED)
 
     assert await runs.get_run(live.run_id) is not None
+
+
+async def test_stalled_turns_cannot_grow_the_store_past_the_window(spine) -> None:
+    """The bound holds when turns stall — the shape a lost executor leaves.
+
+    Three turns admitted and left RUNNING with nothing executing under them,
+    over a window of two. A window that shields every non-terminal Run grows
+    without limit exactly when the process is misbehaving, which is when it
+    must not: the oldest stalled Run goes, the newest survive.
+    """
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
+
+    admitted = []
+    for index in range(3):
+        run = await admitter.admit(_turn(f"turn {index}"))
+        await runs.transition_run(run.run_id, RunStatus.QUEUED)
+        await runs.transition_run(run.run_id, RunStatus.RUNNING)
+        admitted.append(run.run_id)
+
+    assert admitter.retained <= 2
+    stored = [run_id for run_id in admitted if await runs.get_run(run_id) is not None]
+    assert stored == admitted[1:]
+
+
+async def test_an_attempt_whose_lease_lapsed_no_longer_shields_its_run(spine) -> None:
+    """A lapsed lease is a stall, by the rule recovery itself reclaims on."""
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
+
+    stalled = await admitter.admit(_turn("holder died"))
+    await runs.transition_run(stalled.run_id, RunStatus.QUEUED)
+    await runs.transition_run(stalled.run_id, RunStatus.RUNNING)
+    node_run = await runs.create_node_run(
+        stalled.run_id, node_id=stalled.graph.materialize().nodes[0].node_id
+    )
+    await runs.create_attempt(
+        node_run.node_run_id, lease_holder="chat", lease_ttl=timedelta(microseconds=1)
+    )
+
+    later = await admitter.admit(_turn("next turn"))
+
+    assert await runs.get_run(stalled.run_id) is None
+    assert await runs.get_run(later.run_id) is not None
+
+
+async def test_a_finished_attempt_under_an_open_run_does_not_shield_it(spine) -> None:
+    """A finished Attempt under a Run nobody closed is a stall, not a turn."""
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=1)
+
+    stalled = await admitter.admit(_turn("executor died at the close"))
+    await runs.transition_run(stalled.run_id, RunStatus.QUEUED)
+    await runs.transition_run(stalled.run_id, RunStatus.RUNNING)
+    node_run = await runs.create_node_run(
+        stalled.run_id, node_id=stalled.graph.materialize().nodes[0].node_id
+    )
+    attempt = await runs.create_attempt(node_run.node_run_id)
+    await runs.transition_attempt(attempt.attempt_id, AttemptStatus.RUNNING)
+    await runs.transition_attempt(attempt.attempt_id, AttemptStatus.COMPLETED)
+
+    later = await admitter.admit(_turn("next turn"))
+
+    assert await runs.get_run(stalled.run_id) is None
+    assert await runs.get_run(later.run_id) is not None
 
 
 async def test_the_sweep_does_not_touch_a_task_run(spine) -> None:
@@ -338,7 +417,14 @@ async def test_concurrent_admissions_sweep_without_colliding(spine) -> None:
 
     assert len({run.run_id for run in admitted}) == 8
     for run in admitted:
-        assert await runs.get_run(run.run_id) is not None
+        await runs.transition_run(run.run_id, RunStatus.QUEUED)
+        await runs.transition_run(run.run_id, RunStatus.CANCELLED)
+    # A concurrent burst can finish after its last admission. The execution
+    # seam calls this same hook; keep the direct admitter contract explicit too.
+    await admitter.sweep()
+
+    surviving = [run for run in admitted if await runs.get_run(run.run_id) is not None]
+    assert len(surviving) <= 2
 
 
 async def test_a_turn_with_no_intent_hint_names_no_agent(spine) -> None:
@@ -395,6 +481,34 @@ async def test_deleting_a_run_with_a_child_is_refused(spine) -> None:
         await runs.delete_run(parent.run_id)
 
     assert await runs.get_run(parent.run_id) is not None
+
+
+async def test_retention_walks_past_a_terminal_parent_with_a_child(spine) -> None:
+    """One undeletable parent must not strand younger eligible chat Runs."""
+    _projects, runs, root = spine
+    admitter = ChatRunAdmitter(runs, workspace_id="w1", project_id=root.project_id, max_retained=2)
+    parent = await admitter.admit(_turn("parent"))
+    await runs.transition_run(parent.run_id, RunStatus.QUEUED)
+    await runs.transition_run(parent.run_id, RunStatus.RUNNING)
+    child_graph = parent.graph.materialize().model_copy(
+        update={"graph_id": "child-graph"}, deep=True
+    )
+    child = await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    await runs.transition_run(child.run_id, RunStatus.QUEUED)
+    await runs.transition_run(child.run_id, RunStatus.RUNNING)
+    await runs.transition_run(child.run_id, RunStatus.COMPLETED)
+    await runs.transition_run(parent.run_id, RunStatus.COMPLETED)
+
+    second = await admitter.admit(_turn("second"))
+    await runs.transition_run(second.run_id, RunStatus.QUEUED)
+    await runs.transition_run(second.run_id, RunStatus.RUNNING)
+    await runs.transition_run(second.run_id, RunStatus.COMPLETED)
+    third = await admitter.admit(_turn("third"))
+
+    assert admitter.retained == 2
+    assert await runs.get_run(parent.run_id) is not None
+    assert await runs.get_run(second.run_id) is None
+    assert await runs.get_run(third.run_id) is not None
 
 
 def test_a_turns_outcome_records_its_answer() -> None:

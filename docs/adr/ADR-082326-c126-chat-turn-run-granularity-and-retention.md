@@ -65,12 +65,47 @@ happened and was answered, and that is the audit trail worth having.
 
 **Retention is bounded by the admitter, not by the store.** `ChatRunAdmitter`
 keeps a window of the last `MAX_RETAINED_CHAT_RUNS` (500) Runs it admitted, and
-deletes the oldest *terminal* ones as it overflows. This is enforced where the
-pressure is created, so the bound holds on any store rather than only on the one
-that happens to prune. A non-terminal Run in the window is skipped rather than
-deleted: work in flight keeps its identity however old it is, and a window full
-of live Runs grows rather than eating them, which is the same failure the
-store's own bound already chooses and for the same reason.
+deletes the oldest ones as it overflows — terminal Runs, and stalled
+non-terminal ones with nothing left living in them *(amended 2026-09-26, see
+below)*. Admission sweeps when a new Run arrives, and the canonical chat
+execution seam invokes the same sweep after terminalizing a turn; the latter
+closes the otherwise-unbounded final burst that has no subsequent admission.
+This is enforced where the pressure is created, so the bound holds on any store
+rather than only on the one that happens to prune.
+
+**A stalled turn may not hold the window open** *(amended 2026-09-26, repair
+round on #131's retention bound)*. The window originally skipped every
+non-terminal Run, on the reasoning that work in flight keeps its identity
+however old it is. The reasoning was right about work in flight and wrong
+about the test it chose: a Run's status alone cannot tell a live turn from a
+dead one. A turn whose executor never came — a stranded admission with no
+Attempt (#338), an Attempt whose lease lapsed, a finished Attempt under a Run
+nobody closed — stays non-terminal forever, so a window that shields every
+non-terminal Run grows without limit exactly when the process is misbehaving,
+which is when it must not. The window now reads the liveness signals the spine
+already trusts instead of the status byte. A non-terminal Run past the window
+is forgotten unless something could still be living in it: it is dispatch-
+pending (the seam admitted it and has not settled its dispatch), still
+CREATED/QUEUED (mid-admission, which the admission path compensates itself),
+or holds an Attempt inside its lease — the chat executor leases every Attempt
+it creates and renews it while the turn runs (#1170), and
+`recover_abandoned_attempts` already reclaims on exactly that lease's expiry,
+so a live turn is never evicted, and the live population is bounded by how
+many turns can be in flight at once, not by the window. The dispatch-pending
+mark is seam bookkeeping, not a new authority: `route_request` sets it between
+its Run's QUEUED and RUNNING transitions (so no sweep ever observes the
+RUNNING, Attempt-less, unshielded moment), releases it when the turn closes —
+including the refused, cancelled, and dispatch-unrecorded exits — and a
+process death clears it with the window that reads it. Two costs are accepted
+and named. First, an admission-only caller of `_admit_chat_turn` — one that
+admits without intending to dispatch — leaves its Runs unshielded, so an
+abandoned admission is evictable at the next turn rather than kept; that is
+the policy working, since nothing will ever terminalize such a Run. Second,
+every non-terminal Run left CREATED/QUEUED by a caller that neither finishes
+nor compensates its admission is shielded until it terminalizes; the shipped
+seam compensates its own admission failures on the spot (#338), so the shape
+is reachable only by a caller that abandons admission half-done, which is the
+caller's contract to close.
 
 **And the store's own bound is source-aware.** The admitter's window alone does
 not deliver "chat volume cannot evict task Runs", because the store's bound runs
