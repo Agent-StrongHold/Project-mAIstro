@@ -306,3 +306,32 @@ re-scanned for `(close[sd]?|fix(e[sd])?|resolve[sd]?)[: ]*#[0-9]`: only
 Conventional-Commits `fix(hitl):` type prefixes exist, no auto-close keywords.
 Worktree clean at `75e847ec` before and after this docs-only record; no code
 change was needed this round.
+
+## Independent verifier re-validation at the develop-sync merge head `ca95b99de` (this round)
+
+Driver check-0..4 logs exist and are green at this head (`uv sync --locked --extra
+dev`, `ruff check .`, `ruff format --check .`, 33 door+timeout tests,
+`check-suite-inventory` 2816 ok). The verifier then re-executed the battery
+itself, trusting no prior record: 33/33 `test_hitl_door.py` +
+`test_hitl_timeout_cancel.py`; `ruff check .` clean;
+`check-suite-inventory.py --suite packages/hive-conductor/backend/tests` ok;
+`packages/maistro-core/tests/graph/durable_runs` 556 passed / 39 skipped; the
+adjacent scope suites (`test_workspace_authority`,
+`test_workspace_authority_durable`, `test_privilege_middleware_installed`,
+`test_production_workspace_scope`) 28 passed / 5 pre-existing skips — relevant
+because this merge head brings develop's `middleware/auth.py` session changes
+that `_request_user_id`/`_session_principal` read.
+
+The mutation experiment was re-executed independently in a throwaway
+`git archive` copy under `/tmp/v1110-mut` (assigned tree untouched,
+authentication intact), baseline 3/3 first: (1) an early-return no-op in
+`authorize_project` fails exactly
+`test_project_reviewer_isolated_from_sibling_hitl_work` (a denied-Project
+pause becomes listable/answerable) while the Workspace-boundary tests still
+hold via the independent membership layer; (2) removing the route's
+Workspace membership pre-read from `_authorized_record` fails
+`test_hitl_mutation_rechecks_membership_at_the_store_boundary` (the captured
+log shows the unauthorized answer settle `200 OK`). Both scope layers are
+load-bearing and detected. PR #1443 body ("Refs #1110") and all branch commit
+messages re-scanned: no fixes/closes/resolves keywords. Worktree clean at
+`ca95b99de` before and after this docs-only record; no code change needed.
