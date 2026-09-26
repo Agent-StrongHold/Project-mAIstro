@@ -56,6 +56,13 @@ EXPECTED_TABLES = frozenset(
         "asset_sheets",
         "audit_log",
         "books",
+        # The Canvas store's own tables (044), created outside the repository
+        # until #286 put them in the chain.
+        "canvas_blobs",
+        "canvases",
+        "composite_records",
+        "generation_jobs",
+        "layers",
         # The canonical governed-capability boundary (039, renumbered from 032
         # after a collision with 032_asset_instance_org_scope; #1079).
         # Bindings and Invocations are separate tables: Bindings are immutable

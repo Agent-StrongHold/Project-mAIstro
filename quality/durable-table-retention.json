@@ -11,14 +11,9 @@
   },
   "created_outside_this_repo": {
     "tables": [
-      "canvas_blobs",
-      "canvases",
-      "composite_records",
-      "generation_jobs",
-      "hive_memory_entries",
-      "layers"
+      "hive_memory_entries"
     ],
-    "note": "These are read and written in production but no migration or DDL in this repository creates them, so this gate cannot see them: the five canvas tables through maistro_canvas.canvas.store (alembic/versions/002 calls them 'created elsewhere'), and hive_memory_entries through PostgREST in hive-conductor/backend/services/chat_completion.py. They stay uninventoried until their DDL lands here; tracked on #325."
+    "note": "Read and written in production but no migration or DDL in this repository creates it, so this gate cannot see it: hive_memory_entries through PostgREST in hive-conductor/backend/services/chat_completion.py. It stays uninventoried until its DDL lands here; tracked on #325. (The five Canvas store tables left this list when alembic/versions/044 took them into the root chain, #286.)"
   },
   "tables": [
     {
@@ -246,6 +241,30 @@
       "notes": "Deleted only on an explicit DELETE /workspaces/{id}; lives as long as the tenant wants it. Needs an explicit indefinite_by_decision."
     },
     {
+      "table": "canvas_blobs",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Image bytes written by PgCanvasStore.store_blob. No DELETE anywhere in the tree and no parent row; blobs accumulate for the life of the deployment."
+    },
+    {
+      "table": "canvases",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Archived (archived_at), never deleted: no DELETE anywhere in the tree. Its layers, jobs and composites cascade from it, so their lifetime is this decision too."
+    },
+    {
       "table": "capability_approvals",
       "backends": [
         "sqlite"
@@ -318,6 +337,19 @@
       "deletion_path": null,
       "issue": "#325",
       "notes": "Personalisation data about a child. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
+    },
+    {
+      "table": "composite_records",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/store.py",
+      "data_class": "user_content",
+      "retention": "bounded_by_parent",
+      "deletion_path": null,
+      "issue": null,
+      "parent": "canvases",
+      "notes": "ON DELETE CASCADE from canvases (migration 044). No delete of its own; canvases are never deleted today, so in practice it lives as long as the undecided parent."
     },
     {
       "table": "consumer_cursors",
@@ -443,6 +475,19 @@
       "notes": "Book-maker POC schema. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
+      "table": "generation_jobs",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/store.py",
+      "data_class": "execution_state",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro_canvas.canvas.store:PgCanvasStore.remove_layer",
+      "issue": null,
+      "parent": "layers",
+      "notes": "ON DELETE CASCADE from layers (migration 044): removed with its layer on an explicit layer removal, or with the canvas. No retention sweep of terminal receipts."
+    },
+    {
       "table": "genomes",
       "backends": [
         "sqlite"
@@ -518,6 +563,19 @@
       "deletion_path": "maistro.state:PersistedStore.delete",
       "issue": "#325",
       "notes": "Generic homelab key-value store; callers delete their own keys, no retention sweep."
+    },
+    {
+      "table": "layers",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-canvas/src/maistro_canvas/canvas/store.py",
+      "data_class": "user_content",
+      "retention": "bounded_by_parent",
+      "deletion_path": "maistro_canvas.canvas.store:PgCanvasStore.remove_layer",
+      "issue": null,
+      "parent": "canvases",
+      "notes": "ON DELETE CASCADE from canvases (migration 044), or removed on an explicit layer removal."
     },
     {
       "table": "learnings",
