@@ -3,12 +3,11 @@ id: SPEC-070226-2b70
 title: "Observability extensions: replayable LLM/tool proxies and PII sensitivity-tier routing"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-037
   - maistro-engine#ADR-050
-  - maistro-engine#ADR-055
   - maistro-engine#SPEC-228
 implements:
   - maistro-engine#ADR-055
@@ -16,6 +15,7 @@ related:
   - maistro-engine#ADR-053
   - maistro-engine#ADR-056
   - maistro-engine#SPEC-223
+  - maistro-engine#ADR-055
 supersedes: []
 blocks: []
 blocked-by: []
@@ -38,6 +38,11 @@ ac-modules:
 layer: Observability
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-2b70: Observability extensions — replayable proxies and PII sensitivity tiers
@@ -49,8 +54,11 @@ proxies record every LLM call and tool call so orchestration code can be determi
 re-executed against recorded responses; and (2) PII sensitivity tiers — `normal`/`sensitive`/
 `secret` tags that route event payloads to different storage/retention regimes.
 
-This SPEC realizes both, and resolves ADR-055's five open questions with concrete choices
-(recorded there as recommendations; locked in here).
+ADR-055 remains Proposed and is retained as design context only; it is not shipped
+authority for this SPEC. The operative authority is this SPEC under its Accepted
+substrate (ADR-037, ADR-050). This SPEC realizes both capabilities, and resolves
+ADR-055's five open questions with concrete choices (recorded there as
+recommendations; locked in here).
 
 ## Goals
 
