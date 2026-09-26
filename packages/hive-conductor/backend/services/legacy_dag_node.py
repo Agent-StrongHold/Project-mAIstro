@@ -13,13 +13,17 @@ import json
 import logging
 import os
 from collections.abc import Callable, Mapping
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 from pydantic import BaseModel, ConfigDict
 
 from maistro.graph.nodes.base import BaseNode, NodeContext
 from maistro.http import shared_client
+from maistro.sandbox import fence_from_context
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from maistro.sandbox import SandboxFence
 
 logger = logging.getLogger(__name__)
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
@@ -100,8 +104,15 @@ def _run_node_subprocess(
     context: str,
     base_env: dict[str, str],
     execution_mode: str = "autonomous",
+    fence: SandboxFence | None = None,
 ) -> dict[str, Any]:
-    """Execute one compatibility node inside the configured isolation provider."""
+    """Execute one compatibility node inside the configured isolation provider.
+
+    `fence` is the Attempt identity the calling node serves (#79), projected
+    from the `NodeContext` the attempt executor stamped. It crosses the sandbox
+    boundary as `MAISTRO_FENCE_*` environment variables; `None` (a node run
+    outside an Attempt lease) carries no fence, and none is invented.
+    """
     import asyncio as _aio
 
     from services.hyperlight_executor import get_executor
@@ -123,6 +134,7 @@ def _run_node_subprocess(
                 timeout_s=120,
                 allow_network=True,
                 mode=execution_mode,
+                fence=fence,
             )
         )
         if result["success"]:
@@ -495,6 +507,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
                 context,
                 self._node_env,
                 self._execution_mode,
+                fence_from_context(ctx),
             )
             _invoke_subprocess_usage_hooks([node_id], {node_id: result}, self._on_response)
         else:

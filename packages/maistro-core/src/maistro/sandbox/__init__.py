@@ -16,6 +16,7 @@ from maistro.sandbox.fence import (
     SandboxFence,
     StaleExecutionFence,
     assert_fence_is_current,
+    fence_from_context,
 )
 from maistro.sandbox.network import (
     DENY_ALL,
@@ -84,6 +85,7 @@ __all__ = [
     "build_selector",
     "candidate_env",
     "detect_host_capabilities",
+    "fence_from_context",
     "fenced_commit",
     "floor_for_mode",
     "grant_from_credential",

@@ -134,6 +134,27 @@ def test_code_reaches_the_backend_as_argv_not_a_templated_script() -> None:
     assert command == ["/usr/bin/python3", "-c", "print('marker-123')"]
 
 
+def test_the_attempt_fence_rides_into_the_sandbox_config() -> None:
+    """#79: a fence the caller presents lands on the config the backend gets.
+
+    The backends inject `config.fence.to_env()` into the sandbox environment,
+    so the boundary carries the Attempt identity — that is the whole trip.
+    The adapter never synthesizes one: no fence given, none appears.
+    """
+    from maistro.sandbox import SandboxFence
+
+    fence = SandboxFence(
+        attempt_id="attempt-1", node_run_id="node-run-1", lease_epoch=2, fencing_token="tok-1"
+    )
+    fenced = _StubBackend()
+    asyncio.run(_executor_with(fenced).execute_node("print('hi')", fence=fence, mode="interactive"))
+    assert fenced.spawned[0].fence is fence
+
+    unfenced = _StubBackend()
+    asyncio.run(_executor_with(unfenced).execute_node("print('hi')", mode="interactive"))
+    assert unfenced.spawned[0].fence is None
+
+
 # ─── Result mapping tells the truth about bounded output (#1197) ──────────
 
 

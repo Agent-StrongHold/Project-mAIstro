@@ -17,7 +17,16 @@ import contextlib
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, Generic, Literal, NoReturn, Protocol, TypeVar, runtime_checkable
+from typing import (
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    NoReturn,
+    Protocol,
+    TypeVar,
+    runtime_checkable,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 
@@ -54,6 +63,14 @@ class NodeContext(BaseModel):
     node_id: str
     node_run_id: str = ""
     attempt_id: str = ""
+    # Lease identity (#79), stamped by the attempt executor once the Attempt is
+    # persisted and running. Empty token means "no fence": nodes executed
+    # outside an Attempt lease keep their historical shape, and a fence may not
+    # be invented from less than all four identity fields. Project it onto the
+    # boundary fence with `maistro.sandbox.fence_from_context` — that function
+    # lives in the sandbox substrate, so this contract stays sandbox-free.
+    lease_epoch: int = 0
+    fencing_token: str = ""
     user_id: str | None = None
     workspace_id: str | None = None
     project_id: str | None = None

@@ -411,3 +411,82 @@ async def test_a_timed_pause_needs_a_fresh_try_only_once_its_deadline_elapses(
     assert (
         attempt_executor._requires_continuation_redispatch(record, "wait-step", paused) is expected
     )
+
+
+class _FenceProbe(BaseNode[_Empty, _Seed]):
+    """Records the NodeContext it executed under (#79)."""
+
+    kind: ClassVar[str] = "test.attempt.fence_probe"
+    kind_category: ClassVar = "sync.transform"
+    input_schema: ClassVar[type[BaseModel]] = _Empty
+    output_schema: ClassVar[type[BaseModel]] = _Seed
+    contexts: ClassVar[list[NodeContext]] = []
+
+    async def _execute(self, inputs: _Empty, ctx: NodeContext) -> _Seed:
+        type(self).contexts.append(ctx)
+        return _Seed(seed="go")
+
+
+@pytest.mark.asyncio
+async def test_the_attempt_context_carries_the_lease_fence() -> None:
+    """#79: a node executes under its Attempt's lease identity, not just its ids.
+
+    The attempt executor stamps `lease_epoch`/`fencing_token` next to
+    `node_run_id`/`attempt_id`, so a sandbox-crossing node builds a real
+    `SandboxFence` — and a context nobody stamped invents none, because a
+    fence assembled from missing fields would present authority the worker
+    does not have.
+    """
+    _FenceProbe.contexts = []
+
+    def resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
+        del graph
+        assert node_id == "probe"
+        return _FenceProbe()
+
+    graph = Graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Fenced attempt",
+        nodes=[Node(node_id="probe", node_type=_FenceProbe.kind)],
+        metadata={"entry_node": "probe"},
+    )
+    record = await run_durable_graph(
+        graph,
+        store=InMemoryDurableRunStore(),
+        node_resolver=resolver,
+        runtime=PythonExecutionRuntime(),
+    )
+
+    assert record.status is RunStatus.COMPLETED
+    assert len(_FenceProbe.contexts) == 1
+    ctx = _FenceProbe.contexts[0]
+    attempt = record.attempts[0]
+    lease = attempt.execution_lease
+    assert lease is not None
+    assert ctx.attempt_id == attempt.attempt_id
+    assert ctx.node_run_id == attempt.node_run_id
+    assert ctx.lease_epoch == lease.lease_epoch
+    assert ctx.fencing_token == lease.fencing_token
+
+    from maistro.sandbox import fence_from_context
+
+    fence = fence_from_context(ctx)
+    assert fence is not None
+    assert fence.attempt_id == attempt.attempt_id
+    assert fence.node_run_id == attempt.node_run_id
+    assert fence.lease_epoch == lease.lease_epoch
+    assert fence.fencing_token == lease.fencing_token
+    # The fence rides into the sandbox as environment, backend-independent.
+    env = fence.to_env()
+    assert env["MAISTRO_FENCE_ATTEMPT_ID"] == attempt.attempt_id
+    assert env["MAISTRO_FENCE_LEASE_EPOCH"] == str(lease.lease_epoch)
+
+    # No lease stamped, no fence: None, never a lie.
+    assert fence_from_context(NodeContext(run_id="r", dag_id="d", node_id="n")) is None
+    assert (
+        fence_from_context(
+            NodeContext(run_id="r", dag_id="d", node_id="n", attempt_id="a", fencing_token="")
+        )
+        is None
+    )

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,7 @@ from maistro.sandbox import (
     ExecResult,
     ExecutionMode,
     NoSuitableBackendError,
+    SandboxFence,
     SandboxSelector,
     WorkloadPolicy,
     build_selector,
@@ -218,6 +220,7 @@ class SandboxExecutor:
         allow_network: bool = False,
         memory_mb: int = 256,
         mode: str = "autonomous",
+        fence: SandboxFence | None = None,
     ) -> dict[str, Any]:
         """Run `code` under the strongest backend the selector admits.
 
@@ -226,6 +229,13 @@ class SandboxExecutor:
         nothing else: canonical backends start from a cleared environment, so
         the retired behavior of inheriting the host's whole `os.environ` is
         structurally gone, not filtered.
+
+        `fence` is the Attempt identity the calling node serves (#79). When
+        given, it rides into the sandbox environment as `MAISTRO_FENCE_*`
+        variables — the boundary carries the fence, so a sandboxed worker can
+        prove it is still the current execution before publishing anything
+        back. The caller stamps it from its `NodeContext` (which the attempt
+        executor fills from the live lease); nothing here invents one.
         """
         policy = self._policy(
             mode=mode,
@@ -251,6 +261,10 @@ class SandboxExecutor:
             timeout_s=timeout_s,
             env=dict(env or {}),
         )
+        if fence is not None:
+            # `SandboxConfig` is frozen so the fence cannot be widened or
+            # dropped after the config exists.
+            config = replace(config, fence=fence)
         instance = await backend.spawn(config=config)
         try:
             result = await backend.exec(

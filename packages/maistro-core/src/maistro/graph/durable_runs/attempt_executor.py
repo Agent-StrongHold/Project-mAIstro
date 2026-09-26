@@ -555,10 +555,16 @@ async def _execute_frontier(
         def context_for_attempt(attempt: Attempt, base: Any) -> NodeContext:
             if not isinstance(base, NodeContext):
                 raise TypeError("durable Graph execution requires NodeContext")
+            # The Attempt's lease identity rides with the context (#79): a node
+            # that crosses the sandbox boundary presents exactly this fence,
+            # and the store's own token check stays the final word.
+            lease = attempt.execution_lease
             return base.model_copy(
                 update={
                     "node_run_id": node_run.node_run_id,
                     "attempt_id": attempt.attempt_id,
+                    "lease_epoch": lease.lease_epoch if lease is not None else 0,
+                    "fencing_token": lease.fencing_token if lease is not None else "",
                 }
             )
 

@@ -115,12 +115,8 @@ authority.
 
 Known residuals, recorded rather than hidden:
 
-- `legacy_dag_node` carries no `SandboxFence` (#79): `NodeContext` has
-  `attempt_id`/`node_run_id` but no lease epoch or fencing token, and a fence
-  invented from those would be a lie. The canonical fence machinery
-  (`SandboxFence`, `fenced_commit`, backend env injection) is in place and
-  tested; threading a real lease into legacy nodes is runner work outside
-  this repair.
+- ~~`legacy_dag_node` carries no `SandboxFence` (#79)~~ **resolved in the
+  2026-09-26 round — see "Fence threading repair (#79)" below.**
 - On a Tier-3-only host, unattended legacy DAG nodes now refuse where the
   retired executor sometimes "succeeded" on a claimed gVisor boundary. That
   is the honest downgrade the support matrix documents; deployments needing
@@ -128,6 +124,36 @@ Known residuals, recorded rather than hidden:
   installer preflight already reports the real ladder.
 - Child-issue closure states (#76–#81, #811, #1197, #1198) are not
   verifiable from this worktree; no GitHub action is taken from here.
+
+## Fence threading repair (#79, 2026-09-26 round)
+
+The recorded residual — the canonical fence machinery existed and was tested
+but no production executor put a real lease on the wire — is closed on the
+same production backend the selector already picks:
+
+- `NodeContext` carries the Attempt's lease identity (`lease_epoch`,
+  `fencing_token`) beside `node_run_id`/`attempt_id`. The durable attempt
+  executor stamps it in `context_for_attempt` from the live
+  `attempt.execution_lease` — the same lease whose token the store checks at
+  every `transition_attempt`, so there is exactly one source of fence truth.
+- `maistro.sandbox.fence_from_context(context)` (exported from
+  `maistro.sandbox`) is the one way to project that stamp onto the boundary
+  fence. Partial identity reads as `None`, never a weaker fence, mirroring
+  `SandboxFence.from_env`. The projection lives in the sandbox substrate, so
+  the graph node contract stays sandbox-free.
+- The production path consumes it end to end: `LegacyConductorNode._execute`
+  (sandbox tier) → `_run_node_subprocess(fence=...)` →
+  `SandboxExecutor.execute_node(fence=...)` → `SandboxConfig.fence` (frozen;
+  set via `dataclasses.replace`) → canonical container/bubblewrap backends
+  inject `fence.to_env()` as `MAISTRO_FENCE_*` environment. A node executed
+  under an Attempt lease now runs in a sandbox that carries the fence of that
+  Attempt; nothing synthesizes a fence anywhere on the path.
+- What this deliberately does not do: `fenced_commit` enforcement for guest-
+  side external writes stays with the publishing caller (the legacy node
+  script publishes only through its parent, whose writes the store's own
+  token check already fences). The runner-level gap — no lease epoch to
+  fence from — is what this repair closes; guest-side publication policy is
+  the publisher's, not the substrate's.
 
 ## Verification repair (2026-09-23, same branch)
 

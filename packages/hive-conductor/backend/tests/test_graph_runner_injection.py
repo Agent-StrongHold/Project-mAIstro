@@ -51,8 +51,9 @@ class _StubExecutor:
         allow_network: bool = False,
         memory_mb: int = 256,
         mode: str = "autonomous",
+        fence: Any = None,
     ) -> dict[str, Any]:
-        self.calls.append({"code": code, "env": env or {}})
+        self.calls.append({"code": code, "env": env or {}, "fence": fence})
         return {"success": True, "output": "ok", "isolation": "stub"}
 
 

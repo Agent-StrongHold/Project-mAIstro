@@ -33,6 +33,7 @@ from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, Attempt
 from maistro.runs.store import StaleExecutionFence
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from maistro.graph.nodes.base import NodeContext
     from maistro.runs.model import ExecutionLease
     from maistro.runs.store import RunStore
 
@@ -148,6 +149,26 @@ async def assert_fence_is_current(fence: SandboxFence, *, run_store: RunStore) -
     return attempt
 
 
+def fence_from_context(context: NodeContext) -> SandboxFence | None:
+    """Project a node execution context onto the fence it publishes under.
+
+    The attempt executor stamps the lease identity onto the `NodeContext` it
+    hands a node (#79); this is the one way to turn that stamp back into the
+    fence that crosses the sandbox boundary. A context nobody stamped — a node
+    executed outside an Attempt lease, or partial identity — reads as `None`,
+    never as a weaker fence, for the same reason `from_env` treats partial as
+    absent: a fence missing its token is not a weaker fence, it is no fence.
+    """
+    if not context.attempt_id or not context.fencing_token:
+        return None
+    return SandboxFence(
+        attempt_id=context.attempt_id,
+        node_run_id=context.node_run_id,
+        lease_epoch=context.lease_epoch,
+        fencing_token=context.fencing_token,
+    )
+
+
 __all__ = [
     "ENV_ATTEMPT_ID",
     "ENV_LEASE_EPOCH",
@@ -156,4 +177,5 @@ __all__ = [
     "SandboxFence",
     "StaleExecutionFence",
     "assert_fence_is_current",
+    "fence_from_context",
 ]
