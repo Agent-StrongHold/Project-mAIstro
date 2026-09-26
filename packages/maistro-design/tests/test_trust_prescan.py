@@ -60,6 +60,11 @@ HOSTILE_CORPUS = (
     '<div style="color:var(--attacker-controlled)">y</div>',
     '<div style="padding:env(safe-area-inset-top)">y</div>',
     '<div style="background:data:text/html;base64,PHNjcmlwdD4=">y</div>',
+    # Renderer-parity round-20 finding: scrubTree blocks every non-allowlisted
+    # tag as active-element; the shared scanner's catch-all must classify the
+    # same unknown tags so the pre-scan cannot recommend upgrading them.
+    "<marquee>hello</marquee>",
+    "<custom-widget>hostile</custom-widget>",
 )
 CLEAN_BRIEF = "A calm spring bake-sale poster"
 # Prose that names the CSS `behavior` property as an English heading must not

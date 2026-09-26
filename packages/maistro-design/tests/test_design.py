@@ -1301,6 +1301,11 @@ class TestBuildMultimodalOutput:
             # (#817 repair: the shared decoder used to read `ul(` here).
             r"<style>.x { background: \75rl(https://evil.example/leak) }</style>",
             "<math><mi>x</mi></math>",
+            # Unknown/inert-list-excluded tags: scrubTree removes every element
+            # outside the renderer's HTML_TAGS/SVG_TAGS as active-element, so
+            # the output scan must classify the same markup (#817 round-20).
+            "<html></html>",
+            "<marquee>hostile</marquee>",
         ],
     )
     def test_hostile_render_output_is_rejected(self, payload: str):
@@ -1344,7 +1349,10 @@ class TestBuildMultimodalOutput:
 
         output = build_multimodal_output(
             {
-                OutputFormat.HTML: "<html></html>",
+                # Fragment markup the shared boundary renders (a full <html>
+                # wrapper is renderer-blocked active-element, see the hostile
+                # parametrize list above).
+                OutputFormat.HTML: "<section>ok</section>",
                 OutputFormat.CSS: "body { color: red; }",
                 OutputFormat.JS: "console.log('hi')",
             },
@@ -1353,7 +1361,7 @@ class TestBuildMultimodalOutput:
         assert output.root.kind is ArtifactKind.CONTAINER
         assert set(output.root.children) == {"html", "css", "js"}
         assert output.root.children["html"].kind is ArtifactKind.FILE
-        assert output.root.children["html"].value == "<html></html>"
+        assert output.root.children["html"].value == "<section>ok</section>"
         assert output.root.children["css"].format is OutputFormat.CSS
 
     @pytest.mark.contract("boundary")
@@ -1443,7 +1451,7 @@ class TestBuildMultimodalOutput:
         from maistro_design.types import OutputFormat
 
         output = build_multimodal_output(
-            {OutputFormat.HTML: "<html></html>", OutputFormat.PNG: b"\x89PNG"},
+            {OutputFormat.HTML: "<section>ok</section>", OutputFormat.PNG: b"\x89PNG"},
             trust_tier=TrustTier.T3,
         )
         canvas_store = AsyncMock()

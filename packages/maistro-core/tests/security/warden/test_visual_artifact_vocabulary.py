@@ -15,6 +15,7 @@ from pathlib import Path
 
 from maistro.security.warden.patterns import (
     VISUAL_ARTIFACT_BLOCK_REASONS,
+    VISUAL_ARTIFACT_INERT_TAGS,
     VISUAL_ARTIFACT_PATTERNS,
 )
 
@@ -32,12 +33,19 @@ def _monorepo_root() -> Path:
 
 
 def test_pattern_table_reasons_are_the_declared_vocabulary() -> None:
-    reasons = tuple(reason for _, reason in VISUAL_ARTIFACT_PATTERNS)
+    # Several patterns may share one reason, but every declared reason must be
+    # covered, first occurrence must keep the declared order, and no
+    # undeclared reason may appear — a drift here means the derivation from
+    # the declared tuple was bypassed. (The unknown-tag catch-all is code, not
+    # a table row: visual_artifact_unknown_tag_names reuses
+    # REASON_ACTIVE_ELEMENT from this same tuple.)
+    seen: list[str] = []
+    for _, reason in VISUAL_ARTIFACT_PATTERNS:
+        if reason not in seen:
+            seen.append(reason)
 
-    # Same names, same order: the table is derived from the declared tuple, so
-    # a drift here means the derivation was bypassed.
-    assert reasons == VISUAL_ARTIFACT_BLOCK_REASONS
-    assert len(set(reasons)) == len(reasons)
+    assert tuple(seen) == VISUAL_ARTIFACT_BLOCK_REASONS
+    assert {reason for _, reason in VISUAL_ARTIFACT_PATTERNS} == set(VISUAL_ARTIFACT_BLOCK_REASONS)
 
 
 def test_design_scanner_emits_only_declared_visual_reasons() -> None:
@@ -162,4 +170,88 @@ def test_renderer_blocked_var_env_data_styles_are_scanner_blocked() -> None:
         visual = [flag for flag in flags if "visual artifact " in flag]
         assert any(flag.endswith("css-network-or-code") for flag in visual), (
             f"{markup!r}: scanner did not classify a renderer-blocked style: {visual}"
+        )
+
+
+def _renderer_inert_tags() -> set[str]:
+    """Parse the renderer's HTML_TAGS/SVG_TAGS inert sets from the TS source."""
+    tsx = _monorepo_root() / _TS_RENDERER
+    source = tsx.read_text(encoding="utf-8")
+    tags: set[str] = set()
+    for set_name in ("HTML_TAGS", "SVG_TAGS"):
+        match = re.search(rf"const {set_name} = new Set\(\[(.*?)\]\);", source, re.DOTALL)
+        assert match, f"{set_name} moved or was reshaped in the TS renderer"
+        tags |= set(re.findall(r'"([^"]+)"', match.group(1)))
+    return tags
+
+
+def test_renderer_inert_tag_allowlist_is_pinned_by_python() -> None:
+    """The catch-all's inert allowlist cannot drift from the browser boundary.
+
+    ``scrubTree`` in visualArtifactRenderer.tsx blocks every element whose tag
+    is outside HTML_TAGS/SVG_TAGS as ``active-element``. The shared scanner's
+    catch-all classifies the same markup only if its allowlist is the same
+    set; this test parses the TS sets and demands equality so neither side can
+    grow or shrink a tag alone (#817 round-20 finding).
+    """
+    assert frozenset(_renderer_inert_tags()) == VISUAL_ARTIFACT_INERT_TAGS
+
+
+def test_renderer_blocked_unknown_tags_are_scanner_classified_and_never_upgradeable() -> None:
+    """Regression: the exact round-20 parity probe must fail closed (#817).
+
+    The renderer removes `<marquee>` and every other non-allowlisted tag as
+    ``active-element``; the pre-scan used to return empty flags and an
+    ``upgrade`` recommendation for exactly that markup.
+    """
+    from maistro_design.scan import scan_blocking_patterns
+    from maistro_design.trust import InMemoryTrustReviewQueue, TrustTier, scan_and_record
+
+    probes = (
+        "<marquee>hello</marquee>",
+        "<custom-widget>hostile</custom-widget>",
+        "<blink>x</blink>",
+    )
+    for markup in probes:
+        flags = scan_blocking_patterns("content", markup, None, visual_artifact=True)
+        visual = [flag for flag in flags if "visual artifact " in flag]
+        assert any(flag.endswith("active-element") for flag in visual), (
+            f"{markup!r}: scanner did not classify a renderer-blocked unknown tag: {flags}"
+        )
+
+        queue = InMemoryTrustReviewQueue()
+        tier = scan_and_record(
+            markup,
+            source="discovery_field",
+            source_key="k",
+            record_id="r",
+            review_queue=queue,
+        )
+        (record,) = queue.all_records()
+        assert tier is TrustTier.SKULL, f"{markup!r}: pre-scan tier {tier}"
+        assert record.warden_recommendation != "upgrade", (
+            f"{markup!r}: pre-scan recommended upgrading renderer-blocked content"
+        )
+
+
+def test_inert_tags_stay_renderable_with_no_visual_flag() -> None:
+    """Guard against an over-broad catch-all: allowlisted markup must stay clean.
+
+    Case-insensitive tags, self-closing SVG shapes, prose comparisons like
+    ``3 < 5``, and doctype/comment constructs are all inert in the browser and
+    must produce no visual-artifact flag either.
+    """
+    from maistro_design.scan import scan_blocking_patterns
+
+    inert = (
+        "<div><p>ok</p></div>",
+        '<svg viewBox="0 0 20 20"><circle cx="5" cy="5" r="4"/></svg>',
+        "3 < 5 and x < y prose",
+        "<TABLE><TR><TD>x</TD></TR></TABLE>",
+        "<!DOCTYPE html><!-- review note -->",
+    )
+    for markup in inert:
+        flags = scan_blocking_patterns("content", markup, None, visual_artifact=True)
+        assert not [flag for flag in flags if "visual artifact " in flag], (
+            f"{markup!r}: inert markup was flagged: {flags}"
         )

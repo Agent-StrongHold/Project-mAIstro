@@ -72,15 +72,114 @@ VISUAL_ARTIFACT_BLOCK_REASONS: tuple[str, ...] = (
     "css-network-or-code",
 )
 
+# The inert tags the Design Studio browser boundary renders without blocking
+# (HTML_TAGS plus SVG_TAGS in visualArtifactRenderer.tsx). The renderer removes
+# every OTHER element subtree and classifies it ``active-element`` — a
+# catch-all the pattern table below must mirror, or the trust pre-scan would
+# recommend upgrading markup the renderer blocks (#817 round-20 finding:
+# ``<marquee>`` scanned clean while the renderer blocked it). A lockstep test
+# pins this frozenset to the TS sets so neither side can drift alone.
+VISUAL_ARTIFACT_INERT_TAGS: frozenset[str] = frozenset(
+    {
+        # HTML_TAGS
+        "article",
+        "b",
+        "blockquote",
+        "br",
+        "caption",
+        "code",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "figcaption",
+        "figure",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "i",
+        "li",
+        "main",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "small",
+        "span",
+        "strong",
+        "sub",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "u",
+        "ul",
+        # SVG_TAGS
+        "circle",
+        "ellipse",
+        "g",
+        "line",
+        "lineargradient",
+        "path",
+        "polygon",
+        "polyline",
+        "radialgradient",
+        "rect",
+        "stop",
+        "svg",
+        "text",
+        "tspan",
+    }
+)
+
 # The pattern table's reasons ARE the declared vocabulary above: unpacking
 # keeps the two in lockstep by construction, so a scanner-emitted reason can
 # never drift from the names the browser boundary reports (AC-4 of #817).
-(
-    _REASON_ACTIVE_ELEMENT,
-    _REASON_EVENT_HANDLER,
-    _REASON_DANGEROUS_URL,
-    _REASON_CSS_NETWORK_OR_CODE,
-) = VISUAL_ARTIFACT_BLOCK_REASONS
+REASON_ACTIVE_ELEMENT, _REASON_EVENT_HANDLER, _REASON_DANGEROUS_URL, _REASON_CSS_NETWORK_OR_CODE = (
+    VISUAL_ARTIFACT_BLOCK_REASONS
+)
+
+# Element-name extractor for the unknown-tag catch-all (round-20 finding).
+# scrubTree() in visualArtifactRenderer.tsx blocks every element outside the
+# inert allowlist as ``active-element``; the named patterns below cannot
+# enumerate "everything else", so the shared scanner classifies unknown tags
+# with this extractor instead. Callers pass raw content plus an
+# invisibles-stripped NFKD view — deliberately NOT normalize_for_detection(),
+# whose bounded leetspeak folding rewrites real tag names (``h1`` -> ``hi``)
+# no browser ever folds, and whose homoglyph folding would make a lookalike
+# tag such as ``<marquee>`` with Cyrillic letters read as an inert tag the
+# browser does not have.
+_TAG_NAME_PATTERN = regex.compile(r"</?([a-zA-Z][a-zA-Z0-9-]*)")
+
+
+def visual_artifact_unknown_tag_names(*views: str) -> set[str]:
+    """Tag names in the given views that the browser boundary would block.
+
+    Mirrors ``scrubTree``: any element whose (case-insensitive) local name is
+    outside ``VISUAL_ARTIFACT_INERT_TAGS`` is removed and classified
+    ``active-element``, so the trust pre-scan and the output boundary must
+    classify it the same way. Prose comparisons (``3 < 5``) do not match: the
+    HTML tokenizer opens an element only at ``<`` (or ``</``) followed
+    immediately by a letter, and this extractor uses the same rule.
+    """
+    return {
+        name.lower()
+        for view in views
+        for name in _TAG_NAME_PATTERN.findall(view)
+        if name.lower() not in VISUAL_ARTIFACT_INERT_TAGS
+    }
+
 
 VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
     (
@@ -90,7 +189,7 @@ VISUAL_ARTIFACT_PATTERNS: tuple[tuple[regex.Pattern[str], str], ...] = (
             r"textarea|select|option|a|animate|set|mpath|math|annotation-xml)\b",
             regex.IGNORECASE,
         ),
-        _REASON_ACTIVE_ELEMENT,
+        REASON_ACTIVE_ELEMENT,
     ),
     (
         regex.compile(r"<[^>]*\bon[a-z][a-z0-9:-]*\s*=", regex.IGNORECASE),

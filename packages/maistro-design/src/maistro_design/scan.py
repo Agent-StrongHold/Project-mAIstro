@@ -15,12 +15,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from maistro.security.normalize import normalize_for_detection
+from maistro.security.normalize import normalize_for_detection, strip_invisibles
 from maistro.security.warden.patterns import (
     ACTIVE_MARKUP_PATTERNS,
+    REASON_ACTIVE_ELEMENT,
     REJECT_PATTERNS,
     SCRIPT_PATTERNS,
     VISUAL_ARTIFACT_PATTERNS,
+    visual_artifact_unknown_tag_names,
 )
 
 if TYPE_CHECKING:
@@ -196,6 +198,15 @@ def scan_blocking_patterns(
             for pattern, reason in VISUAL_ARTIFACT_PATTERNS
             if _pattern_matches(pattern, normalized)
         )
+        # Unknown-tag catch-all (renderer parity, #817 round-20): the browser
+        # boundary removes every element outside the inert allowlist and
+        # reports active-element; the scanner must classify the same markup.
+        # Runs on raw content plus an invisibles-stripped NFKD view — never
+        # the folded `normalized` view, whose leetspeak step rewrites real
+        # tag names (h1 -> hi) no browser ever folds.
+        mild = strip_invisibles(unicodedata.normalize("NFKD", content))
+        if visual_artifact_unknown_tag_names(content, mild):
+            blocking.append(f"{label}: visual artifact {REASON_ACTIVE_ELEMENT}")
 
     for match in _BASE64_RE.finditer(normalized):
         blocking.append(f"{label}: base64 blob ({len(match.group(0))} chars)")

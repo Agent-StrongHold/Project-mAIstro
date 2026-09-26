@@ -393,6 +393,10 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     '<div style="color:var(--attacker-controlled)">safe</div>',
     '<div style="padding-top:env(safe-area-inset-top)">safe</div>',
     '<div style="background:data:text/html;base64,PHNjcmlwdD4=">safe</div>',
+    // #817 round-20: scrubTree removes every non-allowlisted tag as
+    // active-element; unknown/inert-list-excluded tags must not survive.
+    '<marquee>hostile</marquee><p>safe</p>',
+    '<html><body><p>safe</p></body></html>',
   ];
 
   const outputs = await page.evaluate((items) => {
@@ -409,7 +413,7 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     const scan = (
       window as Window & { __scanVisualArtifactMarkup: (markup: string) => { blocked: boolean; reasons: string[]; sanitizedMarkup: string } }
     ).__scanVisualArtifactMarkup;
-    return items.slice(0, 7).map((item) => scan(item));
+    return items.slice(0, 9).map((item) => scan(item));
   }, [
     '<div onclick="alert(1)">handler</div>',
     '<a href="data:text/html,<script>alert(1)</script>">navigation</a>',
@@ -423,6 +427,10 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
     // css-network-or-code too.
     '<div style="color:var(--attacker-controlled)">network</div>',
     '<div style="padding-top:env(safe-area-inset-top)">network</div>',
+    // #817 round-20: renderer-blocked unknown tags classify active-element,
+    // matching the shared Python scanner's catch-all.
+    '<marquee>unknown-tag</marquee>',
+    '<custom-widget>x</custom-widget>',
   ]);
   expect(scanResults.every((result) => result.blocked)).toBe(true);
   expect(scanResults[0].reasons).toContain("event-handler");
@@ -432,6 +440,8 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
   expect(scanResults[4].reasons).toContain("css-network-or-code");
   expect(scanResults[5].reasons).toContain("css-network-or-code");
   expect(scanResults[6].reasons).toContain("css-network-or-code");
+  expect(scanResults[7].reasons).toContain("active-element");
+  expect(scanResults[8].reasons).toContain("active-element");
 
   const recommendations = await page.evaluate(() => {
     const recommend = (
@@ -444,9 +454,19 @@ test("mutation, encoded, SVG, and CSS payload families fail closed while present
       recommend('<math><mi>x</mi></math>'),
       // #817 round-19: renderer-blocked CSS values must never be upgradeable.
       recommend('<div style="color:var(--attacker-controlled)">css</div>'),
+      // #817 round-20: renderer-blocked unknown tags are never upgradeable,
+      // matching the Python pre-scan's shared classification.
+      recommend('<marquee>unknown-tag</marquee>'),
     ];
   });
-  expect(recommendations).toEqual(["review", "upgrade", "upgrade", "review", "review"]);
+  expect(recommendations).toEqual([
+    "review",
+    "upgrade",
+    "upgrade",
+    "review",
+    "review",
+    "review",
+  ]);
 
   const safePresentation = await page.evaluate(() => {
     const sanitize = (

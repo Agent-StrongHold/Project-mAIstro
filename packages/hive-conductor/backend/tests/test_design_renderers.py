@@ -98,7 +98,9 @@ async def test_render_to_png_raises_501_not_notimplementederror() -> None:
 
     svc = DesignRenderService()
     with pytest.raises(HTTPException) as exc_info:
-        await svc.render_to_png("<html>hi</html>", {})
+        # Fragment markup the shared output boundary passes (a raw <html>
+        # wrapper is renderer-blocked active-element).
+        await svc.render_to_png("<section>hi</section>", {})
 
     assert exc_info.value.status_code == 501
     assert "PNG rendering is not implemented" in str(exc_info.value.detail)
