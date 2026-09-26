@@ -120,7 +120,9 @@ class DefaultContextAssemblyPolicy:
         A non-blank `project_id` keeps only memories attributed to that
         Project: an agent id reused across Workspaces must not recall one
         Workspace's memories in another (#1047). A memory with no project is
-        not guessed into one. Blank means no project filter.
+        not guessed into one, which includes an unattributed GLOBAL memory: a
+        Project run sees only what was recorded for that Project. Blank means
+        no project filter.
         """
         if query:
             memories = await self._retrieval.retrieve(
