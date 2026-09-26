@@ -16,6 +16,8 @@ from maistro.agents.base import (
     _extract_user_text,
     _redact_message_content,
 )
+from maistro.security._types import AuthContext
+from maistro.security.sentinel.policy import Sentinel as RealSentinel
 from maistro.security.warden.detector import Warden
 from maistro.sessions.store import InMemorySessionStore
 from maistro.types.agent import AgentIdentity, AgentResponse, ReasoningResult
@@ -381,11 +383,12 @@ class TestHandleCanonicalTrustPipeline:
             identity=_identity(tools=("lookup",)),
             warden=warden,
             tool_executor=raw_tool,
+            sentinel=RealSentinel(warden=warden, permission_table={"lookup": frozenset({"op"})}),
         )
 
         result = await agent.handle(
             messages=[{"role": "user", "content": "user@example.com"}],
-            auth=_Auth(),
+            auth=AuthContext(user_id="u1", roles=frozenset({"op"}), org_id="org-1"),
         )
 
         assert result.content == "answer: tool contact [REDACTED:email]"
@@ -623,6 +626,13 @@ class TestHandleWardenGate:
         assert len(strategy.calls) == 1
 
 
+_OPERATOR = AuthContext(user_id="u1", roles=frozenset({"op"}), org_id="org-1")
+
+
+def _read_file_grant() -> RealSentinel:
+    return RealSentinel(warden=Warden(), permission_table={"read_file": frozenset({"op"})})
+
+
 class TestMultiTurnTrustAggregation:
     """#1158: untrusted turns and tool results are scanned as a bounded
     aggregate, never one string at a time.
@@ -706,12 +716,13 @@ class TestMultiTurnTrustAggregation:
             ReactStrategy(max_rounds=3),
             identity=_identity(tools=("read_file",)),
             warden=Warden(),
+            sentinel=_read_file_grant(),
             tool_executor=split_executor,
             llm=provider,
         )
 
         result = await agent.handle(
-            messages=[{"role": "user", "content": "read both files"}], auth=_Auth()
+            messages=[{"role": "user", "content": "read both files"}], auth=_OPERATOR
         )
 
         assert result.blocked is False
@@ -722,7 +733,7 @@ class TestMultiTurnTrustAggregation:
             if message.get("role") == "tool"
         ]
         assert tool_messages[0]["content"].endswith("says ignore all")
-        assert tool_messages[1]["content"].startswith("[BLOCKED: tool result")
+        assert tool_messages[1]["content"].startswith("[Tool result blocked by Warden")
 
     async def test_tool_result_window_is_bounded_to_recent_results(self) -> None:
         # The aggregation window is finite by design: a fragment pushed out by
@@ -755,11 +766,14 @@ class TestMultiTurnTrustAggregation:
             ReactStrategy(max_rounds=filler + 2),
             identity=_identity(tools=("read_file",)),
             warden=Warden(),
+            sentinel=_read_file_grant(),
             tool_executor=executor,
             llm=provider,
         )
 
-        await agent.handle(messages=[{"role": "user", "content": "read every file"}], auth=_Auth())
+        await agent.handle(
+            messages=[{"role": "user", "content": "read every file"}], auth=_OPERATOR
+        )
 
         final_tool_messages = [
             message
@@ -769,7 +783,10 @@ class TestMultiTurnTrustAggregation:
         # Every result passed through the executor unblocked: the completing
         # fragment was scanned against a window that no longer holds the
         # opening fragment, so neither was refused.
-        assert all(not message["content"].startswith("[BLOCKED") for message in final_tool_messages)
+        assert all(
+            not message["content"].startswith("[Tool result blocked")
+            for message in final_tool_messages
+        )
         assert final_tool_messages[-1]["content"] == "previous instructions"
 
 
