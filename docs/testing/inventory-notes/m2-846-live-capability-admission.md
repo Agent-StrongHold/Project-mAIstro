@@ -130,3 +130,41 @@ re-resolves Binding+provider per call, and disable/revoke-after-construction
 tests assert zero provider calls on the real route and repair paths. PR #1439
 body ("Refs #846", draft) and all branch commit messages carry no closure
 keywords. Only this note changed after the checks ran.
+
+Independent verification pass 7 + vulture CI repair (auto-846, head 0db5d778c,
+develop base ca4caec7d): the prior round died emitting no result (worker error,
+no validation failure); the full battery was re-run plus independent live
+spot-checks against real production objects:
+
+- Spot-check 1: `HarnessSessionManager(registry, warden=...)` with no policy and
+  no Invocation wiring — the old `policy=None` default-allow shape — fails
+  closed (`Unavailable`, zero provider calls) instead of AllowAllGate.
+- Spot-check 2: a fully wired manager with `slot disable` and `Binding revoke`
+  applied AFTER actor construction and session start denies send/stream with
+  the provider call count unchanged.
+- Spot-check 3: a raising policy evaluator denies via `InvocationDenied`
+  ("capability invocation policy unavailable") with resolver and executor
+  never called, and one audited `capability.invocation.policy_decision` deny
+  event (rule `invocation.fail-closed`) in the effect event stream.
+- Battery: 468 passed (full `tests/capabilities` + the 6 conductor route/
+  wiring/egress files + the agent-spawn/rsi-pace graph-node files); `ruff check .` and
+  `ruff format --check .` clean; canonical six-package mypy clean (713 files);
+  `check-ratchet-provenance.py`, `check-shipped-surface-truth.py`,
+  `check_direct_effects.py` all exit 0.
+- Vulture CI repair (exact-debt-ledger, per lane brief):
+  `check-vulture-baseline.py packages/*/src --min-confidence 60` flagged
+  (a) NEW identity `slots/infra.py:42: unused class 'InfraAction'` — the #846
+  fix removed core's last in-scope reference (the `RuleBasedRepair` raw
+  `infra_action` ctor param), leaving the live protocol referenced only by
+  `capabilities_wiring.py` outside the scan glob; and (b) STALE ledger row
+  `harness_manager.py::send_invocation`, made live by the fix (`send()` routes
+  through it). Repair: (a) documented `_vulture_infra_action_usage`
+  TYPE_CHECKING reference in `slots/infra.py` per the repo precedent
+  (e1f16ddae; banking alone cannot pass because a floor-raise grant must be
+  landed at the merge-base — two-merge rule), referencing the protocol name
+  only, so the genuinely unconsumed `allowed_actions` banked findings remain
+  banked; (b) pruned the eliminated `send_invocation` row from
+  `quality/vulture-baseline.json`. Gate re-run -> exit 0 (1415 reviewed
+  identities -> 1414 findings; the 1-row delta is the eliminated identity).
+
+No test files added or changed this pass: inventory delta unchanged.

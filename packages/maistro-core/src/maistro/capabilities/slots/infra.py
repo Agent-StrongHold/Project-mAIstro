@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from maistro.capabilities.protocols import CapabilityProvider
 
@@ -43,6 +43,26 @@ class InfraMonitor(CapabilityProvider, Protocol):
 class InfraAction(CapabilityProvider, Protocol):
     def allowed_actions(self) -> tuple[str, ...]: ...
     async def act(self, action: str, params: dict[str, Any]) -> ActionResult: ...
+
+
+if TYPE_CHECKING:
+
+    def _vulture_infra_action_usage() -> None:
+        """Keep the infra_action slot protocol visible to production-only scans.
+
+        The shipped consumer of ``InfraAction`` is the governed self-repair
+        effect boundary (``packages/hive-conductor/backend/services/
+        capabilities_wiring.py``), whose Invocation resolver admits a provider
+        only after ``isinstance(provider, InfraAction)`` at effect time. That
+        module lives outside the ``packages/*/src`` scope the Vulture ratchet
+        scans, and #846 deliberately removed core's last in-scope reference
+        (``RuleBasedRepair`` no longer captures a raw provider). This
+        non-executing reference records the reviewed downstream consumer
+        without banking the protocol as dead code.
+        """
+        _ = (InfraAction,)
+
+    _ = _vulture_infra_action_usage
 
 
 _READ_ACTIONS = {"docker_logs", "ollama_list", "snapraid_status"}
