@@ -137,7 +137,7 @@ async def _write_canonical(schedule: Schedule) -> None:
         await put_canonical_definition(schedule.id, schedule)
     except ScheduleAdmissionUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (ValueError, LookupError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
@@ -238,19 +238,20 @@ class UpdateScheduleBody(BaseModel):
 
 @router.put("/{schedule_id}", response_model=Schedule)
 async def update_schedule(schedule_id: str, body: UpdateScheduleBody, request: Request) -> Schedule:
-    schedule = await _writable_schedule(request, schedule_id)
+    await _writable_schedule(request, schedule_id)
+    from services.scheduler import definition_lock
+
     updates = body.model_dump(exclude_none=True)
-    t = _now()
-    updates["updated_at"] = t
-    await _write_canonical(schedule.model_copy(update=updates))
-    # Re-read after the await: a tick may have projected new cursors onto the
-    # row, and a concurrent delete must not be resurrected by this write.
-    current = stores.schedules.get(schedule_id)
-    if current is None:
-        await _delete_canonical(schedule_id)
-        raise HTTPException(status_code=404, detail="schedule not found")
-    updated: Schedule = current.model_copy(update=updates)
-    stores.schedules[schedule_id] = updated
+    updates["updated_at"] = _now()
+    async with definition_lock(schedule_id):
+        current = stores.schedules.get(schedule_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        await _write_canonical(current.model_copy(update=updates))
+        # Re-read after the await: a tick may have projected newer cursors.
+        latest = stores.schedules.get(schedule_id) or current
+        updated: Schedule = latest.model_copy(update=updates)
+        stores.schedules[schedule_id] = updated
     return updated
 
 
@@ -266,8 +267,11 @@ async def _delete_canonical(schedule_id: str) -> None:
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: str, request: Request) -> None:
     await _writable_schedule(request, schedule_id, require_active=False)
-    await _delete_canonical(schedule_id)
-    stores.schedules.pop(schedule_id, None)
+    from services.scheduler import definition_lock
+
+    async with definition_lock(schedule_id):
+        await _delete_canonical(schedule_id)
+        stores.schedules.pop(schedule_id, None)
 
 
 class ManualFireBody(BaseModel):

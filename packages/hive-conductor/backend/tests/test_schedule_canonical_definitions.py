@@ -331,21 +331,56 @@ def test_clearing_the_template_removes_the_canonical_row(
         _drop_hive_row(sid)
 
 
-def test_an_update_racing_a_delete_does_not_resurrect_the_canonical_row(
-    admin_client: Any, configured: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import services.scheduler as scheduler
+def _request_as_admin() -> Any:
+    return SimpleNamespace(state=SimpleNamespace(user={"id": "admin"}))
+
+
+def test_concurrent_updates_leave_both_rows_agreeing(admin_client: Any, configured: Any) -> None:
+    import stores
+    from routes import schedules as routes
 
     sid = _create(admin_client, configured.test_workspace)["id"]
-    original = scheduler.put_canonical_definition
+    request = _request_as_admin()
 
-    async def put_then_lose_the_row(schedule_id: str, schedule: Any) -> None:
-        await original(schedule_id, schedule)
-        _drop_hive_row(schedule_id)
+    async def both() -> None:
+        await asyncio.gather(
+            routes.update_schedule(sid, routes.UpdateScheduleBody(enabled=False), request),
+            routes.update_schedule(sid, routes.UpdateScheduleBody(name="renamed"), request),
+        )
 
-    monkeypatch.setattr(scheduler, "put_canonical_definition", put_then_lose_the_row)
-    response = admin_client.put(f"/v1/schedules/{sid}", json={"name": "renamed"})
-    assert response.status_code == 404, response.text
+    try:
+        asyncio.run(both())
+        hive = stores.schedules.get(sid)
+        stored = asyncio.run(configured.schedule_store.get(sid))
+        assert hive is not None and stored is not None
+        assert (hive.enabled, hive.name) == (False, "renamed")
+        assert (stored.enabled, stored.name) == (False, "renamed")
+    finally:
+        _drop_hive_row(sid)
+
+
+def test_an_update_racing_a_delete_leaves_no_canonical_orphan(
+    admin_client: Any, configured: Any
+) -> None:
+    import stores
+    from routes import schedules as routes
+
+    sid = _create(admin_client, configured.test_workspace)["id"]
+    request = _request_as_admin()
+
+    async def both() -> list[Any]:
+        return list(
+            await asyncio.gather(
+                routes.update_schedule(sid, routes.UpdateScheduleBody(name="renamed"), request),
+                routes.delete_schedule(sid, request),
+                return_exceptions=True,
+            )
+        )
+
+    for outcome in asyncio.run(both()):
+        if isinstance(outcome, BaseException):
+            assert getattr(outcome, "status_code", None) == 404, outcome
+    assert stores.schedules.get(sid) is None
     assert asyncio.run(configured.schedule_store.get(sid)) is None
 
 

@@ -143,6 +143,19 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
     return run_id
 
 
+_definition_locks: dict[str, asyncio.Lock] = {}
+
+
+def definition_lock(sid: str) -> asyncio.Lock:
+    """Serialise the writers of one schedule's canonical definition and row.
+
+    Each writer builds the definition from the Hive row and then awaits the
+    store, so without this two edits could land canonically in the opposite
+    order to the row and leave the authority disagreeing with its projection.
+    """
+    return _definition_locks.setdefault(sid, asyncio.Lock())
+
+
 def _definition_authority() -> tuple[_ScheduleRunner, Any] | None:
     """The runner and Container that own canonical definitions, if configured.
 
@@ -217,18 +230,26 @@ async def backfill_canonical_definitions() -> int:
     if store is None or getattr(container, "project_scope_store", None) is None:
         return 0
     written = 0
-    for sid, schedule in list(stores.schedules.items()):
+    for sid in list(stores.schedules.keys()):
         try:
-            if await store.get(sid) is not None:
-                continue
-            definition = await _scoped_definition(runner, sid, schedule, container)
-            if definition is None:
-                continue
-            await store.put(definition)
-            written += 1
+            async with definition_lock(sid):
+                written += await _backfill_one(runner, sid, container)
         except Exception as exc:
             logger.warning("Failed to backfill canonical schedule %s: %s", sid, exc)
     return written
+
+
+async def _backfill_one(runner: _ScheduleRunner, sid: str, container: Any) -> int:
+    import stores
+
+    schedule = stores.schedules.get(sid)
+    if schedule is None or await container.schedule_store.get(sid) is not None:
+        return 0
+    definition = await _scoped_definition(runner, sid, schedule, container)
+    if definition is None:
+        return 0
+    await container.schedule_store.put(definition)
+    return 1
 
 
 class _ScheduleRunner:
