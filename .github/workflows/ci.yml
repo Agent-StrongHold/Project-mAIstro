@@ -29,8 +29,29 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  compliance:
+    name: Compliance registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # This job intentionally uses the system interpreter; provision the YAML
+      # parser it imports instead of relying on an unrelated workspace install.
+      - name: Install compliance checker dependencies
+        run: python -m pip install --disable-pip-version-check "PyYAML>=6.0,<7"
+      - name: Validate control registry and claims
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/check-compliance.py
+
   # #383: the PR template used to tell every author to target `main`, which
   # contradicted CONTRIBUTING, ADR-095 and the actual branch flow — and the
   # base decides which checks can even report (base-coupled gates run on
@@ -138,6 +159,14 @@ jobs:
       # profile to the `${VAR:?message}` shape the rest already use.
       - name: No deployment profile hands out a credential
         run: python3 scripts/check-compose-secrets.py
+      # `security_violations` and `usage_events` were appended to forever
+      # because no table had to say how long its rows live (#325). Every table
+      # an Alembic revision, runtime `CREATE TABLE` or `__tablename__` creates
+      # needs an entry in `quality/durable-table-retention.json`, and every
+      # claimed deletion path must import. No driven purge is `undecided`
+      # against its issue, written down rather than absent.
+      - name: Every durable table declares its retention
+        run: uv run python3 scripts/check-durable-table-inventory.py
       # `SENSITIVE_PATH_PATTERNS` decides which self-modifications need
       # adversarial review, and it was a hand-written list that kept falling
       # one entry behind: `local_loop.py` fast-forwards the baseline,
@@ -298,41 +327,50 @@ jobs:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
       - run: uv sync --locked --extra dev --extra s3
-      # `docker run`, not a `services:` container. MinIO's own image needs an
-      # explicit `server /data` command and service containers cannot set one,
-      # which is why this used `bitnami/minio` — a repackaging that starts the
-      # server by default. Bitnami withdrew that tag and the job began failing
-      # on `manifest unknown`, so the dependency on someone else's repackaging
-      # is gone: the upstream image, pinned, started here. That did not end the
-      # churn either — Docker Hub stopped serving `minio/minio` anonymously
-      # (`pull access denied` before a single test ran), so the pin now names
-      # quay.io, where MinIO publishes the identical RELEASE tag.
+      # A step, not a `services:` container, and no longer an image at all.
+      # Upstream MinIO needs an explicit `server /data` command, which a
+      # service container cannot set, so this first used `bitnami/minio` (a
+      # repackaging that starts the server by default) until Bitnami withdrew
+      # that tag (`manifest unknown`). The upstream image then went too: Docker
+      # Hub stopped serving `minio/minio` anonymously, and after MinIO archived
+      # the community server quay.io started answering 401 and dl.min.io 410.
+      # The step below builds the same pinned RELEASE from source through the
+      # Go module proxy, checksum-verified, and runs the binary on the runner.
+      - uses: actions/setup-go@v7
+        with:
+          # minio's go.mod names this toolchain; the module cache is not ours
+          # to key (no go.sum in this repo), so setup-go's cache stays off.
+          go-version: "1.24.2"
+          cache: false
       - name: Start MinIO
         run: |
-          image=quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
-          # Pull before `docker run`, retrying the fetch alone. quay.io answered
-          # `502 Bad Gateway` on one PR run and `unauthorized: Unknown service
-          # key` on one merge-group run in a single night (2026-09-15), each
-          # before a test had run, and each cost a queue round: the automation
-          # that watches these PRs cannot re-run a job (403). Only the network
-          # step is retried, the same shape as scripts/prepull-base-images.sh;
-          # a MinIO that starts and never answers still fails once, below.
-          for attempt in 1 2 3 4; do
-            if docker pull "$image"; then
+          # Build the pinned RELEASE from source rather than pulling an image.
+          # MinIO archived the community server: quay.io now answers 401 for
+          # `minio/minio` and dl.min.io answers 410 for every release binary,
+          # so no anonymous prebuilt artifact remains. The source still does,
+          # through the Go module proxy, and `go install` checks every module
+          # it fetches against sum.golang.org, so the pin is content-verified
+          # without a secret. This pseudo-version is RELEASE.2025-04-22T22-12-26Z
+          # (commit 0d7408fc9969), the same server build the image pin named.
+          version=v0.0.0-20250422221226-0d7408fc9969
+          # Retry the fetch-and-build alone: a proxy hiccup is not a storage
+          # bug, and the automation that watches these PRs cannot re-run a
+          # job (403). A MinIO that starts and never answers still fails once.
+          for attempt in 1 2 3; do
+            if go install "github.com/minio/minio@${version}"; then
               break
             fi
-            if [ "$attempt" -eq 4 ]; then
-              echo "::error::could not pull $image after 4 attempts" >&2
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::could not build minio@${version} after 3 attempts" >&2
               exit 1
             fi
-            echo "::warning::pull of $image failed (attempt $attempt/4); retrying" >&2
+            echo "::warning::go install of minio@${version} failed (attempt $attempt/3); retrying" >&2
             sleep $((attempt * 5))
           done
-          docker run -d --name minio \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=maistro \
-            -e MINIO_ROOT_PASSWORD=maistro-secret \
-            "$image" server /data
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=maistro MINIO_ROOT_PASSWORD=maistro-secret \
+            nohup "$(go env GOPATH)/bin/minio" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:9000 >"$RUNNER_TEMP/minio.log" 2>&1 &
           for _ in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
               echo "minio ready"
@@ -341,7 +379,7 @@ jobs:
             sleep 2
           done
           echo "minio did not become ready" >&2
-          docker logs minio >&2 || true
+          cat "$RUNNER_TEMP/minio.log" >&2 || true
           exit 1
       - name: Archive conformance against MinIO
         run: uv run pytest packages/maistro-core/tests/archive -v --tb=short
@@ -358,12 +396,26 @@ jobs:
       # exactly as vulture-ratchet.yml does, so the trusted baseline is the
       # revision this push replaces. tests/conftest.py captures this value and
       # keeps it away from every test except the gate self-checks that opt in.
+      #
+      # Only a protected-branch push replaces a revision, though. On a topic
+      # branch `before` is that branch's own previous tip, which any rebase
+      # orphans: unreachable from every ref, so `fetch-depth: 0` does not fetch
+      # it and the resolver refuses with "base revision could not be resolved".
+      # That reds the seven root-suite self-checks on a candidate whose
+      # pull-request run passes on identical content. Topic pushes use the
+      # integration base instead, matching their PR run.
       RATCHET_BASE_REV: >-
         ${{ github.event_name == 'pull_request'
             && format('origin/{0}', github.base_ref)
             || github.event_name == 'merge_group'
             && github.event.merge_group.base_sha
-            || github.event.before }}
+            || github.ref == 'refs/heads/develop'
+            && github.event.before
+            || github.ref == 'refs/heads/integration'
+            && github.event.before
+            || github.ref == 'refs/heads/main'
+            && github.event.before
+            || 'origin/develop' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -746,7 +798,7 @@ jobs:
       # one Dockerfile's cache cannot evict another's, and security.yml's
       # `containers` job uses the SAME scope names so a main-targeted PR can
       # warm-start from whatever a develop-targeted run already built.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # `docker/build-push-action` exposes GitHub's runtime cache-auth
       # variables (ACTIONS_RUNTIME_TOKEN, ACTIONS_CACHE_URL) internally

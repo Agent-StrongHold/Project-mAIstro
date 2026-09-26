@@ -77,11 +77,15 @@ def _paused_record(
 
 
 @pytest.fixture
-def seeded(admin_client: Any) -> Iterator[_Seeded]:
-    from services.dag_agents import get_run_store
+def seeded(admin_client: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Seeded]:
+    from services import dag_agents
 
-    store = get_run_store()
+    # This fixture seeds the legacy document-shaped store directly. Bind it to
+    # the route only as an explicit test seam; production `_store()` refuses
+    # this store and requires the Container's canonical projection.
+    store = dag_agents.get_run_store()
     assert isinstance(store, InMemoryDurableRunStore)
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", lambda: store)
     created: list[str] = []
 
     async def _seed(run_id: str, *, deadline: datetime) -> None:
@@ -102,6 +106,23 @@ def seeded(admin_client: Any) -> Iterator[_Seeded]:
 
 
 @pytest.mark.ac("SPEC-083026-73c1/AC-6")
+def test_hitl_endpoint_fails_closed_without_canonical_spine(
+    admin_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A degraded Conductor must not present ephemeral human work as durable."""
+    from services import dag_agents
+
+    def _unavailable() -> Any:
+        raise RuntimeError("canonical graph execution spine is unavailable")
+
+    monkeypatch.setattr(dag_agents, "get_canonical_run_store", _unavailable)
+
+    response = admin_client.get("/v1/hitl/pending")
+
+    assert response.status_code == 503
+    assert "canonical execution spine" in response.json()["detail"]
+
+
 async def test_cancel_endpoint_requests_canonical_settlement(seeded: _Seeded) -> None:
     client, store, seed = seeded
     await seed("hitl-api-cancel", deadline=datetime.now(UTC) + timedelta(hours=1))
@@ -157,6 +178,110 @@ async def test_expiry_endpoint_reports_an_empty_tick(seeded: _Seeded) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"expired": 0, "run_ids": []}
+
+
+@pytest.fixture
+def workspace_writer_client() -> Iterator[Any]:
+    import stores
+    from fastapi.testclient import TestClient
+    from main import app
+
+    stores.users["scope-user"] = stores.users["user"].model_copy(
+        update={
+            "id": "scope-user",
+            "username": "scope-user",
+            "permissions": ["dags.write"],
+        }
+    )
+    client = TestClient(app)
+    try:
+        assert (
+            client.post(
+                "/v1/auth/login", json={"username": "scope-user", "password": "testpass"}
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/v1/auth/elevate",
+                json={
+                    "password": "testpass",
+                    "permissions": ["dags.write"],
+                    "task_id": "hitl-expiry-scope-test",
+                },
+            ).status_code
+            == 200
+        )
+        yield client
+    finally:
+        stores.users.pop("scope-user", None)
+
+
+async def test_expiry_endpoint_cannot_timeout_a_foreign_workspace(
+    seeded: _Seeded, workspace_writer_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bounded timeout request applies only to canonical member Workspaces."""
+    _admin_client, store, _seed = seeded
+    mine = await create_workspace(
+        creator_user_id="scope-user",
+        name="HITL expiry mine",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    other = await create_workspace(
+        creator_user_id="other-tenant",
+        name="HITL expiry other",
+        persona_template_id="default",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    now = datetime.now(UTC) - timedelta(minutes=1)
+    mine_id = "hitl-expiry-scope-mine"
+    other_id = "hitl-expiry-scope-other"
+    race_id = "hitl-expiry-scope-revoked"
+    await store.create(_paused_record(mine_id, deadline=now, workspace_id=mine.id))
+    await store.create(_paused_record(other_id, deadline=now, workspace_id=other.id))
+    try:
+        response = workspace_writer_client.post("/v1/hitl/expire?limit=10")
+
+        assert response.status_code == 200
+        assert response.json() == {"expired": 1, "run_ids": [mine_id]}
+        mine_record = await store.get(mine_id)
+        other_record = await store.get(other_id)
+        assert mine_record is not None and mine_record.run.status is RunStatus.TIMED_OUT
+        assert other_record is not None and other_record.run.status is RunStatus.PAUSED
+
+        # The same two-Workspace boundary applies after the local timeout has
+        # won a race: a late answer or cancel cannot settle the foreign pause.
+        assert (
+            workspace_writer_client.post(
+                f"/v1/hitl/{other_id}/ask/answer", json={"answer": "late"}
+            ).status_code
+            == 404
+        )
+        assert workspace_writer_client.post(f"/v1/hitl/{other_id}/ask/cancel").status_code == 404
+        other_record = await store.get(other_id)
+        assert other_record is not None and other_record.run.status is RunStatus.PAUSED
+
+        import routes.hitl as hitl_routes
+
+        await store.create(_paused_record(race_id, deadline=now, workspace_id=mine.id))
+
+        async def revoked_membership(_user_id: str, _workspace_id: str) -> bool:
+            return False
+
+        monkeypatch.setattr(hitl_routes, "is_member", revoked_membership)
+        response = workspace_writer_client.post("/v1/hitl/expire?limit=10")
+        assert response.json() == {"expired": 0, "run_ids": []}
+        race_record = await store.get(race_id)
+        assert race_record is not None and race_record.run.status is RunStatus.PAUSED
+    finally:
+        store._rows.pop(mine_id, None)
+        store._rows.pop(other_id, None)
+        store._rows.pop(race_id, None)
 
 
 def test_settlement_endpoints_keep_the_existing_dags_write_scope(authed_client: Any) -> None:

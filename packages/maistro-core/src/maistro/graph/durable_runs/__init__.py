@@ -15,6 +15,7 @@ from __future__ import annotations
 from maistro.runs.model import RunStatus
 
 from .attempt_executor import (
+    DEFAULT_MAX_STEPS,
     NodeResolver,
     resume_durable_graph,
     run_durable_graph,
@@ -29,8 +30,11 @@ from .continuation import (
 from .execution_store import DurableRunExecutionStore
 from .fair_scan import ScanContinuation, cursor_time
 from .hitl import (
+    HitlAuthorization,
+    HitlAuthorizationRequired,
     HitlDeadlineElapsed,
     HitlDeadlinePending,
+    HitlDelegationEvidence,
     HitlSettlementError,
     expire_hitl_pauses,
 )
@@ -46,6 +50,7 @@ from .stores import InMemoryDurableRunStore, SqliteDurableRunStore
 from .types import DurableRunRecord
 
 __all__ = [
+    "DEFAULT_MAX_STEPS",
     "ArchivedGraphRun",
     "CanonicalDurableRunStore",
     "DurableRunExecutionStore",
@@ -53,8 +58,11 @@ __all__ = [
     "DurableRunStore",
     "GraphContinuation",
     "GraphContinuationStore",
+    "HitlAuthorization",
+    "HitlAuthorizationRequired",
     "HitlDeadlineElapsed",
     "HitlDeadlinePending",
+    "HitlDelegationEvidence",
     "HitlSettlementError",
     "InMemoryDurableRunStore",
     "InMemoryGraphContinuationStore",

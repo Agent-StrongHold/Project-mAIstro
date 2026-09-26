@@ -98,14 +98,17 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     if container is None:
         return _fallback_node_resolver
     # Read as attributes rather than through getattr(): the Container dataclass
-    # always defines all three, and check-wiring-reads.py (#236) walks attribute
-    # loads, so a getattr("name") read is invisible to it and the fields would
-    # report as wired-but-unread. Naming them here is what makes the gate able
-    # to hold this wiring in place.
+    # always defines these collaborators, and check-wiring-reads.py (#236)
+    # walks attribute loads, so a getattr("name") read is invisible to it and
+    # the fields would report as wired-but-unread. Naming them here is what
+    # makes the gate able to hold this wiring in place.
     return build_node_resolver(
         a2a_delegator=container.a2a_delegator,
         guest_peers=container.guest_peers,
         run_store=container.run_store,
+        effect_context=container.capability_effects,
+        provider_registry=container.provider_registry,
+        llm_router=container.llm_router,
         # The durable graph store, which `agent.synth_dag` declares as
         # required (#1193): without it the resolver refuses that kind instead
         # of constructing one that reports success for a sub-graph nothing
@@ -122,27 +125,39 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
 _fallback_run_store = InMemoryDurableRunStore()
 
 
-def get_run_store() -> DurableRunStore:
-    """The durable store backing registered-DAG execution.
+def get_canonical_run_store() -> DurableRunStore:
+    """Return the graph store projected onto the canonical execution spine.
 
-    The Container's `graph_run_store` when there is one -- a `DurableRunStore`
-    in interface only, whose Run, NodeRuns and Attempts are rows on the
-    canonical spine (#44). That is what makes a DAG this process ran findable
-    through `GET /v1/runs/{id}`, sweepable by retention, and resumable by
-    another replica; the module-level in-memory store this replaces could do
-    none of those, and its records did not outlive the process that made them.
+    HITL is not available against the standalone compatibility store. Refusing
+    that path is important: a pending human decision must never be written to
+    process-local state that the canonical Run API and a restarted worker
+    cannot see.
     """
     container = _container()
     if container is None:
-        return _fallback_run_store
+        raise RuntimeError("canonical graph execution spine is unavailable")
     # An attribute load, not getattr(): check-wiring-reads.py (#236) walks
     # attribute loads, so a getattr("graph_run_store") read is invisible to it
     # and the Container field would report as wired-but-unread. Naming it here
     # is what holds this wiring in place.
     store = container.graph_run_store
     if store is None:
-        return _fallback_run_store
+        raise RuntimeError("canonical graph execution spine is unavailable")
     return store  # type: ignore[no-any-return]
+
+
+def get_run_store() -> DurableRunStore:
+    """Return the graph store used by registered-DAG execution.
+
+    The no-container branch remains a deliberately isolated compatibility path
+    for non-HITL standalone DAG tests and deployments. Product HITL routes use
+    :func:`get_canonical_run_store` and therefore cannot accidentally expose or
+    mutate this process-local state.
+    """
+    try:
+        return get_canonical_run_store()
+    except RuntimeError:
+        return _fallback_run_store
 
 
 def get_registry() -> DagRegistry:
@@ -189,6 +204,8 @@ async def run_registered_dag(
         configure(graph)
     container = _container()
     run_store = container.run_store if container is not None else None
+    if run_store is None and any(node.node_type.startswith("human.") for node in graph.nodes):
+        raise RuntimeError("canonical graph execution spine is required for human work")
     # Admission first, then execution. Traversal consumes an admitted Run
     # rather than creating one (#44): the create and the first traversal
     # checkpoint are writes to two stores, so a crash between them would leave

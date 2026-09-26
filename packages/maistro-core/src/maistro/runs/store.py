@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import islice
@@ -476,6 +476,22 @@ class RunStore(Protocol):
         """Resolve the canonical Run claiming one scheduled occurrence."""
         ...
 
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """Resolve every claim among `scheduled_fors`, in one round trip.
+
+        The batched twin of `get_run_for_occurrence` (#1533): a caller
+        checking many occurrences of the same schedule at once — the
+        scheduling admitter's truncated-tail recovery walk — issues one query
+        instead of one per occurrence, which is the difference between a
+        single lookup and tens of thousands of serial ones on a schedule
+        whose enumeration cap dropped a large tail. An occurrence with no
+        claim is simply absent from the result, the same "no claim"
+        `get_run_for_occurrence` answers with `None`.
+        """
+        ...
+
     async def find_delegation_run(self, delegation_key: str) -> Run | None: ...
 
     async def attach_delegation_receipt(
@@ -623,6 +639,12 @@ class InMemoryRunStore:
         # scanning them, because the check is on the hot admission path and a
         # scan would be linear in every Run the store holds.
         self._occurrences: dict[tuple[str, str], str] = {}
+        # `canvas_job_id` -> run_id (#1055 review, migration 039). Same shape
+        # as `_occurrences`: two workers racing the same Canvas idempotency
+        # key both compute the same deterministic `canvas_job_id` before
+        # either inserts, and this is the claim that refuses the second one
+        # rather than leaving two Runs that agree on one job id.
+        self._canvas_job_claims: dict[str, str] = {}
 
     def _prune_terminal_runs(self) -> None:
         """Evict the oldest terminal Runs once the store exceeds its bound.
@@ -662,6 +684,33 @@ class InMemoryRunStore:
                 continue
             yield run_id
 
+    def _release_occurrence_claim(self, forgotten: Run, run_id: str) -> None:
+        """Release `forgotten`'s schedule-occurrence claim, if it held one.
+
+        The claim goes with the Run, so a Run this store evicted or a
+        retention sweep deleted stops blocking its occurrence. That is the
+        right coupling: nothing is duplicated by re-admitting a firing whose
+        only record has been deliberately destroyed, and keeping the claim
+        would be an unreachable row asserting something no longer true.
+        """
+        occurrence = occurrence_key(forgotten.provenance)
+        if occurrence is not None and self._occurrences.get(occurrence) == run_id:
+            del self._occurrences[occurrence]
+
+    def _release_canvas_job_claim(self, forgotten: Run, run_id: str) -> None:
+        """Release `forgotten`'s Canvas job claim, if it held one.
+
+        Same coupling as `_release_occurrence_claim`, for the Canvas
+        `canvas_job_id` claim (#1055 review, migration 039).
+        """
+        canvas_job_id = forgotten.provenance.get("canvas_job_id")
+        if (
+            isinstance(canvas_job_id, str)
+            and canvas_job_id
+            and self._canvas_job_claims.get(canvas_job_id) == run_id
+        ):
+            del self._canvas_job_claims[canvas_job_id]
+
     def _forget_run(self, run_id: str) -> None:
         """Drop a Run and everything hanging off it.
 
@@ -670,14 +719,8 @@ class InMemoryRunStore:
         also unreachable.
         """
         forgotten = self._runs.pop(run_id)
-        # The claim goes with the Run, so a Run this store evicted or a
-        # retention sweep deleted stops blocking its occurrence. That is the
-        # right coupling: nothing is duplicated by re-admitting a firing whose
-        # only record has been deliberately destroyed, and keeping the claim
-        # would be an unreachable row asserting something no longer true.
-        occurrence = occurrence_key(forgotten.provenance)
-        if occurrence is not None and self._occurrences.get(occurrence) == run_id:
-            del self._occurrences[occurrence]
+        self._release_occurrence_claim(forgotten, run_id)
+        self._release_canvas_job_claim(forgotten, run_id)
         node_run_ids = {
             node_run_id
             for node_run_id, node_run in self._node_runs.items()
@@ -732,18 +775,47 @@ class InMemoryRunStore:
             retention_expires_at=retention_expires_at,
         )
         run = admit_in_state(run, initial_status)
-        occurrence = occurrence_key(run.provenance)
-        if occurrence is not None:
-            # Checked and claimed with no await between, which is what makes
-            # this atomic here: this store runs in one event loop, and the two
-            # halves cannot be interleaved by another coroutine. The durable
-            # backends get the same guarantee from a unique index instead.
-            if occurrence in self._occurrences:
-                raise DuplicateOccurrence(*occurrence)
-            self._occurrences[occurrence] = run.run_id
+        self._claim_occurrence(run)
+        self._claim_canvas_job(run)
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return run.model_copy(deep=True)
+
+    def _claim_occurrence(self, run: Run) -> None:
+        """Atomically claim `run`'s schedule occurrence, if it names one.
+
+        Checked and claimed with no await between, which is what makes this
+        atomic here: this store runs in one event loop, and the two halves
+        cannot be interleaved by another coroutine. The durable backends get
+        the same guarantee from a unique index instead (migration 015).
+        """
+        occurrence = occurrence_key(run.provenance)
+        if occurrence is None:
+            return
+        if occurrence in self._occurrences:
+            raise DuplicateOccurrence(*occurrence)
+        self._occurrences[occurrence] = run.run_id
+
+    def _claim_canvas_job(self, run: Run) -> None:
+        """Atomically claim `run`'s Canvas job id, if it is a Canvas admission.
+
+        Same no-await claim as `_claim_occurrence`, mirrored by a real unique
+        index on the durable backends (#1055 review, migration 039). Scoped
+        to `admission_source == "canvas_generation"` too: the field name
+        alone is not exclusively Canvas-owned, and a Run from an unrelated
+        source that happens to carry the same string in its own provenance
+        must not be able to block a real admission.
+        """
+        canvas_job_id = run.provenance.get("canvas_job_id")
+        if not (
+            isinstance(canvas_job_id, str)
+            and canvas_job_id
+            and run.provenance.get(ADMISSION_SOURCE) == "canvas_generation"
+        ):
+            return
+        if canvas_job_id in self._canvas_job_claims:
+            raise RunIntegrityError(f"a Run already claims Canvas job {canvas_job_id!r}")
+        self._canvas_job_claims[canvas_job_id] = run.run_id
 
     def _referenced_by_children(self) -> tuple[set[str], set[str]]:
         """The Run and NodeRun ids some other Run names as its parent."""
@@ -1054,6 +1126,20 @@ class InMemoryRunStore:
         """Resolve an occurrence through its claim index, never by scanning Runs."""
         run_id = self._occurrences.get((schedule_id, scheduled_for))
         return await self.get_run(run_id) if run_id is not None else None
+
+    async def get_runs_for_occurrences(
+        self, schedule_id: str, scheduled_fors: Sequence[str]
+    ) -> dict[str, Run]:
+        """The batched twin of `get_run_for_occurrence`, from the same index."""
+        found: dict[str, Run] = {}
+        for scheduled_for in scheduled_fors:
+            run_id = self._occurrences.get((schedule_id, scheduled_for))
+            if run_id is None:
+                continue
+            run = await self.get_run(run_id)
+            if run is not None:
+                found[scheduled_for] = run
+        return found
 
     async def find_delegation_run(self, delegation_key: str) -> Run | None:
         for run in self._runs.values():
