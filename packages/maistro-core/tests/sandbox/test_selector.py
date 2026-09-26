@@ -8,6 +8,8 @@ from maistro.sandbox.policy import (
     DEV_ONLY,
     TRUSTED_TOOL,
     UNTRUSTED_CODE,
+    ExecutionMode,
+    WorkloadPolicy,
     tier_satisfies,
 )
 from maistro.sandbox.protocol import SandboxProtocol
@@ -138,14 +140,13 @@ class TestBuildConfigClamping:
     Overrides may only tighten.
     """
 
-    def test_network_override_cannot_defeat_a_no_network_policy(self) -> None:
-        cfg = SandboxSelector().build_config(UNTRUSTED_CODE, network=True)
-        assert cfg.network is False
+    def test_network_override_is_rejected_instead_of_becoming_a_second_policy(self) -> None:
+        with pytest.raises(ValueError, match="network override is retired"):
+            SandboxSelector().build_config(UNTRUSTED_CODE, network=True)
 
-    def test_network_override_can_still_drop_network(self) -> None:
-        assert TRUSTED_TOOL.network_allowed is True
-        cfg = SandboxSelector().build_config(TRUSTED_TOOL, network=False)
-        assert cfg.network is False
+    def test_network_override_cannot_be_used_to_change_a_trusted_policy(self) -> None:
+        with pytest.raises(ValueError, match="network override is retired"):
+            SandboxSelector().build_config(TRUSTED_TOOL, network=False)
 
     def test_memory_override_above_the_ceiling_is_clamped(self) -> None:
         cfg = SandboxSelector().build_config(UNTRUSTED_CODE, memory_mb=999_999)
@@ -163,5 +164,40 @@ class TestBuildConfigClamping:
         cfg = SandboxSelector().build_config(BENCHMARK_EVAL)
         assert cfg.memory_mb == BENCHMARK_EVAL.max_memory_mb
         assert cfg.timeout_s == BENCHMARK_EVAL.max_timeout_s
-        assert cfg.network is False
+        assert cfg.egress.grants_network is False
         assert cfg.min_isolation == BENCHMARK_EVAL.min_tier
+
+
+class TestPolicyEgressConsistency:
+    """`network_allowed` is a consistency mirror of the egress grant, not a
+    second authority: a policy that claims networking is allowed while its
+    grant denies — or the reverse — is rejected at construction (#18)."""
+
+    def test_allowed_flag_with_deny_grant_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="contradicts its egress grant"):
+            WorkloadPolicy(min_tier="container", network_allowed=True)
+
+    def test_disallowed_flag_with_host_grant_is_rejected(self) -> None:
+        from maistro.sandbox.network import EgressGrant, EgressMode
+
+        with pytest.raises(ValueError, match="contradicts its egress grant"):
+            WorkloadPolicy(
+                min_tier="container",
+                network_allowed=False,
+                egress=EgressGrant(mode=EgressMode.HOST, reason="test"),
+            )
+
+    def test_standard_policies_are_self_consistent(self) -> None:
+        for policy in (UNTRUSTED_CODE, TRUSTED_TOOL, BENCHMARK_EVAL, DEV_ONLY):
+            assert policy.network_allowed == policy.egress.grants_network
+
+    def test_consistent_policy_constructs(self) -> None:
+        from maistro.sandbox.network import DENY_ALL
+
+        policy = WorkloadPolicy(
+            min_tier="vm",
+            network_allowed=False,
+            mode=ExecutionMode.AUTONOMOUS,
+            egress=DENY_ALL,
+        )
+        assert policy.effective_min_tier == "vm"

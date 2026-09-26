@@ -1057,6 +1057,14 @@ jobs:
       - name: model egress (the direct-caller set may only shrink)
         run: uv run python scripts/check-model-egress.py
 
+      # ADR-093/SPEC-190 (#18): maistro.sandbox is the one sandbox policy
+      # authority. No product consumer may construct a backend, import one,
+      # assemble launcher flags by hand, or import a microVM runtime no
+      # shipped backend backs — and the legacy execute_node adapter must keep
+      # consuming the authority rather than becoming a second one again.
+      - name: sandbox authority (one selector, no private launchers)
+        run: uv run python scripts/check-sandbox-authority.py
+
       - name: Architecture fitness functions
         env:
           PYTHONPATH: packages/maistro-core/src

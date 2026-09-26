@@ -122,8 +122,9 @@ class CodeRegistry(Protocol):
 
 Registered code is **untrusted by default** and executes inside a **Hyperlight microVM** —
 hardware-virtualized, per-invocation ephemeral, no host filesystem or network unless explicitly
-granted. This is the same isolation surface the hive-conductor `hyperlight_executor` already
-provides for graph nodes; the registry reuses it.
+granted. Graph-node code execution reaches this isolation surface through the canonical
+`maistro.sandbox` selector authority (ADR-093); today no microVM backend ships behind it, so an
+untrusted ref is refused rather than downgraded (SANDBOX-SUPPORT-MATRIX.md).
 
 - **Fail-closed.** If no microVM runtime is available, an **untrusted** ref is **refused**
   (`isolation: "refused"`), *not* run as an unconfined host subprocess. Honest labelling: the

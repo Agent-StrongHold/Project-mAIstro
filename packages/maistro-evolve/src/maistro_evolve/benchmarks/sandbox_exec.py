@@ -74,11 +74,12 @@ async def run_function_checks(
 
     try:
         from maistro.config.settings import SandboxSettings
+        from maistro.sandbox import NoSuitableBackendError
         from maistro.tools.sandbox.docker import create_sandbox
     except ImportError as exc:
         return False, f"isolated sandbox unavailable: {exc}"[:_MAX_OUTPUT_CHARS]
 
-    # ``ensure_workspace`` only permits MAIstro's dedicated temporary root (or
+    # ``validate_host_root`` only permits MAIstro's dedicated temporary root (or
     # /repos). Build the evaluator directory under that root rather than using
     # an arbitrary tempfile path that the sandbox correctly refuses to mount.
     sandbox_root = Path(tempfile.gettempdir()) / "maistro-workspace" / "swebench-eval"
@@ -115,7 +116,18 @@ async def run_function_checks(
                     "python check.py",
                     timeout=max(1, math.ceil(timeout)),
                 )
-        except (FileNotFoundError, PermissionError, RuntimeError, ValueError, OSError) as exc:
+        except (
+            FileNotFoundError,
+            PermissionError,
+            RuntimeError,
+            ValueError,
+            OSError,
+            NoSuitableBackendError,
+        ) as exc:
+            # Includes the canonical selector's refusal on hosts without a
+            # Tier-2 backend: candidate code is unattended and untrusted
+            # (ADR-093 decision 6), so the check fails closed — it never
+            # falls back to executing on the evaluator host.
             return False, f"isolated sandbox unavailable: {exc}"[:_MAX_OUTPUT_CHARS]
 
     output = output.strip()

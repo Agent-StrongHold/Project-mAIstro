@@ -15,12 +15,12 @@ class TestFailClosedExecutor:
     """The executor MUST refuse when no isolation backend is installed."""
 
     def test_no_backend_refuses_execution(self):
-        """With all backends unavailable, execute_node returns fail-closed."""
+        """With no backend registered, execute_node returns fail-closed."""
         from services.hyperlight_executor import SandboxExecutor
 
-        executor = SandboxExecutor()
-        # Force no backend
-        executor._backend = None
+        from maistro.sandbox import SandboxSelector
+
+        executor = SandboxExecutor(selector=SandboxSelector())
 
         result = asyncio.run(executor.execute_node("print('hi')"))
         assert result["success"] is False
@@ -30,8 +30,9 @@ class TestFailClosedExecutor:
     def test_no_backend_available_property_false(self):
         from services.hyperlight_executor import SandboxExecutor
 
-        executor = SandboxExecutor()
-        executor._backend = None
+        from maistro.sandbox import SandboxSelector
+
+        executor = SandboxExecutor(selector=SandboxSelector())
         assert executor.available is False
 
 

@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 import maistro_evolve.benchmarks.swebench as swebench_module
+from maistro.sandbox import ExecResult, SandboxSelector
 from maistro_evolve.benchmarks.datasets import SWEBENCH_SAMPLES
 from maistro_evolve.benchmarks.swebench import (
     _extract_code,
@@ -13,6 +14,53 @@ from maistro_evolve.benchmarks.swebench import (
 )
 
 from .conftest import make_genome
+
+
+class _StubExecBackend:
+    """A vm-tier backend whose exec returns a canned result.
+
+    Candidate code must never execute on the host, so the stub does not run
+    the script either — it stands in for the sandbox boundary the way the
+    canonical backends' own tests do. Real-container execution of this
+    benchmark is covered by the sandbox conformance suite (#80).
+    """
+
+    tier = "vm"
+    supports_scoped_egress = False
+
+    def __init__(self, exit_code: int, output: str) -> None:
+        self._result = ExecResult(exit_code=exit_code, stdout=output, stderr="", duration_ms=1)
+        self.exec_count = 0
+
+    async def spawn(self, *, config: Any) -> object:
+        return object()
+
+    async def exec(self, instance: Any, command: list[str], *, timeout_s: int = 120) -> ExecResult:
+        self.exec_count += 1
+        return self._result
+
+    async def read_file(self, instance: Any, path: str) -> bytes:
+        raise NotImplementedError
+
+    async def write_file(self, instance: Any, path: str, content: bytes) -> None:
+        pass
+
+    async def destroy(self, instance: Any) -> None:
+        pass
+
+
+def _patch_sandbox(
+    monkeypatch: pytest.MonkeyPatch, exit_code: int, output: str
+) -> _StubExecBackend:
+    """Route the benchmark through a selector that has a vm-tier backend."""
+    from maistro.tools.sandbox import docker as sandbox_docker
+
+    backend = _StubExecBackend(exit_code, output)
+    selector = SandboxSelector()
+    selector.register("vm", backend)
+    monkeypatch.setattr(sandbox_docker, "build_selector", lambda: selector)
+    return backend
+
 
 # A single small, fast sample used for most run_swebench tests. It deliberately
 # uses the real swe_01 identity so the production evaluator supplies its
@@ -105,6 +153,7 @@ class TestRunSwebench:
             await run_swebench(genome, None)
 
     async def test_correct_fix_scores_full_marks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_sandbox(monkeypatch, exit_code=0, output="PASS\n")
         monkeypatch.setattr(swebench_module, "SWEBENCH_SAMPLES", [_FAST_SAMPLE])
         genome = make_genome()
 
@@ -120,6 +169,24 @@ class TestRunSwebench:
         assert result.metadata["check"] == "isolated_hidden_assertion_batch"
         assert result.metadata["total_samples"] == 1
         assert result.metadata["failures"] == []
+
+    async def test_host_without_vm_tier_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No registered backend meets the unattended/untrusted floor → the
+        candidate is refused, scored zero, and never executed on the host
+        (ADR-093 decision 6; #18 converged this seam onto the canonical
+        ladder, which refuses on container-only hosts)."""
+        from maistro.tools.sandbox import docker as sandbox_docker
+
+        monkeypatch.setattr(sandbox_docker, "build_selector", SandboxSelector)  # nothing registered
+        monkeypatch.setattr(swebench_module, "SWEBENCH_SAMPLES", [_FAST_SAMPLE])
+        genome = make_genome()
+
+        async def llm_call(messages: Any, **kwargs: Any) -> str:
+            return _CORRECT_FIX
+
+        result = await run_swebench(genome, llm_call)
+        assert result.score == 0.0
+        assert result.metadata["failures"][0]["detail"].startswith("isolated sandbox unavailable")
 
     async def test_unfixed_buggy_code_scores_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(swebench_module, "SWEBENCH_SAMPLES", [_FAST_SAMPLE])
@@ -139,7 +206,14 @@ class TestRunSwebench:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A non-code response isn't a harness exception — it's a genuine
-        sandboxed execution failure (SyntaxError), same as any other fail."""
+        sandboxed execution failure (SyntaxError), same as any other fail.
+        The stub returns what a real sandbox prints for a script that cannot
+        parse; the pin is that such output flows into `failures` unmodified."""
+        _patch_sandbox(
+            monkeypatch,
+            exit_code=1,
+            output='  File "check.py", line 1\n    I refuse to write code.\nSyntaxError: invalid syntax\n',
+        )
         monkeypatch.setattr(swebench_module, "SWEBENCH_SAMPLES", [_FAST_SAMPLE])
         genome = make_genome()
 

@@ -20,19 +20,20 @@ self-evolving-agent host process depends on both packages).
 
 Docker itself is not available in CI/sandboxed dev environments, so --
 mirroring the existing precedent in
-packages/maistro-core/tests/tools/sandbox/test_docker.py -- only the OS
-process boundary (`asyncio.create_subprocess_exec`) is mocked. Every other
-component (SandboxContainer, EvalHarness, EloTournament, PipelineGenome) is
-the real production class.
+packages/maistro-core/tests/tools/sandbox/test_docker.py -- only the sandbox
+backend at the process boundary (the canonical `SandboxProtocol` seam the
+facade drives) is stubbed. Every other component (SandboxContainer,
+EvalHarness, EloTournament, PipelineGenome) is the real production class.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from typing import Any
 
 import pytest
 
+from maistro.sandbox import ExecResult, SandboxInstance
 from maistro.tools.sandbox.docker import SandboxContainer
 from maistro_evolve.harness import EvalHarness
 from maistro_evolve.tournament import EloTournament
@@ -41,19 +42,43 @@ from maistro_evolve.types import DAGTopology, EvalWeights, NodeGenome, PipelineG
 BENCHMARK_NAME = "trivial_addition"
 
 
-class _FakeProc:
-    """Stands in for the asyncio subprocess used by SandboxContainer.exec.
+class _StubSandboxBackend:
+    """Stands in for the canonical backend behind the legacy facade.
 
-    Mirrors maistro-core's own test_docker.py boundary mock -- no real Docker
-    daemon is available in this environment.
+    The facade (``SandboxContainer``) is real production code; only the
+    protocol backend at the process boundary is stubbed -- no real Docker
+    daemon is available in this environment. The boundary moved from an
+    asyncio subprocess to the backend protocol seam when the legacy launcher
+    was retired behind `maistro.sandbox` (#18); the equivalence is exact:
+    both are where "the command left the process under test".
     """
 
-    def __init__(self, stdout: bytes = b"", returncode: int = 0) -> None:
-        self._stdout = stdout
-        self.returncode = returncode
+    tier = "vm"
 
-    async def communicate(self) -> tuple[bytes, bytes]:
-        return self._stdout, b""
+    def __init__(self, stdout: bytes, returncode: int) -> None:
+        self._result = ExecResult(
+            exit_code=returncode,
+            stdout=stdout.decode(),
+            stderr="",
+            duration_ms=1,
+        )
+
+    async def spawn(self, *, config: Any) -> SandboxInstance:
+        return SandboxInstance(id="stub", backend="stub", isolation_tier="vm")
+
+    async def exec(
+        self, instance: SandboxInstance, command: list[str], *, timeout_s: int = 120
+    ) -> ExecResult:
+        return self._result
+
+    async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
+        raise NotImplementedError
+
+    async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
+        raise NotImplementedError
+
+    async def destroy(self, instance: SandboxInstance) -> None:
+        pass
 
 
 def _make_genome(
@@ -101,19 +126,13 @@ async def _run_coding_task_in_sandbox(
     correct code") gets exit code 0; the other gets a nonzero exit code --
     this is the deterministic stand-in for "harness scores the result."
     """
-    container = SandboxContainer(f"sandbox-{genome.id}", "/host")
-    fake_proc = _FakeProc(
+    backend = _StubSandboxBackend(
         stdout=b"3\n" if expected_exit == 0 else b"Traceback: NameError\n",
         returncode=expected_exit,
     )
-    with (
-        patch("maistro.tools.sandbox.docker.is_dangerous_command", return_value=[]),
-        patch(
-            "maistro.tools.sandbox.docker.asyncio.create_subprocess_exec",
-            new=AsyncMock(return_value=fake_proc),
-        ),
-    ):
-        code, output = await container.exec("python3 add.py")
+    instance = SandboxInstance(id=f"sandbox-{genome.id}", backend="stub", isolation_tier="vm")
+    container = SandboxContainer(backend, instance)
+    code, output = await container.exec("python3 add.py")
     return code, output
 
 

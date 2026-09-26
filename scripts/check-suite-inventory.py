@@ -129,6 +129,7 @@ _EVOLVE_RSI = ["packages/maistro-evolve/src", "packages/maistro-rsi/src"]
 #: recording a count for it would appear to be gated when it is not.
 RECIPES: dict[str, Recipe] = {
     "packages/maistro-core/tests": Recipe(args=[]),
+    "packages/maistro-core/tests/sandbox": Recipe(args=[]),
     "packages/maistro-registry/tests": Recipe(args=[]),
     "packages/maistro-evolve/tests": Recipe(args=[], pythonpath=_EVOLVE_RSI),
     "packages/maistro-rsi/tests": Recipe(args=[], pythonpath=_EVOLVE_RSI),

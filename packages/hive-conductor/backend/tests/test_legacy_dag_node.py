@@ -541,7 +541,9 @@ async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
 
     captured: dict[str, Any] = {}
 
-    def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
+    def fake_subprocess(
+        raw_node: dict, task: str, context: str, env: dict, mode: str, fence: object = None
+    ) -> dict:
         captured.update(node=raw_node["id"], task=task, context=context, mode=mode)
         return {
             "role": "worker",
@@ -568,12 +570,51 @@ async def test_a_sandbox_tier_adapter_node_runs_the_isolated_subprocess(
     assert usage_events and usage_events[0]["usage"]["prompt_tokens"] == 3
 
 
+async def test_a_sandbox_tier_node_presents_the_ctx_fence_to_the_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#79: the fence the attempt executor stamped on the context is what the
+    isolated subprocess runs under — and an unstamped context presents none,
+    because a fence may not be invented from partial identity."""
+    import services.legacy_dag_node as adapter
+
+    seen: list[object] = []
+
+    def fake_subprocess(
+        raw_node: dict, task: str, context: str, env: dict, mode: str, fence: object = None
+    ) -> dict:
+        seen.append(fence)
+        return {"role": "worker", "response": "ok", "success": True}
+
+    monkeypatch.setattr(adapter, "_run_node_subprocess", fake_subprocess)
+
+    node = _adapter_node({"id": "n1", "config": {"capabilities": ["shell"]}})
+
+    stamped = _ctx().model_copy(
+        update={
+            "node_run_id": "nr-9",
+            "attempt_id": "a-9",
+            "lease_epoch": 4,
+            "fencing_token": "tok-9",
+        }
+    )
+    await node._execute(node.input_schema(), stamped)
+    await node._execute(node.input_schema(), _ctx())
+
+    fence = seen[0]
+    assert fence is not None and fence.fencing_token == "tok-9" and fence.lease_epoch == 4
+    assert fence.attempt_id == "a-9" and fence.node_run_id == "nr-9"
+    assert seen[1] is None
+
+
 async def test_a_failed_isolated_node_fails_the_adapter_node(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import services.legacy_dag_node as adapter
 
-    def fake_subprocess(raw_node: dict, task: str, context: str, env: dict, mode: str) -> dict:
+    def fake_subprocess(
+        raw_node: dict, task: str, context: str, env: dict, mode: str, fence: object = None
+    ) -> dict:
         return {"role": "worker", "response": "subprocess refused", "success": False}
 
     monkeypatch.setattr(adapter, "_run_node_subprocess", fake_subprocess)

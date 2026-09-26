@@ -11,6 +11,25 @@ from maistro.sandbox.network import DENY_ALL, EgressGrant
 # Type alias for clarity
 IsolationTier = str  # "vm" | "gvisor" | "container" | "bubblewrap" | "fake"
 
+#: Default retained bytes per stream. The bound applies to bytes on the host
+#: pipe, before decoding them into the result strings.
+DEFAULT_OUTPUT_CAPTURE_BYTES = 64 * 1024
+#: Host policy ceiling. SandboxConfig normalizes larger workload requests to
+#: this value, and backends clamp again at capture time as a defense in depth.
+MAX_OUTPUT_CAPTURE_BYTES = 1024 * 1024
+#: Stable result code for host-side output policy termination.
+OUTPUT_LIMIT_EXIT_CODE = 125
+
+
+def output_capture_limits(stdout_bytes: int, stderr_bytes: int) -> tuple[int, int]:
+    """Return non-negative, host-capped output limits for both streams."""
+    if stdout_bytes < 0 or stderr_bytes < 0:
+        raise ValueError("stdout/stderr capture limits cannot be negative")
+    return (
+        min(stdout_bytes, MAX_OUTPUT_CAPTURE_BYTES),
+        min(stderr_bytes, MAX_OUTPUT_CAPTURE_BYTES),
+    )
+
 
 @runtime_checkable
 class SandboxProtocol(Protocol):
@@ -55,7 +74,10 @@ class SandboxConfig:
     #: Best-effort process ceiling. Set as `RLIMIT_NPROC`, which the kernel
     #: does not enforce for a privileged parent -- see `resource_limits`.
     max_processes: int = 128
-    network: bool = False
+    #: Retained as a mechanically rejected compatibility input. Egress is
+    #: authoritative; accepting a second boolean would let callers believe
+    #: they had granted or denied networking without an auditable policy.
+    network: bool | None = None
     writable_paths: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     min_isolation: IsolationTier = "container"
@@ -67,6 +89,22 @@ class SandboxConfig:
     #: the sandbox environment so anything it publishes can prove it is
     #: still the current execution. `None` for work with nothing to commit.
     fence: SandboxFence | None = None
+    #: The host retains at most this many bytes from each child output stream.
+    #: Values above the host ceiling are reduced to the ceiling; workloads
+    #: cannot use their config to obtain an unbounded host-owned pipe.
+    max_stdout_bytes: int = DEFAULT_OUTPUT_CAPTURE_BYTES
+    max_stderr_bytes: int = DEFAULT_OUTPUT_CAPTURE_BYTES
+
+    def __post_init__(self) -> None:
+        if self.network is not None:
+            raise ValueError(
+                "SandboxConfig.network is retired; set an explicit EgressGrant on the policy"
+            )
+        stdout_bytes, stderr_bytes = output_capture_limits(
+            self.max_stdout_bytes, self.max_stderr_bytes
+        )
+        object.__setattr__(self, "max_stdout_bytes", stdout_bytes)
+        object.__setattr__(self, "max_stderr_bytes", stderr_bytes)
 
 
 @dataclass
@@ -82,10 +120,34 @@ class SandboxInstance:
 
 @dataclass(frozen=True)
 class ExecResult:
-    """Result of a command execution in a sandbox."""
+    """Result of a command execution in a sandbox.
+
+    Backends retain only the configured prefix of each stream. If a child
+    writes beyond either bound, the backend kills the process group, returns
+    exit code ``OUTPUT_LIMIT_EXIT_CODE``, and sets ``output_limit_exceeded``;
+    the per-stream truncation flags and retained byte counts make the result
+    auditable without pretending the strings are complete output.
+    """
 
     exit_code: int
     stdout: str
     stderr: str
     duration_ms: int
     timed_out: bool = False
+    #: True when the backend terminated execution after a stream exceeded its
+    #: configured bound. The retained counts below describe the truthful prefix.
+    output_limit_exceeded: bool = False
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    stdout_bytes_retained: int = 0
+    stderr_bytes_retained: int = 0
+
+    @property
+    def stdout_bytes(self) -> int:
+        """Compatibility shorthand for the retained stdout byte count."""
+        return self.stdout_bytes_retained
+
+    @property
+    def stderr_bytes(self) -> int:
+        """Compatibility shorthand for the retained stderr byte count."""
+        return self.stderr_bytes_retained

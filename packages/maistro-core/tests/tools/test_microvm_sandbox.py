@@ -133,7 +133,7 @@ def test_parse_mib_units():
 def test_workspace_outside_allowlist_is_refused():
     """The harness API's request body controls workdir, and the launcher
     mounts it into the guest: /etc or the service checkout must be refused at
-    construction, mirroring the Docker backend's ensure_workspace posture."""
+    construction, mirroring the sandbox workspace allowlist posture."""
     import pytest
 
     async def launch(spec):

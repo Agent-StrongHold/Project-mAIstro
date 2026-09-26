@@ -33,9 +33,16 @@ from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
+from maistro.sandbox.capture import capture_process
 from maistro.sandbox.detect import BUBBLEWRAP_BINARY
 from maistro.sandbox.network import EgressMode, resolve_grant
-from maistro.sandbox.protocol import ExecResult, SandboxConfig, SandboxInstance
+from maistro.sandbox.paths import read_beneath, validate_host_root, write_beneath
+from maistro.sandbox.protocol import (
+    OUTPUT_LIMIT_EXIT_CODE,
+    ExecResult,
+    SandboxConfig,
+    SandboxInstance,
+)
 
 logger = logging.getLogger("maistro.sandbox.bubblewrap")
 
@@ -224,8 +231,12 @@ class BubblewrapSandboxBackend:
         # The sandbox's writable surface is exactly its own workdir, mounted at
         # a fixed path so a command does not need to know the host layout.
         argv += ["--bind", str(workdir), "/work", "--chdir", "/work"]
-        for extra in config.writable_paths:
-            argv += ["--bind", extra, extra]
+        for index, extra in enumerate(config.writable_paths):
+            # A caller-supplied mount is still host authority. Authorize it
+            # before building argv and give it a fixed guest name rather than
+            # exposing its host path inside the candidate.
+            authorized = validate_host_root(extra)
+            argv += ["--bind", str(authorized), f"/work-extra-{index}"]
         if config.egress.mode is EgressMode.HOST:
             # `--unshare-all` already removed the network namespace; sharing it
             # back is the only way this backend can grant egress, and it grants
@@ -264,61 +275,55 @@ class BubblewrapSandboxBackend:
             # by everything inside the sandbox. The same hook the capability
             # probe runs under, so detection and spawn cannot disagree (#1235).
             preexec_fn=preexec_for(limits),
+            start_new_session=True,
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
-        except TimeoutError:
-            # `--die-with-parent` makes the kill reach the whole sandbox rather
-            # than only the `bwrap` process, so a timeout cannot leave the
-            # sandboxed work running unsupervised.
-            process.kill()
-            await process.wait()
-            return ExecResult(
-                exit_code=TIMEOUT_EXIT_CODE,
-                stdout="",
-                stderr=f"sandbox timed out after {timeout_s}s",
-                duration_ms=int((time.monotonic() - start) * 1000),
-                timed_out=True,
-            )
-
+        captured = await capture_process(
+            process,
+            timeout_s=timeout_s,
+            max_stdout_bytes=config.max_stdout_bytes,
+            max_stderr_bytes=config.max_stderr_bytes,
+        )
+        # `--die-with-parent` plus capture_process's process-group kill makes
+        # both timeout and output overflow terminate the complete workload.
+        exit_code = process.returncode if process.returncode is not None else -1
+        if captured.timed_out:
+            exit_code = TIMEOUT_EXIT_CODE
+        elif captured.output_limit_exceeded:
+            exit_code = OUTPUT_LIMIT_EXIT_CODE
         return ExecResult(
-            exit_code=process.returncode if process.returncode is not None else -1,
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
+            exit_code=exit_code,
+            stdout=captured.stdout.decode(errors="replace"),
+            stderr=captured.stderr.decode(errors="replace"),
             duration_ms=int((time.monotonic() - start) * 1000),
+            timed_out=captured.timed_out,
+            output_limit_exceeded=captured.output_limit_exceeded,
+            stdout_truncated=captured.stdout_truncated,
+            stderr_truncated=captured.stderr_truncated,
+            stdout_bytes_retained=len(captured.stdout),
+            stderr_bytes_retained=len(captured.stderr),
         )
 
     # --- files -------------------------------------------------------------
 
     async def write_file(self, instance: SandboxInstance, path: str, content: bytes) -> None:
-        target = self._resolve(instance, path)
-        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_bytes, content)
+        """Write through the host-side transfer boundary (#1198).
 
-    async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
-        target = self._resolve(instance, path)
-        return await asyncio.to_thread(target.read_bytes)
-
-    def _resolve(self, instance: SandboxInstance, path: str) -> Path:
-        """Map a sandbox path onto the host, refusing to escape the workdir.
-
-        The file operations run on the *host* side — they are how a caller gets
-        work in and results out — so a sandbox path of `../../etc/passwd` would
-        otherwise be a host write with no sandbox involved at all.
+        These calls run on the *host* — they are how work gets in and results
+        come out — so their containment check is a security boundary. It is
+        enforced at `open` time, not before it: `write_beneath` walks directory
+        file descriptors with `O_NOFOLLOW`, so a symlink swapped into the path
+        between a check and the open is refused by the kernel (ELOOP) instead
+        of followed. A resolve-then-open implementation here had exactly that
+        check-to-open window, and a host write through it needed no sandbox
+        escape at all — only a race it could win.
         """
         _config, workdir = self._require(instance)
-        relative = Path(path)
-        if relative.is_absolute():
-            try:
-                relative = relative.relative_to("/work")
-            except ValueError:
-                raise ValueError(
-                    f"path {path!r} is outside the sandbox; writable root is '/work'"
-                ) from None
-        resolved = (workdir / relative).resolve()
-        if not resolved.is_relative_to(workdir.resolve()):
-            raise ValueError(f"path {path!r} escapes the sandbox workdir")
-        return resolved
+        await asyncio.to_thread(write_beneath, workdir, path, content)
+
+    async def read_file(self, instance: SandboxInstance, path: str) -> bytes:
+        """Read through the same O_NOFOLLOW boundary as `write_file` (#1198)."""
+        _config, workdir = self._require(instance)
+        return await asyncio.to_thread(read_beneath, workdir, path)
 
     def _require(self, instance: SandboxInstance) -> tuple[SandboxConfig, Path]:
         entry = self._instances.get(instance.id)
@@ -328,6 +333,7 @@ class BubblewrapSandboxBackend:
 
 
 __all__ = [
+    "OUTPUT_LIMIT_EXIT_CODE",
     "TIMEOUT_EXIT_CODE",
     "BubblewrapSandboxBackend",
     "BubblewrapUnavailableError",

@@ -47,6 +47,11 @@ class WorkloadPolicy:
     """What isolation a workload requires."""
 
     min_tier: IsolationTier
+    #: Kept as a consistency mirror of `egress`, not a second authority: the
+    #: grant decides (#77), and a policy that claims networking is allowed
+    #: while its grant denies — or the reverse — is a contradiction that would
+    #: let a reader believe whichever field they looked at first. Stated once
+    #: in `egress`; this field must agree or the policy is rejected (#18).
     network_allowed: bool = False
     max_memory_mb: int = 512
     max_timeout_s: int = 300
@@ -64,6 +69,15 @@ class WorkloadPolicy:
     untrusted: bool = True
     #: The egress this workload is granted. Default-deny (#77).
     egress: EgressGrant = DENY_ALL
+
+    def __post_init__(self) -> None:
+        if self.network_allowed != self.egress.grants_network:
+            raise ValueError(
+                "WorkloadPolicy.network_allowed contradicts its egress grant "
+                f"(network_allowed={self.network_allowed!r}, "
+                f"egress mode={self.egress.mode.value!r}): egress is "
+                "authoritative (ADR-093); state the decision once, as the grant"
+            )
 
     @property
     def effective_min_tier(self) -> IsolationTier:

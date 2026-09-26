@@ -181,8 +181,10 @@ closed below that.)
 ## Source references
 
 - `packages/maistro-core/src/maistro/tools/sandbox/docker.py` — current Docker sandbox.
-- `packages/hive-conductor/backend/services/hyperlight_executor.py` — fallback ladder + mode-floor
-  enforcement (reference implementation of Decision items 5-6).
+- `packages/maistro-core/src/maistro/sandbox/policy.py` + `selector.py` + `wiring.py` — the
+  canonical ladder and mode-floor enforcement (reference implementation of Decision items 5-6);
+  `packages/hive-conductor/backend/services/hyperlight_executor.py` consumes them through a
+  compatibility adapter.
 - ADR-019 (canonical source split), ADR-038 (reliability taxonomy), ADR-072 (threat model).
 - SPEC-190 — pluggable sandbox substrate (the design implementing this decision).
 - SPEC-200 — builders safety layer (the interactive confirmation gates the `interactive` floor
