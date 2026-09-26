@@ -870,8 +870,9 @@ async def test_blocked_answers_name_each_verified_requester_without_settling_app
     blocked_answer_clients, monkeypatch
 ) -> None:
     """A rejected attempt keeps Alice and Bob distinguishable without approval attribution."""
-    from maistro.graph.durable_runs import InMemoryDurableRunStore
     from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.graph.durable_runs import InMemoryDurableRunStore
 
     store = InMemoryDurableRunStore()
     monkeypatch.setattr("services.dag_agents.get_run_store", lambda: store)
