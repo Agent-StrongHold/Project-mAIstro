@@ -1,7 +1,8 @@
 """Shared content-scanning primitives for design-system imports and generated outputs.
 
-Detects script/eval injection, prompt-injection phrasing, base64 blobs, and Unicode
-steganography. `systems.importer` uses these for input-side (vendored design-system)
+Detects script/eval injection, prompt-injection phrasing, active markup/CSS network
+primitives, base64 blobs, and Unicode steganography. `systems.importer` uses these
+for input-side (vendored design-system)
 scanning; `scan_design_output` below applies the same primitives output-side, since
 generated HTML/SVG/JS/CSS carries the session's contaminated trust tier (ADR-062326-702b).
 """
@@ -11,414 +12,30 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from html.parser import HTMLParser
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
+
+from maistro.security.normalize import normalize_for_detection, strip_invisibles
+from maistro.security.warden.patterns import (
+    ACTIVE_MARKUP_PATTERNS,
+    REASON_ACTIVE_ELEMENT,
+    REJECT_PATTERNS,
+    SCRIPT_PATTERNS,
+    VISUAL_ARTIFACT_PATTERNS,
+    visual_artifact_unknown_tag_names,
+)
 
 if TYPE_CHECKING:
     from maistro_design.trust import InMemoryTrustBanishList
     from maistro_design.types import DesignOutput
 
-_SCRIPT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"<script\b", re.IGNORECASE),
-    re.compile(r"<iframe\b", re.IGNORECASE),
-    re.compile(r"<object\b", re.IGNORECASE),
-    re.compile(r"<embed\b", re.IGNORECASE),
-    re.compile(r"\beval\s*\(", re.IGNORECASE),
-    re.compile(r"\bFunction\s*\(", re.IGNORECASE),
-    re.compile(r"\bXMLHttpRequest\b"),
-    re.compile(r"\bnew\s+WebSocket\s*\("),
-    re.compile(r"\bfetch\s*\("),
-    re.compile(r"javascript:", re.IGNORECASE),
-)
-
-_PROMPT_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"ignore\s+(all\s+|any\s+)?(previous|prior|above)\s+instructions", re.IGNORECASE),
-    re.compile(r"disregard\s+(all\s+|any\s+)?(previous|prior|above)", re.IGNORECASE),
-    re.compile(r"\bjailbreak\b", re.IGNORECASE),
-    re.compile(r"forget\s+(all\s+|your\s+)?(previous|prior)\s+instructions", re.IGNORECASE),
-    re.compile(r"\bdeveloper\s+mode\b", re.IGNORECASE),
-    re.compile(r"you\s+are\s+now\s+(in\s+)?(DAN|jailbroken)", re.IGNORECASE),
-    re.compile(r"reveal\s+(your\s+)?system\s+prompt", re.IGNORECASE),
-)
-
 _URL_RE = re.compile(r"https?://[^\s\"'<>)]+")
 _BASE64_RE = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
-
-# Keep these reason names in sync with the frontend visual-artifact boundary.
-# This is deliberately conservative: trust recommendations must not upgrade
-# content that the browser renderer will remove or neutralize.
-VISUAL_ARTIFACT_BLOCK_REASONS: tuple[str, ...] = (
-    "active-element",
-    "event-handler",
-    "dangerous-url",
-    "unsupported-attribute",
-    "unsupported-css-property",
-    "css-network-or-code",
-)
-
-# Allowed tag names (HTML and SVG) as per frontend visualArtifactRenderer.tsx
-_HTML_TAGS = {
-    "article",
-    "b",
-    "blockquote",
-    "br",
-    "caption",
-    "code",
-    "dd",
-    "div",
-    "dl",
-    "dt",
-    "em",
-    "figcaption",
-    "figure",
-    "footer",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "header",
-    "hr",
-    "i",
-    "li",
-    "main",
-    "ol",
-    "p",
-    "pre",
-    "section",
-    "small",
-    "span",
-    "strong",
-    "sub",
-    "sup",
-    "table",
-    "tbody",
-    "td",
-    "tfoot",
-    "th",
-    "thead",
-    "tr",
-    "u",
-    "ul",
-}
-_SVG_TAGS = {
-    "circle",
-    "ellipse",
-    "g",
-    "line",
-    "lineargradient",
-    "path",
-    "polygon",
-    "polyline",
-    "radialgradient",
-    "rect",
-    "stop",
-    "svg",
-    "text",
-    "tspan",
-}
-_ALLOWED_TAGS = _HTML_TAGS | _SVG_TAGS
-
-# Allowed attribute names (HTML and SVG) as per frontend visualArtifactRenderer.tsx
-_HTML_ATTRIBUTES = {
-    "aria-hidden",
-    "aria-label",
-    "dir",
-    "role",
-    "style",
-    "title",
-}
-_SVG_ATTRIBUTES = {
-    "aria-hidden",
-    "aria-label",
-    "cx",
-    "cy",
-    "d",
-    "dir",
-    "fill",
-    "fill-opacity",
-    "font-size",
-    "font-weight",
-    "gradientunits",
-    "height",
-    "offset",
-    "opacity",
-    "points",
-    "preserveaspectratio",
-    "r",
-    "role",
-    "rx",
-    "ry",
-    "spreadmethod",
-    "stop-color",
-    "stop-opacity",
-    "stroke",
-    "stroke-dasharray",
-    "stroke-dashoffset",
-    "stroke-linecap",
-    "stroke-linejoin",
-    "stroke-opacity",
-    "stroke-width",
-    "style",
-    "text-anchor",
-    "text-transform",
-    "title",
-    "transform",
-    "transform-origin",
-    "viewbox",
-    "width",
-    "x",
-    "x1",
-    "x2",
-    "y",
-    "y1",
-    "y2",
-}
-# Allowed CSS properties as per frontend visualArtifactRenderer.tsx
-_STYLE_PROPERTIES = {
-    "align-content",
-    "align-items",
-    "align-self",
-    "aspect-ratio",
-    "background",
-    "background-color",
-    "background-image",
-    "background-position",
-    "background-repeat",
-    "background-size",
-    "border",
-    "border-bottom",
-    "border-bottom-color",
-    "border-bottom-left-radius",
-    "border-bottom-right-radius",
-    "border-bottom-style",
-    "border-bottom-width",
-    "border-color",
-    "border-left",
-    "border-left-color",
-    "border-left-style",
-    "border-left-width",
-    "border-radius",
-    "border-right",
-    "border-right-color",
-    "border-right-style",
-    "border-right-width",
-    "border-style",
-    "border-top",
-    "border-top-color",
-    "border-top-left-radius",
-    "border-top-right-radius",
-    "border-top-style",
-    "border-top-width",
-    "border-width",
-    "bottom",
-    "box-sizing",
-    "color",
-    "column-gap",
-    "display",
-    "flex",
-    "flex-basis",
-    "flex-direction",
-    "flex-grow",
-    "flex-shrink",
-    "flex-wrap",
-    "font-family",
-    "font-size",
-    "font-style",
-    "font-weight",
-    "gap",
-    "height",
-    "justify-content",
-    "left",
-    "letter-spacing",
-    "line-height",
-    "margin",
-    "margin-bottom",
-    "margin-left",
-    "margin-right",
-    "margin-top",
-    "max-height",
-    "max-width",
-    "min-height",
-    "min-width",
-    "object-fit",
-    "opacity",
-    "overflow",
-    "overflow-x",
-    "overflow-y",
-    "padding",
-    "padding-bottom",
-    "padding-left",
-    "padding-right",
-    "padding-top",
-    "position",
-    "right",
-    "row-gap",
-    "text-align",
-    "text-decoration",
-    "text-overflow",
-    "text-transform",
-    "top",
-    "transform",
-    "transform-origin",
-    "vertical-align",
-    "white-space",
-    "width",
-    "word-break",
-    "z-index",
-    "-webkit-background-clip",
-    "-webkit-text-fill-color",
-}
-
-# CSS escapes/comments can hide a blocked function from a lexical check (the
-# renderer's OBFUSCATED_CSS gate rejects them wholesale before CSSOM
-# normalization). The pre-scan mirrors that rejection so the same content can
-# never be recommended for trust upgrade (#817): `ur\6c(` must classify the
-# same as `url(`.
-_OBFUSCATED_CSS = re.compile(r"\\|/\*")
-
-# Regular expressions for detecting network/code in CSS values and attribute values
-_NETWORK_OR_CODE_CSS = re.compile(
-    r"(?:url\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|paint\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|@import|behavior\s*:|-moz-binding|var\s*\(|env\s*\()",
+_CSS_URL_RE = re.compile(r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
+_CSS_IMPORT_RE = re.compile(
+    r"@import\b\s*(?:url\s*\(\s*(['\"]?)(.*?)\1\s*\)|(['\"])(.*?)\3)",
     re.IGNORECASE,
 )
-_NETWORK_OR_CODE_ATTRIBUTE = re.compile(
-    r"(?:url\s*\(|javascript\s*:|vbscript\s*:|data\s*:|https?\s*:|\/\/)",
-    re.IGNORECASE,
-)
-
-
-class _VisualArtifactScanner(HTMLParser):
-    """Parse HTML/SVG and collect reasons for blocking based on allowlists."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.reasons: set[str] = set()
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        # Sole dispatch point: HTMLParser calls this from feed() for both
-        # `<tag ...>` and self-closing `<tag ... />` (the stdlib default
-        # handle_startendtag delegates here verbatim), so one hook sees every
-        # start tag exactly once with the same attribute list.
-        self._check_tag(tag)
-        for attr, value in attrs:
-            self._check_attribute(tag, attr, value)
-
-    def _check_tag(self, tag: str) -> None:
-        if tag.lower() not in _ALLOWED_TAGS:
-            self.reasons.add("active-element")
-
-    def _check_attribute(self, tag: str, attr: str, value: str | None) -> None:
-        attr_lower = attr.lower()
-        # A bare attribute (`<div style>`) has a null value; the DOM models the
-        # same thing as the empty string.
-        value = value or ""
-        attr_lower = attr.lower()
-        # Event handler attributes
-        if attr_lower.startswith("on"):
-            self.reasons.add("event-handler")
-            return
-        # Attributes with colon (including XML namespaces like xlink:href) are unsupported
-        if ":" in attr:
-            self.reasons.add("unsupported-attribute")
-            self._check_value_for_dangerous_url(value)
-            return
-        # Namespace parity with the frontend renderer: SVG elements accept the
-        # SVG attribute set, everything else the HTML set. Inside an allowed
-        # SVG subtree every tag is an SVG tag, so the tag name selects the same
-        # set the browser's namespaceURI check would.
-        allowed = _SVG_ATTRIBUTES if tag.lower() in _SVG_TAGS else _HTML_ATTRIBUTES
-        if attr_lower not in allowed:
-            self.reasons.add("unsupported-attribute")
-            self._check_value_for_dangerous_url(value)
-            return
-        # Style attribute: parse CSS
-        if attr_lower == "style":
-            self._check_style(value)
-            return
-        # Other attributes: check for dangerous URLs
-        self._check_value_for_dangerous_url(value)
-
-    def _check_value_for_dangerous_url(self, value: str) -> None:
-        # The renderer strips disallowed attributes without inspecting their
-        # values, but the pre-scan must never see less than the corpus does: a
-        # `data:`/`javascript:` scheme inside a stripped attribute is hostile
-        # content the boundary removed, so it still blocks a trust upgrade.
-        if _NETWORK_OR_CODE_ATTRIBUTE.search(value):
-            self.reasons.add("dangerous-url")
-
-    def _check_style(self, style_text: str) -> None:
-        # Parity with the renderer's OBFUSCATED_CSS gate: a backslash escape or
-        # a CSS comment can hide blocked constructs from the lexical checks
-        # below (`color: red/*..*/..url(..)`), so the browser boundary rejects
-        # the whole declaration set before normalization. The pre-scan must
-        # block the same content instead of upgrading it (#817).
-        if _OBFUSCATED_CSS.search(style_text):
-            self.reasons.add("css-network-or-code")
-            return
-        # Parse simple CSS: property: value; pairs
-        for declaration in style_text.split(";"):
-            if not declaration.strip():
-                continue
-            if ":" not in declaration:
-                # Malformed, treat as unsupported
-                self.reasons.add("unsupported-css-property")
-                continue
-            prop, val = declaration.split(":", 1)
-            prop = prop.strip().lower()
-            val = val.strip()
-            # Check if property is allowed
-            if prop not in _STYLE_PROPERTIES:
-                # Certain properties that can load code or URLs are treated as css-network-or-code
-                if "image" in prop or prop == "mask" or prop == "content":
-                    self.reasons.add("css-network-or-code")
-                else:
-                    self.reasons.add("unsupported-css-property")
-                continue
-            # Check value for network/code patterns
-            if _NETWORK_OR_CODE_CSS.search(val):
-                self.reasons.add("css-network-or-code")
-
-
-# Vulture input only, mirroring packages/maistro-core/src/_vulture_whitelist.py:
-# HTMLParser dispatches handle_starttag from feed() inside the stdlib, which the
-# `packages/*/src` scan cannot see, so the parser-protocol method would be
-# misread as dead code. The scan CI gate runs on the same sources as vulture,
-# which makes this in-module reference the reviewed record of that dispatch.
-_VULTURE_WHITELIST = (_VisualArtifactScanner.handle_starttag,)
-
-
-def scan_visual_artifact_markup(content: str) -> tuple[str, ...]:
-    """Return shared blocking reasons for HTML/SVG visual-artifact content.
-
-    Mirrors the frontend's visualArtifactRenderer.scanVisualArtifactMarkup:
-    the same tag/attribute/CSS allowlists and the same reason vocabulary
-    (VISUAL_ARTIFACT_BLOCK_REASONS), so the trust pre-scan (#817) classifies
-    content with the words the browser boundary blocks in. The pre-scan is a
-    deliberate conservative superset of the renderer: values inside attributes
-    the renderer simply strips are still scanned for dangerous schemes, and an
-    unparseable payload fails closed (every reason), so no construct the
-    rendering boundary removes can ever be recommended for trust upgrade.
-    """
-    if not content:
-        return ()
-    scanner = _VisualArtifactScanner()
-    try:
-        scanner.feed(content)
-        scanner.close()
-    except Exception:
-        # Fail closed: if the parser cannot vouch for the content, no trust
-        # recommendation may call it upgradeable. `html.parser` is tolerant by
-        # design, so this path should be unreachable — it exists so a parser
-        # regression can never silently reopen the boundary.
-        return VISUAL_ARTIFACT_BLOCK_REASONS
-    # Deterministic order matching VISUAL_ARTIFACT_BLOCK_REASONS / the frontend
-    # vocabulary order, so recorded warden_flags are stable.
-    return tuple(reason for reason in VISUAL_ARTIFACT_BLOCK_REASONS if reason in scanner.reasons)
-
-
-# Documentation/font-CDN links that are expected to appear in design-system prose.
 
 # Documentation/font-CDN links that are expected to appear in design-system prose.
 DEFAULT_URL_ALLOWLIST: tuple[str, ...] = (
@@ -434,8 +51,9 @@ DEFAULT_URL_ALLOWLIST: tuple[str, ...] = (
 class ScanReport:
     """Result of a content scan.
 
-    `blocking_flags` covers script/eval injection, prompt-injection phrasing,
-    base64 blobs, Unicode steganography, and banish-list hits — any of these
+    `blocking_flags` covers script/eval injection, prompt-injection phrasing, active
+    markup/CSS network primitives, base64 blobs, Unicode steganography, and banish-list
+    hits — any of these
     means `passed=False`. `external_urls` is informational only and never blocks.
     """
 
@@ -444,23 +62,153 @@ class ScanReport:
     external_urls: tuple[str, ...] = ()
 
 
+def _reviewed_url_parts(url: str) -> tuple[str, str, int, str] | None:
+    """Parse a URL into the authority fields used by the allowlist."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme not in {"http", "https"}
+        or parts.username is not None
+        or parts.password is not None
+        or parts.hostname is None
+    ):
+        return None
+    effective_port = port or (443 if parts.scheme == "https" else 80)
+    return parts.scheme, parts.hostname, effective_port, parts.path
+
+
+def _is_allowlisted_url(target: str, url_allowlist: tuple[str, ...]) -> bool:
+    """Match reviewed URL authorities, not attacker-controlled string prefixes."""
+    target_parts = _reviewed_url_parts(target)
+    if target_parts is None:
+        return False
+
+    for allowed in url_allowlist:
+        allowed_parts = _reviewed_url_parts(allowed)
+        if allowed_parts is None or target_parts[:3] != allowed_parts[:3]:
+            continue
+        allowed_path = allowed_parts[3]
+        if allowed_path and not (
+            target_parts[3] == allowed_path
+            or target_parts[3].startswith(allowed_path.rstrip("/") + "/")
+        ):
+            continue
+        return True
+    return False
+
+
+def _css_network_or_code_is_blocking(content: str, url_allowlist: tuple[str, ...]) -> bool:
+    """Allow only reviewed documentation/font URLs inside CSS primitives."""
+    normalized = normalize_for_detection(content)
+    for match in _CSS_URL_RE.finditer(normalized):
+        target = re.sub(r"\s+", "", match.group(2)).strip()
+        if target.startswith("#"):
+            continue
+        if not _is_allowlisted_url(target, url_allowlist):
+            return True
+
+    for match in _CSS_IMPORT_RE.finditer(normalized):
+        target = match.group(2) or match.group(4) or ""
+        target = re.sub(r"\s+", "", target).strip()
+        if not _is_allowlisted_url(target, url_allowlist):
+            return True
+
+    # These primitives can execute code or trigger a request without a URL
+    # that the allowlist can meaningfully constrain. ``behavior``/
+    # ``-moz-binding`` are pinned to a URL-or-function value: the properties
+    # exfiltrate only when the declaration names a payload, and a bare
+    # ``behavior:`` otherwise false-positives on English prose such as the
+    # bundled systems' "**Container behavior:**" headings (Apple prompt-stack
+    # generation was trust-banned by exactly that before the anchor).
+    return bool(
+        re.search(
+            r"(?:image-set\s*\(|cross-fade\s*\(|element\s*\(|"
+            r"paint\s*\(|expression\s*\(|"
+            r"(?:javascript|vbscript)\s*:|"
+            r"(?:-moz-binding|behavior)\s*:\s*(?:url\s*\(|expression\s*\(|"
+            r"(?:\"|')?\s*(?:https?:|//|\.{0,2}/)))",
+            normalized,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _pattern_matches(pattern: object, content: str) -> bool:
+    """Search a shared regex and fail closed if the regex engine fails."""
+    try:
+        return bool(pattern.search(content, timeout=0.5))  # type: ignore[attr-defined]
+    except Exception:
+        return True
+
+
+def _scan_active_markup_patterns(content: str, url_allowlist: tuple[str, ...]) -> list[str]:
+    findings: list[str] = []
+    normalized = normalize_for_detection(content)
+    for pattern, description in ACTIVE_MARKUP_PATTERNS:
+        if description == "CSS network/code primitive":
+            matched = _pattern_matches(pattern, normalized) and _css_network_or_code_is_blocking(
+                normalized, url_allowlist
+            )
+        else:
+            matched = _pattern_matches(pattern, normalized)
+        if matched:
+            findings.append(description)
+    return findings
+
+
 def scan_blocking_patterns(
-    label: str, content: str, banish_list: InMemoryTrustBanishList | None
+    label: str,
+    content: str,
+    banish_list: InMemoryTrustBanishList | None,
+    *,
+    url_allowlist: tuple[str, ...] = DEFAULT_URL_ALLOWLIST,
+    visual_artifact: bool = False,
 ) -> list[str]:
-    """Scan one named piece of text content for blocking patterns. `label` tags findings."""
+    """Scan one named piece of text content for the shared blocking vocabulary."""
     blocking: list[str] = []
     if banish_list is not None and banish_list.is_banned(content):
         blocking.append(f"{label}: matches banish-list pattern")
 
-    for pattern in _SCRIPT_PATTERNS:
-        if pattern.search(content):
-            blocking.append(f"{label}: matched script pattern {pattern.pattern!r}")
+    normalized = normalize_for_detection(content)
 
-    for pattern in _PROMPT_INJECTION_PATTERNS:
-        if pattern.search(content):
-            blocking.append(f"{label}: matched prompt-injection pattern {pattern.pattern!r}")
+    active_descriptions = {description for _, description in ACTIVE_MARKUP_PATTERNS}
+    script_descriptions = {description for _, description in SCRIPT_PATTERNS}
+    for pattern, description in REJECT_PATTERNS:
+        # Active markup has Design's reviewed URL allowlist semantics; the
+        # pattern vocabulary remains shared with Warden/Sentinel.
+        if description in active_descriptions:
+            continue
+        if not _pattern_matches(pattern, normalized):
+            continue
+        category = (
+            "script pattern" if description in script_descriptions else "prompt-injection pattern"
+        )
+        blocking.append(f"{label}: matched {category} {description}")
 
-    for match in _BASE64_RE.finditer(content):
+    blocking.extend(
+        f"{label}: matched {description}"
+        for description in _scan_active_markup_patterns(content, url_allowlist)
+    )
+    if visual_artifact:
+        blocking.extend(
+            f"{label}: visual artifact {reason}"
+            for pattern, reason in VISUAL_ARTIFACT_PATTERNS
+            if _pattern_matches(pattern, normalized)
+        )
+        # Unknown-tag catch-all (renderer parity, #817 round-20): the browser
+        # boundary removes every element outside the inert allowlist and
+        # reports active-element; the scanner must classify the same markup.
+        # Runs on raw content plus an invisibles-stripped NFKD view — never
+        # the folded `normalized` view, whose leetspeak step rewrites real
+        # tag names (h1 -> hi) no browser ever folds.
+        mild = strip_invisibles(unicodedata.normalize("NFKD", content))
+        if visual_artifact_unknown_tag_names(content, mild):
+            blocking.append(f"{label}: visual artifact {REASON_ACTIVE_ELEMENT}")
+
+    for match in _BASE64_RE.finditer(normalized):
         blocking.append(f"{label}: base64 blob ({len(match.group(0))} chars)")
 
     for offset, ch in enumerate(content):
@@ -478,9 +226,42 @@ def find_external_urls(content: str, url_allowlist: tuple[str, ...]) -> set[str]
     found: set[str] = set()
     for url in _URL_RE.findall(content):
         url = url.rstrip("`).,;\"'")
-        if not any(url.startswith(prefix) for prefix in url_allowlist):
+        if not _is_allowlisted_url(url, url_allowlist):
             found.add(url)
     return found
+
+
+def scan_design_text(
+    content: str,
+    *,
+    label: str = "content",
+    banish_list: InMemoryTrustBanishList | None = None,
+    url_allowlist: tuple[str, ...] = DEFAULT_URL_ALLOWLIST,
+    visual_artifact: bool = True,
+) -> ScanReport:
+    """Scan one text value at a final Design Studio output boundary.
+
+    This is the same fail-closed path used for artifact trees. Renderers call it
+    before handing content to a document/browser backend, so a caller cannot
+    bypass the returned-artifact scan merely by choosing a different output sink.
+
+    ``visual_artifact`` defaults to True — a renderer boundary is a markup sink,
+    so the visual-artifact families run unconditionally there. The artifact-tree
+    walk (``scan_design_output``) passes the leaf's format decision instead; the
+    blocking vocabulary itself stays shared either way (#817).
+    """
+    blocking = scan_blocking_patterns(
+        label,
+        content,
+        banish_list,
+        url_allowlist=url_allowlist,
+        visual_artifact=visual_artifact,
+    )
+    return ScanReport(
+        passed=not blocking,
+        blocking_flags=tuple(blocking),
+        external_urls=tuple(sorted(find_external_urls(content, url_allowlist))),
+    )
 
 
 def scan_design_output(
@@ -494,12 +275,15 @@ def scan_design_output(
     Binary (BLOB) leaves are not pattern-scanned — there is no text to match against;
     binary content safety is the renderer/asset-store boundary's concern.
 
-    The HTML/SVG allowlist scan is a *markup* boundary, so it runs only on leaves
-    whose format reaches a browser markup sink. Prose leaves — the MARKDOWN
-    prompt-stack embeds design-system component examples, links, and forms as
-    documentation for the model, never as executable markup — are model input
-    and stay covered by scan_blocking_patterns() above. An untagged FILE leaf
-    fails closed and is scanned.
+    The visual-artifact arm is a *markup* boundary, so it runs only on leaves whose
+    format reaches a browser markup sink (HTML/SVG); an untagged FILE leaf fails
+    closed and is scanned. Prose leaves — the MARKDOWN prompt-stack embeds
+    design-system component examples, links, and forms as documentation for the
+    model, never as executable markup — are model input and stay covered by the
+    unconditional arms of scan_blocking_patterns() (script, prompt-injection,
+    active-markup, base64, suspicious Unicode). The renderer boundary itself
+    (scan_design_text, visual_artifact=True) never widens: markup-sink families
+    are enforced wherever content actually reaches a browser (#817 AC-3/AC-4).
     """
     # Deferred import: maistro_design.types imports trust, which imports this
     # module, so a module-level types import would close a runtime cycle.
@@ -511,11 +295,15 @@ def scan_design_output(
 
     for address, node in output.root.walk():
         if isinstance(node.value, str):
-            blocking.extend(scan_blocking_patterns(address, node.value, banish_list))
-            if node.format is None or node.format in visual_markup_formats:
-                for reason in scan_visual_artifact_markup(node.value):
-                    blocking.append(f"{address}: visual artifact {reason}")
-            external_urls.update(find_external_urls(node.value, url_allowlist))
+            report = scan_design_text(
+                node.value,
+                label=address,
+                banish_list=banish_list,
+                url_allowlist=url_allowlist,
+                visual_artifact=node.format is None or node.format in visual_markup_formats,
+            )
+            blocking.extend(report.blocking_flags)
+            external_urls.update(report.external_urls)
 
     return ScanReport(
         passed=not blocking,
