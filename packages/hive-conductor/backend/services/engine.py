@@ -96,6 +96,15 @@ class EngineService:
         return getattr(container, "run_store", None)
 
     @property
+    def run_reader(self) -> Any:
+        """The core Container's Workspace-scoped Run reader, or None (#1152).
+
+        None exactly when `run_store` is: the reader scopes that same store.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "run_reader", None)
+
+    @property
     def schedule_store(self) -> Any:
         """The core Container's canonical Schedule store, or None.
 

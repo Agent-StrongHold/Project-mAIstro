@@ -31,19 +31,20 @@ from services.dag_run_store import MAX_RUNS, get_dag_run_store
 from services.workspace_authority import list_views_for_user
 
 
-async def _canonical_projection(record: dict[str, Any]) -> dict[str, Any]:
-    """Overlay lifecycle truth from the canonical Run, when this deployment has one."""
+async def _canonical_projection(record: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Overlay lifecycle truth from the canonical Run `user_id` may read, if any."""
     run_id = str(record.get("canonical_run_id") or record.get("id") or "")
     if not run_id:
         return record
     try:
         from services.engine import get_engine
 
-        store = get_engine().run_store
-        run = await store.get_run(run_id) if store is not None else None
+        reader = get_engine().run_reader
+        run = await reader.get_run(run_id, principal_id=user_id) if reader is not None else None
     except Exception:
         # Projection reads remain available in standalone mode, but never
-        # invent canonical status when the spine is unavailable.
+        # invent canonical status when the spine is unavailable -- nor borrow
+        # it from a canonical Run outside the caller's Workspaces (#1152).
         return record
     if run is None:
         return record
@@ -83,7 +84,7 @@ async def list_visible_runs(user_id: str, *, limit: int = 25) -> list[dict[str, 
     # exposing any additional rows. Each surviving summary is overlaid with
     # canonical execution truth before the caller's limit is applied.
     visible = [
-        await _canonical_projection(summary)
+        await _canonical_projection(summary, user_id)
         for summary in get_dag_run_store().list_runs(limit=MAX_RUNS)
         if _in_scope(summary, allowed)
     ]
@@ -117,7 +118,7 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     allowed = await authorized_workspace_ids(user_id)
     if not _in_scope(record, allowed):
         return None
-    return await _canonical_projection(record)
+    return await _canonical_projection(record, user_id)
 
 
 async def visible_run_ids(user_id: str, run_ids: Iterable[str]) -> set[str]:

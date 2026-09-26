@@ -57,9 +57,9 @@ async def _owned_workspace() -> Any:
     )
 
 
-async def _long_running_canonical_run() -> tuple[
-    Any, str, asyncio.Task[Any], asyncio.Event, list[str]
-]:
+async def _long_running_canonical_run(
+    workspace_id: str,
+) -> tuple[Any, str, asyncio.Task[Any], asyncio.Event, list[str]]:
     """A canonical Run whose single Attempt's provider is parked mid-flight.
 
     The provider sleeps on `release` — an event nothing in the product ever
@@ -67,21 +67,24 @@ async def _long_running_canonical_run() -> tuple[
     it. `provider_exits` records the coroutine actually unwinding, which is
     what distinguishes "the work was stopped" from "the record was edited".
     """
+    from services.workspace_authority import canonical_store_for_tests
+
     from maistro.graph import Graph, Node
-    from maistro.projects.scope_store import InMemoryProjectScopeStore
     from maistro.runs import AttemptExecutionService, AttemptStatus, InMemoryRunStore
     from maistro.runtime import PythonExecutionRuntime
 
-    project_store = InMemoryProjectScopeStore()
-    root = await project_store.create_root("ws-cancel")
+    # Filed in the caller's own canonical Workspace, as the product files it:
+    # the projection overlay reads canonical truth only for a member (#1152).
+    project_store = canonical_store_for_tests().project_store
+    root = await project_store.root_for_workspace(workspace_id)
     project = await project_store.create(
-        workspace_id="ws-cancel",
+        workspace_id=workspace_id,
         parent_project_id=root.project_id,
         name="Long-running DAG",
     )
     store = InMemoryRunStore(project_store=project_store)
     graph = Graph(
-        workspace_id="ws-cancel",
+        workspace_id=workspace_id,
         project_id=project.project_id,
         name="Long-running DAG",
         nodes=[Node(node_id="node-1", node_type="agent")],
@@ -139,8 +142,16 @@ async def test_cancel_route_terminates_a_long_running_canonical_run(
     from maistro.runs import AttemptStatus, RunStatus
 
     view = await _owned_workspace()
-    store, run_id, worker, release, provider_exits = await _long_running_canonical_run()
-    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_store=store))
+    from services.workspace_authority import canonical_store_for_tests
+
+    from maistro.runs.scoped_reads import ScopedRunReader
+
+    store, run_id, worker, release, provider_exits = await _long_running_canonical_run(view.id)
+    workspaces = canonical_store_for_tests()
+    reader = ScopedRunReader(store, workspaces, workspaces.project_store)
+    monkeypatch.setattr(
+        engine_mod, "_singleton", SimpleNamespace(run_store=store, run_reader=reader)
+    )
 
     await get_dag_run_store().start_run(
         run_id="dag-cancel-e2e",

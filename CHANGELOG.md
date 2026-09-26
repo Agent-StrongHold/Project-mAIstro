@@ -25,6 +25,20 @@ or placeholder-only section.
 
 ### Security
 
+- **Canonical Run reads have a Workspace-membership-scoped seam (#1152,
+  partial).** `maistro.runs.scoped_reads.ScopedRunReader`, wired as
+  `Container.run_reader` over the Container's own Run, Workspace and Project
+  scope stores, reads a Run, its NodeRuns and its Attempts only for a member
+  of the Run's Workspace whose Project belongs to it. The initiating
+  principal is provenance, not a gate. Missing and foreign ids, a blank
+  principal, and a NodeRun or Attempt id from another Run all raise the same
+  `RunNotVisible`, and membership is resolved before the Run lookup. Hive's
+  DAG-run inspection now reads its canonical lifecycle overlay through this
+  reader, so a projection row naming another Workspace's Run no longer
+  borrows that Run's status, result or error. maistro-server `/v1/runs`, Hive
+  Canvas eval, `actor_principal_id` validation, accounting identity and
+  delegation identity are still open.
+
 - **Tool-result governance is pinned across real Agent strategies (#1202,
   partial).** A regression suite drives the shipped ReAct, Artificer and
   BuildersLearning strategies through `Agent.handle` with a real Warden and
