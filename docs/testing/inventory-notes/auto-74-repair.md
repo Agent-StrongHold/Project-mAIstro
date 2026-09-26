@@ -338,3 +338,53 @@ Evidence at this head:
   **1414 reviewed identities → 1414 findings, unclassified 0,
   never_allowlist 0** (candidate `88f6fa900` vs base `84402748f`). No ledger
   amendment needed: nothing unbanked, nothing dead found.
+
+## Pass 8: develop sync to 5fff24e1d + suite-inventory drift repair (head 777f626d8)
+
+Previous block resolved: the worktree started clean at `4feda0f58` (the
+pass-7 conflict resolution `88f6fa900` had already been committed; no
+`MERGE_HEAD` present), so the sync was a fresh `git merge origin/develop`
+(`5fff24e1d`) → merge commit `777f626d8`, **no conflicts**. The merge did not
+touch any #74 production surface (`git diff 4feda0f58..HEAD` on
+`maistro/security/` and `maistro/agents/strategies/` is empty).
+
+- **Prior finding repaired (check-4.log drift, +1 maistro-core).** The pass-7
+  claim "check-suite-inventory 13/13" was FALSE: collection measured at
+  `88f6fa900` with that revision's own tree/src is 10940 vs ledger 10939.
+  Root cause measured across three `git archive` snapshots (lane start
+  `3e9f7525b` green 10045/10045; `88f6fa900` +1; `777f626d8` +1) plus node-ID
+  diffs: lane notes under-record the lane's net additions by 3 while develop
+  commits merged inside the range over-record by 2 — net +1, no suite ever
+  stopped collecting. Fixed per the ledger's designed mechanism by recording
+  the +1 in `auto-74-suite-ledger-reconcile.md` (full decomposition there);
+  `check-suite-inventory.py` now exits 0 with all 13 suites ok
+  (maistro-core 11008).
+- CI-repair step run exactly as briefed: `check-vulture-baseline.py
+  packages/*/src --min-confidence 60 --exclude '*/third_party/*'` → exit 0,
+  **1413 reviewed identities → 1413 findings, unclassified 0,
+  never_allowlist 0** (candidate `777f626d8` vs base `5fff24e1d`). No ledger
+  amendment needed: nothing unbanked, nothing dead found (the merge itself
+  pruned one develop identity, 1414→1413).
+- Acceptance nodes re-executed at this head:
+  `test_sentinel_policy.py -k "post_call_real_warden or pii_match"` →
+  **8 passed**; `test_warden_regex_equivalence.py -rs` → **7 passed / 0
+  skipped** with `import re2` verified; strategies + PII-bypass +
+  evasion-normalization set → **47 passed**; `formal/models/
+  test_warden_semantic.py` + `formal/models/test_sentinel_policy.py`
+  (`--hypothesis-seed=0`) → **26 passed**.
+- Full `pytest packages/maistro-core/tests/security` → 1270 passed / 19
+  skipped / 1 failed; the single red is the documented pre-existing
+  `test_log_redaction.py::test_install_is_idempotent` pytest-9 interaction —
+  re-verified byte-identical against develop base `5fff24e1d` (empty diff on
+  the test and its module), i.e. not introduced or touchable by this lane.
+- Gates at this head: `ruff check .` clean; `ruff format --check .` → 2556
+  files clean; full AGENTS.md mypy command → **716 source files, no issues**;
+  `check-security-inventory.py` exit 0 (65 paths / 23 rows / 2 recomputed
+  claims); `check-compliance.py` exit 0 and `tests/test_check_compliance.py`
+  → 97 passed; `check-doc-links.py` exit 0; `check-ratchet-provenance.py`
+  exit 0; `check-shipped-surface-truth.py` exit 0.
+- Alembic: single head `042` (develop's manual-fire migration), `alembic
+  branches` empty; `pytest tests/migrations` → 17 passed / 79 skipped
+  (DB-gated). SECURITY.md (`:123-135`) and COMPLIANCE.md (`:55-67`, registry
+  rows `:25-26`) still cite the executed product-path nodes, and both files
+  are untouched by the merge.
