@@ -353,3 +353,35 @@ does not answer closed ports with a prompt refusal the way CI runners do; the
 same test passes in CI and its module is fully exercised by the postgres
 producer. Remote CI completion on the PR rollup remains the only unverified
 item from this environment.
+
+Fifteenth round (develop sync + salvage commit at the merged head): the
+fourteenth round's work was found validated but UNCOMMITTED in the worktree
+(the run died rate-limited between validation and commit); it was salvaged
+verbatim from the worktree diff, re-validated (focused suite 27/27, ruff
+clean), and committed as ba419d90f before anything else touched the tree.
+The lane's prior block (hosted-PR snapshot mismatch) was treated as the
+develop-sync case per the round brief: origin/develop (80ce0d998) was merged
+into auto-1187. The textual merge was clean but SEMANTICALLY broken —
+develop's atomic-registration rework (b906cc577) deleted
+`_REGISTRATION_LOCK` and the `threading` import from routes/auth.py while
+this branch's `_SESSION_LOCK = threading.RLock()` line survived in a distant
+hunk, so importing the app raised NameError and 26 test modules failed
+collection. Fix: re-added `import threading` (the only semantic collision;
+middleware/auth.py, routes/ws.py, and stores.py were diffed hunk-by-hunk
+against the pre-merge branch — stores.py gained only develop's own gated
+username_claims store). The failed CI job was also verified from its real
+log (run 36185251218, job 108239013206): the publish-set floor PASSED (TOTAL
+55,874 statements at 92% against --fail-under=87) and only the diff half
+failed, on exactly the three files the fourteenth round's ten cases target.
+Re-validation at the merged head after the fix, under the CI-shaped producer
+(`coverage run --branch --source=packages/hive-conductor/backend` over the
+full backend suite): 2809 passed / 5 skipped; diff-coverage gate vs
+origin/develop EXIT 0 (4 changed files measured, 1 exempt as test evidence);
+`ruff check .` and `ruff format --check .` clean across the repo; vulture
+ratchet vs base 80ce0d998 — 1412 reviewed identities, 0 unbanked, no ledger
+amendment; suite inventory ok at 2814 collected node IDs (delta note still
++27, absorbed by the merge); doc-links, adr-index, merge-markers,
+public-routes, and frontend-api-routes gates all ok. #1050 separation
+re-spotted at the merged head: whoami stays in
+`_SESSION_ACTIVITY_EXCLUDED_PATHS` and Profile.tsx still states restoration
+preferences do not extend authentication.
