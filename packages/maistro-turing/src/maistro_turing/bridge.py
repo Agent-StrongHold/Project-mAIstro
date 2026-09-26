@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -71,9 +71,17 @@ class TuringMemory(Protocol):
 
 @runtime_checkable
 class TuringSecurity(Protocol):
-    """What Turing needs from the canonical security system."""
+    """What Turing needs from the canonical security system.
 
-    async def scan_user_input(self, content: str) -> dict[str, Any]: ...
+    ``scan_user_input`` accepts the canonical bounded ordered trust-analysis
+    context (``WardenContext`` items, plain strings, or role mappings) so a
+    payload split across prior session turns is detected at the completing
+    turn instead of being scanned one string at a time.
+    """
+
+    async def scan_user_input(
+        self, content: str, *, context: Sequence[Any] | None = None
+    ) -> dict[str, Any]: ...
 
     async def scan_self_write(self, content: str, *, kind: str = "") -> dict[str, Any]: ...
 
@@ -220,9 +228,22 @@ class TuringSecurityBridge:
         self._warden = warden
         self._audit_hook = audit_hook
 
-    async def _scan(self, content: str, boundary: str, *, failure: str) -> dict[str, Any]:
+    async def _scan(
+        self,
+        content: str,
+        boundary: str,
+        *,
+        failure: str,
+        context: Sequence[Any] | None = None,
+    ) -> dict[str, Any]:
         try:
-            result = self._warden.scan(content, boundary)
+            # The context is only forwarded when non-empty, so wardens and
+            # test doubles implementing the pre-#1158 single-string seam keep
+            # working on first turns; the canonical Warden aggregates it.
+            if context:
+                result = self._warden.scan(content, boundary, context=context)
+            else:
+                result = self._warden.scan(content, boundary)
             if inspect.isawaitable(result):
                 result = await result
             return await self._finish_scan(result, content, boundary)
@@ -245,8 +266,10 @@ class TuringSecurityBridge:
             "flags": list(getattr(result, "flags", [])),
         }
 
-    async def scan_user_input(self, content: str) -> dict[str, Any]:
-        return await self._scan(content, "user_input", failure="user input")
+    async def scan_user_input(
+        self, content: str, *, context: Sequence[Any] | None = None
+    ) -> dict[str, Any]:
+        return await self._scan(content, "user_input", failure="user input", context=context)
 
     async def scan_self_write(self, content: str, *, kind: str = "") -> dict[str, Any]:
         return await self._scan(content, "user_input", failure="self-write")
