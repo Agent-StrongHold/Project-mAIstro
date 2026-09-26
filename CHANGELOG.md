@@ -650,6 +650,17 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A streamed `/v1/chat/completions` turn no longer cancels a Run left open
+  for recovery (#1108, partial).** When the model answered but the Attempt
+  could not be recorded (`ChatDispatchUnrecorded`), `Container.route_request`
+  deliberately leaves the Run RUNNING for `recover_abandoned_attempts` /
+  `AttemptLifecycleReconciler`; the SSE stream's abandoned-Run cleanup then
+  overwrote it as CANCELLED ("stream abandoned") even though the answer had
+  streamed. The cleanup now steps aside only when an Attempt under the Run is
+  still live or COMPLETED — the two shapes `ChatDispatchUnrecorded` leaves for
+  recovery — and still cancels a Run abandoned before dispatch or one whose
+  own close failed over a failed/refused turn.
+
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
   with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,

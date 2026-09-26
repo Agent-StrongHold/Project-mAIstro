@@ -28,7 +28,8 @@ from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.container import create_container
 from maistro.runs.admission import ADMISSION_SOURCE
 from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, CHAT_SOURCE, UPSTREAM_FAILURE
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.chat_execution import DEFAULT_CHAT_LEASE_TTL
+from maistro.runs.model import TERMINAL_RUN_STATUSES, AttemptStatus, RunStatus
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
 from maistro.security._types import GateResult
 from maistro.types.config import AgentConfig
@@ -495,6 +496,208 @@ async def test_an_abandoned_stream_still_closes_its_run(wired) -> None:
     assert closed.status in TERMINAL_RUN_STATUSES
     assert closed.status is RunStatus.CANCELLED
     assert closed.error == chat_api.ABANDONED
+
+
+class _VetoAttemptCompletion:
+    """The Run store with the post-dispatch Attempt COMPLETED write failing once.
+
+    The same veto as `tests/runs/test_chat_execution.py::_RecordingVeto`: the
+    model has answered, and the spine cannot record it, so `route_request`
+    hands back `ChatDispatchUnrecorded`'s answer with the Run left open.
+    """
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self._armed = True
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def transition_attempt(self, attempt_id: str, target: object, **kwargs: object) -> object:
+        if self._armed and target is AttemptStatus.COMPLETED:
+            self._armed = False
+            raise RunIntegrityError("store hiccup after dispatch")
+        return await self._inner.transition_attempt(attempt_id, target, **kwargs)  # type: ignore[arg-type]
+
+
+async def test_a_stream_does_not_cancel_a_run_left_open_for_recovery(
+    container: object, wired: InMemoryRunStore
+) -> None:
+    """The stream cleanup must not overwrite recovery evidence (#1108).
+
+    After `ChatDispatchUnrecorded`, `route_request` leaves the Run RUNNING on
+    purpose so `recover_abandoned_attempts` can settle it from the Attempt it
+    left behind. Cancelling it as "abandoned" would claim the reader left
+    before an answer that was in fact streamed, and fence recovery out.
+    """
+    from datetime import UTC, datetime
+
+    container.run_store = _VetoAttemptCompletion(wired)  # type: ignore[attr-defined]
+    request = chat_api.ChatCompletionRequest(
+        stream=True, messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+    run = await chat_api._admit_turn(request, None)
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        body = "".join(
+            [chunk async for chunk in chat_api._stream_conductor_response(request, None, run)]
+        )
+
+    assert _sse_text(body) == "42"
+    run_task.assert_awaited_once()
+    left = await wired.get_run(run.run_id)
+    assert left is not None
+    assert left.status is RunStatus.RUNNING
+    assert left.error is None
+    node_runs = await wired.list_node_runs(run.run_id)
+    assert len(node_runs) == 1
+    assert node_runs[0].status not in TERMINAL_RUN_STATUSES
+    attempts = await wired.list_attempts(node_runs[0].node_run_id)
+    assert [a.status for a in attempts] == [AttemptStatus.RUNNING]
+
+    settled = await container.recover_abandoned_attempts(  # type: ignore[attr-defined]
+        now=datetime.now(UTC) + 2 * DEFAULT_CHAT_LEASE_TTL
+    )
+    assert settled == 1
+    run_task.assert_awaited_once()
+
+
+class _VetoNodeRunCompletion:
+    """The Attempt is recorded COMPLETED; the NodeRun reconcile after it fails once."""
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self._armed = True
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def transition_node_run(
+        self, node_run_id: str, target: object, **kwargs: object
+    ) -> object:
+        if self._armed and target is RunStatus.COMPLETED:
+            self._armed = False
+            raise RunIntegrityError("store hiccup after dispatch")
+        return await self._inner.transition_node_run(node_run_id, target, **kwargs)  # type: ignore[arg-type]
+
+
+async def test_a_stream_leaves_a_completed_attempt_for_the_reconciler(
+    container: object, wired: InMemoryRunStore
+) -> None:
+    """The other `ChatDispatchUnrecorded` shape: the evidence is a COMPLETED Attempt."""
+    container.run_store = _VetoNodeRunCompletion(wired)  # type: ignore[attr-defined]
+    request = chat_api.ChatCompletionRequest(
+        stream=True, messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+    run = await chat_api._admit_turn(request, None)
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        body = "".join(
+            [chunk async for chunk in chat_api._stream_conductor_response(request, None, run)]
+        )
+
+    assert _sse_text(body) == "42"
+    run_task.assert_awaited_once()
+    left = await wired.get_run(run.run_id)
+    assert left is not None
+    assert left.status is RunStatus.RUNNING
+    (node_run,) = await wired.list_node_runs(run.run_id)
+    assert node_run.status is RunStatus.RUNNING
+    assert [a.status for a in await wired.list_attempts(node_run.node_run_id)] == [
+        AttemptStatus.COMPLETED
+    ]
+
+
+class _VetoAttemptAndRunClose:
+    """The Attempt is refused before dispatch, and so is `route_request`'s close.
+
+    A NodeRun exists but nothing physical ever ran under it, so recovery has
+    no Attempt to reclaim: the stream cleanup is the last thing that can close
+    the Run.
+    """
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self._close_armed = True
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def create_attempt(self, *_args: object, **_kwargs: object) -> None:
+        raise RunIntegrityError("attempt write vetoed")
+
+    async def transition_run(self, run_id: str, target: object, **kwargs: object) -> object:
+        if self._close_armed and target in TERMINAL_RUN_STATUSES:
+            self._close_armed = False
+            raise RunIntegrityError("close write vetoed")
+        return await self._inner.transition_run(run_id, target, **kwargs)  # type: ignore[arg-type]
+
+
+async def test_a_refused_stream_whose_close_failed_is_still_cancelled(
+    container: object, wired: InMemoryRunStore
+) -> None:
+    """A NodeRun with no Attempt is not recovery's to settle: the cleanup closes it."""
+    request = chat_api.ChatCompletionRequest(
+        stream=True, messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+    run = await chat_api._admit_turn(request, None)
+    container.run_store = _VetoAttemptAndRunClose(wired)  # type: ignore[attr-defined]
+    run_task = AsyncMock(return_value=_output("42"))
+    with patch(RUN_TASK, run_task):
+        body = "".join(
+            [chunk async for chunk in chat_api._stream_conductor_response(request, None, run)]
+        )
+
+    assert '"type": "unavailable"' in body
+    run_task.assert_not_awaited()
+    assert len(await wired.list_node_runs(run.run_id)) == 1
+    closed = await wired.get_run(run.run_id)
+    assert closed is not None
+    assert closed.status is RunStatus.CANCELLED
+    assert closed.error == chat_api.ABANDONED
+
+
+class _VetoRunClose:
+    """`route_request`'s terminal Run write fails once; everything else behaves."""
+
+    def __init__(self, inner: InMemoryRunStore) -> None:
+        self._inner = inner
+        self._armed = True
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def transition_run(self, run_id: str, target: object, **kwargs: object) -> object:
+        if self._armed and target in TERMINAL_RUN_STATUSES:
+            self._armed = False
+            raise RunIntegrityError("close write vetoed")
+        return await self._inner.transition_run(run_id, target, **kwargs)  # type: ignore[arg-type]
+
+
+async def test_a_failed_stream_whose_close_failed_is_still_cancelled(
+    container: object, wired: InMemoryRunStore
+) -> None:
+    """A FAILED Attempt leaves recovery nothing to settle: the cleanup closes the Run."""
+    request = chat_api.ChatCompletionRequest(
+        stream=True, messages=[chat_api.ChatMessage(role="user", content="hi")]
+    )
+    run = await chat_api._admit_turn(request, None)
+    container.run_store = _VetoRunClose(wired)  # type: ignore[attr-defined]
+    run_task = AsyncMock(side_effect=LLMProviderError("upstream down"))
+    with patch(RUN_TASK, run_task):
+        body = "".join(
+            [chunk async for chunk in chat_api._stream_conductor_response(request, None, run)]
+        )
+
+    assert '"type": "upstream_error"' in body
+    run_task.assert_awaited_once()
+    (node_run,) = await wired.list_node_runs(run.run_id)
+    assert [a.status for a in await wired.list_attempts(node_run.node_run_id)] == [
+        AttemptStatus.FAILED
+    ]
+    closed = await wired.get_run(run.run_id)
+    assert closed is not None
+    assert closed.status is RunStatus.CANCELLED
 
 
 async def test_a_completed_stream_is_not_re_closed_as_abandoned(wired, client) -> None:
