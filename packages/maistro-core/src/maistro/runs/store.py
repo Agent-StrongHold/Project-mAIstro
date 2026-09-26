@@ -11,6 +11,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.concurrency import ACTIVE_ROOT_STATUSES, RunConcurrencyLimits
 from maistro.runs.evidence_json import json_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -600,10 +601,12 @@ class InMemoryRunStore:
         prune_target: int = RUN_PRUNE_TARGET,
         archive_store: ArchiveStore | None = None,
         continuation_store: ContinuationPurge | None = None,
+        concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         if prune_target > max_runs:
             raise ValueError("prune_target cannot exceed max_runs")
         self._project_store = project_store
+        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits()
         # The same seam `archive_store` is: a capability the reference store
         # may be wired with, so a retention sweep reclaims Graph continuation
         # state along with the Run it belongs to (#1175). None — the default —
@@ -757,6 +760,10 @@ class InMemoryRunStore:
                 parent_node_run = self._require_node_run(parent_node_run_id)
                 if parent_node_run.run_id != parent_run_id:
                     raise RunIntegrityError("parent_node_run_id does not belong to parent_run_id")
+        else:
+            # No await between this count and the insert below, so no other
+            # task on this loop can admit into the gap.
+            self._check_root_admission(graph.workspace_id, actor_principal_id)
         run = Run(
             workspace_id=graph.workspace_id,
             project_id=graph.project_id,
@@ -774,6 +781,19 @@ class InMemoryRunStore:
         self._runs[run.run_id] = run
         self._prune_terminal_runs()
         return run.model_copy(deep=True)
+
+    def _check_root_admission(self, workspace_id: str, principal: str | None) -> None:
+        active = [
+            run
+            for run in self._runs.values()
+            if run.parent_run_id is None and run.status in ACTIVE_ROOT_STATUSES
+        ]
+        self._concurrency_limits.check(
+            workspace_active=sum(run.workspace_id == workspace_id for run in active),
+            principal_active=(
+                sum(run.actor_principal_id == principal for run in active) if principal else None
+            ),
+        )
 
     def _claim_occurrence(self, run: Run) -> None:
         """Atomically claim `run`'s schedule occurrence, if it names one.

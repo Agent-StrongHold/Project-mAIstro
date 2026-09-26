@@ -277,5 +277,15 @@ class _PoolRaising:
     async def __aexit__(self, *_exc_info: object) -> bool:
         return False
 
-    async def execute(self, *_args: object) -> None:
+    def transaction(self) -> _PoolRaising:
+        return self
+
+    async def fetchrow(self, *_args: object) -> dict[str, int]:
+        # The root-Run ceiling's count (#1182): nothing active, so the
+        # statement that fails is the INSERT these tests are about.
+        return {"workspace_active": 0, "principal_active": 0}
+
+    async def execute(self, query: str, *_args: object) -> None:
+        if "pg_advisory_xact_lock" in query:
+            return
         raise self._exc

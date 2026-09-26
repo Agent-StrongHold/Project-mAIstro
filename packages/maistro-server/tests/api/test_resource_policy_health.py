@@ -32,6 +32,8 @@ def test_readiness_exposes_effective_resource_policy() -> None:
         rate_limit_burst=5,
         circuit_breaker_failure_threshold=3,
         circuit_breaker_recovery_timeout_s=90,
+        max_active_root_runs_per_principal=4,
+        max_active_root_runs_per_workspace=16,
     )
     app.dependency_overrides[get_settings] = lambda: settings
     ok = ProbeResult(status="ok")
@@ -53,5 +55,7 @@ def test_readiness_exposes_effective_resource_policy() -> None:
         "rate_limit_burst": 5,
         "circuit_breaker_failure_threshold": 3,
         "circuit_breaker_recovery_timeout_s": 90.0,
+        "max_active_root_runs_per_principal": 4,
+        "max_active_root_runs_per_workspace": 16,
         "unsafe_overrides_enabled": False,
     }

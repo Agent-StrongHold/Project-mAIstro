@@ -25,6 +25,23 @@ or placeholder-only section.
 
 ### Security
 
+- **Active root Runs are capped per principal and per Workspace (#1182,
+  partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
+  refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for
+  its actor principal (across Workspaces) or 32 for its Workspace. "Active"
+  means CREATED, QUEUED or RUNNING. Child Runs, parked WAITING/PAUSED Runs and
+  terminal Runs hold no slot, and a parked Run resuming is not a new admission.
+  PostgreSQL serializes the count and the insert with transaction-scoped
+  advisory locks, so the ceiling holds across replicas. SQLite uses
+  `BEGIN IMMEDIATE`. The ceilings are governed floors in
+  `quality/security-resource-floors.json`
+  (`MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL`, `MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE`).
+  Operators may lower them, but raising either requires
+  `ALLOW_UNSAFE_RESOURCE_OVERRIDES`. Both appear in `/health`
+  `effective_resource_policy`. The scheduler already keeps a refused occurrence
+  owed and retries it on a later tick. Not yet done: HTTP/WebSocket submit
+  surfaces still need to map the refusal to 429.
+
 - **Tool-result governance is pinned across real Agent strategies (#1202,
   partial).** A regression suite drives the shipped ReAct, Artificer and
   BuildersLearning strategies through `Agent.handle` with a real Warden and

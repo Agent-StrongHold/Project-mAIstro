@@ -31,6 +31,7 @@ codec (`maistro.persistence._register_json_codecs`).
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -39,6 +40,7 @@ from maistro.archive.protocols import ArchiveStore
 from maistro.archive.types import ArchiveKey
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLimits
 from maistro.runs.evidence_json import decode_evidence, decode_payload, json_of, model_of
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -174,9 +176,11 @@ class PgRunStore:
         *,
         project_store: ProjectScopeStore,
         archive_store: ArchiveStore | None = None,
+        concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         self._pool = pool
         self._project_store = project_store
+        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits()
         # None means the tier is off (f436 decision 9). A store with archived
         # rows and no archive configured still reads correctly for everything
         # resident and raises `ArchivedPayloadUnavailable` -- never an empty
@@ -234,29 +238,70 @@ class PgRunStore:
         run = admit_in_state(run, initial_status)
         async with self._pool.acquire() as conn:
             try:
-                await conn.execute(
-                    """INSERT INTO canonical_runs
-                   (run_id, workspace_id, project_id, parent_run_id,
-                    parent_node_run_id, status, payload, retention_expires_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
-                    run.run_id,
-                    run.workspace_id,
-                    run.project_id,
-                    run.parent_run_id,
-                    run.parent_node_run_id,
-                    run.status.value,
-                    json_of(run),
-                    # Duplicated out of the payload so the retention sweep can use
-                    # an index (migration 012). Written once at creation and never
-                    # transitioned, so the two cannot drift the way `status` could.
-                    run.retention_expires_at,
-                )
+                async with conn.transaction():
+                    if parent_run_id is None:
+                        await self._check_root_admission(conn, run)
+                    await conn.execute(
+                        """INSERT INTO canonical_runs
+                       (run_id, workspace_id, project_id, parent_run_id,
+                        parent_node_run_id, status, payload, retention_expires_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)""",
+                        run.run_id,
+                        run.workspace_id,
+                        run.project_id,
+                        run.parent_run_id,
+                        run.parent_node_run_id,
+                        run.status.value,
+                        json_of(run),
+                        # Duplicated out of the payload so the retention sweep can
+                        # use an index (migration 012). Written once at creation
+                        # and never transitioned, so the two cannot drift the way
+                        # `status` could.
+                        run.retention_expires_at,
+                    )
             except _integrity_errors() as exc:
                 conflict = _occurrence_conflict(exc, run)
                 if conflict is None:
                     raise
                 raise conflict from exc
         return run
+
+    async def _check_root_admission(self, conn: Any, run: Run) -> None:
+        """Count active root Runs under locks every replica takes (#1182).
+
+        Transaction-scoped advisory locks, so the count and the caller's insert
+        are one critical section across replicas and the locks go with the
+        transaction however it ends. Workspace before principal, always: each
+        admission takes one lock per namespace in that order, so two cannot
+        wait on each other.
+        """
+        principal = run.actor_principal_id or None
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock($1, $2)",
+            _WORKSPACE_ADMISSION_LOCK,
+            _admission_lock_key(run.workspace_id),
+        )
+        if principal is not None:
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                _PRINCIPAL_ADMISSION_LOCK,
+                _admission_lock_key(principal),
+            )
+        row = await conn.fetchrow(
+            """SELECT
+                   COUNT(*) FILTER (WHERE workspace_id = $2) AS workspace_active,
+                   COUNT(*) FILTER (WHERE payload->>'actor_principal_id' = $3)
+                       AS principal_active
+                 FROM canonical_runs
+                WHERE parent_run_id IS NULL AND status = ANY($1::text[])""",
+            list(ACTIVE_ROOT_STATUS_VALUES),
+            run.workspace_id,
+            principal,
+        )
+        self._concurrency_limits.check(
+            workspace_active=int(row["workspace_active"]),
+            principal_active=int(row["principal_active"]) if principal is not None else None,
+        )
 
     async def purge_expired_runs(
         self,
@@ -1302,6 +1347,20 @@ _NOT_FOUND: dict[str, type[Exception]] = {
     "canonical_node_runs": NodeRunNotFound,
     "canonical_attempts": AttemptNotFound,
 }
+
+
+#: `pg_advisory_xact_lock(key1, key2)` namespaces for root-Run admission.
+#: Separate namespaces so a Workspace and a principal that hash alike never
+#: share a lock, which is what keeps the lock order acyclic.
+_WORKSPACE_ADMISSION_LOCK = 0x72617721  # "raw!"
+_PRINCIPAL_ADMISSION_LOCK = 0x72617021  # "rap!"
+
+
+def _admission_lock_key(identity: str) -> int:
+    """A signed 32-bit key, hashed here because `hashtext()` is not stable
+    across the PostgreSQL major versions this repository runs against."""
+    digest = hashlib.blake2b(identity.encode("utf-8"), digest_size=4).digest()
+    return int.from_bytes(digest, "big", signed=True)
 
 
 def _integrity_errors() -> tuple[type[Exception], ...]:

@@ -37,6 +37,7 @@ from maistro.graph.execution_state import GraphExecutionState
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
+from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.lifecycle import transition_run
 from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.store import RunStore
@@ -93,6 +94,11 @@ class _Spine:
     project_id: str
 
 
+#: Room for the 300-Run backlog one case seeds ahead of a stranded Run; the
+#: governed root-Run ceiling (#1182) is not what these cases test.
+_BACKLOG_LIMITS = RunConcurrencyLimits(per_workspace=512)
+
+
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def spine(
     request: pytest.FixtureRequest, tmp_path: Path, pg_pool: Any
@@ -106,7 +112,9 @@ async def spine(
         from maistro.runs.sqlite_store import SqliteRunStore
 
         async with aiosqlite.connect(tmp_path / "spine.db") as conn:
-            sqlite_runs = SqliteRunStore(conn, project_store=projects)
+            sqlite_runs = SqliteRunStore(
+                conn, project_store=projects, concurrency_limits=_BACKLOG_LIMITS
+            )
             await sqlite_runs.ensure_schema()
             sqlite_continuations = SqliteGraphContinuationStore(conn)
             await sqlite_continuations.ensure_schema()
@@ -126,7 +134,7 @@ async def spine(
         from maistro.graph.durable_runs.pg_continuation import PgGraphContinuationStore
 
         continuations = PgGraphContinuationStore(pg_pool)
-    run_store = InMemoryRunStore(project_store=projects)
+    run_store = InMemoryRunStore(project_store=projects, concurrency_limits=_BACKLOG_LIMITS)
     yield _Spine(
         run_store,
         continuations,

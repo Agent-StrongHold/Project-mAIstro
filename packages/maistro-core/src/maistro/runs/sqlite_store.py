@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
+from maistro.runs.concurrency import ACTIVE_ROOT_STATUS_VALUES, RunConcurrencyLimits
 from maistro.runs.evidence_json import json_of, model_of_json
 from maistro.runs.lifecycle import (
     check_completion_is_earned,
@@ -103,6 +104,17 @@ _PURGE_CANDIDATES_WORKSPACE_SQL = """SELECT run_id, payload FROM canonical_runs 
       )
     ORDER BY json_extract(r.payload, '$.retention_expires_at')
     LIMIT ?"""
+
+#: Active root Runs in one Workspace and for one principal (#1182). The
+#: principal ceiling spans Workspaces, so its count has no Workspace predicate.
+_ACTIVE_ROOT_COUNTS_SQL = """SELECT
+    (SELECT COUNT(*) FROM canonical_runs
+      WHERE parent_run_id IS NULL AND status IN ({statuses}) AND workspace_id = ?),
+    (SELECT COUNT(*) FROM canonical_runs
+      WHERE parent_run_id IS NULL AND status IN ({statuses})
+        AND json_extract(payload, '$.actor_principal_id') = ?)""".format(  # nosec B608
+    statuses=_placeholders(len(ACTIVE_ROOT_STATUS_VALUES))
+)
 
 _PURGE_CANDIDATES_GLOBAL_SQL = """SELECT run_id, payload FROM canonical_runs r
     WHERE r.status IN ({statuses})
@@ -325,9 +337,11 @@ class SqliteRunStore:
         conn: aiosqlite.Connection,
         *,
         project_store: ProjectScopeStore,
+        concurrency_limits: RunConcurrencyLimits | None = None,
     ) -> None:
         self._conn = conn
         self._project_store = project_store
+        self._concurrency_limits = concurrency_limits or RunConcurrencyLimits()
         # One connection, and now more than one caller: the task runner drives
         # four workers against this store (#143), and `create_attempt` opens an
         # explicit BEGIN IMMEDIATE. Two of those interleaving on one aiosqlite
@@ -404,37 +418,63 @@ class SqliteRunStore:
             # names a receipt that was already queued.
             run = admit_in_state(run, initial_status)
             try:
-                await self._conn.execute(
-                    """INSERT INTO canonical_runs
-                       (run_id, workspace_id, project_id, parent_run_id,
-                        parent_node_run_id, status, payload)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        run.run_id,
-                        run.workspace_id,
-                        run.project_id,
-                        run.parent_run_id,
-                        run.parent_node_run_id,
-                        run.status.value,
-                        json_of(run),
-                    ),
-                )
+                await self._insert_run(run)
             except sqlite3.IntegrityError as exc:
-                # Rolled back before raising, whatever the conflict: the failed
-                # INSERT opened a transaction, and leaving it for the next
-                # caller to inherit would make an unrelated write commit inside
-                # this one. A delegation-key conflict re-raises into
-                # `_reserve_child`'s adopt-the-winner recovery, which must not
-                # inherit the loser's open write transaction either -- the
-                # recovery's next write (or its uncertain-transport pause)
-                # would otherwise hold the database write lock indefinitely.
-                await self._conn.rollback()
                 occurrence = occurrence_key(run.provenance)
                 if occurrence is None or "idx_canonical_runs_occurrence" not in str(exc):
                     raise
                 raise DuplicateOccurrence(*occurrence) from exc
             await self._conn.commit()
             return run
+
+    async def _insert_run(self, run: Run) -> None:
+        """Insert `run`, admitting it against the root ceilings when it is one.
+
+        Rolled back before raising, whatever the failure: a failed INSERT or a
+        refused admission leaves a transaction open, and leaving it for the
+        next caller to inherit would make an unrelated write commit inside this
+        one. A delegation-key conflict re-raises into `_reserve_child`'s
+        adopt-the-winner recovery, which must not inherit the loser's open write
+        transaction either -- the recovery's next write (or its
+        uncertain-transport pause) would otherwise hold the database write lock
+        indefinitely.
+        """
+        try:
+            if run.parent_run_id is None:
+                # IMMEDIATE takes the write lock before the count, so a second
+                # process on this file cannot admit into the gap.
+                await self._conn.execute("BEGIN IMMEDIATE")
+                await self._check_root_admission(run)
+            await self._conn.execute(
+                """INSERT INTO canonical_runs
+                   (run_id, workspace_id, project_id, parent_run_id,
+                    parent_node_run_id, status, payload)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run.run_id,
+                    run.workspace_id,
+                    run.project_id,
+                    run.parent_run_id,
+                    run.parent_node_run_id,
+                    run.status.value,
+                    json_of(run),
+                ),
+            )
+        except BaseException:
+            await self._conn.rollback()
+            raise
+
+    async def _check_root_admission(self, run: Run) -> None:
+        principal = run.actor_principal_id or None
+        row = await self._fetchone(
+            _ACTIVE_ROOT_COUNTS_SQL,
+            (*ACTIVE_ROOT_STATUS_VALUES, run.workspace_id, *ACTIVE_ROOT_STATUS_VALUES, principal),
+        )
+        assert row is not None  # nosec B101 - a scalar SELECT always yields a row
+        self._concurrency_limits.check(
+            workspace_active=int(row[0]),
+            principal_active=int(row[1]) if principal is not None else None,
+        )
 
     async def get_run(self, run_id: str) -> Run | None:
         row = await self._fetchone(

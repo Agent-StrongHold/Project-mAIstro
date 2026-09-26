@@ -31,6 +31,7 @@ from maistro.graph.durable_runs import (
     HitlAuthorization,
     InMemoryGraphContinuationStore,
 )
+from maistro.graph.durable_runs.fair_scan import DEFAULT_MAX_INSPECTED
 from maistro.graph.nodes import BaseNode, NodeContext, register_node
 from maistro.graph.nodes.base import (
     PAUSE_AWAITING_HUMAN_ANSWER,
@@ -40,6 +41,7 @@ from maistro.graph.nodes.base import (
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.providers.registry import InMemoryProviderRegistry
 from maistro.providers.router import CostAwareRouter
+from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.model import RunStatus
 from maistro.runs.store import InMemoryRunStore
 
@@ -173,7 +175,12 @@ async def container(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("ws-rdr")
-    run_store = InMemoryRunStore(project_store=projects)
+    # The fair-scan case seeds more active root Runs than the governed
+    # Workspace ceiling (#1182) admits; the ceiling is not what it tests.
+    run_store = InMemoryRunStore(
+        project_store=projects,
+        concurrency_limits=RunConcurrencyLimits(per_workspace=DEFAULT_MAX_INSPECTED + 8),
+    )
     providers = InMemoryProviderRegistry()
     built = SimpleNamespace(
         projects=projects,
@@ -424,8 +431,6 @@ async def test_a_foreign_prefix_longer_than_one_tick_is_crossed_across_ticks(
     ``admission_source`` prefilter, so they are the realistic prefix a
     bounded scan must walk past to reach the one this half owns."""
     from services.registered_dag_recovery import recover_stranded_registered_dag_runs
-
-    from maistro.graph.durable_runs.fair_scan import DEFAULT_MAX_INSPECTED
 
     single = Graph(
         workspace_id="ws-rdr",
