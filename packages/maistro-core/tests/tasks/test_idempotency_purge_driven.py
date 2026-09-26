@@ -96,9 +96,7 @@ async def _seed_expired(store: Any, count: int) -> list[str]:
         # Completing is claimant-fenced (#1176): the outcome lands only with
         # the token the claim itself minted.
         assert (
-            await store.complete(
-                scope, token=claimed.token, task_id=f"t-{scope}", run_id=None
-            )
+            await store.complete(scope, token=claimed.token, task_id=f"t-{scope}", run_id=None)
             is True
         )
     return scopes
@@ -147,9 +145,7 @@ async def test_a_claim_inside_the_interval_does_not_purge_again(store: Any, cloc
     newer = [_scope("newer")]
     newer_claim = await store.claim(newer[0], fingerprint="fp", request="{}", now=_EXPIRED)
     assert isinstance(newer_claim, Claimed)
-    await store.complete(
-        newer[0], token=newer_claim.token, task_id="t-newer", run_id=None
-    )
+    await store.complete(newer[0], token=newer_claim.token, task_id="t-newer", run_id=None)
     clock.value += idem.IDEMPOTENCY_PURGE_INTERVAL_SECONDS - 1
     later = _EXPIRED + DEFAULT_REPLAY_WINDOW + timedelta(seconds=1)
     await store.claim(_scope("second"), fingerprint="fp", request="{}", now=later)
