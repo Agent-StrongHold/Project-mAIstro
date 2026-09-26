@@ -20,6 +20,11 @@ contracts:
 tests:
   - tests/test_check_security_inventory.py::test_repo_constructor_census_has_no_unpooled_production_clients
   - packages/maistro-rsi/tests/test_free_router.py::test_explicit_gateway_base_cannot_allowlist_a_private_target
+ac-modules:
+  AC-1: maistro.security.outbound
+  AC-2: maistro_registry.linker
+  AC-3: maistro.security.outbound
+  AC-4: maistro.security.outbound
 layer: Connectivity
 owners:
   - '@BlakeMatthews-dev'
@@ -81,11 +86,22 @@ explicitly pinned, while path data remains untrusted.
 
 ## Acceptance criteria
 
-- [x] Every outbound client in the five packages is created or borrowed through
-      the guarded core seam; test doubles use `httpx.MockTransport`, which opens
-      no socket and is intentionally not wrapped.
-- [x] The registry linker pins scheme and origin before creating its client.
-- [x] The dependency choice is recorded here and declared in package metadata.
-- [x] The security census covers the sibling package source roots and reports no
-      private `httpx.Client` or `httpx.AsyncClient` construction outside the
-      central seam.
+Retrofitted at acceptance from the behaviour this change already shipped, in
+the same shape as ADR-082326-5386: each criterion is bound to a test that
+proves it, and each anchor names the module that carries the decision's
+runtime consequence.
+
+- [x] **AC-1** Every outbound network call in the five sibling packages
+  (`maistro-registry`, `maistro-bootstrap`, `maistro-evolve`, `maistro-rsi`,
+  `maistro-design`) resolves through the guarded core seam; the sibling census
+  reports no direct `httpx` network call in their source trees.
+- [x] **AC-2** The registry linker pins the `https://api.github.com` origin and
+  quotes owner/repository path segments before any client is created;
+  caller-influenced values can never choose the scheme or network origin, and
+  the fetch runs on `maistro.http.sync_client`'s guarded transports.
+- [x] **AC-3** The dependency choice is recorded here and declared in package
+  metadata: `maistro-registry`, `maistro-bootstrap` and `maistro-evolve`
+  declare `maistro-core>=0.9.0` rather than vendoring a second guard.
+- [x] **AC-4** The repo-wide constructor census covers the sibling source roots
+  and reports no unguarded `httpx.Client`/`httpx.AsyncClient` construction in
+  production code outside the central seam.

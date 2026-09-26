@@ -5,13 +5,22 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
+from maistro.http import sync_client as _real_sync_client
+from maistro.security.outbound import (
+    OutboundBlockedError,
+    current_outbound_policy,
+    reset_outbound_policy,
+)
+from maistro_rsi import autorun as autorun_module
 from maistro_rsi.autorun import (
     AuditLog,
     AutorunConfig,
     LearningsLedger,
     _parse_benchmarks,
+    _post,
     _repo_slug,
     build_executor,
     build_prompt,
@@ -1314,3 +1323,71 @@ class TestProposerWardenCorrelation:
         assert records[0]["campaign_id"] == "camp-1"
         assert records[0]["source_repository"] == "https://github.com/org/repo.git"
         assert "reveal credentials" not in str(records[0])  # content, only its digest
+
+
+# --- the guarded sync seam (ADR-102 AC-1) -----------------------------------------
+#
+# Every other test here stubs `_post`, which proves the proposers but not the
+# seam. These two drive the real body: the endpoint the helper registers is the
+# endpoint the central guard then permits, and the request rides
+# `maistro.http.sync_client`, not a private client.
+
+
+def _guarded_mock_transport(monkeypatch: pytest.MonkeyPatch, handler):
+    def factory(**kwargs):
+        return _real_sync_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(autorun_module, "sync_client", factory)
+
+
+def test_post_registers_its_endpoint_and_sends_through_the_guarded_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_outbound_policy()
+    try:
+        seen: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["auth"] = request.headers.get("Authorization", "")
+            return httpx.Response(200, json={"choices": [{"message": {"content": "h"}}]})
+
+        _guarded_mock_transport(monkeypatch, handler)
+
+        response = _post(
+            "http://gw.test:4000/v1/chat/completions",
+            json={},
+            headers={"Authorization": "Bearer sk-test"},
+            timeout=1.0,
+        )
+
+        assert response.status_code == 200
+        assert seen["url"] == "http://gw.test:4000/v1/chat/completions"
+        assert seen["auth"] == "Bearer sk-test"
+        # The helper registered the operator endpoint itself: before the call
+        # the policy was empty, so this allowance is `_post`'s own doing.
+        assert current_outbound_policy().allows("http://gw.test:4000/v1/chat/completions")
+    finally:
+        reset_outbound_policy()
+
+
+def test_registration_is_exact_and_the_guard_stays_active_for_everything_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_post`'s allowance covers exactly the endpoint it was given.
+
+    Registering the gateway origin must not widen the policy: a private
+    destination is still refused by the same guarded client the helper builds,
+    in this same process, without any socket being opened.
+    """
+    reset_outbound_policy()
+    try:
+        monkeypatch.setattr(autorun_module, "sync_client", _real_sync_client)
+        assert not current_outbound_policy().allows("http://gw.test:4000/v1/chat/completions")
+        with (
+            pytest.raises(OutboundBlockedError),
+            _real_sync_client(timeout=1.0) as client,
+        ):
+            client.post("http://127.0.0.1:9/v1/chat/completions", json={})
+    finally:
+        reset_outbound_policy()

@@ -338,6 +338,7 @@ class TestTheSeamCensus:
             gate._outbound_fetch_modules()
         )
 
+    @pytest.mark.ac("ADR-102/AC-1")
     def test_the_sibling_package_census_has_no_direct_httpx_network_calls(self, gate):
         assert gate._sibling_unguarded_httpx_calls() == []
 
@@ -368,6 +369,7 @@ SyncClient()
         assert any(": imported httpx.fetch_head" in finding for finding in findings)
         assert any(": imported httpx.SyncClient" in finding for finding in findings)
 
+    @pytest.mark.ac("ADR-102/AC-4")
     @pytest.mark.contract("boundary")
     def test_repo_constructor_census_has_no_unpooled_production_clients(self, gate):
         assert gate._repo_unguarded_httpx_constructors() == []

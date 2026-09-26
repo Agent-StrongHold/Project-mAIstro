@@ -9,8 +9,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from maistro.http import sync_client as _real_sync_client
 from maistro.security.outbound import (
     OutboundBlockedError,
+    configure_outbound_policy,
     current_outbound_policy,
     reset_outbound_policy,
 )
@@ -295,3 +297,56 @@ def test_expanded_roster_seeds_concrete_models() -> None:
     assert seeded <= set(roster)
     assert not (seeded & fr.FREE_ROUTER_ALIASES)
     assert all(genome_to_competitor(g).model in roster for g in store.list_all())
+
+
+# --- the guarded sync seam (ADR-102 AC-1) -----------------------------------------
+#
+# `_post`'s refusal path is covered by the private-gateway test above; `_get`
+# had no test reaching its body at all (every caller stubs it). These drive the
+# real helpers through `maistro.http.sync_client`: refused while the caller
+# owns no registered origin, flowing once the caller registers one.
+
+
+def _guarded_mock_transport(monkeypatch: pytest.MonkeyPatch, handler):
+    def factory(**kwargs):
+        return _real_sync_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(fr, "sync_client", factory)
+
+
+def test_get_refuses_while_no_origin_is_registered() -> None:
+    reset_outbound_policy()
+    try:
+        with pytest.raises(OutboundBlockedError):
+            fr._get("http://127.0.0.1:9/credentials", headers={}, timeout=1.0)
+        assert not current_outbound_policy().allows("http://127.0.0.1:9/credentials")
+    finally:
+        reset_outbound_policy()
+
+
+def test_get_and_post_flow_once_the_caller_registers_the_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_outbound_policy()
+    try:
+        configure_outbound_policy("http://gw.test:4000")
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(f"{request.method} {request.url}")
+            return httpx.Response(200, json={"data": []})
+
+        _guarded_mock_transport(monkeypatch, handler)
+
+        resp = fr._get(
+            "http://gw.test:4000/credentials", headers={"Authorization": "Bearer k"}, timeout=1.0
+        )
+        assert resp.status_code == 200
+        posted = fr._post("http://gw.test:4000/model/new", json={}, headers={}, timeout=1.0)
+        assert posted.status_code == 200
+        assert seen == [
+            "GET http://gw.test:4000/credentials",
+            "POST http://gw.test:4000/model/new",
+        ]
+    finally:
+        reset_outbound_policy()
