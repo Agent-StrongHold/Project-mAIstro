@@ -308,6 +308,9 @@ class Container:
     # process-wide singleton (quota/usage_log.py) so this container and any
     # caller using build_node_resolver's standalone default share state.
     usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
+    #: Durable write-behind owner for the SQLite usage log, when configured.
+    #: Callers may flush it periodically; `aclose()` performs the shutdown flush.
+    usage_log_persistence: Any = None
     #: Where `resume_parked_runs`' next scan of each parked status resumes.
     #: In-process and deliberately not durable: losing it on restart costs one
     #: lap back to the oldest page, which is where a fresh process would start
@@ -377,6 +380,24 @@ class Container:
 
             self.capabilities = default_capability_registry()
 
+    async def _flush_usage_log_on_shutdown(self) -> None:
+        """Write the usage log's retained events to its SQLite persistence.
+
+        The final flush of the write-behind `SqliteUsageLog` (#1204): a
+        container wired with `usage_log_persistence` must not drop the events
+        recorded since the last periodic snapshot just because the process is
+        going down. Idempotent by the durable event identity, so a shutdown
+        racing a periodic flush cannot double-persist. A failure here must not
+        block the rest of the shutdown, which is why the exception is only
+        logged.
+        """
+        if self.usage_log_persistence is None:
+            return
+        try:
+            await self.usage_log_persistence.snapshot(self.usage_log)
+        except Exception:
+            logger.exception("container: the usage log did not flush cleanly")
+
     async def aclose(self) -> None:
         """Release what this container took. Idempotent.
 
@@ -411,6 +432,7 @@ class Container:
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
+        await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool
 
@@ -1640,6 +1662,8 @@ async def create_container(
     pg_pool = None
     holds_pg_pool = False
     holds_db_pool = False
+    usage_log = get_default_usage_log()
+    usage_log_persistence: Any = None
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
@@ -1654,6 +1678,11 @@ async def create_container(
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
         holds_db_pool = True
+        from maistro.quota.sqlite_usage_log import SqliteUsageLog
+
+        usage_log_persistence = SqliteUsageLog(db_pool)
+        await usage_log_persistence.ensure_schema()
+        usage_log = await usage_log_persistence.restore()
     elif config.database_url.startswith(POSTGRES_SCHEMES):
         (
             pg_pool,
@@ -1957,6 +1986,8 @@ async def create_container(
         agents=agents,
         audit_log=audit_log,
         db_pool=db_pool,
+        usage_log=usage_log,
+        usage_log_persistence=usage_log_persistence,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
         pg_pool=pg_pool,
@@ -2186,6 +2217,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_usage_events",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
     # for the same reason as `prompt_labels`: without it a database migrated

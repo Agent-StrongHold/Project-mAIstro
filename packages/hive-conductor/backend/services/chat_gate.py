@@ -24,8 +24,8 @@ tool selection crosses this boundary too, and the effect classes below are
 what the backend requires before a tool with that effect may run:
 
 - `destroy`/`mutate`  privileged effects: refused unless the caller presents
-                      an approval the model cannot mint (`approved=True` on
-                      the dispatcher, with the approval recorded in audit).
+                      an approval the model cannot mint. Workflow execution
+                      specifically consumes the shared capability approval.
 - `network`           a principal is required: with no authenticated user
                       there is no authorization at all, so the call refuses.
 - `read`              local, user-scoped reads; audited, allowed.
@@ -39,17 +39,22 @@ future re-enablement.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from routes.agents import ScanBudgetExceeded, scan_config
 from routes.audit import log_audit
 
+from maistro.capabilities.authority import approval_signing_secret, verify_approval_authority
+from maistro.capabilities.slots.approval import ApprovalDecision, ApprovalRequest
+
 #: Bumped whenever the policy below changes shape — new refusal reason,
 #: changed timeout, changed tool classification — so every recorded decision
 #: names the rules it was judged by.
-POLICY_VERSION = "chat-gate/1"
+POLICY_VERSION = "chat-gate/3"
 
 #: How long one scan may run before the turn fails closed.
 SCAN_TIMEOUT_SECONDS = 10.0
@@ -67,6 +72,8 @@ REASON_FLAGGED = "flagged"
 REASON_SCANNER_TIMEOUT = "scanner_timeout"
 REASON_SCANNER_ERROR = "scanner_error"
 REASON_BUDGET_EXCEEDED = "budget_exceeded"
+REASON_APPROVAL_REQUIRED = "approval_required"
+REASON_INVALID_APPROVAL = "invalid_approval_evidence"
 
 _BOUNDARY_USER_INPUT = "user_input"
 _BOUNDARY_TOOL_RESULT = "tool_result"
@@ -247,7 +254,9 @@ TOOL_EFFECTS: dict[str, str] = {
     "web_search": TOOL_EFFECT_NETWORK,
     "browse_url": TOOL_EFFECT_NETWORK,
     "analyze_dashboard": TOOL_EFFECT_NETWORK,
-    "run_workflow": TOOL_EFFECT_NETWORK,
+    # A workflow creates durable Run history and may execute mutating nodes;
+    # transport is not the effect classification (#1094).
+    "run_workflow": TOOL_EFFECT_MUTATE,
     # mutate — privileged effect, approval independent of the model required
     "save_as_action": TOOL_EFFECT_MUTATE,
     "create_agent_button": TOOL_EFFECT_MUTATE,
@@ -275,8 +284,81 @@ def tool_effect(tool_name: str) -> str:
     return TOOL_EFFECTS.get(tool_name, TOOL_EFFECT_DESTROY)
 
 
+def _workflow_request_digest(args: Mapping[str, Any]) -> str:
+    """Digest the exact model-visible workflow arguments for approval scope."""
+    import hashlib
+
+    payload = json.dumps(dict(args), sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _canonical_approval_matches(
+    request: ApprovalRequest | None,
+    decision: ApprovalDecision | None,
+    *,
+    user_id: str,
+    workflow_id: str,
+    request_digest: str,
+) -> bool:
+    """Accept only a decision returned by the canonical approval capability.
+
+    The request and decision travel together from the capability provider; the
+    model never receives either object. Exact action, principal, workflow, and
+    argument digest binding prevents an approval for one run being replayed for
+    another. The provider owns human/delegated authority and its audit record.
+    """
+    if not isinstance(request, ApprovalRequest) or not isinstance(decision, ApprovalDecision):
+        return False
+    authority = decision.authority
+    authority_valid = bool(
+        authority
+        and authority.evidence_id == request.request_id
+        and authority.scope == "run_workflow"
+        and authority.principal == decision.actor
+        and verify_approval_authority(authority, approval_signing_secret())
+    )
+    return bool(
+        request.action == "run_workflow"
+        and request.requester == user_id
+        and request.params.get("workflow_id") == workflow_id
+        and request.params.get("request_digest") == request_digest
+        and decision.request_id == request.request_id
+        and decision.approved
+        and decision.actor
+        and authority_valid
+    )
+
+
+def _approval_audit_details(
+    request: ApprovalRequest | None, decision: ApprovalDecision | None
+) -> dict[str, Any] | None:
+    """Keep canonical approval evidence bounded to its exact scope."""
+    if request is None and decision is None:
+        return None
+    return {
+        "request_id": request.request_id if request else (decision.request_id if decision else ""),
+        "action": request.action if request else "run_workflow",
+        "principal": request.requester if request else None,
+        "workflow_id": request.params.get("workflow_id") if request else None,
+        "request_digest": request.params.get("request_digest") if request else None,
+        "actor": decision.actor if decision else None,
+        "authority_kind": (decision.authority.kind if decision and decision.authority else None),
+        "authority_scope": (decision.authority.scope if decision and decision.authority else None),
+        "source": "capability_approval",
+    }
+
+
 def gate_tool_dispatch(
-    tool_name: str, user_id: str, *, approved: bool = False, gate_id: str | None = None
+    tool_name: str,
+    user_id: str,
+    *,
+    approved: bool = False,
+    approval_evidence: Mapping[str, Any] | None = None,
+    approval_request: ApprovalRequest | None = None,
+    approval_decision: ApprovalDecision | None = None,
+    workflow_id: str | None = None,
+    request_digest: str | None = None,
+    gate_id: str | None = None,
 ) -> GateDecision | None:
     """The authorization decision for dispatching one tool, or None to run.
 
@@ -287,14 +369,79 @@ def gate_tool_dispatch(
     """
     effect = tool_effect(tool_name)
     if effect in (TOOL_EFFECT_DESTROY, TOOL_EFFECT_MUTATE):
-        if approved:
+        # Workflow approval must come from the canonical approval capability.
+        # A model argument or caller-shaped metadata is not an authority boundary.
+        if tool_name == "run_workflow" and (
+            not request_digest
+            or not _canonical_approval_matches(
+                approval_request,
+                approval_decision,
+                user_id=user_id,
+                workflow_id=workflow_id or "",
+                request_digest=request_digest,
+            )
+        ):
+            # Refusal naming: a caller that presented no approval evidence at
+            # all is missing authorization; a caller that presented evidence
+            # which failed verification gets the more precise invalid reason,
+            # so the audit row distinguishes a missing grant from a bad one.
+            presented_evidence = bool(approval_evidence or approval_decision is not None)
+            decision = GateDecision(
+                allowed=False,
+                reason=(
+                    REASON_INVALID_APPROVAL if presented_evidence else REASON_APPROVAL_REQUIRED
+                ),
+                boundary=_BOUNDARY_USER_INPUT,
+                surface="chat_tool_dispatch",
+                gate_id=gate_id or new_gate_id(),
+                tool=tool_name,
+            )
+            evidence_detail = _approval_audit_details(approval_request, approval_decision)
+            if evidence_detail is None and approval_evidence:
+                evidence_detail = {
+                    key: str(approval_evidence[key])[:512]
+                    for key in (
+                        "action",
+                        "principal",
+                        "workflow_id",
+                        "request_digest",
+                        "approval_id",
+                        "issuer",
+                        "delegated_for",
+                    )
+                    if approval_evidence.get(key) is not None
+                }
+            log_audit(
+                "chat_tool_privilege_blocked",
+                user_id or "anonymous",
+                target=tool_name,
+                detail={
+                    "gate_id": decision.gate_id,
+                    "principal": user_id or "anonymous",
+                    "effect": effect,
+                    "workflow_id": workflow_id,
+                    "approval_evidence": evidence_detail,
+                    "refusal_reason": decision.reason,
+                    "policy_version": POLICY_VERSION,
+                },
+                severity="warning",
+            )
+            return decision
+        if approved or tool_name == "run_workflow":
+            # The workflow branch is reachable only after the canonical
+            # approval provider returned the exact request/decision pair.
+            evidence = _approval_audit_details(approval_request, approval_decision)
             log_audit(
                 "chat_tool_privilege_approved",
                 user_id or "anonymous",
                 target=tool_name,
                 detail={
                     "gate_id": gate_id or new_gate_id(),
+                    "principal": user_id or "anonymous",
                     "effect": effect,
+                    "workflow_id": workflow_id,
+                    "approval_evidence": evidence,
+                    "approval_scope": "tool_dispatch_only",
                     "policy_version": POLICY_VERSION,
                 },
             )
@@ -313,7 +460,10 @@ def gate_tool_dispatch(
             target=tool_name,
             detail={
                 "gate_id": decision.gate_id,
+                "principal": user_id or "anonymous",
                 "effect": effect,
+                "workflow_id": workflow_id,
+                "refusal_reason": decision.reason,
                 "policy_version": POLICY_VERSION,
             },
             severity="warning",

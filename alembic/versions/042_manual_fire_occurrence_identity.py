@@ -38,8 +38,11 @@ both declared `down_revision = "038"`, two heads at 038 — the same collision
 revision 040's own docstring records), then from 041 onto `036_audit_log_org_scope`
 (develop's #1395 re-parented that migration onto `040`, so following `040`
 here would fork the chain into the "multiple head revisions" failure every
-deployment hits). The id keeps the develop chain linear with this as the
-single head. Only the identifiers change; the DDL this applies is untouched.
+deployment hits). The id kept the develop chain linear with this as the
+single head until #1204's merge re-parented `039_quota_usage_event_identity`
+onto this revision — the same reconciliation in the opposite direction: the
+#1204 revision follows the develop chain tip (now `042`), keeping exactly
+one head. Only the identifiers change; the DDL this applies is untouched.
 """
 
 from __future__ import annotations

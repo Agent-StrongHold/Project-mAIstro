@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+# Callers reuse this identity when a usage write is retried after an
+# ambiguous database result. Omitting it means this is a new observation.
+UsageEventId = str
+
 
 @runtime_checkable
 class QuotaTracker(Protocol):
@@ -15,8 +19,14 @@ class QuotaTracker(Protocol):
         billing_cycle: str,
         input_tokens: int,
         output_tokens: int,
+        event_id: UsageEventId | None = None,
     ) -> dict[str, object]:
-        """Record token usage. Returns updated totals."""
+        """Record token usage once for ``event_id`` and return updated totals.
+
+        Implementations generate an identity when one is omitted for backwards
+        compatibility. Retry-capable callers must pass the same identity for
+        every attempt to record one observed invocation.
+        """
         ...
 
     async def get_usage_pct(
