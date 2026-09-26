@@ -34,7 +34,9 @@ stream starts the Run is already terminal — a client that disconnects mid-stre
 cannot leave one open. `_close_if_open` remains for the one case it cannot
 cover: a client that disconnects at the very first `yield`, before
 `route_request` is ever called, would otherwise strand a Run this module
-admitted for the response header.
+admitted for the response header. It leaves alone any Run the chat executor
+has already taken on, including one `route_request` deliberately left open for
+recovery after `ChatDispatchUnrecorded` (#1108).
 
 The Run is admitted here, not by `route_request`, for exactly that header: the
 streaming branch has to name the Run before the first byte, and the seam cannot
@@ -309,14 +311,22 @@ _pending_closes: set[asyncio.Task[None]] = set()
 
 
 async def _close_if_open(run: Run) -> None:
-    """Terminalize a Run nothing else closed.
+    """Terminalize a Run abandoned before its turn was dispatched.
 
     Idempotent by design: every ordinary path closes its own Run, so this reads
     the Run back and does nothing when it is already terminal.
+
+    Once the chat executor has created the turn's NodeRun, the Run is
+    `Container.route_request`'s to close, or recovery's: after
+    `ChatDispatchUnrecorded` it is left RUNNING on purpose so
+    `recover_abandoned_attempts` can settle it (#1108). Cancelling it here
+    would overwrite that evidence with an abandonment that never happened.
     """
     if _container is None:
         return
     try:
+        if await _container.run_store.list_node_runs(run.run_id):
+            return
         from maistro.runs.service import RunExecutionService
         from maistro.runtime import PythonExecutionRuntime
 
