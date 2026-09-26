@@ -97,24 +97,33 @@ def _bounded_json_text(value: object, budget: int) -> str:
         return _prefix_within_utf8_budget(str(value), budget)
 
 
-def message_to_scan_text(message: Mapping[str, object], *, max_bytes: int | None = None) -> str:
-    """Serialize fields reaching a downstream harness, optionally bounded."""
-    content = message.get("content", "")
-    content_text = (
-        content
-        if isinstance(content, str)
-        else (str(content) if max_bytes is None else _bounded_json_text(content, max_bytes))
-    )
-    extra_fields = {k: v for k, v in message.items() if k not in ("content", "role")}
-    if max_bytes is None:
-        if not extra_fields:
-            return content_text
-        try:
-            serialized = json.dumps(extra_fields, sort_keys=True, default=str)
-        except (TypeError, ValueError):
-            serialized = str(extra_fields)
-        return f"{content_text}\n{serialized}" if content_text else serialized
+def _content_scan_text(content: object, max_bytes: int | None) -> str:
+    """Serialize a message's content field, optionally bounded."""
+    if isinstance(content, str):
+        return content
+    return str(content) if max_bytes is None else _bounded_json_text(content, max_bytes)
 
+
+def _extra_scan_fields(message: Mapping[str, object]) -> dict[str, object]:
+    """Fields outside ``content``/``role`` that also reach a downstream harness."""
+    return {k: v for k, v in message.items() if k not in ("content", "role")}
+
+
+def _unbounded_scan_text(content_text: str, extra_fields: Mapping[str, object]) -> str:
+    """Join the content and metadata readings without any size bound."""
+    if not extra_fields:
+        return content_text
+    try:
+        serialized = json.dumps(extra_fields, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        serialized = str(extra_fields)
+    return f"{content_text}\n{serialized}" if content_text else serialized
+
+
+def _bounded_scan_text(
+    content_text: str, extra_fields: Mapping[str, object], max_bytes: int
+) -> str:
+    """Join the content and metadata readings within one shared byte budget."""
     content_text = _prefix_within_utf8_budget(content_text, max_bytes)
     used = len(content_text.encode("utf-8"))
     if not extra_fields or used >= max_bytes:
@@ -122,6 +131,15 @@ def message_to_scan_text(message: Mapping[str, object], *, max_bytes: int | None
     separator = "\n" if content_text else ""
     remaining = max_bytes - used - len(separator.encode("utf-8"))
     return f"{content_text}{separator}{_bounded_json_text(extra_fields, remaining)}"
+
+
+def message_to_scan_text(message: Mapping[str, object], *, max_bytes: int | None = None) -> str:
+    """Serialize fields reaching a downstream harness, optionally bounded."""
+    content_text = _content_scan_text(message.get("content", ""), max_bytes)
+    extra_fields = _extra_scan_fields(message)
+    if max_bytes is None:
+        return _unbounded_scan_text(content_text, extra_fields)
+    return _bounded_scan_text(content_text, extra_fields, max_bytes)
 
 
 def context_from_messages(messages: Sequence[Mapping[str, object]]) -> list[WardenContext]:
