@@ -300,3 +300,39 @@ mypy --strict (631 files), check-sandbox-authority, check-suite-inventory
 
 Remaining open, unchanged: #79 lease threading (runner-side, above this lane)
 and GitHub closure states for the child issues.
+
+## Verification round (2026-09-25, head `28911588e7ee`, no code changes)
+
+Independent acceptance re-validation after the round-2 commit (the previous
+verification job died on a provider timeout before recording anything, and the
+round before this branch carried the recorded-inventory gate failure fixed by
+`5691b0927`). Every gate re-executed green at this exact head:
+
+- `ruff check .`, `ruff format --check .` (2533 files);
+- `mypy` over all six declared package src trees (715 files) **and** CI's hard
+  gate `mypy --strict packages/maistro-core/src` (631 files, 0-baseline);
+- `scripts/check-sandbox-authority.py` — plus its rules exercised live:
+  synthetic launcher (2 violations), direct backend construction (3),
+  `import hyperlight` (1) all fail; clean `build_selector` use passes;
+- `scripts/check-suite-inventory.py` — 14 suites match, including this suite;
+- vulture per-identity ledger — exit 0 (1415 reviewed → 1414 findings);
+- pytest: core 10100 passed / 651 skipped / 1 xfailed, core sandbox 143 passed
+  / 36 skipped, core tools 393, evolve 646, RSI 721, conductor backend
+  2658 passed / 1 skipped, bootstrap #811 argv 38;
+- container conformance 17/17 **against the live daemon** (Docker 29.7.2), and
+  `maistro sandbox status` reports the honest ladder on this host: container
+  registered; vm (kvm present but not rw), gvisor (no runsc), bubblewrap
+  (userns refused) each refused with its reason — the #81 preflight surface.
+
+Acceptance criteria spot-verified against production behavior: the retired
+`SandboxConfig.network` input raises in `build_config` and is test-pinned;
+`WorkloadPolicy.network_allowed` contradicts its grant in `__post_init__`; the
+selector refuses tier relabelling (`TierMismatchError`) and fails closed with
+per-tier reasons (`NoSuitableBackendError`); host-side transfer walks
+directory fds with `O_NOFOLLOW` and authorized roots reject symlinks; capture
+is bounded per-stream with truthful `*_truncated`/`output_limit_exceeded`
+flags and kill-on-overflow.
+
+Still above this lane, unchanged: #79 lease threading into the runner's
+`NodeContext`, child-issue GitHub closure states, and the bootstrap data-plane
+sandbox's full convergence (owner decision, posture pinned by the gate).
