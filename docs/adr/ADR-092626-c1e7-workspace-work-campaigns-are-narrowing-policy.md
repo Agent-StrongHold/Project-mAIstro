@@ -58,8 +58,8 @@ and keeps no private campaign model.
 
 The contract, its autonomy modes and its acceptance criteria are in
 SPEC-092626-1831. The priority combination rule, the default autonomy mode,
-overlapping campaigns and the record's owning store are open there and are
-decided before this ADR is accepted.
+budget and overlap behaviour, where the records are stored, and un-parking
+are open there (Q1 to Q5) and are decided before this ADR is accepted.
 
 ## Consequences
 

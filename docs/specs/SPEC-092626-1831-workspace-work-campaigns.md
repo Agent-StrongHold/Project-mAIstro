@@ -14,6 +14,7 @@ implements:
   - maistro-engine#ADR-092626-c1e7
 related:
   - maistro-engine#SPEC-091726-7c2a
+  - maistro-engine#ADR-092326-7ed7
 supersedes: []
 blocks: []
 blocked-by: []
@@ -84,14 +85,16 @@ canonical Goal → Graph → Run
   existing policy owners (Sentinel, Workspace membership, capability grants).
 - **Goal ownership or lifecycle.** A campaign does not own Goals, copy Goal
   ownership into BacklogItem fields, or add a Goal state. The canonical Goal
-  (`maistro.goals`, `docs/architecture/INTEROP-ONTOLOGY-v1.md`) stays the only
-  owner.
+  stays the only owner. `docs/architecture/INTEROP-ONTOLOGY-v1.md` names
+  `maistro.goals` as its semantic owner; that package is not implemented yet.
 - **Scheduling or execution.** A campaign is not a scheduler, queue, lease or
   Run lifecycle. The Run lease and fence primitives (`ExecutionLease`,
   `StaleExecutionFence`, `CursorLease`) are unchanged. A campaign filters
   eligibility before any of them are involved.
-- **The BacklogItem shape.** #98 owns BacklogItem. This spec names only the
-  fields a campaign reads, and adds no BacklogItem semantics.
+- **The BacklogItem shape.** #98 owns BacklogItem. A campaign reads an item's
+  tags, milestone, package, Workspace/Project scope and linked `goal_id` /
+  `goal_revision`, and adds no BacklogItem semantics. Where per-item mode,
+  explicit human priority and park state are stored is open (Q4).
 - **Multi-tenancy.** Hard tenant isolation stays in the importing product
   (ADR-019). Campaign scope uses the soft Workspace/Project axes only.
 - **Deciding the open questions** listed below.
@@ -107,9 +110,12 @@ versions are kept. A campaign may:
 - **constrain eligibility** by tags, milestones, packages, and Workspace or
   Project scope;
 - **set budgets** for cost, time and completion count, each of which acts as a
-  stop condition when reached;
-- **name protected areas** (paths, packages or resources) that no autonomously
-  selected item may touch.
+  stop condition on new selections when reached (what happens to work already
+  in progress is open, Q3);
+- **name protected areas** (paths, packages or resources). At selection time an
+  item whose declared scope includes a protected area is not eligible for
+  automated selection. Enforcement once a Run starts stays with the existing
+  runtime owners (Sentinel, capability grants); a campaign adds none.
 
 A campaign only ever **removes** items from the eligible set. The eligible set
 under a campaign is always a subset of what the actor is already authorized to
@@ -135,10 +141,12 @@ one is a durable, attributed record, not process memory, and survives a
 restart. The UI and API both write the same record. Clearing a control is also
 a recorded decision.
 
-- **pin-next**: the pinned eligible item is selected before any scored item.
+- **pin-next**: the pinned eligible item outranks the system score. How it
+  orders against explicit human priority and other pins is part of Q1.
 - **pause**: the campaign or item is not selected until the pause is cleared.
 - **exclude**: the item is removed from the eligible set.
-- **human-only**: sets the item's mode to `human-only`.
+- **human-only**: sets the item's mode to `human-only`. Clearing it returns
+  the item to the mode it had before, recorded as its own decision.
 
 ### Priority and selection score
 
@@ -146,7 +154,7 @@ Two inputs are kept separate and recorded separately:
 
 1. **Explicit human priority**: set by a person, stored as given, and never
    rewritten by the system.
-2. **System selection score**: computed from criticality, unblock value,
+2. **System selection score**: may consider criticality, unblock value,
    verification confidence, expected learning value, cost, risk and dependency
    readiness.
 
@@ -165,8 +173,10 @@ or campaign fields.
 
 An item that is stalled or blocked may be **parked** with evidence (the reason,
 the blocking dependency or failing check, and the Run or artifact references).
-Parking removes it from the eligible set until the evidence is cleared, and
-another eligible item can be selected in the meantime. Parking does not change
+Parking removes it from the eligible set until an attributed decision
+un-parks it, and another eligible item can be selected in the meantime.
+Whether un-parking can also happen automatically when the blocker resolves is
+open (Q5). Parking does not change
 the linked Goal's state or owner.
 
 ### Invariants
@@ -215,8 +225,8 @@ Feature: Workspace work campaigns narrow eligible work without owning it
     And cost, time and completion budgets and a named protected area
     When eligibility is evaluated
     Then only items inside every constraint are eligible
-    And no item touching the protected area is autonomously eligible
-    And selection stops once any budget is reached
+    And no item whose declared scope includes the protected area is eligible for automated selection
+    And no new item is selected once any budget is reached
 
   @AC-2
   Scenario: Each item carries one autonomy mode
@@ -228,7 +238,7 @@ Feature: Workspace work campaigns narrow eligible work without owning it
   @AC-3
   Scenario: Human priority stays separate from the system score
     Given an item with an explicit human priority
-    When the system computes its selection score from criticality, unblock value, verification confidence, expected learning value, cost, risk and dependency readiness
+    When the system computes a selection score that may consider criticality, unblock value, verification confidence, expected learning value, cost, risk and dependency readiness
     Then the human priority is stored unchanged
     And the selection record carries both inputs and the combining rule's version
 
@@ -286,10 +296,14 @@ selection path, not on a seam only tests construct. This spec adds no tests.
   override, a tie-break on the system score, or a weighted input to it?
 - **Q2. Default autonomy mode.** What mode does an item under a campaign get
   when none is set?
-- **Q3. Overlapping campaigns.** When several campaigns cover one item, do
-  their constraints intersect, and how do their budgets combine?
-- **Q4. Record owner.** Does the campaign record live beside BacklogItem (#98)
-  or in its own store, given the M1 convergence freeze on new universal owners?
+- **Q3. Budgets and overlapping campaigns.** When several campaigns cover one
+  item, do their constraints intersect, and how do their budgets combine? When
+  a budget is reached, does in-progress or pinned work continue?
+- **Q4. Record owner.** Do the campaign record, per-item mode, explicit human
+  priority and park state live beside BacklogItem (#98) or in a campaign
+  store, given the M1 convergence freeze on new universal owners?
+- **Q5. Un-parking.** Is a parked item only returned by a person, or also
+  automatically when its recorded blocker clears?
 
 ## References
 
