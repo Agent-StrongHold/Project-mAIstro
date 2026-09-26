@@ -92,35 +92,32 @@ _PRESCRIPTIVE_PATTERNS: list[PatternLike] = [
 ]
 
 
-def semantic_tool_poisoning_capture_signals(text: str) -> tuple[bool, bool]:
-    """Return bounded presence signals for a capture of a complete conversation."""
-    text_lower = text.lower()
-    return (
-        any(p.search(text_lower) for p in _CAPTURE_ACTIONS),
-        any(p.search(text_lower) for p in _FULL_CONVERSATION_OBJECTS),
-    )
+def semantic_tool_poisoning_capture_positions(text: str) -> tuple[int | None, int | None]:
+    """First capture-verb start and last complete-object start in ``text``.
 
-
-def semantic_tool_poisoning_capture_ordered(text: str) -> bool:
-    """Match the legacy ``capture.*full conversation`` ordering safely.
-
-    The old rule required the capture verb to precede the first complete-object
-    phrase. Keeping the two bounded searches separate avoids ``.*``
-    backtracking, while comparing the first match positions preserves that
-    behavioral detail.
+    The legacy detector expressed this relationship as one unbounded
+    ``(?:capture|export|include).*(?:full|complete|entire)\\s+conversation``
+    search: a match exists exactly when some capture verb precedes some
+    complete-object phrase, i.e. when ``first capture start < last
+    conversation start``. Keeping the two searches bounded and comparing
+    positions reproduces that verdict without the ``.*`` hot path, including
+    the case an earlier standalone object phrase must not suppress: a later
+    capture→object pair is still an attack even when a benign complete-object
+    mention came first (issue #74 repair — the previous min-vs-min comparison
+    let a prepended object phrase hide every later pair).
     """
     text_lower = text.lower()
-    capture_starts = [
-        match.start() for pattern in _CAPTURE_ACTIONS for match in pattern.finditer(text_lower)
-    ]
-    full_conversation_starts = [
-        match.start()
-        for pattern in _FULL_CONVERSATION_OBJECTS
-        for match in pattern.finditer(text_lower)
-    ]
-    return bool(capture_starts and full_conversation_starts) and min(capture_starts) < min(
-        full_conversation_starts
-    )
+    first_capture: int | None = None
+    for pattern in _CAPTURE_ACTIONS:
+        match = pattern.search(text_lower)
+        if match is not None and (first_capture is None or match.start() < first_capture):
+            first_capture = match.start()
+    last_conversation: int | None = None
+    for pattern in _FULL_CONVERSATION_OBJECTS:
+        for match in pattern.finditer(text_lower):
+            if last_conversation is None or match.start() > last_conversation:
+                last_conversation = match.start()
+    return first_capture, last_conversation
 
 
 def semantic_tool_poisoning_signals(text: str) -> tuple[bool, bool, bool]:

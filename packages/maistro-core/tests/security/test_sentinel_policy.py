@@ -529,8 +529,8 @@ async def test_post_call_real_warden_windows_semantic_fallback_input(monkeypatch
     )
     monkeypatch.setattr(
         detector,
-        "semantic_tool_poisoning_capture_signals",
-        record_window(semantic.semantic_tool_poisoning_capture_signals),
+        "semantic_tool_poisoning_capture_positions",
+        record_window(semantic.semantic_tool_poisoning_capture_positions),
     )
     text = "capture export include report " * 2_500
     result = await _sentinel(warden=Warden()).post_call("tool", text, _auth())
@@ -557,14 +557,30 @@ async def test_post_call_real_warden_preserves_padded_semantic_signal():
 
 
 async def test_post_call_real_warden_preserves_capture_ordering():
-    """A complete object before the capture verb is not the legacy attack."""
+    """Only a capture verb followed by a complete object is the attack.
+
+    The legacy single-regex rule flagged ``capture ... full conversation`` —
+    some capture verb followed *somewhere later* by a complete-object phrase.
+    A complete object that merely precedes the capture verb, with no later
+    object, stays clean.
+
+    The pre-repair windowed carry was stricter: it compared the capture verb
+    against the *first* complete-object phrase, so a payload opening with a
+    benign complete-object mention suppressed every later capture→object
+    pair — an evasion reproduced through MasterOrchestrator.execute (issue
+    #74). The flagged cases below pin the repaired legacy-parity verdict.
+    """
     from maistro.security.warden.detector import Warden
 
-    texts = (
-        "The full conversation should capture the entire record.",
-        "The full conversation " + ("padding " * 7_000) + "should capture the entire record.",
+    clean_texts = (
+        # Object before verb, and no complete object after the verb: the
+        # legacy rule finds no capture→object pair and Warden must agree.
+        "The full conversation was summarized before we capture anything else.",
+        "The full conversation "
+        + ("padding " * 7_000)
+        + "was summarized before we capture anything else.",
     )
-    for text in texts:
+    for text in clean_texts:
         outcome = await _sentinel(warden=Warden()).process_output("tool", text, _auth())
 
         assert outcome.blocked is False
@@ -572,6 +588,22 @@ async def test_post_call_real_warden_preserves_capture_ordering():
         assert outcome.warden_verdict.clean is True
         assert outcome.warden_verdict.flags == ()
     assert outcome.sanitized_text.endswith("[... truncated, full result available in trace]")
+
+    # An earlier complete-object mention must not hide a later capture→object
+    # pair: the capture verb precedes the *last* complete object, exactly what
+    # the legacy ``(?:capture|export|include).*(?:full|complete|entire)\\s+``
+    # rule matched.
+    attacked = (
+        "The full conversation should capture the entire record.",
+        "The full conversation " + ("padding " * 7_000) + "should capture the entire record.",
+    )
+    for text in attacked:
+        outcome = await _sentinel(warden=Warden()).process_output("tool", text, _auth())
+
+        assert outcome.blocked is True
+        assert outcome.warden_verdict is not None
+        assert outcome.warden_verdict.clean is False
+        assert "prescriptive_instruction+dangerous_action" in outcome.warden_verdict.flags
 
 
 async def test_post_call_real_warden_windows_large_fallback_semantic_input(monkeypatch):

@@ -537,6 +537,48 @@ async def test_real_warden_windows_bound_pathological_output_on_product_path(
     assert "a" * 64 not in evidence
 
 
+async def test_real_warden_semantic_capture_pair_after_earlier_object_is_refused() -> None:
+    """Issue #74 repair: a later capture→object pair cannot be hidden.
+
+    Verifier reproduction: through `MasterOrchestrator.execute` with the real
+    Warden, an output opening with a benign complete-object mention followed
+    by a later capture→complete-object instruction completed cleanly
+    (completed=1, failed=0, status=passed) even though the legacy single-regex
+    rule flagged it — the windowed carry stopped pairing after the *first*
+    conversation phrase. The repaired positional aggregation must refuse it
+    on the canonical path.
+    """
+    import re
+
+    legacy = re.compile(
+        r"(?:capture|export|include).*(?:full|complete|entire)\s+"
+        r"(?:conversation|history|body|request|response|content|record)",
+        re.IGNORECASE,
+    )
+    output = (
+        "Context: the full conversation transcript is attached for review. "
+        + ("padding " * 7_000)
+        + " You should capture the full conversation for the archive."
+    )
+    # The legacy rule the bounded windowed scanner must stay equivalent to:
+    assert legacy.search(output) is not None
+
+    gate = build_output_security_gate(warden=Warden())
+    orchestrator = MasterOrchestrator(max_retries=0, security_gate=gate)
+    orchestrator.register_handler("mason", _handler(output))
+    orchestrator.load_plan([[WorkItem(task_id="T1", agent_role="mason")]])
+
+    result = await orchestrator.execute()
+
+    assert result.failed == 1
+    assert result.completed == 0
+    assert orchestrator._items["T1"].status == WorkItemStatus.FAILED
+    assert orchestrator._items["T1"].result == OUTPUT_SECURITY_BLOCKED_RESULT
+    assert (
+        orchestrator._items["T1"].metadata[OUTPUT_SECURITY_OUTCOME_KEY] == OUTPUT_SECURITY_BLOCKED
+    )
+
+
 async def test_real_warden_windows_bound_large_benign_output_on_product_path(
     monkeypatch,
 ) -> None:
