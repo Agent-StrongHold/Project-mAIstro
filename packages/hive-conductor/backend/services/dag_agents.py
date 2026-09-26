@@ -67,7 +67,6 @@ _registry: DagRegistry | None = None
 # time there is no Container to ask. By the time a DAG runs, Hive has one,
 # reached the way services/engine.py already reaches run_store and
 # task_admitter (ADR-082526-3ca6).
-_fallback_node_resolver = build_node_resolver()
 
 
 def _container() -> Any:
@@ -96,7 +95,7 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     """
     container = _container()
     if container is None:
-        return _fallback_node_resolver
+        return build_node_resolver()
     # Read as attributes rather than through getattr(): the Container dataclass
     # always defines these collaborators, and check-wiring-reads.py (#236)
     # walks attribute loads, so a getattr("name") read is invisible to it and

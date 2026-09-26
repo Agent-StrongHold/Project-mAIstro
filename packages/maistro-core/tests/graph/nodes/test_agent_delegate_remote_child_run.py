@@ -24,16 +24,28 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
+
 from maistro.a2a.delegate import A2ADelegator
-from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager
+from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager, PeerTrust
 from maistro.graph import Graph, Node
+from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
+    InMemoryGraphContinuationStore,
+    resume_durable_graph,
+    run_durable_graph,
+)
+from maistro.graph.durable_runs.hitl import HitlAuthorization
 from maistro.graph.nodes import NodeContext
 from maistro.graph.nodes.agent_delegate_remote import (
     AgentDelegateRemoteNode,
+    DelegateRemoteIn,
     DelegationNotConfiguredError,
 )
+from maistro.http import set_test_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
-from maistro.runs import InMemoryRunStore
+from maistro.runs import InMemoryRunStore, RunStatus
+from maistro.runs.store import RunIntegrityError
 
 
 async def _spine(
@@ -74,6 +86,25 @@ def _delegator() -> A2ADelegator:
     delegator = A2ADelegator()
     delegator.register_agent_capability("planner", ["researcher"])
     return delegator
+
+
+async def _allow_test_hitl_membership(_principal: str, _workspace_id: str) -> bool:
+    return True
+
+
+def _hitl_authorization(*workspace_ids: str) -> HitlAuthorization:
+    """Answer-path evidence for this file's fixture Workspaces.
+
+    `submit_hitl_answer` requires effective-principal evidence since #364; a
+    delegated answer is the same server-owned settlement path, so the durable
+    resume test presents an explicit operator principal rather than bypassing
+    the authorization the production route carries.
+    """
+    return HitlAuthorization(
+        effective_principal="test-hitl-operator",
+        workspace_ids=frozenset(workspace_ids),
+        membership_check=_allow_test_hitl_membership,
+    )
 
 
 class TestDelegationFilesAChildRun:
@@ -142,11 +173,12 @@ class TestDelegationFilesAChildRun:
         parent = await store.create_run(
             _graph(workspace_id="workspace-1", project_id=project.project_id)
         )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
 
         node = AgentDelegateRemoteNode(a2a_delegator=A2ADelegator(), run_store=store)
         result = await node.run(
             {"from_agent": "planner", "task": "x"},
-            _ctx(run_id=parent.run_id),
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
         )
 
         assert result.status == "completed"
@@ -212,6 +244,317 @@ class TestTheEscapeGuardsFire:
         assert result.status == "failed"
         assert result.error_code == "RunIntegrityError"
         assert "Project boundaries" in (result.error_message or "")
+
+
+class TestInterruptedChildAdmission:
+    """Reservation is two durable stages; a death between them must neither
+    pause the parent on an unanswerable child nor strand one nothing revisits.
+
+    These are the #147 verification findings made executable: adopting a
+    partially-created child left a paused parent plus a child with zero
+    NodeRuns, and the child was admitted QUEUED before its evidence while
+    `a2a_delegation` is deliberately not a consumable source — so that partial
+    child had no recovery path at all.
+    """
+
+    @staticmethod
+    async def _parent(store: InMemoryRunStore, project: Any) -> tuple[Any, Any]:
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        return parent, parent_node_run
+
+    async def test_a_transient_fault_during_evidence_writing_is_healed_before_the_pause(
+        self,
+    ) -> None:
+        """The verification fault: the store dies after `create_run`.
+
+        `_reserve_child` used to adopt its own half-written child and pause,
+        leaving a paused parent beside a child with zero NodeRuns that no
+        answer could ever settle. Adoption now completes the child's canonical
+        evidence first, so the pause lands on an answerable Run.
+        """
+        store, _projects, project = await _spine()
+        parent, parent_node_run = await self._parent(store, project)
+        real_create_node_run = store.create_node_run
+        calls = 0
+
+        async def fail_once(run_id: str, *, node_id: str) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RunIntegrityError("injected: store died mid-admission")
+            return await real_create_node_run(run_id, node_id=node_id)
+
+        store.create_node_run = fail_once  # type: ignore[method-assign]
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused", result.error_message
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        node_runs = await store.list_node_runs(child.run_id)
+        assert len(node_runs) == 1, "the adopted child was completed, not adopted half-way"
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded"]
+        assert child.status.value == "waiting"
+
+    async def test_a_persistent_fault_fails_the_dispatch_loudly_without_pausing(
+        self,
+    ) -> None:
+        """A store that stays broken must not park the parent on an unanswerable
+        child. The dispatch fails as an Attempt error the retry machinery can
+        act on, and the reservation it leaves behind is a CREATED resting
+        projection — never a QUEUED Run that reads as admitted work while no
+        consumer will ever execute it.
+        """
+        store, _projects, project = await _spine()
+        parent, parent_node_run = await self._parent(store, project)
+
+        async def always_fails(run_id: str, *, node_id: str) -> Any:
+            raise RunIntegrityError("injected: store unavailable")
+
+        store.create_node_run = always_fails  # type: ignore[method-assign]
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "failed"
+        assert result.error_code == "RunIntegrityError"
+        children = [
+            run
+            for run in store._runs.values()
+            if run.parent_run_id == parent.run_id  # type: ignore[attr-defined]
+        ]
+        assert len(children) == 1
+        leftover = children[0]
+        assert leftover.status is RunStatus.CREATED, (
+            "an interrupted reservation rests in CREATED, not in QUEUED-with-no-evidence"
+        )
+        assert leftover.provenance.get("a2a_task_id", "") == ""
+        assert await store.list_node_runs(leftover.run_id) == []
+
+    async def test_a_crashed_replicas_partial_child_is_completed_and_answerable(
+        self,
+    ) -> None:
+        """Recoverability, not just non-repetition. A replica that died between
+        the child Run row and its evidence leaves a durable partial; the next
+        dispatch through this node completes it — `a2a_delegation` has no
+        consumer by design (ADR-082426-6201), so this visit is the recovery
+        path — and the resumed answer settles the healed child.
+        """
+        store, _projects, project = await _spine()
+        parent, parent_node_run = await self._parent(store, project)
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        inputs = DelegateRemoteIn(from_agent="planner", task="research X", to_agent="researcher")
+        ctx = _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id)
+
+        # What a crashed replica leaves behind: the child Run row, durable and
+        # keyed, with none of its canonical evidence.
+        child = await store.create_run(
+            node._child_graph(inputs, parent=parent, target="researcher"),
+            parent_run_id=parent.run_id,
+            parent_node_run_id=parent_node_run.node_run_id,
+            provenance={
+                "admission_source": "a2a_delegation",
+                "delegation_key": node._delegation_key(inputs, ctx),
+                "delegation_mode": "in_process",
+            },
+        )
+
+        first = await node.run(inputs, ctx)
+
+        assert first.status == "paused", first.error_message
+        healed = await store.get_run(child.run_id)
+        assert healed is not None
+        node_runs = await store.list_node_runs(child.run_id)
+        assert len(node_runs) == 1
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded"]
+        assert healed.provenance["a2a_task_id"] == first.metadata["task_id"]
+
+        answered = await node.run(
+            inputs,
+            ctx.model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                "task_id": first.metadata["task_id"],
+                                "result": "ok",
+                                "_pause": {"run_id": child.run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        assert answered.output.status == "completed"
+        settled = await store.get_run(child.run_id)
+        assert settled is not None
+        assert settled.status.value == "completed"
+
+    async def test_the_child_row_is_admitted_created_and_only_parks_with_evidence(
+        self,
+    ) -> None:
+        """Pins the ordering that closes the unrecoverable window: the child Run
+        becomes durable in CREATED — the recovery model's resting state for a
+        projection — and reaches WAITING only through its yielded Attempt,
+        never through a QUEUED row with no NodeRun.
+        """
+        store, _projects, project = await _spine()
+        parent, parent_node_run = await self._parent(store, project)
+        real_create_run = store.create_run
+        admitted_as: list[str] = []
+
+        async def spy_create_run(graph: Any, **kwargs: Any) -> Any:
+            run = await real_create_run(graph, **kwargs)
+            if run.parent_run_id == parent.run_id:
+                admitted_as.append(run.status.value)
+            return run
+
+        store.create_run = spy_create_run  # type: ignore[method-assign]
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused", result.error_message
+        assert admitted_as == ["created"], (
+            "the child row must be durable in CREATED before its evidence exists"
+        )
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        assert child.status.value == "waiting"
+        assert len(await store.list_node_runs(child.run_id)) == 1
+
+
+class TestTheReceiptIsAttemptOwnedIdentity:
+    """ADR-082526-7f02 applied to the delegation child: the Attempt is where a
+    reader learns which transport carried the work.
+
+    The verification defect this pins: the reservation-time yielded Attempt
+    used to record ``task_id: ""` -- a placeholder for a fact that did not
+    exist yet -- and stayed that way forever, while the real receipt lived only
+    in the Run's post-admission provenance. An absent fact stays absent
+    (AC-3); the receipt is recorded on the Attempt that settles the work
+    (AC-1's pattern), beside the Run-provenance receipt #147's acceptance
+    names.
+    """
+
+    async def test_the_reservation_attempt_records_no_receipt_placeholder(self) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused", result.error_message
+        child_id = result.metadata["run_id"]
+        child_node_runs = await store.list_node_runs(child_id)
+        attempts = await store.list_attempts(child_node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded"]
+        # Nothing has been accepted yet, so the evidence names the mode and no
+        # receipt -- not an empty-string receipt that can never become true.
+        assert attempts[0].result == {"mode": "in_process"}
+
+    async def test_the_settling_attempt_names_the_transport_receipt(self) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        first = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+        child_run_id = first.metadata["run_id"]
+
+        await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id).model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                "task_id": first.metadata["task_id"],
+                                "result": "ok",
+                                "_pause": {"run_id": child_run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        child = await store.get_run(child_run_id)
+        assert child is not None
+        child_node_runs = await store.list_node_runs(child_run_id)
+        attempts = await store.list_attempts(child_node_runs[0].node_run_id)
+        settled = [attempt for attempt in attempts if attempt.status.value == "completed"]
+        assert len(settled) == 1
+        # The Attempt answers "which transport carried this", spelling the
+        # receipt under the same key the Run's provenance and the answer use.
+        assert settled[0].result is not None
+        assert settled[0].result["task_id"] == child.provenance["a2a_task_id"]
+
+    async def test_an_answer_without_a_receipt_records_no_placeholder(self) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        first = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+        child_run_id = first.metadata["run_id"]
+
+        await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id).model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                # An older caller that names no receipt.
+                                "result": "ok",
+                                "_pause": {"run_id": child_run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        child_node_runs = await store.list_node_runs(child_run_id)
+        attempts = await store.list_attempts(child_node_runs[0].node_run_id)
+        settled = [attempt for attempt in attempts if attempt.status.value == "completed"]
+        assert len(settled) == 1
+        assert settled[0].result is not None
+        assert "task_id" not in settled[0].result
 
 
 class TestAnUnknownParentIsRefused:
@@ -284,11 +627,15 @@ class TestCrossInstanceDelegationFilesAChildRun:
     """
 
     @staticmethod
-    def _peers(status: str = "submitted", error: str | None = None) -> GuestPeerManager:
+    def _peers(
+        status: str = "submitted",
+        error: str | None = None,
+        task_id: str = "remote-1",
+    ) -> GuestPeerManager:
         guest_peers = GuestPeerManager()
         guest_peers.delegate = AsyncMock(  # type: ignore[method-assign]
             return_value=DelegationResult(
-                task_id="remote-1", peer_name="hub", status=status, error=error
+                task_id=task_id, peer_name="hub", status=status, error=error
             )
         )
         return guest_peers
@@ -318,6 +665,83 @@ class TestCrossInstanceDelegationFilesAChildRun:
         assert child.parent_node_run_id == parent_node_run.node_run_id
         assert child.workspace_id == parent.workspace_id
         assert child.project_id == parent.project_id
+
+    async def test_cross_instance_transport_and_child_admission_are_one_path(self) -> None:
+        """Exercise the node through GuestPeerManager's real HTTP seam."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["json"] = request.content
+            return httpx.Response(200, json={"task_id": "http-remote-1"})
+
+        set_test_transport(httpx.MockTransport(handler))
+        peers = GuestPeerManager()
+        peers.register_peer(PeerTrust(peer_url="http://hub", peer_name="hub"))
+        node = AgentDelegateRemoteNode(guest_peers=peers, run_store=store)
+
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused"
+        assert seen["url"] == "http://hub/a2a/tasks/create"
+        assert b'"agent_id":"planner"' in seen["json"]
+        assert b'"content":"research X"' in seen["json"]
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+        assert child.parent_node_run_id == parent_node_run.node_run_id
+        assert child.provenance["a2a_task_id"] == "http-remote-1"
+
+    async def test_the_cross_instance_answer_completes_the_child_attempt(self) -> None:
+        """A peer answer settles canonical evidence, not the Run directly."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(), run_store=store)
+        first = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+        child_run_id = first.metadata["run_id"]
+
+        await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(
+                run_id=parent.run_id,
+                node_run_id=parent_node_run.node_run_id,
+            ).model_copy(
+                update={
+                    "metadata": {
+                        "hitl_answers": {
+                            "delegate-1": {
+                                "status": "completed",
+                                "task_id": "remote-1",
+                                "result": "ok",
+                                "_pause": {"run_id": child_run_id},
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+
+        child = await store.get_run(child_run_id)
+        assert child is not None
+        assert child.status.value == "completed"
+        node_runs = await store.list_node_runs(child_run_id)
+        assert len(node_runs) == 1
+        attempts = await store.list_attempts(node_runs[0].node_run_id)
+        assert [attempt.status.value for attempt in attempts] == ["yielded", "completed"]
 
     async def test_the_cross_instance_child_names_the_peer_the_task_and_the_mode(self) -> None:
         """The receipt stays a receipt: the A2A task_id is provenance on the
@@ -369,3 +793,117 @@ class TestCrossInstanceDelegationFilesAChildRun:
             if run.parent_run_id == parent.run_id
         ]
         assert children == []
+
+    async def test_a_submitted_peer_response_without_a_receipt_pauses_for_reconciliation(
+        self,
+    ) -> None:
+        """An uncertain transport keeps its reserved child and polls for its receipt."""
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(guest_peers=self._peers(task_id=""), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "peer_name": "hub"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused"
+        assert result.metadata["paused_reason"] == "awaiting_delegation_reconciliation"
+        child = await store.get_run(result.metadata["child_run_id"])
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+        # No receipt has been reconciled, so the child names no receipt at all --
+        # an absent fact stays absent (ADR-082526-7f02 AC-3), never a placeholder.
+        assert "a2a_task_id" not in child.provenance
+
+    async def test_durable_parent_resumes_from_the_answer_and_settles_child(self) -> None:
+        """The production checkpoint can accept the remote answer.
+
+        ``awaiting_remote_delegation`` is answer-gated, not a timer/poll. The
+        parent therefore parks PAUSED, allowing the canonical durable answer
+        path to stamp the server-owned child ``run_id`` and queue the parent.
+        """
+        run_store, _projects, project = await _spine()
+        graph = Graph(
+            workspace_id="workspace-1",
+            project_id=project.project_id,
+            name="Delegating pipeline",
+            nodes=[
+                Node(
+                    node_id="delegate-1",
+                    node_type="agent.delegate_remote",
+                    inputs={
+                        "from_agent": "planner",
+                        "task": "research X",
+                        "to_agent": "researcher",
+                    },
+                )
+            ],
+        )
+        parent = await run_store.create_run(graph)
+        await run_store.transition_run(parent.run_id, RunStatus.QUEUED)
+        durable = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=run_store)
+
+        def resolver(_node_id: str, _graph: Graph) -> AgentDelegateRemoteNode:
+            return node
+
+        started = await run_durable_graph(
+            graph,
+            store=durable,
+            node_resolver=resolver,
+            run_id=parent.run_id,
+            run_store=run_store,
+        )
+
+        assert started.status is RunStatus.PAUSED
+        pause = started.graph_state.metadata["pauses"]["delegate-1"]
+        child_run_id = pause["metadata"]["run_id"]
+        assert child_run_id
+        child = await run_store.get_run(child_run_id)
+        assert child is not None
+        assert child.parent_run_id == parent.run_id
+
+        answered = await durable.submit_hitl_answer(
+            parent.run_id,
+            "delegate-1",
+            {"status": "completed", "task_id": pause["metadata"]["task_id"], "result": "ok"},
+            authorization=_hitl_authorization("workspace-1"),
+        )
+        assert answered.status is RunStatus.QUEUED
+        assert answered.hitl_answers["delegate-1"]["_pause"]["metadata"]["run_id"] == child_run_id
+        resumed = await resume_durable_graph(
+            parent.run_id,
+            store=durable,
+            node_resolver=resolver,
+            run_store=run_store,
+        )
+
+        assert resumed.status is RunStatus.COMPLETED
+        parent_nodes = await run_store.list_node_runs(parent.run_id)
+        parent_attempts = await run_store.list_attempts(parent_nodes[0].node_run_id)
+        settled_child = await run_store.get_run(child_run_id)
+        assert settled_child is not None
+        child_nodes = await run_store.list_node_runs(child_run_id)
+        child_attempts = await run_store.list_attempts(child_nodes[0].node_run_id)
+        assert len(parent_attempts) == 2, (
+            [(attempt.status, attempt.result) for attempt in parent_attempts],
+            resumed,
+        )
+        assert parent_nodes[0].result["run_id"] == child_run_id
+        assert len(child_attempts) == 2, (
+            [(attempt.status, attempt.result) for attempt in child_attempts],
+            [(node.status, node.result) for node in parent_nodes],
+            resumed,
+        )
+        assert settled_child.status is RunStatus.COMPLETED, (
+            settled_child.status,
+            [(node.node_run_id, node.status, node.accepted_outcome) for node in child_nodes],
+            [(attempt.status, attempt.result) for attempt in child_attempts],
+            [(node.status, node.result) for node in parent_nodes],
+            [(attempt.status, attempt.result) for attempt in parent_attempts],
+        )
+        assert settled_child.result == "ok"
