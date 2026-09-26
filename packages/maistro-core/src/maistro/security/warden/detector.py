@@ -13,8 +13,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from operator import gt, lt
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from maistro.security._types import WardenVerdict
@@ -395,6 +396,59 @@ def _scan_heuristics_windowed(content: str) -> tuple[bool, list[str]]:
     return False, []
 
 
+@dataclass
+class _SemanticWindowAggregate:
+    """Running Layer 2.5 state folded across scan windows (#74)."""
+
+    has_actions: bool = False
+    has_objects: bool = False
+    has_prescriptive: bool = False
+    first_capture: int | None = None
+    last_conversation: int | None = None
+
+    @property
+    def complete(self) -> bool:
+        """True once every signal has been seen; later windows add nothing."""
+        return self.has_actions and self.has_objects and self.has_prescriptive
+
+
+def _merge_position(
+    current: int | None,
+    window_position: int | None,
+    offset: int,
+    closer: Callable[[int, int], bool],
+) -> int | None:
+    """Fold a window-local match offset into the running global extreme.
+
+    ``closer(position, current)`` decides whether the new global position
+    replaces the running one (``lt`` keeps the earliest match, ``gt`` the
+    latest). Every semantic phrase is far shorter than the window overlap, so
+    a phrase fully contained in one window has its true global position at
+    ``offset + start``.
+    """
+    if window_position is None:
+        return current
+    position = offset + window_position
+    if current is None or closer(position, current):
+        return position
+    return current
+
+
+def _fold_semantic_window(window: str, offset: int, agg: _SemanticWindowAggregate) -> None:
+    """Merge one window's semantic signals into ``agg`` in place."""
+    window_actions, window_objects, window_prescriptive = semantic_tool_poisoning_signals(window)
+    agg.has_actions = agg.has_actions or window_actions
+    agg.has_objects = agg.has_objects or window_objects
+    agg.has_prescriptive = agg.has_prescriptive or window_prescriptive
+    window_first_capture, window_last_conversation = semantic_tool_poisoning_capture_positions(
+        window
+    )
+    agg.first_capture = _merge_position(agg.first_capture, window_first_capture, offset, lt)
+    agg.last_conversation = _merge_position(
+        agg.last_conversation, window_last_conversation, offset, gt
+    )
+
+
 def _scan_semantic_windowed(content: str) -> tuple[bool, list[str]]:
     """Aggregate Layer 2.5 signals without handing fallback regex a full body.
 
@@ -415,46 +469,26 @@ def _scan_semantic_windowed(content: str) -> tuple[bool, list[str]]:
     capture→object pair — reproduced through MasterOrchestrator.execute as a
     clean Warden verdict on text the legacy rule flagged (#74).
     """
-    has_actions = False
-    has_objects = False
-    has_prescriptive = False
-    first_capture: int | None = None
-    last_conversation: int | None = None
+    agg = _SemanticWindowAggregate()
     offset = 0
     for window in _windows(content):
-        window_actions, window_objects, window_prescriptive = semantic_tool_poisoning_signals(
-            window
-        )
-        has_actions = has_actions or window_actions
-        has_objects = has_objects or window_objects
-        has_prescriptive = has_prescriptive or window_prescriptive
-        window_first_capture, window_last_conversation = semantic_tool_poisoning_capture_positions(
-            window
-        )
-        if window_first_capture is not None:
-            position = offset + window_first_capture
-            if first_capture is None or position < first_capture:
-                first_capture = position
-        if window_last_conversation is not None:
-            position = offset + window_last_conversation
-            if last_conversation is None or position > last_conversation:
-                last_conversation = position
-        if has_actions and has_objects and has_prescriptive:
+        _fold_semantic_window(window, offset, agg)
+        if agg.complete:
             break
         offset += _SCAN_WINDOW_CHARS - _SCAN_OVERLAP_CHARS
 
     has_ordered_capture = (
-        first_capture is not None
-        and last_conversation is not None
-        and first_capture < last_conversation
+        agg.first_capture is not None
+        and agg.last_conversation is not None
+        and agg.first_capture < agg.last_conversation
     )
     # No regex call ever sees the attacker-controlled padding between them.
-    has_actions = has_actions or has_ordered_capture
+    has_actions = agg.has_actions or has_ordered_capture
 
     flags: list[str] = []
-    if has_prescriptive and has_actions:
+    if agg.has_prescriptive and has_actions:
         flags.append("prescriptive_instruction+dangerous_action")
-    if has_prescriptive and has_objects:
+    if agg.has_prescriptive and agg.has_objects:
         flags.append("prescriptive_instruction+sensitive_object")
     return bool(flags), flags
 
