@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +6
+  tests/: +13
 ---
 
 # auto-374-2bb3
@@ -66,3 +66,25 @@ the only governing-field ADR-083 citations (SPEC-080226-510f, ADR-082226-4478) s
 sources, which the gate exempts by design (`test_only_active_sources_claim_live_authority`).
 
 No collected-node change: inventory-delta for this section is +0.
+
+## Repair round: unqualified matrix parentheticals are governing (develop 9e9f5037e merged)
+
+Independent verification of the prior head reproduced the exact bypass the parenthetical
+exemption allowed: a matrix governing cell `ADR-001 (ADR-002)` — no historical or supersession
+qualifier, just punctuation — dropped ADR-002 from the status gate entirely, so a Proposed
+decision cited in a bare parenthetical governed with `problems=[]`.
+
+The repair replaces the blanket `_without_parenthetical_text` strip in
+`scripts/check-citation-status.py` with a relation-aware `_governing_ids`: a parenthetical is
+exempt only when it names its own relation (`supersedes*`, `historical`, `formerly`,
+`previously`, `replaced*`, `proposed in`). IDs in any other parenthetical are checked like the
+rest of the governing column. The two real matrix parentheticals — `(supersedes ADR-046)` and
+`(tournament contracts Proposed in ADR-070126-6386, SPEC-070126-9d37)` — remain exempt, so the
+corpus gate still passes with 0 baselined exceptions.
+
+Tests: +7 collected nodes in `tests/test_check_citation_status.py` — the verifier's probe
+(unqualified parenthetical, Proposed target → flagged), the active-target control (no false
+positive), four parametrized explicitly-qualified exemptions, and the unqualified Superseded
+case naming its active replacement. Also merged develop 9e9f5037e (HITL authorization work,
+root-suite neutral: no test files touched). Net recorded delta for this note: +6 + 7 = +13.
+Produced by `check-suite-inventory.py --update`, not estimated.

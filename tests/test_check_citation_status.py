@@ -430,6 +430,107 @@ def test_the_matrix_authority_after_historical_parenthetical_is_checked(
     assert "Proposed" in problems[0].reason
 
 
+def test_the_matrix_unqualified_parenthetical_is_governing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bare ``(ADR-002)`` asserts no historical relation, so its ID is held
+    to the same authority rule as the rest of the governing column. Dropping
+    it silently would let a Proposed decision govern from behind punctuation."""
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-001 (ADR-002) | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    accepted = _doc("ADR-001", Status.ACCEPTED)
+    proposed = _doc("ADR-002", Status.PROPOSED)
+
+    problems = module._matrix_problems([accepted, proposed])
+
+    assert len(problems) == 1
+    assert problems[0].target == _ref("ADR-002")
+    assert "Proposed" in problems[0].reason
+
+
+def test_the_matrix_unqualified_parenthetical_with_active_target_passes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-001 (ADR-002) | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    assert (
+        module._matrix_problems(
+            [_doc("ADR-001", Status.ACCEPTED), _doc("ADR-002", Status.ACCEPTED)]
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("note", "qualifier"),
+    [
+        ("supersedes ADR-002", "supersession"),
+        ("historical ADR-002", "historical"),
+        ("formerly ADR-002", "former name"),
+        ("proposed in ADR-002", "provenance"),
+    ],
+)
+def test_the_matrix_explicitly_qualified_notes_stay_exempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, note: str, qualifier: str
+) -> None:
+    """Historical and provenance notes remain possible -- but only when they
+    name their own relation, so they cannot be mistaken for normative."""
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        f"| Demo | entry | `none` | KEEP | ADR-001 ({note}) | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    accepted = _doc("ADR-001", Status.ACCEPTED)
+    proposed = _doc("ADR-002", Status.PROPOSED)
+
+    assert module._matrix_problems([accepted, proposed]) == [], qualifier
+
+
+def test_the_matrix_unqualified_parenthetical_superseded_names_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _gate_module()
+    matrix = tmp_path / "CONVERGENCE-MATRIX.md"
+    matrix.write_text(
+        "<!-- matrix:disposition -->\n"
+        "| Subsystem | Real entry point | Unreachable | Disposition | Governing ADR/spec | Acceptance evidence | Dependencies |\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| Demo | entry | `none` | KEEP | ADR-001 (ADR-002) | evidence | — |\n"
+    )
+    monkeypatch.setattr(module, "MATRIX", matrix)
+
+    old = _doc("ADR-002", Status.SUPERSEDED, superseded_by=[_ref("ADR-003")])
+    accepted = _doc("ADR-001", Status.ACCEPTED)
+    new = _doc("ADR-003", Status.ACCEPTED)
+
+    problems = module._matrix_problems([accepted, old, new])
+
+    assert len(problems) == 1
+    assert problems[0].target == _ref("ADR-002")
+    assert "ADR-003" in problems[0].reason
+
+
 def test_the_matrix_superseded_authority_names_the_active_replacement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

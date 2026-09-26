@@ -41,30 +41,47 @@ MATRIX = ROOT / "docs" / "architecture" / "CONVERGENCE-MATRIX.md"
 MATRIX_MARKER = "<!-- matrix:disposition -->"
 _DECISION_ID = re.compile(r"\b(?:ADR|SPEC)-[0-9][0-9A-Za-z-]*")
 
+#: A note that names its own relation. Only these are exempt from the status
+#: gate: ``(supersedes ADR-046)`` is a statement about the past, and ``(proposed
+#: in ADR-123)`` points at where a decision is being worked out rather than
+#: claiming its authority. A bare ``(ADR-002)`` asserts nothing, so the ID it
+#: holds is read as exactly what the governing column says it is -- governing.
+_HISTORICAL_NOTE = re.compile(
+    r"\b(?:supersed\w*|historical|formerly|previously|replac\w+|proposed\s+in)\b",
+    re.IGNORECASE,
+)
 
-def _without_parenthetical_text(text: str) -> str:
-    """Remove balanced historical notes without hiding later authorities."""
-    visible: list[str] = []
-    segment_start = 0
-    hidden_start: int | None = None
+
+def _parenthetical_notes(text: str) -> list[str]:
+    """The balanced top-level parenthetical notes in one cell."""
+    notes: list[str] = []
     depth = 0
+    start: int | None = None
     for index, character in enumerate(text):
         if character == "(":
             if depth == 0:
-                visible.append(text[segment_start:index])
-                hidden_start = index
+                start = index
             depth += 1
         elif character == ")" and depth:
             depth -= 1
-            if depth == 0:
-                segment_start = index + 1
-    if depth:
-        # A malformed note is not allowed to hide a governing ID from the gate.
-        assert hidden_start is not None
-        visible.append(text[hidden_start:])
-    else:
-        visible.append(text[segment_start:])
-    return "".join(visible)
+            if depth == 0 and start is not None:
+                notes.append(text[start + 1 : index])
+    return notes
+
+
+def _governing_ids(cell: str) -> list[str]:
+    """Decision IDs the cell puts forward as authority.
+
+    Every ID counts unless a note around it explicitly names a historical,
+    supersession or provenance relation. Silently dropping IDs from an
+    unqualified parenthetical would let a Proposed decision govern shipped
+    behaviour from behind punctuation the gate never looks past.
+    """
+    visible = cell
+    for note in _parenthetical_notes(cell):
+        if _HISTORICAL_NOTE.search(note):
+            visible = visible.replace(f"({note})", " ")
+    return _DECISION_ID.findall(visible)
 
 
 def _corpus() -> list[FrontMatter]:
@@ -81,10 +98,11 @@ def _corpus() -> list[FrontMatter]:
 def _matrix_references(text: str) -> list[tuple[str, str, str]]:
     """Read direct authorities from the matrix disposition table.
 
-    Parenthetical text is deliberately excluded: the matrix uses it for
-    historical notes such as ``(supersedes ADR-046)``, not for a live governing
-    relationship. The disposition gate owns table shape and existence; this
-    gate owns the status of each direct authority.
+    An ID counts as governing unless it sits inside a note that names its own
+    relation -- ``(supersedes ADR-046)``, ``(proposed in ADR-123)``. Bare
+    parentheticals are not a hiding place: ``(ADR-002)`` is checked like any
+    other authority. The disposition gate owns table shape and existence; this
+    gate owns the status of each authority the cell puts forward.
     """
     start = text.find(MATRIX_MARKER)
     if start < 0:
@@ -116,10 +134,9 @@ def _matrix_references(text: str) -> list[tuple[str, str, str]]:
         if len(row) <= max(subsystem_column, governing_column):
             continue
         source = f"matrix#{row[subsystem_column]}"
-        direct_cell = _without_parenthetical_text(row[governing_column])
         references.extend(
             (source, "governing", f"maistro-engine#{identifier}")
-            for identifier in _DECISION_ID.findall(direct_cell)
+            for identifier in _governing_ids(row[governing_column])
         )
     return references
 
