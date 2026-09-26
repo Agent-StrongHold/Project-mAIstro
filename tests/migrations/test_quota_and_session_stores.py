@@ -96,8 +96,13 @@ async def _recreate_scratch_database(url: str) -> None:
 #: pin. That is the suite working -- it exercises the store against real
 #: migrations, so a store that outgrows its schema fails here rather than in a
 #: deployment. This is still a *name*, not `head`, so the objection above holds:
-#: the fixture acquires exactly the migrations up to 023 and no later one.
-_TARGET_REVISION = "023"
+#: the fixture acquires exactly the migrations up to the pin and no later one.
+#:
+#: Moved 023 -> 039_quota_usage_event_identity by #1204, for the same reason:
+#: `PgQuotaTracker` now also touches `quota_usage_events` (the durable event
+#: identities that make `record_usage` retries harmless), which 039 creates and
+#: 023 knows nothing about.
+_TARGET_REVISION = "039_quota_usage_event_identity"
 
 
 def test_the_pinned_revision_is_the_one_this_suite_covers() -> None:
@@ -118,18 +123,19 @@ def test_the_pinned_revision_is_the_one_this_suite_covers() -> None:
 def migrated_url() -> str:
     """A scratch database with the revision that creates these tables applied.
 
-    That revision is `023` as of #327, and was `005` before it -- not the
-    `004_quota_sessions` this suite was written against. #122 landed `005_engine_runtime_tables` first and it creates
+    That revision is `039_quota_usage_event_identity` as of #1204, `023` as of
+    #327, and was `005` before it -- not the `004_quota_sessions` this suite was
+    written against. #122 landed `005_engine_runtime_tables` first and it creates
     `quota_usage` and `sessions` with the same shapes, so this branch's own
     migration became a duplicate that failed with `DuplicateTable` and has been
     deleted. The suite is the part worth keeping — it exercises the *stores*
     against whatever created the tables, which is a property no DDL diff has.
 
-    `stamp 003` then `upgrade 005` rather than a full `upgrade head` from
-    empty: 001 needs the `vector` extension and nothing between 003 and 005
-    depends on what 001-003 create, so walking the whole chain would couple
-    these tests to a pgvector image for no gain. #178 owns the
-    chain-from-empty case.
+    A plain `upgrade` from empty rather than a chain stop part-way: 001 needs
+    the `vector` extension, so wherever this suite runs against a live server
+    the image already carries pgvector; stopping earlier would only re-test
+    stores against schemas they have outgrown. #178 owns the chain-from-empty
+    case.
 
     The target is the revision by name, not `head`. `head` moves, and a later
     migration that alters `tasks` would fail here on a `tasks` that was never
@@ -182,7 +188,7 @@ async def pool(migrated_url):
 
     pool = await asyncpg.create_pool(migrated_url, min_size=1, max_size=8)
     try:
-        await pool.execute("TRUNCATE quota_usage, sessions")
+        await pool.execute("TRUNCATE quota_usage_events, quota_usage, sessions")
         yield pool
     finally:
         await pool.close()

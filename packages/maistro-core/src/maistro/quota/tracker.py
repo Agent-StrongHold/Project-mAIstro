@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from uuid import uuid4
 
 from maistro.quota.billing import cycle_key
+
+UsagePayload = tuple[str, str, int, int]
 
 
 class InMemoryQuotaTracker:
@@ -12,6 +15,7 @@ class InMemoryQuotaTracker:
         self._usage: dict[tuple[str, str], dict[str, int]] = defaultdict(
             lambda: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "request_count": 0},
         )
+        self._events: dict[str, UsagePayload] = {}
 
     async def record_usage(
         self,
@@ -19,8 +23,18 @@ class InMemoryQuotaTracker:
         billing_cycle: str,
         input_tokens: int,
         output_tokens: int,
+        event_id: str | None = None,
     ) -> dict[str, object]:
+        event_id = event_id or uuid4().hex
         key = (provider, cycle_key(billing_cycle))
+        payload = (provider, key[1], input_tokens, output_tokens)
+        previous = self._events.get(event_id)
+        if previous is not None:
+            if previous != payload:
+                raise ValueError(f"event_id {event_id!r} was reused with different usage")
+            return {"provider": provider, "cycle_key": key[1], **self._usage[key]}
+
+        self._events[event_id] = payload
         entry = self._usage[key]
         entry["input_tokens"] += input_tokens
         entry["output_tokens"] += output_tokens
