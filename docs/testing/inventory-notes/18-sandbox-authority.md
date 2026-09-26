@@ -336,3 +336,42 @@ flags and kill-on-overflow.
 Still above this lane, unchanged: #79 lease threading into the runner's
 `NodeContext`, child-issue GitHub closure states, and the bootstrap data-plane
 sandbox's full convergence (owner decision, posture pinned by the gate).
+
+## Verification round (2026-09-25, head `beace0425a7`, no code changes)
+
+Re-validation after the docs-only inventory commit, run independently
+(no driver check logs were supplied to this job, so every gate was executed
+from scratch here). All green at this exact head:
+
+- `ruff check .`, `ruff format --check .` (2533 files);
+- `mypy --strict packages/maistro-core/src` (631 files, 0 errors) and the
+  six-declared-src-tree mypy run (715 files, clean);
+- `scripts/check-sandbox-authority.py` exit 0 — and its negative case
+  re-proven live: a scratch module importing and constructing
+  `FakeSandboxBackend` under `maistro_server` produced 3 violations and
+  exit 1, then passed clean after removal;
+- `scripts/check-suite-inventory.py` — 14 suites match (core sandbox 179);
+- vulture per-identity ledger — exit 0 (1415 reviewed → 1414 findings);
+- pytest: core sandbox 143 passed / 36 skipped (userns-restricted host),
+  core tools 393 passed, conductor executor/gating/injection/security 34
+  passed, evolve swebench+e2e and bootstrap 249 passed / 1 skipped;
+- container conformance 17/17 **against the live daemon**;
+- `maistro sandbox status` reports the honest ladder (vm not rw, no runsc,
+  bubblewrap userns refused, container registered) — the #81 preflight
+  surface wired as `platform_detect.SANDBOX_AUTHORITY`.
+
+Policy-disposition spot-check against the real selector on this host:
+`TRUSTED_TOOL`/`BROWSER_AUTOMATION` select the container backend;
+`UNTRUSTED_CODE`/`BENCHMARK_EVAL` refuse with `NoSuitableBackendError` and
+the per-tier reason (vm required, none registered); `DEV_ONLY` selects.
+Criterion evidence re-confirmed in source: `SandboxConfig.network` raises at
+`protocol.py:101`; `WorkloadPolicy.network_allowed` contradicts its grant in
+`__post_init__` (`policy.py:74`); container backend sanitizes env
+(`sanitize_env(config.env)`) and bwrap assembles `--clearenv`;
+`SandboxFence`/`assert_fence_is_current` exist and are tested but are still
+not threaded into the legacy DAG runner (no lease epoch in `NodeContext`).
+
+Verdict unchanged from the previous round: the branch is green and its
+claims hold; what remains (#79 runner-side lease threading, child-issue
+closure states, bootstrap data-plane convergence) is above this lane and
+goes to deep review / owner coordination.
