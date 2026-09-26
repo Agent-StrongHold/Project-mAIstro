@@ -611,6 +611,15 @@
       ]
     },
     {
+      "id": "compliance-evidence-validator",
+      "subsystem": "Repo tooling",
+      "disposition": "LIBRARY",
+      "rationale": "The compliance claim/evidence validator behind COMPLIANCE.md (#751) is run as a deterministic local command (uv run python scripts/check_compliance.py) and is deliberately not named in any workflow, so the tooling roots never reach it; its only automated exercise loads the script by file path with importlib.util.spec_from_file_location in tests/test_check_compliance.py -- the same shape as branch-independence-contract-helper and ratchet-provenance-helper. Published technical-evidence surface, unreachable by construction and honestly so.",
+      "modules": [
+        "@tool/check_compliance"
+      ]
+    },
+    {
       "id": "vulture-whitelist",
       "subsystem": "Repo tooling",
       "disposition": "LIBRARY",

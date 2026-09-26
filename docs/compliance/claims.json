@@ -1,0 +1,1180 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-09-25T12:00:00Z",
+  "claims": [
+    {
+      "control_id": "AT-01",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-01",
+        "ev-artifact-38f933841c21e29d",
+        "ev-artifact-ea45b160439fe01b"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-02",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-02",
+        "ev-artifact-cca6e54a1a0fa9d3",
+        "ev-artifact-5750f8a64c92f36d",
+        "ev-artifact-12d98c1fee85e043",
+        "ev-govern-1",
+        "ev-manage-1"
+      ],
+      "last_verified": "2026-09-25",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-03",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-03",
+        "ev-artifact-1796333842c8ffd5",
+        "ev-artifact-9e36ab8ad19c7e80"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-04",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-04",
+        "ev-manage-2",
+        "ev-artifact-55b78e08435c6a2d",
+        "ev-artifact-bbf628ee0fcf8a41",
+        "ev-artifact-e884c5316878f894"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-05",
+      "status": "planned",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-05",
+        "ev-artifact-360a5673df0cb3cb",
+        "ev-artifact-cf7b61a5b9455160",
+        "ev-artifact-e884c5316878f894"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-06",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-06",
+        "ev-artifact-d37bfd4c981f2134",
+        "ev-artifact-8584fb5fda145cb8",
+        "ev-artifact-c11426404d1960d0",
+        "ev-artifact-3416374dea57cc62",
+        "ev-artifact-1e4dbbb5c2417500"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-07",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-07",
+        "ev-artifact-41dce0aece5f4c04",
+        "ev-measure-1",
+        "ev-soc2-processing-integrity"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-08",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-08",
+        "ev-eu-art-12",
+        "ev-govern-2"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-09",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-09",
+        "ev-artifact-9e36ab8ad19c7e80",
+        "ev-govern-4"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "AT-10",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-at-10",
+        "ev-artifact-c11426404d1960d0",
+        "ev-artifact-c9c97926a6e80bfc",
+        "ev-artifact-23fb015b3132f6de",
+        "ev-artifact-6b1885c80e192284"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "GOVERN-1",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-govern-1"
+      ],
+      "last_verified": "2026-09-25",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "GOVERN-2",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-govern-2"
+      ],
+      "last_verified": "2026-09-25",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "GOVERN-3",
+      "status": "documented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-govern-3"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "GOVERN-4",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-govern-4"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "GOVERN-5",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-govern-5"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MAP-1",
+      "status": "documented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-map-1"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MAP-2",
+      "status": "documented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-map-2"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MAP-3",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-map-3"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MAP-4",
+      "status": "documented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-map-4"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MAP-5",
+      "status": "documented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-map-5"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MEASURE-1",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-measure-1",
+        "ev-at-07",
+        "ev-soc2-processing-integrity"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MEASURE-2",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-measure-2",
+        "ev-artifact-26121d843a9ddf82"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MEASURE-3",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-measure-3"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MEASURE-4",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-measure-4"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MANAGE-1",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-manage-1"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MANAGE-2",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-manage-2",
+        "ev-at-04"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MANAGE-3",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-manage-3"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "MANAGE-4",
+      "status": "planned",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-manage-4"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-9",
+      "status": "documented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-9"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-10",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-10",
+        "ev-artifact-d051e84a20025643",
+        "ev-eu-art-15",
+        "ev-soc2-privacy",
+        "ev-soc2-security",
+        "ev-artifact-37ada2ca435ea39f"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-11",
+      "status": "documented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-11"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-12",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-12",
+        "ev-at-08"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-13",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-13"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-14",
+      "status": "not_applicable",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-14"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-15",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-15",
+        "ev-eu-art-10",
+        "ev-soc2-privacy"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-17",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-17"
+      ],
+      "last_verified": "2026-09-22",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "EU-ART-26",
+      "status": "not_applicable",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-eu-art-26"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "SOC2-SECURITY",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-soc2-security"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "SOC2-AVAILABILITY",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-soc2-availability",
+        "ev-artifact-e884c5316878f894"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "SOC2-PROCESSING-INTEGRITY",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-soc2-processing-integrity",
+        "ev-at-07",
+        "ev-measure-1"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "SOC2-CONFIDENTIALITY",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-soc2-confidentiality"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    },
+    {
+      "control_id": "SOC2-PRIVACY",
+      "status": "partially_implemented",
+      "owner": "maistro-engine compliance",
+      "scope": "engine technical control",
+      "evidence_refs": [
+        "ev-soc2-privacy",
+        "ev-eu-art-10",
+        "ev-eu-art-15",
+        "ev-soc2-confidentiality"
+      ],
+      "last_verified": "2026-09-14",
+      "stale_after_days": 365
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev-at-01",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/warden/test_detector.py",
+      "sha256": "94211d958ed3e61a216dcaa1b99e7e2fed7818c12cdf0b8d5a3e7aa9dcd5fe76",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-at-02",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_sentinel_policy.py",
+      "sha256": "854484c7cc3d58789f20539f4cfeef1b0bde498f6ad81d25e01a8e25b28e0227",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-25T12:00:00Z"
+    },
+    {
+      "id": "ev-at-03",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_authz_tier_ladder.py",
+      "sha256": "71aecd4f331f1650083f016e22b3fe03cd8f57a7f19a201e58aeebc468e2ce94",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-at-04",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/quota/test_tracker.py",
+      "sha256": "967fe4f8e2faa64a97ec986f6fd9516ab6ac9e4c779ab618776894cc49a64d4f",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-at-05",
+      "kind": "repository_artifact",
+      "path": "docs/adr/ADR-038-reliability-taxonomy.md",
+      "sha256": "a1ca51929055b85f1ef00c7cb563f2b3aeba63272daf9956f0dce1dfef8fe1f9",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-at-06",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_auth_jwt.py",
+      "sha256": "13478c9a45e6c4c8b97488311888548c751bb65a1de957a44efb63f2b54a46b5",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-at-07",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/builders/test_structural_gate.py",
+      "sha256": "e04db3567258da74f000a30d7dd2b224ef4574be4e2ef335ead4657df83c1cfb",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-at-08",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/events/test_durable_log.py",
+      "sha256": "2f653e059ea1f64ac2b8edb8bc2f5fbec0e9ef692cbaf8a70d69de5989d0be64",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-at-09",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/tools/test_approval_gate.py",
+      "sha256": "e86d062e10dc33c543fc10315482347a627d95f6f1ff4ca036f348ce9152491f",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-at-10",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/skills/test_import_pipeline.py",
+      "sha256": "8a3a7311f0cbe08fda5bbbaa5cbc620da619db27b7280eead6020fb7bc0138db",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-govern-1",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_sentinel_policy.py",
+      "sha256": "854484c7cc3d58789f20539f4cfeef1b0bde498f6ad81d25e01a8e25b28e0227",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-25T12:00:00Z"
+    },
+    {
+      "id": "ev-govern-2",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/sentinel/test_audit.py",
+      "sha256": "bca54ffcdbaceec340cef0c94bb29dc83ed5880cacf126faa3e454aa2af85dfc",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-25T12:00:00Z"
+    },
+    {
+      "id": "ev-govern-3",
+      "kind": "repository_artifact",
+      "path": "CLAUDE.md",
+      "sha256": "699dd8080c73871f910f94df7945bd092cfb669fc917304641a617b77672ee5e",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-govern-4",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/tools/test_approval_gate.py",
+      "sha256": "e86d062e10dc33c543fc10315482347a627d95f6f1ff4ca036f348ce9152491f",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-govern-5",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-registry/src/maistro_registry/schema.py",
+      "sha256": "fe93b25f9e416f96c0229db21c68d3f1c8b19e6875952743ee70a0874072b266",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-map-1",
+      "kind": "repository_artifact",
+      "path": "docs/adr/ADR-072-threat-model.md",
+      "sha256": "44a28430f0512b609a993962df42cd0265ec43ca089080c572b9dd0c34ea0f84",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-22T12:00:00Z"
+    },
+    {
+      "id": "ev-map-2",
+      "kind": "repository_artifact",
+      "path": "COMPLIANCE.md",
+      "sha256": "6dcdccf0f66a46a473f5fd605a9502ec02853d35ce264fdf27ea4cf4019642a4",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-25T12:00:00Z"
+    },
+    {
+      "id": "ev-map-3",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/agents/test_pm_capabilities.py",
+      "sha256": "e938de7d3cb48780f49446fd3187f89247237336c6818ef80212502255a35abf",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-map-4",
+      "kind": "repository_artifact",
+      "path": "docs/adr/ADR-072-threat-model.md",
+      "sha256": "44a28430f0512b609a993962df42cd0265ec43ca089080c572b9dd0c34ea0f84",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-22T12:00:00Z"
+    },
+    {
+      "id": "ev-map-5",
+      "kind": "repository_artifact",
+      "path": "docs/adr/ADR-072-threat-model.md",
+      "sha256": "44a28430f0512b609a993962df42cd0265ec43ca089080c572b9dd0c34ea0f84",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-22T12:00:00Z"
+    },
+    {
+      "id": "ev-measure-1",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/builders/test_structural_gate.py",
+      "sha256": "e04db3567258da74f000a30d7dd2b224ef4574be4e2ef335ead4657df83c1cfb",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-measure-2",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/observability/test_tracing.py",
+      "sha256": "19f465908910d3ccef350f0d6ab93661a525cf5f8fbeb83154bce5960fe30f31",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-measure-3",
+      "kind": "repository_artifact",
+      "path": ".github/workflows/mutation.yml",
+      "sha256": "f6d02e2cc009c16013e4bbc24090267c849f18fe411f796ead433bca5a526251",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-measure-4",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/memory/learnings/test_promoter.py",
+      "sha256": "f1971446a9101822c5015d06329dd153df47e8f06d207c676c2e91970f23786a",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-manage-1",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_sentinel_validator.py",
+      "sha256": "2260b3d43e301f73201ba24208f652ca7491d97b914f1760ae8dce2e9fed34ef",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-manage-2",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/quota/test_tracker.py",
+      "sha256": "967fe4f8e2faa64a97ec986f6fd9516ab6ac9e4c779ab618776894cc49a64d4f",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-manage-3",
+      "kind": "repository_artifact",
+      "path": ".github/workflows/ci.yml",
+      "sha256": "f13469576a7aa5f793dfba4fe606c416eb7d18fb8c5f6d1f4ac37d40b0fb5d1b",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-25T12:00:00Z"
+    },
+    {
+      "id": "ev-manage-4",
+      "kind": "repository_artifact",
+      "path": "SECURITY.md",
+      "sha256": "96a4b35a2010153a205f65fa950c0049c498bca1efa1b4eedaf08142f86b1a91",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-9",
+      "kind": "repository_artifact",
+      "path": "docs/adr/ADR-072-threat-model.md",
+      "sha256": "44a28430f0512b609a993962df42cd0265ec43ca089080c572b9dd0c34ea0f84",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-22T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-10",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_pii_filter.py",
+      "sha256": "d62eeaee15ca62423b67419c4f7db35ad09a7631fa13ab393b8546697f75f1d0",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-11",
+      "kind": "repository_artifact",
+      "path": "CLAUDE.md",
+      "sha256": "699dd8080c73871f910f94df7945bd092cfb669fc917304641a617b77672ee5e",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-12",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/events/test_durable_log.py",
+      "sha256": "2f653e059ea1f64ac2b8edb8bc2f5fbec0e9ef692cbaf8a70d69de5989d0be64",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-13",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_flag_response.py",
+      "sha256": "31afab00d665d33e812d2658ec1d200f55d8696398fb111499bdb3f9230cd522",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-14",
+      "kind": "repository_artifact",
+      "path": "docs/adr/ADR-068-unified-authorization-and-elevation.md",
+      "sha256": "b3d2858bcb5807d2f2c151e543ba207b764f95fcadc7ff6386dbb202d7f58a9f",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-22T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-15",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_pii_filter.py",
+      "sha256": "d62eeaee15ca62423b67419c4f7db35ad09a7631fa13ab393b8546697f75f1d0",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-17",
+      "kind": "repository_artifact",
+      "path": ".github/workflows/quality.yml",
+      "sha256": "2745109b0df2eb6dce8052fdc8fdd715fe183f806cc1a0dc72ee64e6b44b614c",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-25T12:00:00Z"
+    },
+    {
+      "id": "ev-eu-art-26",
+      "kind": "repository_artifact",
+      "path": "docs/adr/ADR-019-canonical-source-split.md",
+      "sha256": "13d96f224f685fdc825068ea1a2c0d969ac97915e3e86d155b6ac1de6ad861f1",
+      "state": "current",
+      "mode": "manual",
+      "result": "observed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-soc2-security",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_log_redaction.py",
+      "sha256": "38bae45dcafbb8a499b3fac8e69ef2542f40def901e64036ae89287db33266cd",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-soc2-availability",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-server/tests/api/test_health.py",
+      "sha256": "386e1db35ad9270b6c7804326a01f9437d1aea2f5f0e96ff776c5608a2fdbf53",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-soc2-processing-integrity",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/builders/test_structural_gate.py",
+      "sha256": "e04db3567258da74f000a30d7dd2b224ef4574be4e2ef335ead4657df83c1cfb",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-soc2-confidentiality",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/observability/test_tiers.py",
+      "sha256": "292fe0e8f96a989d9a32337debce92d40a5d639fb4681597bf56a4060ed6965e",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-soc2-privacy",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_pii_filter.py",
+      "sha256": "d62eeaee15ca62423b67419c4f7db35ad09a7631fa13ab393b8546697f75f1d0",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-38f933841c21e29d",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/memory/episodic/test_decay.py",
+      "sha256": "29f455b434c1e09c9693fe95ca2ea8a84d0af2e16311e730a458f98004c59da4",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-ea45b160439fe01b",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/memory/learnings/test_promoter_gate.py",
+      "sha256": "0e9b0681e0627b0b8ed161dd17fb6e5fea766d85557c17873447acabeb6f8faf",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-cca6e54a1a0fa9d3",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_dangerous_tools.py",
+      "sha256": "1019ada320c3342719a5baf0f14b6cd14e9a8454f422a241271f3495663404b2",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-5750f8a64c92f36d",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_sentinel_policy.py",
+      "sha256": "d72b2710c5a2adfbab59c3ab30793b17a9f171f07d5d3c8b913e5cf607c000da",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-12d98c1fee85e043",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_sentinel_validator.py",
+      "sha256": "35d7423cd60388aae0b310794c986af970610c413252b527a9cac74e762f9478",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-1796333842c8ffd5",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/privilege/test_privilege.py",
+      "sha256": "7d1cb84f0e515169e5e153b2ac085a5e4ab14ee66761afbd2d13497a9e2995b1",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-9e36ab8ad19c7e80",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_elevation_grants.py",
+      "sha256": "a0da75fda5cad9c670edd011623f204ea65e8fc62f05989cf0a6f5b3f19094df",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-55b78e08435c6a2d",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/resilience/test_retry_policy.py",
+      "sha256": "8be7f7367ae2f13afaf8cc957c47e32162a3202c35f3274b2a4c8701c2629ecc",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-bbf628ee0fcf8a41",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_rate_limiter.py",
+      "sha256": "a97ce25f15f5a3f716176f7a6dc837b6ee1aed7eb389a938efaac16448da5692",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-e884c5316878f894",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/test_circuit_breaker.py",
+      "sha256": "31e4cd4d6a92cb7b6d2acd7f53a2f0e9bd096c9bd1f483515021b3a497ba9bc5",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-360a5673df0cb3cb",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/resilience/test_fallback.py",
+      "sha256": "14182e7d733a000746aae0bbcf5ff856bc5ec7453a353be2d263a371e1213162",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-cf7b61a5b9455160",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/resilience/test_rate_coordination.py",
+      "sha256": "6674df68ef6457e00dd3b449adbec08250b757c1a2667fbebf75a262eb6394a5",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-d37bfd4c981f2134",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_composite_auth.py",
+      "sha256": "d72d9a1e23334b15a338d99449a9d3d85c484ead5007f850847bc583653e9da2",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-8584fb5fda145cb8",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_jwt_auth.py",
+      "sha256": "c2d31ec17ce71f778b6cb9be9e307d174ea1b0d17f5fe084b09ca58baad926b3",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-c11426404d1960d0",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/code_registry/test_registry.py",
+      "sha256": "ed09e86419222850e94dc2eba382a48075b7e41ba4e3a5a406b20dba362b936f",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-3416374dea57cc62",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/identity/test_lifecycle.py",
+      "sha256": "14bc130cee549f8bbc93e4ecbc8bfd6028e764c850b480bb506e2949c20dbee8",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-1e4dbbb5c2417500",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_auth_composite.py",
+      "sha256": "20b1a78a1b1b1b74d25b966d59f74ea5c8b0ef18bfc866dfc48d836ebd386fb4",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-41dce0aece5f4c04",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/builders/test_pipeline_spec_flow.py",
+      "sha256": "e722658906edc7bd300230d4a2f99116b5d39cdcf198b40c522c276d9cf086a8",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-22T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-c9c97926a6e80bfc",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/sandbox/backends/test_fake.py",
+      "sha256": "07a9456ac0a778746b0baa73f510402a09c10584b3f1f4298121408f29307f9e",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-23fb015b3132f6de",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/sandbox/test_selector.py",
+      "sha256": "094ff3ac38ccd8dc2e2f94dd4cd24c19c904736c07712fe3f984c8eccbfdf4fe",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-6b1885c80e192284",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/skills/test_parser.py",
+      "sha256": "ab0a68b18a589b25d0d02d1ae54fbdd65dfa755babca5906ac95f22bf242e90b",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-26121d843a9ddf82",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/observability/test_replay.py",
+      "sha256": "cad7d2bc32bd3c0c7822f2a2cc6f7710c24e13633717204fc1e3aa865f42d0a0",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-14T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-d051e84a20025643",
+      "kind": "repository_artifact",
+      "path": "formal/models/test_memory_scopes.py",
+      "sha256": "20e361d62b4429959d765a066079ce4952dfab1ff8b74455c676a3947e9c017c",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-22T12:00:00Z"
+    },
+    {
+      "id": "ev-artifact-37ada2ca435ea39f",
+      "kind": "repository_artifact",
+      "path": "packages/maistro-core/tests/security/test_redact.py",
+      "sha256": "9932fff8df72ebad37230b294d67702211bdcfbb80247edfa34c3215ce0ec667",
+      "state": "current",
+      "mode": "automated",
+      "result": "passed",
+      "observed_at": "2026-09-22T12:00:00Z"
+    }
+  ]
+}
