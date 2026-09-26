@@ -131,6 +131,9 @@ dag_runs: JsonStore = JsonStore("dag_runs")
 #: whose conflict-safe insert decides single use. Name is shared with
 #: ``services/registration_policy.py``; tokens are stored only as digests.
 registration_invitations: JsonStore = JsonStore("registration_invitations")
+#: Canonical case-folded username -> user-id claims. Account creation writes
+#: this index and the user row in one durable transaction.
+username_claims: JsonStore = JsonStore("username_claims")
 
 _all_model_stores: list[ModelStore] = [
     missions,
@@ -163,6 +166,7 @@ _all_json_stores: list[JsonStore] = [
     oauth_identity_links,
     dag_runs,
     registration_invitations,
+    username_claims,
 ]
 
 
@@ -201,6 +205,11 @@ def initialize_stores() -> None:
     for store in _all_json_stores:
         store.initialize()
     _seed_if_empty()
+    # Legacy rows predate the username index. Create a canonical claim for
+    # unambiguous rows and quarantine historical duplicates before login uses it.
+    from services.username_registry import migrate_legacy_claims
+
+    migrate_legacy_claims()
     logger.info("Stores initialized (persisted=%s)", _persisted is not None)
 
 
