@@ -863,3 +863,39 @@ changes are this note (and the merge itself).
 
 No production or test file changed this round (merge + fresh validation
 evidence only); no new tests added, so no inventory-delta change.
+
+## Independent verification 18 (auto-817 @ 704cd1f849ec)
+
+Focused CI-repair validation at the assigned starting head after the
+round-20 unknown-tag scanner parity repair. No production or test files were
+changed in this verification; this section records the new evidence only.
+
+- `uv run pytest packages/maistro-design/tests packages/maistro-core/tests/security/warden -x -q`:
+  **463 passed**. This exercises `scan_and_record` through the shared
+  `scan_blocking_patterns(..., visual_artifact=True)` path, the hostile
+  pre-scan corpus, and the Python/TypeScript block-vocabulary and inert-tag
+  allowlist lockstep.
+- `PYTHONPATH=packages/hive-conductor/backend uv run pytest
+  packages/hive-conductor/backend/tests/test_design_renderers.py -x -q`:
+  **7 passed**. PDF, PPTX, and DOCX reject hostile markup before their optional
+  rendering backend is imported.
+- `uv run ruff check . && uv run ruff format --check .`: clean (**2,585 files
+  already formatted**).
+- CI-exact vulture invocation, `uv run python
+  scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+  --exclude '*/third_party/*'`: **rc=0**, `1406 reviewed identities -> 1406
+  findings` against base `51058d899139`; there are no unbanked identities and
+  no ledger amendment is required.
+- Chromium browser proof against the live worktree sources:
+  `E2E_SRC_ROOT=$PWD/packages/hive-conductor
+  E2E_NODE_PATHS=$PWD/packages/hive-conductor/frontend/node_modules
+  packages/hive-conductor/tests/e2e/node_modules/.bin/playwright test
+  packages/hive-conductor/tests/e2e/deck-sanitization.spec.ts --config=packages/hive-conductor/tests/e2e/playwright.config.ts
+  --project=chromium --workers=1`: **9 passed**. It covers model/persisted
+  markup, handler attributes, script-capable SVG/image payloads,
+  `data:text/html`, CSS/network primitives and obfuscation, edit/paste/drop,
+  export, trust recommendation parity, and the structured editor Design
+  Studio mounts.
+
+No new tests were added in this verification, so the existing inventory delta
+remains accurate.
