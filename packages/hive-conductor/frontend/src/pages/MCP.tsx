@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../lib/api";
 import { Hex, PageHeader, StatCard, ConfirmDialog, useToast } from "../components/shared";
+import { TabList, TabPanel } from "../components/TabList";
 const ROVO_MCP_URL = "https://mcp.atlassian.com/v1/mcp/authv2";
+
+const TABS = [{ id: "servers", label: "Servers" }, { id: "tools", label: "Tools" }] as const;
+
+const DISCLOSURE_STYLE = {
+  display: "grid", gridTemplateColumns: "12px 1fr auto auto", gap: 10, alignItems: "center", width: "100%",
+  padding: 0, margin: 0, background: "none", border: "none", borderRadius: 0, boxShadow: "none", transform: "none",
+  font: "inherit", color: "inherit", textAlign: "left", cursor: "pointer",
+} as const;
 
 type Server = {
   id: string; name: string; description: string; url: string;
@@ -122,11 +131,7 @@ export default function MCP() {
           </a>
         </div>
       </div>
-      <div style={{ display: "flex", gap: 0, borderBottom: "1px solid var(--rule)", marginBottom: 12 }}>
-        {(["servers", "tools"] as const).map((t) => (
-          <div key={t} onClick={() => setTab(t)} style={{ padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer", borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent", color: tab === t ? "var(--ink)" : "var(--pencil)", textTransform: "capitalize" }}>{t}</div>
-        ))}
-      </div>
+      <TabList label="MCP views" idPrefix="mcp" tabs={TABS} selected={tab} onSelect={setTab} style={{ marginBottom: 12 }} />
 
       {adding && (
         <div className="card" style={{ borderLeft: "3px solid var(--accent)", marginBottom: 10 }}>
@@ -142,25 +147,29 @@ export default function MCP() {
         </div>
       )}
 
-      {tab === "servers" && (
+      <TabPanel idPrefix="mcp" id="servers" selected={tab === "servers"}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {servers.map((s) => {
             const serverTools = tools.filter((t) => t.server_id === s.id);
+            const open = sel?.id === s.id;
+            const detailsId = `mcp-server-${s.id}-details`;
             return (
-              <div key={s.id} className="card" onClick={() => setSel(sel?.id === s.id ? null : s)} style={{ cursor: "pointer" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "12px 1fr auto auto auto", gap: 10, alignItems: "center" }}>
-                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
-                  <div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</div>
-                    <div style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{s.description}</div>
-                  </div>
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
-                  <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
-                  <button className="btn" style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); }}>remove</button>
+              <div key={s.id} className="card">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "center" }}>
+                  <button type="button" aria-expanded={open} aria-controls={detailsId} onClick={() => setSel(open ? null : s)} style={DISCLOSURE_STYLE}>
+                    <span style={{ width: 10, height: 10, borderRadius: "50%", background: s.status === "connected" ? "var(--ok)" : "var(--danger)" }} />
+                    <span>
+                      <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 15, fontWeight: 600 }}>{s.name}</span>
+                      <span style={{ display: "block", fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)" }}>{s.description}</span>
+                    </span>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", textAlign: "center" }}>{s.tools_count} tools</span>
+                    <Hex variant={s.status === "connected" ? "ok" : "danger"}>{s.status}</Hex>
+                  </button>
+                  <button className="btn" aria-label={`Remove ${s.name}`} style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={() => setDeleteTarget(s)}>remove</button>
                 </div>
 
-                {sel?.id === s.id && (
-                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
+                {open && (
+                  <div id={detailsId} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6, marginBottom: 10 }}>
                       <StatCard label="URL" value={s.url.replace("http://", "").replace("/mcp", "")} />
                       <StatCard label="Version" value={s.version ?? "—"} />
@@ -196,9 +205,9 @@ export default function MCP() {
           })}
           {servers.length === 0 && !adding && <div style={{ fontFamily: "var(--hand)", fontSize: 16, color: "var(--pencil)", padding: 20 }}>no MCP servers configured</div>}
         </div>
-      )}
+      </TabPanel>
 
-      {tab === "tools" && (
+      <TabPanel idPrefix="mcp" id="tools" selected={tab === "tools"}>
         <div className="card" style={{ padding: 0 }}>
           <table className="table">
             <thead><tr><th>Tool</th><th>Server</th><th>Category</th><th>Description</th></tr></thead>
@@ -214,7 +223,7 @@ export default function MCP() {
             </tbody>
           </table>
         </div>
-      )}
+      </TabPanel>
     </div>
   );
 }

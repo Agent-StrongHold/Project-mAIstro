@@ -650,6 +650,14 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Schedules and MCP work from the keyboard alone (#370, partial).** The
+  Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
+  schedule's enable toggle is a labelled switch, so a keyboard user can enable
+  or disable a schedule; cron presets are toggle buttons; and an MCP server
+  expands through a disclosure button, with its remove button a separate
+  control. Pointer behaviour is unchanged, except that clicking inside an
+  expanded MCP server's details no longer collapses it.
+
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED
   with the reason recorded (`SynthDagFailed: ...`) and the parent Run fails,
