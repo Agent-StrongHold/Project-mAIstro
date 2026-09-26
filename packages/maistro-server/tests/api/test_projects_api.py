@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
@@ -13,6 +14,11 @@ from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 from maistro_server.api import workspaces as workspace_api
 from maistro_server.api.auth import verify_api_key
 from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.projects import (
+    AddProjectMembershipBody,
+    add_project_membership,
+    remove_project_membership,
+)
 from maistro_server.api.route_table import iter_effective_routes
 from maistro_server.main import app as server_app
 
@@ -553,6 +559,89 @@ async def test_a_non_owner_delegated_post_cannot_grant_beyond_own_delegation(api
     assert response.status_code == 403
     memberships = await projects.memberships_for(root.project_id, principal_id="cara")
     assert memberships[0].grants == {"read"}
+
+
+async def test_owner_revocation_racing_a_delegated_regrant_cannot_resurrect_the_revoked_principal(
+    api,
+    monkeypatch,
+) -> None:
+    """Reproduced from review: a delegated POST read the target principal's
+    membership with `memberships_for` and merged it in Python before writing
+    through `set_membership`, so an owner revocation committing between the
+    read and the write was overwritten by an upsert "preserving" the stale
+    row -- Cara came back holding grants=['publish','read'] after the owner
+    had revoked her. The merge is now one atomic store operation decided
+    inside the store's critical section, so a revocation that commits first
+    leaves nothing to preserve: the re-granted row carries only what the
+    requester could actually delegate."""
+    _app, _client, workspaces, projects = api
+    workspace = await workspaces.create(creator_user_id="alice", name="Auth")
+    root = await projects.root_for_workspace(workspace.workspace_id)
+    await workspaces.set_membership(
+        workspace.workspace_id,
+        user_id="bob",
+        role=WorkspaceRole.CONTRIBUTOR,
+    )
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="bob",
+            grants={"read"},
+            delegable_grants={"read"},
+        )
+    )
+    # Owner-issued authority for Cara, about to be revoked concurrently.
+    await projects.set_membership(
+        ProjectMembership(
+            workspace_id=workspace.workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"publish"},
+        )
+    )
+
+    real_merge = projects.merge_membership
+    real_remove = projects.remove_membership
+    revoked = asyncio.Event()
+
+    async def revocation_lands_first(project_id: str, *, principal_id: str) -> None:
+        await real_remove(project_id, principal_id=principal_id)
+        revoked.set()
+
+    async def merge_only_after_revocation(
+        membership: ProjectMembership,
+    ) -> ProjectMembership:
+        await revoked.wait()
+        return await real_merge(membership)
+
+    monkeypatch.setattr(projects, "remove_membership", revocation_lands_first)
+    monkeypatch.setattr(projects, "merge_membership", merge_only_after_revocation)
+
+    granted, _ = await asyncio.gather(
+        add_project_membership(
+            workspace.workspace_id,
+            root.project_id,
+            AddProjectMembershipBody(principal_id="cara", grants={"read"}),
+            auth=_principal("bob"),
+            workspace_store=workspaces,
+            project_store=projects,
+        ),
+        remove_project_membership(
+            workspace.workspace_id,
+            root.project_id,
+            "cara",
+            auth=_principal("alice"),
+            workspace_store=workspaces,
+            project_store=projects,
+        ),
+    )
+
+    assert granted.grants == {"read"}
+    memberships = await projects.memberships_for(root.project_id, principal_id="cara")
+    assert len(memberships) == 1
+    assert memberships[0].grants == {"read"}
+    assert memberships[0].denies == set()
 
 
 @pytest.mark.parametrize("field", ["name", "parent_project_id"])

@@ -630,6 +630,108 @@ async def test_concurrent_membership_writes_leave_exactly_one_row(backend) -> No
     assert memberships[0].grants in ({"publish"}, {"review"})
 
 
+async def test_a_revocation_racing_a_delegated_merge_cannot_resurrect_revoked_grants(
+    backend,
+) -> None:
+    """`merge_membership` must decide what to preserve inside the same critical
+    section that writes the row (#1148). An owner revocation racing a
+    delegated re-grant therefore has exactly two valid outcomes: the
+    revocation commits first and the merge starts a fresh row carrying only
+    the delegated grant, or the merge commits first and the revocation then
+    removes the whole row. The invalid outcome -- the row coming back with
+    the revoked grant unioned in -- is what reading the row with
+    `memberships_for` and then upserting through `set_membership` produced
+    when the revocation landed between the two calls."""
+    store_a = await backend.store()
+    store_b = await backend.store()
+    workspace_id = _workspace()
+    root = await store_a.create_root(workspace_id)
+
+    for _ in range(5):
+        await store_a.set_membership(
+            ProjectMembership(
+                workspace_id=workspace_id,
+                project_id=root.project_id,
+                principal_id="cara",
+                grants={"publish"},
+            )
+        )
+        await asyncio.gather(
+            store_b.remove_membership(root.project_id, principal_id="cara"),
+            store_a.merge_membership(
+                ProjectMembership(
+                    workspace_id=workspace_id,
+                    project_id=root.project_id,
+                    principal_id="cara",
+                    grants={"read"},
+                )
+            ),
+        )
+
+        fresh = await backend.store()
+        memberships = await fresh.memberships_for(root.project_id, principal_id="cara")
+        assert len(memberships) <= 1
+        if memberships:
+            assert memberships[0].grants == {"read"}
+
+
+async def test_a_delegated_merge_preserves_the_row_it_finds(backend) -> None:
+    """A delegated merge into an existing row unions the caller's grants and
+    delegable authority onto it and carries the row's identity, `created_at`,
+    `denies` and `role` forward -- the same preservation `set_membership`'s
+    callers relied on, now decided atomically inside the store."""
+    store = await backend.store()
+    workspace_id = _workspace()
+    root = await store.create_root(workspace_id)
+    owner_issued = await store.set_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            role="editor",
+            grants={"publish"},
+            denies={"delete"},
+            delegable_grants={"publish"},
+        )
+    )
+
+    merged = await store.merge_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"read"},
+            delegable_grants={"read"},
+        )
+    )
+
+    assert merged.membership_id == owner_issued.membership_id
+    assert merged.created_at == owner_issued.created_at
+    assert merged.role == "editor"
+    assert merged.grants == {"publish", "read"}
+    assert merged.denies == {"delete"}
+    assert merged.delegable_grants == {"publish", "read"}
+    fresh = await backend.store()
+    reloaded = await fresh.memberships_for(root.project_id, principal_id="cara")
+    assert len(reloaded) == 1
+    assert reloaded[0].grants == {"publish", "read"}
+
+    # With no row left -- as after an owner revocation -- the merge starts a
+    # fresh row carrying only the delegated authority.
+    await store.remove_membership(root.project_id, principal_id="cara")
+    re_granted = await store.merge_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"read"},
+            delegable_grants={"read"},
+        )
+    )
+    assert re_granted.grants == {"read"}
+    assert re_granted.membership_id != owner_issued.membership_id
+
+
 async def test_a_membership_survives_a_fresh_store_and_a_removal(backend) -> None:
     """`remove_membership` is on the shared protocol, so every backend answers
     the same question a caller who only has the abstract store can ask."""
