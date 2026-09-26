@@ -459,7 +459,9 @@ app.add_middleware(
     # header is sent and then hidden: `response.headers` in browser JS only
     # exposes the CORS-safelisted set, so `X-Maistro-Run-Id` would have been
     # an advertised correlation path that no cross-origin UI could follow.
-    expose_headers=[RUN_ID_HEADER, "X-Request-ID"],
+    # `Retry-After` likewise: a refused chat turn's 503 (#1108) names its
+    # retry delay there, and it is not on the safelist either.
+    expose_headers=[RUN_ID_HEADER, "X-Request-ID", "Retry-After"],
 )
 
 # Rate limiting
