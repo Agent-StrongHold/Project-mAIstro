@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { randomId } from "../lib/ids";
 
 type FixedPageEditorProps = {
   artifactName: string;
@@ -32,7 +33,11 @@ function escapeHtml(value: string): string {
 }
 
 function makeId(): string {
-  return `layer-${crypto.randomUUID().slice(0, 8)}`;
+  // `randomId`, not `crypto.randomUUID`: the e2e harness (and documented
+  // homelab deploys) serve the app over plain HTTP from a LAN hostname, where
+  // randomUUID is undefined and the editor would die in the error boundary on
+  // first render (#1344 records the identical DeckBuilder failure).
+  return `layer-${randomId().slice(0, 8)}`;
 }
 
 export default function FixedPageEditor({ artifactName, initialPrompt, onExit, onSave }: FixedPageEditorProps) {

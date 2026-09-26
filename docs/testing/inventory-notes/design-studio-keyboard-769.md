@@ -14,6 +14,53 @@ collected by pytest, so their node count is not part of the inventory ledger
 API tests). The routed `/decks` journey added in repair round 12 grows the
 browser corpus, not the pytest ledger, so the delta stays `+0`.
 
+## Executed evidence (repair round 13, CI-repair: hive-conductor-e2e-ui root-caused and fixed)
+
+The GitHub checks at head `b0048035f` showed exactly one failing required
+job, `hive-conductor-e2e-ui` (`integration-scope` failed only as its
+aggregator; every other check, including `exact-debt-ledger`, was green).
+Reproduced faithfully with the CI compose stack
+(`docker compose -f docker-compose.test.yml --profile test up --build
+--abort-on-container-exit --exit-code-from e2e-tests`, pinned
+`@playwright/test` 1.52 image, app served from `http://hive:8101`):
+
+- `design-studio-keyboard.spec.ts:158` and
+  `design-studio-truthfulness.spec.ts:221` both failed with the editor
+  heading never appearing; the error-context page snapshot showed the app's
+  error boundary: "crypto.randomUUID is not a function".
+- Root cause: `FixedPageEditor.tsx` (added by this lane) generated layer ids
+  with `crypto.randomUUID()`, which exists only in secure contexts. The e2e
+  harness (and documented homelab deploys) serve the app over plain HTTP from
+  a LAN hostname, so opening any fixed-page editor threw into the error
+  boundary. Every prior round validated against `127.0.0.1` — a
+  potentially-trustworthy origin — which is why the defect only surfaced in
+  CI. `lib/ids.ts` `randomId()` (#1344) exists for exactly this and
+  `DeckBuilder.tsx`/`Chat.tsx` already use it; `FixedPageEditor.tsx` now does
+  too (`layer-${randomId().slice(0, 8)}`, same CSPRNG via
+  `crypto.getRandomValues`, available in insecure contexts).
+- Reproduction fidelity fix: `packages/hive-conductor/.dockerignore` now also
+  excludes `tests/e2e/node_modules` and `tests/e2e/test-results`. Without it,
+  a developer's locally installed `@playwright/test` (1.60) was copied by
+  `COPY tests/e2e/ /tests/tests/e2e/` into an image whose own pin is 1.52,
+  and every spec died with "Playwright Test did not expect test() to be
+  called here" / "No tests found" — masking the real failure locally.
+- Executed after the fix, CI-identical compose stack: **87 passed (1.3m),
+  0 failed, exit 0** — including all 4 `design-studio-keyboard` journeys
+  (tab-order picker, all-9-modes, fixed-page+Deck transitions, routed
+  `/decks` presentation) and all 4 `design-studio-truthfulness` journeys,
+  plus `deck-sanitization` 7/7 and `widget-capabilities` 5/5.
+- Battery re-run: `npm run build` (tsc + vite) clean; `npm run lint` 0 errors
+  (90 pre-existing warnings); `uv run ruff check .` + `uv run ruff format
+  --check .` clean (2555 files); `uv run pytest
+  packages/hive-conductor/backend/tests -q -k design` → **82 passed**;
+  `scripts/check-suite-inventory.py` → exit 0 (13 suites); vulture gate
+  `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → exit 0 (1414 reviewed identities, 0 unclassified — no
+  ledger amendment needed this round).
+- Also re-verified locally against the rebuilt `frontend/dist` on
+  `http://127.0.0.1:18136` (secure-context leg): keyboard + truthfulness
+  specs → **8/8 passed**; server stopped afterwards.
+
 ## Executed evidence (repair round 12, routed /decks coverage + Deck focus fixes)
 
 Round 11's verification pass returned NEEDS-REPAIR with four actionable
