@@ -80,7 +80,10 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("local", "container"),
         default="local",
         help="Where the agent runs: 'local' (host worktree) or 'container' "
-        "(ADR-093 Docker isolation). Default: local.",
+        "(ADR-093 Docker isolation). Default: local. 'container' is refused "
+        "for this unattended loop: ADR-093 decision 6 floors autonomous "
+        "execution at a user-space-kernel tier (gVisor or better), and the "
+        "Docker backend is Tier 3.",
     )
     run.add_argument(
         "--image",
@@ -297,7 +300,14 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve.add_argument("--coverage-source", default=".")
     evolve.add_argument("--coverage-pytest-args", default="")
     evolve.add_argument("--agent-turns", type=int, default=6)
-    evolve.add_argument("--isolation", choices=("local", "container"), default="local")
+    evolve.add_argument(
+        "--isolation",
+        choices=("local", "container"),
+        default="local",
+        help="Refused when 'container': evolve runs unattended, and ADR-093 "
+        "decision 6 floors autonomous execution at gVisor-or-better while the "
+        "Docker backend is Tier 3.",
+    )
     evolve.add_argument(
         "--db", default=None, help="PopulationStore path (persists lineage; default: in-memory)."
     )
@@ -339,9 +349,34 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _refuse_unattendable_isolation(args: argparse.Namespace) -> int | None:
+    """Exit code for an isolation choice ADR-093 forbids unattended, or None.
+
+    `run` and `evolve` are the autonomous surfaces of this CLI: multi-cycle
+    loops with nobody watching. Decision 6 floors those at a user-space kernel
+    (Tier 2+); the Docker `ContainerBuilderSandbox` `--isolation container`
+    starts is Tier 3, so the run refuses to start rather than executing
+    unsupervised candidate code behind a shared kernel. The comparison itself
+    lives in `maistro_rsi.local_loop.autonomous_isolation_refusal`, driven by
+    the canonical `maistro.sandbox.policy` floors, so a future Tier-2+ backend
+    under the same flag passes without this dispatcher being edited.
+    """
+    from maistro_rsi.local_loop import autonomous_isolation_refusal
+
+    refusal = autonomous_isolation_refusal(getattr(args, "isolation", "local"))
+    if refusal is None:
+        return None
+    print(f"refusing to start: {refusal}", file=sys.stderr)
+    return 2
+
+
 def _evolve(args: argparse.Namespace) -> int:
     import asyncio
     import tempfile
+
+    refused = _refuse_unattendable_isolation(args)
+    if refused is not None:
+        return refused
 
     from maistro.security.warden.detector import Warden
     from maistro_evolve.cycle import EvolutionConfig
@@ -808,6 +843,9 @@ def _model_arguments(args: argparse.Namespace) -> _ModelArguments:
 
 
 def _run(args: argparse.Namespace) -> int:
+    refused = _refuse_unattendable_isolation(args)
+    if refused is not None:
+        return refused
     repo = Path(args.repo).expanduser()
     # `.git` is a dir in a normal checkout, a file in a linked worktree.
     if not (repo / ".git").exists():

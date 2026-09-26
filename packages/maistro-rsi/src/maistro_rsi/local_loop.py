@@ -44,6 +44,12 @@ from typing import Any
 
 import structlog
 
+from maistro.sandbox.policy import (
+    ExecutionMode,
+    IsolationTier,
+    floor_for_mode,
+    tier_satisfies,
+)
 from maistro.security.warden.detector import Warden
 from maistro_evolve._candidate_env import candidate_env
 from maistro_evolve.improvement import BudgetTier, ImprovementKind
@@ -640,6 +646,50 @@ def _resume_transcript(
         # than poison the context with the sentinel.
         return None
     return _trim_for_resume(list(transcript), char_budget=char_budget)
+
+
+# The isolation the CLI vocabulary can name, mapped to the ADR-093 tier it
+# actually is. ``local`` is deliberately absent: it is not a sandbox tier at
+# all but an operator's explicit choice to run the loop on their own machine
+# (ADR-093 decision 5's ladder has no bare-subprocess tier, and the local
+# loop's own boundary set — credential boundary, warden, RLPHD review — is
+# what governs it), so it is not this map's question to answer.
+_CLI_ISOLATION_TIERS: dict[str, IsolationTier] = {"container": "container"}
+
+
+def autonomous_isolation_refusal(isolation: str) -> str | None:
+    """Why `isolation` cannot back an unattended RSI loop, or None if it can.
+
+    ADR-093 decision 6 sets execution-mode floors: an *autonomous* run — the
+    multi-cycle ``run``/``evolve`` loops, nobody at the keyboard — may not
+    execute candidate code behind a Tier-3 OS container; the floor is a
+    Tier-2 user-space kernel (gVisor or better). Decision 5 is explicit that
+    the hardened container is "a guardrail against accidents … not a security
+    boundary against hostile code", which is exactly what an unattended
+    self-improvement cycle runs. So the run refuses to start (``full-auto is
+    blocked``) rather than executing unsupervised adversarial code behind a
+    shared kernel.
+
+    Data-driven off `MODE_FLOORS` rather than hardcoded: the guard compares
+    the tier the backend *is* against the floor the canonical policy
+    declares, so a future Tier-2+ backend wired to the same flag passes
+    without this check being edited, and the refusal always names the floor
+    it enforced.
+    """
+    tier = _CLI_ISOLATION_TIERS.get(isolation)
+    if tier is None:
+        return None
+    floor = floor_for_mode(ExecutionMode.AUTONOMOUS)
+    if tier_satisfies(tier, floor):
+        return None
+    return (
+        f"isolation={isolation!r} selects a Tier-3 container backend, below the "
+        f"ADR-093 decision-6 autonomous floor ({floor!r}: a user-space kernel or "
+        "better). An unattended multi-cycle RSI run refuses to start behind a "
+        "shared kernel — run the builders session interactively (its floor is "
+        "Tier 3 with a human confirming gated actions), or back the loop with a "
+        "gVisor-or-better sandbox backend."
+    )
 
 
 def make_builders_apply_patch(
@@ -2492,6 +2542,21 @@ class LocalRsiLoop:
             return _NoHostExecSandbox(cycle_dir)
         return LocalSandbox(cycle_dir)
 
+    def _require_autonomous_isolation_tier(self) -> None:
+        """Refuse a Tier-3 backend for this unattended loop (ADR-093 decision 6).
+
+        The CLI refuses `--isolation container` before any work starts; this
+        is the same rule at the library boundary, because `LocalRsiConfig` is
+        a public constructor and a programmatic caller can reach `run()` without
+        ever passing through ``maistro_rsi.__main__`. Interactive use of the
+        same `ContainerBuilderSandbox` (a human at the builders TUI, SPEC-200
+        gates live) keeps its Tier-3 floor — it is the autonomy that is
+        refused here, not the backend.
+        """
+        refusal = autonomous_isolation_refusal(self._config.isolation)
+        if refusal is not None:
+            raise ContainmentUnavailable(refusal)
+
     def _require_contained_signals(self) -> None:
         """Refuse a configuration whose signals would execute on the host (#305).
 
@@ -2564,6 +2629,7 @@ class LocalRsiLoop:
         return proc.returncode == 0
 
     def run(self) -> LocalRsiResult:
+        self._require_autonomous_isolation_tier()
         self._require_contained_signals()
         self._setup_baseline()
         self._load_saved_patches()  # resume from a prior run by reapplying saved patches
