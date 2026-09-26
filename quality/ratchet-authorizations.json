@@ -275,6 +275,11 @@
       "owner": "@BlakeMatthews-dev",
       "issue": "#1064",
       "reason": "PopulationStore.get_cycle_marker is record_cycle_marker's read half: _finalize_cycle checks it first on every call, replaying the cached committed output untouched rather than re-running finalize's many in-place mutations (cull/breed/self-improve/migrate/lineage) a second time. Reached the same way, through hive-conductor's evolution_graph.py, outside the packages/*/src Vulture scan set. Exercised directly by packages/maistro-evolve/tests and packages/hive-conductor/backend/tests/test_evolution_canonical_graph.py's finalize-replay tests."
+    },
+    "packages/maistro-server/src/maistro_server/api/a2a.py::unused function 'create_a2a_task'": {
+      "owner": "@BlakeMatthews-dev",
+      "issue": "#42",
+      "reason": "create_a2a_task is the live inbound A2A admission route at the canonical Run boundary (#1194, #225): `@router.post(\"/tasks/create\")` on the a2a APIRouter that maistro_server/main.py mounts with `app.include_router(a2a.router)` and arms with `a2a.configure_a2a_admission` against the Container's canonical RunStore. FastAPI dispatches it through the decorator, so Vulture's static call graph cannot see the use and reports the handler unused at 60% confidence - the same framework_decorator_surface shape the fastapi-route-handler rule exists for. It is not dead code: it returns the idempotent receipt for the canonical Run claimed through RunStore.claim_run_by_effect, and the replay-dedupe contract is exercised by packages/maistro-server/tests/api/test_a2a_api.py::test_replayed_a2a_create_returns_one_canonical_run. The identity is already banked in the fastapi-route-handler findings ledger; this grant is the documented second half of the two-merge authorization flow, landing the reviewed tolerance so the debt becomes prior at the trusted base. It authorizes only this exact Vulture identity; it does not approve new A2A surface or close #225."
     }
   },
   "model-egress": {
