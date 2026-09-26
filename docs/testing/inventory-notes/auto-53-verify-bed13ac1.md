@@ -127,3 +127,39 @@ No issue-closure actions performed by the verifier. Child-issue closure
 here by design; M2/M3/M4 layering and compatibility criteria are architectural
 (single persistent identity seam, thunk-replaceable egress, parent-correlated
 child Runs), consistent with the gate and code inspection above.
+
+## Repair-phase re-validation (job fcd281d0, HEAD b948663e6 + vulture repair)
+
+The prior repair round (job cb64945e) died on a provider timeout before doing
+any work; the tree was clean at `b948663e6`. This round re-ran the failing
+battery and then repaired the one remaining CI gate:
+
+- The check-4 failure from verify job b5f87a87
+  (`test_created_dag_run_uses_one_canonical_run_for_history_projection`) is
+  closed at this HEAD: the exact 10-file verifier battery -> 184 passed.
+- `uv run ruff check .` / `uv run ruff format --check .` -> clean;
+  `packages/maistro-core/tests/test_container_chat_runs.py` -> 35 passed;
+  `scripts/check-m1-convergence-freeze.py --base 1dea30dfe` -> exit 0;
+  `scripts/check-ratchet-provenance.py` and
+  `scripts/check-shipped-surface-truth.py` -> exit 0;
+  `uv run mypy packages/maistro-core/src/maistro/container.py` -> clean
+  (remaining mypy `maistro_bootstrap` import-not-found errors in `cli/` are
+  pre-existing env gaps requiring `--extra bootstrap`, untouched by this diff).
+- Vulture ratchet repair: the narrow CI scan
+  (`check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`, per `.github/workflows/vulture-ratchet.yml`) flagged
+  `Container.route_conversation_request` as NEW unauthorized debt vs trusted
+  base `1dea30dfe`. The method is the live #1037 production seam, consumed by
+  `packages/hive-conductor/backend/services/chat_execution.py` through a
+  duck-typed `getattr` outside the `packages/*/src` scan scope, so the scan
+  cannot see the call. Banking alone cannot pass (a floor-raise grant must
+  already be landed at the merge-base — two-merge rule, ratchet_provenance.py),
+  so the repair follows the repo's established `_vulture_*_usage` TYPE_CHECKING
+  visibility precedent (`types/config.py`, `graph/execution_state.py`,
+  `graph/traversal_commit.py`): a documented non-executing reference
+  `container.py::_vulture_conversation_request_usage` keeps the reviewed
+  downstream-consumed seam visible to the production-only scan. Gate re-run ->
+  1415 reviewed identities -> 1415 findings, exit 0; no ledger row added (the
+  finding no longer exists to bank).
+
+No inventory delta: no test files added or changed this round.

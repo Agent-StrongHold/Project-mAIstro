@@ -1510,6 +1510,25 @@ class Container:
         )
 
 
+if TYPE_CHECKING:
+
+    def _vulture_conversation_request_usage(container: Container) -> None:
+        """Keep the product chat seam visible to production-only Vulture scans.
+
+        ``Container.route_conversation_request`` is the #1037 seam the shipped
+        Conductor product surface consumes
+        (``packages/hive-conductor/backend/services/chat_execution.py``).
+        That consumer lives outside the ``packages/*/src`` scope the Vulture
+        ratchet scans and reaches the method through a duck-typed ``getattr``
+        port, so package-local static analysis cannot see the call. This
+        reference records the reviewed downstream consumer without executing
+        anything and without banking the identity as unreviewed debt.
+        """
+        _ = container.route_conversation_request
+
+    _ = _vulture_conversation_request_usage
+
+
 def _wire_schedule_admission(
     run_store: RunStore,
     template_store: GraphTemplateStore | None,
