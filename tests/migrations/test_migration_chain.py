@@ -84,6 +84,10 @@ EXPECTED_TABLES = frozenset(
         "child_profiles",
         "design_outputs",
         "design_projects",
+        # Short-lived elevation grants (#72): durable so a grant issued before
+        # a restart still answers `find_valid` instead of silently failing
+        # closed and re-prompting. Lives at the end of the chain (039).
+        "elevation_grants",
         "episodic_memories",
         "event_log",
         "graph_continuations",

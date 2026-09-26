@@ -231,7 +231,12 @@ class TestLifespan:
         """
         test_app = MagicMock()
         test_app.state = MagicMock()
-        server_logger = MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())
+        server_logger = MagicMock(ainfo=AsyncMock(), awarning=AsyncMock(), aerror=AsyncMock())
+        # Shutdown owns the usage-log flush (#72, #1204): the lifespan awaits
+        # `flush_usage_log()` then `aclose()` on whatever container it built.
+        mock_container = MagicMock()
+        mock_container.flush_usage_log = AsyncMock()
+        mock_container.aclose = AsyncMock()
 
         with (
             patch("maistro.agents.conductor.run_task"),
@@ -246,7 +251,7 @@ class TestLifespan:
             # the branch emits, not about wiring a real one.
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=MagicMock()),
+                AsyncMock(return_value=mock_container),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -261,6 +266,10 @@ class TestLifespan:
             if call.args and call.args[0] == "run_store_in_process_only"
         ]
         assert bool(warned) is expects_warning
+        # The write-behind contract runs on both branches: whatever the run
+        # store said, rate-accounting events still get flushed at shutdown.
+        mock_container.flush_usage_log.assert_awaited_once()
+        mock_container.aclose.assert_awaited_once()
 
     async def test_lifespan_configures_progress_webhook_when_url_set(
         self, monkeypatch: pytest.MonkeyPatch

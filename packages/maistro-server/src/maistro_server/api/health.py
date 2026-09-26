@@ -47,6 +47,7 @@ class DetailedHealthResponse(BaseModel):
     effective_resource_policy: dict[str, int | float | bool]
     container_limits: dict[str, int | float | str] | None
     strike_tracker: dict[str, str | bool]
+    persistence: dict[str, dict[str, str | bool]]
 
 
 def _container_limits_for(
@@ -65,8 +66,40 @@ def _strike_tracker_diagnostics(container: Any) -> dict[str, str | bool]:
     """Report the configured strike tracker without touching its state."""
     tracker = getattr(container, "strike_tracker", None)
     if tracker is None:
-        return {"enabled": False, "backend": "none"}
-    return {"enabled": True, "backend": type(tracker).__name__}
+        return {"enabled": False, "backend": "none", "durable": False}
+    durable = type(tracker).__name__.startswith("Pg")
+    return {"enabled": True, "backend": type(tracker).__name__, "durable": durable}
+
+
+def _persistence_diagnostics(container: Any) -> dict[str, dict[str, str | bool]]:
+    """Describe actual stores, including deliberate process-local fallbacks."""
+    stores = {
+        "audit": getattr(container, "audit_log", None),
+        "elevation": getattr(container, "elevation_store", None),
+        "sessions": getattr(container, "session_store", None),
+        "strikes": getattr(container, "strike_tracker", None),
+        "quota": getattr(container, "quota_tracker", None),
+        "learnings": getattr(container, "learning_store", None),
+        "usage_log": getattr(container, "usage_log", None),
+    }
+    result: dict[str, dict[str, str | bool]] = {}
+    # A pathless `sqlite://` wires the durable-twin classes over SQLite's
+    # in-memory database. The class name alone would call that durable, so
+    # the container's recorded disposition decides (#72).
+    memory_backed = bool(getattr(container, "stores_memory_backed", False))
+    for name, store in stores.items():
+        backend = type(store).__name__ if store is not None else "none"
+        durable = backend.startswith("Pg") or (backend.startswith("Sqlite") and not memory_backed)
+        entry: dict[str, str | bool] = {"backend": backend, "durable": durable}
+        if backend.startswith("Sqlite") and memory_backed:
+            entry["note"] = "pathless sqlite:// runs SQLite in-memory; restart-ephemeral"
+        result[name] = entry
+    usage_persistence = getattr(container, "usage_log_persistence", None)
+    if usage_persistence is not None:
+        result["usage_log"]["persistence_backend"] = type(usage_persistence).__name__
+        result["usage_log"]["mode"] = "write-behind; flush_usage_log required"
+        result["usage_log"]["durable"] = True
+    return result
 
 
 async def _check_postgres(settings: Settings) -> ProbeResult:
@@ -206,6 +239,7 @@ async def readiness(
         effective_resource_policy=settings.effective_resource_policy().as_dict(),
         container_limits=container_limits,
         strike_tracker=_strike_tracker_diagnostics(container),
+        persistence=_persistence_diagnostics(container),
     )
 
     if not all_ok:

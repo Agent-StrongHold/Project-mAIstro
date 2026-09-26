@@ -14,7 +14,12 @@ from fastapi.testclient import TestClient
 
 from maistro.agents.circuit_breaker import CircuitState
 from maistro.config.settings import SandboxSettings, Settings, get_settings
-from maistro_server.api.health import ProbeResult, _check_docker, _check_postgres
+from maistro_server.api.health import (
+    ProbeResult,
+    _check_docker,
+    _check_postgres,
+    _persistence_diagnostics,
+)
 from maistro_server.api.health import router as health_router
 from maistro_server.main import APP_VERSION, app
 from maistro_server.startup import StartupPhase, set_startup_phase
@@ -188,6 +193,64 @@ class TestCheckPostgres:
             result = await _check_postgres(settings)
         assert result.status == "error"
         assert len(result.detail) == 100
+
+
+def test_persistence_diagnostics_identify_ephemeral_and_durable_stores() -> None:
+    class Store:
+        pass
+
+    class PgAuditLog:
+        pass
+
+    container = type(
+        "Container",
+        (),
+        {
+            "audit_log": PgAuditLog(),
+            "elevation_store": Store(),
+            "session_store": Store(),
+            "strike_tracker": None,
+            "quota_tracker": Store(),
+            "learning_store": Store(),
+            "usage_log": Store(),
+            "usage_log_persistence": None,
+        },
+    )()
+
+    diagnostics = _persistence_diagnostics(container)
+    assert diagnostics["audit"] == {"backend": "PgAuditLog", "durable": True}
+    assert diagnostics["elevation"]["durable"] is False
+    assert diagnostics["strikes"] == {"backend": "none", "durable": False}
+
+
+def test_persistence_diagnostics_report_memory_backed_sqlite_as_ephemeral() -> None:
+    """A pathless `sqlite://` wires the durable-twin classes over :memory:.
+
+    Reported durable just because the class name starts with "Sqlite", health
+    would contradict the container's own restart-ephemeral warning (#72).
+    """
+    from maistro.persistence.sqlite_learnings import SqliteLearningStore
+
+    container = type(
+        "Container",
+        (),
+        {
+            "audit_log": None,
+            "elevation_store": None,
+            "session_store": None,
+            "strike_tracker": None,
+            "quota_tracker": None,
+            "learning_store": SqliteLearningStore.__new__(SqliteLearningStore),
+            "usage_log": None,
+            "usage_log_persistence": None,
+            "stores_memory_backed": True,
+        },
+    )()
+
+    diagnostics = _persistence_diagnostics(container)
+    assert diagnostics["learnings"]["backend"] == "SqliteLearningStore"
+    assert diagnostics["learnings"]["durable"] is False
+    assert "restart-ephemeral" in str(diagnostics["learnings"]["note"])
 
 
 class TestReadinessEndpoint:
