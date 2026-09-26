@@ -22,7 +22,7 @@ A **floor** is a fixed minimum/maximum threshold. A **ratchet** records reviewed
 | reachability | identity ratchet | `quality/reachability-baseline.json` | a module built but never wired to any entry point |
 | convergence matrix | identity ratchet | `docs/architecture/CONVERGENCE-MATRIX.md` | a subsystem left unclassified, or a row whose ownership/reachability claim no longer matches the code |
 | reachability dispositions | identity ratchet | `quality/reachability-dispositions.json` | an unreachable module with no disposition, a disposition left behind after its module became reachable, or a CONNECT/RETIRE row with no named root/replacement |
-| backlog consistency | floor | `BACKLOG.md` legends | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, or a citation to an ADR/spec that does not exist |
+| backlog consistency | floor + identity ratchet | `BACKLOG.md` legends; `_LEGACY_UNEVIDENCED` in `scripts/check-backlog-consistency.py` | an item using a status or gap marker no legend defines, a duplicate id, an undocumented id prefix, a citation to an ADR/spec that does not exist, an `Implemented` item with no PR/issue link or existing repo path (or citing a path that no longer exists), an `Abandoned` item with no reason, or a legacy id left in the set after it gained evidence, reopened or was removed (#101) |
 | coverage (aggregate) | floor | 86% line + branch, publish set | the repository as a whole rotting |
 | coverage (diff) | floor | per file: 90% lines, 80% branch arcs, on lines the PR touched | a single undertested change the aggregate cannot see |
 | interrogate | ratchet | 38 / 45 / 63 / 46 per tree | missing docstrings, per-subtree floors |
