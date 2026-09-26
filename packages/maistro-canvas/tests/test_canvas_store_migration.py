@@ -33,8 +33,8 @@ from types import ModuleType
 
 import pytest
 
+import maistro_canvas.canvas.store as store_module
 from maistro.testing.postgres import postgres_dsn
-from maistro_canvas.canvas import store as store_module
 from maistro_canvas.canvas.store import PgCanvasStore
 from maistro_canvas.types import (
     CompositeResult,
@@ -57,7 +57,7 @@ def _inventory_gate() -> ModuleType:
     spec = importlib.util.spec_from_file_location("check_durable_table_inventory", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules.setdefault(spec.name, module)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
