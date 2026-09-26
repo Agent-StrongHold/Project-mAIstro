@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from maistro.projects.scope_store import ProjectScopeStore
@@ -16,6 +16,7 @@ from maistro.workspaces.backlog.model import (
     BacklogRelationError,
     BacklogVersionConflict,
     apply_changes,
+    new_item,
 )
 
 
@@ -107,6 +108,11 @@ def sort_key(item: BacklogItem) -> tuple[float, str, str]:
     return (item.rank, item.created_at.isoformat(), item.item_id)
 
 
+def _sorted_copies(items: Iterable[BacklogItem]) -> builtins.list[BacklogItem]:
+    """Callers get their own objects, so mutating one cannot skip a version bump."""
+    return [item.model_copy(deep=True) for item in sorted(items, key=sort_key)]
+
+
 class InMemoryBacklogItemStore:
     """Reference implementation; the contract the durable stores are held to."""
 
@@ -117,7 +123,7 @@ class InMemoryBacklogItemStore:
         self._lock = asyncio.Lock()
 
     async def create(self, item: BacklogItem) -> BacklogItem:
-        created = item.model_copy(update={"version": 1})
+        created = new_item(item)
         async with self._lock:
             if created.item_id in self._items or self._external_key_taken(created):
                 raise BacklogItemAlreadyExists(created.item_id)
@@ -127,10 +133,11 @@ class InMemoryBacklogItemStore:
             if created.parent_item_id is not None:
                 require_same_workspace(created, self._require(created.parent_item_id))
             self._items[created.item_id] = created
-        return created
+        return created.model_copy(deep=True)
 
     async def get(self, item_id: str) -> BacklogItem | None:
-        return self._items.get(item_id)
+        item = self._items.get(item_id)
+        return item.model_copy(deep=True) if item is not None else None
 
     async def list(
         self,
@@ -138,15 +145,12 @@ class InMemoryBacklogItemStore:
         project_id: str | None = None,
         status: BacklogItemStatus | None = None,
     ) -> builtins.list[BacklogItem]:
-        return sorted(
-            (
-                item
-                for item in self._items.values()
-                if item.workspace_id == workspace_id
-                and (project_id is None or item.project_id == project_id)
-                and (status is None or item.status == status)
-            ),
-            key=sort_key,
+        return _sorted_copies(
+            item
+            for item in self._items.values()
+            if item.workspace_id == workspace_id
+            and (project_id is None or item.project_id == project_id)
+            and (status is None or item.status == status)
         )
 
     async def update(
@@ -162,7 +166,7 @@ class InMemoryBacklogItemStore:
                     self._project_store, updated.project_id, updated.workspace_id
                 )
             self._items[item_id] = updated
-        return updated
+        return updated.model_copy(deep=True)
 
     async def add_dependency(self, item_id: str, depends_on_item_id: str) -> None:
         async with self._lock:
@@ -184,20 +188,18 @@ class InMemoryBacklogItemStore:
     async def dependencies_of(self, item_id: str) -> builtins.list[BacklogItem]:
         self._require(item_id)
         ids = self._depends_on.get(item_id, set())
-        return sorted((self._items[i] for i in ids), key=sort_key)
+        return _sorted_copies(self._items[i] for i in ids)
 
     async def dependents_of(self, item_id: str) -> builtins.list[BacklogItem]:
         self._require(item_id)
-        return sorted(
-            (self._items[i] for i, deps in self._depends_on.items() if item_id in deps),
-            key=sort_key,
+        return _sorted_copies(
+            (self._items[i] for i, deps in self._depends_on.items() if item_id in deps)
         )
 
     async def children_of(self, item_id: str) -> builtins.list[BacklogItem]:
         self._require(item_id)
-        return sorted(
-            (item for item in self._items.values() if item.parent_item_id == item_id),
-            key=sort_key,
+        return _sorted_copies(
+            item for item in self._items.values() if item.parent_item_id == item_id
         )
 
     async def set_parent(
@@ -217,7 +219,7 @@ class InMemoryBacklogItemStore:
                 update={"parent_item_id": parent_item_id}
             )
             self._items[item_id] = updated
-        return updated
+        return updated.model_copy(deep=True)
 
     def _require(self, item_id: str) -> BacklogItem:
         item = self._items.get(item_id)

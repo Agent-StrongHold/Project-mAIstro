@@ -459,3 +459,54 @@ def test_backlog_item_reads_naive_timestamps_as_utc() -> None:
         created_at=datetime(2026, 1, 1, 12, 0),
     )
     assert item.created_at == datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("rank", [float("inf"), float("-inf"), float("nan")])
+async def test_non_finite_rank_is_refused_and_leaves_the_row_readable(backend, rank) -> None:
+    """A rank the payload cannot round-trip (JSON has no inf/nan) must never be
+    written: a stored ``null`` rank made every read of the Workspace fail."""
+    store = await backend.store()
+    project_id = await _workspace(backend, store, "ws-a")
+    item = await store.create(_item("ws-a", project_id))
+
+    with pytest.raises(ValidationError):
+        await store.update(item.item_id, expected_version=1, changes={"rank": rank})
+    with pytest.raises(ValidationError):
+        _item("ws-a", project_id, rank=rank)
+    assert await store.list("ws-a") == [item]
+
+
+async def test_create_refuses_claim_fields(backend) -> None:
+    store = await backend.store()
+    project_id = await _workspace(backend, store, "ws-a")
+
+    with pytest.raises(ValueError, match="fence_token"):
+        await store.create(_item("ws-a", project_id, fence_token=3))
+    assert await store.list("ws-a") == []
+
+
+async def test_returned_items_are_not_the_stored_record(backend) -> None:
+    store = await backend.store()
+    project_id = await _workspace(backend, store, "ws-a")
+    item = await store.create(_item("ws-a", project_id))
+    snapshot = item.model_copy(deep=True)
+    item.pinned = True
+
+    fetched = await store.get(item.item_id)
+    fetched.title = "mutated without a version bump"
+    (await store.list("ws-a"))[0].acceptance_refs.append("sneaky")
+
+    assert await store.get(item.item_id) == snapshot
+
+
+def test_backlog_item_normalises_aware_timestamps_to_utc() -> None:
+    from datetime import UTC, datetime, timedelta, timezone
+
+    item = BacklogItem(
+        workspace_id="ws-a",
+        project_id="p",
+        title="t",
+        created_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=2))),
+    )
+    assert item.created_at.tzinfo is UTC
+    assert item.created_at == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)

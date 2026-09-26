@@ -12,16 +12,17 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.workspaces import WorkspaceStore
 from maistro.workspaces.backlog import (
     BacklogItem,
     BacklogItemAlreadyExists,
+    BacklogItemNotFound,
     BacklogItemStatus,
     BacklogItemStore,
     BacklogRelationError,
@@ -87,6 +88,22 @@ class CreateBacklogItemBody(_ItemFields):
     parent_item_id: str | None = None
 
 
+#: The BacklogItem fields an update may clear by sending ``null``.
+_NULLABLE_FIELDS = frozenset(
+    {
+        "external_key",
+        "priority",
+        "risk",
+        "source",
+        "owner_principal_id",
+        "milestone",
+        "autonomy_mode",
+        "archived_at",
+        "goal_ref",
+    }
+)
+
+
 class UpdateBacklogItemBody(BaseModel):
     """Only the fields sent are changed; `expected_version` is mandatory."""
 
@@ -116,6 +133,17 @@ class UpdateBacklogItemBody(BaseModel):
     archived_at: datetime | None = None
     goal_ref: GoalReference | None = None
 
+    @model_validator(mode="after")
+    def _no_null_for_required_fields(self) -> Self:
+        nulled = sorted(
+            name
+            for name in self.model_fields_set
+            if getattr(self, name) is None and name not in _NULLABLE_FIELDS
+        )
+        if nulled:
+            raise ValueError(f"{', '.join(nulled)} cannot be null")
+        return self
+
 
 class SetParentBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -131,6 +159,8 @@ def _store_errors() -> Iterator[None]:
         yield
     except BacklogVersionConflict as exc:
         raise _Conflict(exc.current_item) from exc
+    except BacklogItemNotFound as exc:
+        raise _not_found() from exc
     except BacklogRelationError as exc:
         if exc.kind == "cross_workspace":
             raise _not_found() from exc
@@ -138,6 +168,13 @@ def _store_errors() -> Iterator[None]:
     except BacklogItemAlreadyExists as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="BacklogItem already exists"
+        ) from exc
+    except ValueError as exc:
+        # Checked by BacklogItem rather than the request body: FastAPI's own
+        # 422 echoes the input, and a non-finite rank cannot be encoded.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="BacklogItem field values are invalid",
         ) from exc
 
 

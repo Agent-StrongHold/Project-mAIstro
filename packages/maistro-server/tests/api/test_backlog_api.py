@@ -266,3 +266,28 @@ async def test_backlog_routes_fail_closed_without_a_container_store() -> None:
         assert response.status_code == 503
     finally:
         workspace_api.configure_workspace_store(None)
+
+
+async def test_malformed_writes_are_422_or_404_not_500(api) -> None:
+    workspace_id, project_id = await _workspace(api)
+    _as_user(api.app, "contributor")
+    item = _create(api, workspace_id, project_id)
+    base = f"/workspaces/{workspace_id}/backlog"
+    url = f"{base}/{item['item_id']}"
+
+    for field in ("title", "rank", "status", "description", "paused", "acceptance_refs"):
+        response = api.client.patch(url, json={"expected_version": 1, field: None})
+        assert response.status_code == 422, (field, response.text)
+    infinite = api.client.patch(
+        url,
+        content='{"expected_version": 1, "rank": 1e999}',
+        headers={"content-type": "application/json"},
+    )
+    assert infinite.status_code == 422
+    missing_parent = api.client.post(
+        base, json={"project_id": project_id, "title": "x", "parent_item_id": "nope"}
+    )
+    assert missing_parent.status_code == 404
+    listed = api.client.get(base)
+    assert listed.status_code == 200
+    assert [i["version"] for i in listed.json()] == [1]

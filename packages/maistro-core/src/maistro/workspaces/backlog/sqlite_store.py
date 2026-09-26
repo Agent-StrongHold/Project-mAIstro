@@ -33,6 +33,7 @@ from maistro.workspaces.backlog.model import (
     BacklogRelationError,
     BacklogVersionConflict,
     apply_changes,
+    new_item,
 )
 from maistro.workspaces.backlog.store import (
     require_not_self,
@@ -158,7 +159,7 @@ class SqliteBacklogItemStore:
             yield conn
 
     async def create(self, item: BacklogItem) -> BacklogItem:
-        created = item.model_copy(update={"version": 1})
+        created = new_item(item)
         async with self._write() as conn:
             await require_project_in_workspace(
                 self._project_store, created.project_id, created.workspace_id

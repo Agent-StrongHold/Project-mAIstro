@@ -20,7 +20,9 @@ from maistro.interop import INTEROP_ONTOLOGY_V1, InteropContractError
 
 
 def _as_utc(value: datetime) -> datetime:
-    return value if value.utcoffset() is not None else value.replace(tzinfo=UTC)
+    if value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 class BacklogItemStatus(StrEnum):
@@ -84,7 +86,7 @@ class BacklogItem(BaseModel):
     #: A free token; what each mode permits is #100/#103's to define.
     autonomy_mode: str | None = None
     parent_item_id: str | None = None
-    rank: float = 0.0
+    rank: float = Field(default=0.0, allow_inf_nan=False)
     paused: bool = False
     pinned: bool = False
     archived_at: datetime | None = None
@@ -146,6 +148,17 @@ class BacklogRelationError(ValueError):
         self.kind = kind
 
 
+#: #100's claim/lease fields: reserved, so neither `create` nor `update` sets them.
+CLAIM_FIELDS = frozenset(
+    {
+        "claimant_principal_id",
+        "claimant_agent_id",
+        "claim_run_id",
+        "lease_expires_at",
+        "fence_token",
+    }
+)
+
 #: Fields `update` will not change: identity, scope root, the version it owns,
 #: the parent edge `set_parent` owns, and #100's claim fields.
 IMMUTABLE_FIELDS = frozenset(
@@ -156,13 +169,17 @@ IMMUTABLE_FIELDS = frozenset(
         "created_at",
         "updated_at",
         "parent_item_id",
-        "claimant_principal_id",
-        "claimant_agent_id",
-        "claim_run_id",
-        "lease_expires_at",
-        "fence_token",
     }
+    | CLAIM_FIELDS
 )
+
+
+def new_item(item: BacklogItem) -> BacklogItem:
+    """`item` as a store persists it on create: version 1, no claim."""
+    claimed = sorted(name for name in CLAIM_FIELDS if getattr(item, name) is not None)
+    if claimed:
+        raise ValueError(f"BacklogItem.create cannot set {', '.join(claimed)}")
+    return item.model_copy(update={"version": 1}, deep=True)
 
 
 def apply_changes(current: BacklogItem, changes: dict[str, Any]) -> BacklogItem:
@@ -181,6 +198,7 @@ def apply_changes(current: BacklogItem, changes: dict[str, Any]) -> BacklogItem:
 
 
 __all__ = [
+    "CLAIM_FIELDS",
     "IMMUTABLE_FIELDS",
     "BacklogItem",
     "BacklogItemAlreadyExists",
@@ -190,4 +208,5 @@ __all__ = [
     "BacklogVersionConflict",
     "GoalReference",
     "apply_changes",
+    "new_item",
 ]

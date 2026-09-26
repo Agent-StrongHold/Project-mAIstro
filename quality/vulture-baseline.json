@@ -1498,6 +1498,7 @@
         "packages/maistro-rsi/src/maistro_rsi/sandbox/local.py::unused method 'restore'",
         "packages/maistro-rsi/src/maistro_rsi/sandbox/microvm.py::unused method 'restore'",
         "packages/maistro-rsi/src/maistro_rsi/test_inventory.py::unused property 'skip_gated'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused method '_no_null_for_required_fields'",
         "packages/maistro-server/src/maistro_server/api/principal.py::unused property 'is_admin'",
         "packages/maistro-server/src/maistro_server/api/projects.py::unused method '_delegation_requires_grant'",
         "packages/maistro-server/src/maistro_server/api/projects.py::unused method '_require_non_blank_actions'",
