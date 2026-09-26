@@ -650,8 +650,7 @@ or placeholder-only section.
 
 ### Fixed
 
-- **`/v1/schedules` writes the canonical Schedule definition first
-  ([#1199](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1199),
+- **`/v1/schedules` writes the canonical Schedule definition first (#1199,
   partial).** With a configured Container, create, update and delete now
   write the canonical `ScheduleStore` before the Hive row, which becomes a
   projection. Disabling a schedule disables its canonical row, and a cron or
@@ -662,9 +661,11 @@ or placeholder-only section.
   definition the canonical model refuses (such as an unreadable cron) returns
   422. On startup the scheduler runs a one-shot backfill that puts only the
   Hive rows missing from the canonical store, so recorded cursors are never
-  rewound. Standalone mode (no Container) is unchanged. The tick still reads
-  `stores.schedules`; moving it onto `ScheduleStore.due()` is the rest of
-  #1199.
+  rewound. A tick now re-reads the row under the same per-schedule lock the
+  routes hold, so a snapshot taken before an edit or delete cannot re-enable
+  or resurrect the canonical row. Standalone mode (no Container) is unchanged.
+  The tick still enumerates `stores.schedules`; moving it onto
+  `ScheduleStore.due()` is the rest of #1199.
 
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED

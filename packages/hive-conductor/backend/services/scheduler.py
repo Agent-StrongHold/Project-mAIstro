@@ -794,13 +794,22 @@ class _ScheduleRunner:
                     "configured Container is missing its run/template/schedule store wiring; "
                     "canonical schedule admission is unavailable"
                 )
-            await self._evaluate_canonical(
-                sid,
-                schedule,
-                now=now,
-                container=container,
-                admitter=admitter,
-            )
+            import stores
+
+            # The tick's snapshot may predate a route edit or delete; under the
+            # definition lock the current row decides, so a stale copy cannot
+            # re-enable or resurrect the canonical definition.
+            async with definition_lock(sid):
+                current = stores.schedules.get(sid)
+                if current is None or not getattr(current, "enabled", False):
+                    return
+                await self._evaluate_canonical(
+                    sid,
+                    current,
+                    now=now,
+                    container=container,
+                    admitter=admitter,
+                )
             return
 
         # Standalone/demo compatibility path. Production must never reach this

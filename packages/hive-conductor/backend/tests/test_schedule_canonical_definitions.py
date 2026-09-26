@@ -172,6 +172,7 @@ def test_delete_removes_the_canonical_row(admin_client: Any, configured: Any) ->
     import stores
 
     sid = _create(admin_client, configured.test_workspace)["id"]
+    assert asyncio.run(configured.schedule_store.get(sid)) is not None
     response = admin_client.delete(f"/v1/schedules/{sid}")
     assert response.status_code == 204, response.text
     assert stores.schedules.get(sid) is None
@@ -322,6 +323,7 @@ def test_clearing_the_template_removes_the_canonical_row(
     admin_client: Any, configured: Any
 ) -> None:
     sid = _create(admin_client, configured.test_workspace)["id"]
+    assert asyncio.run(configured.schedule_store.get(sid)) is not None
     try:
         response = admin_client.put(f"/v1/schedules/{sid}", json={"mission_template_id": ""})
         assert response.status_code == 200, response.text
@@ -359,27 +361,41 @@ def test_concurrent_updates_leave_both_rows_agreeing(admin_client: Any, configur
         _drop_hive_row(sid)
 
 
-def test_an_update_racing_a_delete_leaves_no_canonical_orphan(
+def test_an_update_queued_behind_a_delete_is_a_404_and_leaves_no_orphan(
     admin_client: Any, configured: Any
 ) -> None:
     import stores
     from routes import schedules as routes
+    from services.scheduler import definition_lock
 
     sid = _create(admin_client, configured.test_workspace)["id"]
+    assert asyncio.run(configured.schedule_store.get(sid)) is not None
     request = _request_as_admin()
 
-    async def both() -> list[Any]:
-        return list(
-            await asyncio.gather(
-                routes.update_schedule(sid, routes.UpdateScheduleBody(name="renamed"), request),
-                routes.delete_schedule(sid, request),
-                return_exceptions=True,
-            )
-        )
+    async def update_waits_for_delete() -> BaseException | None:
+        from services.scheduler import delete_canonical_definition
 
-    for outcome in asyncio.run(both()):
-        if isinstance(outcome, BaseException):
-            assert getattr(outcome, "status_code", None) == 404, outcome
+        lock = definition_lock(sid)
+        async with lock:
+            update = asyncio.ensure_future(
+                routes.update_schedule(sid, routes.UpdateScheduleBody(name="renamed"), request)
+            )
+            for _ in range(1000):
+                if lock._waiters:
+                    break
+                await asyncio.sleep(0.001)
+            assert lock._waiters, "the update never reached the lock"
+            # A delete holding the lock: what `delete_schedule` does under it.
+            await delete_canonical_definition(sid)
+            stores.schedules.pop(sid, None)
+        try:
+            await update
+        except BaseException as exc:
+            return exc
+        return None
+
+    outcome = asyncio.run(update_waits_for_delete())
+    assert getattr(outcome, "status_code", None) == 404, outcome
     assert stores.schedules.get(sid) is None
     assert asyncio.run(configured.schedule_store.get(sid)) is None
 
@@ -397,3 +413,46 @@ def test_delete_with_an_unwired_container_is_a_503_that_keeps_the_row(
         assert stores.schedules.get(sid) is not None
     finally:
         _drop_hive_row(sid)
+
+
+def _stale_tick(configured: Any, monkeypatch: pytest.MonkeyPatch, sid: str, snapshot: Any) -> None:
+    """Replay a tick that snapshotted ``snapshot`` before a route changed the row."""
+    from services.scheduler import _ScheduleRunner
+
+    monkeypatch.setattr(_ScheduleRunner, "_canonical_container", staticmethod(lambda: configured))
+    asyncio.run(_ScheduleRunner()._evaluate_schedule(sid, snapshot, now=datetime.now(UTC)))
+
+
+def test_a_tick_holding_a_stale_snapshot_does_not_re_enable_a_disabled_schedule(
+    admin_client: Any, configured: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stores
+
+    sid = _create(admin_client, configured.test_workspace)["id"]
+    snapshot = stores.schedules.get(sid)
+    try:
+        response = admin_client.put(f"/v1/schedules/{sid}", json={"enabled": False})
+        assert response.status_code == 200, response.text
+        _stale_tick(configured, monkeypatch, sid, snapshot)
+        stored = asyncio.run(configured.schedule_store.get(sid))
+        hive = stores.schedules.get(sid)
+        assert stored is not None and hive is not None
+        assert stored.enabled is False
+        assert hive.enabled is False
+        assert sid not in _due_ids(configured)
+    finally:
+        _drop_hive_row(sid)
+
+
+def test_a_tick_holding_a_stale_snapshot_does_not_resurrect_a_deleted_schedule(
+    admin_client: Any, configured: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stores
+
+    sid = _create(admin_client, configured.test_workspace)["id"]
+    snapshot = stores.schedules.get(sid)
+    response = admin_client.delete(f"/v1/schedules/{sid}")
+    assert response.status_code == 204, response.text
+    _stale_tick(configured, monkeypatch, sid, snapshot)
+    assert asyncio.run(configured.schedule_store.get(sid)) is None
+    assert sid not in _due_ids(configured)
