@@ -6,7 +6,7 @@ const tabId = (idPrefix: string, id: string) => `${idPrefix}-tab-${id}`;
 const panelId = (idPrefix: string, id: string) => `${idPrefix}-panel-${id}`;
 
 const TAB_STYLE: CSSProperties = {
-  padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 12, cursor: "pointer",
+  padding: "7px 16px", fontFamily: "var(--mono)", fontSize: 12, fontWeight: "inherit", lineHeight: "inherit", cursor: "pointer",
   background: "none", border: "none", borderRadius: 0, boxShadow: "none", transform: "none",
   textTransform: "capitalize",
 };
@@ -26,6 +26,7 @@ export function TabList<T extends string>({ label, idPrefix, tabs, selected, onS
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
 
   function onKeyDown(e: KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
     const last = tabs.length - 1;
     const next = { ArrowRight: index === last ? 0 : index + 1, ArrowLeft: index === 0 ? last : index - 1, Home: 0, End: last }[e.key];
     if (next === undefined) return;

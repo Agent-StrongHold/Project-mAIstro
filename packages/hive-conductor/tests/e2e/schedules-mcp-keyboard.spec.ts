@@ -194,11 +194,12 @@ test("MCP tools are reachable and a server expands from the keyboard", async () 
   const disclosure = page.getByRole("button", { name: new RegExp(`^${server.name}`) });
   await tabTo(disclosure, 6);
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
-  await page.keyboard.press("Enter");
-  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
   const detailsId = await disclosure.getAttribute("aria-controls");
   expect(detailsId).toBeTruthy();
   const details = page.locator(`[id="${detailsId}"]`);
+  await expect(details).toBeHidden();
+  await page.keyboard.press("Enter");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
   await expect(details.getByText("URL")).toBeVisible();
   await expect(details.getByText(server.version)).toBeVisible();
 
@@ -215,5 +216,5 @@ test("MCP tools are reachable and a server expands from the keyboard", async () 
   await expect(disclosure).toBeFocused();
   await page.keyboard.press("Space");
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
-  await expect(details).toHaveCount(0);
+  await expect(details).toBeHidden();
 });

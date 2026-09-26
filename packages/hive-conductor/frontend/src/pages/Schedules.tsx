@@ -21,6 +21,9 @@ const CRON_PRESETS = [
   { label: "Monthly 1st", cron: "0 0 1 * *" },
 ];
 
+// `.hex-badge` clip-path would cut away the global focus-visible outline at its usual offset.
+const PRESET_STYLE = { cursor: "pointer", boxShadow: "none", transform: "none", outlineOffset: -4 } as const;
+
 const TABS = [{ id: "schedules", label: "Schedules" }, { id: "history", label: "History" }] as const;
 
 export default function Schedules() {
@@ -118,7 +121,7 @@ export default function Schedules() {
                   <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>PRESETS</div>
                   <div role="group" aria-label="Cron presets" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {CRON_PRESETS.map((p) => (
-                      <button key={p.cron} type="button" aria-pressed={form.cron_expression === p.cron} className={`hex-badge${form.cron_expression === p.cron ? " hex-badge-accent" : ""}`} style={{ cursor: "pointer", boxShadow: "none", transform: "none" }} onClick={() => setForm((f) => ({ ...f, cron_expression: p.cron }))}>{p.label}</button>
+                      <button key={p.cron} type="button" aria-pressed={form.cron_expression === p.cron} className={`hex-badge${form.cron_expression === p.cron ? " hex-badge-accent" : ""}`} style={PRESET_STYLE} onClick={() => setForm((f) => ({ ...f, cron_expression: p.cron }))}>{p.label}</button>
                     ))}
                   </div>
                 </div>

@@ -655,8 +655,8 @@ or placeholder-only section.
   schedule's enable toggle is a labelled switch, so a keyboard user can enable
   or disable a schedule; cron presets are toggle buttons; and an MCP server
   expands through a disclosure button, with its remove button a separate
-  control. Pointer behaviour is unchanged, except that clicking inside an
-  expanded MCP server's details no longer collapses it.
+  control. For pointer users, an MCP server now expands or collapses only
+  from its header row, not from its details area or the card's padding.
 
 - **`agent.synth_dag` fails its NodeRun when it runs no work (#1193).**
   The node now raises `SynthDagFailed`, so its canonical NodeRun ends FAILED

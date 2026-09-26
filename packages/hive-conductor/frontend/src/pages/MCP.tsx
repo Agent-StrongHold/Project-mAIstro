@@ -168,38 +168,36 @@ export default function MCP() {
                   <button className="btn" aria-label={`Remove ${s.name}`} style={{ fontSize: 12, padding: "1px 6px", borderColor: "var(--danger)", color: "var(--danger)", opacity: 0.5 }} onClick={() => setDeleteTarget(s)}>remove</button>
                 </div>
 
-                {open && (
-                  <div id={detailsId} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6, marginBottom: 10 }}>
-                      <StatCard label="URL" value={s.url.replace("http://", "").replace("/mcp", "")} />
-                      <StatCard label="Version" value={s.version ?? "—"} />
-                      <StatCard label="Last Ping" value={s.last_ping ? new Date(s.last_ping).toLocaleTimeString() : "never"} />
-                      <StatCard label="Tools" value={`${s.tools_count}`} />
-                    </div>
-                    {s.capabilities.length > 0 && (
-                      <div style={{ marginBottom: 8 }}>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {s.capabilities.map((c) => <Hex key={c}>{c}</Hex>)}
-                        </div>
-                      </div>
-                    )}
-                    {serverTools.length > 0 && (
-                      <div>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>TOOLS</div>
-                        {serverTools.map((t) => (
-                          <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, padding: "4px 6px", borderBottom: "1px dotted var(--rule)" }}>
-                            <div>
-                              <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)" }}>{t.name}</span>
-                              <span style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginLeft: 8 }}>{t.description}</span>
-                            </div>
-                            {t.category && <Hex variant="muted">{t.category}</Hex>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                <div id={detailsId} hidden={!open} style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dotted var(--rule)" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6, marginBottom: 10 }}>
+                    <StatCard label="URL" value={s.url.replace("http://", "").replace("/mcp", "")} />
+                    <StatCard label="Version" value={s.version ?? "—"} />
+                    <StatCard label="Last Ping" value={s.last_ping ? new Date(s.last_ping).toLocaleTimeString() : "never"} />
+                    <StatCard label="Tools" value={`${s.tools_count}`} />
                   </div>
-                )}
+                  {s.capabilities.length > 0 && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>CAPABILITIES</div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {s.capabilities.map((c) => <Hex key={c}>{c}</Hex>)}
+                      </div>
+                    </div>
+                  )}
+                  {serverTools.length > 0 && (
+                    <div>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--pencil)", marginBottom: 3 }}>TOOLS</div>
+                      {serverTools.map((t) => (
+                        <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, padding: "4px 6px", borderBottom: "1px dotted var(--rule)" }}>
+                          <div>
+                            <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--accent)" }}>{t.name}</span>
+                            <span style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--pencil)", marginLeft: 8 }}>{t.description}</span>
+                          </div>
+                          {t.category && <Hex variant="muted">{t.category}</Hex>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
