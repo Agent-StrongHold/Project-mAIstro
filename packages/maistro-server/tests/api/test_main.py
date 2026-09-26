@@ -235,6 +235,7 @@ class TestLifespan:
         # Shutdown owns the usage-log flush (#72, #1204): the lifespan awaits
         # `flush_usage_log()` then `aclose()` on whatever container it built.
         mock_container = MagicMock()
+        mock_container.run_store = MagicMock(list_by_status=AsyncMock(return_value=[]))
         mock_container.flush_usage_log = AsyncMock()
         mock_container.aclose = AsyncMock()
 

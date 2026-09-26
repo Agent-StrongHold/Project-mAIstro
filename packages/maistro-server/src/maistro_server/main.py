@@ -328,6 +328,10 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # are durable.
         idempotency_store=container.task_idempotency,
     )
+    # Rebuild receipts from canonical QUEUED task Runs before starting workers.
+    # This is the restart-safe handoff for both admission/receipt gaps; the Run
+    # already contains the immutable payload needed to execute the original id.
+    await queue.recover(run_store)
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
