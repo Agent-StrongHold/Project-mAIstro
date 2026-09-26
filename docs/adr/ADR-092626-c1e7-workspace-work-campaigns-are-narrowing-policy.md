@@ -16,8 +16,7 @@ related:
 supersedes: []
 blocks: []
 blocked-by: []
-contracts:
-  - boundary
+contracts: []
 tests: []
 layer: Governance
 owners:
