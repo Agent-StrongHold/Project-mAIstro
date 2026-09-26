@@ -307,8 +307,13 @@ class ArtificerStrategy:
         auth: Any,
         security_pipeline: bool,
     ) -> tuple[dict[str, Any], Any, bool]:
-        if security_pipeline or sentinel is None or auth is None:
+        if security_pipeline:
             return tool_args, None, False
+        if sentinel is None or auth is None:
+            logger.warning(
+                "Denied tool '%s': no Sentinel or caller auth to authorize it", tool_name
+            )
+            return tool_args, f"Error: Permission denied for tool '{tool_name}'", True
         sentinel_verdict = await sentinel.pre_call(tool_name, tool_args, auth, {})
         if not sentinel_verdict.allowed:
             return tool_args, f"Error: Permission denied for tool '{tool_name}'", True

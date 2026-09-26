@@ -16,6 +16,8 @@ from maistro.agents.base import (
     _extract_user_text,
     _redact_message_content,
 )
+from maistro.security._types import AuthContext
+from maistro.security.sentinel.policy import Sentinel as RealSentinel
 from maistro.sessions.store import InMemorySessionStore
 from maistro.types.agent import AgentIdentity, AgentResponse, ReasoningResult
 
@@ -379,11 +381,12 @@ class TestHandleCanonicalTrustPipeline:
             identity=_identity(tools=("lookup",)),
             warden=warden,
             tool_executor=raw_tool,
+            sentinel=RealSentinel(warden=warden, permission_table={"lookup": frozenset({"op"})}),
         )
 
         result = await agent.handle(
             messages=[{"role": "user", "content": "user@example.com"}],
-            auth=_Auth(),
+            auth=AuthContext(user_id="u1", roles=frozenset({"op"}), org_id="org-1"),
         )
 
         assert result.content == "answer: tool contact [REDACTED:email]"

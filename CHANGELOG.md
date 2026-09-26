@@ -25,6 +25,13 @@ or placeholder-only section.
 
 ### Security
 
+- **Tool calls fail closed when Sentinel or caller auth is missing (#1165).**
+  An `Agent` built without a Sentinel, or handed a turn with no `auth`, used
+  to execute tool calls unauthorized; it now returns `Error: Permission denied
+  for tool …` and logs why. The standalone ReAct and Artificer strategy paths
+  apply the same rule. Callers that construct Agents directly must wire a
+  Sentinel whose permission table grants the tools they need.
+
 - **Tool-result governance is pinned across real Agent strategies (#1202,
   partial).** A regression suite drives the shipped ReAct, Artificer and
   BuildersLearning strategies through `Agent.handle` with a real Warden and

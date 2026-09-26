@@ -9,6 +9,9 @@ from typing import Any
 import pytest
 
 from maistro.agents.artificer.strategy import ArtificerStrategy, _noop_status
+from maistro.security._types import AuthContext
+from maistro.security.sentinel.policy import Sentinel
+from maistro.security.warden.detector import Warden
 from maistro.testing.faux_provider import FauxProvider, FauxResponse
 
 
@@ -83,6 +86,15 @@ class _FakeSentinel:
 
 class _Auth:
     user_id = "u1"
+
+
+_OPERATOR = AuthContext(user_id="u1", roles=frozenset({"operator"}))
+
+
+def _grant(tool_name: str) -> dict[str, Any]:
+    """Standalone authorization for one tool: a real Sentinel with an explicit grant."""
+    sentinel = Sentinel(warden=Warden(), permission_table={tool_name: frozenset({"operator"})})
+    return {"sentinel": sentinel, "auth": _OPERATOR}
 
 
 async def _echo_executor(_name: str, args: dict[str, Any]) -> str:
@@ -165,6 +177,7 @@ class TestReasonWithToolCalls:
             provider,
             tools=tools,
             tool_executor=_echo_executor,
+            **_grant("write_file"),
         )
 
         assert result.done is True
@@ -418,8 +431,7 @@ class TestHandleToolCall:
             tool_executor=_echo_executor,
             trace=None,
             status=_status,
-            sentinel=None,
-            auth=None,
+            **_grant("write_file"),
             warden=None,
         )
 
@@ -437,8 +449,7 @@ class TestHandleToolCall:
             tool_executor=_echo_executor,
             trace=None,
             status=_noop_status,
-            sentinel=None,
-            auth=None,
+            **_grant("write_file"),
             warden=None,
         )
 
@@ -523,8 +534,7 @@ class TestHandleToolCall:
             tool_executor=_big_executor,
             trace=None,
             status=_noop_status,
-            sentinel=None,
-            auth=None,
+            **_grant("write_file"),
             warden=None,
         )
 
