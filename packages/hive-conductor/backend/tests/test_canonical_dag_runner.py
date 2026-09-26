@@ -405,15 +405,25 @@ async def test_scope_rejects_project_id_mismatch(
 
 
 @pytest.mark.asyncio
-async def test_scope_rejects_a_missing_scope(
+async def test_resolver_without_a_scope_maps_the_compat_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """`_scope` without an authorized scope is the #1174 resolver arm: it maps
+    the standalone compat scope and carries no authorization of its own — the
+    registered-DAG route and projection writers call it AFTER authorizing an
+    explicit selection. Scope-less EXECUTION stays refused where it belongs,
+    by `execute_dag` itself (see `test_execute_dag_rejects_a_missing_scope`).
+    """
     import services.canonical_dag_runner as runner
 
     monkeypatch.setattr(runner, "_container", lambda: None)
 
-    with pytest.raises(ValueError, match="authorized DAG execution scope is required"):
-        await runner._scope({}, scope=None, workspace_id=None, project_id=None)
+    workspace_id, project_id, run_store = await runner._scope(
+        {}, scope=None, workspace_id=None, project_id=None
+    )
+    assert workspace_id == runner._COMPAT_SCOPE
+    assert project_id == runner._COMPAT_SCOPE
+    assert run_store is None
 
 
 @pytest.mark.asyncio

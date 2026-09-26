@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 import stores
@@ -12,6 +13,9 @@ from pydantic import BaseModel, ConfigDict
 from services.brief_chat import brief_turn
 from services.chat_completion import build_llm_port
 from services.chat_completion import conversation_only as _conversation_only
+from services.chat_execution import (
+    execute_conversation_turn,
+)
 from services.chat_gate import (
     REASON_BUDGET_EXCEEDED,
     REASON_SCANNER_ERROR,
@@ -118,7 +122,7 @@ def _dashboard_edit_requested(req: ChatCompletionRequest) -> bool:
     return extra.get("tools_scope") == _DASHBOARD_EDIT_SCOPE
 
 
-def _disabled_dashboard_response() -> dict:
+def _disabled_dashboard_response() -> dict[str, Any]:
     return {"choices": [{"message": {"role": "assistant", "content": _DASHBOARD_EDIT_DISABLED}}]}
 
 
@@ -145,13 +149,32 @@ async def _gate_messages(req: ChatCompletionRequest, request: Request, surface: 
     return openai_refusal(decision)
 
 
-async def _interview_turn(req: ChatCompletionRequest, request: Request):
+async def _contained_response(
+    req: ChatCompletionRequest,
+    request: Request,
+    messages: list[dict[str, Any]],
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    async def _dispatch() -> dict[str, Any]:
+        return response
+
+    return await execute_conversation_turn(req, request, messages, _dispatch)
+
+
+def _interview_payload(turn: Any) -> dict[str, Any]:
+    """The interview's deterministic reply in the chat completion shape."""
+    return {"choices": [{"message": {"role": "assistant", "content": turn.text}}]}
+
+
+async def _interview_turn(req: ChatCompletionRequest, request: Request) -> Any:
     """The brief interview's answer to this turn, when it is the interview's to answer.
 
     A turn in a workspace that asks for work opens the interview
     (SPEC-091726-7c2a); while one is open, every turn there is an answer to
     it. The reply comes after the Warden boundary and instead of the model:
-    the interview is deterministic and writes nothing but its own state.
+    the interview is deterministic and writes nothing but its own state. It
+    still crosses the canonical chat seam (`execute_conversation_turn`) so the
+    turn leaves Run/NodeRun/Attempt evidence like every other turn (#1037).
     """
     extra = req.model_extra or {}
     workspace_id = extra.get("workspace_id")
@@ -191,22 +214,28 @@ def _model_call(req: ChatCompletionRequest, messages: list[dict]):
 
 
 @router.post("/complete")
-async def complete(req: ChatCompletionRequest, request: Request) -> dict:
+async def complete(req: ChatCompletionRequest, request: Request) -> dict[str, Any]:
     """Non-streaming conversational completion; model-driven tools are M0-disabled."""
     if _dashboard_edit_requested(req):
         # Do not send the dashboard builder prompt to a model at all. The SPA
         # interprets textual ```widget_update``` blocks, so tool disabling alone
-        # would not contain model-authored widget mutations (#483).
-        return _disabled_dashboard_response()
+        # would not contain model-authored widget mutations (#483). It still
+        # gets a canonical completed Attempt as a contained user turn.
+        return await _contained_response(
+            req, request, list(req.messages), _disabled_dashboard_response()
+        )
     refusal = await _gate_messages(req, request, "chat_complete")
     if refusal is not None:
-        return refusal
-    turn = await _interview_turn(req, request)
-    if turn is not None:
-        return {
-            "choices": [{"message": {"role": "assistant", "content": turn.text}}],
-            "brief": turn.payload(),
-        }
+        return await _contained_response(req, request, list(req.messages), refusal)
+    interview = await _interview_turn(req, request)
+    if interview is not None:
+        # The interview's deterministic answer replaces the model callback,
+        # not the canonical Run: this is still one admitted, terminalized turn.
+        response = await _contained_response(
+            req, request, list(req.messages), _interview_payload(interview)
+        )
+        response["brief"] = interview.payload()
+        return response
     messages = _conversation_messages(req)
     turn = await _admit(req, request, messages)
     return await execute_turn(turn, messages, _model_call(req, messages))
@@ -226,23 +255,21 @@ async def stream_complete(req: ChatCompletionRequest, request: Request):
 
     if _dashboard_edit_requested(req):
         return StreamingResponse(
-            _single_done_event(_DASHBOARD_EDIT_DISABLED),
+            _contained_done_event(req, request, list(req.messages), _disabled_dashboard_response()),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     refusal = await _gate_messages(req, request, "chat_stream")
     if refusal is not None:
-        content = refusal["choices"][0]["message"]["content"]
         return StreamingResponse(
-            _single_done_event(content),
+            _contained_done_event(req, request, list(req.messages), refusal),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-
-    turn = await _interview_turn(req, request)
-    if turn is not None:
+    interview = await _interview_turn(req, request)
+    if interview is not None:
         return StreamingResponse(
-            _brief_events(turn),
+            _brief_events(req, request, list(req.messages), interview),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -293,22 +320,49 @@ class _RunStreamingResponse(StreamingResponse):
             await self._on_finished()
 
 
-def _brief_events(turn):
-    """The interview's SSE frames: the brief so far, then the reply as `done`."""
+def _brief_events(
+    req: ChatCompletionRequest,
+    request: Request,
+    messages: list[dict[str, Any]],
+    interview: Any,
+) -> AsyncIterator[str]:
+    """The interview's SSE frames: the brief so far, then the reply as `done`.
+
+    The deterministic reply replaces the model callback, not the canonical
+    Run: the turn is admitted and terminalized through the same seam as every
+    other contained answer before anything is streamed (#1037).
+    """
     import json
 
-    async def gen():
-        yield f"data: {json.dumps(turn.payload())}\n\n"
-        yield f"data: {json.dumps({'type': 'done', 'content': turn.text})}\n\n"
+    async def gen() -> AsyncIterator[str]:
+        response = await _contained_response(req, request, messages, _interview_payload(interview))
+        yield f"data: {json.dumps(interview.payload())}\n\n"
+        choice = (response.get("choices") or [{}])[0]
+        content = (choice.get("message") or {}).get("content") or ""
+        event: dict[str, Any] = {"type": "done", "content": content}
+        if response.get("run_id"):
+            event["run_id"] = response["run_id"]
+        yield f"data: {json.dumps(event)}\n\n"
 
     return gen()
 
 
-def _single_done_event(content: str):
-    """One `done` SSE frame — the shape every contained stream answer takes."""
+def _contained_done_event(
+    req: ChatCompletionRequest,
+    request: Request,
+    messages: list[dict[str, Any]],
+    response: dict[str, Any],
+) -> AsyncIterator[str]:
+    """Run static/refused stream answers through the same canonical seam."""
     import json
 
-    async def gen():
-        yield f"data: {json.dumps({'type': 'done', 'content': content})}\n\n"
+    async def gen() -> AsyncIterator[str]:
+        result = await _contained_response(req, request, messages, response)
+        choice = (result.get("choices") or [{}])[0]
+        content = (choice.get("message") or {}).get("content") or ""
+        event: dict[str, Any] = {"type": "done", "content": content}
+        if result.get("run_id"):
+            event["run_id"] = result["run_id"]
+        yield f"data: {json.dumps(event)}\n\n"
 
     return gen()

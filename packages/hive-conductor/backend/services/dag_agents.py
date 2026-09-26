@@ -20,13 +20,17 @@ from maistro.container import build_node_resolver
 from maistro.graph.dag_registry import DagRegistry
 from maistro.graph.definitions import Graph
 from maistro.graph.durable_runs import (
+    CanonicalDurableRunStore,
     DurableRunStore,
     InMemoryDurableRunStore,
+    InMemoryGraphContinuationStore,
     RunStatus,
     run_durable_graph,
 )
 from maistro.graph.seeds import daily_status_seed
 from maistro.graph.template_adapter import descriptor_to_template
+from maistro.projects.scope import Project
+from maistro.runs import InMemoryRunStore
 from services.node_metrics_store import record_run_completion
 
 logger = logging.getLogger(__name__)
@@ -117,12 +121,75 @@ def _resolve_nodes_with() -> Callable[[str, Any], Any]:
     )
 
 
-# The last-resort store, for a Conductor booted without a Container. It is
-# process-local and that is the defect, not the design: a restart empties the
-# HITL queue and two workers disagree about what is paused. It survives only
-# because a standalone Conductor has no canonical spine to project onto, and
-# it is reached only when `_container()` returns nothing.
+class _StandaloneProjectScope:
+    """Minimal canonical Project lookup for an unconfigured local process."""
+
+    def __init__(self) -> None:
+        self._projects: dict[str, Project] = {}
+
+    async def ensure(self, workspace_id: str, project_id: str) -> None:
+        self._projects.setdefault(
+            project_id,
+            Project(
+                project_id=project_id,
+                workspace_id=workspace_id,
+                name="Standalone compatibility project",
+                parent_project_id=None,
+                is_root=True,
+            ),
+        )
+
+    async def get(self, project_id: str) -> Project | None:
+        return self._projects.get(project_id)
+
+
+_fallback_project_scope = _StandaloneProjectScope()
+_fallback_canonical_run_store = InMemoryRunStore(project_store=_fallback_project_scope)
+
+
+class _StandaloneCanonicalGraphStore(CanonicalDurableRunStore):
+    """Canonical graph store with a read-only compatibility index for Hive.
+
+    M1 product-local projection: Graph
+
+    This subclass adds no storage of its own: every Run/NodeRun/Attempt write
+    goes through ``CanonicalDurableRunStore`` over the canonical RunStore, and
+    the bounded ``_rows`` index below is a presentation adapter that older
+    HITL/scheduler callers refresh from those canonical writes. It is a Hive
+    local view of the durable graph record, not a second graph authority.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(_fallback_canonical_run_store, InMemoryGraphContinuationStore())
+        # Older HITL/scheduler callers inspect this bounded adapter index. They
+        # do not own lifecycle; every value is refreshed from canonical writes.
+        self._rows: dict[str, Any] = {}
+
+    async def create(self, record):
+        # Isolated HITL tests historically seeded a graph record directly.
+        # Import that fixture into the canonical in-memory indexes before the
+        # continuation write; subsequent reads and controls remain canonical.
+        if await _fallback_canonical_run_store.get_run(record.run_id) is None:
+            _fallback_canonical_run_store._runs[record.run_id] = record.run
+            for node_run in record.node_runs:
+                _fallback_canonical_run_store._node_runs[node_run.node_run_id] = node_run
+            for attempt in record.attempts:
+                _fallback_canonical_run_store._attempts[attempt.attempt_id] = attempt
+        created = await super().create(record)
+        self._rows[created.run_id] = created
+        return created
+
+    async def update(self, record):
+        updated = await super().update(record)
+        self._rows[updated.run_id] = updated
+        return updated
+
+
+_fallback_graph_store = _StandaloneCanonicalGraphStore()
+# Preserve the old test/compatibility handle without using its graph-only
+# methods for execution. It is an index alias, not a second source of truth.
 _fallback_run_store = InMemoryDurableRunStore()
+_fallback_run_store._rows = _fallback_graph_store._rows
 
 
 def get_canonical_run_store() -> DurableRunStore:
@@ -169,6 +236,11 @@ def get_registry() -> DagRegistry:
     return _registry
 
 
+def get_node_resolver() -> Callable[[str, Any], Any]:
+    """Return the production resolver for a registered Graph execution."""
+    return _resolve_nodes_with()
+
+
 async def run_registered_dag(
     dag_id: str,
     *,
@@ -176,6 +248,7 @@ async def run_registered_dag(
     project_id: str,
     user_id: str | None = None,
     configure: Callable[[Graph], None] | None = None,
+    node_resolver: Callable[[str, Any], Any] | None = None,
     parent_run_id: str | None = None,
     parent_node_run_id: str | None = None,
     provenance: Mapping[str, Any] | None = None,
@@ -186,7 +259,10 @@ async def run_registered_dag(
     is not registered. ``configure`` runs against the *instantiated* Graph —
     after provenance is stamped — which is where per-request runtime inputs
     such as credentials belong; the registered template stays secret-free.
-    A caller that is itself executing canonical work passes its Run/NodeRun
+    ``node_resolver`` is an optional product node implementation seam; Run
+    admission and graph traversal remain owned here and the default resolver
+    is used when it is omitted. A caller that is itself executing canonical
+    work passes its Run/NodeRun
     identity via ``parent_run_id``/``parent_node_run_id`` so the launched
     work is a child Run rather than a disconnected sibling. Returns the
     instantiated Graph (callers key node lookups on its stable node names)
@@ -203,16 +279,29 @@ async def run_registered_dag(
     if configure is not None:
         configure(graph)
     container = _container()
-    run_store = container.run_store if container is not None else None
-    if run_store is None and any(node.node_type.startswith("human.") for node in graph.nodes):
-        raise RuntimeError("canonical graph execution spine is required for human work")
+    if container is not None:
+        run_store = container.run_store
+        graph_store = container.graph_run_store
+        if run_store is None or graph_store is None:
+            raise RuntimeError("canonical graph execution spine is unavailable")
+    else:
+        # Standalone mode still uses the canonical Run -> NodeRun -> Attempt
+        # store. It is process-local because no durable backend was configured,
+        # but it is not the retired graph-only lifecycle. Human work is the one
+        # exception: a pending human decision must never be written to
+        # process-local state that the canonical Run API and a restarted worker
+        # cannot see.
+        if any(node.node_type.startswith("human.") for node in graph.nodes):
+            raise RuntimeError("canonical graph execution spine is required for human work")
+        await _fallback_project_scope.ensure(workspace_id, project_id)
+        run_store = _fallback_canonical_run_store
+        graph_store = _fallback_graph_store
     # Admission first, then execution. Traversal consumes an admitted Run
     # rather than creating one (#44): the create and the first traversal
     # checkpoint are writes to two stores, so a crash between them would leave
     # a canonical Run RUNNING with nothing to resume it. Admitting here leaves
-    # a QUEUED Run instead, which #251's consumer tick can pick up. Without a
-    # Container there is no spine, and execution takes the pre-convergence
-    # path rather than failing to start.
+    # a QUEUED Run instead, which #251's consumer tick can pick up. Standalone
+    # mode uses the same canonical lifecycle with process-local persistence.
     admitted_run_id = None
     if run_store is not None:
         admitted = await run_store.create_run(
@@ -226,8 +315,8 @@ async def run_registered_dag(
         admitted_run_id = admitted.run_id
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
-        node_resolver=_resolve_nodes_with(),
+        store=graph_store,
+        node_resolver=node_resolver or _resolve_nodes_with(),
         actor_principal_id=user_id,
         run_id=admitted_run_id,
         run_store=run_store,

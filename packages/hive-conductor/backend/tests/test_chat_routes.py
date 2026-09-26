@@ -37,6 +37,19 @@ def _clear_chat_sessions():
     _clear(stores.chat_sessions)
 
 
+@pytest.fixture(autouse=True)
+def _canonical_chat_seam(monkeypatch: pytest.MonkeyPatch):
+    """Route parity tests run through the configured-runtime seam."""
+
+    class Runtime:
+        async def route_conversation_request(self, messages, dispatch, **_kwargs):
+            result = await dispatch()
+            result["run_id"] = "test-canonical-run"
+            return result
+
+    monkeypatch.setattr("services.chat_execution._canonical_container", lambda: Runtime())
+
+
 # --------------------------------------------------------------------------- #
 # GET /sessions
 # --------------------------------------------------------------------------- #

@@ -21,6 +21,7 @@ from maistro.runs.chat_admission import (
     ADMISSION_INCOMPLETE,
     CHAT_SOURCE,
     EXECUTION_NEVER_STARTED,
+    REQUEST_ID_KEY,
     SESSION_ID_KEY,
     ChatRunAdmitter,
 )
@@ -47,6 +48,102 @@ class _Conduit:
         if self._raises is not None:
             raise self._raises
         return {"choices": [{"message": {"role": "assistant", "content": "hi"}}]}
+
+
+async def test_conversation_only_turns_share_workspace_agent_but_not_runs() -> None:
+    container = await _container()
+    await container.project_scope_store.create_root("workspace-alpha")
+
+    async def dispatch() -> dict:
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    first = await container.route_conversation_request(
+        [{"role": "user", "content": "one"}],
+        dispatch,
+        workspace_id="workspace-alpha",
+        workspace_agent_id="workspace-alpha.overseer",
+        session_id="session-1",
+        request_id="request-1",
+    )
+    second = await container.route_conversation_request(
+        [{"role": "user", "content": "two"}],
+        dispatch,
+        workspace_id="workspace-alpha",
+        workspace_agent_id="workspace-alpha.overseer",
+        session_id="session-1",
+        request_id="request-2",
+    )
+
+    assert first["run_id"] != second["run_id"]
+    for response in (first, second):
+        run = await container.run_store.get_run(response["run_id"])
+        assert run is not None and run.status is RunStatus.COMPLETED
+        assert run.provenance["workspace_agent_id"] == "workspace-alpha.overseer"
+        assert run.provenance[SESSION_ID_KEY] == "session-1"
+        node_runs = await container.run_store.list_node_runs(response["run_id"])
+        assert len(node_runs) == 1
+        attempts = await container.run_store.list_attempts(node_runs[0].node_run_id)
+        assert len(attempts) == 1
+    first_run = await container.run_store.get_run(first["run_id"])
+    second_run = await container.run_store.get_run(second["run_id"])
+    assert first_run is not None and first_run.provenance[REQUEST_ID_KEY] == "request-1"
+    assert second_run is not None and second_run.provenance[REQUEST_ID_KEY] == "request-2"
+
+
+async def test_conversation_only_callback_enters_conduit_before_execution() -> None:
+    container = await _container()
+    await container.project_scope_store.create_root("workspace-conduit")
+    calls: list[dict[str, object]] = []
+    original = container.conduit.route_request
+
+    async def observed(messages, **kwargs):
+        calls.append(kwargs)
+        return await original(messages, **kwargs)
+
+    container.conduit.route_request = observed
+
+    async def dispatch() -> dict:
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    result = await container.route_conversation_request(
+        [{"role": "user", "content": "hello"}],
+        dispatch,
+        workspace_id="workspace-conduit",
+        workspace_agent_id="workspace-conduit.overseer",
+    )
+
+    assert result["run_id"]
+    assert len(calls) == 1
+    assert calls[0]["dispatch"] is not None
+    run = await container.run_store.get_run(result["run_id"])
+    assert run is not None and run.status is RunStatus.COMPLETED
+    node_runs = await container.run_store.list_node_runs(run.run_id)
+    attempts = await container.run_store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+
+
+async def test_conversation_only_model_failure_terminalizes_the_run() -> None:
+    container = await _container()
+    await container.project_scope_store.create_root("workspace-failure")
+
+    async def dispatch() -> dict:
+        raise TimeoutError("provider timeout")
+
+    with pytest.raises(TimeoutError):
+        await container.route_conversation_request(
+            [{"role": "user", "content": "hello"}],
+            dispatch,
+            workspace_id="workspace-failure",
+            workspace_agent_id="workspace-failure.overseer",
+        )
+
+    runs = [run for run in _chat_runs(container) if run.workspace_id == "workspace-failure"]
+    assert len(runs) == 1
+    assert runs[0].status is RunStatus.FAILED
+    node_runs = await container.run_store.list_node_runs(runs[0].run_id)
+    attempts = await container.run_store.list_attempts(node_runs[0].node_run_id)
+    assert len(attempts) == 1
+    assert attempts[0].status.value == "failed"
 
 
 async def test_a_turn_yields_a_run_id_that_resolves() -> None:

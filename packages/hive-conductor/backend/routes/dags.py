@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -8,28 +10,25 @@ from uuid import uuid4
 import stores
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
-from services.dag_execution_scope import (
-    DagWorkspaceSelectionError,
-    authorize_hive_dag_scope,
-)
 from services.edit_lock import diff_dag_snapshots, mark_edited
 
+from maistro.runs.model import TERMINAL_RUN_STATUSES
 from routes.audit import log_audit
-
-
-def _public_failure(exc: BaseException) -> str:
-    """What a caller may learn about an unexpected failure: the kind, not the text.
-
-    Exception messages carry file paths, connection strings, and provider
-    replies; the full detail is in the server log with the traceback, and the
-    response names only the exception class so a client can still tell a
-    timeout from a type error.
-    """
-    return f"{type(exc).__name__}: execution failed; see server logs"
-
 
 router = APIRouter(tags=["dags"])
 logger = logging.getLogger("hive.dags")
+
+# The editable Hive DAG format historically stored agent roles rather than
+# canonical node kinds. Keep those records on the legacy node adapter while the
+# UI migrates to the registered-node palette.
+_DEFAULT_REGISTERED_NODE_KIND = "hive.legacy_node"
+
+
+class DagRunRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    workspace_id: str | None = None
+    project_id: str | None = None
 
 
 class DAGNode(BaseModel):
@@ -38,6 +37,7 @@ class DAGNode(BaseModel):
     id: str
     role: str
     name: str
+    kind: str = _DEFAULT_REGISTERED_NODE_KIND
     agent_id: str | None = None
     model: str | None = None
     strategy: Literal["react", "plan_execute", "direct", "delegate"] = "react"
@@ -52,13 +52,6 @@ class DAGEdge(BaseModel):
     from_node: str
     to_node: str | None = None
     condition: str | None = None
-
-
-class DagRunRequest(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    workspace_id: str | None = None
-    project_id: str | None = None
 
 
 class DAGFile(BaseModel):
@@ -86,11 +79,226 @@ def _actor(request: Request) -> str:
     return str(user.get("id") or "system")
 
 
+def _public_failure(exc: BaseException) -> str:
+    """What a caller may learn about an unexpected failure: the kind, not the text.
+
+    Exception messages carry file paths, connection strings, and provider
+    replies; the full detail is in the server log with the traceback, and the
+    response names only the exception class so a client can still tell a
+    timeout from a type error.
+    """
+    return f"{type(exc).__name__}: execution failed; see server logs"
+
+
+async def _resolve_run_scope(
+    dag_data: Mapping[str, Any],
+    request: Request,
+    workspace_id: str | None,
+    project_id: str | None = None,
+) -> tuple[str, str]:
+    """Resolve and authorize the scope used by canonical Run admission.
+
+    A request-selected Workspace is checked at the existing Hive authorization
+    boundary before the canonical resolver maps it to its Root Project. The
+    resolver remains the single source for the deployment default and for
+    project selection; this route only supplies an already-authorized request
+    choice when one exists.
+    """
+    selected_workspace = (
+        workspace_id
+        or getattr(request.state, "workspace_id", None)
+        or dag_data.get("workspace_id")
+        or ""
+    )
+    selected_workspace = str(selected_workspace).strip()
+    if selected_workspace:
+        from services.dag_execution_scope import (
+            DagWorkspaceSelectionError,
+            authorize_hive_dag_workspace,
+        )
+
+        try:
+            await authorize_hive_dag_workspace(
+                workspace_id=selected_workspace,
+                user_id=_actor(request),
+            )
+        except DagWorkspaceSelectionError as exc:
+            raise HTTPException(
+                status_code=403, detail="DAG Workspace scope is not authorized"
+            ) from exc
+
+    selected_project = (
+        project_id or getattr(request.state, "project_id", None) or dag_data.get("project_id") or ""
+    )
+    from services.canonical_dag_runner import resolve_execution_scope
+
+    return await resolve_execution_scope(
+        dag_data,
+        workspace_id=selected_workspace or None,
+        project_id=str(selected_project).strip() or None,
+    )
+
+
+def _registered_dag_snapshot(dag_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Make legacy role-only snapshots valid registered-DAG descriptors.
+
+    Older saved DAGs predate the canonical node catalog and have no ``kind``.
+    Registration must still validate the snapshot before ``run_registered_dag``
+    admits a Run, so project the missing field to the legacy compatibility node
+    without changing the stored UI definition.
+    """
+    snapshot = dict(dag_data)
+    nodes: list[dict[str, Any]] = []
+    for raw in snapshot.get("nodes", []):
+        node = dict(raw)
+        if not str(node.get("kind") or "").strip():
+            node["kind"] = str(node.get("node_type") or _DEFAULT_REGISTERED_NODE_KIND)
+        nodes.append(node)
+    snapshot["nodes"] = nodes
+    return snapshot
+
+
+def _route_node_resolver(
+    dag_data: Mapping[str, Any], user_id: str
+) -> Callable[[str, Any], Any] | None:
+    """Keep legacy role nodes on their adapter inside canonical traversal.
+
+    ``run_registered_dag`` owns admission and traversal. The resolver is only
+    the node implementation seam: canonical catalog nodes use the normal
+    container-wired resolver, while old role-shaped nodes retain their
+    ``LegacyConductorNode`` behavior instead of becoming a no-op transform.
+    """
+    snapshot = _registered_dag_snapshot(dag_data)
+    if not any(
+        str(node.get("kind") or "") == _DEFAULT_REGISTERED_NODE_KIND
+        for node in snapshot.get("nodes", [])
+    ):
+        return None
+
+    from services.canonical_dag_runner import _node_env
+    from services.dag_agents import get_node_resolver
+    from services.legacy_dag_node import LegacyConductorNode
+
+    from maistro.graph.nodes import get_node, register_node
+
+    # DagRegistry validates kinds through the core catalog. The adapter is
+    # product-owned, so register its existing implementation at the product
+    # boundary rather than substituting a second node implementation.
+    try:
+        get_node(_DEFAULT_REGISTERED_NODE_KIND)
+    except KeyError:
+        register_node(LegacyConductorNode)
+
+    fallback = get_node_resolver()
+    # Resolve the model boundary through the graph_runner facade at request
+    # time — the same seam `execute_dag` hands the canonical runner — so both
+    # transports build their LLM calls from one place instead of this route
+    # freezing its own copy of the builder (#766).
+    from services import graph_runner as _graph_runner
+
+    def resolve(node_id: str, graph: Any) -> Any:
+        # The registered template instantiates with fresh node identities, so
+        # the editable node ids this snapshot was keyed by are gone by
+        # execution time. Recover the raw node from the instantiated spec's
+        # metadata (where `snapshot_to_template` preserved it) instead of
+        # falling through to a bare constructor call that cannot succeed.
+        spec = next(
+            (node for node in getattr(graph, "nodes", ()) if node.node_id == node_id),
+            None,
+        )
+        if (
+            spec is not None
+            and str(getattr(spec, "node_type", "")) == _DEFAULT_REGISTERED_NODE_KIND
+        ):
+            raw = {
+                "id": str(spec.node_id),
+                "name": str(getattr(spec, "name", "") or spec.node_id),
+                "config": dict(getattr(spec, "parameters", {}) or {}),
+                **dict(getattr(spec, "metadata", {}) or {}),
+            }
+            return LegacyConductorNode(
+                raw_node=raw,
+                task_desc=str(snapshot.get("description") or snapshot.get("name") or ""),
+                node_env=_node_env(snapshot, user_id=user_id, user_credentials=None),
+                execution_mode="interactive",
+                on_response=None,
+                llm_builder=_graph_runner._build_llm_call,
+            )
+        return fallback(node_id, graph)
+
+    return resolve
+
+
+def _value_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        if isinstance(dumped, Mapping):
+            return dict(dumped)
+    return {}
+
+
+def _registered_run_result(graph: Any, record: Any) -> dict[str, Any]:
+    """Project canonical Run/NodeRun facts into the existing DAG response shape."""
+    run = record.run
+    status = str(getattr(getattr(run, "status", None), "value", run.status) or "failed")
+    graph_nodes = {node.node_id: node for node in getattr(graph, "nodes", ())}
+    node_results: dict[str, dict[str, Any]] = {}
+    for node_run in getattr(record, "node_runs", ()):
+        node = graph_nodes.get(node_run.node_id)
+        metadata = _value_mapping(getattr(node, "metadata", {}))
+        raw = _value_mapping(metadata.get("legacy_node")) or metadata
+        output = _value_mapping(getattr(node_run, "result", None))
+        response = output.get("response")
+        if response is None and output:
+            response = json.dumps(output, default=str)
+        if response is None:
+            response = getattr(node_run, "error", None) or ""
+        node_status = str(
+            getattr(getattr(node_run, "status", None), "value", node_run.status) or "failed"
+        )
+        node_results[node_run.node_id] = {
+            "role": str(output.get("role") or raw.get("role") or "worker"),
+            "response": str(response),
+            # This is deliberately the canonical NodeRun status, not a second
+            # interpretation of an executor result payload.
+            "success": node_status == "completed",
+            "model": output.get("model") or raw.get("model"),
+            **({"isolation": output["isolation"]} if output.get("isolation") else {}),
+        }
+    graph_state = getattr(record, "graph_state", None)
+    blackboard = getattr(graph_state, "blackboard_snapshot", {})
+    annotations = blackboard.get("node_annotations", {}) if isinstance(blackboard, Mapping) else {}
+    result: dict[str, Any] = {
+        "status": status,
+        "run_id": record.run_id,
+        "workspace_id": run.workspace_id,
+        "project_id": run.project_id,
+        "cycles": getattr(graph_state, "cycle", 0),
+        "node_results": node_results,
+        "annotations": dict(annotations) if isinstance(annotations, Mapping) else {},
+    }
+    # Same terminal-error derivation `canonical_dag_runner._project` uses, so
+    # the HTTP and socket transports report one failure identically (#766):
+    # the Run's canonical error, else the first unsuccessful node's response.
+    error = getattr(run, "error", None)
+    if not error:
+        error = next(
+            (str(nr.get("response") or "") for nr in node_results.values() if not nr["success"]),
+            None,
+        )
+    if error:
+        result["error"] = str(error)
+    return result
+
+
 async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str, Any]) -> None:
     """Mirror canonical Run facts into the bounded Recent Runs projection.
 
     The projection uses the canonical Run id as its own key and copies the
-    canonical terminal status. It cannot mint a second execution identity or
+    canonical Run status. It cannot mint a second execution identity or
     recompute whether the DAG succeeded.
     """
     run_id = str(result.get("run_id") or "")
@@ -101,7 +309,7 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
 
         store = get_dag_run_store()
         # The result carries the canonical Workspace/Project the Run was
-        # admitted into (`canonical_dag_runner._project` mirrors
+        # admitted into (`_registered_run_result` mirrors
         # `Run.workspace_id`/`Run.project_id`), so the projection row is born
         # with the scope inspection will later authorize it at (#1174).
         await store.start_run(
@@ -112,12 +320,23 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
             workspace_id=str(result.get("workspace_id") or ""),
             project_id=str(result.get("project_id") or ""),
         )
+        run_status = str(result.get("status") or "failed")
         for node_id, node_result in result.get("node_results", {}).items():
+            # A parked NodeRun is not a failed NodeRun. The projection keeps
+            # the old started event for non-terminal canonical work, while a
+            # terminal Run's unsuccessful node is presented as failed.
+            event_type = (
+                "pm_node_completed"
+                if node_result.get("success")
+                else (
+                    "pm_node_started"
+                    if run_status in {"created", "queued", "running", "waiting", "paused"}
+                    else "pm_node_failed"
+                )
+            )
             await store.append_event(
                 run_id,
-                event_type=(
-                    "pm_node_completed" if node_result.get("success") else "pm_node_failed"
-                ),
+                event_type=event_type,
                 role=node_result.get("role", "worker"),
                 capability=node_id,
                 payload={
@@ -125,11 +344,13 @@ async def _record_run_projection(*, dag_id: str, user_id: str, result: dict[str,
                     "response": node_result.get("response", "")[:2000],
                 },
             )
-        await store.finish_run(
-            run_id,
-            status=str(result.get("status") or "failed"),
-            result=result,
-        )
+        status = str(result.get("status") or "failed")
+        if status in {terminal.value for terminal in TERMINAL_RUN_STATUSES}:
+            await store.finish_run(run_id, status=status, result=result)
+        else:
+            # Intermediate canonical states are snapshots, not product-owned
+            # terminal decisions. Keep the history row refreshable for recovery.
+            await store.update_run_snapshot(run_id, status=status, result=result)
     except Exception:
         logger.warning(
             "dag_run_projection_not_recorded run_id=%s dag_id=%s",
@@ -248,6 +469,7 @@ class AddNodeBody(BaseModel):
 
     role: str
     name: str
+    kind: str = _DEFAULT_REGISTERED_NODE_KIND
     agent_id: str | None = None
     model: str | None = None
     strategy: Literal["react", "plan_execute", "direct", "delegate"] = "react"
@@ -264,6 +486,7 @@ def add_node(dag_id: str, body: AddNodeBody) -> dict:
         id=str(uuid4()),
         role=body.role,
         name=body.name,
+        kind=body.kind,
         agent_id=body.agent_id,
         model=body.model,
         strategy=body.strategy,
@@ -338,54 +561,63 @@ async def run_dag(
     workspace_id: str | None = Query(default=None),
     project_id: str | None = Query(default=None),
 ) -> dict:
-    """Execute through one canonical Run and project its facts for the UI."""
+    """Execute a saved DAG through the registered canonical Run path.
+
+    A Workspace/Project selection may arrive in the JSON body or the query
+    string — the socket and the HTTP transports accept the same selections so
+    a run started from either lands in the same canonical scope (#766). An
+    explicit selection is authorized before admission; no selection falls
+    back to the deployment default.
+    """
     if dag_id not in stores.dags:
         raise HTTPException(status_code=404, detail="dag not found")
     dag_data = stores.dags[dag_id]
     actor = _actor(request)
-    selection = (body.workspace_id if body is not None else None) or workspace_id
-    requested_project = (body.project_id if body is not None else None) or project_id
-    try:
-        scope = await authorize_hive_dag_scope(
-            workspace_id=selection or "", user_id=actor, project_id=requested_project
-        )
-    except DagWorkspaceSelectionError as exc:
-        raise HTTPException(
-            status_code=403, detail="DAG Workspace scope is not authorized"
-        ) from exc
     log_audit("dag_run", actor, target=dag_id)
 
-    from services.graph_runner import CanonicalDagExecutionError, execute_dag
+    from services.dag_agents import get_registry, run_registered_dag
 
     try:
-        result = await execute_dag(
-            dag_data,
-            scope=scope,
-            execution_mode="interactive",
+        selected_workspace = (body.workspace_id if body is not None else None) or workspace_id
+        selected_project = (body.project_id if body is not None else None) or project_id
+        resolved_workspace, resolved_project = await _resolve_run_scope(
+            dag_data, request, selected_workspace, selected_project
         )
-    except CanonicalDagExecutionError as exc:
-        result = exc.result
-        await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
-        run_id = result.get("run_id")
-        return {
-            "status": result.get("status", "failed"),
-            "execution_id": run_id,
-            "run_id": run_id,
-            "error": str(exc),
-            "result": result,
-        }
+        # The saved DAG is the product's editable definition. Registering its
+        # snapshot first makes this route use the same descriptor -> template
+        # projection as schedules and other registered-DAG producers.
+        snapshot = _registered_dag_snapshot(dag_data)
+        node_resolver = _route_node_resolver(dag_data, actor)
+        get_registry().register(snapshot)
+        graph, record = await run_registered_dag(
+            dag_id,
+            workspace_id=resolved_workspace,
+            project_id=resolved_project,
+            user_id=actor,
+            node_resolver=node_resolver,
+            provenance={"admission_source": "hive_dag_route", "execution_mode": "interactive"},
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.warning("Graph execution failed", exc_info=exc)
+        logger.warning("Registered DAG execution failed: %s", exc, exc_info=exc)
         return {"status": "failed", "error": _public_failure(exc)}
 
+    result = _registered_run_result(graph, record)
     await _record_run_projection(dag_id=dag_id, user_id=actor, result=result)
     run_id = result["run_id"]
-    return {
+    response: dict[str, Any] = {
         "status": result["status"],
         "execution_id": run_id,
         "run_id": run_id,
         "result": result,
     }
+    # A settled Run that did not complete is a failure the caller must see as
+    # one. Same sanitized shape the socket's terminal frame carries, so the
+    # transports stay indistinguishable at the boundary (#766).
+    if result["status"] != "completed":
+        response["error"] = str(result.get("error") or f"canonical Run ended {result['status']}")
+    return response
 
 
 @router.post("/run-champion")
@@ -396,18 +628,25 @@ async def run_champion(
 ) -> dict:
     actor = _actor(request)
     selection = (body.workspace_id if body is not None else None) or workspace_id
-    try:
-        scope = await authorize_hive_dag_scope(workspace_id=selection or "", user_id=actor)
-    except DagWorkspaceSelectionError as exc:
-        raise HTTPException(
-            status_code=403, detail="DAG Workspace scope is not authorized"
-        ) from exc
+    scope = None
+    if selection and selection.strip():
+        from services.dag_execution_scope import (
+            DagWorkspaceSelectionError,
+            authorize_hive_dag_scope,
+        )
+
+        try:
+            scope = await authorize_hive_dag_scope(workspace_id=selection.strip(), user_id=actor)
+        except DagWorkspaceSelectionError as exc:
+            raise HTTPException(
+                status_code=403, detail="DAG Workspace scope is not authorized"
+            ) from exc
     try:
         from services.graph_runner import execute_champion
 
-        result = await execute_champion(scope=scope)
+        result = await execute_champion(**({"scope": scope} if scope is not None else {}))
         run_id = result.get("run_id")
         return {"execution_id": run_id, "run_id": run_id, "result": result}
     except Exception as exc:
-        logger.warning("Champion execution failed", exc_info=exc)
+        logger.warning("Champion execution failed: %s", exc, exc_info=exc)
         return {"status": "failed", "error": _public_failure(exc)}

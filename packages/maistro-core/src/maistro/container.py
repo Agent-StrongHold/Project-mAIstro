@@ -24,7 +24,10 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    new_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.events.consumer_cursor import (
@@ -206,6 +209,9 @@ class Container:
     #: admitter because the two have different retention: a task's Run is kept
     #: as long as its receipt, a chat turn's is swept behind a small window.
     chat_admitter: ChatRunAdmitter = None  # type: ignore[assignment]
+    #: Per-Workspace chat admitters share the Container's one RunStore while
+    #: retaining their own bounded chat retention windows.
+    chat_admitters: dict[str, ChatRunAdmitter] = field(default_factory=dict)
     #: Where a Graph definition comes from when a Run is not trivial work — a
     #: schedule firing, or anything else that instantiates a drawn topology
     #: rather than a one-node stand-in (#132). Optional in the same way the rest
@@ -328,13 +334,6 @@ class Container:
     # a lease holder across repeated ticks/renewals.
     consumer_cursor_store: ConsumerCursorStore = None  # type: ignore[assignment]
     _durable_events_holder: str = field(default_factory=lambda: uuid.uuid4().hex)
-    # Ids the durable log skipped over below the settled cursor, keyed to
-    # when this holder first saw each missing. PostgreSQL allocates ids
-    # before commit, so a hole is an append that has not committed yet (or
-    # never will); the durable position stays below it for
-    # `durable_event_hole_grace_s` seconds, then treats it as aborted.
-    _durable_event_holes: dict[int, float] = field(default_factory=dict)
-    durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
     # LLM provider registry + cost-aware router (SPEC-070226-cb8d).
     provider_registry: LLMProviderRegistry = None  # type: ignore[assignment]
     llm_router: LLMRouter = None  # type: ignore[assignment]
@@ -366,6 +365,13 @@ class Container:
     strike_tracker: StrikeTracker | None = None
     strike_recovery: Any = None
     durable_event_cursor: int = 0
+    # Ids the durable log skipped over below the settled cursor, keyed to
+    # when this holder first saw each missing. PostgreSQL allocates ids
+    # before commit, so a hole is an append that has not committed yet (or
+    # never will); the durable position stays below it for
+    # `durable_event_hole_grace_s` seconds, then treats it as aborted.
+    _durable_event_holes: dict[int, float] = field(default_factory=dict)
+    durable_event_hole_grace_s: float = DEFAULT_HOLE_GRACE_SECONDS
 
     def __post_init__(self) -> None:
         if self.conduit is None:
@@ -453,18 +459,26 @@ class Container:
             self.holds_db_pool = False
 
     def _resolve_chat_auth(self, auth: Any) -> Any:
-        """Evaluate an identity-free turn as the role-less anonymous principal.
-
-        The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it is
-        empty -- it denies -- but the strategies consult Sentinel only when
-        `auth is not None`, so `None` passed through here would let an
-        unauthenticated turn execute every tool the table denies. Such a turn
-        is routed as the anonymous principal instead. Armed-control enforcement
-        lives in one place: `_require_auth_while_armed`.
-        """
-        self._require_auth_while_armed(auth)
+        """Require identity for armed controls and deny anonymous tool use."""
         if auth is not None:
             return auth
+        if self.sentinel._permission_table or self.strike_tracker:
+            armed = []
+            if self.sentinel._permission_table:
+                armed.append("sentinel permission table")
+            if self.strike_tracker:
+                armed.append("strike tracking")
+            msg = (
+                f"route_request() called without auth while {' and '.join(armed)} "
+                f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
+                "the caller identity, so they would silently enforce nothing. "
+                "Pass an AuthContext, or disable them in config.security."
+            )
+            raise AgentError(msg)
+        # The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it
+        # is empty -- it denies -- but strategies only consult Sentinel when
+        # auth is not None. Evaluate an identity-free request as the role-less
+        # anonymous principal so it cannot walk past the table.
         return ANONYMOUS_AUTH
 
     async def route_request(
@@ -516,82 +530,150 @@ class Container:
             )
             return dispatched
 
+        result = await self._settle_chat_turn(run, messages, _dispatch)
+        if run is not None:
+            # Additive. The OpenAI-compatible shape a caller parses is
+            # untouched; `run_id` is the handle for anyone who wants to follow
+            # the turn through the canonical spine, and is simply absent for a
+            # container with no chat admitter wired.
+            result["run_id"] = run.run_id
+        return result
+
+    async def route_conversation_request(
+        self,
+        messages: list[dict[str, Any]],
+        dispatch: ChatDispatch,
+        *,
+        workspace_id: str | None = None,
+        workspace_agent_id: str | None = None,
+        auth: Any = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        actor_principal_id: str | None = None,
+        runtime_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a contained model turn on the canonical Run spine.
+
+        This is the product-facing variant of :meth:`route_request`: the
+        caller owns the conversation-only model callback, while this Container
+        still owns admission, NodeRun/Attempt creation, and terminal truth.
+        Keeping the callback a thunk means a later governed egress path can
+        replace the model call without changing Workspace Agent or Run
+        admission.
+        """
+        if self.run_store is None:
+            raise RuntimeError("canonical chat execution spine is unavailable")
+        selected_workspace = (workspace_id or self.config.workspace_id).strip()
+        if not selected_workspace:
+            raise ValueError("conversation turns require a Workspace")
+        admitter = self.chat_admitters.get(selected_workspace)
+        if admitter is None:
+            if selected_workspace == self.config.workspace_id and self.chat_admitter is not None:
+                admitter = self.chat_admitter
+            else:
+                admitter = ChatRunAdmitter(
+                    self.run_store,
+                    workspace_id=selected_workspace,
+                    project_store=self.project_scope_store,
+                    intents=self.intent_registry,
+                )
+            self.chat_admitters[selected_workspace] = admitter
+        run: Run | None = None
         try:
-            result: dict[str, Any] = await self._execute_chat_turn(run, messages, _dispatch)
-        except ChatDispatchUnrecorded as exc:
-            # The turn was answered and the spine could not say so (#1108). The
-            # answer goes back as it is -- never through a second dispatch --
-            # and the Run stays open on purpose: closing it COMPLETED would
-            # cascade the NodeRun the failed write left RUNNING into a terminal
-            # state the reconciler then refuses to repair, turning recoverable
-            # evidence into a Run that claims an outcome its own record cannot
-            # back. Left RUNNING, it is exactly the state the canonical recovery
-            # authorities read: an unrenewed lease is reclaimed by
-            # `recover_abandoned_attempts`, and a COMPLETED Attempt under a
-            # RUNNING NodeRun is what `AttemptLifecycleReconciler` re-derives
-            # the logical record from -- the same handoff `_close_chat_run`
-            # already makes when its own write fails.
-            logger.warning(
-                "chat turn %s was answered but could not be recorded as an Attempt; "
-                "its Run is left open for recovery",
-                exc.run_id,
-                exc_info=True,
+            run = await admitter.admit(
+                messages,
+                session_id=session_id,
+                request_id=request_id,
+                actor_principal_id=actor_principal_id,
+                agent_id=workspace_agent_id,
             )
-            # Past the dispatch gap in the other direction: the Run stays open
-            # for recovery, unshielded, so once its lease lapses the retention
-            # window treats it as the stall it is.
-            self._release_chat_dispatch(run)
-            result = exc.response
+            await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+            run = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._cancel_incomplete_admission(run))
+            raise
+        except Exception:
+            await self._cancel_incomplete_admission(run)
+            raise
+
+        async def _conduit_dispatch(_agent: Any, _agent_name: str) -> dict[str, Any]:
+            # Hive's public chat callback is intentionally tool-disabled. It is
+            # still invoked by Conduit after gate/classification, so this path
+            # cannot become a second request router while M2 hardening lands.
+            return await dispatch()
+
+        result = await self._settle_chat_turn(
+            run,
+            messages,
+            lambda: self.conduit.route_request(
+                messages,
+                auth=auth,
+                session_id=session_id,
+                turn_id=run.run_id if run is not None else None,
+                dispatch=_conduit_dispatch,
+                agent_id=runtime_agent_id or workspace_agent_id,
+            ),
+        )
+        result["run_id"] = run.run_id
+        return result
+
+    async def _settle_chat_turn(
+        self,
+        run: Run | None,
+        messages: list[dict[str, Any]],
+        dispatch: ChatDispatch,
+    ) -> dict[str, Any]:
+        """Execute a dispatched turn and settle its Run — one place, both routes.
+
+        `route_request` and `route_conversation_request` differ only in who
+        builds the callback; admission, NodeRun/Attempt creation, terminal
+        truth, and the fate of an answer the spine could not record (#1108)
+        are the same contract, so they settle here together.
+        """
+        try:
+            result = await self._execute_chat_turn(run, messages, dispatch)
+        except ChatDispatchUnrecorded as exc:
+            return await self._settle_unrecorded_dispatch(run, exc)
         except BaseException as exc:
             # Attempt reconciliation already owns cancellation, so a client
             # disconnect observes CANCELLED rather than being reinterpreted as
             # FAILED by this outer product boundary. Other failures retain the
             # existing sanitized failure category.
             cancelled = isinstance(exc, asyncio.CancelledError)
-            error = {True: None, False: failure_category(exc)}[cancelled]
+            error = None if cancelled else failure_category(exc)
             await self._close_chat_run(run, error=error, cancelled=cancelled)
             raise
         else:
             await self._close_chat_run(run, result=chat_turn_outcome(result))
-        # Additive. The OpenAI-compatible shape a caller parses is untouched;
-        # `run_id` is the handle for anyone who wants to follow the turn
-        # through the canonical spine.
-        result["run_id"] = run.run_id
         return result
 
-    def _require_auth_while_armed(self, auth: Any) -> None:
-        """Refuse an unauthenticated turn while a caller-keyed control is armed.
+    async def _settle_unrecorded_dispatch(
+        self, run: Run | None, exc: ChatDispatchUnrecorded
+    ) -> dict[str, Any]:
+        """Answer a turn the spine could not record, without a second dispatch (#1108).
 
-        An armed security control that cannot run is worse than an unarmed
-        one: the operator believes it is enforcing. Both controls this
-        container can arm are keyed on the caller's identity --
-        Gate.process_input derives user_id from auth and skips every strike
-        path when it is empty (security/gate.py:62,64,102), and the ReAct and
-        Artificer strategies guard Sentinel.pre_call with `auth is not None`
-        (agents/strategies/react.py:252). So with auth=None an armed
-        permission table authorizes everything and an armed strike tracker
-        records nothing, silently.
-
-        Refusing here costs nothing at the shipped defaults (empty table, no
-        tracker -> this never fires) and converts a silent no-op into an
-        unmissable error for anyone who opts in. That is the same defect
-        class this container's permission table was fixed for; it should not
-        reappear one level up.
+        The answer goes back as it is -- never through a second dispatch --
+        and the Run stays open on purpose: closing it COMPLETED would cascade
+        the NodeRun the failed write left RUNNING into a terminal state the
+        reconciler then refuses to repair, turning recoverable evidence into a
+        Run that claims an outcome its own record cannot back. Left RUNNING,
+        it is exactly the state the canonical recovery authorities read: an
+        unrenewed lease is reclaimed by `recover_abandoned_attempts`, and a
+        COMPLETED Attempt under a RUNNING NodeRun is what
+        `AttemptLifecycleReconciler` re-derives the logical record from -- the
+        same handoff `_close_chat_run` already makes when its own write fails.
         """
-        if auth is not None or not (self.sentinel._permission_table or self.strike_tracker):
-            return
-        armed = []
-        if self.sentinel._permission_table:
-            armed.append("sentinel permission table")
-        if self.strike_tracker:
-            armed.append("strike tracking")
-        msg = (
-            f"route_request() called without auth while {' and '.join(armed)} "
-            f"{'are' if len(armed) > 1 else 'is'} armed. These controls key on "
-            "the caller identity, so they would silently enforce nothing. "
-            "Pass an AuthContext, or disable them in config.security."
+        logger.warning(
+            "chat turn %s was answered but could not be recorded as an Attempt; "
+            "its Run is left open for recovery",
+            exc.run_id,
+            exc_info=True,
         )
-        raise AgentError(msg)
+        # Past the dispatch gap in the other direction: the Run stays open
+        # for recovery, unshielded, so once its lease lapses the retention
+        # window treats it as the stall it is.
+        self._release_chat_dispatch(run)
+        return exc.response
 
     async def _execute_chat_turn(
         self,
@@ -855,14 +937,10 @@ class Container:
     async def process_durable_events(self, *, limit: int = 100) -> int:
         """Tick the durable-event loop (ADR-086): log -> triggers -> handlers.
 
-        Advances and persists the container's replay cursor (#1163); safe to
-        call repeatedly (idempotent invocations dedupe redelivery) and safe
-        to call from more than one replica at once.
-
-        The cursor is a resume optimisation, not the correctness backstop --
-        that is `InvocationStore.claim` (ADR-082426-82c7: "the occurrence is
-        the claim, not the cursor"). What `consumer_cursor_store.claim` adds
-        is: of several replicas that might tick this at once, only the lease
+        Advances and persists the container's replay cursor; safe to call
+        repeatedly (idempotent invocations dedupe redelivery). The cursor is
+        a claimed lease with a fencing token (`consumer_cursor_store.claim`
+        — #1163): of several replicas that might tick at once, only the lease
         holder re-scans/redispatches this round, so the rest do not redo
         (idempotent, but wasted) work. The durable position is written only
         after `process_events_batch` returns -- i.e. only once every event up
@@ -1517,6 +1595,25 @@ class Container:
         )
 
 
+if TYPE_CHECKING:
+
+    def _vulture_conversation_request_usage(container: Container) -> None:
+        """Keep the product chat seam visible to production-only Vulture scans.
+
+        ``Container.route_conversation_request`` is the #1037 seam the shipped
+        Conductor product surface consumes
+        (``packages/hive-conductor/backend/services/chat_execution.py``).
+        That consumer lives outside the ``packages/*/src`` scope the Vulture
+        ratchet scans and reaches the method through a duck-typed ``getattr``
+        port, so package-local static analysis cannot see the call. This
+        reference records the reviewed downstream consumer without executing
+        anything and without banking the identity as unreviewed debt.
+        """
+        _ = container.route_conversation_request
+
+    _ = _vulture_conversation_request_usage
+
+
 def _wire_schedule_admission(
     run_store: RunStore,
     template_store: GraphTemplateStore | None,
@@ -1944,13 +2041,13 @@ async def create_container(
         workspace_store=workspace_store,
         run_store=run_store,
         task_admitter=task_admitter,
+        task_idempotency=task_idempotency,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,
         node_template_store=node_template_store,
         graph_run_store=CanonicalDurableRunStore(run_store, graph_continuations),
         schedule_store=schedule_store,
         schedule_admitter=schedule_admitter,
-        task_idempotency=task_idempotency,
         context_assembly_policy=context_assembly_policy,
         agents=agents,
         audit_log=audit_log,
@@ -1965,8 +2062,8 @@ async def create_container(
         durable_event_log=durable_event_log,
         trigger_store=trigger_store,
         invocation_store=invocation_store,
-        handler_caller=handler_caller,
         consumer_cursor_store=consumer_cursor_store,
+        handler_caller=handler_caller,
         provider_registry=provider_registry,
         llm_router=llm_router,
         record_store=record_store,

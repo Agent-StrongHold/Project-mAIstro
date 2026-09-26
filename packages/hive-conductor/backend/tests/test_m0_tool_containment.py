@@ -22,6 +22,20 @@ class FakeLLM:
 class FakeRequest:
     def __init__(self) -> None:
         self.state = SimpleNamespace(user={"id": "user-1"})
+        self.headers = {}
+
+
+@pytest.fixture(autouse=True)
+def _canonical_chat_seam(monkeypatch: pytest.MonkeyPatch):
+    """Containment tests exercise the callback after canonical admission."""
+
+    class Runtime:
+        async def route_conversation_request(self, messages, dispatch, **_kwargs):
+            result = await dispatch()
+            result["run_id"] = "test-canonical-run"
+            return result
+
+    monkeypatch.setattr("services.chat_execution._canonical_container", lambda: Runtime())
 
 
 def test_conversation_boundary_strips_tools_and_extra_scope() -> None:

@@ -291,12 +291,12 @@ class TestSubscribersAreNotHistory:
         }
 
 
-class TestTheCanonicalIdentityHasSomewhereToGo:
-    """`POST /v1/dags/{id}/run` mints no canonical Run -- that is #53.
+class TestTheCanonicalIdentityIsOptionalForLegacyRows:
+    """The UI projection can still rehydrate rows written before #736.
 
-    `execute_dag` creates none, so this path's `canonical_run_id` is empty and
-    the field is a place for the identity rather than a claim that one exists.
-    Stated as a test so the gap is recorded rather than implied.
+    The shipped DAG route now carries the canonical Run id. The empty-value
+    case remains a compatibility guarantee for historical or pre-admission
+    bookkeeping rows, not an execution path the route is allowed to create.
     """
 
     @pytest.mark.ac("SPEC-083026-2601/AC-5")
@@ -310,9 +310,8 @@ class TestTheCanonicalIdentityHasSomewhereToGo:
     async def test_a_run_without_one_says_so_rather_than_inventing_it(self) -> None:
         """Empty, not the DAG-run id: those are different identities.
 
-        Reusing `id` here would make the run look correlated to a canonical Run
-        that does not exist, which is the over-claim the whole convergence
-        matrix exists to prevent.
+        Reusing `id` here would make the legacy row look correlated to a
+        canonical Run that does not exist.
         """
         store = DagRunStore()
         await store.start_run(run_id="r1")

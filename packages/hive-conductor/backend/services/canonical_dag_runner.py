@@ -24,13 +24,21 @@ from maistro.graph.durable_runs import (
 )
 from maistro.graph.types import DEFAULT_SYSTEM_PROMPTS, JSON_OUTPUT_SCHEMAS, AgentRole
 from maistro.runs.model import TERMINAL_RUN_STATUSES, Run
-from services.dag_agents import _container, get_run_store
+from services.dag_agents import (
+    _container,
+    _fallback_canonical_run_store,
+    _fallback_graph_store,
+    _fallback_project_scope,
+    _fallback_run_store,
+    get_run_store,
+)
 from services.dag_execution_scope import DagExecutionScope, DagWorkspaceSelectionError
 from services.legacy_dag_node import LegacyConductorNode, OnResponseHook
 from services.node_metrics_store import record_run_completion
 from services.scan_continuations import scan_continuation
 
 logger = logging.getLogger(__name__)
+_COMPAT_SCOPE = "hive-standalone-compat"
 _SCOUT_NODE_ID = "__hive_legacy_scout__"
 _SCOUT_EDGE_ID = "__hive_legacy_scout_to_entry__"
 
@@ -326,9 +334,52 @@ async def _scope(
     workspace_id: str | None,
     project_id: str | None,
 ) -> tuple[str, str, Any]:
-    del dag_data
     if scope is None:
-        raise DagWorkspaceSelectionError("authorized DAG execution scope is required")
+        # Resolver mode (#1174 projection writers and the registered-DAG
+        # route): an explicit request selection was already authorized at the
+        # Hive boundary before this call, so the resolver keeps owning the
+        # deployment default and the Root Project mapping. Direct
+        # ``execute_dag`` callers never take this arm — they must hand in an
+        # authorized scope (fail closed below).
+        container = _container()
+        if container is None:
+            resolved_workspace = workspace_id or str(dag_data.get("workspace_id") or _COMPAT_SCOPE)
+            if project_id:
+                return resolved_workspace, project_id, None
+            # Standalone (no Container): prefer the Root Project the canonical
+            # Workspace authority already created for this Workspace. The
+            # compatibility scope below is a single process-wide row; pinning
+            # every Workspace onto it made the second concurrent Workspace's
+            # admission fail scope validation because the shared Project
+            # belonged to whichever Workspace ran first.
+            if resolved_workspace != _COMPAT_SCOPE:
+                try:
+                    from services import workspace_authority
+
+                    store = await workspace_authority.canonical_workspace_store()
+                    root = await store.project_store.root_for_workspace(resolved_workspace)
+                    return resolved_workspace, root.project_id, None
+                except Exception:
+                    logger.warning(
+                        "standalone_scope_root_project_unavailable workspace_id=%s",
+                        resolved_workspace,
+                        exc_info=True,
+                    )
+            return (
+                resolved_workspace,
+                str(dag_data.get("project_id") or _COMPAT_SCOPE),
+                None,
+            )
+        resolved_workspace = (
+            workspace_id
+            or str(dag_data.get("workspace_id") or "").strip()
+            or str(container.config.workspace_id)
+        )
+        resolved_project = project_id or str(dag_data.get("project_id") or "").strip() or None
+        if resolved_project is None:
+            root = await container.project_scope_store.root_for_workspace(resolved_workspace)
+            resolved_project = root.project_id
+        return resolved_workspace, resolved_project, container.run_store
     if workspace_id is not None and workspace_id != scope.workspace_id:
         raise DagWorkspaceSelectionError("workspace_id does not match authorized scope")
     if project_id is not None and project_id != scope.project_id:
@@ -535,6 +586,17 @@ async def execute_dag(
         workspace_id=resolved_workspace,
         project_id=resolved_project,
     )
+    graph_store = get_run_store()
+    if canonical_run_store is None and graph_store in {
+        _fallback_run_store,
+        _fallback_graph_store,
+    }:
+        # Standalone workflow callers still use an in-memory canonical spine;
+        # the old graph-only fallback is retained only for direct compatibility
+        # consumers that explicitly ask for it.
+        await _fallback_project_scope.ensure(resolved_workspace, resolved_project)
+        canonical_run_store = _fallback_canonical_run_store
+        graph_store = _fallback_graph_store
     execution_nodes, _, _ = _execution_shape(dag_data)
     raw_by_id = {str(raw["id"]): raw for raw in execution_nodes}
     task_desc = str(dag_data.get("description") or dag_data.get("name") or "")
@@ -557,7 +619,7 @@ async def execute_dag(
 
     record = await run_durable_graph(
         graph,
-        store=get_run_store(),
+        store=graph_store,
         node_resolver=_resolver(
             raw_by_id,
             task_desc=task_desc,

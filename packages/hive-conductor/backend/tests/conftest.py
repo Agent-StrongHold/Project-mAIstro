@@ -45,6 +45,15 @@ def _init_engine() -> None:
 
     _seed_test_user()
 
+    # Production seeds users before the legacy-claim migration runs (see
+    # `stores.initialize_stores`). This fixture seeds AFTER it, so re-run the
+    # migration here: since #1061 the register route's duplicate authority is
+    # the atomic username-claim allocation, and an unindexed seeded row would
+    # let `testuser` be registered a second time (200 instead of 409).
+    from services.username_registry import migrate_legacy_claims
+
+    migrate_legacy_claims()
+
     import tempfile
 
     from services import user_credentials as cred_svc

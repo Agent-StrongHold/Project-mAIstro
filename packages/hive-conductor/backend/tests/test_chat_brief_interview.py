@@ -49,6 +49,19 @@ def llm(monkeypatch) -> _CountingLLM:
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _canonical_chat_seam(monkeypatch: pytest.MonkeyPatch):
+    """Interview turns and model turns both leave canonical Run evidence."""
+
+    class Runtime:
+        async def route_conversation_request(self, messages, dispatch, **_kwargs):
+            result = await dispatch()
+            result["run_id"] = "test-canonical-run"
+            return result
+
+    monkeypatch.setattr("services.chat_execution._canonical_container", lambda: Runtime())
+
+
 def _workspace(admin_client, *, share_with_user: bool = True) -> str:
     r = admin_client.post(
         "/v1/workspaces",
@@ -198,12 +211,24 @@ def test_the_non_streaming_route_carries_the_same_brief(admin_client, authed_cli
     assert llm.calls == 0
 
 
-def test_a_workspace_the_caller_is_not_a_member_of_is_the_models_turn(
-    admin_client, authed_client, llm
+def test_a_workspace_the_caller_cannot_touch_opens_no_interview_there(
+    admin_client: Any, authed_client: Any, llm: Any
 ) -> None:
+    """A Workspace the caller cannot touch is a boundary, not a refusal.
+
+    ADR-092326-7ed7 resolves a selection the caller cannot see as no
+    selection, so the turn is still answered — but never *there*: no
+    interview opens in the foreign Workspace and the model answers in the
+    caller's default Workspace, so no Run is admitted into someone else's
+    Workspace (#1037). Filing nothing in the named Workspace itself is
+    covered by test_chat_run_admission.py::
+    test_named_workspace_the_caller_is_not_a_member_of_files_nothing_there.
+    """
     ws = _workspace(admin_client, share_with_user=False)
     events = _stream(authed_client, "let's make a new video", ws)
+
     assert [e["type"] for e in events] == ["done"]
+    assert "becomes a Goal" not in events[0]["content"]
     assert llm.calls == 1
 
 
