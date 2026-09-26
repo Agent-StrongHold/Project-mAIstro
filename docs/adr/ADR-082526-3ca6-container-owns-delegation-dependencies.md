@@ -173,4 +173,17 @@ requires. The evidence was always there; nothing was measuring it.
   Container, so the delegate node receives a delegator, a guest-peer manager
   and the canonical `RunStore`.
 - [x] **AC-5** Without a bridge — or with an engine that raises — the path
-  still resolves nodes via the no-arg resolver rather than failing.
+  refuses Graph work with an explicit `unavailable` result instead of
+  resolving nodes against a private fallback lifecycle, and that refusal
+  keeps its shape through every shipped Graph-running surface.
+
+  Amended 2026-09-26 (M1 convergence #44 / #1113). This criterion originally
+  ratified the pre-convergence fallback — "still resolves nodes via the
+  no-arg resolver rather than failing" — which let a shipped Hive process
+  execute Graph work against a process-local `InMemoryDurableRunStore` and a
+  manufactured `hive-standalone-compat` scope whenever the canonical Container
+  spine was absent. #1113 retires that second execution universe: a no-spine
+  process now raises `GraphExecutionUnavailableError` before any Run is
+  created, and no standalone compatibility scope is manufactured. The tests
+  tagged here prove the amended contract at the node resolver, the run-store
+  seam, the registered-DAG entry point, and the chat tool surface.

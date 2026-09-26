@@ -252,13 +252,12 @@ def test_the_synth_dag_node_gets_the_durable_graph_store_from_the_container(
     assert node._run_store is not container.run_store
 
 
-@pytest.mark.ac("M1-E-1113/AC-3")
+@pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_without_a_bridge_graph_nodes_are_unavailable(monkeypatch) -> None:
     """Stub/degraded mode must not resolve executable Graph nodes (#1113).
 
-    Supersedes ADR-082526-3ca6/AC-5's standalone resolver behavior: a
-    no-spine process refuses before composing any node rather than resolving
-    against a private fallback."""
+    AC-5 as amended by the M1 convergence: a no-spine process refuses before
+    composing any node rather than resolving against a private fallback."""
     import services.dag_agents as dag_agents
     import services.engine as engine_module
 
@@ -271,11 +270,11 @@ def test_without_a_bridge_graph_nodes_are_unavailable(monkeypatch) -> None:
         dag_agents._resolve_nodes_with()
 
 
-@pytest.mark.ac("M1-E-1113/AC-3")
+@pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_an_unavailable_engine_does_not_select_a_private_graph_store(monkeypatch) -> None:
-    # Supersedes ADR-082526-3ca6/AC-5's no-bridge fallback: #1113 retires the
-    # second execution universe, so an engine failure fails closed before any
-    # Graph work instead of silently resolving a private lifecycle.
+    # AC-5 as amended: #1113 retires the second execution universe, so an
+    # engine failure fails closed before any Graph work instead of silently
+    # resolving a private lifecycle.
     import services.dag_agents as dag_agents
     import services.engine as engine_module
 
@@ -287,7 +286,7 @@ def test_an_unavailable_engine_does_not_select_a_private_graph_store(monkeypatch
         dag_agents.get_run_store()
 
 
-@pytest.mark.ac("M1-E-1113/AC-1")
+@pytest.mark.ac("ADR-082526-3ca6/AC-5")
 def test_registered_dag_fails_closed_without_the_canonical_spine(
     monkeypatch, synth_dag_id: str
 ) -> None:

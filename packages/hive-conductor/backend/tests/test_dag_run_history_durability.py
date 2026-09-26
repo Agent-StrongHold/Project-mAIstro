@@ -648,16 +648,16 @@ class TestTheChatProducerDrivenEndToEnd:
         assert answer["score"] == 0
         assert store.get_run(answer["run_id"])["status"] == "completed"
 
-    @pytest.mark.ac("M1-E-1113/AC-3")
+    @pytest.mark.ac("ADR-082526-3ca6/AC-5")
     async def test_a_refused_execution_is_unavailable_not_a_generic_error(
         self, monkeypatch: Any
     ) -> None:
         """The no-spine refusal keeps its own shape through the chat tool.
 
-        `execute_dag` fails closed by raising `CanonicalDagExecutionError`
-        whose result says `unavailable`; the producer must surface that
-        degraded capability as-is rather than as a generic DAG failure
-        (#1113).
+        AC-5 as amended (#1113): `execute_dag` fails closed by raising
+        `CanonicalDagExecutionError` whose result says `unavailable`; the
+        producer must surface that degraded capability as-is rather than as a
+        generic DAG failure.
         """
         import services.graph_runner as graph_runner_module
         from services.chat_completion import _tool_run_workflow
