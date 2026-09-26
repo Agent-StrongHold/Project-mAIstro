@@ -22,6 +22,8 @@ import httpx
 import structlog
 
 from maistro.http import shared_client
+from maistro.security.warden.detector import Warden
+from maistro_rsi.harvest_boundary import AuditSink, HarvestCorrelation, WardenHarvestBoundary
 
 logger = structlog.get_logger()
 
@@ -48,6 +50,8 @@ def make_gateway_llm_call(
     *,
     timeout: float = 60.0,
     on_response: Callable[[dict[str, object], httpx.Response], None] | None = None,
+    correlation: HarvestCorrelation | None = None,
+    audit_sink: AuditSink | None = None,
 ) -> LlmCall:
     """Return an async ``llm_call`` that routes to ``model`` via the gateway.
 
@@ -62,12 +66,26 @@ def make_gateway_llm_call(
     never turn into a failure the caller has to handle.
     """
 
+    boundary = WardenHarvestBoundary(
+        Warden(),
+        correlation=correlation or HarvestCorrelation(candidate_id=model),
+        audit_sink=audit_sink,
+    )
+
     async def llm_call(
         messages: list[dict[str, str]],
         *,
         temperature: float = 0.2,
         max_tokens: int = 2048,
     ) -> str:
+        # The gateway is the last shared seam before RSI evaluation context
+        # reaches a model. Scan the exact structured messages, including keys,
+        # filenames, tool fields, and nested values, before doing any I/O.
+        admission = await boundary.scan(messages)
+        if not admission.admitted:
+            from maistro_rsi.harvest_boundary import HarvestInputRefused
+
+            raise HarvestInputRefused(admission)
         base = _gateway_base()
         if not base:
             raise RuntimeError(
