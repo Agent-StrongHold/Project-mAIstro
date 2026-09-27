@@ -98,3 +98,11 @@ async def create_a2a_task(
         },
     )
     return A2ATaskCreated(task_id=claim.run.run_id, run_id=claim.run.run_id)
+
+
+#: Vulture reference: FastAPI dispatches the handler through the
+#: ``@router.post`` decorator, which the static call graph cannot see (the
+#: same framework-dispatch blindness ``maistro-core``'s ``_vulture_whitelist``
+#: documents for pydantic hooks). The tuple keeps the live route visible to
+#: the dead-code scanner without any runtime effect.
+_A2A_ROUTE_HANDLERS = (create_a2a_task,)
