@@ -13,6 +13,8 @@ from maistro.quota.rate_profile import LimitUnit, LimitWindow
 from maistro.security.resource_policy import (
     BASELINE_CIRCUIT_FAILURE_THRESHOLD,
     BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S,
+    BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL,
+    BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE,
     BASELINE_MAX_REQUEST_BODY_BYTES,
     BASELINE_MAX_WEBHOOK_BODY_BYTES,
     BASELINE_RATE_LIMIT_BURST,
@@ -276,6 +278,10 @@ class Settings(BaseSettings):
     rate_limit_burst: int = BASELINE_RATE_LIMIT_BURST
     circuit_breaker_failure_threshold: int = BASELINE_CIRCUIT_FAILURE_THRESHOLD
     circuit_breaker_recovery_timeout_s: float = BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S
+    # Governed ceilings on concurrently active root Runs (#1182), enforced by
+    # every RunStore at admission. Tighten freely; loosening needs the override.
+    max_active_root_runs_per_principal: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL
+    max_active_root_runs_per_workspace: int = BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE
 
     # Shared outbound HTTP pool (see maistro.http). Ceilings against fd
     # exhaustion, NOT a load throttle — a small cap here was measured as the
@@ -314,6 +320,8 @@ class Settings(BaseSettings):
             rate_limit_burst=self.rate_limit_burst,
             circuit_breaker_failure_threshold=self.circuit_breaker_failure_threshold,
             circuit_breaker_recovery_timeout_s=self.circuit_breaker_recovery_timeout_s,
+            max_active_root_runs_per_principal=self.max_active_root_runs_per_principal,
+            max_active_root_runs_per_workspace=self.max_active_root_runs_per_workspace,
             unsafe_overrides_enabled=self.allow_unsafe_resource_overrides,
         )
 

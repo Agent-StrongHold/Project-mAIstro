@@ -8,9 +8,10 @@ so the table first attached as "039" — and when develop added its own
 made `alembic history` fail outright ("042 overlaps with other requested
 revisions 039"). It was renumbered to 043 on parent 042, and when develop
 then landed its own #1204 migration `039_quota_usage_event_identity` on
-the same parent 042, that left two heads — so it now attaches after the
-develop chain tip `039_quota_usage_event_identity` as 044, keeping the
-chain linear with exactly one head (044 = canvas store tables).
+the same parent 042, that left two heads — and when develop then landed
+`044_canvas_store_tables` on `039_quota_usage_event_identity`, that took
+"044" too. It therefore now attaches after develop's chain tip `044` as
+`045`, keeping the chain linear with exactly one head.
 """
 
 from __future__ import annotations
