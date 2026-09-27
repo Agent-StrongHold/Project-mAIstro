@@ -711,6 +711,13 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Agent's dashboard-widget edit no longer overwrites a concurrent UI save (#1048).**
+  `create_dashboard_widget` now saves against the revision it read; on a conflict it
+  re-reads and re-applies the insertion once (via the pure
+  `dashboard_layouts.with_widget`), and on a second conflict reports `created: false`
+  instead of erasing the `PUT /v1/dashboard/layout` that landed in between. Partial: the rest
+  of #1048 (Workspace-scoped Home, pinned regions, projections) remains.
+
 - **Agent builder, intent routing and RSI Stop work from the keyboard (#370,
   partial).** The Agents builder's strategy cards are a named radio group of
   native radio inputs (arrow keys change the strategy; each is named by its
