@@ -20,7 +20,12 @@ the repository happened to be that week.
 
 What it measures, and what it does not
 --------------------------------------
-**Job-minutes**, summed over every check on one head. Not billable minutes:
+**Head-attributed job-minutes**, not the full cost caused by a candidate.
+Default-branch workflow_run publishers (including Gates Ran) and other work
+whose run metadata uses a different head are not included. Their attribution
+remains separate work; this subtotal must not be presented as fleet cost.
+
+Not billable minutes:
 GitHub reports `total_ms: 0` for this repository, so a cost stated in money
 would be zero and would say nothing about the constraint that is real —
 contention for concurrent runners, and how long a contributor waits.
@@ -186,7 +191,22 @@ def _completed_job(job: dict[str, Any]) -> None:
         return  # No runner was allocated; this is not a running job with no end.
     if not start or not end:
         raise ValueError(f"job {job['id']} has incomplete timing evidence")
-    _seconds(start, end)  # Validate the timestamps before returning any totals.
+    started = dt.datetime.strptime(start, _TS)
+    completed = dt.datetime.strptime(end, _TS)
+    if completed < started and job.get("conclusion") != "skipped":
+        raise ValueError(f"job {job['id']} has backwards timing evidence")
+
+
+def _validate_measurement_run(run: dict[str, Any], sha: str) -> None:
+    """Exclude only the current active manual reporter, never its history."""
+    if (
+        run.get("path") != ".github/workflows/runner-cost.yml"
+        or run.get("head_sha") != sha
+        or run.get("event") != "workflow_dispatch"
+        or run.get("status") != "in_progress"
+        or str(run["id"]) != os.environ.get("GITHUB_RUN_ID")
+    ):
+        raise ValueError("the excluded run is not this active Runner cost execution")
 
 
 def collect(
@@ -202,8 +222,7 @@ def collect(
     jobs: list[dict[str, Any]] = []
     for run in runs:
         if run["id"] == exclude_measurement_run:
-            if run.get("path") != ".github/workflows/runner-cost.yml" or run.get("head_sha") != sha:
-                raise ValueError("the excluded run is not this head's Runner cost workflow")
+            _validate_measurement_run(run, sha)
             continue
         if run.get("status") != "completed" or run.get("head_sha") != sha:
             raise ValueError(f"run {run['id']} is incomplete or belongs to another head")
@@ -242,7 +261,8 @@ def render(totals: dict[str, dict[str, Any]], figures: dict[str, float]) -> str:
         lines.append(f"{workflow:<26}{row['jobs']:>6}{row['seconds'] / 60:>14.1f}")
     lines.append("-" * 46)
     lines.append(
-        f"{'TOTAL':<26}{sum(r['jobs'] for r in totals.values()):>6}{figures['after_any']:>14.1f}"
+        f"{'HEAD-ATTRIBUTED SUBTOTAL':<26}"
+        f"{sum(r['jobs'] for r in totals.values()):>6}{figures['after_any']:>14.1f}"
     )
     lines += [
         "",
@@ -284,6 +304,9 @@ def main(argv: list[str]) -> int:
 
     totals = aggregate(jobs)
     print(f"head {sha}: completed observed jobs, all recorded attempts\n")
+    print("Scope: head-attributed workflow runs only; not total candidate or fleet cost.")
+    print("Excluded: workflow_run publishers on another head (including Gates Ran).")
+    print("Historical #161 figures below have the same limited scope.\n")
     if args.exclude_measurement_run is not None:
         print(f"Runner cost measurement run {args.exclude_measurement_run} excluded if present.")
     print(render(totals, split(totals)))

@@ -18,7 +18,8 @@ HEAD = "a" * 40
 
 
 @pytest.fixture
-def cost():
+def cost(monkeypatch):
+    monkeypatch.setenv("GITHUB_RUN_ID", "2")
     spec = importlib.util.spec_from_file_location("ci_cost_collection", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -222,7 +223,12 @@ def test_cli_labels_completed_observed_attempts(cost, monkeypatch, capsys):
 
 
 def test_current_measurement_does_not_wait_for_itself(cost, monkeypatch):
-    own = run(2, status="in_progress", path=".github/workflows/runner-cost.yml")
+    own = run(
+        2,
+        status="in_progress",
+        path=".github/workflows/runner-cost.yml",
+        event="workflow_dispatch",
+    )
     api(monkeypatch, cost, [run(), own], [job()])
     rows = cost.collect(HEAD, "fixture-token", exclude_measurement_run=2)
     assert [row["run_id"] for row in rows] == [1]
@@ -240,7 +246,12 @@ def test_exclusion_cannot_hide_an_ordinary_ci_run_or_wrong_head(cost, monkeypatc
 
 
 def test_self_exclusion_does_not_hide_other_incomplete_work(cost, monkeypatch):
-    own = run(2, status="in_progress", path=".github/workflows/runner-cost.yml")
+    own = run(
+        2,
+        status="in_progress",
+        path=".github/workflows/runner-cost.yml",
+        event="workflow_dispatch",
+    )
     api(monkeypatch, cost, [own, run(status="in_progress")], [job()])
     with pytest.raises(ValueError, match="incomplete or belongs to another head"):
         cost.collect(HEAD, "fixture-token", exclude_measurement_run=2)
@@ -248,7 +259,12 @@ def test_self_exclusion_does_not_hide_other_incomplete_work(cost, monkeypatch):
 
 def test_cli_discloses_its_measurement_exclusion(cost, monkeypatch, capsys):
     monkeypatch.setenv("GITHUB_TOKEN", "fixture-token")
-    own = run(2, status="in_progress", path=".github/workflows/runner-cost.yml")
+    own = run(
+        2,
+        status="in_progress",
+        path=".github/workflows/runner-cost.yml",
+        event="workflow_dispatch",
+    )
     api(monkeypatch, cost, [run(), own], [job()])
     assert cost.main(["--sha", HEAD, "--exclude-measurement-run", "2"]) == 0
     assert "measurement run 2 excluded if present" in capsys.readouterr().out
@@ -289,3 +305,69 @@ def test_workflow_passes_inputs_as_data_and_names_its_own_run(tmp_path, pr):
         "99",
     ]
     assert not (tmp_path / "unexpected").exists()
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", "cancelled", "timed_out"])
+def test_backwards_timings_for_executed_jobs_are_refused(cost, conclusion):
+    value = job(conclusion=conclusion, completed_at="2026-09-26T09:59:59Z")
+    with pytest.raises(ValueError, match="backwards timing"):
+        cost._completed_job(value)
+
+
+def test_skipped_job_backwards_timestamp_exception_remains(cost):
+    value = job(conclusion="skipped", completed_at="2026-09-26T09:59:59Z")
+    cost._completed_job(value)
+    assert cost._seconds(value["started_at"], value["completed_at"]) == 0
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"status": "completed"}, {"status": "queued"}, {"event": "pull_request"}],
+)
+def test_measurement_exclusion_requires_active_manual_execution(cost, monkeypatch, overrides):
+    excluded = run(
+        2,
+        status="in_progress",
+        path=".github/workflows/runner-cost.yml",
+        event="workflow_dispatch",
+    )
+    excluded.update(overrides)
+    api(monkeypatch, cost, [excluded], [])
+    with pytest.raises(ValueError, match="excluded run is not this active"):
+        cost.collect(HEAD, "fixture-token", exclude_measurement_run=2)
+
+
+@pytest.mark.parametrize("current_id", [None, "99"])
+def test_measurement_exclusion_requires_current_runtime_identity(cost, monkeypatch, current_id):
+    if current_id is None:
+        monkeypatch.delenv("GITHUB_RUN_ID")
+    else:
+        monkeypatch.setenv("GITHUB_RUN_ID", current_id)
+    excluded = run(
+        2,
+        status="in_progress",
+        path=".github/workflows/runner-cost.yml",
+        event="workflow_dispatch",
+    )
+    api(monkeypatch, cost, [excluded], [])
+    with pytest.raises(ValueError, match="excluded run is not this active"):
+        cost.collect(HEAD, "fixture-token", exclude_measurement_run=2)
+
+
+def test_head_only_measurement_explicitly_excludes_default_branch_publishers(
+    cost, monkeypatch, capsys
+):
+    monkeypatch.setenv("GITHUB_TOKEN", "fixture-token")
+    api(monkeypatch, cost, [run()], [job()])
+    assert cost.main(["--sha", HEAD]) == 0
+    output = capsys.readouterr().out
+    assert "not total candidate or fleet cost" in output
+    assert "workflow_run publishers on another head (including Gates Ran)" in output
+    assert "HEAD-ATTRIBUTED SUBTOTAL" in output
+
+
+def test_backwards_time_refuses_cli_subtotal(cost, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_TOKEN", "fixture-token")
+    api(monkeypatch, cost, [run()], [job(completed_at="2026-09-26T09:59:59Z")])
+    assert cost.main(["--sha", HEAD]) == 1
+    assert "SUBTOTAL" not in capsys.readouterr().out
