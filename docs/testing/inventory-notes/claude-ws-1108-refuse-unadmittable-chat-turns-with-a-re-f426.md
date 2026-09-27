@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +4
-  packages/maistro-server/tests: +8
+  packages/maistro-server/tests: +9
 ---
 # #1108 — refuse unadmittable chat turns with a retryable 503
 
@@ -24,3 +24,6 @@ its canonical Run is refused and never dispatched.
   for a broken admitter, no admitter, and no Container at all (6 cases), plus a compensated
   QUEUED-transition failure, a non-stream pre-dispatch spine refusal, and a
   streamed one that emits an `unavailable` SSE event (net +8).
+- `packages/maistro-server/tests` +1 (Codex review): `Retry-After` is in the
+  CORS `expose_headers`, so a cross-origin browser client can read the delay
+  a refused turn's 503 names (net +9).
