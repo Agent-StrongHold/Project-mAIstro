@@ -20,11 +20,19 @@ from typing import Any
 from maistro.runs.aggregation import terminal_run_payload
 from maistro.runs.lifecycle import (
     InvalidLifecycleTransition,
+    lease_is_expired,
     settle_open_node_run,
     transition_node_run,
     transition_run,
 )
-from maistro.runs.model import TERMINAL_RUN_STATUSES, Attempt, NodeRun, Run, RunStatus
+from maistro.runs.model import (
+    TERMINAL_ATTEMPT_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    Attempt,
+    NodeRun,
+    Run,
+    RunStatus,
+)
 from maistro.runs.store import RunCursor, RunIntegrityError, RunStore, run_cursor_key
 
 from .continuation import GraphContinuation, GraphContinuationStore
@@ -206,6 +214,35 @@ def _requeue_answered_nodes(
     )
 
 
+def _long_observed(
+    first_seen: dict[str, tuple[int, datetime]],
+    continuation: GraphContinuation,
+    moment: datetime,
+    period: timedelta,
+) -> bool:
+    """Whether this continuation version has been seen unchanged for ``period``.
+
+    The continuation carries no write time, and the spine's timestamps can be
+    older than the period for a walker that has only just written it -- a node
+    that ran past the period and then raised leaves nothing on the spine newer
+    than its Attempt's start. The first sighting of a version is no earlier than
+    its write, so a version seen unchanged for the whole period has outlived any
+    walker that wrote it and was about to write again. A restarted replica waits
+    the period again; that only delays.
+    """
+    run_id = continuation.run_id
+    seen = first_seen.get(run_id)
+    if seen is None or seen[0] != continuation.version:
+        seen = (continuation.version, moment)
+        first_seen[run_id] = seen
+    return moment - seen[1] >= period
+
+
+def _attempt_released(attempt: Attempt, moment: datetime) -> bool:
+    """Whether no live process can still be executing this Attempt."""
+    return attempt.status in TERMINAL_ATTEMPT_STATUSES or lease_is_expired(attempt, moment)
+
+
 class CanonicalDurableRunStore:
     """Persist and assemble durable graph runs over `RunStore` + continuations."""
 
@@ -224,6 +261,9 @@ class CanonicalDurableRunStore:
         # run_id -> (continuation version, when this instance first saw it
         # terminal over a RUNNING Run). See `_reconcile_terminal_graph`.
         self._terminal_first_seen: dict[str, tuple[int, datetime]] = {}
+        # run_id -> (continuation version, when this instance first saw it
+        # RUNNING with no claim). See `_reconcile_stalled_walk`.
+        self._stalled_first_seen: dict[str, tuple[int, datetime]] = {}
 
     async def create(self, record: DurableRunRecord) -> DurableRunRecord:
         if await self._run_store.get_run(record.run_id) is None:
@@ -386,6 +426,8 @@ class CanonicalDurableRunStore:
             return True
         if await self._reconcile_unstarted_claim(continuation, canonical, moment):
             return True
+        if await self._reconcile_stalled_walk(continuation, canonical, moment):
+            return True
         if canonical.status is RunStatus.RUNNING and continuation.status in {
             RunStatus.WAITING,
             RunStatus.PAUSED,
@@ -492,7 +534,9 @@ class CanonicalDurableRunStore:
             return False
         if target is RunStatus.CANCELLED and _matching_hitl_settlement(continuation, target):
             return False
-        if not self._terminal_long_observed(continuation, moment):
+        if not _long_observed(
+            self._terminal_first_seen, continuation, moment, self._terminal_quiet_period
+        ):
             return False
         record = await self.get(run_id)
         if record is None or not self._spine_is_quiet(record, moment):
@@ -510,24 +554,6 @@ class CanonicalDurableRunStore:
         settled = await self._mirror_terminal_hitl(desired, run_id, target)
         self._terminal_first_seen.pop(run_id, None)
         return settled
-
-    def _terminal_long_observed(self, continuation: GraphContinuation, moment: datetime) -> bool:
-        """Whether this terminal continuation version has been seen for the quiet period.
-
-        The continuation carries no write time, and the spine's timestamps can
-        be older than the quiet period for a walker that has only just written
-        it -- a node that ran past the period and then raised leaves nothing on
-        the spine newer than its Attempt's start. The first sighting of a
-        version is no earlier than its write, so a version seen unchanged for
-        the whole period has outlived any walker between that write and its
-        mirror. A restarted replica waits the period again; that only delays.
-        """
-        run_id = continuation.run_id
-        seen = self._terminal_first_seen.get(run_id)
-        if seen is None or seen[0] != continuation.version:
-            seen = (continuation.version, moment)
-            self._terminal_first_seen[run_id] = seen
-        return moment - seen[1] >= self._terminal_quiet_period
 
     def _spine_is_quiet(self, record: DurableRunRecord, moment: datetime) -> bool:
         """Whether nothing on the Run's spine moved within the quiet period.
@@ -571,6 +597,75 @@ class CanonicalDurableRunStore:
         except ValueError:
             # Another writer advanced the continuation first; it owns the Run.
             return False
+        return True
+
+    async def _reconcile_stalled_walk(
+        self,
+        continuation: GraphContinuation,
+        canonical: Run,
+        moment: datetime,
+    ) -> bool:
+        """Make a Graph Run whose walker died after its first frontier due again.
+
+        A walker writes its recovery claim once, when it takes the Run
+        (`resume_durable_graph`). The first frontier checkpoint clears it
+        (`_checkpoint_advancement` writes ``resume_at=None``) and no later
+        frontier writes another, so a walker that dies anywhere after its
+        first frontier -- inside a later node, while the next frontier was
+        being created, or after the last NodeRun terminalized but before the
+        Run settled -- leaves a RUNNING Run under a RUNNING continuation the
+        due index never lists.
+
+        Nothing here re-derives the Run's outcome. The continuation is given
+        an elapsed claim, exactly the state an expired recovery claim is in,
+        and the due tick's `resume_durable_graph` does the rest: it reconciles
+        orphaned Attempts under their fences, re-claims, and walks on from the
+        persisted frontier, settling the Run if that frontier is empty.
+
+        It acts only when no walker can still hold the Run:
+
+        * every Attempt is terminal or its lease has lapsed. Graph Attempts
+          renew their lease from the executing process, so a lapsed one means
+          that process stopped proving it is alive. An open Attempt with no
+          lease is never reclaimable (`lease_is_expired`), so this sweep does
+          not guess ownership the Attempt layer did not persist;
+        * nothing on the spine moved within the quiet period; and
+        * this store has seen the same continuation version, still unclaimed,
+          for that period, since every frontier checkpoint writes a new one.
+
+        A version conflict means another writer moved first; it owns the Run.
+        """
+        run_id = canonical.run_id
+        if (
+            continuation.status is not RunStatus.RUNNING
+            or canonical.status is not RunStatus.RUNNING
+            or continuation.resume_at is not None
+        ):
+            self._stalled_first_seen.pop(run_id, None)
+            return False
+        if not _long_observed(
+            self._stalled_first_seen, continuation, moment, self._terminal_quiet_period
+        ):
+            return False
+        record = await self.get(run_id)
+        if record is None or not self._spine_is_quiet(record, moment):
+            return False
+        if not all(_attempt_released(attempt, moment) for attempt in record.attempts):
+            return False
+        due = continuation.model_copy(
+            update={"resume_at": moment, "version": continuation.version + 1}
+        )
+        self._stalled_first_seen.pop(run_id, None)
+        try:
+            await self._continuations.update(due)
+        except ValueError:
+            return False
+        logger.warning(
+            "Graph Run %s was RUNNING with no live walker (continuation version %d); "
+            "made it due for recovery",
+            run_id,
+            continuation.version,
+        )
         return True
 
     @staticmethod

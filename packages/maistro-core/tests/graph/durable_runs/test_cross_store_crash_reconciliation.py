@@ -21,7 +21,7 @@ import aiosqlite
 import pytest
 from pydantic import BaseModel
 
-from maistro.graph import Graph, Node
+from maistro.graph import Edge, Graph, Node
 from maistro.graph.durable_runs import (
     CanonicalDurableRunStore,
     InMemoryGraphContinuationStore,
@@ -38,7 +38,7 @@ from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
 from maistro.runs.lifecycle import transition_run
-from maistro.runs.model import TERMINAL_RUN_STATUSES, RunStatus
+from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, TERMINAL_RUN_STATUSES, RunStatus
 from maistro.runs.store import RunStore
 
 pytestmark = [pytest.mark.contract("behavioral")]
@@ -606,3 +606,225 @@ async def test_the_running_sweep_does_not_spend_the_per_status_budget(spine: _Sp
 
     assert await spine.store.reconcile_persistence(limit=5) == 1
     assert await spine.continuations.get("orphaned-continuation") is None
+
+
+# --- A walker that died between frontiers -------------------------------------
+#
+# A walker's recovery claim is written once, when it takes the Run, and the
+# first frontier checkpoint clears it (`resume_at=None`); no later frontier
+# writes another. So a walker that dies anywhere after its first frontier leaves
+# a RUNNING Run under a RUNNING continuation the due index never lists (#1151
+# windows 1 and 2, and any crash inside a later node).
+
+
+class _Counted(_Step):
+    kind: ClassVar[str] = "test.cross_store_crash.counted"
+    executions: ClassVar[list[str]] = []
+
+    async def _execute(self, inputs: _In, ctx: NodeContext) -> _Out:
+        _Counted.executions.append(ctx.node_id)
+        return _Out(text=f"ran {ctx.node_id}")
+
+
+def _two_step_graph(spine: _Spine) -> Graph:
+    return Graph(
+        workspace_id=_WORKSPACE,
+        project_id=spine.project_id,
+        name="stalled walk",
+        nodes=[
+            Node(node_id="first", node_type=_Counted.kind, policies={"max_attempts": 1}),
+            Node(node_id="second", node_type=_Counted.kind, policies={"max_attempts": 1}),
+        ],
+        edges=[Edge(edge_id="first-second", from_node="first", to_node="second")],
+    )
+
+
+async def _die_after_frontier_checkpoint(spine: _Spine, graph: Graph) -> str:
+    """Walk until the first frontier checkpoint is durable, then die."""
+    _Counted.executions.clear()
+    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    real_update = spine.store.update
+
+    async def crashing_update(record: DurableRunRecord) -> DurableRunRecord:
+        written = await real_update(record)
+        if record.traversal_commits and record.run.status is RunStatus.RUNNING:
+            raise _InjectedCrash
+        return written
+
+    spine.store.update = crashing_update  # type: ignore[method-assign]
+    try:
+        with pytest.raises(_InjectedCrash):
+            await run_durable_graph(
+                graph,
+                store=spine.store,
+                node_resolver=lambda node_id, current: _Counted(),
+                run_id=admitted.run_id,
+                run_store=spine.run_store,
+            )
+    finally:
+        spine.store.update = real_update  # type: ignore[method-assign]
+    stranded = await spine.store.get(admitted.run_id)
+    assert stranded is not None
+    assert stranded.run.status is RunStatus.RUNNING
+    assert stranded.resume_at is None
+    return admitted.run_id
+
+
+async def _resume_due(spine: _Spine, *, now: datetime | None = None) -> int:
+    return await resume_due_graph_runs(
+        store=spine.store,
+        run_store=spine.run_store,
+        node_resolver=lambda node_id, graph: _Counted(),
+        now=now if now is not None else datetime.now(UTC),
+    )
+
+
+async def test_a_run_whose_last_node_settled_before_the_walker_died_is_completed(
+    spine: _Spine,
+) -> None:
+    """Window 1: the only NodeRun is terminal, the Run never settled."""
+    run_id = await _die_after_frontier_checkpoint(spine, _graph(spine, _Counted()))
+    assert _Counted.executions == ["step"]
+
+    assert await _resume_due(spine) == 1
+
+    finished = await spine.run_store.get_run(run_id)
+    assert finished is not None and finished.status is RunStatus.COMPLETED
+    assert finished.result == {"text": "ran step"}
+    assert _Counted.executions == ["step"], "a settled node must not run again"
+
+
+async def test_a_walk_that_died_mid_graph_continues_from_its_frontier(spine: _Spine) -> None:
+    """The first node committed and routed; the walker died before the second."""
+    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
+    assert _Counted.executions == ["first"]
+
+    assert await _resume_due(spine) == 1
+
+    finished = await spine.store.get(run_id)
+    assert finished is not None and finished.run.status is RunStatus.COMPLETED
+    assert _Counted.executions == ["first", "second"]
+    assert sorted(item.node_id for item in finished.node_runs) == ["first", "second"]
+
+
+async def test_the_repair_gives_an_elapsed_claim_and_is_idempotent(spine: _Spine) -> None:
+    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
+    before = await spine.continuations.get(run_id)
+    assert before is not None
+    moment = datetime.now(UTC)
+
+    assert await spine.store.reconcile_persistence(now=moment) == 1
+    after = await spine.continuations.get(run_id)
+    assert after is not None
+    assert after.status is RunStatus.RUNNING
+    assert after.resume_at == moment
+    assert after.version == before.version + 1
+    assert await spine.store.reconcile_persistence(now=moment) == 0
+
+
+async def test_a_stalled_walk_waits_out_the_observation_period(spine: _Spine) -> None:
+    """Each frontier writes a new version, so only one unchanged for the period is stalled."""
+    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
+    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
+    quiet = datetime.now(UTC) + TERMINAL_SETTLE_QUIET_PERIOD * 2
+
+    assert await patient.reconcile_persistence(now=quiet) == 0
+    assert await patient.reconcile_persistence(now=quiet + timedelta(seconds=59)) == 0
+    unclaimed = await spine.continuations.get(run_id)
+    assert unclaimed is not None and unclaimed.resume_at is None
+
+    assert await patient.reconcile_persistence(now=quiet + TERMINAL_SETTLE_QUIET_PERIOD) == 1
+
+
+async def test_a_walk_whose_spine_just_moved_is_left_to_its_walker(spine: _Spine) -> None:
+    """Observed unchanged long enough, but the spine itself moved within the period."""
+    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
+    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
+    now = datetime.now(UTC)
+    # First sighting well before the spine's last write, so only the spine
+    # check stands between this tick and the repair.
+    assert await patient.reconcile_persistence(now=now - TERMINAL_SETTLE_QUIET_PERIOD * 2) == 0
+
+    assert await patient.reconcile_persistence(now=now + timedelta(seconds=30)) == 0
+    unclaimed = await spine.continuations.get(run_id)
+    assert unclaimed is not None and unclaimed.resume_at is None
+
+    assert await patient.reconcile_persistence(now=now + TERMINAL_SETTLE_QUIET_PERIOD) == 1
+
+
+class _DiesOnSecond(_Counted):
+    kind: ClassVar[str] = "test.cross_store_crash.dies_on_second"
+
+    async def _execute(self, inputs: _In, ctx: NodeContext) -> _Out:
+        if ctx.node_id == "second":
+            _Counted.executions.append(ctx.node_id)
+            raise _InjectedCrash
+        return await super()._execute(inputs, ctx)
+
+
+async def test_a_walker_that_died_inside_a_later_node_is_recovered_once_its_lease_lapses(
+    spine: _Spine,
+) -> None:
+    """The second node's Attempt is open under a lease its dead process no longer renews.
+
+    Until that lease lapses, a live walker could still hold the Attempt, so the
+    sweep leaves the Run alone; after it, the Run is made due.
+    """
+    _Counted.executions.clear()
+    graph = _two_step_graph(spine)
+    admitted = await spine.run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+    with pytest.raises(_InjectedCrash):
+        await run_durable_graph(
+            graph,
+            store=spine.store,
+            node_resolver=lambda node_id, current: _DiesOnSecond(),
+            run_id=admitted.run_id,
+            run_store=spine.run_store,
+        )
+    assert _Counted.executions == ["first", "second"]
+    stranded = await spine.store.get(admitted.run_id)
+    assert stranded is not None
+    assert stranded.run.status is RunStatus.RUNNING
+    assert stranded.resume_at is None
+    [open_attempt] = [a for a in stranded.attempts if a.status not in TERMINAL_ATTEMPT_STATUSES]
+    lease = open_attempt.execution_lease
+    assert lease is not None and lease.expires_at is not None
+
+    before_lapse = lease.expires_at - timedelta(seconds=1)
+    assert await spine.store.reconcile_persistence(now=before_lapse) == 0
+    held = await spine.continuations.get(admitted.run_id)
+    assert held is not None and held.resume_at is None
+
+    lapsed = lease.expires_at + timedelta(seconds=1)
+    assert await spine.store.reconcile_persistence(now=lapsed) == 1
+    due = await spine.continuations.get(admitted.run_id)
+    assert due is not None and due.resume_at == lapsed
+
+
+async def test_an_open_attempt_without_a_lease_is_never_presumed_dead(spine: _Spine) -> None:
+    """No lease means no liveness evidence either way, so the sweep does not guess."""
+    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
+    second = await spine.run_store.create_node_run(run_id, node_id="second")
+    unleased = await spine.run_store.create_attempt(second.node_run_id)
+    assert unleased.execution_lease is None
+
+    assert await spine.store.reconcile_persistence(now=datetime.now(UTC) + timedelta(hours=1)) == 0
+    held = await spine.continuations.get(run_id)
+    assert held is not None and held.resume_at is None
+
+
+async def test_a_claimed_walk_is_not_reclaimed(spine: _Spine) -> None:
+    """A recovering walker's claim is its own; the due index sees it when it lapses."""
+    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
+    record = await spine.store.get(run_id)
+    assert record is not None
+    claim = datetime.now(UTC) + timedelta(minutes=5)
+    await spine.continuations.update(
+        GraphContinuation.of(
+            record.model_copy(update={"resume_at": claim, "version": record.version + 1})
+        )
+    )
+
+    assert await spine.store.reconcile_persistence() == 0
+    held = await spine.continuations.get(run_id)
+    assert held is not None and held.resume_at == claim

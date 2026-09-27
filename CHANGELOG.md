@@ -821,6 +821,19 @@ or placeholder-only section.
   swept with a cursor that advances across ticks, so a stranded Run behind any
   number of other RUNNING Runs is reached in a bounded number of ticks.
 
+- **A Graph Run whose walker died after its first frontier is now resumed
+  (#1151).** A walker's recovery claim is written once, when it takes the Run,
+  and the first frontier checkpoint clears it; no later frontier writes
+  another. So a process that died anywhere after that -- inside a later node,
+  while the next frontier was being created, or after the last node finished
+  but before the Run settled -- left the Run RUNNING and invisible to the due
+  tick forever. The same persistence reconcile now gives such a Run an elapsed
+  claim, and the due tick resumes it from its persisted frontier without
+  re-running the nodes it already committed. It acts only when every Attempt
+  is terminal or its heartbeat-renewed lease has lapsed, the spine has been
+  quiet, and the same unclaimed continuation version has been observed, both
+  for 60 seconds. An open Attempt with no lease is never presumed dead.
+
 - **Hive now ticks the Container's canonical recovery seams (#62).**
   `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and
   `resume_parked_runs` are operator-scheduled (ADR-019) and had no production
