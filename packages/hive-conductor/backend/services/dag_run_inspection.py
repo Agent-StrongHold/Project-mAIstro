@@ -58,6 +58,11 @@ def _overlay(record: dict[str, Any], run: Any) -> dict[str, Any]:
     # Workspaces (#1152) -- leaves the projection row as it is.
     if run is None:
         return record
+    # A canonical Run filed in a different Workspace than the projection row
+    # is a cross-link (legacy or corrupt), not this row's lifecycle truth,
+    # even when the caller can read both Workspaces.
+    if run.workspace_id != str(record.get("workspace_id") or ""):
+        return record
     return {
         **record,
         "status": run.status.value,

@@ -746,7 +746,12 @@ async def test_projection_overlays_a_canonical_run_the_caller_may_read(
     reader, runs, workspaces = _canonical_spine()
     run = await _cancelled_canonical_run(runs, workspaces, "user")
     monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
-    record = {"id": "r-mine", "canonical_run_id": run.run_id, "status": "running"}
+    record = {
+        "id": "r-mine",
+        "canonical_run_id": run.run_id,
+        "workspace_id": run.workspace_id,
+        "status": "running",
+    }
 
     projected = await _canonical_projection(dict(record), "user")
 
@@ -768,5 +773,32 @@ async def test_projection_never_overlays_a_foreign_canonical_run(
     foreign = await _cancelled_canonical_run(runs, workspaces, "someone-else")
     monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
     record = {"id": "r-mine", "canonical_run_id": foreign.run_id, "status": "running"}
+
+    assert await _canonical_projection(dict(record), "user") == record
+
+
+async def test_projection_never_overlays_a_canonical_run_from_another_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller who can read both Workspaces still gets no overlay when the
+    projection row and its canonical Run are filed in different ones: the
+    cross-link is not that row's lifecycle truth (#1152)."""
+    import services.engine as engine_mod
+    from services.dag_run_inspection import _canonical_projection
+
+    from maistro.workspaces import WorkspaceRole
+
+    reader, runs, workspaces = _canonical_spine()
+    mine = await workspaces.create(creator_user_id="user", name="mine")
+    other = await _cancelled_canonical_run(runs, workspaces, "someone-else")
+    await workspaces.set_membership(other.workspace_id, user_id="user", role=WorkspaceRole.MEMBER)
+    monkeypatch.setattr(engine_mod, "_singleton", SimpleNamespace(run_reader=reader))
+    assert await reader.get_run(other.run_id, principal_id="user")
+    record = {
+        "id": "r-mine",
+        "canonical_run_id": other.run_id,
+        "workspace_id": mine.workspace_id,
+        "status": "running",
+    }
 
     assert await _canonical_projection(dict(record), "user") == record

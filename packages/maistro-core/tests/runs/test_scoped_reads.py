@@ -12,12 +12,13 @@ from typing import Any
 
 import aiosqlite
 import pytest
+from pydantic import ValidationError
 
 from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore, ProjectScopeStore
 from maistro.runs.model import Attempt, NodeRun, Run
 from maistro.runs.scoped_reads import RunNotVisible, ScopedRunReader
-from maistro.runs.store import InMemoryRunStore, RunStore
+from maistro.runs.store import ArchivedPayloadUnavailable, InMemoryRunStore, RunStore
 from maistro.workspaces import InMemoryWorkspaceStore, WorkspaceRole
 
 
@@ -246,3 +247,43 @@ async def test_membership_revoked_after_listing_denies_the_read(world: _World) -
     with pytest.raises(RunNotVisible) as caught:
         await world.reader.get_run(world.a.run.run_id, principal_id="carol")
     assert caught.value.__context__ is None
+
+
+def _unreadable(world: _World, broken: dict[str, Exception]) -> None:
+    """Make `get_run` raise for the given ids, as an unhydratable row would."""
+    get_run = world.runs.get_run
+
+    async def failing_get_run(run_id: str) -> Run | None:
+        if run_id in broken:
+            raise broken[run_id]
+        return await get_run(run_id)
+
+    world.runs.get_run = failing_get_run  # type: ignore[method-assign]
+
+
+def _invalid_payload() -> Exception:
+    try:
+        Run.model_validate({})
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("an empty payload validated")
+
+
+async def test_an_unreadable_stored_run_is_denied_like_a_missing_one(world: _World) -> None:
+    b = world.b.run.run_id
+    _unreadable(world, {b: ArchivedPayloadUnavailable(b, "runs/" + "0" * 64)})
+
+    with pytest.raises(RunNotVisible) as foreign:
+        await world.reader.get_run(b, principal_id="alice")
+    with pytest.raises(RunNotVisible) as missing:
+        await world.reader.get_run("missing-run", principal_id="alice")
+
+    assert _shape(foreign.value) == _shape(missing.value) == (RunNotVisible, "Run not found", True)
+
+
+async def test_get_runs_skips_an_unreadable_run_and_keeps_the_rest(world: _World) -> None:
+    a, b = world.a.run.run_id, world.b.run.run_id
+    _unreadable(world, {b: _invalid_payload()})
+
+    assert list(await world.reader.get_runs([b, a], principal_id="bob")) == []
+    assert list(await world.reader.get_runs([b, a], principal_id="alice")) == [a]

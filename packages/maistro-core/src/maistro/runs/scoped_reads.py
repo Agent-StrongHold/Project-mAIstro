@@ -11,18 +11,23 @@ a child id that belongs to another Run -- so no answer confirms an id exists.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from contextlib import suppress
 
+from pydantic import ValidationError
+
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.model import Attempt, NodeRun, Run
-from maistro.runs.store import RunStore
+from maistro.runs.store import RunIntegrityError, RunStore
 from maistro.workspaces.authorization import (
     WorkspaceAction,
     WorkspaceAuthorizationDenied,
     WorkspaceAuthorizer,
 )
 from maistro.workspaces.store import WorkspaceStore
+
+logger = logging.getLogger(__name__)
 
 
 class RunNotVisible(LookupError):
@@ -86,7 +91,7 @@ class ScopedRunReader:
         decided: dict[tuple[str, str], bool] = {}
         visible: dict[str, Run] = {}
         for run_id in dict.fromkeys(run_ids):
-            run = await self.run_store.get_run(run_id)
+            run = await self._lookup_run(run_id)
             if run is None or run.workspace_id not in member_of:
                 continue
             scope = (run.workspace_id, run.project_id)
@@ -101,12 +106,25 @@ class ScopedRunReader:
         # of, the Run lookup, so a missing id and a foreign id do the same
         # membership work before the same refusal.
         member_of = await self._member_workspace_ids(principal_id)
-        run = await self.run_store.get_run(run_id)
+        run = await self._lookup_run(run_id)
         if run is None or run.workspace_id not in member_of:
             raise RunNotVisible
         if not await self._admits(run, principal_id):
             raise RunNotVisible
         return run
+
+    async def _lookup_run(self, run_id: str) -> Run | None:
+        # A stored Run that cannot be read -- an archived payload with no
+        # archive tier configured, or a payload that no longer validates --
+        # is answered like a missing one. Its scope is inside the unreadable
+        # payload, so nothing can be decided about it here, and letting the
+        # store's distinct error through would confirm, to any caller, that
+        # the id exists. The operator still sees why, in the log.
+        try:
+            return await self.run_store.get_run(run_id)
+        except (RunIntegrityError, ValidationError) as exc:
+            logger.warning("canonical Run %r is unreadable: %s", run_id, exc)
+            return None
 
     async def _admits(self, run: Run, principal_id: str) -> bool:
         membership = None
