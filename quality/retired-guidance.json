@@ -97,6 +97,25 @@
         "used to"
       ],
       "issue": "388"
+    },
+    {
+      "id": "pre-durable-run-graph",
+      "pattern": "(?i)(from\\s+maistro\\.graph[\\w.]*\\s+import\\s+[^\\n]*\\brun_graph\\b|\\bmaistro\\.graph\\.run_graph\\b)",
+      "retired_by": "#1154",
+      "also_recorded_in": [
+        "docs/adr/ADR-062-graph-execution-protocol.md, \"Top-level API\" retirement note",
+        "packages/maistro-core/src/maistro/graph/executor.py module docstring"
+      ],
+      "replacement": "Canonical durable execution is maistro.graph.durable_runs, which records Run/NodeRun/Attempt evidence and is re-derivable after a crash. The pre-durable run_graph wrapper recorded none of it, so work reached through it was invisible to every recovery path; it is no longer exported from maistro.graph or defined in maistro.graph.executor. GraphRun remains in maistro.graph.run as Graph-domain traversal, not an execution authority.",
+      "citation_markers": [
+        "#1154",
+        "supersed",
+        "stale",
+        "retired",
+        "used to",
+        "no longer"
+      ],
+      "issue": "1154"
     }
   ]
 }
