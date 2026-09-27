@@ -378,6 +378,60 @@ async def test_a_sqlite_refusal_leaves_a_sibling_stores_open_write_intact() -> N
 
         async with conn.execute("SELECT value FROM sibling") as cursor:
             assert await cursor.fetchall() == [("uncommitted",)]
+        # Still the sibling's to finish: the refusal neither committed its
+        # write nor ended its transaction, so its own rollback discards it.
+        assert conn.in_transaction
+        await conn.rollback()
+        async with conn.execute("SELECT value FROM sibling") as cursor:
+            assert await cursor.fetchall() == []
+        async with conn.execute("SELECT COUNT(*) FROM canonical_runs") as cursor:
+            assert await cursor.fetchone() == (1,)
+    finally:
+        await conn.close()
+
+
+async def test_a_sqlite_refusal_with_no_open_transaction_leaves_none_open() -> None:
+    """On its own, the refusal's savepoint is its whole transaction: releasing
+    it must not leave the shared connection holding SQLite's write lock."""
+    from maistro.runs.consumer_claim import ClaimingSqliteRunStore
+
+    scope_store = InMemoryProjectScopeStore()
+    projects = await _projects(scope_store, ("w1",))
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = ClaimingSqliteRunStore(
+            conn,
+            project_store=scope_store,
+            concurrency_limits=RunConcurrencyLimits(per_principal=1),
+        )
+        await store.ensure_schema()
+        spine = _Spine(store, projects)
+        admitted = await spine.root("w1", "alice")
+
+        with pytest.raises(RunConcurrencyExceeded):
+            await spine.root("w1", "alice")
+
+        assert not conn.in_transaction
+        async with conn.execute("SELECT run_id FROM canonical_runs") as cursor:
+            assert await cursor.fetchall() == [(admitted.run_id,)]
+    finally:
+        await conn.close()
+
+
+async def test_sqlite_counts_read_the_active_root_indexes() -> None:
+    """Both counts are served by partial indexes over the live roots, so
+    admission does not scan every Run a long-lived database still holds."""
+    from maistro.runs.sqlite_store import _ACTIVE_ROOT_COUNTS_SQL, SqliteRunStore
+
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await SqliteRunStore(conn, project_store=InMemoryProjectScopeStore()).ensure_schema()
+        async with conn.execute(
+            f"EXPLAIN QUERY PLAN {_ACTIVE_ROOT_COUNTS_SQL}", ("w1", "alice")
+        ) as cursor:
+            plan = " ".join(str(row[3]) for row in await cursor.fetchall())
+        assert "USING INDEX idx_canonical_runs_active_root_workspace" in plan
+        assert "USING INDEX idx_canonical_runs_active_root_principal" in plan
     finally:
         await conn.close()
 
@@ -396,5 +450,57 @@ async def test_a_chat_turn_over_the_ceiling_is_refused_not_answered_unrecorded()
     for _ in range(8):
         assert await container._admit_chat_turn(messages, auth=alice) is not None
 
+    with pytest.raises(RunConcurrencyExceeded):
+        await container._admit_chat_turn(messages, auth=alice)
+
+
+async def test_a_full_ceiling_of_stranded_chat_turns_is_reclaimed_not_permanent() -> None:
+    """Turns a crashed process left mid-admission hold slots no successful
+    admission will ever free; the refused turn reclaims them and is admitted."""
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    container = await create_container(AgentConfig(router_api_key="test-key"))
+    messages = [{"role": "user", "content": "hi"}]
+    alice = SimpleNamespace(user_id="alice")
+    long_ago = datetime.now(UTC) - timedelta(hours=1)
+    stranded = []
+    for _ in range(8):
+        run = await container.chat_admitter.admit(messages, actor_principal_id="alice")  # type: ignore[union-attr]
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED, at=long_ago)
+        stranded.append(run.run_id)
+
+    admitted = await container._admit_chat_turn(messages, auth=alice)
+
+    assert admitted.status is RunStatus.RUNNING
+    for run_id in stranded:
+        run = await container.run_store.get_run(run_id)
+        assert run is not None
+        assert run.status is RunStatus.CANCELLED
+
+
+async def test_a_failed_reclamation_leaves_the_refusal_standing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery is housekeeping: when it cannot run, the turn is refused as
+    backpressure rather than answered past the ceiling."""
+    from types import SimpleNamespace
+
+    from maistro.container import create_container
+    from maistro.types.config import AgentConfig
+
+    container = await create_container(AgentConfig(router_api_key="test-key"))
+    messages = [{"role": "user", "content": "hi"}]
+    alice = SimpleNamespace(user_id="alice")
+    for _ in range(8):
+        await container._admit_chat_turn(messages, auth=alice)
+
+    async def _broken(**_: object) -> int:
+        raise RuntimeError("recovery store down")
+
+    monkeypatch.setattr(container, "_recover_stranded_chat_runs", _broken)
     with pytest.raises(RunConcurrencyExceeded):
         await container._admit_chat_turn(messages, auth=alice)

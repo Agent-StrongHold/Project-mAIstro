@@ -109,16 +109,10 @@ _PURGE_CANDIDATES_WORKSPACE_SQL = """SELECT run_id, payload FROM canonical_runs 
     ORDER BY json_extract(r.payload, '$.retention_expires_at')
     LIMIT ?"""
 
-#: Active root Runs in one Workspace and for one principal (#1182). The
-#: principal ceiling spans Workspaces, so its count has no Workspace predicate.
-_ACTIVE_ROOT_COUNTS_SQL = """SELECT
-    (SELECT COUNT(*) FROM canonical_runs
-      WHERE parent_run_id IS NULL AND status IN ({statuses}) AND workspace_id = ?),
-    (SELECT COUNT(*) FROM canonical_runs
-      WHERE parent_run_id IS NULL AND status IN ({statuses})
-        AND json_extract(payload, '$.actor_principal_id') = ?)""".format(  # nosec B608
-    statuses=_placeholders(len(ACTIVE_ROOT_STATUS_VALUES))
-)
+#: Opened by `create_run` before a root Run's insert, so an active-ceiling
+#: refusal undoes that row alone (#1182).
+_ROOT_ADMISSION_SAVEPOINT = "canonical_root_run_admission"
+
 
 _PURGE_CANDIDATES_GLOBAL_SQL = """SELECT run_id, payload FROM canonical_runs r
     WHERE r.status IN ({statuses})
@@ -312,6 +306,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_attempts_one_active
     WHERE status IN ('created', 'running');
 """
 
+#: The active root Runs the admission ceilings count (#1182), as literals
+#: rather than bound parameters: SQLite uses a partial index only when it can
+#: prove the query's WHERE implies the index's, and it cannot see through a
+#: parameter. Built from the enum values, which are constants.
+_ACTIVE_ROOT_PREDICATE = "parent_run_id IS NULL AND status IN ({})".format(
+    ", ".join(f"'{value}'" for value in ACTIVE_ROOT_STATUS_VALUES)
+)
+
+#: Partial, so each admission reads the few live roots rather than every Run
+#: the table still holds, however old the database gets.
+_SCHEMA += f"""
+CREATE INDEX IF NOT EXISTS idx_canonical_runs_active_root_workspace
+    ON canonical_runs(workspace_id)
+    WHERE {_ACTIVE_ROOT_PREDICATE};
+CREATE INDEX IF NOT EXISTS idx_canonical_runs_active_root_principal
+    ON canonical_runs(json_extract(payload, '$.actor_principal_id'))
+    WHERE {_ACTIVE_ROOT_PREDICATE};
+"""
+
+#: Active root Runs in one Workspace and for one principal (#1182). The
+#: principal ceiling spans Workspaces, so its count has no Workspace predicate.
+_ACTIVE_ROOT_COUNTS_SQL = f"""SELECT
+    (SELECT COUNT(*) FROM canonical_runs
+      WHERE {_ACTIVE_ROOT_PREDICATE} AND workspace_id = ?),
+    (SELECT COUNT(*) FROM canonical_runs
+      WHERE {_ACTIVE_ROOT_PREDICATE}
+        AND json_extract(payload, '$.actor_principal_id') = ?)"""  # nosec B608
+
 
 _PAYLOAD_TABLES = frozenset(
     {
@@ -421,6 +443,13 @@ class SqliteRunStore:
             # in which a process death leaves a CREATED Run whose provenance
             # names a receipt that was already queued.
             run = admit_in_state(run, initial_status)
+            # A root may be refused by the active ceiling after its insert
+            # (#1182). The savepoint lets that refusal undo exactly this row:
+            # nested inside a sibling store's open transaction it leaves that
+            # transaction open and uncommitted, and on its own it opens (and on
+            # release ends) a transaction of its own. The commit below settles
+            # it either way, so a child Run, never refused, is unaffected.
+            await self._conn.execute(f"SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             try:
                 await self._conn.execute(
                     """INSERT INTO canonical_runs
@@ -460,18 +489,19 @@ class SqliteRunStore:
 
         Counted after the insert, under `_write_lock`, so a duplicate
         occurrence is refused as a duplicate rather than as backpressure. A
-        refusal deletes the row rather than rolling back: this connection is
-        shared with sibling stores, and a rollback would discard their
-        uncommitted writes along with this one. No `BEGIN IMMEDIATE` for the
-        same reason -- the SQLite tier is one process, and `_write_lock` is
-        what serializes its admissions.
+        refusal rolls back to the savepoint `create_run` opened before the
+        insert, never the whole transaction and never a commit: this
+        connection is shared with sibling stores, and either would discard or
+        commit their unfinished writes along with this one. No `BEGIN
+        IMMEDIATE` for the same reason -- the SQLite tier is one process, and
+        `_write_lock` is what serializes its admissions.
         """
         if run.parent_run_id is not None:
             return
         principal = run.actor_principal_id or None
         row = await self._fetchone(
             _ACTIVE_ROOT_COUNTS_SQL,
-            (*ACTIVE_ROOT_STATUS_VALUES, run.workspace_id, *ACTIVE_ROOT_STATUS_VALUES, principal),
+            (run.workspace_id, principal),
         )
         assert row is not None  # nosec B101 - a scalar SELECT always yields a row
         try:
@@ -480,8 +510,8 @@ class SqliteRunStore:
                 principal_active=int(row[1]) - 1 if principal is not None else None,
             )
         except RunConcurrencyExceeded:
-            await self._conn.execute("DELETE FROM canonical_runs WHERE run_id = ?", (run.run_id,))
-            await self._conn.commit()
+            await self._conn.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
+            await self._conn.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             raise
 
     async def get_run(self, run_id: str) -> Run | None:

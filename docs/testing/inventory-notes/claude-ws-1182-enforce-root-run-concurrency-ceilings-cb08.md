@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +58
+  packages/maistro-core/tests: +64
   packages/maistro-server/tests: +1
 ---
 # claude-ws-1182-enforce-root-run-concurrency-ceilings-cb08
 
-All 59 new node IDs are for #1182: 58 in core and 1 in maistro-server. No existing test was removed or renamed.
+All 65 new node IDs are for #1182: 64 in core and 1 in maistro-server. No existing test was removed or renamed.
 
-- `tests/runs/test_run_concurrency_limits.py` adds 54 node IDs. Most are
+- `tests/runs/test_run_concurrency_limits.py` adds 58 node IDs. Most are
   parametrized over the memory, SQLite and PostgreSQL backends. They cover:
   the principal and Workspace ceilings, child Runs holding no slot, each
   parked or terminal status freeing a slot, resume not counting as
@@ -17,7 +17,15 @@ All 59 new node IDs are for #1182: 58 in core and 1 in maistro-server. No existi
   - a duplicate occurrence at the ceiling is still refused as a duplicate;
   - a refused occurrence is admissible once a slot frees;
   - a SQLite refusal leaves a sibling store's open write intact;
-  - `Container` chat admission re-raises the refusal.
+  - `Container` chat admission re-raises the refusal;
+  - the SQLite refusal neither commits nor ends a sibling's transaction, and
+    opens none of its own;
+  - both SQLite counts are served by the active-root partial indexes;
+  - a ceiling full of stranded chat turns is reclaimed on refusal, and a
+    failed reclamation leaves the refusal standing.
+- `tests/test_container_chat_runs.py` adds 2, parametrized over CREATED and
+  QUEUED: a chat admission stranded before RUNNING is cancelled by
+  `recover_stranded_chat_admissions` once past its grace period.
 - `tests/security/test_resource_policy_declared_floors.py` adds 4. Two are
   weakening mutants for the new floors. The other two show that each new
   floor can be tightened but only loosened with the unsafe override.

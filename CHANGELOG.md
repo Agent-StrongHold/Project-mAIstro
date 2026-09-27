@@ -34,7 +34,12 @@ or placeholder-only section.
   A duplicate schedule occurrence is still refused as a duplicate. PostgreSQL
   serializes the insert and the count with transaction-scoped advisory locks,
   so the ceiling holds across replicas. SQLite relies on the store's write
-  lock, since that tier is a single process.
+  lock, since that tier is a single process. A SQLite refusal rolls back to a
+  savepoint, so a sibling store's open transaction on the shared connection
+  is neither committed nor ended. Partial indexes serve both SQLite counts.
+  - A chat turn that meets a full ceiling first reclaims slots held by dead
+    turns, then asks once more. `recover_stranded_chat_admissions` now also
+    cancels chat Runs stranded in CREATED or QUEUED.
   - The ceilings are governed floors in `quality/security-resource-floors.json`
     (`MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL`, `MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE`).
     Operators may lower them, but raising either requires
