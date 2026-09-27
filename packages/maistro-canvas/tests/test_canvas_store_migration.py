@@ -355,6 +355,28 @@ class TestTheChainRunsTheStore:
         )
         assert rows == [(1,)]
 
+    def test_an_adopted_partial_unique_index_does_not_stand_in(self, empty_database: str) -> None:
+        """A partial index guards only some rows, so 044 still adds its own."""
+        _alembic(empty_database, "upgrade", PARENT_REVISION)
+        _execute(
+            empty_database,
+            """
+            CREATE TABLE canvases (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                                   width INTEGER NOT NULL, height INTEGER NOT NULL);
+            CREATE TABLE layers (id TEXT PRIMARY KEY, canvas_id TEXT NOT NULL,
+                                 name TEXT NOT NULL, z_index INTEGER NOT NULL DEFAULT 0);
+            CREATE UNIQUE INDEX layers_cz_visible ON layers (canvas_id, z_index)
+                WHERE z_index > 0;
+            """,
+        )
+        _alembic(empty_database, "upgrade", "head")
+        rows = _execute(
+            empty_database,
+            "SELECT conname FROM pg_constraint"
+            " WHERE conrelid = 'layers'::regclass AND contype = 'u'",
+        )
+        assert rows == [("uq_layers_canvas_z",)]
+
     def test_downgrade_removes_the_tables(self, empty_database: str) -> None:
         _alembic(empty_database, "upgrade", "head")
         _alembic(empty_database, "downgrade", PARENT_REVISION)

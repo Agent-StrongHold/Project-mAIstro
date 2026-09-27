@@ -16,9 +16,11 @@ SPEC-203 lease columns gains them, and one already at this shape is untouched.
 A NOT NULL column with no default cannot be added to a populated table, so a
 live table missing an identity column such as `canvases.name` or
 `layers.canvas_id` fails the upgrade loudly rather than being given an invented
-value. An adopted table keeps the constraints it was created with, except that
-`layers` gains the unique constraint below when no unique index covers
-`(canvas_id, z_index)`. So on an adopted table a pre-existing non-deferrable
+value. Likewise an adopted `layers` holding duplicate `(canvas_id, z_index)`
+pairs fails the upgrade when the unique constraint below is added; de-duplicate
+it first. An adopted table keeps the constraints it was created with, except that
+`layers` gains the unique constraint below when no full (non-partial) unique
+index covers `(canvas_id, z_index)`. So on an adopted table a pre-existing non-deferrable
 uniqueness stays in force, and an existing foreign-key column that was
 created without its `REFERENCES` gains no foreign key or cascade.
 
@@ -147,6 +149,7 @@ def upgrade() -> None:
                 SELECT 1 FROM pg_index i
                 WHERE i.indrelid = 'layers'::regclass
                   AND i.indisunique
+                  AND i.indpred IS NULL
                   AND ARRAY(
                         SELECT a.attname::text FROM pg_attribute a
                         WHERE a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
