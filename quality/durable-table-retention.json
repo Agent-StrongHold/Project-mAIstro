@@ -742,7 +742,7 @@
       "retention": "undecided",
       "deletion_path": null,
       "issue": "#72",
-      "notes": "Short-lived signed elevation grants (created by alembic 043 on PostgreSQL, ensure_schema on SQLite). Validity is TTL-filtered at read time in find_valid; no DELETE anywhere, so expired rows accumulate. A driven expiry sweep is the open owner decision."
+      "notes": "Short-lived signed elevation grants (created by alembic 044 on PostgreSQL, ensure_schema on SQLite). Validity is TTL-filtered at read time in find_valid; no DELETE anywhere, so expired rows accumulate. A driven expiry sweep is the open owner decision."
     },
     {
       "table": "session_turns",

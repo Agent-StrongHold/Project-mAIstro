@@ -1,12 +1,16 @@
 """Persist short-lived elevation grants in the canonical database.
 
-Rebased onto the trunk chain twice (#72 merge, then the 2026-09 develop
-sync): the revision ids up to 038 were already taken by the canonical
-migrations, so the table first attached as "039" — and when develop added
-its own `039` (canvas job admission key) on the same parent "038", that
-collision made `alembic history` fail outright ("042 overlaps with other
-requested revisions 039"). It now attaches after the develop chain tip
-`042`, keeping the chain linear with exactly one head.
+Rebased onto the trunk chain three times (#72 merge, the 2026-09 develop
+sync, then the #1204 sync that brought `039_quota_usage_event_identity`):
+the revision ids up to 038 were already taken by the canonical migrations,
+so the table first attached as "039" — and when develop added its own
+`039` (canvas job admission key) on the same parent "038", that collision
+made `alembic history` fail outright ("042 overlaps with other requested
+revisions 039"). It was renumbered to 043 on parent 042, and when develop
+then landed its own #1204 migration `039_quota_usage_event_identity` on
+the same parent 042, that left two heads — so it now attaches after the
+develop chain tip `039_quota_usage_event_identity` as 044, keeping the
+chain linear with exactly one head.
 """
 
 from __future__ import annotations
@@ -14,8 +18,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "043"
-down_revision = "042"
+revision = "044"
+down_revision = "039_quota_usage_event_identity"
 branch_labels = None
 depends_on = None
 

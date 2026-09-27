@@ -1,7 +1,10 @@
 ---
 inventory-delta:
-  tests/migrations: +0 (existing chain suite re-proven live against empty pgvector:pg18)
+  packages/maistro-core/tests: +0
 ---
+
+No new tests; the existing chain suite was re-proven live against an empty
+pgvector:pg18 after the renumber.
 
 # auto-72 verifier repair 2 (develop sync + alembic collision)
 
