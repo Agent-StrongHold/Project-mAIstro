@@ -438,3 +438,60 @@ class TestRunTaskLive:
             result = await run_task(task, on_response=on_response)
         assert result.success is True
         assert captured["data"]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}  # type: ignore[index]
+
+
+class TestGovernedCompletionGuards:
+    """The governed gateway path must fail loudly on unusable bodies (#718).
+
+    A governed completion is the canonical Invocation's physical call; a
+    200 whose body carries no choices (or no message content) is provider
+    breakage, not an empty answer -- returning "" would terminalize the
+    Invocation as a successful zero-content call and record usage evidence
+    for a response the conductor never received.
+    """
+
+    async def test_no_choices_is_a_provider_error(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                return SimpleNamespace(body={"model": "m", "choices": []})
+
+        with pytest.raises(LLMProviderError, match="no choices"):
+            await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                ("run-1", "node-1", "attempt-1"),
+                1,
+                "ws-1",
+                "project-1",
+            )
+
+    async def test_no_content_is_a_provider_error(self) -> None:
+        from types import SimpleNamespace
+
+        from maistro.agents.conductor import ConductorCall, _governed_completion
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="k", system_prompt="s")
+
+        class _Egress:
+            async def complete(self, **kwargs: object) -> SimpleNamespace:
+                return SimpleNamespace(body={"model": "m", "choices": [{"message": {}}]})
+
+        with pytest.raises(LLMProviderError, match="no content"):
+            await _governed_completion(
+                call,
+                "user prompt",
+                128,
+                _Egress(),  # type: ignore[arg-type]
+                ("run-1", "node-1", "attempt-1"),
+                1,
+                "ws-1",
+                "project-1",
+            )

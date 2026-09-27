@@ -30,6 +30,7 @@ from maistro.capabilities.invocation import (
 )
 from maistro.capabilities.model_chat import (
     MODEL_CHAT_CAPABILITY,
+    GovernedLLMClient,
     ModelChatEgress,
     ModelChatRequest,
     _gateway_usage,
@@ -1113,3 +1114,44 @@ async def test_chat_payload_carries_structured_output_shape(
         request=ModelChatRequest(messages=[{"role": "user", "content": "hi"}]),
     )
     assert "response_format" not in captured["json"]
+
+
+async def test_client_complete_without_prior_turn_mints_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that never set a turn still gets canonical identity.
+
+    `Agent.handle` always calls `set_turn` first, but the client is also the
+    factory's LLMClient for strategies driven outside that seam. `complete`
+    must mint a turn itself rather than refuse -- the Invocation lands under
+    that minted identity either way (#718: no ungoverned side door).
+    """
+    tracker = InMemoryQuotaTracker()
+    effects = new_in_memory_effect_context(usage_log=InMemoryUsageLog(), quota_tracker=tracker)
+    effects.credentials.add(
+        workspace_id="ws1",
+        project_id="p1",
+        record=CredentialRecord(
+            key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
+            provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
+            api_key="test-litellm-key",
+        ),
+    )
+    registry = _registry()
+    _patch_gateway(monkeypatch, _OK_BODY)
+    client = GovernedLLMClient(
+        effects,
+        registry=registry,
+        router=CostAwareRouter(registry),
+        endpoint=GatewayEndpoint(base_url="http://gw:4000"),
+        workspace_id="ws1",
+        project_id="p1",
+    )
+
+    body = await client.complete([{"role": "user", "content": "hello"}], "fast-model")
+
+    assert body["choices"][0]["message"]["content"] == "hi"
+    # The minted turn still routed the call through the canonical egress: the
+    # usage the fake gateway reported reached the quota ledger.
+    (entry,) = await tracker.get_all_usage()
+    assert entry["request_count"] == 1

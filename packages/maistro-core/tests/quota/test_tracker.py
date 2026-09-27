@@ -93,3 +93,26 @@ class TestInMemoryQuotaTracker:
     async def test_get_all_usage_empty_when_no_records(self) -> None:
         tracker = InMemoryQuotaTracker()
         assert await tracker.get_all_usage() == []
+
+    async def test_record_invocation_counts_once_per_invocation_id(self) -> None:
+        """The tracker's own at-most-once guard (#718): terminalization retries
+        hand the same physical Invocation back, and the ledger must ignore it
+        even when the caller (a recorder without its own dedup) sends it twice."""
+        tracker = InMemoryQuotaTracker()
+
+        first = await tracker.record_invocation("inv-1", "openai", "daily", 10, 5, True)
+        second = await tracker.record_invocation("inv-1", "openai", "daily", 10, 5, True)
+
+        assert first == second
+        assert first["total_tokens"] == 15
+        assert first["request_count"] == 1
+
+    async def test_record_invocation_missing_usage_is_unreported_not_zero(self) -> None:
+        tracker = InMemoryQuotaTracker()
+
+        result = await tracker.record_invocation("inv-2", "openai", "daily", 0, 0, False)
+
+        assert result["request_count"] == 1
+        assert result["total_tokens"] == 0
+        assert result["unreported_count"] == 1
+        assert result["usage_complete"] is False

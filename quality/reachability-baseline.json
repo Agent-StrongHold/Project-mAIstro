@@ -126,7 +126,6 @@
     "maistro.portability.export",
     "maistro.portability.skills",
     "maistro.prompts.diff",
-    "maistro.quota.sqlite_usage_log",
     "maistro.quota.verifiers",
     "maistro.quota.verifiers.mistral",
     "maistro.quota.verifiers.openrouter",
