@@ -132,7 +132,10 @@ class BacklogVersionConflict(RuntimeError):
             f"not {expected}"
         )
         self.expected = expected
-        self.current_item = current_item
+        # A store may pass its own live object (e.g. InMemoryBacklogItemStore's
+        # `_items` entry). Copy it so a caller mutating the conflict payload
+        # cannot change persisted state without going through compare-and-set.
+        self.current_item = current_item.model_copy(deep=True)
 
 
 class BacklogRelationError(ValueError):

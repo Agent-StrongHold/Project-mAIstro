@@ -228,6 +228,25 @@ async def test_dependency_and_parent_edges(api) -> None:
         == 204
     )
     assert api.client.get(f"{base}/{child['item_id']}/dependencies").json() == []
+
+
+async def test_set_parent_reports_stale_version_over_a_bad_parent(api) -> None:
+    """A stale expected_version must win over a missing/foreign parent_item_id.
+
+    Checking the parent first would return 404 and hide the 409, so the
+    caller could not tell a rebase-me conflict apart from a bad request.
+    """
+    workspace_id, project_id = await _workspace(api)
+    _as_user(api.app, "contributor")
+    item = _create(api, workspace_id, project_id)
+    base = f"/workspaces/{workspace_id}/backlog"
+
+    stale_and_missing = api.client.put(
+        f"{base}/{item['item_id']}/parent",
+        json={"expected_version": 99, "parent_item_id": "does-not-exist"},
+    )
+    assert stale_and_missing.status_code == 409
+    assert stale_and_missing.json()["current"]["item_id"] == item["item_id"]
     assert api.client.get(f"{base}/missing/children").status_code == 404
 
 

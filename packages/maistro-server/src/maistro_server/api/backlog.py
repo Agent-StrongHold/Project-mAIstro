@@ -296,7 +296,9 @@ async def set_backlog_item_parent(
     store: BacklogStoreDep,
 ) -> BacklogItem | JSONResponse:
     await _require_contributor(workspace_store, workspace_id, auth)
-    await _require_item(store, workspace_id, item_id)
+    current = await _require_item(store, workspace_id, item_id)
+    if current.version != body.expected_version:
+        return _conflict_response(_Conflict(current))
     if body.parent_item_id is not None:
         await _require_item(store, workspace_id, body.parent_item_id)
     try:

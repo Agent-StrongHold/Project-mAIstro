@@ -253,7 +253,7 @@ class SqliteBacklogItemStore:
         self, item_id: str, parent_item_id: str | None, *, expected_version: int
     ) -> BacklogItem:
         async with self._write() as conn:
-            current = await self._require(item_id)
+            current = await self._current(item_id, expected_version)
             if parent_item_id is not None:
                 require_not_self(item_id, parent_item_id)
                 require_same_workspace(current, await self._require(parent_item_id))
@@ -261,7 +261,6 @@ class SqliteBacklogItemStore:
                     raise BacklogRelationError(
                         "cycle", f"{parent_item_id} is a descendant of {item_id}"
                     )
-            current = await self._current(item_id, expected_version)
             updated = apply_changes(current, {}).model_copy(
                 update={"parent_item_id": parent_item_id}
             )

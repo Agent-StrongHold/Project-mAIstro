@@ -170,6 +170,20 @@ async def test_update_is_compare_and_set(backend) -> None:
     assert await store.get(item.item_id) == updated
 
 
+async def test_version_conflict_payload_is_a_detached_copy(backend) -> None:
+    store = await backend.store()
+    project_id = await _workspace(backend, store, "ws-a")
+    item = await store.create(_item("ws-a", project_id))
+
+    with pytest.raises(BacklogVersionConflict) as caught:
+        await store.update(item.item_id, expected_version=99, changes={"title": "Stale"})
+
+    caught.value.current_item.title = "Mutated by a caller, not through compare-and-set"
+    refetched = await store.get(item.item_id)
+    assert refetched.title == item.title
+    assert refetched.version == item.version
+
+
 async def test_update_refuses_identity_and_claim_fields(backend) -> None:
     store = await backend.store()
     project_id = await _workspace(backend, store, "ws-a")
@@ -319,6 +333,24 @@ async def test_parent_links_are_versioned_and_acyclic(backend) -> None:
     detached = await store.set_parent(grandchild.item_id, None, expected_version=2)
     assert (detached.parent_item_id, detached.version) == (None, 3)
     assert await store.children_of(child.item_id) == []
+
+
+async def test_set_parent_checks_version_before_the_requested_parent(backend) -> None:
+    """A stale expected_version must win over an invalid parent (#98 review).
+
+    Checking the parent first would surface a relation/not-found error and
+    hide the version conflict, so a caller racing another writer could not
+    tell "rebase me" apart from "that parent is wrong" and would retry with
+    the wrong fix.
+    """
+    store = await backend.store()
+    project_id = await _workspace(backend, store, "ws-a")
+    item = await store.create(_item("ws-a", project_id))
+
+    with pytest.raises(BacklogVersionConflict):
+        await store.set_parent(item.item_id, "does-not-exist", expected_version=99)
+    with pytest.raises(BacklogVersionConflict):
+        await store.set_parent(item.item_id, item.item_id, expected_version=99)
 
 
 async def test_sqlite_restart_keeps_item_edges_and_version(tmp_path) -> None:
