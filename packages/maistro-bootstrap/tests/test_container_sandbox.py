@@ -507,6 +507,76 @@ def test_container_user_namespace_maps_container_uids_off_the_host(
         assert root_line.split()[1] != "0", uid_map
 
 
+@_needs_isolating_daemon
+def test_nested_user_namespace_does_not_reopen_the_host(tmp_path: Path) -> None:
+    """Nesting a user namespace is how candidate code would try to regain the
+    capabilities `--cap-drop ALL` removed.
+
+    Whether the kernel lets an unprivileged uid nest user namespaces is a
+    property of the host (the CI lane relaxes the AppArmor knob that blocks
+    it elsewhere), so — like the Bubblewrap Tier-3 suite's twin of this test
+    — the assertion is about *reach*, not refusal: whether the nesting
+    succeeds or is refused, the image root stays unwritable, nothing appears
+    in it, and no mount the agent's uid was denied becomes mountable through
+    the nested namespace. The fallback runs the same payload unnested so the
+    assertions hold on both kinds of host.
+    """
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        payload = "touch /usr/l80-escape 2>&1"
+        out = sb.run_command(f"unshare -Ur sh -c '{payload}' || sh -c '{payload}'")
+        assert "Read-only file system" in out, out
+        rc, _ = sb.run_argv_status(["test", "!", "-e", "/usr/l80-escape"])
+        assert rc == 0, "a nested user namespace wrote into the image root"
+        # The nested namespace does not own the sandbox's mount namespace, so
+        # mounting through it stays refused however the nesting itself went.
+        rc, _ = sb.run_argv_status(
+            [
+                "sh",
+                "-c",
+                "mkdir -p /workspace/n && unshare -Ur mount -t tmpfs none /workspace/n",
+            ]
+        )
+        assert rc != 0, "a nested user namespace mounted a filesystem"
+        rc, mounts = sb.run_argv_status(["cat", "/proc/mounts"])
+        assert rc == 0
+        assert not [line for line in mounts.splitlines() if " /workspace/n " in line]
+
+
+@_needs_isolating_daemon
+def test_no_block_devices_reachable(tmp_path: Path) -> None:
+    """A visible disk is a filesystem escape that needs no kernel bug."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        text = sb.run_command("ls /dev/sd* /dev/nvme* /dev/vd* /dev/loop* 2>&1")
+        assert "No such file" in text
+        # No line that is not an ls error — i.e. no device actually matched.
+        assert not [line for line in text.splitlines() if not line.startswith("ls:")]
+
+
+@_needs_isolating_daemon
+def test_no_host_unix_sockets_visible(tmp_path: Path) -> None:
+    """A reachable `docker.sock` or agent socket is root on the host, with no
+    exploit required. Unix sockets are per network namespace, so a table
+    holding only its header is the namespace being real rather than the host
+    having no sockets."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        lines = sb.run_command("cat /proc/net/unix 2>/dev/null | wc -l")
+        assert int(lines.strip()) <= 1, f"host unix sockets visible: {lines}"
+
+
+@_needs_isolating_daemon
+def test_no_host_listening_ports_visible(tmp_path: Path) -> None:
+    """`/proc/net/tcp` is per network namespace, so an empty one (headers
+    only) is the `--network=none` namespace being real rather than the host
+    having no services — the live-network twin of the egress probe."""
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        lines = sb.run_command("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l")
+        assert int(lines.strip()) <= 2, f"host listening ports visible: {lines}"
+
+
 @pytest.mark.skipif(
     _DAEMON_QUALIFIES,
     reason="this daemon provides the rootless/userns boundary, so the sandbox starts on it",

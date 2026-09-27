@@ -485,29 +485,54 @@ jobs:
       # The bwrap step above already relaxed
       # kernel.apparmor_restrict_unprivileged_userns for its own kernel probes;
       # rootlesskit needs the same relaxation, so keep this step after it.
+      #
+      # Provisioning (#80 round 19): the rootless toolchain comes from Docker's
+      # pinned static bundle. The previous apt route died with exit 100 on the
+      # runner (`docker-ce-rootless-extras` has no installation candidate —
+      # the Docker apt repo is not in the runner image's sources), so the
+      # escape suite never ran remotely. `dockerd` itself is preinstalled on
+      # the runner; uidmap and slirp4netns are in Ubuntu's own universe repo,
+      # not Docker's. Same recipe as the locally-proven lane.
       - name: Start a rootless Docker daemon for the conformance lane
+        env:
+          DOCKER_ROOTLESS_EXTRAS_VERSION: "29.8.1"
         run: |
-          set -eux
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          timeout 180 sudo apt-get install -y uidmap slirp4netns dbus-user-session || true
-          if ! command -v dockerd-rootless-setuptool.sh >/dev/null; then
-            timeout 180 sudo apt-get install -y docker-ce-rootless-extras
-          fi
-          # --force: the runner's rootful system daemon stays up (other steps
-          # and jobs use it); this user-local daemon is additive.
-          dockerd-rootless-setuptool.sh install --force
-          systemctl --user enable --now docker
-          # Verify against the rootless socket explicitly: the system daemon
-          # is still the default target at this point in this step.
-          docker --host "unix:///run/user/$(id -u)/docker.sock" info \
+          set -euxo pipefail
+          uid="$(id -u)"
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          timeout 180 sudo apt-get update || true
+          timeout 180 sudo apt-get install -y uidmap slirp4netns || true
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-${DOCKER_ROOTLESS_EXTRAS_VERSION}.tgz" \
+            | tar xz -C "$RUNNER_TEMP"
+          export PATH="$RUNNER_TEMP/docker-rootless-extras:$PATH"
+          lane_dir="$RUNNER_TEMP/docker-l80"
+          mkdir -p "$lane_dir"
+          # Direct dockerd-rootless.sh rather than setuptool+systemd: fewer
+          # moving parts, and the daemon only has to outlive this job. vfs is
+          # deterministic without fuse-overlayfs; the lane is small.
+          nohup dockerd-rootless.sh \
+            --storage-driver=vfs \
+            --data-root="$lane_dir/data" \
+            --exec-root="$lane_dir/exec" \
+            --pidfile="$lane_dir/docker.pid" \
+            --host="unix://$lane_dir/docker.sock" \
+            > "$lane_dir/dockerd.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if docker --host "unix://$lane_dir/docker.sock" info > /dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker --host "unix://$lane_dir/docker.sock" info \
             --format '{{json .SecurityOptions}}' | grep -q rootless
-          echo "DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> "$GITHUB_ENV"
+          echo "DOCKER_HOST=unix://$lane_dir/docker.sock" >> "$GITHUB_ENV"
       # Seed the rootless daemon from the image built above instead of
-      # rebuilding it: the lane's budget belongs to the conformance run.
+      # rebuilding it: the lane's budget belongs to the conformance run. The
+      # first docker talks to the runner's rootful system daemon explicitly;
+      # the second inherits DOCKER_HOST from the previous step's GITHUB_ENV.
       - name: Load the Builder sandbox image into the rootless daemon
-        run: >-
-          docker --host unix:///var/run/docker.sock save maistro-builders:latest
-          | docker --host unix:///run/user/$(id -u)/docker.sock load
+        run: docker --host unix:///var/run/docker.sock save maistro-builders:latest | docker load
       - name: Run the real Builder sandbox conformance lane
         run: uv run pytest packages/maistro-bootstrap/tests/test_container_sandbox.py -v --tb=short
       - run: uv run pytest packages/maistro-bootstrap/tests -v --tb=short
