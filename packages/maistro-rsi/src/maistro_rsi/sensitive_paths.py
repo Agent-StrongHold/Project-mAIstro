@@ -109,6 +109,21 @@ SENSITIVE_PATH_PATTERNS: tuple[str, ...] = (
     # SafeHarnessRunner composes Warden and the ActionGate but lives under
     # capabilities/, so the "maistro/security/" pattern above never saw it.
     "maistro/capabilities/providers/",
+    # The governed capability-effect boundary (#55/#1362): governed_invocation
+    # evaluates the invocation policy and enforces the durable approvals it
+    # consults; authority.py and approval_store.py are the approval authority
+    # and its durable record; invocation.py is the external-effect boundary and
+    # the invocation stores are its durable state. A candidate that can edit
+    # any of these can weaken the approval/effect gate without touching
+    # security/ or capabilities/providers/, so they sit on the sensitive
+    # surface instead of being tolerated as baseline admission (Codex review,
+    # chore/authorize-effect-door-promotion).
+    "maistro/capabilities/governed_invocation.py",
+    "maistro/capabilities/authority.py",
+    "maistro/capabilities/approval_store.py",
+    "maistro/capabilities/invocation.py",
+    "maistro/capabilities/invocation_store.py",
+    "maistro/capabilities/pg_invocation_store.py",
     # The DAG-synthesis substrate that lets an agent spawn further
     # sub-agents/DAGs: the recursion-depth cap and the two node kinds that
     # dispatch through it.
