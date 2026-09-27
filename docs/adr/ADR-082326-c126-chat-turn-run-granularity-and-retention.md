@@ -3,8 +3,9 @@ id: ADR-082326-c126
 title: "Chat turn Run granularity and retention"
 repo: maistro-engine
 kind: adr
-status: Proposed
+status: Accepted
 created: 2026-08-23
+accepted: 2026-09-27
 substrate:
   - maistro-engine#ADR-081226-a66b
 implements: []
@@ -15,7 +16,14 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests: []
+tests:
+  - packages/maistro-core/tests/runs/test_chat_admission.py
+  - packages/maistro-core/tests/test_container_chat_runs.py
+history:
+  - status: Proposed
+    date: 2026-08-23
+  - status: Accepted
+    date: 2026-09-27
 layer: Orchestration
 owners:
   - '@BlakeMatthews-dev'
