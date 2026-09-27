@@ -290,6 +290,21 @@ or placeholder-only section.
 
 ### Added
 
+- **The Canvas store's tables are in the root alembic chain (#286, partial).**
+  Migration 044 creates `canvases`, `layers`, `generation_jobs` (with the
+  SPEC-203 lease columns and the partial pending-claim index),
+  `composite_records` and `canvas_blobs`, which `PgCanvasStore` reads and
+  writes but no migration here ever created. It adopts rather than assumes an
+  empty database: `CREATE TABLE IF NOT EXISTS` plus `ADD COLUMN IF NOT EXISTS`
+  for every column, so a deployment whose tables were created outside the
+  repository gains any missing columns and keeps its rows. On tables 044
+  creates, the `(canvas_id, z_index)` uniqueness is deferred to commit, so
+  layer reorder and removal no longer collide on intermediate states; an
+  adopted table keeps its own constraints and foreign keys as they were. The five tables move
+  from `created_outside_this_repo` into the durable-table retention inventory.
+  Operators: `alembic upgrade head` now touches these tables, and `downgrade`
+  past 044 drops them, including rows an adopted table held before.
+
 - **Durable user model: `UserModelFact` and self-consented promotion
   (#1047, partial).** New `maistro.memory.user_model` package: a frozen,
   revisioned `UserModelFact` owned by the canonical user id (evidence refs,
