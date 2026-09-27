@@ -422,7 +422,11 @@ async def test_canonical_invocation_completion_records_quota_once(
 ) -> None:
     """The live Invocation hook records provider usage and deduplicates effects."""
     tracker = InMemoryQuotaTracker()
-    effects = new_in_memory_effect_context(usage_log=InMemoryUsageLog(), quota_tracker=tracker)
+    effects = new_in_memory_effect_context(
+        usage_log=InMemoryUsageLog(),
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
     # Binding-scoped credential routing (#1091): every governed call in this
     # file crosses the credential seam, so the gateway credential the binding
     # authorizes must exist in its Workspace/Project scope.
@@ -477,7 +481,11 @@ async def test_canonical_invocation_missing_usage_is_explicitly_unreported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tracker = InMemoryQuotaTracker()
-    effects = new_in_memory_effect_context(usage_log=InMemoryUsageLog(), quota_tracker=tracker)
+    effects = new_in_memory_effect_context(
+        usage_log=InMemoryUsageLog(),
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
     effects.credentials.add(
         workspace_id="ws1",
         project_id="p1",
@@ -1132,7 +1140,11 @@ async def test_client_complete_without_prior_turn_mints_one(
     that minted identity either way (#718: no ungoverned side door).
     """
     tracker = InMemoryQuotaTracker()
-    effects = new_in_memory_effect_context(usage_log=InMemoryUsageLog(), quota_tracker=tracker)
+    effects = new_in_memory_effect_context(
+        usage_log=InMemoryUsageLog(),
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
     effects.credentials.add(
         workspace_id="ws1",
         project_id="p1",

@@ -16,7 +16,10 @@ from typing import Any
 import pytest
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_in_memory_effect_context,
+)
 from maistro.capabilities.invocation import (
     InvocationStatus,
     InvocationUsage,
@@ -92,7 +95,11 @@ async def test_applied_reconciliation_records_recovered_usage_exactly_once() -> 
 
     tracker = InMemoryQuotaTracker()
     usage_log = InMemoryUsageLog()
-    governed = new_in_memory_effect_context(usage_log=usage_log, quota_tracker=tracker)
+    governed = new_in_memory_effect_context(
+        usage_log=usage_log,
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
 
     async def crash(_provider: Any, _request: Any) -> dict[str, Any]:
         raise RuntimeError("connection dropped after the provider committed")
@@ -144,7 +151,11 @@ async def test_not_applied_settlement_records_no_usage() -> None:
 
     tracker = InMemoryQuotaTracker()
     usage_log = InMemoryUsageLog()
-    governed = new_in_memory_effect_context(usage_log=usage_log, quota_tracker=tracker)
+    governed = new_in_memory_effect_context(
+        usage_log=usage_log,
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
 
     async def crash(_provider: Any, _request: Any) -> dict[str, Any]:
         raise RuntimeError("process died before the request left")
@@ -173,7 +184,11 @@ async def test_reconciled_missing_usage_is_unreported_not_zero() -> None:
 
     tracker = InMemoryQuotaTracker()
     usage_log = InMemoryUsageLog()
-    governed = new_in_memory_effect_context(usage_log=usage_log, quota_tracker=tracker)
+    governed = new_in_memory_effect_context(
+        usage_log=usage_log,
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
 
     async def crash(_provider: Any, _request: Any) -> dict[str, Any]:
         raise RuntimeError("crashed mid-call")
@@ -206,7 +221,11 @@ async def test_physical_completion_records_once_and_reconciliation_cannot_add() 
 
     tracker = InMemoryQuotaTracker()
     usage_log = InMemoryUsageLog()
-    governed = new_in_memory_effect_context(usage_log=usage_log, quota_tracker=tracker)
+    governed = new_in_memory_effect_context(
+        usage_log=usage_log,
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
 
     async def execute(_provider: Any, _request: Any) -> dict[str, Any]:
         return {"remote_id": "remote-1"}
@@ -239,7 +258,11 @@ async def test_indeterminate_settlement_keeps_the_ledger_waiting() -> None:
 
     tracker = InMemoryQuotaTracker()
     usage_log = InMemoryUsageLog()
-    governed = new_in_memory_effect_context(usage_log=usage_log, quota_tracker=tracker)
+    governed = new_in_memory_effect_context(
+        usage_log=usage_log,
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
 
     async def crash(_provider: Any, _request: Any) -> dict[str, Any]:
         raise RuntimeError("crashed mid-call")

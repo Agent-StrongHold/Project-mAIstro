@@ -140,11 +140,20 @@ def _install_container(monkeypatch: pytest.MonkeyPatch, tracker: _RecordingTrack
     """
     import services.canonical_dag_runner as runner
 
-    from maistro.capabilities.effect_context import new_effect_context
+    from maistro.capabilities.effect_context import (
+        binding_scope_policy,
+        new_effect_context,
+    )
     from maistro.quota.usage_log import InMemoryUsageLog
 
     usage_log = InMemoryUsageLog()
-    effects = new_effect_context(usage_log=usage_log, quota_tracker=tracker)
+    # Since #846 an omitted policy evaluator fails closed, so this stand-in
+    # names the explicit M1 baseline like the production container does.
+    effects = new_effect_context(
+        usage_log=usage_log,
+        quota_tracker=tracker,
+        policy_evaluator=binding_scope_policy,
+    )
     container = SimpleNamespace(
         capability_effects=effects,
         provider_registry=_UnknownModelRegistry(),

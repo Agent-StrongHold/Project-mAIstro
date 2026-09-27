@@ -7,7 +7,10 @@ import httpx
 
 from maistro.agents.base import Agent
 from maistro.agents.strategies.direct import DirectStrategy
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_in_memory_effect_context,
+)
 from maistro.capabilities.model_chat import GovernedLLMClient
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
@@ -70,7 +73,13 @@ async def test_agent_completion_uses_canonical_invocation_quota_hook(
     _patch_gateway(monkeypatch)
     tracker = InMemoryQuotaTracker()
     usage_log = InMemoryUsageLog()
-    effects = new_in_memory_effect_context(usage_log=usage_log, quota_tracker=tracker)
+    effects = new_in_memory_effect_context(
+        usage_log=usage_log,
+        quota_tracker=tracker,
+        # Since #846 an omitted policy evaluator fails closed, so this fixture
+        # names the explicit M1 baseline like the production container does.
+        policy_evaluator=binding_scope_policy,
+    )
     # Binding-scoped credential routing (#1091): the governed call refuses
     # before any HTTP unless the credential the Binding authorizes exists in
     # its Workspace/Project scope. Register the deployment's default gateway
