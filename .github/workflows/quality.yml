@@ -111,7 +111,7 @@ jobs:
       # The Tier-3 sandbox backend (#76). Without it the bubblewrap
       # integration tests skip, and the diff-coverage gate then measures a
       # backend whose execution paths nothing ran -- the exact shape of the
-      # gap that gate exists to find.
+      # gap that gate exists to catch.
       - name: install bubblewrap
         run: |
           timeout 180 sudo apt-get update -qq || true
@@ -364,6 +364,10 @@ jobs:
       # while its PostgreSQL leg was passing — in the other job, where it
       # skipped. A list of suites is a list of what gets measured, so a new
       # PostgreSQL store means an edit here, every time.
+      #
+      # The claim-driven `task_idempotency` purge (#325) is one file, not the
+      # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
+      # race, are the only ones under `tasks` that need a server.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -376,7 +380,8 @@ jobs:
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
-            packages/maistro-core/tests/scheduling -v --tb=short
+            packages/maistro-core/tests/scheduling \
+            packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py -v --tb=short
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in
@@ -401,7 +406,16 @@ jobs:
   coverage-gate:
     name: Coverage gate (publish-set floor + diff coverage)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 -> 30 on 2026-09-26: capacity, not scope. The `combine` step below
+    # runs the non-publish suites serially after the publish-set floor (six
+    # when measured; maistro-registry has since made it seven), and they are
+    # essentially the whole job: on #1591 (run 36207106537) it took 11m07s of
+    # 11m25s, of which the root `tests/` suite (the `--source=scripts`
+    # producer) was 7m49s and hive-conductor 2m16s with its requirements
+    # install. #1576 took ~14 min and #1581 was cancelled at 15 twice; a
+    # cancelled gate never reports, so it blocks the PR without measuring
+    # anything. The suites, sources, floor and diff thresholds are unchanged.
+    timeout-minutes: 30
     needs: [coverage-unit, coverage-archive, coverage-postgres]
     env:
       # The combine step re-runs the root suite as the `scripts` producer, and
@@ -409,9 +423,9 @@ jobs:
       # to `develop` the resolver's local fallback degenerates to HEAD and the
       # #534 self-reference refusal fires, reding this job for "cannot
       # compare" rather than any coverage regression (#1235). Name the event's
-      # own base, exactly as vulture-ratchet.yml does. tests/conftest.py
-      # captures this value and keeps it away from every test except the gate
-      # self-checks that opt in.
+      # own base, exactly as vulture-ratchet.yml does, so the trusted baseline is
+      # the revision this push replaces. tests/conftest.py captures this value
+      # and keeps it away from every test except the gate self-checks that opt in.
       #
       # `before` is right only for a protected-branch push, which really does
       # replace that revision. A topic branch's `before` is its own previous
@@ -534,6 +548,18 @@ jobs:
             -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
           uv run coverage run --append --branch --source=packages/maistro-design/src/maistro_design \
             -m pytest packages/maistro-design/tests --timeout=30 -q
+          # maistro-registry joins the measured set with #1096: its linker
+          # performs the caller-influenced GitHub fetch that the SSRF sweep
+          # (#67, ADR-102) routed through the central guard — the one tree
+          # where an unmeasured change would be indistinguishable from a
+          # tested one, because nothing else ran its suite under coverage.
+          # The #374 citation-status policy (maistro_registry.citations) is
+          # exercised by the root suite, not by this package's own five tests;
+          # without naming that file here the module's changed lines measure
+          # 0% in this producer and the diff-coverage gate fails on tests
+          # that exist and pass but were never pointed at this --source.
+          uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
+            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py --timeout=30 -q
           # hive-conductor's pytest-bdd is declared in that workspace member's
           # OWN `dev` extra, and `--all-extras` includes every optional
           # dependency of the ROOT project only — not of each member. So the
@@ -1002,14 +1028,12 @@ jobs:
           # above -- 3 points of headroom is 3 regressions that land silently.
           PYRIGHT_BASELINE: 21
         run: |
-          uv run pyright --outputjson packages/maistro-core/src > pyright.json || true
-          count=$(uv run python -c "import json;print(json.load(open('pyright.json'))['summary']['errorCount'])")
-          uv run pyright packages/maistro-core/src || true
-          echo "pyright error count: $count (baseline: $PYRIGHT_BASELINE)"
-          if [ "$count" -gt "$PYRIGHT_BASELINE" ]; then
-            echo "::error::pyright regression — $count errors exceeds baseline of $PYRIGHT_BASELINE; fix the new findings (Boy Scout Rule)"
-            exit 1
-          fi
+          # One analysis supplies both the verdict and the complete diagnostics.
+          # A type-error exit may consume the existing allowance; a fatal exit may not.
+          pyright_status=0
+          uv run pyright --outputjson packages/maistro-core/src > pyright.json || pyright_status=$?
+          uv run python scripts/check-pyright-report.py pyright.json \
+            --baseline "$PYRIGHT_BASELINE" --exit-code "$pyright_status"
 
       # ----- Pillar 2: Hypothesis property tests -----
       # The property suite lives in formal/ (also run by formal-conformance.yml

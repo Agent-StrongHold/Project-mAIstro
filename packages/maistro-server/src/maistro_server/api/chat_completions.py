@@ -53,7 +53,7 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -109,6 +109,10 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "maistro-tier-2"
     messages: list[ChatMessage]
+    # Optional Maistro correlation for clients that already have a session.
+    # OpenAI clients ignore this additive field, while the canonical Run keeps
+    # the conversation identity separate from the HTTP request identity.
+    session_id: str | None = None
     stream: bool = False
     temperature: float | None = None
     max_tokens: int | None = None
@@ -205,6 +209,8 @@ def _unavailable(retry_after_s: int = CHAT_TURN_RETRY_AFTER_S) -> HTTPException:
 async def _admit_turn(
     request: ChatCompletionRequest,
     auth: AuthenticatedPrincipal | None,
+    *,
+    request_id: str | None = None,
 ) -> Run:
     """Admit this turn as a canonical Run, or refuse it with a retryable 503.
 
@@ -219,6 +225,10 @@ async def _admit_turn(
     its canonical Run is refused and never dispatched (#1108 owner decision,
     amending ADR-082326-c126) — raised before the `StreamingResponse` exists,
     so a streaming caller gets a real 503 too.
+
+    The turn's provenance travels with the admission: `session_id` keeps the
+    conversation identity on the Run, and `request_id` the HTTP request that
+    carried it, exactly as the task path records them.
     """
     if _container is None:
         raise _unavailable()
@@ -226,6 +236,14 @@ async def _admit_turn(
         run: Run = await _container._admit_chat_turn(
             [m.model_dump() for m in request.messages],
             auth=_auth_context(auth),
+            session_id=request.session_id,
+            request_id=request_id,
+            # A dispatch follows in this process — `_route` below — so the
+            # Run is shielded from the chat retention window until the turn
+            # closes. Without the shield, a burst could evict this Run in the
+            # gap between its admission (here, for the response header) and
+            # its first Attempt, turning a live turn into a refusal.
+            dispatch_pending=True,
         )
     except ChatTurnRefused as exc:
         logger.warning("chat_completions_turn_refused", reason=exc.detail)
@@ -237,6 +255,8 @@ async def _route(
     request: ChatCompletionRequest,
     auth: AuthenticatedPrincipal | None,
     run: Run | None,
+    *,
+    request_id: str | None = None,
 ) -> tuple[str, str]:
     """The turn's answer and its finish reason, from the Conduit.
 
@@ -255,6 +275,8 @@ async def _route(
     result = await _container.route_request(
         [m.model_dump() for m in request.messages],
         auth=_auth_context(auth),
+        session_id=request.session_id,
+        request_id=request_id,
         run=run,
     )
     return _answer_of(result)
@@ -320,10 +342,18 @@ async def _close_if_open(run: Run) -> None:
         from maistro.runs.service import RunExecutionService
         from maistro.runtime import PythonExecutionRuntime
 
+        # Released before the cancel rather than after: the mark shields a
+        # Run only until its dispatch settles, and an abandoned stream is
+        # past that — this close is the settlement, whichever write wins.
+        _container._release_chat_dispatch(run)
         await RunExecutionService(
             store=_container.run_store,
             runtime=PythonExecutionRuntime(),
         ).cancel_run(run.run_id, error=ABANDONED)
+        # The stream admits before dispatch, so a burst can make every Run live
+        # until cleanup. Sweep after terminalizing the last one as well as on
+        # the normal route so abandoned streams cannot bypass the chat bound.
+        await _container._sweep_chat_runs()
     except Exception:
         logger.exception("chat_completions_abandoned_run_close_failed", run_id=run.run_id)
 
@@ -332,6 +362,8 @@ async def _stream_conductor_response(
     request: ChatCompletionRequest,
     auth: AuthenticatedPrincipal | None = None,
     run: Run | None = None,
+    *,
+    request_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream the turn, and close its Run however the stream ends.
 
@@ -347,7 +379,7 @@ async def _stream_conductor_response(
     allowed to suspend.
     """
     try:
-        async for chunk in _stream_turn(request, auth, run):
+        async for chunk in _stream_turn(request, auth, run, request_id=request_id):
             yield chunk
     finally:
         if run is not None:
@@ -362,6 +394,8 @@ async def _stream_turn(
     request: ChatCompletionRequest,
     auth: AuthenticatedPrincipal | None = None,
     run: Run | None = None,
+    *,
+    request_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream the conductor response as SSE chunks."""
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
@@ -383,7 +417,7 @@ async def _stream_turn(
     user_msg = _extract_user_message(request)
 
     try:
-        response_text, finish_reason = await _route(request, auth, run)
+        response_text, finish_reason = await _route(request, auth, run, request_id=request_id)
     except TimeoutError:
         logger.error("chat_completions_timeout", user_msg=user_msg[:100])
         error_event = {"error": {"type": "timeout", "message": "LLM call timed out"}}
@@ -430,18 +464,21 @@ async def _stream_turn(
 async def chat_completions(
     request: ChatCompletionRequest,
     auth: RequireAuth,
+    http_request: Request,
 ) -> ChatCompletionResponse | StreamingResponse:
     # Admitted here rather than inside the generator, so the streaming branch
     # can name the Run in a response header — the one place a client can read
-    # it without parsing SSE at all.
-    run = await _admit_turn(request, auth)
+    # it without parsing SSE at all. RequestIDMiddleware has already assigned
+    # the id before FastAPI enters this handler.
+    request_id = getattr(http_request.state, "request_id", None)
+    run = await _admit_turn(request, auth, request_id=request_id)
 
     if request.stream:
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         if run is not None:
             headers[RUN_ID_HEADER] = run.run_id
         return StreamingResponse(
-            _stream_conductor_response(request, auth, run),
+            _stream_conductor_response(request, auth, run, request_id=request_id),
             media_type="text/event-stream",
             headers=headers,
         )
@@ -452,7 +489,7 @@ async def chat_completions(
     user_msg = _extract_user_message(request)
 
     try:
-        response_text, finish_reason = await _route(request, auth, run)
+        response_text, finish_reason = await _route(request, auth, run, request_id=request_id)
     except TimeoutError:
         logger.error("chat_completions_timeout", user_msg=user_msg[:100])
         raise HTTPException(status_code=504, detail="LLM call timed out") from None

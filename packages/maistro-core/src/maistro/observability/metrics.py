@@ -14,6 +14,14 @@ not turn that responsibility into unbounded process-memory growth, the
 registry additionally caps the number of distinct label sets a metric may
 hold (#818 AC-3): past the cap, new label sets are dropped and counted in
 ``metrics_series_overflow_total`` instead of stored.
+
+The same failure shape exists one level up: a caller minting metric *names*
+from unbounded input would otherwise grow the registry family by family. The
+registry therefore also caps how many distinct caller-requested metric
+families it will hold; past that cap, registrations of brand-new names return
+a dropping sink (same interface, writes are no-ops) and the refusal is
+counted in ``metrics_registry_overflow_total``. Both caps are memory
+backstops, not quotas — legitimate instrumentation stays far below them.
 """
 
 from __future__ import annotations
@@ -25,7 +33,7 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 from itertools import pairwise
-from typing import Any, TypedDict
+from typing import Any, TypedDict, TypeVar
 
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
@@ -46,6 +54,15 @@ DEFAULT_MAX_SERIES_PER_METRIC = 10_000
 _OVERFLOW_METRIC_NAME = "metrics_series_overflow_total"
 _OVERFLOW_METRIC_HELP = (
     "Samples dropped because their metric reached its series-cardinality cap (#818)"
+)
+
+#: Family-cap signal counter, created lazily on the first refused metric
+#: registration. Unlabeled by construction: a caller-controlled label here
+#: would reintroduce exactly the unbounded growth the family cap exists to
+#: stop.
+_REGISTRY_OVERFLOW_METRIC_NAME = "metrics_registry_overflow_total"
+_REGISTRY_OVERFLOW_METRIC_HELP = (
+    "Metric-family registrations refused because the registry reached its family cap"
 )
 
 _LabelSet = tuple[tuple[str, str], ...]
@@ -102,8 +119,8 @@ def _validate_metric_name(name: str) -> None:
         raise ValueError(f"invalid Prometheus metric name {name!r}; the '__' prefix is reserved")
     if name == _UPTIME_METRIC_NAME:
         raise ValueError(f"{_UPTIME_METRIC_NAME!r} is reserved for registry uptime")
-    if name == _OVERFLOW_METRIC_NAME:
-        raise ValueError(f"{_OVERFLOW_METRIC_NAME!r} is reserved for registry overflow accounting")
+    if name in (_OVERFLOW_METRIC_NAME, _REGISTRY_OVERFLOW_METRIC_NAME):
+        raise ValueError(f"{name!r} is reserved for registry overflow accounting")
 
 
 def _label_key(
@@ -287,6 +304,16 @@ class _Histogram:
             return results
 
 
+#: Default cap on distinct metric families a registry will hold. The
+#: predefined application metrics number in the dozens; this backstop fires
+#: only for a caller minting metric names from unbounded input (ids, paths,
+#: tenants) — the same failure shape as the per-metric series cap, one level
+#: up. Backstop accounting counters (the two overflow metrics) are exempt.
+DEFAULT_MAX_METRICS_PER_REGISTRY = 1_000
+
+_MetricT = TypeVar("_MetricT", _Counter, _Gauge, _Histogram)
+
+
 class MetricsRegistry:
     """Central registry for JSON collection and Prometheus text exposition.
 
@@ -295,9 +322,21 @@ class MetricsRegistry:
     new sets are dropped and counted in ``metrics_series_overflow_total``
     rather than stored, so a caller with unbounded label values cannot grow
     process memory without bound.
+
+    The backstop also covers unbounded metric *families*: past
+    ``max_metrics_per_registry`` distinct caller-requested names, registering
+    a brand-new metric returns a dropping sink (same interface, writes are
+    no-ops) and the refusal is counted in the unlabeled
+    ``metrics_registry_overflow_total``. The two overflow counters are exempt
+    from the family cap, so registry memory is bounded at
+    ``max_metrics_per_registry`` families plus fixed-size accounting.
     """
 
-    def __init__(self, max_series_per_metric: int | None = None) -> None:
+    def __init__(
+        self,
+        max_series_per_metric: int | None = None,
+        max_metrics_per_registry: int | None = None,
+    ) -> None:
         # None keeps the optional configuration API while retaining the safe
         # default; there is no public uncapped mode because this is a backstop.
         cap = (
@@ -307,18 +346,32 @@ class MetricsRegistry:
         )
         if cap is not None and cap < 1:
             raise ValueError("max_series_per_metric must be at least 1 when set")
+        family_cap = (
+            DEFAULT_MAX_METRICS_PER_REGISTRY
+            if max_metrics_per_registry is None
+            else max_metrics_per_registry
+        )
+        if family_cap < 1:
+            raise ValueError("max_metrics_per_registry must be at least 1 when set")
         self._metrics: dict[str, _Counter | _Gauge | _Histogram] = {}
         self._lock = threading.Lock()
         self._start_time = time.monotonic()
         self._series_cap = _SeriesCap(cap, self._record_overflow)
+        self._family_cap = family_cap
+        # Caller-requested families actually stored; the exempt overflow
+        # counters are not counted against the family cap.
+        self._caller_families = 0
 
     def _record_overflow(self, metric_name: str) -> None:
         """Count one dropped sample; never raises into the guarded metric.
 
         Called with the reporting metric's lock held, so it must not touch that
-        metric again — only the lazily created, deliberately uncapped overflow
-        counter (its label space is registry metric names, already finite, and
-        wiring its own overflow to itself would recurse).
+        metric again — only the lazily created overflow counter. That counter
+        is itself series-capped (with no recursion wiring): dynamic metric
+        names are exactly the unbounded input this module defends against, so
+        its ``metric`` label space must not inherit them without bound. Once
+        the overflow counter is at its cap, records for further new metric
+        names are dropped — resolution loss, never unbounded memory.
         """
         try:
             with self._lock:
@@ -327,7 +380,7 @@ class MetricsRegistry:
                     overflow = _Counter(
                         _OVERFLOW_METRIC_NAME,
                         _OVERFLOW_METRIC_HELP,
-                        series_cap=_SeriesCap(None, None),
+                        series_cap=_SeriesCap(self._series_cap.max_series, None),
                     )
                     self._metrics[_OVERFLOW_METRIC_NAME] = overflow
                 elif not isinstance(overflow, _Counter):
@@ -336,13 +389,33 @@ class MetricsRegistry:
         except Exception:
             pass  # a backstop that breaks the metric it guards guards nothing
 
+    def _refuse_family(self, sink: _MetricT) -> _MetricT:
+        """Handle a brand-new metric past the family cap: count the refusal
+        (lazily creating the exempt, unlabeled accounting counter) and return
+        a dropping sink so the caller keeps a working instrument. Callers must
+        hold the registry lock; ``sink`` is deliberately not stored.
+        """
+        overflow = self._metrics.get(_REGISTRY_OVERFLOW_METRIC_NAME)
+        if overflow is None:
+            overflow = _Counter(_REGISTRY_OVERFLOW_METRIC_NAME, _REGISTRY_OVERFLOW_METRIC_HELP)
+            self._metrics[_REGISTRY_OVERFLOW_METRIC_NAME] = overflow
+        if isinstance(overflow, _Counter):
+            # Unlabeled and single-series by construction, so this cannot grow.
+            overflow.inc()
+        return sink
+
     def counter(self, name: str, help_text: str = "") -> _Counter:
         _validate_metric_name(name)
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
+                if self._caller_families >= self._family_cap:
+                    return self._refuse_family(
+                        _Counter(name, help_text, series_cap=_SeriesCap(0, None))
+                    )
                 metric = _Counter(name, help_text, series_cap=self._series_cap)
                 self._metrics[name] = metric
+                self._caller_families += 1
             elif not isinstance(metric, _Counter):
                 raise ValueError(f"metric {name!r} is already registered with another type")
             return metric
@@ -352,8 +425,13 @@ class MetricsRegistry:
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
+                if self._caller_families >= self._family_cap:
+                    return self._refuse_family(
+                        _Gauge(name, help_text, series_cap=_SeriesCap(0, None))
+                    )
                 metric = _Gauge(name, help_text, series_cap=self._series_cap)
                 self._metrics[name] = metric
+                self._caller_families += 1
             elif not isinstance(metric, _Gauge):
                 raise ValueError(f"metric {name!r} is already registered with another type")
             return metric
@@ -365,8 +443,13 @@ class MetricsRegistry:
         with self._lock:
             metric = self._metrics.get(name)
             if metric is None:
+                if self._caller_families >= self._family_cap:
+                    return self._refuse_family(
+                        _Histogram(name, help_text, buckets, series_cap=_SeriesCap(0, None))
+                    )
                 metric = _Histogram(name, help_text, buckets, series_cap=self._series_cap)
                 self._metrics[name] = metric
+                self._caller_families += 1
             elif not isinstance(metric, _Histogram):
                 raise ValueError(f"metric {name!r} is already registered with another type")
             return metric

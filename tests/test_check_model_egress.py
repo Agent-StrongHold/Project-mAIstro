@@ -15,6 +15,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -49,6 +50,49 @@ def gate():
 
 
 # --- detection ----------------------------------------------------------------
+
+
+def test_the_sibling_loader_loads_cold_and_caches_the_result(
+    gate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing cached, ``_load_direct_effects`` performs the real load.
+
+    Every in-suite import takes the cache-hit path because an alphabetically
+    earlier test module registers ``check_direct_effects`` first; this drives
+    the spec-based load that path skips, which is the code that has to work
+    when this gate is imported on its own.
+    """
+    monkeypatch.delitem(sys.modules, "check_direct_effects", raising=False)
+
+    module = gate._load_direct_effects()
+
+    assert module.__name__ == "check_direct_effects"
+    assert sys.modules["check_direct_effects"] is module
+
+
+def test_the_sibling_loader_cleans_up_a_failed_load(gate, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sibling whose exec fails must not leave its half-built module cached.
+
+    A cached failed module would make every later importer see the broken
+    object instead of the error, turning one load failure into a confused
+    downstream crash.
+    """
+    monkeypatch.delitem(sys.modules, "check_direct_effects", raising=False)
+
+    class Loader:
+        def exec_module(self, _module: object) -> None:
+            raise RuntimeError("boom")
+
+    fake_spec = SimpleNamespace(name="check_direct_effects", loader=Loader())
+    monkeypatch.setattr(gate.importlib.util, "spec_from_file_location", lambda *_args: fake_spec)
+    monkeypatch.setattr(
+        gate.importlib.util, "module_from_spec", lambda _spec: ModuleType("check_direct_effects")
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        gate._load_direct_effects()
+
+    assert "check_direct_effects" not in sys.modules
 
 
 def test_a_module_that_posts_to_a_completions_endpoint_counts(gate) -> None:

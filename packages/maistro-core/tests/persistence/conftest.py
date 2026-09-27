@@ -23,6 +23,7 @@ import pytest
 #: than discovered: truncating everything would take out the alembic version
 #: table and make the migrated database look unmigrated.
 _SCRATCH_TABLES = (
+    "quota_usage_events",
     "quota_usage",
     "sessions",
     "session_turns",

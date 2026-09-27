@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal, cast
 
 import pytest
 import services.chat_completion as service
@@ -483,6 +483,726 @@ async def test_nonstreaming_tool_loop_refuses_injected_inbound(
 # --------------------------------------------------------------------------- #
 # Dispatch policy: authorization independent of model judgment
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_scan_config_visits_nested_airtable_field_name_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.agent_materialization as materialization
+
+    class _RecordingWarden:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def scan(self, text: str, boundary: str) -> SimpleNamespace:
+            self.texts.append(text)
+            return SimpleNamespace(clean=True, flags=[])
+
+    warden = _RecordingWarden()
+    monkeypatch.setattr(materialization, "_warden_instance", warden)
+    verdict = await materialization.scan_config(
+        {"records": [{"fields": {INJECTION: "safe value"}}]}, boundary="tool_result"
+    )
+
+    assert verdict["status"] == "clean"
+    assert INJECTION in warden.texts
+
+
+@pytest.mark.asyncio
+async def test_airtable_field_name_in_nested_mapping_key_is_withheld(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Airtable field names are result data, not trusted scanner paths."""
+
+    async def airtable_result(tool_name: str, args: dict, user_id: str) -> dict:
+        return {
+            "records": [
+                {
+                    "id": "rec-1",
+                    "fields": {INJECTION: "attacker-controlled field value"},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(service, "_execute_tool", airtable_result)
+    result, summary = await service._gated_execute_tool(
+        "airtable_query", {"source": "airtable", "table": "Accounts"}, "user-1", "gate-airtable"
+    )
+
+    assert result == {"error": "tool result withheld by security gate", "blocked": True}
+    assert "withheld" in summary
+
+
+@pytest.mark.asyncio
+async def test_tool_result_gate_scans_exact_serialized_mapping_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[object] = []
+
+    async def clean_gate(payload: object, **kwargs: Any) -> chat_gate.GateDecision:
+        seen.append(payload)
+        return chat_gate.GateDecision(
+            allowed=True,
+            reason=chat_gate.REASON_CLEAN,
+            surface=kwargs["surface"],
+        )
+
+    async def airtable_result(tool_name: str, args: dict, user_id: str) -> dict:
+        return {"records": [{"fields": {"Account Owner": "Ada"}}]}
+
+    monkeypatch.setattr(service, "gate_untrusted", clean_gate)
+    monkeypatch.setattr(service, "_execute_tool", airtable_result)
+    result, _summary = await service._gated_execute_tool(
+        "airtable_query", {"source": "airtable"}, "user-1", "gate-json"
+    )
+
+    serialized = seen[-1]
+    assert isinstance(serialized, str)
+    assert json.loads(serialized) == result
+    assert '"Account Owner"' in serialized
+
+
+def test_run_workflow_is_privileged_and_requires_scoped_approval() -> None:
+    _reset_audit()
+    refused = chat_gate.gate_tool_dispatch("run_workflow", "user-1", workflow_id="dag-1")
+    assert refused is not None
+    assert refused.reason == "approval_required"
+    bare_boolean = chat_gate.gate_tool_dispatch(
+        "run_workflow", "user-1", approved=True, workflow_id="dag-1"
+    )
+    assert bare_boolean is not None
+    assert bare_boolean.reason == "approval_required"
+    assert chat_gate.tool_effect("run_workflow") == chat_gate.TOOL_EFFECT_MUTATE
+
+    import stores
+
+    blocked = [
+        e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_blocked"
+    ][-1]
+    assert blocked["detail"]["principal"] == "user-1"
+    assert blocked["detail"]["workflow_id"] == "dag-1"
+    assert blocked["detail"]["refusal_reason"] == "approval_required"
+
+    forged = chat_gate.gate_tool_dispatch(
+        "run_workflow",
+        "user-1",
+        approved=True,
+        workflow_id="dag-1",
+        gate_id="gate-workflow",
+        approval_evidence={"kind": "human", "approval_id": "approval-1"},
+    )
+    assert forged is not None
+    assert forged.reason == chat_gate.REASON_INVALID_APPROVAL
+
+    blocked = [
+        e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_blocked"
+    ][-1]
+    assert blocked["detail"]["refusal_reason"] == chat_gate.REASON_INVALID_APPROVAL
+    assert blocked["detail"]["approval_evidence"]["approval_id"] == "approval-1"
+
+
+def _canonical_workflow_approval(
+    *,
+    principal: str,
+    workflow_id: str,
+    args: dict[str, Any],
+    actor: str,
+    kind: str = "human",
+) -> tuple[Any, Any]:
+    from maistro.capabilities.authority import (
+        ApprovalAuthority,
+        approval_signing_secret,
+        sign_approval_authority,
+    )
+    from maistro.capabilities.slots.approval import ApprovalDecision, ApprovalRequest
+
+    request = ApprovalRequest(
+        action="run_workflow",
+        params={
+            "workflow_id": workflow_id,
+            "request_digest": chat_gate._workflow_request_digest(args),
+        },
+        tier="policy",
+        requester=principal,
+    )
+    authority = ApprovalAuthority(
+        kind=cast(Literal["human", "delegated"], kind),
+        principal=actor,
+        scope="run_workflow",
+        evidence_id=request.request_id,
+    )
+    authority = ApprovalAuthority(
+        **{
+            **authority.__dict__,
+            "signature": sign_approval_authority(authority, approval_signing_secret()),
+        }
+    )
+    return request, ApprovalDecision(
+        request_id=request.request_id,
+        approved=True,
+        actor=actor,
+        authority=authority,
+    )
+
+
+def test_actor_string_without_typed_authority_cannot_approve_workflow() -> None:
+    args = {"dag_id": "dag-1", "goal": "approved goal"}
+    request, decision = _canonical_workflow_approval(
+        principal="user-1", workflow_id="dag-1", args=args, actor="admin-1"
+    )
+    from maistro.capabilities.slots.approval import ApprovalDecision
+
+    refused = chat_gate.gate_tool_dispatch(
+        "run_workflow",
+        "user-1",
+        approval_request=request,
+        approval_decision=ApprovalDecision(
+            request_id=decision.request_id, approved=True, actor="admin-1"
+        ),
+        workflow_id="dag-1",
+        request_digest=chat_gate._workflow_request_digest(args),
+    )
+    assert refused is not None
+    # A decision was presented; it simply carries no verified authority.
+    assert refused.reason == chat_gate.REASON_INVALID_APPROVAL
+
+
+def test_delegated_authority_authorizes_only_through_its_signature() -> None:
+    """Delegated authority crosses the same signed, scope-bound check as human
+    authority (#1094): a validly signed delegation authorizes the exact
+    workflow, while the identical evidence without the server's signature is
+    not authority at all — the actor string alone never delegates."""
+    args = {"dag_id": "dag-1", "goal": "delegated goal"}
+    request, decision = _canonical_workflow_approval(
+        principal="user-1",
+        workflow_id="dag-1",
+        args=args,
+        actor="delegate-ops",
+        kind="delegated",
+    )
+    gate_kwargs: dict[str, Any] = {
+        "approval_request": request,
+        "workflow_id": "dag-1",
+        "request_digest": chat_gate._workflow_request_digest(args),
+    }
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow", "user-1", approval_decision=decision, **gate_kwargs
+        )
+        is None
+    )
+
+    from maistro.capabilities.authority import ApprovalAuthority
+    from maistro.capabilities.slots.approval import ApprovalDecision
+
+    assert decision.authority is not None
+    unsigned = ApprovalAuthority(**{**decision.authority.__dict__, "signature": ""})
+    refused = chat_gate.gate_tool_dispatch(
+        "run_workflow",
+        "user-1",
+        approval_decision=ApprovalDecision(
+            request_id=decision.request_id, approved=True, actor="delegate-ops", authority=unsigned
+        ),
+        **gate_kwargs,
+    )
+    assert refused is not None
+    assert refused.reason == chat_gate.REASON_INVALID_APPROVAL
+
+
+def test_canonical_human_approval_is_exactly_scoped_and_audited() -> None:
+    import stores
+
+    _reset_audit()
+    args = {"dag_id": "dag-1", "goal": "approved goal"}
+    request, decision = _canonical_workflow_approval(
+        principal="user-1", workflow_id="dag-1", args=args, actor="admin-1"
+    )
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow",
+            "user-1",
+            approval_request=request,
+            approval_decision=decision,
+            workflow_id="dag-1",
+            request_digest=chat_gate._workflow_request_digest(args),
+            gate_id="gate-canonical",
+        )
+        is None
+    )
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow",
+            "user-1",
+            approval_request=request,
+            approval_decision=decision,
+            workflow_id="other-dag",
+            request_digest=chat_gate._workflow_request_digest(
+                {"dag_id": "other-dag", "goal": "approved goal"}
+            ),
+        )
+        is not None
+    )
+    assert (
+        chat_gate.gate_tool_dispatch(
+            "run_workflow",
+            "different-user",
+            approval_request=request,
+            approval_decision=decision,
+            workflow_id="dag-1",
+            request_digest=chat_gate._workflow_request_digest(args),
+        )
+        is not None
+    )
+    approval = [
+        e for e in stores.audit_log.values() if e["action"] == "chat_tool_privilege_approved"
+    ][-1]
+    assert approval["detail"]["principal"] == "user-1"
+    assert approval["detail"]["workflow_id"] == "dag-1"
+    assert approval["detail"]["approval_evidence"]["actor"] == "admin-1"
+
+
+@pytest.mark.asyncio
+async def test_reachable_chat_workflow_route_passes_verified_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[dict[str, Any], str]] = []
+
+    async def run(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        captured.append((args, user_id))
+        return {"run_id": "run-route", "status": "completed"}
+
+    monkeypatch.setattr(chat, "_execute_workflow_with_approval", run)
+    result = await chat.run_workflow(
+        chat.RunWorkflowBody(dag_id="dag-1", goal="approved goal"), FakeRequest()
+    )
+
+    assert result["run_id"] == "run-route"
+    assert captured == [({"dag_id": "dag-1", "goal": "approved goal"}, "user-1")]
+
+
+@pytest.mark.asyncio
+async def test_chat_workflow_route_refuses_an_unauthenticated_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[tuple[dict[str, Any], str]] = []
+
+    async def run(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        executed.append((args, user_id))
+        return {}
+
+    monkeypatch.setattr(chat, "_execute_workflow_with_approval", run)
+    anonymous = SimpleNamespace(state=SimpleNamespace(user=None))
+    with pytest.raises(HTTPException) as exc:
+        await chat.run_workflow(chat.RunWorkflowBody(dag_id="dag-1"), anonymous)
+    assert exc.value.status_code == 401
+    assert executed == []
+
+
+@pytest.mark.asyncio
+async def test_chat_workflow_route_accepts_username_principal_and_omits_empty_goal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A username-only principal still names a user, and no goal means no
+    fabricated goal rides the approval request."""
+
+    captured: list[tuple[dict[str, Any], str]] = []
+
+    async def run(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        captured.append((args, user_id))
+        return {"run_id": "run-route"}
+
+    monkeypatch.setattr(chat, "_execute_workflow_with_approval", run)
+    named = SimpleNamespace(state=SimpleNamespace(user={"username": "blake"}))
+    result = await chat.run_workflow(chat.RunWorkflowBody(dag_id="dag-2"), named)
+
+    assert result["run_id"] == "run-route"
+    assert captured == [({"dag_id": "dag-2"}, "blake")]
+
+
+@pytest.mark.asyncio
+async def test_chat_workflow_route_waits_on_shared_inbox_then_executes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.engine import get_engine
+
+    from maistro.capabilities.bootstrap import default_capability_registry
+
+    engine = get_engine()
+    registry = default_capability_registry()
+    inbox = registry.provider("approval", "inbox")
+    saved = engine._capabilities
+    engine._capabilities = registry
+
+    async def execute(
+        tool_name: str,
+        args: dict[str, Any],
+        user_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert tool_name == "run_workflow"
+        assert kwargs["approval_request"].action == "run_workflow"
+        assert kwargs["approval_decision"].actor == "admin-1"
+        return {"run_id": "run-route-approved", "status": "completed"}
+
+    monkeypatch.setattr(service, "_execute_tool", execute)
+    try:
+        task = asyncio.create_task(
+            chat.run_workflow(
+                chat.RunWorkflowBody(dag_id="dag-1", goal="approved goal"), FakeRequest()
+            )
+        )
+        for _ in range(100):
+            if inbox.pending():
+                break
+            await asyncio.sleep(0.005)
+        pending = inbox.pending()
+        assert len(pending) == 1
+        assert pending[0].action == "run_workflow"
+        assert pending[0].requester == "user-1"
+        assert not task.done()
+
+        from routes import capabilities as cap_routes
+
+        resolved = cap_routes.resolve_approval(
+            pending[0].request_id,
+            cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
+            SimpleNamespace(state=SimpleNamespace(user={"id": "admin-1", "role": "admin"})),
+        )
+        assert resolved["resolved"] is True
+        result = await asyncio.wait_for(task, timeout=1.0)
+        assert result["run_id"] == "run-route-approved"
+    finally:
+        engine._capabilities = saved
+
+
+def test_workflow_approval_route_rejects_config_editor_as_approver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from routes import capabilities as cap_routes
+
+    from maistro.capabilities.slots.approval import ApprovalRequest
+
+    request = ApprovalRequest(
+        action="run_workflow",
+        params={"workflow_id": "dag-1", "request_digest": "digest"},
+        tier="policy",
+        requester="requester-1",
+        request_id="approval-1",
+    )
+    resolved: list[str] = []
+
+    class _Inbox:
+        def pending(self) -> list[ApprovalRequest]:
+            return [request]
+
+        def resolve(self, request_id: str, **_: Any) -> bool:
+            resolved.append(request_id)
+            return True
+
+    monkeypatch.setattr(cap_routes, "_approval_inbox", lambda: _Inbox())
+    with pytest.raises(HTTPException) as exc:
+        cap_routes.resolve_approval(
+            "approval-1",
+            cap_routes.ResolveApprovalBody(approved=True, actor="forged"),
+            SimpleNamespace(
+                state=SimpleNamespace(
+                    user={
+                        "id": "editor-1",
+                        "role": "user",
+                        "permissions": ["config.write"],
+                        "elevated_permissions": ["config.write"],
+                    }
+                )
+            ),
+        )
+    assert exc.value.status_code == 403
+    assert resolved == []
+
+
+@pytest.mark.asyncio
+async def test_unavailable_workflow_approval_is_audited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.engine
+    import stores
+
+    class _Capabilities:
+        async def resolve(self, _: str) -> None:
+            return None
+
+    class _Engine:
+        capabilities = _Capabilities()
+
+    _reset_audit()
+    monkeypatch.setattr(services.engine, "get_engine", lambda: _Engine())
+    result = await service._execute_workflow_with_approval({"dag_id": "dag-1"}, "user-1")
+    assert result["blocked"] is True
+    rows = [
+        entry
+        for entry in stores.audit_log.values()
+        if entry["action"] == "chat_workflow_approval_refused"
+    ]
+    assert rows[-1]["detail"]["refusal_reason"] == "approval_capability_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_reachable_workflow_approval_uses_canonical_inbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maistro.capabilities.authority import (
+        ApprovalAuthority,
+        approval_signing_secret,
+        sign_approval_authority,
+    )
+    from maistro.capabilities.slots.approval import ApprovalDecision
+
+    seen: list[Any] = []
+
+    class _ApprovalProvider:
+        async def request(self, request: Any) -> ApprovalDecision:
+            seen.append(request)
+            authority = ApprovalAuthority(
+                kind="human",
+                principal="admin-1",
+                scope="run_workflow",
+                evidence_id=request.request_id,
+            )
+            authority = ApprovalAuthority(
+                **{
+                    **authority.__dict__,
+                    "signature": sign_approval_authority(authority, approval_signing_secret()),
+                }
+            )
+            return ApprovalDecision(
+                request_id=request.request_id,
+                approved=True,
+                actor="admin-1",
+                authority=authority,
+            )
+
+    class _Capabilities:
+        async def resolve(self, _: str) -> _ApprovalProvider:
+            return _ApprovalProvider()
+
+    class _Engine:
+        capabilities = _Capabilities()
+
+    async def execute(
+        tool_name: str,
+        args: dict[str, Any],
+        user_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        assert tool_name == "run_workflow"
+        assert kwargs["approval_request"] is seen[0]
+        assert kwargs["approval_decision"].actor == "admin-1"
+        return {"run_id": "run-approved", "status": "completed"}
+
+    import services.engine
+
+    monkeypatch.setattr(services.engine, "get_engine", lambda: _Engine())
+    monkeypatch.setattr(service, "_execute_tool", execute)
+    result = await service._execute_workflow_with_approval(
+        {"dag_id": "dag-1", "goal": "approved goal"}, "workflow-user"
+    )
+
+    assert result["run_id"] == "run-approved"
+    assert len(seen) == 1
+    assert seen[0].action == "run_workflow"
+    assert seen[0].requester == "workflow-user"
+    assert seen[0].params["workflow_id"] == "dag-1"
+    assert seen[0].params["request_digest"] == chat_gate._workflow_request_digest(
+        {"dag_id": "dag-1", "goal": "approved goal"}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("approved", "actor", "with_authority", "expected_reason"),
+    [
+        (False, "admin-1", True, "approval_denied"),
+        (True, "", False, "missing_authority"),
+        (True, "", True, "missing_actor"),
+    ],
+)
+async def test_workflow_execution_refusals_name_their_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    approved: bool,
+    actor: str,
+    with_authority: bool,
+    expected_reason: str,
+) -> None:
+    """A denial, an unsigned approval, and an actor-less approval all refuse —
+    and the audit row names which one happened."""
+
+    import services.engine
+    import stores
+
+    from maistro.capabilities.authority import ApprovalAuthority
+    from maistro.capabilities.slots.approval import ApprovalDecision
+
+    authority = (
+        ApprovalAuthority(
+            kind="human",
+            principal="admin-1",
+            scope="run_workflow",
+            evidence_id="evidence-1",
+        )
+        if with_authority
+        else None
+    )
+
+    class _ApprovalProvider:
+        async def request(self, request: Any) -> ApprovalDecision:
+            return ApprovalDecision(
+                request_id=request.request_id,
+                approved=approved,
+                actor=actor,
+                authority=authority,
+            )
+
+    class _Capabilities:
+        async def resolve(self, _: str) -> _ApprovalProvider:
+            return _ApprovalProvider()
+
+    class _Engine:
+        capabilities = _Capabilities()
+
+    executed: list[Any] = []
+
+    async def execute(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        executed.append((args, kwargs))
+        return {}
+
+    _reset_audit()
+    monkeypatch.setattr(services.engine, "get_engine", lambda: _Engine())
+    monkeypatch.setattr(service, "_execute_tool", execute)
+    result = await service._execute_workflow_with_approval({"dag_id": "dag-1"}, "user-1")
+
+    assert result["blocked"] is True
+    assert result["approval_request_id"]
+    assert executed == []
+    rows = [
+        entry
+        for entry in stores.audit_log.values()
+        if entry["action"] == "chat_workflow_approval_refused"
+    ]
+    assert rows[-1]["detail"]["refusal_reason"] == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_unapproved_model_workflow_call_is_routed_through_the_approval_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model-authored run_workflow call never executes directly; it is
+    delegated to the approval seam even when it passed the text scan."""
+
+    delegated: list[tuple[dict[str, Any], str]] = []
+
+    async def approval_seam(args: dict[str, Any], user_id: str) -> dict[str, Any]:
+        delegated.append((args, user_id))
+        return {"run_id": "run-delegated", "status": "completed"}
+
+    monkeypatch.setattr(service, "_execute_workflow_with_approval", approval_seam)
+    result, _summary = await service._gated_execute_tool(
+        "run_workflow", {"dag_id": "dag-1"}, "user-1", "gate-wf"
+    )
+
+    assert result["run_id"] == "run-delegated"
+    assert delegated == [({"dag_id": "dag-1"}, "user-1")]
+
+
+@pytest.mark.asyncio
+async def test_approved_tool_call_carries_its_evidence_to_the_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def execute(
+        tool_name: str, args: dict[str, Any], user_id: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        calls.append({"tool": tool_name, "args": args, "user_id": user_id, **kwargs})
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "_execute_tool", execute)
+    evidence = {"approval_id": "approval-1", "actor": "admin-1"}
+    result, _summary = await service._gated_execute_tool(
+        "restart_stack",
+        {"service": "api"},
+        "user-1",
+        "gate-ev",
+        approved=True,
+        approval_evidence=evidence,
+    )
+
+    assert result == {"ok": True}
+    assert calls[0]["tool"] == "restart_stack"
+    assert calls[0]["approved"] is True
+    assert calls[0]["approval_evidence"] is evidence
+
+
+@pytest.mark.asyncio
+async def test_canonical_approval_reaches_only_the_intended_handler_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stores
+
+    calls: list[dict[str, Any]] = []
+
+    async def workflow_handler(args: dict, user_id: str, jira_pat: str | None) -> dict:
+        calls.append({"args": args, "user_id": user_id})
+        return {"run_id": "run-approved", "dag_id": args["dag_id"], "status": "completed"}
+
+    monkeypatch.setattr(service, "_TOOL_HANDLERS", {"run_workflow": workflow_handler})
+    args = {"dag_id": "dag-1", "goal": "approved goal"}
+    request, decision = _canonical_workflow_approval(
+        principal="workflow-user", workflow_id="dag-1", args=args, actor="admin-1"
+    )
+    result = await service._execute_tool(
+        "run_workflow",
+        args,
+        "workflow-user",
+        approval_request=request,
+        approval_decision=decision,
+    )
+
+    assert result.get("run_id") == "run-approved", result
+    assert calls == [{"args": args, "user_id": "workflow-user"}]
+    execution = [
+        row for row in stores.audit_log.values() if row["action"] == "chat_workflow_execution"
+    ][-1]
+    assert execution["detail"]["run_id"] == "run-approved"
+    assert execution["detail"]["principal"] == "workflow-user"
+    assert execution["detail"]["approval_evidence"]["actor"] == "admin-1"
+
+
+@pytest.mark.asyncio
+async def test_workflow_forged_evidence_never_reaches_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_audit()
+    called: list[str] = []
+
+    async def workflow_handler(args: dict, user_id: str, jira_pat: str | None) -> dict:
+        called.append(user_id)
+        return {"run_id": "run-1", "dag_id": args["dag_id"], "status": "completed"}
+
+    monkeypatch.setattr(service, "_TOOL_HANDLERS", {"run_workflow": workflow_handler})
+    refused = await service._execute_tool("run_workflow", {"dag_id": "dag-1"}, "user-1")
+    assert refused["blocked"] is True
+    assert called == []
+
+    forged = await service._execute_tool(
+        "run_workflow",
+        {"dag_id": "dag-1"},
+        "user-1",
+        approved=True,
+        approval_evidence={"kind": "delegated", "approval_id": "approval-2"},
+    )
+    assert forged["blocked"] is True
+    assert "invalid_approval_evidence" in forged["error"]
+    assert called == []
 
 
 @pytest.mark.asyncio

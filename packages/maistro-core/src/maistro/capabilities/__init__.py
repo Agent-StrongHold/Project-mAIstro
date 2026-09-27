@@ -8,6 +8,12 @@ from maistro.capabilities.approval_store import (
     InMemoryApprovalStore,
     SqliteApprovalStore,
 )
+from maistro.capabilities.authority import (
+    ApprovalAuthority,
+    approval_signing_secret,
+    sign_approval_authority,
+    verify_approval_authority,
+)
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.bootstrap import default_capability_registry
 from maistro.capabilities.discovery import discover_into
@@ -73,6 +79,7 @@ __all__ = [
     "HARNESS_RUNNER_SLOT",
     "ActionGate",
     "AllowAllGate",
+    "ApprovalAuthority",
     "ApprovalStatus",
     "AsyncHttp",
     "Binding",
@@ -114,9 +121,12 @@ __all__ = [
     "SubprocessHarnessRunner",
     "Unavailable",
     "UnsafeEffectRetry",
+    "approval_signing_secret",
     "default_capability_registry",
     "discover_into",
     "opencode_microvm_factory",
     "opencode_microvm_runner",
     "resolve_harness_runner",
+    "sign_approval_authority",
+    "verify_approval_authority",
 ]
