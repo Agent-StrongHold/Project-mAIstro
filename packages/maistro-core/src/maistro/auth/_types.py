@@ -64,6 +64,7 @@ class Scope(StrEnum):
     EVENTS_HISTORY = "events:history"
     # ADMIN
     ADMIN = "admin:admin"
+    METRICS_READ = "admin:metrics"
     TRACES_READ = "admin:traces"
     DASHBOARD = "admin:dashboard"
     # INFRA
@@ -142,6 +143,7 @@ CATEGORY_SCOPES: dict[ScopeCategory, frozenset[Scope]] = {
     ScopeCategory.ADMIN: frozenset(
         {
             Scope.ADMIN,
+            Scope.METRICS_READ,
             Scope.TRACES_READ,
             Scope.DASHBOARD,
         }
