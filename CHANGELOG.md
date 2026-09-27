@@ -25,6 +25,22 @@ or placeholder-only section.
 
 ### Security
 
+- **Canonical Run reads have a Workspace-membership-scoped seam (#1152,
+  partial).** `maistro.runs.scoped_reads.ScopedRunReader`, wired as
+  `Container.run_reader` over the Container's own Run, Workspace and Project
+  scope stores, reads a Run, its NodeRuns and its Attempts only for a member
+  of the Run's Workspace whose Project belongs to it. The initiating
+  principal is provenance, not a gate. Missing and foreign ids, a blank
+  principal, and a NodeRun or Attempt id from another Run all raise the same
+  `RunNotVisible`, and membership is resolved before the Run lookup. Hive's
+  DAG-run inspection now reads its canonical lifecycle overlay through this
+  reader, so a projection row naming another Workspace's Run no longer
+  borrows that Run's status, result or error; the list path batches those
+  reads through `ScopedRunReader.get_runs`. maistro-server `/v1/runs`, Hive
+  Canvas eval, Hive DAG-run cancel (which still acts on the unscoped
+  `run_store`), `actor_principal_id` validation, accounting identity and
+  delegation identity are still open.
+
 - **Tool calls fail closed when Sentinel or caller auth is missing (#1165).**
   An `Agent` built without a Sentinel, or handed a turn with no `auth`, used
   to execute tool calls unauthorized; it now returns `Error: Permission denied
@@ -299,6 +315,21 @@ or placeholder-only section.
   audit keyed to actor and policy version. It grants no permissions and owns no
   Goals. The priority combination rule and default mode stay open questions.
   Documentation only: no store, route or runtime behaviour changes yet.
+
+- **The Canvas store's tables are in the root alembic chain (#286, partial).**
+  Migration 044 creates `canvases`, `layers`, `generation_jobs` (with the
+  SPEC-203 lease columns and the partial pending-claim index),
+  `composite_records` and `canvas_blobs`, which `PgCanvasStore` reads and
+  writes but no migration here ever created. It adopts rather than assumes an
+  empty database: `CREATE TABLE IF NOT EXISTS` plus `ADD COLUMN IF NOT EXISTS`
+  for every column, so a deployment whose tables were created outside the
+  repository gains any missing columns and keeps its rows. On tables 044
+  creates, the `(canvas_id, z_index)` uniqueness is deferred to commit, so
+  layer reorder and removal no longer collide on intermediate states; an
+  adopted table keeps its own constraints and foreign keys as they were. The five tables move
+  from `created_outside_this_repo` into the durable-table retention inventory.
+  Operators: `alembic upgrade head` now touches these tables, and `downgrade`
+  past 044 drops them, including rows an adopted table held before.
 
 - **Durable user model: `UserModelFact` and self-consented promotion
   (#1047, partial).** New `maistro.memory.user_model` package: a frozen,
