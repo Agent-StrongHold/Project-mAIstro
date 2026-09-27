@@ -259,3 +259,36 @@ issue closure is explicitly prohibited for this lane. The implementation,
 tests and CI gates for #1194 are complete and verified in-tree, so the branch
 is handed off for integration; closure of #1194 (and #42) is the
 orchestrator-side administrative step.
+
+## Independent verification round at 549a0b1f0 (develop sync merged)
+
+Post-merge re-verification of the develop base 4f8339aa6 merge (549a0b1f0),
+executed by the independent reviewer at that exact head:
+
+- Driver deterministic checks (job 2e18e719): `uv sync --locked --extra dev`,
+  `ruff check .` clean, `ruff format --check .` clean (2597 files), lane
+  pytest `-x -q` **159 passed**, core/server suite inventories ok.
+- Re-executed independently: `test_ambiguous_effect_replay_guard.py` +
+  `test_invocation_store.py` **7 passed** (dispatches==1, blocked_visits==2,
+  NodeRun ordinals [1,2,3], one Attempt each, UNKNOWN invocation under the
+  stable effect_scope); `tests/runtime` + `test_chat_attempt_recovery.py` +
+  `tests/graph/durable_runs` + `test_a2a_api.py` +
+  `tests/tasks/test_attempt_execution.py` **624 passed, 39 skipped**.
+- Gates at this head: `check-execution-lifecycles` exit 0 (19/19 classified,
+  0 violations), `check-lifecycle-provenance` exit 0 (0 violations).
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` with `RATCHET_BASE_REV=origin/develop` (exact CI
+  invocation, `RATCHET_BASE_REV` = PR base per vulture-ratchet.yml): **exit
+  0**, 1404 reviewed identities = 1404 findings, `unclassified: 0`. The
+  former `api/a2a.py` `create_a2a_task` debt is gone for the right reason:
+  the handler is now referenced by `_A2A_ROUTE_HANDLERS`
+  (maistro_server/api/a2a.py:108), so vulture no longer flags it and no
+  ledger entry is required.
+- GitHub read-only: #1169 CLOSED, #1170 CLOSED, #42 OPEN, epic #13 OPEN;
+  **#1194 still OPEN** with its delivery PR #1319 still WIP/OPEN.
+
+Sole residual is unchanged and outside lane authority: #42's completion
+condition requires #1194 closed; the in-tree #1194 enforcement, tests and
+gates are green here, so the branch is handed off with the #1194 GitHub
+closure (via #1319 or supersession) as the orchestrator-side step. Nothing
+else is open; no code change was made in this round.
