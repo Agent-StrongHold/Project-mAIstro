@@ -8,17 +8,19 @@ system/unscoped scope. A later contract migration may make the column
 non-nullable once old writers are retired.
 
 Revision ID: 036_audit_log_org_scope
-Revises: 040
+Revises: 042_task_receipt_dispatch_inputs
 Create Date: 2026-09-10
 
-Re-parented twice, both times because develop took the same parent while this
-branch was open: first onto 038, then onto 039 after
-`039_canvas_job_admission_key` landed (#1531); merging develop's `040`
-(`down_revision = "039"`) then restored a two-head fork that fails every
-deployment's ``upgrade head`` with "Multiple head revisions are present". This
-revision now follows the develop chain tip 040, keeping the chain linear with
-the audit scope migration as its single head — the same reconciliation revision
-040's own docstring records for its two renumberings.
+Re-parented three times, each time because develop or a sibling branch took
+the same parent while this revision was open: first onto 038, then onto 039
+after `039_canvas_job_admission_key` landed (#1531), then onto develop's `040`
+(`down_revision = "039"`). Merging that state into the #1057 branch — which
+had already taken 040's child slot with `041_task_identity_provenance` —
+restored a two-head fork that fails every deployment's ``upgrade head`` with
+"Multiple head revisions are present". This revision now follows that
+branch's chain tip `042_task_receipt_dispatch_inputs`, keeping the chain
+linear with the audit scope migration as its single head — the same
+reconciliation revision 040's own docstring records for its two renumberings.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "036_audit_log_org_scope"
-down_revision = "040"
+down_revision = "042_task_receipt_dispatch_inputs"
 branch_labels = None
 depends_on = None
 
