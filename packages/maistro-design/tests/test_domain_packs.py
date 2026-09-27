@@ -2,17 +2,10 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
-from maistro_design.packs import (
-    DomainPackRegistry,
-    PackContractError,
-    bundled_pack_dir,
-    load_bundled_packs,
-)
+from maistro_design.packs import load_bundled_packs
+from maistro_design.packs.registry import PackContractError, _as_pack
 
 REQUIRED = {
     "book",
@@ -34,7 +27,7 @@ def test_bundled_packs_load_through_one_registry() -> None:
         assert pack.run_identity == "canonical"
         assert pack.graph_template == "loop.explore-execute-evaluate-refine"
         assert pack.rubric_dimensions
-        assert "canvas" != pack.pack_id
+        assert pack.pack_id != "canvas"
 
 
 def test_same_goal_two_packs_share_identity_scheme() -> None:
@@ -52,21 +45,20 @@ def test_same_goal_two_packs_share_identity_scheme() -> None:
 
 
 def test_missing_rubric_is_rejected() -> None:
-    registry = DomainPackRegistry()
-    path = bundled_pack_dir() / "product.json"
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["rubric_dimensions"] = []
-    broken = Path(path.as_posix() + ".broken")
     with pytest.raises(PackContractError, match="rubric"):
-        registry.load_file  # keep import used; validate via _as_pack path
-        from maistro_design.packs.registry import _as_pack
-
-        _as_pack(raw)
+        _as_pack(
+            {
+                "pack_id": "orphan",
+                "graph_template": "loop.explore-execute-evaluate-refine",
+                "rubric_dimensions": [],
+                "backends": ["builders"],
+                "artifact_kinds": ["note"],
+                "fence_points": ["rubric-lock"],
+            }
+        )
 
 
 def test_canvas_cannot_be_a_pack_id() -> None:
-    from maistro_design.packs.registry import _as_pack
-
     with pytest.raises(PackContractError, match="backend"):
         _as_pack(
             {
