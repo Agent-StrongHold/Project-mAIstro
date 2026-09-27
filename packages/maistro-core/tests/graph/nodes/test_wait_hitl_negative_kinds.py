@@ -268,8 +268,22 @@ async def test_compliance_block_writes_penalty_to_blackboard() -> None:
     assert p["rule_id"] == "pii.email_in_summary"
     assert p["severity"] == 3.0
     assert p["evidence"] == {"matched": "alice@example.com"}
+    assert p["id"] == "penalty:r1:block-1:pii.email_in_summary"
     # No halt requested
     assert "halt_requested" not in bb.metadata
+
+    again = await Node().run(
+        {
+            "rule_id": "pii.email_in_summary",
+            "severity": 3.0,
+            "reason": "Draft summary contains a customer email address",
+            "evidence": {"matched": "alice@example.com"},
+        },
+        ctx,
+    )
+    assert again.success
+    assert len(bb.metadata["penalties"]) == 1
+    assert bb.metadata["penalties"][0]["id"] == p["id"]
 
 
 async def test_compliance_block_with_halt_sets_halt_flag() -> None:

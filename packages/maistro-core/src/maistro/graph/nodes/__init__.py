@@ -29,7 +29,9 @@ from .base import (
     Node,
     NodeCompositionError,
     NodeContext,
+    NodeReplay,
     NodeResult,
+    catalog_idempotent,
     now_utc,
     pause_until,
 )
@@ -90,6 +92,7 @@ def register_node(node_cls: NodeClassT) -> NodeClassT:
             f"{_REGISTRY[kind].__name__}, refusing to overwrite with {node_cls.__name__}"
         )
     _validate_authority_declaration(node_cls)
+    _validate_replay_contract(node_cls)
     _REGISTRY[kind] = node_cls
     return node_cls
 
@@ -117,6 +120,27 @@ def _validate_authority_declaration(node_cls: type[BaseNode[Any, Any]]) -> None:
                     f"{node_cls.__name__}.{label} maps {keyword!r} to {authority!r}, "
                     f"but __init__ accepts no parameter named {keyword!r}"
                 )
+
+
+_REPLAYS: Final[frozenset[str]] = frozenset({"pure", "idempotent", "effect_keyed", "non_retryable"})
+
+
+def _validate_replay_contract(node_cls: type[BaseNode[Any, Any]]) -> None:
+    """Refuse a replay declaration the revisit gate cannot execute.
+
+    Checked at registration so a typo fails the import that made it, not the
+    first Run that has to decide whether a failed visit may be repeated.
+    """
+    replay = node_cls.replay
+    if replay not in _REPLAYS:
+        raise ValueError(
+            f"{node_cls.__name__} replay must be one of {sorted(_REPLAYS)}; got {replay!r}"
+        )
+    if replay == "effect_keyed" and not tuple(node_cls.effect_key):
+        raise ValueError(
+            f"{node_cls.__name__} declares replay='effect_keyed' but effect_key is empty; "
+            "the revisit gate cannot tell a stable effect from a new one"
+        )
 
 
 def compose_node(kind: str, authorities: Mapping[str, Any]) -> BaseNode[Any, Any]:
@@ -178,7 +202,8 @@ def catalog_json() -> list[dict[str, Any]]:
                 "display_name": cls.display_name or cls.kind,
                 "description": cls.description or "",
                 "cost_hint": cls.cost_hint,
-                "idempotent": cls.idempotent,
+                "idempotent": catalog_idempotent(cls.replay),
+                "replay": cls.replay,
                 "external_io": cls.external_io,
                 "input_schema": _schema_summary(cls.input_schema),
                 "output_schema": _schema_summary(cls.output_schema),
@@ -261,7 +286,9 @@ __all__ = [
     "Node",
     "NodeCompositionError",
     "NodeContext",
+    "NodeReplay",
     "NodeResult",
+    "catalog_idempotent",
     "catalog_json",
     "compose_node",
     "get_node",

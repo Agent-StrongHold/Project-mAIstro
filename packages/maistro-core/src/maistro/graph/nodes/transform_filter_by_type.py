@@ -38,7 +38,7 @@ class TransformFilterByTypeNode(BaseNode[FilterByTypeIn, FilterByTypeOut]):
     input_schema: ClassVar[type[BaseModel]] = FilterByTypeIn
     output_schema: ClassVar[type[BaseModel]] = FilterByTypeOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "pure"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Filter by type"
     description: ClassVar[str] = (

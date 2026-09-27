@@ -326,6 +326,25 @@ def is_reclaimed_attempt(attempt: Attempt) -> bool:
     )
 
 
+#: What orphan recovery records when it closes an Attempt that had no lease.
+#: The status is CANCELLED either way; this text is how a reader tells a
+#: recovered cancel — the worker may already have performed the effect — from
+#: a cancellation somebody asked for.
+RECOVERED_CANCEL_ERROR = "orphaned physical Attempt recovered after process loss"
+
+
+def is_recovered_cancel(attempt: Attempt) -> bool:
+    """Whether process-loss recovery, not a person, cancelled this Attempt.
+
+    Same distinction as :func:`is_reclaimed_attempt`, for the leaseless path:
+    the Attempt is closed so a fresh one can be considered, and the absence of
+    an outcome is not proof that nothing happened.
+    """
+    return attempt.status is AttemptStatus.CANCELLED and (attempt.error or "") == (
+        RECOVERED_CANCEL_ERROR
+    )
+
+
 def lease_is_expired(attempt: Attempt, now: datetime) -> bool:
     """Whether this Attempt's lease has lapsed as of ``now``.
 
@@ -489,6 +508,7 @@ __all__ = [
     "CASCADED_NODE_RUN_STATUS",
     "RECLAIMED_ATTEMPT_ERROR_PREFIX",
     "RECLAIMED_ATTEMPT_STATUS",
+    "RECOVERED_CANCEL_ERROR",
     "RUN_TRANSITIONS",
     "InvalidLifecycleTransition",
     "StaleLeaseRenewal",
@@ -496,6 +516,7 @@ __all__ = [
     "cascaded_node_run_error",
     "check_completion_is_earned",
     "is_reclaimed_attempt",
+    "is_recovered_cancel",
     "latest_node_runs",
     "lease_is_expired",
     "reclaim_attempt",

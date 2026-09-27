@@ -57,7 +57,7 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
     input_schema: ClassVar[type[BaseModel]] = WaitForSubtasksIn
     output_schema: ClassVar[type[BaseModel]] = WaitForSubtasksOut
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "idempotent"
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Jira: wait for subtasks"
     description: ClassVar[str] = (

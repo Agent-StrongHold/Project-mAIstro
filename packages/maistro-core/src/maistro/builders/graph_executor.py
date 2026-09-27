@@ -423,7 +423,7 @@ class _StageNode(BaseNode[_StageInput, _StageOutput]):
     output_schema: ClassVar[type[BaseModel]] = _StageOutput
     display_name: ClassVar[str] = "Execute Builders pipeline stage"
     description: ClassVar[str] = "Run one Builders stage under canonical Attempt evidence."
-    idempotent: ClassVar[bool] = False
+    replay: ClassVar = "non_retryable"
     external_io: ClassVar[bool] = True
 
     def __init__(

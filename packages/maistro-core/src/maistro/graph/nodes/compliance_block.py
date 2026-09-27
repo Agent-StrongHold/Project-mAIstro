@@ -52,7 +52,7 @@ class ComplianceBlockNode(BaseNode[ComplianceBlockIn, ComplianceBlockOut]):
     input_schema: ClassVar[type[BaseModel]] = ComplianceBlockIn
     output_schema: ClassVar[type[BaseModel]] = ComplianceBlockOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "idempotent"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Compliance: block"
     description: ClassVar[str] = (
@@ -64,18 +64,24 @@ class ComplianceBlockNode(BaseNode[ComplianceBlockIn, ComplianceBlockOut]):
         bb = ctx.blackboard
         metadata = bb.metadata if (bb is not None and hasattr(bb, "metadata")) else ctx.metadata
         penalties: list[dict[str, Any]] = list(metadata.get("penalties") or [])
-        penalty_id = f"penalty:{ctx.run_id}:{ctx.node_id}:{len(penalties)}"
-        penalties.append(
-            {
-                "id": penalty_id,
-                "node_id": ctx.node_id,
-                "rule_id": inputs.rule_id,
-                "severity": inputs.severity,
-                "reason": inputs.reason,
-                "evidence": inputs.evidence,
-                "halt_run": inputs.halt_run,
-            }
-        )
+        penalty_id = f"penalty:{ctx.run_id}:{ctx.node_id}:{inputs.rule_id}"
+        penalty = {
+            "id": penalty_id,
+            "node_id": ctx.node_id,
+            "rule_id": inputs.rule_id,
+            "severity": inputs.severity,
+            "reason": inputs.reason,
+            "evidence": inputs.evidence,
+            "halt_run": inputs.halt_run,
+        }
+        # One penalty per (run, node, rule). A retry must reconcile the same
+        # signal, not append another keyed by the current list length.
+        for index, existing in enumerate(penalties):
+            if existing.get("id") == penalty_id:
+                penalties[index] = penalty
+                break
+        else:
+            penalties.append(penalty)
         metadata["penalties"] = penalties
         if inputs.halt_run:
             # Mark a halt request the executor will honor.

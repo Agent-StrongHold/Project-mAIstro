@@ -7,7 +7,7 @@ work and logical acceptance belong to ``attempt_executor`` and
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -32,6 +32,8 @@ from maistro.graph.nodes.base import (
 )
 from maistro.runs.aggregation import derive_run_terminal_status, terminal_run_payload
 from maistro.runs.lifecycle import (
+    is_reclaimed_attempt,
+    is_recovered_cancel,
     settle_open_node_run,
     transition_node_run,
     transition_path,
@@ -39,6 +41,7 @@ from maistro.runs.lifecycle import (
 )
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
+    Attempt,
     GraphSnapshot,
     NodeRun,
     Run,
@@ -578,7 +581,66 @@ def _visit_budget(spec: GraphNode) -> int:
     return max(1, min(declared, MAX_NODE_VISITS))
 
 
-def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) -> bool:
+def _registered_replay(kind: str) -> str:
+    """The replay contract for a registered kind, or ``pure`` when none is.
+
+    Orchestrator stages and test fixtures resolve a node without registering
+    it. They have no contract to enforce, so the visit budget stays the only
+    gate — the behaviour those callers already had.
+    """
+    from maistro.graph.nodes import get_node
+
+    try:
+        return get_node(kind).replay
+    except KeyError:
+        return "pure"
+
+
+def _effect_key_stable_across_visits(kind: str) -> bool:
+    """Whether a new visit would adopt the same effect rather than mint one.
+
+    ``node_run_id`` is minted per visit. A key that names it is a different
+    effect every time, so another visit cannot reconcile with the one that
+    may already have happened.
+    """
+    from maistro.graph.nodes import get_node
+
+    try:
+        key = tuple(get_node(kind).effect_key)
+    except KeyError:
+        return False
+    return bool(key) and "node_run_id" not in key
+
+
+def _ambiguous_physical_effect(
+    item: _FrontierItem,
+    attempts: Sequence[Attempt],
+    node_runs: Sequence[NodeRun],
+) -> bool:
+    """Whether this node already has an Attempt that may have done the work.
+
+    A lease reclaim and a recovered cancel both close the Attempt without an
+    outcome. That is not evidence the effect did not happen. A later visit
+    would be a second try at work the first try may already have performed.
+    """
+    node_run_ids = {item.node_run.node_run_id}
+    node_run_ids.update(
+        node_run.node_run_id for node_run in node_runs if node_run.node_id == item.node_id
+    )
+    return any(
+        is_reclaimed_attempt(attempt) or is_recovered_cancel(attempt)
+        for attempt in attempts
+        if attempt.node_run_id in node_run_ids
+    )
+
+
+def _may_revisit_after(
+    prior_state: GraphExecutionState,
+    item: _FrontierItem,
+    *,
+    attempts: Sequence[Attempt] = (),
+    node_runs: Sequence[NodeRun] = (),
+) -> bool:
     """Whether this failed node has a try left, and is the kind that earns one.
 
     A retry here is the node's **next visit** -- a new NodeRun, with its own
@@ -592,13 +654,34 @@ def _may_revisit_after(prior_state: GraphExecutionState, item: _FrontierItem) ->
     not landing rather than the work failing, and `maistro.resilience`
     classifies and retries those beneath the Attempt, where repeating is safe
     because nothing was accomplished yet.
+
+    The node's ``replay`` contract is what decides the visit is safe.
+    ``pure`` and ``idempotent`` may spend the rest of ``max_attempts``.
+    ``effect_keyed`` may too, but only when its effect key does not include
+    ``node_run_id``. ``non_retryable`` returns false once any Attempt may
+    already have had a physical effect — a reclaimed lease, or a cancel
+    recovered after process loss — even when ``max_attempts`` is greater
+    than one.
     """
     visits = prior_state.visit_counts.get(item.node_id, 0)
-    return visits < _visit_budget(item.spec)
+    if visits >= _visit_budget(item.spec):
+        return False
+    replay = _registered_replay(item.spec.node_type)
+    if replay in {"pure", "idempotent"}:
+        return True
+    if replay == "effect_keyed":
+        return _effect_key_stable_across_visits(item.spec.node_type)
+    if replay == "non_retryable":
+        return not _ambiguous_physical_effect(item, attempts, node_runs)
+    return False
 
 
 def first_exhausted_failure(
-    prior_state: GraphExecutionState, failures: tuple[_FrontierItem, ...]
+    prior_state: GraphExecutionState,
+    failures: tuple[_FrontierItem, ...],
+    *,
+    attempts: Sequence[Attempt] = (),
+    node_runs: Sequence[NodeRun] = (),
 ) -> _FrontierItem | None:
     """The failure with no visit left, if any -- the one that fails the Run.
 
@@ -610,9 +693,21 @@ def first_exhausted_failure(
     Shared by both folds rather than written twice. Two spellings of "may this
     node be tried again" is the shape of defect #44 exists to remove, at the
     scale of one rule: they would agree today and diverge on whichever budget
-    question is asked next.
+    question is asked next. The replay contract is part of that one rule.
     """
-    return next((item for item in failures if not _may_revisit_after(prior_state, item)), None)
+    return next(
+        (
+            item
+            for item in failures
+            if not _may_revisit_after(
+                prior_state,
+                item,
+                attempts=attempts,
+                node_runs=node_runs,
+            )
+        ),
+        None,
+    )
 
 
 async def _fold_failures(
@@ -622,7 +717,12 @@ async def _fold_failures(
     store: DurableRunStore,
 ) -> DurableRunRecord:
     """Fail the Run, or send back the nodes whose own policy says try again."""
-    exhausted = first_exhausted_failure(record.graph_state, failures)
+    exhausted = first_exhausted_failure(
+        record.graph_state,
+        failures,
+        attempts=record.attempts,
+        node_runs=record.node_runs,
+    )
     if exhausted is not None:
         return await _mark_failed(
             record,

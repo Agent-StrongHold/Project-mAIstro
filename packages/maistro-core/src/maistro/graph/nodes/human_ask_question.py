@@ -68,7 +68,7 @@ class HumanAskQuestionNode(BaseNode[AskQuestionIn, AskQuestionOut]):
     input_schema: ClassVar[type[BaseModel]] = AskQuestionIn
     output_schema: ClassVar[type[BaseModel]] = AskQuestionOut
     cost_hint: ClassVar[float] = 0.0  # free for the system; expensive for the human
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "idempotent"
     external_io: ClassVar[bool] = False  # the I/O is the human, not an external API
     display_name: ClassVar[str] = "Human: ask a question"
     description: ClassVar[str] = (

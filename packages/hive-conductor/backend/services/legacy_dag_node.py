@@ -578,7 +578,7 @@ class LegacyConductorNode(BaseNode[_LegacyInputs, _LegacyOutput]):
     output_schema: ClassVar[type[BaseModel]] = _LegacyOutput
     display_name: ClassVar[str] = "Hive legacy node adapter"
     description: ClassVar[str] = "Compatibility adapter; canonical runtime owns traversal."
-    idempotent: ClassVar[bool] = False
+    replay: ClassVar = "non_retryable"
     external_io: ClassVar[bool] = True
 
     def __init__(

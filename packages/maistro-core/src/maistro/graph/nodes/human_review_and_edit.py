@@ -57,7 +57,7 @@ class HumanReviewAndEditNode(BaseNode[ReviewAndEditIn, ReviewAndEditOut]):
     input_schema: ClassVar[type[BaseModel]] = ReviewAndEditIn
     output_schema: ClassVar[type[BaseModel]] = ReviewAndEditOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "idempotent"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Human: review and edit"
     description: ClassVar[str] = (

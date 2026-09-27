@@ -168,6 +168,7 @@ class AgentRemoteWorkNode(BaseNode[DelegateRemoteIn, RemoteWorkOut]):
     output_schema: ClassVar[type[BaseModel]] = RemoteWorkOut
     display_name: ClassVar[str] = "Agent: delegated external work"
     description: ClassVar[str] = "An opaque child Run whose work executes at an A2A peer."
+    replay: ClassVar = "non_retryable"
     external_io: ClassVar[bool] = True
 
     async def _execute(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> RemoteWorkOut:
@@ -201,7 +202,10 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
     output_schema: ClassVar[type[BaseModel]] = DelegateRemoteOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = False
+    replay: ClassVar = "effect_keyed"
+    #: A new visit adopts this child. ``node_run_id`` is per visit, so it is
+    #: not part of the effect — including it filed a second delegation.
+    effect_key: ClassVar[tuple[str, ...]] = ("run_id", "node_id")
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: delegate to remote session"
     description: ClassVar[str] = (
@@ -239,19 +243,15 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         return await self._dispatch_in_process(inputs, ctx)
 
     def _delegation_key(self, _inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
-        """Stable identity for one parent NodeRun's logical delegation.
+        """Stable identity for one logical delegation of this graph node.
 
-        The request is not part of the key. A retry may deserialize equivalent
-        inputs differently, or receive a changed payload after a crash, but it
-        must still adopt the child reservation already made for this parent
-        NodeRun. The request details remain durable on the child graph and
-        provenance; they are not a second admission identity.
+        The key is the class ``effect_key``, not the visit. A retry mints a
+        new NodeRun; naming that id would file a second child for the same
+        work. The request is not part of the key either: a retry may
+        deserialize equivalent inputs differently, but it must still adopt the
+        child already reserved for this run and node.
         """
-        payload = {
-            "run_id": ctx.run_id,
-            "node_run_id": ctx.node_run_id or None,
-            "node_id": ctx.node_id,
-        }
+        payload = {name: getattr(ctx, name) or None for name in type(self).effect_key}
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -833,9 +833,9 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
 
         This is the durable admission point for #1090. The child Run and its
         delegation key are committed before transport acceptance; the A2A task
-        id is attached afterwards as a receipt. `ctx` carries the parent
-        `run_id` and `node_run_id`, so recovery can find this exact child
-        without inventing a second delegation lifecycle.
+        id is attached afterwards as a receipt. The delegation key is the
+        parent run and graph node — not this visit's NodeRun — so a later
+        visit adopts this child instead of filing another.
 
         The reservation carries no receipt key at all rather than an empty one:
         at this moment no transport has accepted anything, and a placeholder

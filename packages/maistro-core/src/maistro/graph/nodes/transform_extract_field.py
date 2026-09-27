@@ -32,7 +32,7 @@ class TransformExtractFieldNode(BaseNode[ExtractFieldIn, ExtractFieldOut]):
     input_schema: ClassVar[type[BaseModel]] = ExtractFieldIn
     output_schema: ClassVar[type[BaseModel]] = ExtractFieldOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "pure"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Extract field"
     description: ClassVar[str] = (

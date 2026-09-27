@@ -302,7 +302,7 @@ class AgentSynthDagNode(BaseNode[SynthDagIn, SynthDagOut]):
     input_schema: ClassVar[type[BaseModel]] = SynthDagIn
     output_schema: ClassVar[type[BaseModel]] = SynthDagOut
     cost_hint: ClassVar[float] = 8.0
-    idempotent: ClassVar[bool] = False
+    replay: ClassVar = "non_retryable"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Agent: synthesize DAG"
     description: ClassVar[str] = (

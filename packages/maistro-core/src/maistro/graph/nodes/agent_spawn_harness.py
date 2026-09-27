@@ -84,7 +84,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
     input_schema: ClassVar[type[BaseModel]] = SpawnHarnessIn
     output_schema: ClassVar[type[BaseModel]] = SpawnHarnessOut
     cost_hint: ClassVar[float] = 5.0
-    idempotent: ClassVar[bool] = False
+    replay: ClassVar = "non_retryable"
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: spawn harness"
     description: ClassVar[str] = (

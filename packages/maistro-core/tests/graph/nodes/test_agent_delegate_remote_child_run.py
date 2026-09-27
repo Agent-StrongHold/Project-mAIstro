@@ -136,6 +136,37 @@ class TestDelegationFilesAChildRun:
         assert child.workspace_id == parent.workspace_id
         assert child.project_id == parent.project_id
 
+    async def test_a_second_visit_adopts_the_same_child(self) -> None:
+        """A new NodeRun is a new visit, not a new delegation (#1194).
+
+        The effect key is the parent run and graph node. Including the visit's
+        ``node_run_id`` filed a second child after lease loss or retry.
+        """
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        first_visit = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        second_visit = await store.create_node_run(parent.run_id, node_id="delegate-1")
+        assert first_visit.node_run_id != second_visit.node_run_id
+        delegator = _delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        inputs = {"from_agent": "planner", "task": "research X", "to_agent": "researcher"}
+
+        first = await node.run(
+            inputs, _ctx(run_id=parent.run_id, node_run_id=first_visit.node_run_id)
+        )
+        second = await node.run(
+            inputs, _ctx(run_id=parent.run_id, node_run_id=second_visit.node_run_id)
+        )
+
+        assert first.status == "paused"
+        assert second.status == "paused"
+        assert second.metadata["run_id"] == first.metadata["run_id"]
+        assert len(delegator._tasks) == 1
+        children = [run for run in store._runs.values() if run.parent_run_id == parent.run_id]
+        assert [child.run_id for child in children] == [first.metadata["run_id"]]
+
     async def test_the_child_run_provenance_names_the_task_the_mode_and_both_agents(
         self,
     ) -> None:

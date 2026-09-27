@@ -37,6 +37,18 @@ KindCategory = Literal[
     "negative_signal",
 ]
 
+#: How a later visit may repeat this node's work (#1194). The durable revisit
+#: gate reads this. The palette's historical ``idempotent`` bool is derived
+#: from it; it is not a second flag a node author writes.
+NodeReplay = Literal["pure", "idempotent", "effect_keyed", "non_retryable"]
+
+_CATALOG_IDEMPOTENT: frozenset[NodeReplay] = frozenset({"pure", "idempotent"})
+
+
+def catalog_idempotent(replay: NodeReplay) -> bool:
+    """Palette bool for ``replay``. Pure and idempotent visits are safe to repeat."""
+    return replay in _CATALOG_IDEMPOTENT
+
 
 class NodeContext(BaseModel):
     """Per-execution context handed to every node's :meth:`Node.run`.
@@ -126,7 +138,7 @@ class Node(Protocol):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float]  # 0.0 = free; 10.0 = very expensive
-    idempotent: ClassVar[bool]
+    replay: ClassVar[NodeReplay]
     external_io: ClassVar[bool]
     display_name: ClassVar[str]
     description: ClassVar[str]
@@ -155,7 +167,17 @@ class BaseNode(Generic[InputT, OutputT]):
     input_schema: ClassVar[type[BaseModel]]
     output_schema: ClassVar[type[BaseModel]]
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    #: ``pure`` and ``idempotent`` may take another visit up to ``max_attempts``.
+    #: ``effect_keyed`` may too, but only when ``effect_key`` does not name
+    #: ``node_run_id`` — that id changes every visit, so a key that includes it
+    #: is a new effect. ``non_retryable`` does not take another visit after an
+    #: Attempt that may already have had a physical effect (lease reclaim or a
+    #: recovered cancel), even when ``max_attempts`` is greater than one.
+    replay: ClassVar[NodeReplay] = "pure"
+    #: Identity fields of one durable effect. Effect-keyed nodes build the key
+    #: from this tuple, and the revisit gate reads the same tuple, so the two
+    #: cannot drift. Empty unless ``replay`` is ``effect_keyed``.
+    effect_key: ClassVar[tuple[str, ...]] = ()
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = ""
     description: ClassVar[str] = ""

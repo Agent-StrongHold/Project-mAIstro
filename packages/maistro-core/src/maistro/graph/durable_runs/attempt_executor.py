@@ -24,7 +24,12 @@ from maistro.graph.nodes.base import (
 )
 from maistro.observability.correlation import bind_execution_context
 from maistro.runs.execution import AttemptExecutionService
-from maistro.runs.lifecycle import lease_is_expired, transition_path, transition_run
+from maistro.runs.lifecycle import (
+    RECOVERED_CANCEL_ERROR,
+    lease_is_expired,
+    transition_path,
+    transition_run,
+)
 from maistro.runs.model import Attempt, AttemptStatus, NodeRun, Run, RunStatus
 from maistro.runs.reconciliation import AttemptLifecycleReconciler, CancellationCause
 from maistro.runs.recovery_events import RecoveryEventSink
@@ -303,7 +308,7 @@ async def _reconcile_orphaned_attempts(
         terminal = await execution_store.transition_attempt(
             attempt.attempt_id,
             AttemptStatus.CANCELLED,
-            error="orphaned physical Attempt recovered after process loss",
+            error=RECOVERED_CANCEL_ERROR,
         )
         await lifecycle.reconcile(terminal, cancellation=CancellationCause.RECOVERED)
     latest = await store.get(record.run_id)

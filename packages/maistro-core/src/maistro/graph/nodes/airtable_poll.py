@@ -52,7 +52,7 @@ class AirtablePollNode(BaseNode[AirtablePollIn, AirtablePollOut]):
     input_schema: ClassVar[type[BaseModel]] = AirtablePollIn
     output_schema: ClassVar[type[BaseModel]] = AirtablePollOut
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "idempotent"
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Airtable: poll table"
     description: ClassVar[str] = (

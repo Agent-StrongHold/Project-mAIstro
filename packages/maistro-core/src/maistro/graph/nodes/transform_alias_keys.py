@@ -54,7 +54,7 @@ class TransformAliasKeysNode(BaseNode[AliasKeysIn, AliasKeysOut]):
     input_schema: ClassVar[type[BaseModel]] = AliasKeysIn
     output_schema: ClassVar[type[BaseModel]] = AliasKeysOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "pure"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Rename keys"
     description: ClassVar[str] = (

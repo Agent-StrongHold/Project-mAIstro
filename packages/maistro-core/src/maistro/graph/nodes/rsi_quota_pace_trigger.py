@@ -102,7 +102,7 @@ class RsiQuotaPaceTriggerNode(BaseNode[RsiQuotaPaceTriggerIn, RsiQuotaPaceTrigge
     input_schema: ClassVar[type[BaseModel]] = RsiQuotaPaceTriggerIn
     output_schema: ClassVar[type[BaseModel]] = RsiQuotaPaceTriggerOut
     cost_hint: ClassVar[float] = 0.5
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "pure"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "RSI: quota-pace trigger"
     description: ClassVar[str] = (

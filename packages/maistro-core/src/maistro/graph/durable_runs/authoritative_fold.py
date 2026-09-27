@@ -54,7 +54,12 @@ def _accept_exhausted_failure(record: DurableRunRecord, item: traversal._Frontie
     """
     return item.spec.policies.get(
         "continue_on_failure"
-    ) is True and not traversal._may_revisit_after(record.graph_state, item)
+    ) is True and not traversal._may_revisit_after(
+        record.graph_state,
+        item,
+        attempts=record.attempts,
+        node_runs=record.node_runs,
+    )
 
 
 def _logical_outcome(
@@ -234,7 +239,12 @@ async def _fold_failures(
     store: DurableRunStore,
 ) -> DurableRunRecord:
     """Retry failed visits without discarding completed sibling advancement."""
-    exhausted = traversal.first_exhausted_failure(prior_state, failures)
+    exhausted = traversal.first_exhausted_failure(
+        prior_state,
+        failures,
+        attempts=record.attempts,
+        node_runs=record.node_runs,
+    )
     if exhausted is not None:
         return await traversal._mark_failed(
             record,

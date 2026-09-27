@@ -43,7 +43,7 @@ class TransformFormatMarkdownNode(BaseNode[FormatMarkdownIn, FormatMarkdownOut])
     input_schema: ClassVar[type[BaseModel]] = FormatMarkdownIn
     output_schema: ClassVar[type[BaseModel]] = FormatMarkdownOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "pure"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Format Markdown"
     description: ClassVar[str] = (

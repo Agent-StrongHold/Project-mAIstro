@@ -52,7 +52,7 @@ class HumanApproveDraftNode(BaseNode[ApproveDraftIn, ApproveDraftOut]):
     input_schema: ClassVar[type[BaseModel]] = ApproveDraftIn
     output_schema: ClassVar[type[BaseModel]] = ApproveDraftOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay: ClassVar = "idempotent"
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Human: approve a draft"
     description: ClassVar[str] = (
