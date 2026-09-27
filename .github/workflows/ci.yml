@@ -493,6 +493,18 @@ jobs:
       # escape suite never ran remotely. `dockerd` itself is preinstalled on
       # the runner; uidmap and slirp4netns are in Ubuntu's own universe repo,
       # not Docker's. Same recipe as the locally-proven lane.
+      #
+      # Round 20: remote run 36336385671 (at 8f714f20d) still failed this
+      # step — the daemon never reported ready in 120s while the step spun
+      # silently and dockerd.log was never shown. Three fixes, all
+      # GitHub-runner rootless-docker requirements: (1) /run/user/<uid> is
+      # NOT guaranteed to exist for the runner user on hosted images —
+      # rootlesskit fails without it, so create it up front; (2) the AppArmor
+      # unprivileged-userns relaxation done for bwrap earlier must not be
+      # load-bearing here by step-ordering accident — re-assert it, hard;
+      # (3) when readiness times out, print the daemon log tail and exit 1 so
+      # the next failure carries its own evidence instead of a bare grep
+      # mismatch.
       - name: Start a rootless Docker daemon for the conformance lane
         env:
           DOCKER_ROOTLESS_EXTRAS_VERSION: "29.8.1"
@@ -500,8 +512,22 @@ jobs:
           set -euxo pipefail
           uid="$(id -u)"
           export XDG_RUNTIME_DIR="/run/user/$uid"
+          # Hosted runners do not create a logind session for the runner
+          # user; XDG_RUNTIME_DIR must exist and belong to it before
+          # rootlesskit can build its runtime dir.
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$uid:$uid" "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
+          # Same kernel knob the bwrap provisioning relaxes; do not depend
+          # on that step having survived its own `|| true`s.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           timeout 180 sudo apt-get update || true
           timeout 180 sudo apt-get install -y uidmap slirp4netns || true
+          # The installs above are best-effort because the runner image
+          # usually ships both already — but then the binaries must exist,
+          # or rootlesskit would die opaquely. Fail here, with the cause in
+          # the step name, not two minutes later in a readiness poll.
+          command -v newuidmap slirp4netns
           curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
             "https://download.docker.com/linux/static/stable/x86_64/docker-rootless-extras-${DOCKER_ROOTLESS_EXTRAS_VERSION}.tgz" \
             | tar xz -C "$RUNNER_TEMP"
@@ -518,12 +544,19 @@ jobs:
             --pidfile="$lane_dir/docker.pid" \
             --host="unix://$lane_dir/docker.sock" \
             > "$lane_dir/dockerd.log" 2>&1 &
+          daemon_ready=0
           for _ in $(seq 1 60); do
             if docker --host "unix://$lane_dir/docker.sock" info > /dev/null 2>&1; then
+              daemon_ready=1
               break
             fi
             sleep 2
           done
+          if [ "$daemon_ready" -ne 1 ]; then
+            echo "::error::rootless dockerd did not become ready in 120s; dockerd.log tail follows"
+            tail -n 200 "$lane_dir/dockerd.log" || true
+            exit 1
+          fi
           docker --host "unix://$lane_dir/docker.sock" info \
             --format '{{json .SecurityOptions}}' | grep -q rootless
           echo "DOCKER_HOST=unix://$lane_dir/docker.sock" >> "$GITHUB_ENV"
