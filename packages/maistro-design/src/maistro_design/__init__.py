@@ -6,13 +6,13 @@ Public API surface. Import from here for stable, ADR-061-governed access.
 import importlib.metadata
 from typing import Any
 
-# Single source of truth for version — read from installed package metadata.
 try:
     __version__ = importlib.metadata.version("maistro-design")
 except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable/unbuilt checkout
     __version__ = "0.9.0-dev"
 
 from maistro_design.engine import DesignEngine
+from maistro_design.packs.scenario import compose_workspace_goal
 from maistro_design.protocols import (
     DesignEngineProtocol,
     DesignProjectStore,
@@ -77,7 +77,10 @@ from maistro_design.types import (
     TypographyToken,
 )
 
+INSTALLED_DOMAIN_PACKS = compose_workspace_goal("installed")
+
 __all__ = [
+    "INSTALLED_DOMAIN_PACKS",
     "NATIVE_SLOTS",
     "ArtifactKind",
     "ArtifactNode",
