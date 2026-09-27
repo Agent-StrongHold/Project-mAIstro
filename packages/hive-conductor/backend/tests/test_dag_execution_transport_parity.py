@@ -346,6 +346,51 @@ def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]
     loop.close()
 
 
+def _legacy_run_ids(dag_id: str) -> set[str]:
+    """Canonical Run ids admitted for ``dag_id`` through the legacy DAG adapter."""
+    from services.dag_agents import get_run_store
+
+    store = get_run_store()
+    return {
+        run_id
+        for run_id, record in store._rows.items()
+        if record.run.provenance.get("admission_source") == "hive_legacy_dag"
+        and record.run.provenance.get("legacy_dag_id") == dag_id
+    }
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+def test_http_and_ws_run_each_admit_exactly_one_canonical_run(
+    admin_client: TestClient, stored_dag: str
+) -> None:
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = _create_workspace(admin_client, "Exactly one canonical run")
+
+    before_http = _legacy_run_ids(stored_dag)
+    http_response = admin_client.post(
+        f"/v1/dags/{stored_dag}/run", json={"workspace_id": workspace_id}
+    )
+    assert http_response.status_code == 200, http_response.text
+    http_run_id = http_response.json()["run_id"]
+    after_http = _legacy_run_ids(stored_dag)
+
+    assert after_http - before_http == {http_run_id}
+    http_projection = get_dag_run_store().get_run(http_run_id)
+    assert http_projection is not None
+    assert http_projection["canonical_run_id"] == http_run_id
+
+    before_ws = _legacy_run_ids(stored_dag)
+    ws_run_id = _run_over_socket(admin_client, stored_dag, workspace_id)[-1]["run_id"]
+    after_ws = _legacy_run_ids(stored_dag)
+
+    assert after_ws - before_ws == {ws_run_id}
+    ws_projection = get_dag_run_store().get_run(ws_run_id)
+    assert ws_projection is not None
+    assert ws_projection["canonical_run_id"] == ws_run_id
+
+
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both_transports(

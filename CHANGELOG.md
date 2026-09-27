@@ -711,6 +711,18 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Both shipped DAG Run controls are now proven to admit exactly one
+  canonical Run per request (#736, partial).** A new behavioral test counts
+  canonical Runs whose `provenance.admission_source == "hive_legacy_dag"` and
+  `legacy_dag_id` matches the requested DAG, before and after one `POST
+  /v1/dags/{id}/run` and one WS `/v1/ws/dags/{id}/run` in a real Workspace,
+  and asserts each request admits exactly one new canonical Run whose id
+  equals the response's `run_id` and the `DagRunStore` projection's
+  `canonical_run_id`. Test-only; no production behavior changed. The
+  WAITING/PAUSED projection half of #736's "cannot be contradicted"
+  criterion (`finished_at` stamped irreversibly on `waiting`, shared with
+  #1036) remains open.
+
 - **Agent builder, intent routing and RSI Stop work from the keyboard (#370,
   partial).** The Agents builder's strategy cards are a named radio group of
   native radio inputs (arrow keys change the strategy; each is named by its
