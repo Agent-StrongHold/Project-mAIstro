@@ -574,3 +574,44 @@ No count moved; no inventory-delta for this note edit.
   `MetricsRegistry(max_series_per_metric=10, max_metrics_per_registry=50)`
   minted 200 dynamic families → 50 rendered, refusal count 150.0 in the
   unlabeled `metrics_registry_overflow_total` (read via `collect_all()`).
+
+## Tenth verification (verifier lane, head 07957e3f5)
+
+Prior block carried into this round — "develop sync conflict preserved in
+worktree" — did not manifest: the worktree is clean at 07957e3f5, which is
+exactly the merge of the develop base 8bfd35903 into auto-365 (committed by
+the prior round). No conflict resolution was needed; verification ran at that
+head unchanged.
+
+Freshly executed evidence at this head (all commands run by this round, not
+inherited):
+
+- `uv run ruff check .`: pass. Driver's `uv sync --locked --extra dev`,
+  `ruff format --check .` (2585 files), and both `scripts/check-suite-inventory.py`
+  scoped gates (core 11287, server 400) re-run: all exit 0.
+- Focused pytest (same eight suites as the driver plus root
+  `tests/api/test_health.py`): **142 passed**.
+- Independent rate-limit-mounted TestClient probes: anonymous `/metrics` →
+  401 generic body, zero metric families; arbitrary user-format Bearer → 401
+  (service-key provider only accepts `X-Service-Key` / `Bearer sk-svc-*`);
+  wrong-scope service key → 403 with no families; `X-Forwarded-*` alone →
+  401; scoped scraper → 200 via `X-Service-Key`, via `Bearer sk-svc-…`, and
+  through proxy headers; `/health` and `/health/live` exactly
+  `{"status":"ok"}`; `/health/startup` only `{status, startup_complete}`;
+  `/health/ready` anonymous → status-only body.
+- #818 adversarial flood re-proven with the default limiter left enabled:
+  round 1 (400 distinct random paths) added only bounded `route="unrouted"`
+  series (404 plus the flood's own 429); round 2 (400 brand-new random
+  paths) added **zero** new series; no attacker-controlled text appears in
+  any rendered label.
+- Registry backstop re-proven on a fresh
+  `MetricsRegistry(max_series_per_metric=10, max_metrics_per_registry=50)`:
+  200 minted families → exactly 50 caller families rendered, refusal count
+  150.0 in the unlabeled `metrics_registry_overflow_total`; series-cap
+  overflow count matched slot arithmetic (9 free slots after the unlabeled
+  series → 21 of 30 new label sets dropped, counted, existing series still
+  updatable).
+- SLO credential leakage closed: `ErrorBudget.publish` emits only a
+  16-hex digest label; the raw service key never reaches the exposition.
+- Closure-keyword review: PR #1457 body ("Draft auto-opened … Refs #365")
+  and all branch commit messages contain no fixes/closes/resolves tokens.
