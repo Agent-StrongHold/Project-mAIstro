@@ -17,6 +17,10 @@ blocked-by: []
 contracts:
   - behavioral
 tests: []
+ac-modules:
+  AC-1: maistro.runs.chat_admission
+  AC-2: maistro.runs.chat_admission
+  AC-3: maistro.container
 history:
   - status: Proposed
     date: 2026-08-23
@@ -203,3 +207,13 @@ parses is unchanged; `run_id` sits alongside `choices` on every answered turn.
   `Conduit.route_request()` exactly as before; the Run is admitted around it.
 - The task path is untouched: its Runs are not swept by this window, and its
   retention remains the store's own bound plus the receipt's.
+
+## Acceptance criteria
+
+- [x] **AC-1** Two chat turns in one session are two Runs, and both carry that
+  `session_id`. A Run is a turn, not a conversation.
+- [x] **AC-2** Completed chat Runs past the admitter window are deleted, oldest
+  first, and the number retained stays within `max_retained`.
+- [x] **AC-3** `Container.route_request` returns a `run_id` correlated to
+  `session_id` and `request_id`, and a finished burst is swept without waiting
+  for another admission.

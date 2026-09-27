@@ -49,6 +49,7 @@ class _Conduit:
         return {"choices": [{"message": {"role": "assistant", "content": "hi"}}]}
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-3")
 async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     container = await _container()
     container.conduit = _Conduit()
@@ -243,6 +244,7 @@ async def test_the_chat_admitter_is_wired_by_the_container() -> None:
     assert container.chat_admitter.retained == 0
 
 
+@pytest.mark.ac("ADR-082326-c126/AC-3")
 async def test_terminalized_concurrent_chat_burst_is_swept() -> None:
     """The bound still holds when no later admission arrives to sweep."""
     container = await _container()
