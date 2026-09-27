@@ -161,6 +161,40 @@ def test_mission_creation_is_audited_to_the_authenticated_principal(
     assert creates[0]["target"] == "task-1"
 
 
+def test_mission_creation_on_the_in_memory_fallback_is_audited_to_the_principal(
+    admin_client, monkeypatch
+) -> None:
+    """#41 provenance holds on the engine-less fallback path too: when no
+    engine is configured the route still mints a mission into the in-memory
+    stores, and that receipt's audit entry must name the authenticated
+    principal — falling back to a literal "system" actor here would leave the
+    unconfigured tier's missions unattributable, exactly what the engine-path
+    test above forbids."""
+    import routes.missions as missions_routes
+    import stores
+
+    class _UnconfiguredEngine:
+        is_configured = False
+        _backend = None
+
+    monkeypatch.setattr(missions_routes, "get_engine", lambda: _UnconfiguredEngine())
+    before = set(stores.audit_log.keys())
+
+    r = admin_client.post("/v1/tasks", json={"name": "Ship it"})
+
+    assert r.status_code == 200
+    mission = r.json()
+    assert mission["id"]
+    assert mission["status"] == "pending"
+    new_keys = stores.audit_log.keys() - before
+    creates = [
+        stores.audit_log[k] for k in new_keys if stores.audit_log[k]["action"] == "mission_create"
+    ]
+    assert len(creates) == 1
+    assert creates[0]["actor"] == "admin"
+    assert creates[0]["target"] == mission["id"]
+
+
 # --- work items (POST /v1/work-items/{id}/confirm) ------------------------
 
 
