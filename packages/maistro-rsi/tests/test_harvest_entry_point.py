@@ -480,6 +480,10 @@ class TestTheEvolveCommandWiresTheMutatorBoundary:
         repo = _real_repo(tmp_path / "repo", "old\n")
         argv = [
             "evolve",
+            # The operator-chosen local path (ADR-082926-a6ab); an unstated
+            # isolation refuses before anything starts (#80).
+            "--isolation",
+            "local",
             "--repo",
             str(repo),
             "--test-cmd",
@@ -524,6 +528,9 @@ class TestTheEvolveCommandWiresTheMutatorBoundary:
             main(
                 [
                     "evolve",
+                    # Operator-chosen local path; unstated isolation refuses (#80).
+                    "--isolation",
+                    "local",
                     "--repo",
                     str(repo),
                     "--test-cmd",

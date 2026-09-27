@@ -235,7 +235,13 @@ async def _run(args: argparse.Namespace) -> int:
     tournament = EloTournament()
     scheduler = QuotaBurnScheduler(InMemoryQuotaTracker())
     apply_patch = make_builders_apply_patch(
-        args.goal, model=args.model, max_agent_turns=args.max_turns
+        args.goal,
+        model=args.model,
+        max_agent_turns=args.max_turns,
+        # Explicit, not inherited from a factory default (#80): the tournament
+        # cycle's agent edits and validates in this host workspace today, and
+        # ADR-082926-a6ab reserves host execution for a stated operator choice.
+        isolation="local",
     )
 
     # PRs never leave the sandbox unscanned: quarantine is mandatory for

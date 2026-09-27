@@ -48,7 +48,10 @@ class LiveCodeFixer:
         coverage_source: str = ".",
         coverage_pytest_args: str = "",
         agent_turns: int = 6,
-        isolation: str = "local",
+        # Unstated ("") refuses when the factory builds the apply function: the
+        # evolve CLI states --isolation explicitly, and a silent host default
+        # would be the bare-subprocess tier ADR-093 decision 5 forbids (#80).
+        isolation: str = "",
         image: str = "maistro-builders:latest",
         baseline_branch: str = "rsi-baseline",
         objective: str | None = None,

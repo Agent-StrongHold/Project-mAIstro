@@ -342,7 +342,13 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    root does not map to host root) against a rootless daemon started in the conformance lane. The
    Docker backend remains a shared-kernel
    guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
-   backends for untrusted autonomous execution.
+   backends for untrusted autonomous execution. Unattended RSI (`maistro_rsi run`/`evolve`) is
+   held to that posture from both sides: a stated Tier-3 backend refuses (ADR-093 decision 6
+   floors autonomous execution at a user-space kernel), and an *unstated* isolation refuses as
+   well — no default quietly executes candidate work on the host (ADR-093 decision 5's
+   no-bare-subprocess tier), while an operator-stated `--isolation local` remains the documented
+   ADR-082926-a6ab carve-out; `packages/maistro-rsi/tests/test_autonomous_isolation_tier.py`
+   pins the guard at the CLI dispatcher, the config boundary and the sandbox factory.
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook
    body size, rate limit and burst, and the LLM circuit breaker's threshold and recovery timeout
    are deployment policy with an enforced floor (see *Configurable limits and their enforced

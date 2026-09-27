@@ -78,12 +78,14 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--isolation",
         choices=("local", "container"),
-        default="local",
+        default="",
         help="Where the agent runs: 'local' (host worktree) or 'container' "
-        "(ADR-093 Docker isolation). Default: local. 'container' is refused "
-        "for this unattended loop: ADR-093 decision 6 floors autonomous "
-        "execution at a user-space-kernel tier (gVisor or better), and the "
-        "Docker backend is Tier 3.",
+        "(ADR-093 Docker isolation). No default: an unstated isolation "
+        "refuses to start (ADR-093 decision 5 has no bare-subprocess tier). "
+        "'local' is the operator's explicit choice of their own machine "
+        "(ADR-082926-a6ab). 'container' is refused for this unattended loop: "
+        "ADR-093 decision 6 floors autonomous execution at a user-space-kernel "
+        "tier (gVisor or better), and the Docker backend is Tier 3.",
     )
     run.add_argument(
         "--image",
@@ -303,10 +305,12 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve.add_argument(
         "--isolation",
         choices=("local", "container"),
-        default="local",
-        help="Refused when 'container': evolve runs unattended, and ADR-093 "
-        "decision 6 floors autonomous execution at gVisor-or-better while the "
-        "Docker backend is Tier 3.",
+        default="",
+        help="No default: an unstated isolation refuses to start (ADR-093 "
+        "decision 5 has no bare-subprocess tier). 'local' is the operator's "
+        "explicit host choice (ADR-082926-a6ab). Refused when 'container': "
+        "evolve runs unattended, and ADR-093 decision 6 floors autonomous "
+        "execution at gVisor-or-better while the Docker backend is Tier 3.",
     )
     evolve.add_argument(
         "--db", default=None, help="PopulationStore path (persists lineage; default: in-memory)."
@@ -362,11 +366,13 @@ def _refuse_unattendable_isolation(args: argparse.Namespace) -> int | None:
     because importing `maistro.sandbox.policy` would pull ~220 unprotected
     maistro-core modules into the promotion closure; the mirror is pinned to
     the canonical policy by test), so a future Tier-2+ backend under the same
-    flag passes without this dispatcher being edited.
+    flag passes without this dispatcher being edited. An unstated isolation
+    ("" — the argparse default) refuses the same way: a silent host default
+    would be the bare-subprocess tier decision 5 forbids (#80 repair).
     """
     from maistro_rsi.local_loop import autonomous_isolation_refusal
 
-    refusal = autonomous_isolation_refusal(getattr(args, "isolation", "local"))
+    refusal = autonomous_isolation_refusal(getattr(args, "isolation", ""))
     if refusal is None:
         return None
     print(f"refusing to start: {refusal}", file=sys.stderr)

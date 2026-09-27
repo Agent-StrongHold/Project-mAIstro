@@ -24,6 +24,9 @@ def _config(tmp_path: Path, **overrides: Any) -> LocalRsiConfig:
         "repo_path": str(tmp_path / "repo"),
         "test_command": "python -m pytest -q",
         "work_root": str(tmp_path / "work"),
+        # Explicit: these tests exercise the operator-chosen local path
+        # (ADR-082926-a6ab); the unstated default now refuses (#80).
+        "isolation": "local",
     }
     base.update(overrides)
     return LocalRsiConfig(**base)

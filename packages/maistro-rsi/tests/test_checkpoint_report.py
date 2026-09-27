@@ -172,6 +172,7 @@ def test_interim_and_final_checkpoints_written(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "src")
     reports = tmp_path / "reports"
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -198,6 +199,7 @@ def test_rolling_export_is_complete_and_not_stale(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "src")
     reports = tmp_path / "reports"
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -227,6 +229,7 @@ def test_live_mode_checkpoint_includes_evolution_section(tmp_path: Path) -> None
     repo = _make_repo(tmp_path / "src")
     reports = tmp_path / "reports"
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),
@@ -248,6 +251,7 @@ def test_live_mode_checkpoint_includes_evolution_section(tmp_path: Path) -> None
 def test_no_report_dir_writes_nothing(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "src")
     config = LocalRsiConfig(
+        isolation="local",
         repo_path=str(repo),
         test_command="exit 0",
         work_root=str(tmp_path / "work"),

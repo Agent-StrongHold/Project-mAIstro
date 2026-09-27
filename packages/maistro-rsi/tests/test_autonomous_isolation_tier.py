@@ -22,6 +22,13 @@ halves: the refusal's behavior, and the mirror's parity with the canonical
 `maistro.sandbox.policy` (`MODE_FLOORS`, `tier_satisfies`) — if the canonical
 autonomous floor or ladder ever changes, these tests fail until the mirror
 follows deliberately.
+
+The 2026 round-22 repair (#80) closed the mirror image of the original gap:
+`--isolation` *defaulted* to `local`, so the unattended loop ran candidate
+work through `LocalWorktreeSandbox` on the host by omission — the
+bare-subprocess tier ADR-093 decision 5 forbids, reached by nobody's
+decision. An unstated isolation now refuses at every entry (CLI, config,
+factory); a stated `local` proceeds as ADR-082926-a6ab's operator choice.
 """
 
 from __future__ import annotations
@@ -43,7 +50,12 @@ from maistro.sandbox.policy import (
 from maistro_rsi import __main__ as entry
 from maistro_rsi import isolation_floor as mirror
 from maistro_rsi.contained_validation import ContainmentUnavailable
-from maistro_rsi.local_loop import LocalRsiConfig, LocalRsiLoop, autonomous_isolation_refusal
+from maistro_rsi.local_loop import (
+    LocalRsiConfig,
+    LocalRsiLoop,
+    autonomous_isolation_refusal,
+    make_builders_apply_patch,
+)
 
 RUN_ARGS = ["run", "--repo", "/nonexistent", "--test-cmd", "true"]
 EVOLVE_ARGS = [
@@ -93,13 +105,36 @@ class TestCliRefusal:
         assert code == 2
         assert "refusing to start" in capsys.readouterr().err
 
-    def test_run_local_isolation_is_not_refused_by_the_tier_guard(
+    def test_run_without_isolation_refuses_fail_closed(self, capsys: pytest.CaptureFixture):
+        """An unstated isolation is nobody's choice: the old `Default: local`
+        silently handed unattended candidate work to `LocalWorktreeSandbox` —
+        the bare-subprocess tier ADR-093 decision 5 forbids. The refusal fires
+        before the repo check: nothing starts."""
+        code = entry.main(RUN_ARGS)
+
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "refusing to start" in err
+        assert "no isolation was chosen" in err
+        # Names the operator's two ways out instead of choosing for them.
+        assert "--isolation local" in err
+        assert "ADR-093" in err
+
+    def test_evolve_without_isolation_refuses_fail_closed(self, capsys: pytest.CaptureFixture):
+        code = entry.main(EVOLVE_ARGS)
+
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "refusing to start" in err
+        assert "no isolation was chosen" in err
+
+    def test_run_explicit_local_isolation_is_not_refused_by_the_tier_guard(
         self, capsys: pytest.CaptureFixture
     ):
-        """`local` is an operator's explicit host choice, not a sandbox tier;
-        the tier guard stays silent and the run proceeds to its own next gate
-        (here: the missing repository)."""
-        code = entry.main(RUN_ARGS)
+        """`local` stated explicitly is ADR-082926-a6ab's operator choice, not
+        a sandbox tier; the tier guard stays silent and the run proceeds to
+        its own next gate (here: the missing repository)."""
+        code = entry.main([*RUN_ARGS, "--isolation", "local"])
 
         assert code == 2
         assert "is not a git repository" in capsys.readouterr().err
@@ -144,6 +179,59 @@ class TestLibraryRefusal:
         result = LocalRsiLoop(config, apply_patch=apply).run()
 
         assert result.cycles and result.cycles[0].tests_passed
+
+    def test_loop_unstated_isolation_refuses(self, tmp_path: Path) -> None:
+        """A programmatic caller who never stated an isolation hits the same
+        fail-closed refusal at `run()` — the old dataclass default (`local`)
+        was the bare-subprocess tier chosen by omission."""
+        repo = _make_repo(tmp_path / "src")
+        config = LocalRsiConfig(
+            repo_path=str(repo),
+            test_command="true",
+            work_root=str(tmp_path / "work"),
+            max_cycles=1,
+        )
+
+        with pytest.raises(ContainmentUnavailable, match="no isolation was chosen"):
+            LocalRsiLoop(config).run()
+
+    def test_unstated_isolation_refuses_rather_than_degrading_to_the_host(self) -> None:
+        """The guard's own refusal for an unstated isolation names the floor
+        it enforces and the operator's ways out."""
+        refusal = autonomous_isolation_refusal("")
+
+        assert refusal is not None
+        assert "no isolation was chosen" in refusal
+        assert "ADR-093" in refusal
+        assert "--isolation local" in refusal
+
+
+class TestFactoryRefusal:
+    """`make_builders_apply_patch` is the one place a sandbox tier is chosen;
+    its old `isolation="local"` default let a direct caller build a
+    `LocalWorktreeSandbox` without ever stating a choice."""
+
+    def test_factory_refuses_an_unstated_isolation(self) -> None:
+        """The runtime unstated case: a config's "" default flowing straight
+        into the factory (the type system already refuses omission)."""
+        with pytest.raises(ContainmentUnavailable, match="no isolation was chosen"):
+            make_builders_apply_patch("objective", isolation="")
+
+    def test_factory_refuses_a_name_it_cannot_construct(self) -> None:
+        """A typo or an unwired backend name must never fall into the apply
+        closure's host-worktree branch — that would be the bare-subprocess
+        tier reached by accident instead of decision."""
+        with pytest.raises(ContainmentUnavailable, match="does not name a sandbox backend"):
+            make_builders_apply_patch("objective", isolation="locaal")
+
+    def test_factory_refuses_container(self) -> None:
+        with pytest.raises(ContainmentUnavailable, match="ADR-093"):
+            make_builders_apply_patch("objective", isolation="container")
+
+    def test_factory_allows_explicit_local(self) -> None:
+        apply_fn = make_builders_apply_patch("objective", isolation="local")
+
+        assert callable(apply_fn)
 
 
 class TestPolicyLinkage:
