@@ -25,6 +25,22 @@ or placeholder-only section.
 
 ### Security
 
+- **Canonical Run reads have a Workspace-membership-scoped seam (#1152,
+  partial).** `maistro.runs.scoped_reads.ScopedRunReader`, wired as
+  `Container.run_reader` over the Container's own Run, Workspace and Project
+  scope stores, reads a Run, its NodeRuns and its Attempts only for a member
+  of the Run's Workspace whose Project belongs to it. The initiating
+  principal is provenance, not a gate. Missing and foreign ids, a blank
+  principal, and a NodeRun or Attempt id from another Run all raise the same
+  `RunNotVisible`, and membership is resolved before the Run lookup. Hive's
+  DAG-run inspection now reads its canonical lifecycle overlay through this
+  reader, so a projection row naming another Workspace's Run no longer
+  borrows that Run's status, result or error; the list path batches those
+  reads through `ScopedRunReader.get_runs`. maistro-server `/v1/runs`, Hive
+  Canvas eval, Hive DAG-run cancel (which still acts on the unscoped
+  `run_store`), `actor_principal_id` validation, accounting identity and
+  delegation identity are still open.
+
 - **Tool calls fail closed when Sentinel or caller auth is missing (#1165).**
   An `Agent` built without a Sentinel, or handed a turn with no `auth`, used
   to execute tool calls unauthorized; it now returns `Error: Permission denied
@@ -289,6 +305,21 @@ or placeholder-only section.
   explicitly does not claim.
 
 ### Added
+
+- **The Canvas store's tables are in the root alembic chain (#286, partial).**
+  Migration 044 creates `canvases`, `layers`, `generation_jobs` (with the
+  SPEC-203 lease columns and the partial pending-claim index),
+  `composite_records` and `canvas_blobs`, which `PgCanvasStore` reads and
+  writes but no migration here ever created. It adopts rather than assumes an
+  empty database: `CREATE TABLE IF NOT EXISTS` plus `ADD COLUMN IF NOT EXISTS`
+  for every column, so a deployment whose tables were created outside the
+  repository gains any missing columns and keeps its rows. On tables 044
+  creates, the `(canvas_id, z_index)` uniqueness is deferred to commit, so
+  layer reorder and removal no longer collide on intermediate states; an
+  adopted table keeps its own constraints and foreign keys as they were. The five tables move
+  from `created_outside_this_repo` into the durable-table retention inventory.
+  Operators: `alembic upgrade head` now touches these tables, and `downgrade`
+  past 044 drops them, including rows an adopted table held before.
 
 - **Durable user model: `UserModelFact` and self-consented promotion
   (#1047, partial).** New `maistro.memory.user_model` package: a frozen,
@@ -692,7 +723,37 @@ or placeholder-only section.
   explicitly and are unaffected; a caller that omits it now gets a
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
+### Removed
+
+- **The pre-durable `run_graph` execution API is retired from `maistro.graph` (#1154).**
+  `maistro.graph.run_graph` and `maistro.graph.executor.run_graph` are gone.
+  The wrapper built an ephemeral `GraphRun` and started it, recording no
+  canonical Run/NodeRun/Attempt evidence and no restart recovery, so physical
+  Graph work reached through it was invisible to every recovery sweep — a
+  second execution universe beside the durable one. It had no non-test callers.
+  Importers use `maistro.graph.durable_runs` for canonical execution, which
+  shares no code with the retired path — it never imported `GraphRun`.
+  `GraphRun` is still importable from `maistro.graph.run` as Graph-domain
+  traversal, but it is not an execution authority and is no longer re-exported
+  as one; with the wrapper gone it and `maistro.graph.executor` are reachable
+  only from tests. The private
+  `_ensure_node_configs` helper went with it — set `NodeConfig.beam_width`
+  directly instead of passing `parallel_generations`.
+
 ### Fixed
+
+- **Run retention throttles and reports backlog per Workspace
+  ([#1175](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1175)).**
+  `RunRetentionSweeper` used to keep one last-sweep time for all Workspaces.
+  The Turing plane shares one sweeper across every per-user Workspace, so a
+  busy Workspace used up the interval and a quiet Workspace's expired Runs
+  were almost never swept. The sweeper now keeps a last-sweep time per
+  scope, in an LRU-bounded map, and still runs only one sweep at a time.
+  `maistro_retention_backlog_remaining{mode}` now counts the scopes whose
+  last completed sweep left a backlog. Before, the last sweep to finish
+  overwrote the value, so one Workspace draining hid another's backlog. A
+  failed sweep leaves the count unchanged. The label is still the mode,
+  never a Workspace id (#818).
 
 - **Agent builder, intent routing and RSI Stop work from the keyboard (#370,
   partial).** The Agents builder's strategy cards are a named radio group of
@@ -1109,6 +1170,26 @@ or placeholder-only section.
   from the mutation's own response instead. `tests/e2e/optimistic-mutations.spec.ts`
   asserts no collection GET follows a toggle, create, or delete; against
   the unfixed build both specs fail on exactly that assertion.
+
+- **Memory entry delete and update are optimistic, with rollback (#1422,
+  partial).** Beyond the single-request fix above, `Memory.tsx`'s
+  `deleteEntry` and `updateEntry` still awaited the DELETE/PUT before
+  touching local state at all, so the row or edit only appeared after the
+  round trip. Both now apply the change (row removal, or the edited fields
+  merged into the entry and `sel`) to local state immediately, reconcile
+  with the server's response on success, and revert to the pre-mutation
+  state on failure. New cases in `tests/e2e/optimistic-mutations.spec.ts`
+  hold the DELETE/PUT via `page.route`, assert the UI already reflects the
+  change while the request is in flight, then fail it with a 500 and assert
+  the rollback; both fail against the unfixed code. Both rollbacks are also
+  race-safe: a failed delete restores `sel` only if nothing else was
+  selected in the meantime, and a failed update's `entries`/`sel` write (and
+  reopening the edit form so the attempted edit isn't lost) is guarded by
+  object identity against the exact optimistic snapshot it made, so a
+  request that resolves after a newer edit or delete of the same entry
+  can't clobber the newer state. Two more e2e cases cover those races. The
+  same gap remains open for `Schedules.tsx` `toggleSchedule` and
+  `WorkspaceContext.tsx` `archiveWorkspace`.
 
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
