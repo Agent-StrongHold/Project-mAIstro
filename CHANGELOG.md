@@ -711,6 +711,23 @@ or placeholder-only section.
 
 ### Fixed
 
+- **A due schedule admits one canonical Run, and a restart does not fire it
+  twice (#46, #251, #1199, partial).** A configured Hive tick selects
+  candidates from `ScheduleStore.due()` and admits each through
+  `ScheduleRunAdmitter` — the same Run spine task admission writes — then
+  `execute_admitted_runs` consumes the Run. The occurrence claim
+  `(schedule_id, scheduled_for)` is the fire identity: a process that stops
+  after admission leaves a QUEUED Run the next process executes once, and a
+  crash between the Run insert and the cursor reconciles to that Run instead
+  of admitting another. The schedule row stays a cursor (`last_run_id`,
+  `runs_so_far`, `next_due_at`), not an execution status. Hive rows the
+  canonical store has never seen are inserted once so existing product
+  definitions still become due; an existing canonical row is not rewritten
+  from the Hive dictionary. Routes still do not write the canonical store on
+  create/update/delete (draft #1603), and a crash before `record_fire` can
+  leave `runs_so_far` uncounted because the duplicate-claim path will not
+  count a firing the winner might still be recording.
+
 - **Agent builder, intent routing and RSI Stop work from the keyboard (#370,
   partial).** The Agents builder's strategy cards are a named radio group of
   native radio inputs (arrow keys change the strategy; each is named by its

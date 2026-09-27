@@ -1,12 +1,14 @@
 """Background schedule runner — turns due schedules into canonical Runs.
 
 Recurrence and fire semantics live in ``maistro.scheduling``.  A configured
-Hive process delegates the complete evaluate -> occurrence claim -> Run admit
--> cursor advance transaction to ``ScheduleRunAdmitter`` — for recurring
-ticks and manual ``POST /v1/schedules/{id}/run`` fires alike — then ticks
-the canonical consumer for the admitted Runs.  The historical in-process
-path remains only as a compatibility fallback for standalone/demo contexts
-that have no core Container; it is not the production authority.
+Hive process selects due definitions from the canonical ``ScheduleStore`` and
+admits each occurrence through ``ScheduleRunAdmitter`` — the same Run spine
+task admission writes (``RunStore.create_run`` at ``QUEUED``, then the
+canonical consumer) — for recurring ticks and manual
+``POST /v1/schedules/{id}/run`` fires alike.  The Hive row is a projection of
+that definition, not an execution lifecycle.  The historical in-process path
+remains only as a compatibility fallback for standalone/demo contexts that
+have no core Container; it is not the production authority.
 """
 
 from __future__ import annotations
@@ -188,21 +190,27 @@ class _ScheduleRunner:
         await run_self_repair_once(registry)
 
     async def _tick(self) -> None:
-        import stores
-
         now = datetime.now(UTC)
-        for sid, schedule in list(stores.schedules.items()):
-            if not getattr(schedule, "enabled", False):
-                continue
-            try:
-                await self._evaluate_schedule(sid, schedule, now=now)
-            except Exception as exc:
-                logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
+        container = self._canonical_container()
+        admitter = self._canonical_admitter(container)
+        if container is not None and admitter is not None:
+            # Due authority is the canonical store. The Hive dictionary cannot
+            # decide what fires, and it is not an execution lifecycle.
+            await self._tick_due(now, container, admitter)
+        else:
+            import stores
+
+            for sid, schedule in list(stores.schedules.items()):
+                if not getattr(schedule, "enabled", False):
+                    continue
+                try:
+                    await self._evaluate_schedule(sid, schedule, now=now)
+                except Exception as exc:
+                    logger.warning("Failed to evaluate schedule %s: %s", sid, exc)
 
         # Admission is the submission for schedule work. The same configured
         # process owns the bounded canonical consumer tick, so a Run admitted
         # above cannot remain QUEUED merely because no task receipt exists.
-        container = self._canonical_container()
         if container is not None:
             try:
                 executed = await container.execute_admitted_runs()
@@ -212,6 +220,66 @@ class _ScheduleRunner:
                 logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
         self._last_check = now
+
+    async def _project_missing_definitions(self, container: Any) -> None:
+        """Insert Hive rows the canonical store has never seen.
+
+        One-way and insert-only. A row that already exists is the due
+        authority; rewriting it from the Hive copy would let that dictionary
+        re-enable, retarget, or rewind a cursor. Rows created before the
+        product routes write the canonical store still become selectable.
+        """
+        import stores
+
+        store = container.schedule_store
+        for sid, schedule in list(stores.schedules.items()):
+            try:
+                if await store.get(sid) is not None:
+                    continue
+                scope = await self._canonical_scope(schedule, container)
+                await self._definition_for(sid, schedule, store=store, scope=scope)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to project schedule %s into the canonical store: %s", sid, exc
+                )
+
+    async def _tick_due(
+        self,
+        now: datetime,
+        container: Any,
+        admitter: ScheduleRunAdmitter,
+    ) -> None:
+        """Admit every schedule ``ScheduleStore.due`` returns, then stop.
+
+        The occurrence identity is the Run store's claim on
+        ``(schedule_id, scheduled_for)``. A restart that finds the Run already
+        admitted reconciles to it instead of creating another, and a Run left
+        ``QUEUED`` is what ``execute_admitted_runs`` picks up — the schedule
+        row only keeps the cursor.
+        """
+        from types import SimpleNamespace
+
+        import stores
+
+        await self._project_missing_definitions(container)
+        for schedule in await container.schedule_store.due(now=now):
+            surface = stores.schedules.get(schedule.schedule_id)
+            if surface is None:
+                surface = SimpleNamespace(
+                    name=schedule.name,
+                    mission_template_id=schedule.graph_template_id,
+                )
+            try:
+                await self._evaluate_canonical(
+                    schedule.schedule_id,
+                    surface,
+                    now=now,
+                    container=container,
+                    admitter=admitter,
+                    loaded=schedule,
+                )
+            except Exception as exc:
+                logger.warning("Failed to evaluate schedule %s: %s", schedule.schedule_id, exc)
 
     def _as_definition(self, sid: str, schedule: Any) -> Schedule | None:
         """Project the live ``/v1/schedules`` row onto the canonical definition.
@@ -441,15 +509,24 @@ class _ScheduleRunner:
         now: datetime,
         container: Any,
         admitter: ScheduleRunAdmitter,
+        loaded: Schedule | None = None,
     ) -> None:
-        """Configured Hive path: one canonical scheduler authority."""
-        scope = await self._canonical_scope(schedule, container)
-        definition = await self._definition_for(
-            sid, schedule, store=container.schedule_store, scope=scope
-        )
+        """Configured Hive path: one canonical scheduler authority.
+
+        ``loaded`` is a definition already read from ``ScheduleStore.due``.
+        When the tick has one, it is the authority and is not rebuilt from
+        the Hive row — that rebuild is what let the product dictionary decide
+        a schedule the store had already judged.
+        """
+        definition = loaded
         if definition is None:
-            logger.debug("Schedule %s names no mission template; nothing to run", sid)
-            return
+            scope = await self._canonical_scope(schedule, container)
+            definition = await self._definition_for(
+                sid, schedule, store=container.schedule_store, scope=scope
+            )
+            if definition is None:
+                logger.debug("Schedule %s names no mission template; nothing to run", sid)
+                return
 
         await self._prime_template(definition, container)
         admission = await admitter.admit_due(
