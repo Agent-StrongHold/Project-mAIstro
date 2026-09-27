@@ -10,7 +10,7 @@ revisions 039"). It was renumbered to 043 on parent 042, and when develop
 then landed its own #1204 migration `039_quota_usage_event_identity` on
 the same parent 042, that left two heads — so it now attaches after the
 develop chain tip `039_quota_usage_event_identity` as 044, keeping the
-chain linear with exactly one head.
+chain linear with exactly one head (044 = canvas store tables).
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "044"
-down_revision = "039_quota_usage_event_identity"
+revision = "045"
+down_revision = "044"
 branch_labels = None
 depends_on = None
 
