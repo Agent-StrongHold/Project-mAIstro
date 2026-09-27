@@ -235,3 +235,31 @@ trusting nothing from the pre-merge rounds:
   amendment needed) — all exit 0.
 - No production or test code changed this round beyond the conflict
   resolution inside the merge commits; evidence-only commit.
+
+## Independent verification (third round, a240cd6e)
+
+Executed at head `a240cd6e` with develop fully merged (`HEAD..origin/develop` = 0):
+
+- Tests: `test_pm_polling_nodes.py` 8 passed (missing/disabled-Binding cases
+  assert `httpx.AsyncClient` is never constructed; repeat-poll dedup asserts
+  `calls == 1` across attempts; SQLite cross-context dedup and
+  unknown-outcome retry-block cases pass); capabilities + graph/nodes
+  659 passed; `tests/test_check_direct_effects.py` 34 passed.
+- Gates: `check_direct_effects.py` exit 0 (61 sites; PM_POLLING_EFFECT=10,
+  every site dispositioned); `check-radon-baseline.py` exit 0 (65 blocks,
+  0 new, 0 regressed); `check-reachability.py` and
+  `check-reachability-dispositions.py` exit 0 (161 CONNECT / 24 LIBRARY /
+  3 RETIRE); `ruff check .` clean; mypy across the six src trees clean
+  (724 files).
+- AC7 probe re-executed independently: a dynamic-URL `shared_client()`
+  `async with` call and a helper-method `httpx.AsyncClient` call under a
+  `/graph/nodes/` path both classify as `DIRECT_HTTP_EFFECT:graph-node-http`.
+  (An initial `[]` probe result was traced to an invalid probe file —
+  `ast.parse` SyntaxError, correctly ignored by design — not a bypass.)
+- Closure keywords: none in commit bodies `20e6cd4a7..a240cd6e`; live PR
+  #1321 body reads "Refs #1195" only (draft, head `a240cd6e`).
+- Residual, recorded not resolved: 10 `hive-conductor` Workspace PM sites
+  remain live direct HTTP under explicit `MIGRATE_TO_GOVERNED_INVOCATION`
+  dispositions (owner #1195) in `quality/direct-effect-call-sites.json` —
+  gate-enforced cutover debt per the issue's Workspace-cutover line and
+  AC7's reviewed-exemption valve, not part of the migrated graph nodes.
