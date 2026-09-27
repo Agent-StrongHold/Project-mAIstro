@@ -807,6 +807,17 @@ or placeholder-only section.
   `durable_graph_runs`, and the inventory no longer claims event or
   occurrence-claim counts the purge does not produce.
 
+- **A streamed `/v1/chat/completions` turn no longer cancels a Run left open
+  for recovery (#1108, partial).** When the model answered but the Attempt
+  could not be recorded (`ChatDispatchUnrecorded`), `Container.route_request`
+  deliberately leaves the Run RUNNING for `recover_abandoned_attempts` /
+  `AttemptLifecycleReconciler`; the SSE stream's abandoned-Run cleanup then
+  overwrote it as CANCELLED ("stream abandoned") even though the answer had
+  streamed. The cleanup now steps aside only when an Attempt under the Run is
+  still live or COMPLETED — the two shapes `ChatDispatchUnrecorded` leaves for
+  recovery — and still cancels a Run abandoned before dispatch or one whose
+  own close failed over a failed/refused turn.
+
 - **The Conductor task websocket no longer blocks the event loop on its
   ownership check (#1180, partial).** `EngineService.iter_task_events` ran its
   ownership check through `MaistroServerTaskBackend.get`, a synchronous
