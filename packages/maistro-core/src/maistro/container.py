@@ -1762,7 +1762,7 @@ async def create_container(
         embedding_client=embeddings,
     )
 
-    router = RouterEngine(quota_tracker)
+    router = RouterEngine()
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
 
