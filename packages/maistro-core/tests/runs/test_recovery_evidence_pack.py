@@ -1,4 +1,8 @@
-"""Adversarial kill-recovery evidence pack (#1611)."""
+"""Adversarial kill-recovery evidence pack (#1611).
+
+Async tests follow the suite's auto mode. Do not add pytest.mark.asyncio;
+that closes the shared loop and fails the rest of the job.
+"""
 
 from __future__ import annotations
 
@@ -22,14 +26,13 @@ from maistro.runs.recovery_events import (
 from maistro.runs.store import StaleExecutionFence
 
 LEDGER = (
-    Path(__file__).resolve().parents[4]
-    / "docs"
-    / "testing"
-    / "recovery-evidence-ledger.json"
+    Path(__file__).resolve().parents[4] / "docs" / "testing" / "recovery-evidence-ledger.json"
 )
 
 
 class _RecordingCanonicalSink:
+    """Records canonical envelopes emitted by the recovery adapter."""
+
     def __init__(self) -> None:
         self.events: list[EventEnvelope] = []
 
@@ -42,9 +45,7 @@ async def _workspace() -> tuple[InMemoryRunStore, str]:
     projects = InMemoryProjectScopeStore()
     root = await projects.create_root("ws-evidence-pack")
     project = await projects.create(
-        workspace_id="ws-evidence-pack",
-        parent_project_id=root.project_id,
-        name="Evidence",
+        workspace_id="ws-evidence-pack", parent_project_id=root.project_id, name="Evidence"
     )
     store = InMemoryRunStore(project_store=projects)
     graph = Graph(
@@ -78,7 +79,6 @@ def test_ledger_names_the_five_pack_scenarios() -> None:
     assert ledger["event_type"] == RECOVERY_EVENT_TYPE
 
 
-@pytest.mark.asyncio
 async def test_kill_mid_attempt_parks_and_emits_recovery_event() -> None:
     store, run_id = await _workspace()
     node_run_id = await _running_node(store, run_id)
@@ -92,22 +92,21 @@ async def test_kill_mid_attempt_parks_and_emits_recovery_event() -> None:
 
     reclaimed = await store.reclaim_expired_attempts(now=after)
     assert len(reclaimed) == 1
-    reconciler = AttemptLifecycleReconciler(
+    await AttemptLifecycleReconciler(
         store, events=sink, source="evidence.kill-mid-attempt"
-    )
-    await reconciler.reconcile(reclaimed[0])
+    ).reconcile(reclaimed[0])
 
     assert recorded.events[0].payload["disposition"] == "recovered_and_parked"
     assert recorded.events[0].type == RECOVERY_EVENT_TYPE
+    assert recorded.events[0].run_id == run_id
     parked = await store.get_attempt(reclaimed[0].attempt_id)
     assert parked is not None
     assert parked.status is AttemptStatus.CANCELLED
 
 
-@pytest.mark.asyncio
 async def test_stale_worker_cannot_rewrite_after_fence_rotation() -> None:
-    store, run_id = await _workspace()
-    node_run_id = await _running_node(store, run_id)
+    store, _run_id = await _workspace()
+    node_run_id = await _running_node(store, _run_id)
     attempt = await store.create_attempt(
         node_run_id, lease_holder="worker-old", lease_ttl=timedelta(seconds=30)
     )
@@ -130,7 +129,6 @@ async def test_stale_worker_cannot_rewrite_after_fence_rotation() -> None:
     assert current.result != {"text": "stale success"}
 
 
-@pytest.mark.asyncio
 async def test_replayed_recovery_fact_keeps_one_event_id() -> None:
     store, run_id = await _workspace()
     run = await store.get_run(run_id)
@@ -154,14 +152,12 @@ async def test_replayed_recovery_fact_keeps_one_event_id() -> None:
     assert first.event_id.startswith("recovery-")
 
 
-@pytest.mark.asyncio
 async def test_mixed_queue_restart_does_not_silently_complete() -> None:
-    store, queued_id = await _workspace()
-    queued = await store.get_run(queued_id)
+    store, running_id = await _workspace()
+    queued = await store.get_run(running_id)
     assert queued is not None
     assert queued.status is RunStatus.QUEUED
 
-    running_id = queued_id
     node_run_id = await _running_node(store, running_id)
     attempt = await store.create_attempt(
         node_run_id, lease_holder="worker-1", lease_ttl=timedelta(seconds=5)
@@ -181,27 +177,18 @@ async def test_mixed_queue_restart_does_not_silently_complete() -> None:
     assert recorded.events[0].payload["disposition"] != "accepted"
 
 
-@pytest.mark.asyncio
 async def test_second_reconcile_does_not_rewrite_attempt_history() -> None:
     store, run_id = await _workspace()
     node_run_id = await _running_node(store, run_id)
     attempt = await store.create_attempt(node_run_id, executor_id="worker-1")
     attempt = await store.transition_attempt(
-        attempt.attempt_id,
-        AttemptStatus.CANCELLED,
-        error="process lost",
+        attempt.attempt_id, AttemptStatus.CANCELLED, error="process lost"
     )
     recorded = _RecordingCanonicalSink()
     sink = CanonicalRecoveryEventSink(store, recorded)
-    reconciler = AttemptLifecycleReconciler(
-        store, events=sink, source="evidence.crash-loop"
-    )
-    first = await reconciler.reconcile(
-        attempt, cancellation=CancellationCause.RECOVERED
-    )
-    second = await reconciler.reconcile(
-        attempt, cancellation=CancellationCause.RECOVERED
-    )
+    reconciler = AttemptLifecycleReconciler(store, events=sink, source="evidence.crash-loop")
+    first = await reconciler.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
+    second = await reconciler.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
     again = await store.get_attempt(attempt.attempt_id)
     assert again is not None
     assert again.error == "process lost"
