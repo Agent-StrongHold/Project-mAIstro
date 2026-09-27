@@ -41,7 +41,6 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -119,7 +118,6 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
-    from maistro.projects.store import ProjectStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -188,7 +186,8 @@ class Container:
     prompt_manager: PromptManager = None  # type: ignore[assignment]
     capabilities: CapabilityRegistry = None  # type: ignore[assignment]  # wired in create_container
     episodic_store: EpisodicStore = None  # type: ignore[assignment]  # wired in create_container
-    project_store: ProjectStore = None  # type: ignore[assignment]  # wired in create_container
+    # Compatibility name retained for callers; it is the canonical scope store.
+    project_store: ProjectScopeStore = None  # type: ignore[assignment]  # wired in create_container
     # Canonical execution spine (#41): the Project scope tree work is filed in,
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
@@ -312,6 +311,9 @@ class Container:
     # process-wide singleton (quota/usage_log.py) so this container and any
     # caller using build_node_resolver's standalone default share state.
     usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
+    #: Durable write-behind owner for the SQLite usage log, when configured.
+    #: Callers may flush it periodically; `aclose()` performs the shutdown flush.
+    usage_log_persistence: Any = None
     #: Where `resume_parked_runs`' next scan of each parked status resumes.
     #: In-process and deliberately not durable: losing it on restart costs one
     #: lap back to the oldest page, which is where a fresh process would start
@@ -381,6 +383,24 @@ class Container:
 
             self.capabilities = default_capability_registry()
 
+    async def _flush_usage_log_on_shutdown(self) -> None:
+        """Write the usage log's retained events to its SQLite persistence.
+
+        The final flush of the write-behind `SqliteUsageLog` (#1204): a
+        container wired with `usage_log_persistence` must not drop the events
+        recorded since the last periodic snapshot just because the process is
+        going down. Idempotent by the durable event identity, so a shutdown
+        racing a periodic flush cannot double-persist. A failure here must not
+        block the rest of the shutdown, which is why the exception is only
+        logged.
+        """
+        if self.usage_log_persistence is None:
+            return
+        try:
+            await self.usage_log_persistence.snapshot(self.usage_log)
+        except Exception:
+            logger.exception("container: the usage log did not flush cleanly")
+
     async def aclose(self) -> None:
         """Release what this container took. Idempotent.
 
@@ -415,6 +435,7 @@ class Container:
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
+        await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool
 
@@ -460,10 +481,11 @@ class Container:
         """Evaluate an identity-free turn as the role-less anonymous principal.
 
         The fail-closed table (ADR-072726-0d6b, #1165) is armed even when it is
-        empty -- it denies -- but the strategies consult Sentinel only when
-        `auth is not None`, so `None` passed through here would let an
-        unauthenticated turn execute every tool the table denies. Such a turn
-        is routed as the anonymous principal instead. Armed-control enforcement
+        empty -- it denies. The Agent tool seam also denies every tool call made
+        with `auth=None`, so an identity-free turn is routed as the anonymous
+        principal: its tool calls are then decided by the table (which grants
+        the role-less principal nothing unless an operator says otherwise)
+        rather than refused for want of an identity. Armed-control enforcement
         lives in one place: `_require_auth_while_armed`.
         """
         self._require_auth_while_armed(auth)
@@ -477,6 +499,7 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
         run: Run | None = None,
     ) -> dict[str, Any]:
@@ -501,7 +524,9 @@ class Container:
                 messages,
                 auth=auth,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
+                dispatch_pending=True,
             )
 
         async def _dispatch() -> dict[str, Any]:
@@ -538,6 +563,10 @@ class Container:
                 exc.run_id,
                 exc_info=True,
             )
+            # Past the dispatch gap in the other direction: the Run stays open
+            # for recovery, unshielded, so once its lease lapses the retention
+            # window treats it as the stall it is.
+            self._release_chat_dispatch(run)
             result = exc.response
         except BaseException as exc:
             # Attempt reconciliation already owns cancellation, so a client
@@ -563,11 +592,12 @@ class Container:
         one: the operator believes it is enforcing. Both controls this
         container can arm are keyed on the caller's identity --
         Gate.process_input derives user_id from auth and skips every strike
-        path when it is empty (security/gate.py:62,64,102), and the ReAct and
-        Artificer strategies guard Sentinel.pre_call with `auth is not None`
-        (agents/strategies/react.py:252). So with auth=None an armed
-        permission table authorizes everything and an armed strike tracker
-        records nothing, silently.
+        path when it is empty (security/gate.py:62,64,102), and a permission
+        table grants by the caller's roles. The Agent tool seam denies every
+        tool call made without auth (#1165), so an armed table fails closed
+        rather than open -- but an armed strike tracker would still record
+        nothing, silently, and an operator's grants would never apply to a
+        caller the turn cannot name.
 
         Refusing here costs nothing at the shipped defaults (empty table, no
         tracker -> this never fires) and converts a silent no-op into an
@@ -640,7 +670,9 @@ class Container:
         *,
         auth: Any = None,
         session_id: str | None = None,
+        request_id: str | None = None,
         intent_hint: str = "",
+        dispatch_pending: bool = False,
     ) -> Run:
         """Admit this turn as a canonical Run, or refuse it (#1108).
 
@@ -649,6 +681,13 @@ class Container:
         retryable 503 and nothing reaches the model (owner decision
         2026-09-23, amending ADR-082326-c126). Whatever admission already
         persisted is compensated first, so the refusal strands nothing.
+
+        `dispatch_pending` says a dispatch follows in this process: the Run is
+        shielded from the retention window until the turn closes, so the
+        window cannot evict it in the gap between admission and its first
+        Attempt. Only the dispatching seam sets it. An admission-only caller
+        leaves it False, because a Run nobody will dispatch is a stall, and
+        stalls are exactly what the window exists to forget.
         """
         if self.chat_admitter is None:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
@@ -657,6 +696,7 @@ class Container:
             run = await self.chat_admitter.admit(
                 messages,
                 session_id=session_id,
+                request_id=request_id,
                 intent_hint=intent_hint,
                 known_task_types=self.config.task_types,
                 actor_principal_id=getattr(auth, "user_id", None) or None,
@@ -666,6 +706,15 @@ class Container:
             # is admitted and about to be dispatched — rather than a fiction
             # invented to satisfy the table.
             await self.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+            if dispatch_pending:
+                # Marked while the Run is still QUEUED, with no await between
+                # the QUEUED write and this mark, so there is no observable
+                # moment where the Run is RUNNING, Attempt-less, and unshielded
+                # — the retention window could otherwise not tell a turn about
+                # to dispatch from a stalled admission. Released when the turn
+                # closes. An admission-only caller never marks, so its
+                # abandoned Runs stay evictable.
+                self.chat_admitter.mark_dispatch_pending(run.run_id)
             return await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
         except asyncio.CancelledError:
             # The client disconnected mid-admission. Without the shield the
@@ -673,10 +722,12 @@ class Container:
             # exists to clean up after — the `_close_chat_run` shield's reason,
             # one step earlier in the turn.
             await asyncio.shield(self._cancel_incomplete_admission(run))
+            self._release_chat_dispatch(run)
             raise
         except Exception as exc:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
             await self._cancel_incomplete_admission(run)
+            self._release_chat_dispatch(run)
             raise ChatTurnRefused("chat turn could not be admitted as a Run") from exc
 
     async def _cancel_incomplete_admission(self, run: Run | None) -> None:
@@ -709,6 +760,7 @@ class Container:
                 RunStatus.CANCELLED,
                 error=ADMISSION_INCOMPLETE,
             )
+            await self._sweep_chat_runs()
         except Exception:
             logger.warning(
                 "stranded chat Run %s could not be compensated", run.run_id, exc_info=True
@@ -746,6 +798,7 @@ class Container:
         """
         if run is None:
             return True
+        self._release_chat_dispatch(run)
         if cancelled and (error is not None or result is not None):
             raise ValueError("cancelled chat closure cannot carry error or result")
         if cancelled:
@@ -759,7 +812,35 @@ class Container:
         except Exception:
             logger.warning("chat Run %s could not be terminalized", run.run_id, exc_info=True)
             return False
+        await self._sweep_chat_runs()
         return True
+
+    def _release_chat_dispatch(self, run: Run | None) -> None:
+        """Drop the Run's dispatch shield once the turn is closing.
+
+        The shield exists for the gap between admission and the turn's first
+        Attempt; closure is past that gap in both directions — the Run
+        terminalizes here, or (dispatch unrecorded, #1108) stays open for
+        recovery with a lease that expires like any other. Housekeeping, on
+        the same terms as the sweep it protects: a failed release is logged,
+        never raised — it must not replace the turn's own outcome.
+        """
+        if run is None or self.chat_admitter is None:
+            return
+        try:
+            self.chat_admitter.release_dispatch_pending(run.run_id)
+        except Exception:
+            logger.warning("chat dispatch shield release failed", exc_info=True)
+
+    async def _sweep_chat_runs(self) -> None:
+        """Trim terminal chat Runs after the canonical seam closes one."""
+        if self.chat_admitter is None:
+            return
+        try:
+            await asyncio.shield(self.chat_admitter.sweep())
+        except Exception:
+            # Retention is housekeeping and must not replace the turn's answer.
+            logger.warning("chat Run retention sweep failed", exc_info=True)
 
     async def _terminalize(
         self,
@@ -1584,6 +1665,8 @@ async def create_container(
     pg_pool = None
     holds_pg_pool = False
     holds_db_pool = False
+    usage_log = get_default_usage_log()
+    usage_log_persistence: Any = None
     if config.database_url.startswith("sqlite:"):
         (
             db_pool,
@@ -1598,6 +1681,11 @@ async def create_container(
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
         holds_db_pool = True
+        from maistro.quota.sqlite_usage_log import SqliteUsageLog
+
+        usage_log_persistence = SqliteUsageLog(db_pool)
+        await usage_log_persistence.ensure_schema()
+        usage_log = await usage_log_persistence.restore()
     elif config.database_url.startswith(POSTGRES_SCHEMES):
         (
             pg_pool,
@@ -1625,7 +1713,6 @@ async def create_container(
     episodic_store = await _wire_episodic_store(
         database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
     )
-    project_store = InMemoryProjectStore()
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
     # separately-constructed default registry would disagree with the one the
@@ -1673,7 +1760,7 @@ async def create_container(
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
-        project_store=project_store,
+        project_store=project_scope_store,
         # The same client #188 wires for durable memory similarity. Absent, the
         # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
@@ -1885,7 +1972,7 @@ async def create_container(
         intent_registry=intent_registry,
         capabilities=capabilities,
         episodic_store=episodic_store,
-        project_store=project_store,
+        project_store=project_scope_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         run_store=run_store,
@@ -1902,6 +1989,8 @@ async def create_container(
         agents=agents,
         audit_log=audit_log,
         db_pool=db_pool,
+        usage_log=usage_log,
+        usage_log_persistence=usage_log_persistence,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
         pg_pool=pg_pool,
@@ -2131,6 +2220,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_usage_events",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
     # for the same reason as `prompt_labels`: without it a database migrated
