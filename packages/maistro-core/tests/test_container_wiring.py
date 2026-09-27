@@ -59,6 +59,7 @@ async def test_container_exposes_all_new_subsystems() -> None:
 
 async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     container = await _container(database_url="sqlite://")
+    assert container.stores_memory_backed is True
     assert type(container.elevation_store).__name__ == "SqliteElevationStore"
     assert type(container.usage_log_persistence).__name__ == "SqliteUsageLog"
     assert type(container.durable_event_log).__name__ == "SqliteEventLog"

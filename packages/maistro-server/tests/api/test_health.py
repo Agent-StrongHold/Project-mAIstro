@@ -285,6 +285,37 @@ def test_persistence_diagnostics_report_the_write_behind_usage_log() -> None:
     assert usage["durable"] is True
 
 
+def test_persistence_diagnostics_reports_pathless_write_behind_as_ephemeral() -> None:
+    """A SQLite write-behind store on ``:memory:`` still vanishes on restart."""
+
+    class Store:
+        pass
+
+    class SqliteUsageLog:
+        pass
+
+    container = type(
+        "Container",
+        (),
+        {
+            "audit_log": None,
+            "elevation_store": None,
+            "session_store": None,
+            "strike_tracker": None,
+            "quota_tracker": Store(),
+            "learning_store": None,
+            "usage_log": Store(),
+            "usage_log_persistence": SqliteUsageLog(),
+            "stores_memory_backed": True,
+        },
+    )()
+
+    usage = _persistence_diagnostics(container)["usage_log"]
+    assert usage["persistence_backend"] == "SqliteUsageLog"
+    assert usage["mode"] == "write-behind; flush_usage_log required"
+    assert usage["durable"] is False
+
+
 class TestReadinessEndpoint:
     """Evidence: /health/ready checks dependencies but discloses only status."""
 

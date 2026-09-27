@@ -118,7 +118,11 @@ def _persistence_diagnostics(container: Any) -> dict[str, dict[str, str | bool]]
     if usage_persistence is not None:
         result["usage_log"]["persistence_backend"] = type(usage_persistence).__name__
         result["usage_log"]["mode"] = "write-behind; flush_usage_log required"
-        result["usage_log"]["durable"] = True
+        # The write-behind twin cannot make SQLite's :memory: database survive
+        # a restart. Preserve the backend-derived disposition above instead of
+        # reporting persistence as durable merely because it exists (#72).
+        if not memory_backed:
+            result["usage_log"]["durable"] = True
     return result
 
 
