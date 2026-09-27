@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 import maistro.tasks.idempotency as idempotency_module
+from maistro.memory.store import TaskRecord
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs.admission import admit_direct_work
 from maistro.runs.model import RunStatus
@@ -827,6 +828,167 @@ async def test_the_same_key_across_principals_admits_twice(scoped) -> None:
     # bob's claim, and the queue's owner check fails the receipt read closed.
     assert queue.get(alices.task_id, user_id="bob") is None
     assert queue.get(bobs.task_id, user_id="alice") is None
+
+
+async def test_a_delegated_retry_replays_the_originating_principal_evidence(
+    scoped,
+) -> None:
+    """#1057 x #1176: the claim tier must not flatten delegated identity.
+
+    A retry under the same key hands back the receipt that names the
+    originating principal and the service/delegation evidence, not a receipt
+    re-minted as service-owned work.
+    """
+    _projects, runs, _root, project = scoped
+    queue, _store = _wired_queue(runs, project.project_id)
+    request = TaskCreate(description="Fix the parser", idempotency_key="retry-1")
+
+    async def delegated(user_id: str, delegation_id: str):
+        return await queue.submit(
+            request,
+            user_id=user_id,
+            service_principal_id="conductor",
+            delegation_id=delegation_id,
+            actor_kind="user",
+        )
+
+    first = await delegated("alice", "delegation-1")
+    retry = await delegated("alice", "delegation-1")
+
+    assert retry.task_id == first.task_id
+    assert retry.run_id == first.run_id
+    assert retry.user_id == "alice"
+    assert retry.service_principal_id == "conductor"
+    assert retry.delegation_id == "delegation-1"
+    assert retry.actor_kind == "user"
+
+
+class _ReceiptSession:
+    """Session double for the durable replay path: keeps the rows the queue's
+    best-effort persistence merged, filling the DB-side defaults the real
+    database would set, and answers ``get`` from them."""
+
+    def __init__(self, rows: list[TaskRecord]) -> None:
+        self._rows = rows
+
+    async def __aenter__(self) -> _ReceiptSession:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def merge(self, record: TaskRecord) -> TaskRecord:
+        if record.created_at is None:
+            record.created_at = datetime.now(UTC)
+        self._rows.append(record)
+        return record
+
+    async def commit(self) -> None:
+        return None
+
+    async def get(self, _model: type, primary_key: str) -> TaskRecord | None:
+        for row in reversed(self._rows):
+            if row.id == primary_key:
+                return row
+        return None
+
+
+async def test_a_replayed_admission_after_restart_answers_from_the_durable_delegated_receipt(
+    scoped, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart drops the in-memory receipt but keeps the claim and the row.
+
+    The retry must answer with the durable receipt — originating principal,
+    service principal and delegation evidence intact — rather than the claim's
+    bare request sketch, which carries none of the delegation provenance.
+    """
+    _projects, runs, _root, project = scoped
+    queue, _store = _wired_queue(runs, project.project_id)
+    rows: list[TaskRecord] = []
+    monkeypatch.setattr(
+        queue_module, "get_async_session_factory", lambda: lambda: _ReceiptSession(rows)
+    )
+    request = TaskCreate(description="Fix the parser", idempotency_key="retry-1")
+
+    first = await queue.submit(
+        request,
+        user_id="alice",
+        service_principal_id="conductor",
+        delegation_id="delegation-1",
+        actor_kind="user",
+    )
+    await _drain_persisted_writes(queue)
+    # The restart: this process loses the live receipt but keeps the claim
+    # store and the durable row.
+    queue._tasks.clear()
+
+    retry = await queue.submit(
+        request,
+        user_id="alice",
+        service_principal_id="conductor",
+        delegation_id="delegation-1",
+        actor_kind="user",
+    )
+
+    assert retry.task_id == first.task_id
+    assert retry.run_id == first.run_id
+    assert retry.user_id == "alice"
+    assert retry.service_principal_id == "conductor"
+    assert retry.delegation_id == "delegation-1"
+    assert retry.actor_kind == "user"
+    # The answer came from the durable row, not the claim's request sketch:
+    # the row's own created_at is what the receipt reports.
+    assert retry.created_at == rows[-1].created_at
+
+
+async def test_a_delegated_replay_without_any_receipt_reconstructs_the_evidence(
+    scoped,
+) -> None:
+    """#1057 x #1176: the claim's stored request is the last-resort answer, and
+    it must carry the delegation evidence, not just the owning user id.
+
+    Neither the live receipt nor the durable row survives this restart, so
+    the replay is reconstructed from the claim's stored request — the exact
+    path that once answered `alice None None user` — and must still name the
+    service principal, the delegation id and the actor kind.
+    """
+    _projects, runs, _root, project = scoped
+    queue, store = _wired_queue(runs, project.project_id)
+    request = TaskCreate(description="Fix the parser", idempotency_key="retry-1")
+
+    first = await queue.submit(
+        request,
+        user_id="alice",
+        service_principal_id="conductor",
+        delegation_id="delegation-123",
+        actor_kind="user",
+    )
+    # The restart: a fresh queue over the same claim store — no live receipt,
+    # no durable row — so the replay answers from the stored request.
+    restarted = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id),
+        idempotency_store=store,
+    )
+
+    replay = await restarted.submit(
+        request,
+        user_id="alice",
+        service_principal_id="conductor",
+        delegation_id="delegation-123",
+        actor_kind="user",
+    )
+
+    assert replay.task_id == first.task_id
+    assert replay.run_id == first.run_id
+    assert replay.user_id == "alice"
+    assert replay.service_principal_id == "conductor"
+    assert replay.delegation_id == "delegation-123"
+    assert replay.actor_kind == "user"
+
+
+async def _drain_persisted_writes(queue: TaskQueue) -> None:
+    while queue._persist_writes:
+        await asyncio.gather(*queue._persist_writes)
 
 
 async def test_the_scope_uses_the_effective_workspace(scoped) -> None:

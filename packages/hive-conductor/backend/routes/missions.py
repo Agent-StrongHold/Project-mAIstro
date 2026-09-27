@@ -22,6 +22,16 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _mission_owned_by(mission: Mission, user_id: str) -> bool:
+    """Keep legacy demo fixtures visible without weakening new ownership.
+
+    Seeded missions predate per-user ownership and have an empty owner. Every
+    mission created through this route carries an explicit owner, so only that
+    compatibility data takes the system-fixture path.
+    """
+    return mission.user_id in ("", "system", user_id)
+
+
 def _task_to_mission(rec: object) -> Mission:
     """Convert a TaskRecord from EngineService into a hive Mission."""
     metadata: dict[str, object] = {"engine_backed": True}
@@ -40,18 +50,22 @@ def _task_to_mission(rec: object) -> Mission:
         started_at=rec.started_at,  # type: ignore[attr-defined]
         completed_at=rec.completed_at,  # type: ignore[attr-defined]
         progress=rec.progress,  # type: ignore[attr-defined]
+        user_id=(
+            getattr(rec, "user_id", "") if isinstance(getattr(rec, "user_id", ""), str) else ""
+        ),
         metadata=metadata,
     )
 
 
 @router.get("", response_model=list[Mission])
-def list_missions() -> list[Mission]:
+def list_missions(request: Request) -> list[Mission]:
+    uid = _user_id(request)
     engine = get_engine()
     if engine.is_configured or engine._backend is not None:
-        tasks = engine.list_tasks()
+        tasks = engine.list_tasks(user_id=uid)
         if tasks:
             return [_task_to_mission(t) for t in tasks]
-    return list(stores.missions.values())
+    return [mission for mission in stores.missions.values() if _mission_owned_by(mission, uid)]
 
 
 class ClearMissionsBody(BaseModel):
@@ -72,22 +86,25 @@ def clear_missions(body: ClearMissionsBody) -> dict[str, int]:
 
 
 @router.get("/{mission_id}", response_model=Mission)
-def get_mission(mission_id: str) -> Mission:
+def get_mission(mission_id: str, request: Request) -> Mission:
+    uid = _user_id(request)
     engine = get_engine()
     if engine.is_configured or engine._backend is not None:
-        rec = engine.get_task(mission_id)
+        rec = engine.get_task(mission_id, user_id=uid)
         if rec is not None:
             return _task_to_mission(rec)
-    if mission_id not in stores.missions:
+    mission = stores.missions.get(mission_id)
+    if mission is None or not _mission_owned_by(mission, uid):
         raise HTTPException(status_code=404, detail="mission not found")
-    return stores.missions[mission_id]
+    return mission
 
 
 @router.get("/{mission_id}/steps", response_model=list[MissionStep])
-def get_steps(mission_id: str) -> list[MissionStep]:
+def get_steps(mission_id: str, request: Request) -> list[MissionStep]:
+    uid = _user_id(request)
     engine = get_engine()
     if engine.is_configured or engine._backend is not None:
-        rec = engine.get_task(mission_id)
+        rec = engine.get_task(mission_id, user_id=uid)
         if rec is not None:
             step_status = "running" if rec.mission_status == "running" else rec.mission_status  # type: ignore[attr-defined]
             step: MissionStep | None = None
@@ -102,6 +119,9 @@ def get_steps(mission_id: str) -> list[MissionStep]:
                     order=1,
                 )
             return [step] if step else []
+    mission = stores.missions.get(mission_id)
+    if mission is None or not _mission_owned_by(mission, uid):
+        raise HTTPException(status_code=404, detail="mission not found")
     return list(stores.mission_steps.get(mission_id, []))
 
 
@@ -116,7 +136,10 @@ class CreateMissionBody(BaseModel):
 
 def _user_id(request: Request) -> str:
     user = getattr(request.state, "user", None) or {}
-    return str(user.get("id") or user.get("username") or "dev")
+    uid = user.get("id") or user.get("username")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return str(uid)
 
 
 @router.post("", response_model=Mission)
@@ -130,7 +153,10 @@ async def create_mission(
     if engine.is_configured or engine._backend is not None:
         try:
             rec = await engine.submit_task(
-                body.name, body.description or body.name, workspace_id=workspace_id
+                body.name,
+                body.description or body.name,
+                user_id=_user_id(request),
+                workspace_id=workspace_id,
             )
         except WorkspaceNotRoutable as exc:
             logger.warning("workspace_not_routable %s", exc)
@@ -138,10 +164,12 @@ async def create_mission(
         log_audit("mission_create", _user_id(request), target=rec.id, detail={"name": body.name})
         return _task_to_mission(rec)
 
+    uid = _user_id(request)
     mid = str(uuid4())[:12]
     t = _now()
     m = Mission(
         id=mid,
+        user_id=uid,
         name=body.name,
         description=body.description or body.name,
         status="pending",
@@ -175,8 +203,9 @@ def update_mission_status(
     request: Request,
 ) -> Mission:
     engine = get_engine()
+    uid = _user_id(request)
     if engine._backend is not None:
-        rec = engine.get_task(mission_id)
+        rec = engine.get_task(mission_id, user_id=uid)
         if rec is not None:
             raise HTTPException(
                 status_code=409,
@@ -186,9 +215,9 @@ def update_mission_status(
                 ),
             )
 
-    if mission_id not in stores.missions:
+    m = stores.missions.get(mission_id)
+    if m is None or not _mission_owned_by(m, uid):
         raise HTTPException(status_code=404, detail="mission not found")
-    m = stores.missions[mission_id]
     m.status = body.status  # type: ignore[assignment]
     m.updated_at = _now()
     if body.status in _TERMINAL_STATUSES:
@@ -196,7 +225,7 @@ def update_mission_status(
         m.progress = 1.0 if body.status == "completed" else m.progress
         _revoke_task_elevation(request, mission_id)
     stores.missions[mission_id] = m
-    log_audit("mission_status", "system", target=mission_id, detail={"status": body.status})
+    log_audit("mission_status", uid, target=mission_id, detail={"status": body.status})
     return m
 
 
@@ -219,22 +248,25 @@ def _revoke_task_elevation(request: Request, task_id: str) -> None:
 
 
 @router.delete("/{mission_id}", status_code=204)
-def delete_mission(mission_id: str, request: Request) -> None:
+async def delete_mission(mission_id: str, request: Request) -> None:
     engine = get_engine()
     if engine._backend is not None:
-        if not engine.delete_task(mission_id):
+        uid = _user_id(request)
+        if not await engine.cancel_task(mission_id, user_id=uid):
             raise HTTPException(
                 status_code=404,
                 detail="Mission not found or still running (only completed/failed can be deleted)",
             )
         _revoke_task_elevation(request, mission_id)
-        log_audit("mission_delete", "system", target=mission_id)
+        log_audit("mission_delete", uid, target=mission_id)
         return
-    if mission_id not in stores.missions:
+    uid = _user_id(request)
+    mission = stores.missions.get(mission_id)
+    if mission is None or not _mission_owned_by(mission, uid):
         raise HTTPException(status_code=404, detail="mission not found")
     stores.missions.pop(mission_id, None)
     stores.mission_steps.pop(mission_id, None)
-    log_audit("mission_delete", "system", target=mission_id)
+    log_audit("mission_delete", uid, target=mission_id)
 
 
 class MissionGuidanceBody(BaseModel):
