@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import OrderedDict
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -25,15 +24,18 @@ from maistro.graph.durable_runs import (
 from maistro.graph.nodes import BaseNode, NodeContext
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
-from maistro.runs.chat_admission import ADMISSION_INCOMPLETE, MAX_RETAINED_CHAT_RUNS
+from maistro.runs.chat_admission import (
+    ADMISSION_INCOMPLETE,
+    MAX_RETAINED_CHAT_RUNS,
+    ChatRunAdmitter,
+)
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
     AttemptStatus,
     RunStatus,
 )
-from maistro.runs.retention import RetentionPolicy, RunRetentionSweeper
-from maistro.runs.retention_scope import WorkspaceRetentionScope
+from maistro.runs.retention import RetentionPolicy
 from maistro.runs.sources import ADMISSION_SOURCE, CHAT_SOURCE
 from maistro.workspaces.store import InMemoryWorkspaceStore
 from maistro_turing.runtime import TuringChatSession, TuringContentBlocked
@@ -88,8 +90,11 @@ class TuringExecutionPlane:
 
     Chat admission still follows the canonical chat retention contract: the Run
     is marked with ``CHAT_SOURCE``, gets a durable retention deadline, and is
-    tracked in a small per-process window so high-volume turns do not evict
-    longer-lived task Runs from a shared store.
+    tracked by a per-Workspace ``ChatRunAdmitter``. Turing keeps its own Graph
+    — the durable chat turn is not ``admit``'s delegate node — but not a second
+    window. Non-terminal status is not a shield; dispatch-pending, CREATED/QUEUED,
+    and an in-lease Attempt are. The admitter sweeps on track and again when
+    the turn terminalizes, and ``max_retained`` is that admitter's bound.
     """
 
     def __init__(
@@ -121,23 +126,38 @@ class TuringExecutionPlane:
         )
         self._workspace_by_user: dict[str, str] = {}
         self._scope_lock = asyncio.Lock()
-        self._retained_runs: OrderedDict[str, None] = OrderedDict()
-        self._retention_lock = asyncio.Lock()
         self._max_retained = max_retained
         self._retention = retention if retention is not None else RetentionPolicy()
-        # This plane's store is private to the process but spans every
-        # per-user Workspace it creates, so the sweeper cannot be given one
-        # Workspace at construction — and it must not be given the store
-        # instead (#1175): store-wide would let one user's admission purge
-        # another user's expired Runs. Each sweep is handed the Workspace of
-        # the admission that triggered it, the same seam ChatRunAdmitter
-        # uses; a sweep with no Workspace named refuses rather than default.
-        self._retention_sweeper = RunRetentionSweeper(self.run_store, self._retention)
+        # One admitter per Workspace, so the window and the durable sweep
+        # share that Workspace's deletion authority (#1175). The bound is the
+        # one this plane was constructed with — explicit, and the same number
+        # ChatRunAdmitter enforces.
+        self._admitters: dict[str, ChatRunAdmitter] = {}
 
     @property
     def retained(self) -> int:
         """How many Turing chat Runs this process still tracks."""
-        return len(self._retained_runs)
+        return sum(admitter.retained for admitter in self._admitters.values())
+
+    def _admitter_for(self, workspace_id: str) -> ChatRunAdmitter:
+        """The canonical chat window for one Workspace.
+
+        Turing creates the Run itself — its Graph is not ``admit``'s delegate
+        node — and ``track``s it here so the shields and the sweep stay
+        ``ChatRunAdmitter``'s. A second copy of that policy is how the stall
+        bug returned.
+        """
+        admitter = self._admitters.get(workspace_id)
+        if admitter is not None:
+            return admitter
+        created = ChatRunAdmitter(
+            self.run_store,
+            workspace_id=workspace_id,
+            project_store=self.project_store,
+            max_retained=self._max_retained,
+            retention=self._retention,
+        )
+        return self._admitters.setdefault(workspace_id, created)
 
     async def _scope_for(self, user_id: str) -> tuple[str, str]:
         async with self._scope_lock:
@@ -154,24 +174,36 @@ class TuringExecutionPlane:
             return workspace_id, root.project_id
 
     async def _track_admission(self, run_id: str, *, workspace_id: str) -> None:
-        self._retained_runs[run_id] = None
-        async with self._retention_lock:
-            for retained_id in list(self._retained_runs):
-                if len(self._retained_runs) <= self._max_retained:
-                    break
-                retained = await self.run_store.get_run(retained_id)
-                if retained is None:
-                    self._retained_runs.pop(retained_id, None)
-                    continue
-                if retained.status not in TERMINAL_RUN_STATUSES:
-                    continue
-                await self.run_store.delete_run(retained_id)
-                self._retained_runs.pop(retained_id, None)
-        # Scoped to the Workspace this admission ran in: one user's turn
-        # is never the deletion authority over another user's expired
-        # Runs (#1175). A sweep with no scope refuses and deletes nothing;
-        # housekeeping never fails the turn that rode it in.
-        await self._retention_sweeper.maybe_sweep(scope=WorkspaceRetentionScope(workspace_id))
+        """Record one admitted chat Run on that Workspace's canonical window."""
+        await self._admitter_for(workspace_id).track(run_id)
+
+    async def _settle_window(self, workspace_id: str, run_id: str) -> None:
+        """Release the dispatch shield and re-apply the window.
+
+        Tracking can only sweep Runs that are already terminal. The turn
+        becomes terminal after dispatch, so a last burst with no later
+        admission would sit past ``max_retained`` unless this seam sweeps
+        too. The shield drops only once the turn has settled: while it is
+        set, a concurrent admission cannot delete a RUNNING turn that has
+        no Attempt yet.
+        """
+        admitter = self._admitters.get(workspace_id)
+        if admitter is None:
+            return
+        try:
+            admitter.release_dispatch_pending(run_id)
+        except Exception:
+            logger.warning("Turing chat dispatch shield release failed", exc_info=True)
+        try:
+            await admitter.sweep()
+        except Exception:
+            logger.warning("Turing chat retention sweep failed", exc_info=True)
+
+    async def _abandon_unstarted(self, workspace_id: str | None, run_id: str | None) -> None:
+        """Compensate an admission that never dispatched, then re-apply the window."""
+        await self._cancel_incomplete_admission(run_id)
+        if workspace_id is not None and run_id is not None:
+            await self._settle_window(workspace_id, run_id)
 
     async def _clear_continuation(self, run_id: str) -> None:
         """Clear runnable frontier after a compensated/cancelled Turing Run."""
@@ -297,6 +329,7 @@ class TuringExecutionPlane:
             raise TuringContentBlocked("user input refused by Warden")
 
         admitted_run_id: str | None = None
+        workspace_id: str | None = None
         try:
             workspace_id, project_id = await self._scope_for(user_id)
             graph = Graph(
@@ -346,11 +379,15 @@ class TuringExecutionPlane:
                     run_id=admitted.run_id,
                 ),
             )
+            # Marked while the Run is still QUEUED, with no await between this
+            # and dispatch. A sweep must not observe RUNNING with no Attempt
+            # and no shield — that is the stall shape the window forgets.
+            self._admitter_for(workspace_id).mark_dispatch_pending(admitted.run_id)
         except asyncio.CancelledError:
-            await asyncio.shield(self._cancel_incomplete_admission(admitted_run_id))
+            await asyncio.shield(self._abandon_unstarted(workspace_id, admitted_run_id))
             raise
         except Exception as exc:
-            await self._cancel_incomplete_admission(admitted_run_id)
+            await self._abandon_unstarted(workspace_id, admitted_run_id)
             raise TuringAdmissionUnavailable("canonical Turing chat admission failed") from exc
 
         node = _ChatNode(session)
@@ -386,6 +423,8 @@ class TuringExecutionPlane:
                     "canonical Turing chat checkpoint admission failed"
                 ) from exc
             raise
+        finally:
+            await asyncio.shield(self._settle_window(workspace_id, admitted_run_id))
 
 
 _execution_plane: TuringExecutionPlane | None = None

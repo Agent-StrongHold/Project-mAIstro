@@ -328,8 +328,20 @@ class ChatRunAdmitter:
             provenance=provenance,
             retention_expires_at=self._retention.deadline(),
         )
-        self._window[run.run_id] = None
-        await self._sweep()
+        await self.track(run.run_id)
+        return run
+
+    async def track(self, run_id: str) -> int:
+        """Record a chat Run on this window and re-apply it.
+
+        ``admit`` creates the Run and then tracks it. A seam that has to
+        build its own Graph — Turing's durable chat turn — records the Run
+        here instead of keeping a second retention policy. The shields are
+        this admitter's: dispatch-pending, still CREATED/QUEUED, or an
+        Attempt inside its lease. A non-terminal status by itself is not one.
+        """
+        self._window[run_id] = None
+        forgotten = await self._sweep()
         # Opportunistic, and deliberately after the Run is safely created: the
         # sweep is bounded and rate-limited by the policy, it swallows its own
         # errors, and a turn is never refused because retention could not run.
@@ -341,7 +353,7 @@ class ChatRunAdmitter:
         # deadline, which makes it purge-eligible and therefore never
         # archive-eligible. Admission is the clock here, not the subject.
         await self._archive_sweeper.maybe_sweep()
-        return run
+        return forgotten
 
     async def _sweep(self) -> int:
         """Forget the oldest chat Runs above the retention window.
