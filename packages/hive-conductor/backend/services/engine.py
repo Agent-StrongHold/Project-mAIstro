@@ -96,6 +96,16 @@ class EngineService:
         return getattr(container, "run_store", None)
 
     @property
+    def run_reader(self) -> Any:
+        """The core Container's Workspace-scoped Run reader, or None (#1152).
+
+        `create_container` builds it over the Container's own `run_store`, so
+        it is None when there is no Container, as `run_store` is.
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "run_reader", None)
+
+    @property
     def schedule_store(self) -> Any:
         """The core Container's canonical Schedule store, or None.
 
@@ -449,11 +459,13 @@ class EngineService:
     ) -> AsyncIterator[dict[str, Any]]:
         if self._backend is None:
             return
-        # When scoped to a user, stream only that user's own task. The backend's
-        # get() enforces ownership (empty-owner tasks fail closed), so a None
-        # result means "not yours / not found" — yield nothing rather than
-        # leaking another principal's in-flight events.
-        if user_id is not None and self._backend.get(task_id, user_id=user_id) is None:
+        # When scoped to a user, stream only that user's own task. A None from
+        # get_async() means "not yours / not found" — yield nothing rather than
+        # leaking another principal's in-flight events. LocalTaskBackend scopes
+        # by owner (empty-owner tasks fail closed); MaistroServerTaskBackend
+        # cannot yet forward the user principal, so it only checks existence
+        # (#1057).
+        if user_id is not None and await self._backend.get_async(task_id, user_id=user_id) is None:
             return
         async for event in self._backend.iter_events(task_id):
             yield event

@@ -2024,6 +2024,52 @@ async def test_a_retried_node_does_not_condemn_its_run(spine: Any) -> None:
     await _assert_a_retried_node_does_not_condemn_its_run(spine)
 
 
+async def _assert_completion_over_a_paused_human_node_refused(spine: Any) -> None:
+    """A human wait is the NodeRun (PAUSED), and the parent cannot finish over it.
+
+    Completing the Run used to cascade that NodeRun to CANCELLED in the same
+    write, so the parent looked finished while the person was still owed an
+    answer. Failure stays legal — it is not a success claim — but the refused
+    completion must leave both rows where they were.
+    """
+    store, _workspace, _project_id = spine
+    run, node_run = await _running_run_with_node(spine)
+    paused = await store.transition_node_run(node_run.node_run_id, RunStatus.PAUSED)
+    assert paused.status is RunStatus.PAUSED
+    assert paused.finished_at is None
+
+    with pytest.raises(UnearnedRunCompletion) as caught:
+        await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    assert caught.value.node_id == "node-1"
+    assert caught.value.status is RunStatus.PAUSED
+    parent = await store.get_run(run.run_id)
+    assert parent is not None
+    assert parent.status is RunStatus.RUNNING
+    assert parent.finished_at is None
+    still = await store.get_node_run(node_run.node_run_id)
+    assert still is not None
+    assert still.status is RunStatus.PAUSED
+
+    failed = await store.transition_run(run.run_id, RunStatus.FAILED, error="stopped")
+    assert failed.status is RunStatus.FAILED
+    # Re-seed: failure cascades the open human node, which is the external
+    # disposition. The success path is the one that must wait for the node.
+    run, node_run = await _running_run_with_node(spine)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.PAUSED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.QUEUED)
+    await store.transition_node_run(node_run.node_run_id, RunStatus.RUNNING)
+    await _complete_node_run(store, node_run.node_run_id, result={"answer": "yes"})
+
+    settled = await store.transition_run(run.run_id, RunStatus.COMPLETED, result={"answer": "yes"})
+
+    assert settled.status is RunStatus.COMPLETED
+
+
+async def test_a_parent_cannot_complete_while_a_human_node_run_is_paused(spine: Any) -> None:
+    await _assert_completion_over_a_paused_human_node_refused(spine)
+
+
 @pytest.mark.ac("ADR-082426-19ed/AC-1")
 async def test_completion_over_a_failed_node_refused_in_memory(memory_spine: Any) -> None:
     await _assert_completion_over_a_failed_node_refused(memory_spine)
