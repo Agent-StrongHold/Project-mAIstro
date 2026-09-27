@@ -81,6 +81,35 @@ class ContractError(RuntimeError):
     """A workflow the contract cannot express, rather than one it misreads."""
 
 
+class _ActionsSafeLoader(yaml.SafeLoader):
+    """Keep Actions input identifiers literal with YAML 1.2 boolean rules.
+
+    Copy the resolver lists: changing PyYAML's shared SafeLoader would alter
+    unrelated callers in the root test process. Safe constructors are retained.
+    """
+
+    yaml_implicit_resolvers = {
+        key: [(tag, pattern) for tag, pattern in rules if tag != "tag:yaml.org,2002:bool"]
+        for key, rules in yaml.SafeLoader.yaml_implicit_resolvers.items()
+    }
+
+
+_ActionsSafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
+
+
+def _load_actions_yaml(text: str) -> object:
+    """Parse with safe constructors and local, non-mutating boolean semantics."""
+    loader = _ActionsSafeLoader(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
 def _trigger_block(doc: dict, events: tuple[str, ...]) -> dict | None:
     """The first requested Actions event block, normalized across YAML forms."""
     triggers = doc.get(True, doc.get("on"))
@@ -221,7 +250,7 @@ def _load_reusable_workflow(uses: str) -> dict:
     if not callee_path.is_file():
         raise ContractError(f"references missing reusable workflow {uses!r}")
     try:
-        callee = yaml.safe_load(callee_path.read_text(encoding="utf-8"))
+        callee = _load_actions_yaml(callee_path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise ContractError(f"cannot read reusable workflow {uses!r}: {exc}") from exc
     if not isinstance(callee, dict) or _trigger_block(callee, ("workflow_call",)) is None:
@@ -238,6 +267,13 @@ def _literal_check_name(value: object) -> str:
     return value
 
 
+def _literal_name_component(value: object) -> str:
+    """An empty prefix/suffix is valid; only the final name must be nonempty."""
+    if not isinstance(value, str) or "${{" in value:
+        raise ContractError(f"unsupported check name component {value!r}")
+    return value
+
+
 def _resolve_reusable_name(template: str, supplied: dict, declared: dict) -> str:
     """Resolve name inputs only; command and environment inputs stay opaque."""
 
@@ -247,10 +283,10 @@ def _resolve_reusable_name(template: str, supplied: dict, declared: dict) -> str
         if not isinstance(definition, dict):
             raise ContractError(f"reusable check name references undeclared input {key!r}")
         if key in supplied:
-            return _literal_check_name(supplied[key])
+            return _literal_name_component(supplied[key])
         if "default" not in definition:
             raise ContractError(f"reusable check name needs unresolved input {key!r}")
-        return _literal_check_name(definition["default"])
+        return _literal_name_component(definition["default"])
 
     return _literal_check_name(_INPUT_EXPRESSION_RE.sub(substitute, template))
 
@@ -295,7 +331,7 @@ def collect() -> list[tuple[str, str, str]]:
     """(workflow, check name, scope) for every job reachable from a PR."""
     rows: list[tuple[str, str, str]] = []
     for path in _workflow_files():
-        doc = yaml.safe_load(path.read_text()) or {}
+        doc = _load_actions_yaml(path.read_text()) or {}
         pull_request = _pull_request_trigger(doc)
         if pull_request is None:
             continue
@@ -320,9 +356,10 @@ def collect() -> list[tuple[str, str, str]]:
 def _refuse_duplicates(rows: list[tuple[str, str, str]]) -> None:
     seen: dict[str, str] = {}
     for workflow, name, _scope_value in rows:
-        if name in seen and seen[name] != workflow:
+        if name in seen:
+            owners = "two jobs in one workflow" if seen[name] == workflow else "two workflows"
             raise ContractError(
-                f"two workflows emit the check name {name!r}: {seen[name]!r} and {workflow!r}. "
+                f"{owners} emit the check name {name!r}: {seen[name]!r} and {workflow!r}. "
                 "Branch protection cannot tell them apart; rename one."
             )
         seen.setdefault(name, workflow)
@@ -401,7 +438,7 @@ def merge_group_gaps(rows: list[tuple[str, str, str]]) -> list[str]:
 
     merge_capable: set[str] = set()
     for path in _workflow_files():
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        doc = _load_actions_yaml(path.read_text(encoding="utf-8")) or {}
         if _merge_group_trigger(doc) is not None:
             merge_capable.add(doc.get("name", path.name))
 
