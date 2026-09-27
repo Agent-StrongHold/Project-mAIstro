@@ -1,3 +1,4 @@
+---
 inventory-delta:
   packages/maistro-server/tests: +1
 ---
