@@ -88,16 +88,22 @@ class RouterEngine:
         if not candidates:
             raise NoModelsError("No eligible models — all over quota without paygo")
 
-        candidates.sort(key=lambda c: c.score, reverse=True)
-        best = candidates[0]
+        from maistro.agents.circuit_breaker import provider_blocks_routing
+
+        admitted = [c for c in candidates if not provider_blocks_routing(c.provider)]
+        if not admitted:
+            raise NoModelsError("No eligible models — provider circuit is open")
+
+        admitted.sort(key=lambda c: c.score, reverse=True)
+        best = admitted[0]
 
         return ModelSelection(
             model_id=best.model_id,
             litellm_id=best.litellm_id,
             provider=best.provider,
             score=best.score,
-            reason=self._build_reason(best, intent, candidates),
-            candidates=tuple(candidates),
+            reason=self._build_reason(best, intent, admitted),
+            candidates=tuple(admitted),
         )
 
     def _fallback(
@@ -106,6 +112,7 @@ class RouterEngine:
         providers: dict[str, ProviderConfig],
     ) -> ModelSelection:
         """Fallback: return highest quality active model regardless of filters."""
+        from maistro.agents.circuit_breaker import provider_blocks_routing
         from maistro.types.model import ModelSelection
 
         best_quality = -1.0
@@ -114,6 +121,8 @@ class RouterEngine:
 
         for model_id, model_cfg in models.items():
             prov = providers.get(model_cfg.provider)
+            if provider_blocks_routing(model_cfg.provider):
+                continue
             if prov and prov.status == "active" and model_cfg.quality > best_quality:
                 best_quality = model_cfg.quality
                 best_id = model_id

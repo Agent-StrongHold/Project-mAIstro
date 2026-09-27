@@ -41,7 +41,11 @@ class CostAwareRouter:
                 if model.name in tried:
                     continue
                 tried.add(model.name)
-                if self._satisfies(model, budget) and self._registry.is_available(model.name):
+                if (
+                    self._satisfies(model, budget)
+                    and self._registry.is_available(model.name)
+                    and not self._circuit_blocks(model.provider)
+                ):
                     return model
         raise NoEligibleModelError(budget, detail=f"all eligible models unavailable: {budget}")
 
@@ -51,7 +55,11 @@ class CostAwareRouter:
         candidates = [
             m
             for m in models
-            if m.max_input_tokens >= input_size_tokens and self._registry.is_available(m.name)
+            if (
+                m.max_input_tokens >= input_size_tokens
+                and self._registry.is_available(m.name)
+                and not self._circuit_blocks(m.provider)
+            )
         ]
         if not candidates:
             raise NoEligibleModelError(
@@ -93,3 +101,12 @@ class CostAwareRouter:
         if budget.max_latency_ms is not None and model.latency_p50_ms > budget.max_latency_ms:
             return False
         return not (budget.reasoning and not model.reasoning_capable)
+
+    @staticmethod
+    def _circuit_blocks(provider: str) -> bool:
+        """Skip a provider whose breaker is open, and every provider when the
+        shared gateway breaker is open. Does not widen budget constraints.
+        """
+        from maistro.agents.circuit_breaker import provider_blocks_routing
+
+        return provider_blocks_routing(provider)

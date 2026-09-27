@@ -22,7 +22,14 @@ import httpx
 import structlog
 from pydantic import ValidationError
 
-from maistro.agents.circuit_breaker import CircuitOpenError, llm_circuit
+from maistro.agents.circuit_breaker import (
+    CircuitBreaker,
+    CircuitOpenError,
+    CircuitState,
+    failure_domain,
+    llm_breakers,
+    llm_circuit,
+)
 from maistro.agents.prompts import CONDUCTOR_SYSTEM
 from maistro.agents.types import ConductorOutput, LLMProviderError, PlanOutput, SubTask
 from maistro.config.model_resolver import resolve_model
@@ -153,6 +160,40 @@ def _parse_json_output(raw: str) -> ConductorOutput:
     return ConductorOutput.model_validate(data)
 
 
+def _is_shared_gateway_failure(exc: Exception) -> bool:
+    """True when the shared gateway itself was not reached.
+
+    An HTTP status, including 502/503, means the gateway accepted the route and
+    the upstream provider domain owns the failure. ``ConnectError`` is the
+    shared dependency: it may open the gateway breaker and block every provider
+    that depends on it.
+    """
+    return isinstance(exc, httpx.ConnectError)
+
+
+def _note_gateway_reached(provider_breaker: CircuitBreaker) -> None:
+    """Record that the shared gateway answered, without clearing its history.
+
+    A closed gateway has no probe to settle. A half-open probe that got an HTTP
+    response closes, because the shared dependency recovered. Provider failures
+    must not call ``record_success`` on a closed gateway — that would wipe the
+    gateway failure window.
+    """
+    if provider_breaker is llm_circuit:
+        return
+    if llm_circuit.state == CircuitState.HALF_OPEN:
+        llm_circuit.record_success()
+    else:
+        llm_circuit.release_probe()
+
+
+def _note_gateway_failure(provider_breaker: CircuitBreaker) -> None:
+    """Open or count the shared gateway breaker and do not blame the provider."""
+    llm_circuit.record_failure()
+    if provider_breaker is not llm_circuit:
+        provider_breaker.release_probe()
+
+
 async def _run_with_retry(
     call: ConductorCall,
     prompt: str,
@@ -161,8 +202,13 @@ async def _run_with_retry(
     on_response: OnResponseHook | None = None,
 ) -> ConductorOutput:
     """Call the gateway with timeout and retry logic for transient failures."""
+    domain = failure_domain(model=call.model)
+    provider_breaker = llm_breakers.breaker(domain)
     if not llm_circuit.allow_request():
         raise CircuitOpenError(llm_circuit)
+    if provider_breaker is not llm_circuit and not provider_breaker.allow_request():
+        llm_circuit.release_probe()
+        raise CircuitOpenError(provider_breaker)
 
     last_exc: Exception | None = None
 
@@ -174,7 +220,8 @@ async def _run_with_retry(
                 timeout=tier_config.timeout,
             )
             result = _parse_json_output(raw)
-            llm_circuit.record_success()
+            provider_breaker.record_success()
+            _note_gateway_reached(provider_breaker)
             return result
         except TimeoutError as exc:
             last_exc = exc
@@ -184,8 +231,18 @@ async def _run_with_retry(
                 max_retries=tier_config.max_llm_retries,
                 timeout=tier_config.timeout,
             )
+            scope = "provider"
         except Exception as exc:
-            if _is_retryable(exc):
+            if _is_shared_gateway_failure(exc):
+                last_exc = exc
+                await logger.awarning(
+                    "llm_gateway_unreachable",
+                    attempt=attempt + 1,
+                    max_retries=tier_config.max_llm_retries,
+                    error=str(exc),
+                )
+                scope = "gateway"
+            elif _is_retryable(exc):
                 last_exc = exc
                 await logger.awarning(
                     "llm_transient_error",
@@ -193,12 +250,18 @@ async def _run_with_retry(
                     max_retries=tier_config.max_llm_retries,
                     error=str(exc),
                 )
+                scope = "provider"
             else:
-                llm_circuit.record_failure()
+                provider_breaker.record_failure()
+                _note_gateway_reached(provider_breaker)
                 llm_errors_total.inc(error_type="non_retryable")
                 raise
 
-        llm_circuit.record_failure()
+        if scope == "gateway":
+            _note_gateway_failure(provider_breaker)
+        else:
+            provider_breaker.record_failure()
+            _note_gateway_reached(provider_breaker)
         llm_errors_total.inc(error_type="retryable")
 
         # Exponential backoff with jitter before retry

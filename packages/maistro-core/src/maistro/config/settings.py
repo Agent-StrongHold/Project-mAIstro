@@ -276,6 +276,15 @@ class Settings(BaseSettings):
     rate_limit_burst: int = BASELINE_RATE_LIMIT_BURST
     circuit_breaker_failure_threshold: int = BASELINE_CIRCUIT_FAILURE_THRESHOLD
     circuit_breaker_recovery_timeout_s: float = BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S
+    circuit_breaker_max_domains: int = Field(
+        default=32,
+        ge=2,
+        description=(
+            "Max in-process LLM circuit breakers for dynamically discovered "
+            "provider failure domains. The shared gateway breaker is not counted "
+            "and is never evicted. Closed idle domains are retired first."
+        ),
+    )
 
     # Shared outbound HTTP pool (see maistro.http). Ceilings against fd
     # exhaustion, NOT a load throttle — a small cap here was measured as the
