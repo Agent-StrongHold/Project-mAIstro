@@ -66,8 +66,7 @@ class SqliteQuotaTracker:
             columns = {row[1] for row in await cursor.fetchall()}
             if "unreported_count" not in columns:
                 await self._conn.execute(
-                    "ALTER TABLE quota_usage ADD COLUMN unreported_count "
-                    "INTEGER NOT NULL DEFAULT 0"
+                    "ALTER TABLE quota_usage ADD COLUMN unreported_count INTEGER NOT NULL DEFAULT 0"
                 )
             await self._conn.execute(_EVIDENCE_SCHEMA)
             await self._conn.execute(_EVENT_SCHEMA)
