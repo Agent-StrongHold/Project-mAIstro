@@ -18,7 +18,10 @@ from starlette.requests import Request
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingResolutionError
-from maistro.capabilities.effect_context import new_in_memory_effect_context
+from maistro.capabilities.effect_context import (
+    binding_scope_policy,
+    new_in_memory_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStatus
 from maistro.capabilities.model_chat import MODEL_CHAT_CAPABILITY
 from maistro.capabilities.providers.llm_gateway import (
@@ -123,7 +126,10 @@ def canvas_egress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[CanvasModelEgress, Any, dict[str, str], Any]:
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
-    effects = new_in_memory_effect_context()
+    # The shipped container composes capability_effects with the explicit M1
+    # baseline policy (#846 fail-closed composition); a bare context denies at
+    # the policy boundary, so this fixture mirrors production composition.
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     import asyncio
 
     async def _seed_execution() -> tuple[dict[str, str], InMemoryRunStore]:
