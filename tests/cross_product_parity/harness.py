@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[2]
+_STRICT_ENV_VAR: Final = "MAISTRO_PARITY_STRICT"
+
+
+def _strict_mode_enabled() -> bool:
+    return os.environ.get(_STRICT_ENV_VAR) == "1"
 
 
 class DependencyUnavailable(AssertionError):
@@ -125,7 +131,7 @@ SCHEDULER = Dependency(
 
 CONDUCTOR_INSPECTION = Dependency(
     key="Conductor canonical inspection plane",
-    issue=65,
+    issue=1036,
     pr=None,
     description=(
         "GET /v1/dag-runs/{run_id} must resolve canonical Run evidence instead of the "
@@ -185,6 +191,11 @@ def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
     issue/PR and a concrete missing/legacy source seam. This is intentionally
     not a pytest skip or expected-failure mechanism. Once the probes pass the
     caller must execute the scenario's real assertions.
+
+    Under ``MAISTRO_PARITY_STRICT=1`` (M1 closeout mode) a blocker is not a
+    named, evidence-backed state to report and continue past: it raises
+    ``DependencyUnavailable`` instead, so a scenario that only proved its
+    dependency missing cannot register as a pass.
     """
     blockers: list[str] = []
     for dependency in dependencies:
@@ -200,6 +211,9 @@ def dependency_assessment(*dependencies: Dependency) -> DependencyAssessment:
         assert failures, f"{dependency.label} cannot be unavailable without probe evidence"
         detail = "; ".join(failures)
         blockers.append(f"{dependency.key}: waiting on {owner}: {detail}")
+
+    if blockers and _strict_mode_enabled():
+        raise DependencyUnavailable(" | ".join(blockers))
 
     assessment = DependencyAssessment(ready=not blockers, blockers=tuple(blockers))
     assert assessment.ready is (not assessment.blockers)

@@ -19,6 +19,11 @@ on:
   # merely on the feature-branch head that was green before it entered the queue.
   merge_group:
     types: [checks_requested]
+  # Manual-only: the #459 strict M1-closeout invocation of the cross-product
+  # parity suite (job `cross-product-parity-strict`, below) has no other
+  # trigger. It is expected to fail until #1036 lands, so it must never be
+  # part of the pull_request/push/merge_group event set above.
+  workflow_dispatch:
 
 # Supersede in-flight runs for the same PR or merge-group candidate instead of
 # letting them pile up. Protected-branch pushes still run to completion because
@@ -532,6 +537,52 @@ jobs:
           MAISTRO_DRY_RUN: "1"
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
+
+  # #459: the cross-product parity suite already ran unnamed, folded into the
+  # `test` job's blanket `pytest tests/`. A named job is what #459's own
+  # acceptance criterion asks for -- one CI check whose pass/fail is legible as
+  # "did cross-product spine parity hold" rather than buried in one line of a
+  # much larger suite.
+  cross-product-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --extra dev
+      - name: Cross-product spine parity suite (#459, development mode)
+        run: uv run pytest tests/cross_product_parity -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+
+  # Manual-only strict M1-closeout invocation (#459). Development mode accepts
+  # a named, assertion-backed dependency blocker; MAISTRO_PARITY_STRICT=1 turns
+  # every remaining blocker into a failure instead, per #459's two-mode
+  # evidence rule. It is expected to fail today on the CONDUCTOR_INSPECTION
+  # blocker until #1036 lands, so it stays out of the pull_request/push/
+  # merge_group event set above and is advisory rather than a required check
+  # (`.github/branch-protection.json`).
+  cross-product-parity-strict:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --extra dev
+      - name: Cross-product spine parity suite (#459, M1 closeout / strict mode)
+        run: uv run pytest tests/cross_product_parity -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+          MAISTRO_PARITY_STRICT: "1"
 
   durable-events:
     needs: workflow-lint

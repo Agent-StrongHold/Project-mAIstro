@@ -21,7 +21,10 @@ from tests.cross_product_parity.harness import (
     GOLDEN_BASELINES,
     ONTOLOGY,
     SCHEDULER,
+    Dependency,
+    DependencyUnavailable,
     ParityContractError,
+    SourceProbe,
     assert_identity_projection,
     assert_matches_golden,
     assert_ontology_identity_projection,
@@ -223,3 +226,48 @@ def test_dependency_handling_contains_no_test_suppression_escape_hatch() -> None
     )
     for token in forbidden:
         assert token not in source
+
+
+def test_strict_mode_turns_synthetic_unavailable_dependency_into_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M1 closeout mode (#459): a blocker cannot register as a pass.
+
+    ``dependency_assessment`` normally reports an unavailable dependency as a
+    named blocker so development-mode scenarios can assert it and return.
+    Under ``MAISTRO_PARITY_STRICT=1`` the same unavailable dependency must
+    instead raise, so a strict-closeout scenario that only proved its
+    dependency missing fails the suite rather than passing it.
+    """
+    monkeypatch.setenv("MAISTRO_PARITY_STRICT", "1")
+    synthetic = Dependency(
+        key="synthetic unavailable dependency",
+        issue=1036,
+        pr=None,
+        description="A SourceProbe pointed at a path that does not exist.",
+        probes=(SourceProbe("tests/cross_product_parity/__does_not_exist__.py"),),
+    )
+
+    with pytest.raises(DependencyUnavailable, match="synthetic unavailable dependency"):
+        dependency_assessment(synthetic)
+
+
+def test_non_strict_mode_still_reports_named_blockers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Development mode (#459) keeps naming blockers instead of failing closed."""
+    monkeypatch.delenv("MAISTRO_PARITY_STRICT", raising=False)
+    synthetic = Dependency(
+        key="synthetic unavailable dependency",
+        issue=1036,
+        pr=None,
+        description="A SourceProbe pointed at a path that does not exist.",
+        probes=(SourceProbe("tests/cross_product_parity/__does_not_exist__.py"),),
+    )
+
+    assessment = dependency_assessment(synthetic)
+
+    assert not assessment.ready
+    assert len(assessment.blockers) == 1
+    assert "synthetic unavailable dependency" in assessment.blockers[0]
+    assert "issue #1036" in assessment.blockers[0]

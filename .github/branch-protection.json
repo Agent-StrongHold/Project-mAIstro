@@ -46,6 +46,7 @@
           "lint-and-type-check",
           "security",
           "test",
+          "cross-product-parity",
           "workflow-lint",
           "block",
           "formal-conformance",
@@ -108,6 +109,7 @@
           "lint-and-type-check",
           "security",
           "test",
+          "cross-product-parity",
           "wheel-imports",
           "workflow-lint",
           "block",
@@ -171,7 +173,8 @@
       "Checks deliberately non-required must be named here with a reason."
     ],
     "pr-base": "PR-only branch-policy check (#383): reports on pull_request events only, so it cannot be a required check that the merge queue waits on (merge_group); the correction is to rebase onto develop.",
-    "DevSkim": "devskim.yml triggers on push/pull_request/schedule only, no merge_group -- same structural gap as pr-base. It runs on every develop PR but remains advisory until the owner explicitly adds it to the required merge contract; a merge-queue entry must not wait for a status this check never reports there."
+    "DevSkim": "devskim.yml triggers on push/pull_request/schedule only, no merge_group -- same structural gap as pr-base. It runs on every develop PR but remains advisory until the owner explicitly adds it to the required merge contract; a merge-queue entry must not wait for a status this check never reports there.",
+    "cross-product-parity-strict": "#459's workflow_dispatch-only M1-closeout invocation of the cross-product parity suite (MAISTRO_PARITY_STRICT=1). Its own job `if:` keeps it from ever running on pull_request/push/merge_group, so it never reports on a PR despite ci.yml's pull_request trigger; it is expected to fail on the CONDUCTOR_INSPECTION blocker until #1036 lands and must not gate merges until #459 can close."
   },
   "repository": {
     "allow_auto_merge": true,
