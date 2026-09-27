@@ -56,12 +56,14 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # as its parent, and once more onto #286's `044_canvas_store_tables`
     # (PR #1620) when develop claimed that parent while this branch was open
     # — the same renumbering this chain performs on every develop collision.
-    # The invariant is one linear head with 043 as its tip and the revisions
-    # it superseded on its ancestor path, not any fixed parent.
-    walked = {item.revision for item in directory.walk_revisions("base", "043")}
+    # The invariant is one linear head — now `045`, this branch's Run-scoped
+    # logical-effect admission revision that continues 043's chain — with the
+    # revisions it superseded on its ancestor path, not any fixed parent.
+    walked = {item.revision for item in directory.walk_revisions("base", "045")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
-    assert directory.get_heads() == ["043"]
+    assert "043" in walked
+    assert directory.get_heads() == ["045"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
