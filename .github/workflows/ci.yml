@@ -521,6 +521,13 @@ jobs:
           # Same kernel knob the bwrap provisioning relaxes; do not depend
           # on that step having survived its own `|| true`s.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Rootless dockerd enforces --memory/--pids-limit only through a
+          # delegated cgroup v2 subtree, which systemd grants to a user
+          # manager. Hosted runners have no logind session for the runner
+          # user, so start one via linger; the enforcement probe in the
+          # image-load step below turns any residual non-delegation into a
+          # named failure instead of a red escape test two steps later.
+          sudo loginctl enable-linger "$uid" || true
           timeout 180 sudo apt-get update || true
           timeout 180 sudo apt-get install -y uidmap slirp4netns || true
           # The installs above are best-effort because the runner image
@@ -537,7 +544,26 @@ jobs:
           # Direct dockerd-rootless.sh rather than setuptool+systemd: fewer
           # moving parts, and the daemon only has to outlive this job. vfs is
           # deterministic without fuse-overlayfs; the lane is small.
+          #
+          # Round 25 root cause for the eight red runs before this one: the
+          # runner's dockerd (28.x) default-initializes the iptables firewall
+          # inside the rootlesskit netns and dies with "failed to create NAT
+          # chain DOCKER: iptables ... Permission denied (you must be root)"
+          # — reproduced locally against dockerd 28.5.2 with this exact
+          # recipe. The locally-proven lanes of rounds 19-24 masked it only
+          # because moby 29.x stopped firewall-initializing in rootless mode.
+          # So the firewall/bridge/port-publish plane is disabled explicitly:
+          # the sandbox contract's network default-deny is per-container
+          # (--network=none; no bridge, NAT or publish path is ever
+          # exercised), and removing the plane removes the exact privilege
+          # the rootless netns cannot grant. The escape suite was re-run
+          # green (16 passed, 1 daemon-posture skip) against a daemon started
+          # with these exact flags under dockerd 28.5.2 before this landed.
           nohup dockerd-rootless.sh \
+            --iptables=false \
+            --ip6tables=false \
+            --userland-proxy=false \
+            --bridge=none \
             --storage-driver=vfs \
             --data-root="$lane_dir/data" \
             --exec-root="$lane_dir/exec" \
@@ -565,7 +591,22 @@ jobs:
       # first docker talks to the runner's rootful system daemon explicitly;
       # the second inherits DOCKER_HOST from the previous step's GITHUB_ENV.
       - name: Load the Builder sandbox image into the rootless daemon
-        run: docker --host unix:///var/run/docker.sock save maistro-builders:latest | docker load
+        run: |
+          docker --host unix:///var/run/docker.sock save maistro-builders:latest | docker load
+          # Round 25: prove the daemon can actually enforce the sandbox's
+          # resource budget before the suite runs on it. Rootless dockerd
+          # needs the delegated cgroup v2 subtree set up by the linger step;
+          # without it, --memory is silently dropped and the exhaustion test
+          # would fail opaquely. Reading memory.max back from inside a
+          # 64m-limited container is the enforcement proof; "max" means
+          # unbounded, i.e. not enforced.
+          enforced="$(docker run --rm --network=none --memory=64m --memory-swap=64m \
+            maistro-builders:latest cat /sys/fs/cgroup/memory.max)"
+          echo "memory.max under a 64m limit: $enforced"
+          if [ "$enforced" != "67108864" ]; then
+            echo "::error::rootless daemon cannot enforce container memory limits (memory.max='$enforced'); cgroup v2 delegation to the runner user is missing"
+            exit 1
+          fi
       - name: Run the real Builder sandbox conformance lane
         run: uv run pytest packages/maistro-bootstrap/tests/test_container_sandbox.py -v --tb=short
       - run: uv run pytest packages/maistro-bootstrap/tests -v --tb=short

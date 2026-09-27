@@ -337,10 +337,17 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    assertions, not selector or fake-backend tests. ADR-093 Decision 2's rootless requirement is
    **enforced at launch, not assumed**: the Docker backend reads its own container's
    `/proc/self/uid_map` and refuses whenever container uid 0 maps to host uid 0 (including a
-   partially remapped map), or whenever that mapping is unproven; CI proves both branches — the
-   refusal against the runner's rootful system daemon, and the full escape suite (including a live
-   uid_map probe that container root does not map to host root) against a rootless daemon started
-   in the conformance lane. The
+   partially remapped map), or whenever that mapping is unproven; the CI conformance lane runs
+   both branches — the refusal against the runner's rootful system daemon, and the full escape
+   suite (including a live uid_map probe that container root does not map to host root) against a
+   rootless daemon the lane provisions itself. That provisioning deliberately keeps the
+   firewall/bridge/port-publish plane off (`--iptables=false --ip6tables=false
+   --userland-proxy=false --bridge=none`): the network default-deny in the contract is enforced
+   per-container (`--network=none`), and an older dockerd (28.x) otherwise fails daemon start
+   building NAT chains the rootless netns cannot authorize — the runner failure was reproduced
+   locally against dockerd 28.5.2, the fixed recipe re-ran the suite 16-passed against that
+   daemon, and the lane asserts cgroup memory-limit enforcement (via `loginctl enable-linger` +
+   a `memory.max` probe) before the suite executes. The
    Docker backend remains a shared-kernel
    guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
    backends for untrusted autonomous execution. Unattended RSI (`maistro_rsi run`/`evolve`) is

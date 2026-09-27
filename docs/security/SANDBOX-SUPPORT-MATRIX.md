@@ -182,7 +182,12 @@ runs on a qualifying daemon, including a live assertion that container uid 0
 does not map to host uid 0; on a rootful unmapped daemon the suite reduces to
 the fail-closed proof that the sandbox refuses to start and leaves no container
 behind. CI runs both: the refusal against the runner's own rootful system
-daemon, then the escape suite against a rootless daemon started in the lane.
+daemon, then the escape suite against a rootless daemon started in the lane —
+provisioned with the firewall/bridge plane off (`--iptables=false
+--ip6tables=false --userland-proxy=false --bridge=none`, safe because the
+contract's network default-deny is per-container) and a cgroup
+memory-enforcement probe, so the suite cannot run against a daemon that
+cannot enforce the resource budget.
 
 ## Verification
 
