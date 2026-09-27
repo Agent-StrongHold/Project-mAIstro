@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from maistro_design.packs.registry import PackContractError, load_bundled_packs
+from maistro_design.packs.scenario import compose_workspace_goal
 from maistro_design.scan import scan_design_output
 from maistro_design.trust import (
     InMemoryTrustBanishList,
@@ -184,6 +186,9 @@ class DesignEngine:
         self._typography_renderer = typography_renderer
         self._project_store = project_store
         self._context_trust_tier: TrustTier = TrustTier.T0
+        self._domain_packs = load_bundled_packs()
+        if not self._domain_packs.ids():
+            raise PackContractError("bundled domain packs missing")
 
     @property
     def context_trust_tier(self) -> TrustTier:
@@ -198,6 +203,10 @@ class DesignEngine:
         into `_systems` is a coupling that breaks without a word.
         """
         return self._systems
+
+    def workspace_goal(self, goal_id: str) -> dict[str, object]:
+        """Bind the Atelier scenario packs onto one Goal. Execution stays the spine."""
+        return compose_workspace_goal(goal_id, registry=self._domain_packs)
 
     def _contaminate(self, tier: TrustTier) -> None:
         self._context_trust_tier = self._context_trust_tier.min(tier)
