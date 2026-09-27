@@ -11,11 +11,11 @@ history:
     date: 2026-08-24
   - status: Accepted
     date: 2026-08-24
-substrate:
-  - maistro-engine#ADR-082326-c126
+substrate: []
 implements: []
 related:
   - maistro-engine#ADR-019
+  - maistro-engine#ADR-082326-c126
 supersedes: []
 blocks: []
 blocked-by: []

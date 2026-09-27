@@ -3,18 +3,18 @@ id: SPEC-070226-6489
 title: "Identity lifecycle: DID method, agent authority tokens, recovery, offboarding"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-07-02
 substrate:
   - maistro-engine#ADR-021
   - maistro-engine#ADR-024
-  - maistro-engine#ADR-084
-  - maistro-engine#SPEC-003
 implements:
   - maistro-engine#ADR-084
 related:
   - maistro-engine#ADR-026
   - maistro-engine#ADR-059
+  - maistro-engine#ADR-084
+  - maistro-engine#SPEC-003
 supersedes: []
 blocks: []
 blocked-by: []
@@ -25,14 +25,21 @@ tests:
 layer: Identity
 owners:
   - '@BlakeMatthews-dev'
+history:
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-070226-6489: Identity lifecycle — DID method, agent authority tokens, recovery, offboarding
 
 ## Context
 
-ADR-084 specifies identity lifecycle: onboarding (agent identity creation), authority token issuance
+ADR-084 proposes identity lifecycle: onboarding (agent identity creation), authority token issuance
 (CapabilityToken per ADR-024), recovery (if key is lost), and offboarding (revoke all tokens).
+ADR-084 remains Proposed and is retained as design context only; it is not shipped authority for
+this SPEC — the operative authority is this SPEC under its Accepted substrate (ADR-021, ADR-024).
 
 DID method is did:key (per ADR-021 baseline); agent authority tokens are JWT-like credentials
 signed by the agent's DID. This SPEC wires the full lifecycle.
@@ -145,7 +152,8 @@ async def offboard_agent(
 ```
 
 Revokes every live token issued by the agent's DID, soft-archives the identity by setting
-`offboarded_at` (archive, never hard-delete — ADR-084 §4), and emits
+`offboarded_at` (archive, never hard-delete; ADR-084 §4 is the originating proposal, not shipped
+authority), and emits
 `("identity.offboarded", agent_id)` via the injected `emit` callable (event-bus wiring is the
 caller's concern). Idempotent: a second offboard keeps the original `offboarded_at`.
 

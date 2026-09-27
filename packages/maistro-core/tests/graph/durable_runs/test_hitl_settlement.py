@@ -711,6 +711,90 @@ async def test_canonical_mutations_refuse_a_foreign_workspace_authorization() ->
     assert timed_out is not None and timed_out.status is RunStatus.TIMED_OUT
 
 
+async def _canonical_two_project_fixture() -> tuple[Any, Any, Any]:
+    """Two real `human.approve_draft` Runs paused in two sibling Projects.
+
+    One Workspace, one root Project, two children: the caller holds Workspace
+    membership for both, so only the `project_ids` selector can tell the two
+    scopes apart (#1110).
+    """
+    projects = InMemoryProjectScopeStore()
+    run_store = InMemoryRunStore(project_store=projects)
+    store = CanonicalDurableRunStore(run_store, InMemoryGraphContinuationStore())
+    root = await projects.create_root("ws-1110-projects")
+    paused: dict[str, Any] = {}
+    for name in ("scope-owned", "scope-other"):
+        project = await projects.create(
+            workspace_id="ws-1110-projects",
+            parent_project_id=root.project_id,
+            name=f"project expiry scope {name}",
+        )
+        graph = Graph(
+            workspace_id="ws-1110-projects",
+            project_id=project.project_id,
+            name="approval",
+            nodes=[
+                Node(
+                    node_id="ask",
+                    node_type="human.approve_draft",
+                    inputs={"draft": {"ticket": "PROJ-1"}, "timeout_seconds": 100},
+                )
+            ],
+        )
+        admitted = await run_store.create_run(graph, initial_status=RunStatus.QUEUED)
+        paused[name] = await run_durable_graph(
+            graph,
+            store=store,
+            node_resolver=lambda node_id, current_graph: get_node("human.approve_draft")(),
+            run_id=admitted.run_id,
+            run_store=run_store,
+        )
+    return store, paused["scope-owned"], paused["scope-other"]
+
+
+async def test_expiry_settles_only_projects_the_caller_holds_authority_over() -> None:
+    """A project-scoped tick never settles a sibling Project's human decision.
+
+    Both Runs are due in a Workspace the authorization covers; `project_ids`
+    is the only thing distinguishing them, so it must narrow settlement the
+    way the HITL door's per-Project `hitl.cancel` authority does (#1110).
+    Removing the `project_ids` filter in `_due_candidates` must fail this
+    test by settling the sibling too.
+    """
+    store, owned, other = await _canonical_two_project_fixture()
+    authorization = HitlAuthorization(
+        effective_principal="project-scoped-user",
+        workspace_ids=frozenset({"ws-1110-projects"}),
+        membership_check=_allow_test_membership,
+    )
+    deadline = hitl_deadline(owned, "ask")
+    assert deadline is not None
+
+    expired = await expire_hitl_pauses(
+        store,
+        now=deadline + timedelta(seconds=1),
+        authorization=authorization,
+        project_ids={owned.run.project_id},
+    )
+
+    assert [record.run_id for record in expired] == [owned.run_id]
+    timed_out = await store.get(owned.run_id)
+    assert timed_out is not None and timed_out.status is RunStatus.TIMED_OUT
+    still_paused = await store.get(other.run_id)
+    assert still_paused is not None and still_paused.status is RunStatus.PAUSED
+
+    # Without a Project selector the same Workspace-wide tick settles both,
+    # which is what a scheduler holding Workspace authority still gets.
+    sibling_expired = await expire_hitl_pauses(
+        store,
+        now=deadline + timedelta(seconds=1),
+        authorization=authorization,
+    )
+    assert [record.run_id for record in sibling_expired] == [other.run_id]
+    settled = await store.get(other.run_id)
+    assert settled is not None and settled.status is RunStatus.TIMED_OUT
+
+
 async def test_inmemory_mutations_refuse_a_foreign_workspace_authorization() -> None:
     """The store-level predicate itself, not a deadline, refuses the mutation.
 
