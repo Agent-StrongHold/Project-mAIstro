@@ -167,6 +167,33 @@ class TestLifespan:
         assert main_module._runner is mock_runner
         assert get_startup_phase(test_app) is StartupPhase.NOT_STARTED
 
+    async def test_lifespan_starts_and_stops_abandoned_attempt_recovery(self) -> None:
+        """The task worker's lease is only real if this process collects it (#232)."""
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        mock_runner = MagicMock(start=AsyncMock(), stop=AsyncMock())
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch("maistro.tools.sandbox.server.cleanup_all_containers", AsyncMock()),
+            patch("maistro_server.main.logger", MagicMock(ainfo=AsyncMock(), awarning=AsyncMock())),
+            patch("maistro_server.main.TaskRunner", return_value=mock_runner),
+            patch("maistro_server.main.start_abandoned_attempt_recovery") as start_recovery,
+            patch(
+                "maistro_server.main.stop_abandoned_attempt_recovery",
+                new_callable=AsyncMock,
+            ) as stop_recovery,
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                start_recovery.assert_called_once()
+                assert start_recovery.call_args.args[0] is test_app.state.container
+
+        stop_recovery.assert_awaited_once()
+
     async def test_runtime_failure_with_missing_runner_is_not_a_startup_failure(self) -> None:
         test_app = MagicMock()
         test_app.state = MagicMock()

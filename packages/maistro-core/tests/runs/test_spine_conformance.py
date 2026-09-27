@@ -832,7 +832,9 @@ async def test_a_run_with_children_is_never_deletable_even_forced(spine: Any) ->
     — PostgreSQL would refuse it with a foreign key and the others must agree."""
     store, workspace, project_id = spine
     parent = await _run(spine)
-    await store.create_run(_graph(workspace, project_id), parent_run_id=parent.run_id)
+    child = await store.create_run(_graph(workspace, project_id), parent_run_id=parent.run_id)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED):
+        await store.transition_run(child.run_id, status)
     await store.transition_run(parent.run_id, RunStatus.QUEUED)
     await store.transition_run(parent.run_id, RunStatus.RUNNING)
     await store.transition_run(parent.run_id, RunStatus.COMPLETED)
@@ -842,6 +844,43 @@ async def test_a_run_with_children_is_never_deletable_even_forced(spine: Any) ->
             await store.delete_run(parent.run_id, force=force)
 
     assert await store.get_run(parent.run_id) is not None
+
+
+async def test_a_parent_cannot_complete_while_a_child_is_non_terminal(spine: Any) -> None:
+    """Delegation's child Run is the execution, not a side task (#47).
+
+    The parent may still fail or be cancelled — those are external
+    dispositions — but it cannot report success while the child is open.
+    """
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    child = await store.create_run(_graph(workspace, project_id), parent_run_id=parent.run_id)
+
+    with pytest.raises(RunIntegrityError, match="non-terminal"):
+        await store.transition_run(parent.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    still = await store.get_run(parent.run_id)
+    assert still is not None and still.status is RunStatus.RUNNING
+    failed = await store.transition_run(parent.run_id, RunStatus.FAILED, error="stopped")
+    assert failed.status is RunStatus.FAILED
+    assert (await store.get_run(child.run_id)) is not None
+    assert (await store.get_run(child.run_id)).status is RunStatus.CREATED
+
+
+async def test_a_parent_completes_once_its_child_is_terminal(spine: Any) -> None:
+    store, workspace, project_id = spine
+    parent = await _run(spine)
+    await store.transition_run(parent.run_id, RunStatus.QUEUED)
+    await store.transition_run(parent.run_id, RunStatus.RUNNING)
+    child = await store.create_run(_graph(workspace, project_id), parent_run_id=parent.run_id)
+    for status in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED):
+        await store.transition_run(child.run_id, status)
+
+    settled = await store.transition_run(parent.run_id, RunStatus.COMPLETED, result={"ok": True})
+
+    assert settled.status is RunStatus.COMPLETED
 
 
 async def test_deleting_a_run_takes_its_node_runs_and_attempts(spine: Any) -> None:

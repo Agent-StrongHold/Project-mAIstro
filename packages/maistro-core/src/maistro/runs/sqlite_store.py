@@ -53,6 +53,7 @@ from maistro.runs.store import (
     admit_in_state,
     is_purgeable,
     outcome_embeds_attempt,
+    refuse_completion_while_children_open,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
@@ -805,6 +806,7 @@ class SqliteRunStore:
             run = await self._require_run(run_id)
             check_completion_is_earned(target, await self._node_runs_of(run_id))
             updated = transition_run(run, target, at=at, result=result, error=error)
+            refuse_completion_while_children_open(target, await self._child_statuses(run_id))
             settled: list[NodeRun] = []
             if target in TERMINAL_RUN_STATUSES:
                 settled = [
@@ -839,6 +841,15 @@ class SqliteRunStore:
         )
         rows = await cursor.fetchall()
         return [model_of_json(NodeRun, row[0]) for row in rows]
+
+    async def _child_statuses(self, run_id: str) -> list[RunStatus]:
+        """Statuses of child Runs, read under the caller's write lock."""
+        cursor = await self._conn.execute(
+            "SELECT status FROM canonical_runs WHERE parent_run_id = ?",
+            (run_id,),
+        )
+        rows = await cursor.fetchall()
+        return [RunStatus(row[0]) for row in rows]
 
     async def create_node_run(self, run_id: str, *, node_id: str) -> NodeRun:
         async with self._write_lock:

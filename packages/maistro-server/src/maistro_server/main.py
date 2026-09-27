@@ -28,12 +28,16 @@ from maistro.http import aclose_shared_clients, configure_shared_http
 from maistro.observability.logging import configure_logging
 from maistro.observability.middleware import RequestIDMiddleware
 from maistro.security.outbound import configure_outbound_policy, configured_endpoints
-from maistro.tasks.execution import TaskAttemptExecutor
+from maistro.tasks.execution import DEFAULT_TASK_LEASE_TTL, TaskAttemptExecutor
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
 from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
+from maistro_server.abandoned_attempt_recovery import (
+    start_abandoned_attempt_recovery,
+    stop_abandoned_attempt_recovery,
+)
 from maistro_server.api import (
     canvas,
     chat_completions,
@@ -354,9 +358,13 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         progress_webhook=progress_wh,
         # Same store the admitter files Runs in, so a task's NodeRun and
         # Attempt land under the Run `POST /tasks` already returned (#143).
-        attempts=TaskAttemptExecutor(run_store),
+        # The TTL is collectable because this lifespan also ticks
+        # `recover_abandoned_attempts` (#232). Without the tick a leased
+        # Attempt whose worker died would stay RUNNING forever.
+        attempts=TaskAttemptExecutor(run_store, lease_ttl=DEFAULT_TASK_LEASE_TTL),
     )
     await _runner.start()
+    start_abandoned_attempt_recovery(container)
     await logger.ainfo("maistro_engine_started", version=APP_VERSION)
 
     # Register graceful shutdown handler
@@ -370,6 +378,9 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Stop the sweep before the runner drains and the spine is dropped, so
+        # a tick cannot reclaim against a store this process is tearing down.
+        await stop_abandoned_attempt_recovery()
         # Graceful shutdown: drain tasks → cleanup containers → flush observability
         if _runner:
             await _runner.stop(drain_timeout=SHUTDOWN_DRAIN_TIMEOUT)
