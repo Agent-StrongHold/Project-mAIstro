@@ -21,7 +21,7 @@ def test_readiness_reports_disabled_strike_tracker() -> None:
     settings = _settings()
     app.dependency_overrides[get_settings] = lambda: settings
     previous = getattr(app.state, "container", None)
-    app.state.container = SimpleNamespace(strike_tracker=None)
+    app.state.container = SimpleNamespace(strike_tracker=None, stores_memory_backed=False)
     ok = ProbeResult(status="ok")
     try:
         with (
@@ -47,7 +47,9 @@ def test_readiness_reports_in_memory_strike_tracker() -> None:
     settings = _settings()
     app.dependency_overrides[get_settings] = lambda: settings
     previous = getattr(app.state, "container", None)
-    app.state.container = SimpleNamespace(strike_tracker=InMemoryStrikeTracker())
+    app.state.container = SimpleNamespace(
+        strike_tracker=InMemoryStrikeTracker(), stores_memory_backed=False
+    )
     ok = ProbeResult(status="ok")
     try:
         with (
@@ -80,7 +82,9 @@ def test_readiness_reports_postgres_strike_tracker_as_durable() -> None:
     settings = _settings()
     app.dependency_overrides[get_settings] = lambda: settings
     previous = getattr(app.state, "container", None)
-    app.state.container = SimpleNamespace(strike_tracker=PgStrikeTracker(pool=object()))
+    app.state.container = SimpleNamespace(
+        strike_tracker=PgStrikeTracker(pool=object()), stores_memory_backed=False
+    )
     ok = ProbeResult(status="ok")
     try:
         with (

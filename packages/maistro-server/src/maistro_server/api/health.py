@@ -85,8 +85,10 @@ def _persistence_diagnostics(container: Any) -> dict[str, dict[str, str | bool]]
     result: dict[str, dict[str, str | bool]] = {}
     # A pathless `sqlite://` wires the durable-twin classes over SQLite's
     # in-memory database. The class name alone would call that durable, so
-    # the container's recorded disposition decides (#72).
-    memory_backed = bool(getattr(container, "stores_memory_backed", False))
+    # the container's recorded disposition decides (#72). Read directly —
+    # the field is part of the Container contract, and a defensive getattr
+    # string would hide the read from the wiring-reads ratchet.
+    memory_backed = container is not None and bool(container.stores_memory_backed)
     for name, store in stores.items():
         backend = type(store).__name__ if store is not None else "none"
         durable = backend.startswith("Pg") or (backend.startswith("Sqlite") and not memory_backed)

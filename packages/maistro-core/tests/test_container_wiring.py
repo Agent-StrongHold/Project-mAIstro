@@ -74,6 +74,22 @@ async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 7
 
 
+async def test_flush_usage_log_is_a_noop_without_persistence() -> None:
+    """`None` persistence is the explicit ephemeral profile (#72).
+
+    Callers own the response boundary and call `flush_usage_log()`
+    unconditionally, so an ephemeral container absorbs the call instead of
+    making every boundary probe `usage_log_persistence` first — the same
+    contract `aclose()` already relies on at shutdown.
+    """
+    container = await _container()
+
+    assert container.usage_log_persistence is None
+    container.usage_log.record("provider:model", input_tokens=3, now=1000.0)
+    await container.flush_usage_log()  # must not raise
+    assert container.usage_log.events_for("provider:model") != ()
+
+
 async def test_context_assembly_uses_the_canonical_scope_store() -> None:
     container = await _container(database_url="sqlite://")
 

@@ -214,6 +214,7 @@ def test_persistence_diagnostics_identify_ephemeral_and_durable_stores() -> None
             "learning_store": Store(),
             "usage_log": Store(),
             "usage_log_persistence": None,
+            "stores_memory_backed": False,
         },
     )()
 
@@ -251,6 +252,44 @@ def test_persistence_diagnostics_report_memory_backed_sqlite_as_ephemeral() -> N
     assert diagnostics["learnings"]["backend"] == "SqliteLearningStore"
     assert diagnostics["learnings"]["durable"] is False
     assert "restart-ephemeral" in str(diagnostics["learnings"]["note"])
+
+
+def test_persistence_diagnostics_report_the_write_behind_usage_log() -> None:
+    """Mixed persistence is reported as what it is (#72).
+
+    The SQLite usage log records synchronously in memory and snapshots
+    durably behind a flush: neither "memory-only" nor "durable on write"
+    is the truthful one-word answer, so the diagnostic names the persistence
+    backend, the write-behind mode, and the durability of the twin.
+    """
+
+    class Store:
+        pass
+
+    class SqliteUsagePersistence:
+        pass
+
+    container = type(
+        "Container",
+        (),
+        {
+            "audit_log": None,
+            "elevation_store": None,
+            "session_store": None,
+            "strike_tracker": None,
+            "quota_tracker": Store(),
+            "learning_store": None,
+            "usage_log": Store(),
+            "usage_log_persistence": SqliteUsagePersistence(),
+            "stores_memory_backed": False,
+        },
+    )()
+
+    usage = _persistence_diagnostics(container)["usage_log"]
+    assert usage["backend"] == "Store"
+    assert usage["persistence_backend"] == "SqliteUsagePersistence"
+    assert usage["mode"] == "write-behind; flush_usage_log required"
+    assert usage["durable"] is True
 
 
 class TestReadinessEndpoint:

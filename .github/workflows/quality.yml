@@ -365,6 +365,10 @@ jobs:
       # skipped. A list of suites is a list of what gets measured, so a new
       # PostgreSQL store means an edit here, every time.
       #
+      # (#72) PgElevationStore is a new PostgreSQL store under security/, so
+      # its suite joins this producer by that same rule: elsewhere its
+      # PostgreSQL legs skip and the store scores as untested code.
+      #
       # The claim-driven `task_idempotency` purge (#325) is one file, not the
       # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
       # race, are the only ones under `tasks` that need a server.
@@ -381,7 +385,8 @@ jobs:
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
             packages/maistro-core/tests/scheduling \
-            packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py -v --tb=short
+            packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py \
+            packages/maistro-core/tests/security/test_elevation_durable.py -v --tb=short
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in
