@@ -78,15 +78,21 @@ def test_non_secret_text_survives_intact(captured):
 
 def test_install_is_idempotent(captured):
     logger, _ = captured
-    # The fixture already installed once; a second install must not double-wrap.
-    # Assert on the handler this test controls: the return count covers every
-    # handler on the named loggers, including ones foreign runners (pytest's
-    # logging plugin) attach mid-test, which say nothing about idempotency.
-    fixture_handler = logger.handlers[0]
-    install_log_redaction(("maistro.test.redaction",))
-    formatter = fixture_handler.formatter
+    formatter = logger.handlers[0].formatter
     assert isinstance(formatter, RedactingFormatter)
     assert not isinstance(formatter.inner, RedactingFormatter)
+    # A second install must never double-wrap an already-wrapped handler.
+    # Handlers added after the fixture may legitimately be wrapped — that is
+    # the documented coverage boundary, not an idempotency violation. pytest 9
+    # attaches capture handlers to non-propagating loggers between fixture and
+    # body.
+    already_wrapped = [
+        handler for handler in logger.handlers if isinstance(handler.formatter, RedactingFormatter)
+    ]
+    wrapped_now = install_log_redaction(("maistro.test.redaction",))
+    assert wrapped_now == len(logger.handlers) - len(already_wrapped)
+    for wrapped in already_wrapped:
+        assert not isinstance(wrapped.formatter.inner, RedactingFormatter)
 
 
 def test_handler_without_explicit_formatter_is_covered():
