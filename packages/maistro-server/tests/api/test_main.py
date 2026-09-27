@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import signal
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -166,6 +167,47 @@ class TestLifespan:
         mock_runner.stop.assert_awaited_once()
         assert main_module._runner is mock_runner
         assert get_startup_phase(test_app) is StartupPhase.NOT_STARTED
+
+    @pytest.mark.contract("behavioral")
+    async def test_shutdown_survives_a_missing_sandbox_extra(self) -> None:
+        """A deployment without maistro-core's `[llm]` extra still shuts down.
+
+        `cleanup_all_containers` lives behind the optional fastmcp stack, so
+        the shutdown path imports it lazily and treats an ImportError as
+        "no sandbox containers exist, nothing to tear down" (#1057). A `None`
+        entry in `sys.modules` makes the `from ... import` raise ImportError
+        deterministically — reproducing the lean interpreter's shape in this
+        full-extras environment — and the stop must still run to completion.
+        """
+        test_app = MagicMock()
+        test_app.state = MagicMock()
+        mock_runner = _stopped_runner()
+
+        with (
+            patch("maistro.agents.conductor.run_task"),
+            patch("maistro.memory.store.get_engine", return_value=None),
+            patch("maistro.memory.store.reset_engine_cache"),
+            patch.dict(sys.modules, {"maistro.tools.sandbox.server": None}),
+            patch(
+                "maistro_server.main.logger",
+                MagicMock(ainfo=AsyncMock(), awarning=AsyncMock()),
+            ) as server_logger,
+            patch("maistro_server.main.TaskRunner", return_value=mock_runner),
+            patch("asyncio.get_running_loop") as mock_loop,
+        ):
+            mock_loop.return_value = _FakeLoop()
+            async with lifespan(test_app):
+                assert main_module._runner is mock_runner
+
+        mock_runner.stop.assert_awaited_once()
+        # The final stop log fired, so the blocked import was absorbed and
+        # shutdown ran past it rather than aborting at the sandbox step.
+        stopped = [
+            call
+            for call in server_logger.ainfo.await_args_list
+            if call.args and call.args[0] == "maistro_engine_stopped"
+        ]
+        assert stopped, "shutdown must complete despite the missing extra"
 
     async def test_runtime_failure_with_missing_runner_is_not_a_startup_failure(self) -> None:
         test_app = MagicMock()

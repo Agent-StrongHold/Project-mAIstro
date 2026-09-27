@@ -32,7 +32,6 @@ from maistro.tasks.execution import TaskAttemptExecutor
 from maistro.tasks.progress_webhook import ProgressWebhookNotifier
 from maistro.tasks.queue import configure_task_queue, reset_task_queue
 from maistro.tasks.runner import TaskRunner
-from maistro.tools.sandbox.server import cleanup_all_containers
 from maistro.types.config import AgentConfig, ModelBindingConfig, SecurityConfig
 from maistro_server.api import (
     canvas,
@@ -330,7 +329,9 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     # Rebuild receipts from canonical QUEUED task Runs before starting workers.
     # This is the restart-safe handoff for both admission/receipt gaps; the Run
-    # already contains the immutable payload needed to execute the original id.
+    # already contains the immutable payload needed to execute the original id —
+    # including the originating-principal evidence (#1057), which survives the
+    # restart in the same committed payload the admission wrote.
     await queue.recover(run_store)
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
@@ -389,7 +390,20 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         runs.configure_run_store(None)
         workspaces.configure_workspace_store(None)
 
-        await cleanup_all_containers()
+        # Imported here, not at module scope: the sandbox MCP server is the
+        # one import in this module's graph that pulls the optional fastmcp
+        # stack (maistro-core's `[llm]` extra). Importing it eagerly made
+        # merely *importing* this app require that extra — so any leaner
+        # environment (a test interpreter, an embedding host) failed at
+        # import time even though it never starts a sandbox. If the extra is
+        # absent no sandbox containers can exist, so there is nothing to
+        # clean up and skipping the call is correct, not a fallback (#1057).
+        try:
+            from maistro.tools.sandbox.server import cleanup_all_containers
+        except ImportError:
+            pass
+        else:
+            await cleanup_all_containers()
 
         # Release pooled outbound connections. After the runner has drained, so
         # in-flight tasks still have their client.

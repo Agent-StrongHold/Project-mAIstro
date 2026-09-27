@@ -7,7 +7,11 @@ Live task state is held in memory. When a database is configured
 fails because the database is unavailable. Writes for one task are chained so
 they land in the order the state changed. With no database the queue behaves
 exactly as before. Wired canonical Runs are the restart source (#1114); an
-unwired queue remains intentionally in-memory.
+unwired queue remains intentionally in-memory. A restart re-enqueues queued
+task Runs from the durable provenance payload committed at admission — the
+same snapshot that carries the originating-principal evidence (#1057) — so
+recovery never depends on a second handoff path the admission did not
+already commit.
 
 When an idempotency store is wired (#1176), ``submit()`` first claims stable
 admission identity for the request — supplied or payload-derived key, scoped
@@ -63,7 +67,14 @@ from maistro.tasks.idempotency import (
     normalize_idempotency_key,
     request_fingerprint,
 )
-from maistro.tasks.models import TaskCreate, TaskProgress, TaskResponse, TaskResult, TaskStatus
+from maistro.tasks.models import (
+    TaskActorKind,
+    TaskCreate,
+    TaskProgress,
+    TaskResponse,
+    TaskResult,
+    TaskStatus,
+)
 from maistro.tasks.status import can_transition
 
 logger = structlog.get_logger()
@@ -75,6 +86,10 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
     return {
         "id": task.task_id,
         "run_id": task.run_id,
+        "user_id": task.user_id,
+        "service_principal_id": task.service_principal_id,
+        "delegation_id": task.delegation_id,
+        "actor_kind": task.actor_kind,
         "status": task.status.value,
         "description": task.description,
         "workspace": task.workspace,
@@ -84,6 +99,13 @@ def _record_values(task: TaskResponse) -> dict[str, Any]:
         "phase": task.phase,
         "progress": task.progress.model_dump(mode="json") if task.progress else None,
         "result": task.result.model_dump(mode="json") if task.result else None,
+        "task_type": task.task_type,
+        "agent_id": task.agent_id,
+        "capability": task.capability,
+        "program_context": task.program_context,
+        "lane": task.lane.value,
+        "priority_tier": task.priority_tier,
+        "session_id": task.session_id,
         "started_at": task.started_at,
         "completed_at": task.completed_at,
     }
@@ -125,6 +147,63 @@ PRUNE_TARGET = 8_000
 
 # Terminal statuses that can be pruned
 _TERMINAL = frozenset({TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED})
+
+
+def _task_from_record(record: TaskRecord) -> TaskResponse:
+    """Rebuild a receipt without creating a new Run or delegation.
+
+    Used by the idempotency replay path (#1176/#1057): the durable receipt row
+    carries the originating-principal evidence the claim's stored request does
+    not, so a replay answered from it re-answers with the original identity.
+    """
+    from maistro.tasks.lanes import Lane
+
+    actor_kind = record.actor_kind
+    # Tuple membership, not a set literal: only the tuple form narrows the
+    # restored ``str`` back to the Literal for the type checker, so the guard
+    # and the proof stay one statement instead of drifting apart.
+    if actor_kind not in ("user", "system", "service"):
+        raise ValueError("invalid persisted task actor kind")
+    if not isinstance(record.user_id, str) or not record.user_id.strip():
+        # A malformed/partially migrated receipt must never become runnable
+        # ownerless work. Migration 041 classifies pre-provenance rows as the
+        # explicit system actor; this guard protects a restart during or before
+        # that migration as well as hand-edited data.
+        raise ValueError("persisted task has no effective actor")
+    try:
+        lane: Lane = Lane(record.lane)
+    except ValueError:
+        lane = Lane.BACKGROUND
+    priority_tier = (
+        record.priority_tier
+        if record.priority_tier in ("P0", "P1", "P2", "P3", "P4", "P5")
+        else "P2"
+    )
+    return TaskResponse(
+        task_id=record.id,
+        status=TaskStatus(record.status),
+        description=record.description,
+        workspace=record.workspace,
+        user_id=record.user_id,
+        service_principal_id=record.service_principal_id,
+        delegation_id=record.delegation_id,
+        actor_kind=actor_kind,
+        task_type=record.task_type,
+        agent_id=record.agent_id,
+        capability=record.capability,
+        program_context=record.program_context,
+        tier=record.tier,
+        lane=lane,
+        priority_tier=priority_tier,
+        session_id=record.session_id,
+        run_id=record.run_id,
+        phase=record.phase,
+        progress=TaskProgress.model_validate(record.progress or {}),
+        result=TaskResult.model_validate(record.result) if record.result is not None else None,
+        created_at=record.created_at,
+        started_at=record.started_at,
+        completed_at=record.completed_at,
+    )
 
 
 def _task_from_run(run: Any) -> tuple[TaskResponse | None, str | None]:
@@ -256,6 +335,9 @@ class TaskQueue:
         *,
         user_id: str = "",
         workspace_id: str | None = None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
         idempotency_key: str | None = None,
     ) -> TaskResponse:
         """Queue one task, admitting it as a Run when an admitter is wired.
@@ -278,10 +360,22 @@ class TaskQueue:
         key = normalize_idempotency_key(idempotency_key, request.idempotency_key)
         if self._idempotency is None:
             return await self._submit_once(
-                request, user_id=user_id, workspace_id=workspace_id, idempotency_key=key
+                request,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
+                idempotency_key=key,
             )
         return await self._submit_idempotent(
-            request, key, user_id=user_id, workspace_id=workspace_id
+            request,
+            key,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
         )
 
     async def _scope_workspace(self, workspace_id: str | None) -> str:
@@ -310,6 +404,9 @@ class TaskQueue:
         *,
         user_id: str,
         workspace_id: str | None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
     ) -> TaskResponse:
         """Submit through the claim store: reconcile, or admit exactly once.
 
@@ -335,7 +432,14 @@ class TaskQueue:
         # The request as admitted: the owner filled in, so a replay after a
         # restart reconstructs a receipt that names the same principal.
         request_json = json.dumps(
-            request.model_copy(update={"user_id": owner}).model_dump(mode="json")
+            request.model_copy(
+                update={
+                    "user_id": owner,
+                    "service_principal_id": service_principal_id,
+                    "delegation_id": delegation_id,
+                    "actor_kind": actor_kind,
+                }
+            ).model_dump(mode="json")
         )
         outcome = await self._claim_until_resolved(
             store,
@@ -350,10 +454,16 @@ class TaskQueue:
                 run_id=outcome.run_id,
                 explicit_key=key is not None,
             )
-            return self._replay_receipt(outcome)
+            return await self._replay_receipt(outcome)
         try:
             task = await self._submit_once(
-                request, user_id=user_id, workspace_id=workspace_id, idempotency_key=key
+                request,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                service_principal_id=service_principal_id,
+                delegation_id=delegation_id,
+                actor_kind=actor_kind,
+                idempotency_key=key,
             )
         except BaseException:
             # Nothing was admitted. Releasing is what makes the caller's retry
@@ -414,19 +524,24 @@ class TaskQueue:
                 )
             await asyncio.sleep(PENDING_POLL)
 
-    def _replay_receipt(self, record: AdmissionRecord) -> TaskResponse:
+    async def _replay_receipt(self, record: AdmissionRecord) -> TaskResponse:
         """The original submission's answer, without minting anything.
 
-        The live receipt when this process still holds it; otherwise one
-        reconstructed from the claim's stored request. A reconstructed receipt
-        says ``queued`` because that is what admission said — the Run behind it
-        has moved on without the queue, and current state is read from the
-        task/Run endpoints, not from a replay.
+        The live receipt when this process still holds it; otherwise the durable
+        TaskRecord row, which carries the originating-principal evidence
+        (#1057) the claim's stored request does not; otherwise one reconstructed
+        from the claim's stored request. A reconstructed receipt says ``queued``
+        because that is what admission said — the Run behind it has moved on
+        without the queue, and current state is read from the task/Run
+        endpoints, not from a replay.
         """
         if record.task_id is not None:
             live = self._tasks.get(record.task_id)
             if live is not None:
                 return live
+            persisted = await self._persisted_receipt(record.task_id)
+            if persisted is not None:
+                return persisted
         stored = TaskCreate.model_validate_json(record.request)
         if record.task_id is None:  # pragma: no cover - replayed claims are admitted
             raise RuntimeError("replayed admission claim carries no receipt id")
@@ -436,6 +551,9 @@ class TaskQueue:
             description=stored.description,
             workspace=stored.workspace,
             user_id=stored.user_id or "",
+            service_principal_id=stored.service_principal_id,
+            delegation_id=stored.delegation_id,
+            actor_kind=stored.actor_kind,
             task_type=stored.task_type,
             agent_id=stored.agent_id,
             capability=stored.capability,
@@ -451,12 +569,38 @@ class TaskQueue:
             created_at=from_epoch_us(record.created_at_us),
         )
 
+    async def _persisted_receipt(self, task_id: str) -> TaskResponse | None:
+        """The durable receipt row for a replayed admission, best-effort.
+
+        Receipt persistence is best-effort (ADR-018) and the claim store, not
+        this row, is the admission contract — a missing or unreadable row is a
+        fall-through to the stored-request reconstruction, never an error the
+        caller's retry has to answer for.
+        """
+        factory = get_async_session_factory()
+        if factory is None:
+            return None
+        try:
+            async with factory() as session:
+                row = await session.get(TaskRecord, task_id)
+        except Exception:
+            return None
+        if row is None:
+            return None
+        try:
+            return _task_from_record(row)
+        except (TypeError, ValueError):
+            return None
+
     async def _submit_once(
         self,
         request: TaskCreate,
         *,
         user_id: str = "",
         workspace_id: str | None = None,
+        service_principal_id: str | None = None,
+        delegation_id: str | None = None,
+        actor_kind: TaskActorKind = "user",
         idempotency_key: str | None = None,
     ) -> TaskResponse:
         """Admit and queue one submission unconditionally — the pre-#1176 path.
@@ -472,6 +616,9 @@ class TaskQueue:
             description=request.description,
             workspace=request.workspace,
             user_id=owner,
+            service_principal_id=service_principal_id,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
             task_type=request.task_type,
             agent_id=request.agent_id,
             capability=request.capability,
