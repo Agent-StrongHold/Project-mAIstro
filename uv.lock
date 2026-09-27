@@ -177,16 +177,16 @@ wheels = [
 
 [[package]]
 name = "alembic"
-version = "1.19.2"
+version = "1.20.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mako" },
     { name = "sqlalchemy" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/34/10/181eecdd552217d0342492bd6f3b8a96e973083379aace3d3402830ddc03/alembic-1.19.2.tar.gz", hash = "sha256:297950a8a91f6770eb82bfbce9bea55c728b90a5386c6e81430191a319d138b0", size = 2082643, upload-time = "2026-09-04T17:10:11.212Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/aa/02910bdb8e2f1444f6654d5b296cd827d126f82209050ee7b1000f92ac4b/alembic-1.20.0.tar.gz", hash = "sha256:db505480647bc60386c5369402f4a57a506b7539c9e9ef5e270d45cbbe4939bf", size = 2093272, upload-time = "2026-09-11T19:09:11.126Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/cb/9014784dcb0585977ae23b6f43331d0a33c51ac0d692506d12b4f5ee9f3b/alembic-1.19.2-py3-none-any.whl", hash = "sha256:32d553dcd577e6fe5c3c63e91468526d35e4dcecafe865d7db4e9b328fa93cb2", size = 267399, upload-time = "2026-09-04T17:10:12.796Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/27/78a89b55b0904d222183164e079b4ca56208e94eff1d35ad1f1ad5be9b06/alembic-1.20.0-py3-none-any.whl", hash = "sha256:77eb101048d95f982c0353e9233404889dcd7a6fc244c107836c0e2fc9cf7d9d", size = 268719, upload-time = "2026-09-11T19:09:12.88Z" },
 ]
 
 [[package]]
@@ -5055,11 +5055,11 @@ wheels = [
 
 [[package]]
 name = "types-regex"
-version = "2026.5.9.20260518"
+version = "2026.9.10.20260911"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/40/a6/c725be71a35ff79f1fd20fd7d3ffacf5f4ad8295c5f7f49347cda6eb630d/types_regex-2026.5.9.20260518.tar.gz", hash = "sha256:7eb0f5ddf7a8f31dddcbef988a3bda80b45c9e5364f5e8fb09f0b8c745b0131b", size = 13389, upload-time = "2026-05-18T06:02:09.597Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/df/3a585f38e180cd6f4588a9549f380a81dd0b71b43c307eb35c10944390a3/types_regex-2026.9.10.20260911.tar.gz", hash = "sha256:049b83eebc92c38fff283444b4046f58a5dea45bfea20c352bc5159308175b6a", size = 13841, upload-time = "2026-09-11T06:45:05.953Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f7/3a/dd7af990afe3c1e6c4395bf3526f74b13b8db165f3b8f027bf715b516e93/types_regex-2026.5.9.20260518-py3-none-any.whl", hash = "sha256:d008c8f7f65c310fdfa746986e922ca2a5aa30bdca567571d69f5483390bda33", size = 11139, upload-time = "2026-05-18T06:02:08.76Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/58/3ac578b782e529fe803abf8c7e05b3f9f8da42bbfd2d5020da30c1ae1daa/types_regex-2026.9.10.20260911-py3-none-any.whl", hash = "sha256:2b55d91d317164800d5630a2273b70b723d9e0e7c40654d2b89465670c62ab06", size = 11192, upload-time = "2026-09-11T06:45:05.064Z" },
 ]
 
 [[package]]
