@@ -330,6 +330,49 @@ class TestTheEscapeGuardsFire:
         assert "Project boundaries" in (result.error_message or "")
 
 
+class TestParentageIsVerifiedBeforeAdmission:
+    """The child Run binds to the physical NodeRun that admitted it.
+
+    The binding is the #1194 correlation contract: a lease-loss retry arrives
+    with a fresh NodeRun identity, and adoption of the existing reservation is
+    what keeps it one logical delegation. A ctx whose ``node_run_id`` names a
+    NodeRun of a *different* Run is not a retry -- it is uncorrelatable
+    parentage, and reserving a child under it would file delegated work no
+    resume could ever trace back to the delegating node.
+    """
+
+    async def test_a_delegation_binding_another_runs_node_run_is_refused(self) -> None:
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        # A real NodeRun, belonging to a different Run.
+        stranger = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        foreign_node_run = await store.create_node_run(stranger.run_id, node_id="delegate-1")
+
+        delegator = _delegator()
+        node = AgentDelegateRemoteNode(a2a_delegator=delegator, run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=foreign_node_run.node_run_id),
+        )
+
+        assert result.status == "failed"
+        assert result.error_code == "RunIntegrityError"
+        assert "does not belong" in (result.error_message or "")
+        # The refusal precedes admission: no child Run under the delegating
+        # parent, and nothing reached the A2A transport.
+        children = [
+            run
+            for run in store._runs.values()
+            if run.parent_run_id == parent.run_id  # type: ignore[attr-defined]
+        ]
+        assert children == []
+        assert len(delegator._tasks) == 0
+
+
 class TestInterruptedChildAdmission:
     """Reservation is two durable stages; a death between them must neither
     pause the parent on an unanswerable child nor strand one nothing revisits.
