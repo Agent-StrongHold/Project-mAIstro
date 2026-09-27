@@ -67,7 +67,7 @@ The shipped values are both defaults and the declared safe baseline. Operators m
 
 A value that crosses the baseline in the weaker direction is rejected during Settings validation. `ALLOW_UNSAFE_RESOURCE_OVERRIDES=true` is the sole explicit escape hatch for an unsafe/development deployment. `debug` does not imply permission to weaken policy. Non-positive values remain invalid even in unsafe mode.
 
-The process-global LLM circuit breaker is constructed from validated Settings. Existing rate-limit, request-body, and webhook paths already read those same Settings fields. `/health/ready` exposes the effective values plus whether unsafe overrides are enabled.
+The process-global LLM circuit breaker is constructed from validated Settings. Existing rate-limit, request-body, and webhook paths already read those same Settings fields. Public health probes expose only aggregate status; effective policy values and unsafe-mode state are not returned to anonymous callers.
 
 The separate legacy/YAML config models are not given duplicate knobs in this change. Adding values there without a demonstrated runtime consumer would create inert security configuration, which this repository explicitly rejects.
 
@@ -118,11 +118,11 @@ Feature: Config-driven resource security floors
     Then those effective values govern the breaker
 
   @AC-6
-  Scenario: Effective values are observable
+  Scenario: Public readiness does not disclose effective policy
     Given the server is running with validated resource policy
-    When an operator reads the readiness diagnostic
-    Then the response includes every effective protected value
-    And it reports whether unsafe overrides are enabled
+    When an anonymous caller reads the readiness probe
+    Then the response contains only aggregate readiness status
+    And it does not report effective protected values or unsafe-mode state
 ```
 
 ## Non-goals
