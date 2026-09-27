@@ -12,8 +12,6 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from maistro_design.packs.registry import PackContractError, load_bundled_packs
-from maistro_design.packs.scenario import compose_workspace_goal
 from maistro_design.scan import scan_design_output
 from maistro_design.trust import (
     InMemoryTrustBanishList,
@@ -83,6 +81,7 @@ _BINARY_FORMATS = frozenset({OutputFormat.PNG, OutputFormat.PDF, OutputFormat.PP
 
 
 def _artifact_leaf(fmt: OutputFormat, content: str | bytes) -> ArtifactNode:
+    """Classify by format, not by content's Python type."""
     if fmt in _BINARY_FORMATS:
         return ArtifactNode(key=fmt.value, kind=ArtifactKind.BLOB, format=fmt, value=content)
     text_value = content.decode("utf-8") if isinstance(content, bytes) else content
@@ -95,6 +94,7 @@ def build_multimodal_output(
     trust_tier: TrustTier,
     banish_list: InMemoryTrustBanishList | None = None,
 ) -> DesignOutput:
+    """Assemble a hierarchical DesignOutput from content a caller already produced."""
     if not contents:
         msg = "build_multimodal_output() requires at least one (format, content) entry"
         raise ValueError(msg)
@@ -114,6 +114,7 @@ def build_multimodal_output(
 
 
 async def persist_blobs(output: DesignOutput, canvas_store: CanvasStore) -> dict[str, str]:
+    """Persist every BLOB leaf in output via canvas_store.store_blob()."""
     stored: dict[str, str] = {}
     for address, node in output.root.walk():
         if node.kind is not ArtifactKind.BLOB:
@@ -155,10 +156,6 @@ class DesignEngine:
         self._typography_renderer = typography_renderer
         self._project_store = project_store
         self._context_trust_tier: TrustTier = TrustTier.T0
-        self._domain_packs = load_bundled_packs()
-        if not self._domain_packs.ids():
-            raise PackContractError("bundled domain packs missing")
-        self._installed_scenario = self.workspace_goal("installed")
 
     @property
     def context_trust_tier(self) -> TrustTier:
@@ -166,16 +163,14 @@ class DesignEngine:
 
     @property
     def systems(self) -> DesignSystemRegistry:
+        """The registry this engine resolves design_system_slug against."""
         return self._systems
-
-    def workspace_goal(self, goal_id: str) -> dict[str, object]:
-        """Bind the Atelier scenario packs onto one Goal. Execution stays the spine."""
-        return compose_workspace_goal(goal_id, registry=self._domain_packs)
 
     def _contaminate(self, tier: TrustTier) -> None:
         self._context_trust_tier = self._context_trust_tier.min(tier)
 
     def reset_context(self) -> None:
+        """Reset trust context to T0 (trusted)."""
         self._context_trust_tier = TrustTier.T0
 
     def _check_compatibility(self, skill: Any, design_system_slug: str) -> None:
@@ -238,10 +233,10 @@ class DesignEngine:
         if skill.system_prompt:
             parts.append("## Skill Instructions\n" + skill.system_prompt)
         if system.design_md:
-            parts.append(f"## Design System: {system.name}\n" + system.design_md)
+            parts.append("## Design System: " + system.name + "\n" + system.design_md)
         elif system.tokens_css:
             parts.append(
-                f"## Design Tokens ({system.name})\n```css\n" + system.tokens_css + "\n```"
+                "## Design Tokens (" + system.name + ")\n```css\n" + system.tokens_css + "\n```"
             )
         if discovery.responses:
             response_lines = "\n".join(f"- **{k}**: {v}" for k, v in discovery.responses.items())
@@ -249,6 +244,7 @@ class DesignEngine:
         return "\n\n".join(parts)
 
     async def run_discovery(self, skill_slug: str) -> list[dict[str, Any]]:
+        """Return the skill's discovery form as a list of serialisable dicts."""
         skill = self._skills.get(skill_slug)
         if skill is None:
             msg = f"Design skill '{skill_slug}' not found"
@@ -258,6 +254,7 @@ class DesignEngine:
     async def generate(
         self, discovery: DiscoveryResult, org_id: str = "default-org", team_id: str | None = None
     ) -> DesignProject:
+        """Build a DesignProject from completed discovery responses."""
         self.reset_context()
         skill = self._skills.get(discovery.skill_slug)
         if skill is None:
