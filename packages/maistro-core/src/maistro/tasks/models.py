@@ -69,6 +69,9 @@ class TaskCreate(BaseModel):
     idempotency_key: str | None = None
     # Set by API from authenticated/delegated context — ignored if sent by client.
     user_id: str | None = None
+    service_principal_id: str | None = None
+    delegation_id: str | None = None
+    actor_kind: TaskActorKind = "user"
 
 
 class TaskProgress(BaseModel):

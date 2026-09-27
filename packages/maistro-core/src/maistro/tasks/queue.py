@@ -432,7 +432,14 @@ class TaskQueue:
         # The request as admitted: the owner filled in, so a replay after a
         # restart reconstructs a receipt that names the same principal.
         request_json = json.dumps(
-            request.model_copy(update={"user_id": owner}).model_dump(mode="json")
+            request.model_copy(
+                update={
+                    "user_id": owner,
+                    "service_principal_id": service_principal_id,
+                    "delegation_id": delegation_id,
+                    "actor_kind": actor_kind,
+                }
+            ).model_dump(mode="json")
         )
         outcome = await self._claim_until_resolved(
             store,
@@ -544,6 +551,9 @@ class TaskQueue:
             description=stored.description,
             workspace=stored.workspace,
             user_id=stored.user_id or "",
+            service_principal_id=stored.service_principal_id,
+            delegation_id=stored.delegation_id,
+            actor_kind=stored.actor_kind,
             task_type=stored.task_type,
             agent_id=stored.agent_id,
             capability=stored.capability,
