@@ -711,6 +711,13 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Turing chat retention uses the canonical admitter window (#131).**
+  The standalone Turing execution plane no longer keeps a private window
+  that skipped every non-terminal Run and swept only when the next turn
+  was admitted. Turns are tracked on `ChatRunAdmitter`: dispatch-pending,
+  CREATED/QUEUED, and an in-lease Attempt are the shields, and the bound
+  is re-applied when a turn terminalizes. `max_retained` stays explicit.
+
 - **Agent builder, intent routing and RSI Stop work from the keyboard (#370,
   partial).** The Agents builder's strategy cards are a named radio group of
   native radio inputs (arrow keys change the strategy; each is named by its
