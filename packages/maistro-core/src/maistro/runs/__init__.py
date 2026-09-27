@@ -1,5 +1,6 @@
 """Canonical logical and physical execution lifecycle."""
 
+from maistro.runs.concurrency import RunConcurrencyExceeded, RunConcurrencyLimits
 from maistro.runs.execution import AttemptExecutionService, AttemptReconciler
 from maistro.runs.lifecycle import (
     ATTEMPT_TRANSITIONS,
@@ -58,6 +59,8 @@ __all__ = [
     "NodeRun",
     "NodeRunNotFound",
     "Run",
+    "RunConcurrencyExceeded",
+    "RunConcurrencyLimits",
     "RunExecutionService",
     "RunIntegrityError",
     "RunNotFound",

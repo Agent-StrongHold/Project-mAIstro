@@ -7,6 +7,8 @@
     "rate_limit_per_minute": {"value": 60, "safer_direction": "lower"},
     "rate_limit_burst": {"value": 10, "safer_direction": "lower"},
     "circuit_breaker_failure_threshold": {"value": 5, "safer_direction": "lower"},
-    "circuit_breaker_recovery_timeout_s": {"value": 60.0, "safer_direction": "higher"}
+    "circuit_breaker_recovery_timeout_s": {"value": 60.0, "safer_direction": "higher"},
+    "max_active_root_runs_per_principal": {"value": 8, "safer_direction": "lower"},
+    "max_active_root_runs_per_workspace": {"value": 32, "safer_direction": "lower"}
   }
 }
