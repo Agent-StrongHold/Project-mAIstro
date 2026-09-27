@@ -306,6 +306,16 @@ or placeholder-only section.
 
 ### Added
 
+- **Proposed spec for Workspace work campaigns (#103, partial).**
+  SPEC-092626-1831 (Proposed), with its boundary decision ADR-092626-c1e7
+  (Proposed), records the campaign contract before any code: a
+  campaign is operator policy that narrows eligible BacklogItems and linked
+  Goals, with four autonomy modes, durable pin-next/pause/exclude/human-only
+  controls, human priority kept separate from the system selection score, and
+  audit keyed to actor and policy version. It grants no permissions and owns no
+  Goals. The priority combination rule and default mode stay open questions.
+  Documentation only: no store, route or runtime behaviour changes yet.
+
 - **The Canvas store's tables are in the root alembic chain (#286, partial).**
   Migration 044 creates `canvases`, `layers`, `generation_jobs` (with the
   SPEC-203 lease columns and the partial pending-claim index),
@@ -753,6 +763,30 @@ or placeholder-only section.
   `get`/`list_tasks` (threadpool routes only) reuse one owned,
   outbound-guarded client closed by `stop()` instead of building one per call.
 
+- **`/v1/schedules` writes the canonical Schedule definition first (#1199,
+  partial).** With a configured Container, create, update and delete now
+  write the canonical `ScheduleStore` before the Hive row, which becomes a
+  projection. Disabling a schedule disables its canonical row, and a cron or
+  timezone change clears `next_due_at` while `runs_so_far` and `last_run_id`
+  stay. Deleting a schedule (or clearing its template) removes the canonical
+  row, so `due()` no longer returns an orphaned enabled row. A Container
+  without a schedule or project store returns 503 and writes nothing; a
+  definition the canonical model refuses (such as an unreadable cron) returns
+  422; a create whose Hive write then fails deletes the canonical row it had
+  already committed rather than leaving an orphan no route can reach. On
+  startup the scheduler runs a one-shot backfill that puts every Hive row the
+  canonical store is missing *or* whose definition has drifted from it (the
+  residual case the old lazy tick could leave — enabled canonically, disabled
+  in Hive, from before these routes existed to sync it) — `ScheduleStore.put`
+  keeps the recorded cursors either way, so reconciling never rewinds them.
+  A tick — and now a manual fire too — re-reads the row under the same
+  per-schedule lock the routes hold, so a snapshot taken before an edit or
+  delete cannot re-enable, resurrect, or admit a Run for a schedule already
+  gone; that lock's process-global dict releases each schedule's entry once
+  idle rather than growing with create/delete churn. Standalone mode (no
+  Container) is unchanged. The tick still enumerates `stores.schedules`;
+  moving it onto `ScheduleStore.due()` is the rest of #1199.
+
 - **Run retention throttles and reports backlog per Workspace
   ([#1175](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1175)).**
   `RunRetentionSweeper` used to keep one last-sweep time for all Workspaces.
@@ -1181,6 +1215,26 @@ or placeholder-only section.
   from the mutation's own response instead. `tests/e2e/optimistic-mutations.spec.ts`
   asserts no collection GET follows a toggle, create, or delete; against
   the unfixed build both specs fail on exactly that assertion.
+
+- **Memory entry delete and update are optimistic, with rollback (#1422,
+  partial).** Beyond the single-request fix above, `Memory.tsx`'s
+  `deleteEntry` and `updateEntry` still awaited the DELETE/PUT before
+  touching local state at all, so the row or edit only appeared after the
+  round trip. Both now apply the change (row removal, or the edited fields
+  merged into the entry and `sel`) to local state immediately, reconcile
+  with the server's response on success, and revert to the pre-mutation
+  state on failure. New cases in `tests/e2e/optimistic-mutations.spec.ts`
+  hold the DELETE/PUT via `page.route`, assert the UI already reflects the
+  change while the request is in flight, then fail it with a 500 and assert
+  the rollback; both fail against the unfixed code. Both rollbacks are also
+  race-safe: a failed delete restores `sel` only if nothing else was
+  selected in the meantime, and a failed update's `entries`/`sel` write (and
+  reopening the edit form so the attempted edit isn't lost) is guarded by
+  object identity against the exact optimistic snapshot it made, so a
+  request that resolves after a newer edit or delete of the same entry
+  can't clobber the newer state. Two more e2e cases cover those races. The
+  same gap remains open for `Schedules.tsx` `toggleSchedule` and
+  `WorkspaceContext.tsx` `archiveWorkspace`.
 
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
