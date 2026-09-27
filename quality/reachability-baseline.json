@@ -99,6 +99,8 @@
     "maistro.governance.conformance",
     "maistro.governance.conformance_types",
     "maistro.graph.compaction",
+    "maistro.graph.executor",
+    "maistro.graph.run",
     "maistro.graph.scout",
     "maistro.graph.steering",
     "maistro.integrations",
