@@ -346,6 +346,99 @@ def sqlite_member_root_project(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]
     loop.close()
 
 
+@pytest.fixture
+def canonical_run_spine(_chat_spine_container: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Wire a real canonical Container onto the engine.
+
+    Without this, ``_container()`` returns ``None`` in this suite (the
+    session's ``StubAgentPort`` carries no container), so
+    ``canonical_dag_runner._scope()`` never calls ``RunStore.create_run()``
+    and ``services.dag_agents.get_run_store()`` falls back to a process-local
+    store: a double-admission bug in the real admission path would go
+    unnoticed. Unlike ``chat_run_spine``, this also exposes ``workspace_store``/
+    ``project_scope_store`` -- ``RunStore.create_run()`` validates the Graph's
+    Project against the Container's own project scope, so Workspace authority
+    must resolve through the same Container or that validation refuses every
+    Workspace this fixture's caller creates.
+    """
+    from types import SimpleNamespace
+
+    from services.engine import get_engine
+
+    container = _chat_spine_container
+    spine = SimpleNamespace(
+        run_store=container.run_store,
+        graph_run_store=container.graph_run_store,
+        workspace_store=container.workspace_store,
+        project_scope_store=container.project_scope_store,
+    )
+    monkeypatch.setattr(get_engine(), "_agent_port", SimpleNamespace(container=spine))
+    yield container
+
+
+async def _canonical_run_ids_for_dag(container: Any, *, workspace_id: str, dag_id: str) -> set[str]:
+    """Canonical Runs admitted for ``dag_id`` in ``workspace_id``, any status.
+
+    Reads the bare canonical ``RunStore`` (``container.run_store``) -- what
+    ``RunStore.create_run()`` actually admits into -- rather than
+    ``graph_run_store``, the ``DurableRunStore`` wrapper that only assembles a
+    record once a Graph continuation exists. A Run admitted and then abandoned
+    before it ever reaches ``run_durable_graph`` (e.g. a double-admission bug
+    that leaves the extra Run ``queued`` with no continuation) has no
+    continuation and is invisible to ``graph_run_store``, but must still count
+    against "exactly one". Every status is swept, not just ``completed``, for
+    the same reason.
+    """
+    from maistro.runs.model import RunStatus
+
+    ids: set[str] = set()
+    for status in RunStatus:
+        runs = await container.run_store.list_by_status(
+            status, workspace_id=workspace_id, admission_source="hive_legacy_dag", limit=100
+        )
+        ids.update(run.run_id for run in runs if run.provenance.get("legacy_dag_id") == dag_id)
+    return ids
+
+
+@pytest.mark.contract("behavioral")
+@pytest.mark.scope("integration")
+def test_http_and_ws_run_each_admit_exactly_one_canonical_run(
+    admin_client: TestClient, stored_dag: str, canonical_run_spine: Any
+) -> None:
+    from services.dag_run_store import get_dag_run_store
+
+    workspace_id = _create_workspace(admin_client, "Exactly one canonical run")
+
+    def _canonical_run_ids() -> set[str]:
+        return asyncio.run(
+            _canonical_run_ids_for_dag(
+                canonical_run_spine, workspace_id=workspace_id, dag_id=stored_dag
+            )
+        )
+
+    before_http = _canonical_run_ids()
+    http_response = admin_client.post(
+        f"/v1/dags/{stored_dag}/run", json={"workspace_id": workspace_id}
+    )
+    assert http_response.status_code == 200, http_response.text
+    http_run_id = http_response.json()["run_id"]
+    after_http = _canonical_run_ids()
+
+    assert after_http - before_http == {http_run_id}
+    http_projection = get_dag_run_store().get_run(http_run_id)
+    assert http_projection is not None
+    assert http_projection["canonical_run_id"] == http_run_id
+
+    before_ws = _canonical_run_ids()
+    ws_run_id = _run_over_socket(admin_client, stored_dag, workspace_id)[-1]["run_id"]
+    after_ws = _canonical_run_ids()
+
+    assert after_ws - before_ws == {ws_run_id}
+    ws_projection = get_dag_run_store().get_run(ws_run_id)
+    assert ws_projection is not None
+    assert ws_projection["canonical_run_id"] == ws_run_id
+
+
 @pytest.mark.contract("behavioral")
 @pytest.mark.scope("integration")
 def test_sqlite_canonical_store_authorizes_member_and_refuses_non_member_on_both_transports(
