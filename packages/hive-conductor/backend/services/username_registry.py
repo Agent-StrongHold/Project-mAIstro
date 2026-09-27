@@ -226,6 +226,14 @@ class UsernameRegistry:
         records = [("users", user.id, user.model_dump_json()) for user in batch]
 
         with _LOCK:
+            # A row that predates the claim index (written before #1061, left
+            # behind by an interrupted startup migration, or seeded directly
+            # into the store) holds no claim yet. Index it — or quarantine it
+            # when history is ambiguous — so the rejection below sees it and
+            # allocation stays fail-closed instead of minting a second
+            # identity for a name that is already taken.
+            for user in batch:
+                self.migrate_or_index_one(user.username)
             self._reject_existing_claims(claims)
             self._write_batch(claims, records, batch)
             for (_, key, raw), user in zip(claims, batch, strict=True):
