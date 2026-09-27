@@ -495,3 +495,81 @@ def test_a_member_workspace_without_a_view_falls_back_to_the_default(
     run, _node_runs, _attempts = _evidence(container, r.json()["run_id"])
     assert run.workspace_id == default.id
     assert _runs_in(container, ws) == []
+
+
+def _answer() -> dict[str, Any]:
+    return {"choices": [{"message": {"role": "assistant", "content": "hello"}}]}
+
+
+@pytest.mark.contract("behavioral")
+def test_hive_window_forgets_completed_turns_without_a_later_admission(
+    container: Container,
+) -> None:
+    """The Workspace admitter's own window is swept when the turn ends (#131).
+
+    `Container._close_chat_run` sweeps a different admitter. Without a sweep
+    on this one, a final burst stays past `max_retained` until the next admit.
+    """
+
+    async def _turns() -> tuple[ChatRunAdmitter, list[str]]:
+        messages = [{"role": "user", "content": "hi"}]
+
+        async def _ok() -> dict[str, Any]:
+            return _answer()
+
+        ids: list[str] = []
+        turn = await chat_runs.admit_turn(_principal(), messages)  # type: ignore[arg-type]
+        admitter = next(iter(chat_runs._admitters.values()))
+        admitter._max_retained = 2
+        await chat_runs.execute_turn(turn, messages, _ok)
+        ids.append(turn.run.run_id)
+        for _ in range(2):
+            turn = await chat_runs.admit_turn(_principal(), messages)  # type: ignore[arg-type]
+            await chat_runs.execute_turn(turn, messages, _ok)
+            ids.append(turn.run.run_id)
+        return admitter, ids
+
+    admitter, ids = _run(_turns())
+    assert admitter.retained <= 2
+    oldest = _run(container.run_store.get_run(ids[0]))
+    assert oldest is None
+    assert _run(container.run_store.get_run(ids[-1])) is not None
+
+
+@pytest.mark.contract("behavioral")
+def test_a_running_hive_turn_is_not_swept_before_its_attempt(
+    container: Container,
+) -> None:
+    async def _turns() -> str:
+        messages = [{"role": "user", "content": "hi"}]
+        live = await chat_runs.admit_turn(_principal(), messages)  # type: ignore[arg-type]
+        admitter = next(iter(chat_runs._admitters.values()))
+        admitter._max_retained = 1
+
+        async def _ok() -> dict[str, Any]:
+            return _answer()
+
+        nxt = await chat_runs.admit_turn(_principal(), messages)  # type: ignore[arg-type]
+        await chat_runs.execute_turn(nxt, messages, _ok)
+        return live.run.run_id
+
+    live_id = _run(_turns())
+    live = _run(container.run_store.get_run(live_id))
+    assert live is not None
+    assert live.status is RunStatus.RUNNING
+
+
+@pytest.mark.contract("behavioral")
+def test_hive_admission_records_the_request_id(container: Container) -> None:
+    from maistro.runs.chat_admission import REQUEST_ID_KEY
+
+    principal = SimpleNamespace(state=SimpleNamespace(user={"id": USER}, request_id="req-hive-1"))
+
+    async def _turn() -> str:
+        turn = await chat_runs.admit_turn(  # type: ignore[arg-type]
+            principal, [{"role": "user", "content": "hi"}]
+        )
+        return turn.run.run_id
+
+    run, _node_runs, _attempts = _evidence(container, _run(_turn()))
+    assert run.provenance[REQUEST_ID_KEY] == "req-hive-1"
