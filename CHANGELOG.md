@@ -1127,6 +1127,20 @@ or placeholder-only section.
   asserts no collection GET follows a toggle, create, or delete; against
   the unfixed build both specs fail on exactly that assertion.
 
+- **Memory entry delete and update are optimistic, with rollback (#1422,
+  partial).** Beyond the single-request fix above, `Memory.tsx`'s
+  `deleteEntry` and `updateEntry` still awaited the DELETE/PUT before
+  touching local state at all, so the row or edit only appeared after the
+  round trip. Both now apply the change (row removal, or the edited fields
+  merged into the entry and `sel`) to local state immediately, reconcile
+  with the server's response on success, and revert to the pre-mutation
+  state on failure. New cases in `tests/e2e/optimistic-mutations.spec.ts`
+  hold the DELETE/PUT via `page.route`, assert the UI already reflects the
+  change while the request is in flight, then fail it with a 500 and assert
+  the rollback; both fail against the unfixed code. The same gap remains
+  open for `Schedules.tsx` `toggleSchedule` and
+  `WorkspaceContext.tsx` `archiveWorkspace`.
+
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
   #1431, #1424, #1437, #1418, #1433).** A zero-workspace account now sees a

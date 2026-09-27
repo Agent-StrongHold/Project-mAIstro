@@ -8,6 +8,11 @@
  * round trips per action instead of one, and a visible stall on a slow link.
  * Memory is workspace-agnostic; a schedule is created inside a Workspace
  * the caller belongs to (#1201), so the schedule spec makes one first.
+ *
+ * Memory.tsx's delete and update also apply the change to local state
+ * *before* the request resolves and roll it back on failure (#1422): the
+ * delete/update specs below hold the request with `page.route` to prove the
+ * UI already reflects the change, then fail it and prove the rollback.
  */
 
 import { test, expect } from "@playwright/test";
@@ -112,4 +117,113 @@ test("creating and deleting a memory entry does not refetch the whole collection
 
   await page.waitForTimeout(300);
   expect(collectionGets).toHaveLength(0);
+});
+
+test("deleting a memory entry disappears immediately and comes back if the delete fails", async ({
+  page,
+}) => {
+  await setupIfNeeded(page);
+  await loginAsAdmin(page);
+  await page.addInitScript(() => window.localStorage.setItem("hive_onboarded", "1"));
+
+  const key = `optimistic-delete-${Date.now()}`;
+  const created = await page.request.post("/v1/memory/entries", {
+    data: { key, value: "will be deleted", namespace: "general", tags: [] },
+  });
+  expect(created.status()).toBe(200);
+  const entry = (await created.json()) as { id: string };
+
+  await page.goto("/memory", { waitUntil: "domcontentloaded" });
+  await page.waitForResponse(
+    (r) => /\/v1\/memory\/entries$/.test(new URL(r.url()).pathname) && r.request().method() === "GET",
+  );
+
+  const card = page.locator(".card", { hasText: key });
+  await expect(card).toBeVisible();
+  await card.click();
+
+  let releaseDelete: (() => void) | null = null;
+  await page.route(`**/v1/memory/entries/${entry.id}`, async (route, request) => {
+    if (request.method() !== "DELETE") {
+      await route.continue();
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "boom" }) });
+  });
+
+  await page.getByRole("button", { name: "delete" }).click();
+  const deleteResponsePromise = page.waitForResponse(
+    (r) => r.url().includes(`/v1/memory/entries/${entry.id}`) && r.request().method() === "DELETE",
+  );
+  await page.getByRole("button", { name: "Confirm" }).click();
+
+  // The row and its detail panel are gone immediately -- the DELETE is still
+  // held by the route handler above, so this can only be the optimistic removal.
+  await expect(card).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: key })).toHaveCount(0);
+
+  await expect.poll(() => releaseDelete !== null).toBe(true);
+  releaseDelete!();
+  const deleteResponse = await deleteResponsePromise;
+  expect(deleteResponse.status()).toBe(500);
+
+  // The failed delete restores the row.
+  await expect(card).toBeVisible();
+});
+
+test("editing a memory entry applies immediately and reverts if the save fails", async ({ page }) => {
+  await setupIfNeeded(page);
+  await loginAsAdmin(page);
+  await page.addInitScript(() => window.localStorage.setItem("hive_onboarded", "1"));
+
+  const key = `optimistic-update-${Date.now()}`;
+  const created = await page.request.post("/v1/memory/entries", {
+    data: { key, value: "original value", namespace: "general", tags: [] },
+  });
+  expect(created.status()).toBe(200);
+  const entry = (await created.json()) as { id: string };
+
+  await page.goto("/memory", { waitUntil: "domcontentloaded" });
+  await page.waitForResponse(
+    (r) => /\/v1\/memory\/entries$/.test(new URL(r.url()).pathname) && r.request().method() === "GET",
+  );
+
+  await page.locator(".card", { hasText: key }).click();
+  await page.getByRole("button", { name: "edit" }).click();
+  await page.locator("textarea.input-field").fill("edited value");
+
+  let releaseUpdate: (() => void) | null = null;
+  await page.route(`**/v1/memory/entries/${entry.id}`, async (route, request) => {
+    if (request.method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "boom" }) });
+  });
+
+  const putResponsePromise = page.waitForResponse(
+    (r) => r.url().includes(`/v1/memory/entries/${entry.id}`) && r.request().method() === "PUT",
+  );
+  await page.getByRole("button", { name: "save" }).click();
+
+  // The edit form closes and the read-only value updates immediately -- the
+  // PUT is still held, so this can only be the optimistic apply. (A bare
+  // `getByText("edited value")` would also match the still-open textarea's
+  // own value, so the edit form's closing is the real signal here.)
+  await expect(page.locator("textarea.input-field")).toHaveCount(0);
+  await expect(page.getByText("edited value").first()).toBeVisible();
+
+  await expect.poll(() => releaseUpdate !== null).toBe(true);
+  releaseUpdate!();
+  const putResponse = await putResponsePromise;
+  expect(putResponse.status()).toBe(500);
+
+  // The failed update reverts to the pre-edit value.
+  await expect(page.getByText("original value").first()).toBeVisible();
 });

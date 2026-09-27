@@ -37,28 +37,52 @@ export default function Memory() {
     } catch { toast("Failed to create", "error"); }
   }
 
-  // One mutation, one request (matches WorkspaceContext.tsx's #1422 fix): the
-  // response is the changed record, so it is patched into local state rather
-  // than followed by a refetch of the whole collection.
+  // Optimistic update (#1422): the edited fields are applied to local state
+  // and `sel` before the PUT resolves, reconciled with the server's record
+  // on success, and rolled back to the pre-edit entry on failure.
   async function updateEntry() {
     if (!sel) return;
+    const previous = sel;
+    const tags = editForm.tags ? editForm.tags.split(",").map((t) => t.trim()).filter(Boolean) : previous.tags;
+    const optimistic: Entry = { ...previous, key: editForm.key || previous.key, value: editForm.value || previous.value, tags };
+    setEntries((prev) => prev.map((e) => (e.id === previous.id ? optimistic : e)));
+    setSel(optimistic);
+    setEditing(false);
     try {
-      const updated = await apiPut<Entry>(`/v1/memory/entries/${sel.id}`, { key: editForm.key || undefined, value: editForm.value || undefined, tags: editForm.tags ? editForm.tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined });
+      const updated = await apiPut<Entry>(`/v1/memory/entries/${previous.id}`, { key: editForm.key || undefined, value: editForm.value || undefined, tags: editForm.tags ? tags : undefined });
       setEntries((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
       setSel(updated);
-      setEditing(false);
       toast("Entry updated", "ok");
-    } catch { toast("Failed to update", "error"); }
+    } catch {
+      setEntries((prev) => prev.map((e) => (e.id === previous.id ? previous : e)));
+      setSel(previous);
+      toast("Failed to update", "error");
+    }
   }
 
+  // Optimistic delete (#1422): the row and any matching `sel` are cleared
+  // before the DELETE resolves, and reinserted at their old index on failure.
   async function deleteEntry(id: string) {
+    const index = entries.findIndex((e) => e.id === id);
+    const removed = index !== -1 ? entries[index] : null;
+    const wasSelected = sel?.id === id;
+    setEntries((prev) => prev.filter((e) => e.id !== id));
+    if (wasSelected) setSel(null);
+    setDeleteTarget(null);
     try {
       await apiDelete(`/v1/memory/entries/${id}`);
-      setEntries((prev) => prev.filter((e) => e.id !== id));
-      if (sel?.id === id) setSel(null);
       toast("Entry deleted", "ok");
-    } catch { toast("Failed to delete", "error"); }
-    setDeleteTarget(null);
+    } catch {
+      if (removed) {
+        setEntries((prev) => {
+          const next = [...prev];
+          next.splice(Math.min(index, next.length), 0, removed);
+          return next;
+        });
+        if (wasSelected) setSel(removed);
+      }
+      toast("Failed to delete", "error");
+    }
   }
 
   function startEdit(e: Entry) {
