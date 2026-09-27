@@ -46,7 +46,7 @@ from maistro.capabilities.pg_invocation_store import PgInvocationStore
 from maistro.capabilities.protocols import CapabilityProvider
 from maistro.capabilities.providers.harness_safety import (
     ActionGate,
-    AllowAllGate,
+    DenyAllGate,
     SafeHarnessRunner,
 )
 from maistro.capabilities.providers.opencode import (
@@ -78,7 +78,6 @@ from maistro.capabilities.types import (
 __all__ = [
     "HARNESS_RUNNER_SLOT",
     "ActionGate",
-    "AllowAllGate",
     "ApprovalAuthority",
     "ApprovalStatus",
     "AsyncHttp",
@@ -86,6 +85,7 @@ __all__ = [
     "CapabilityProvider",
     "CapabilityRegistry",
     "CapabilityUnavailable",
+    "DenyAllGate",
     "DurableApproval",
     "EffectNotApplied",
     "FallbackPolicy",
