@@ -1137,8 +1137,14 @@ or placeholder-only section.
   state on failure. New cases in `tests/e2e/optimistic-mutations.spec.ts`
   hold the DELETE/PUT via `page.route`, assert the UI already reflects the
   change while the request is in flight, then fail it with a 500 and assert
-  the rollback; both fail against the unfixed code. The same gap remains
-  open for `Schedules.tsx` `toggleSchedule` and
+  the rollback; both fail against the unfixed code. Both rollbacks are also
+  race-safe: a failed delete restores `sel` only if nothing else was
+  selected in the meantime, and a failed update's `entries`/`sel` write (and
+  reopening the edit form so the attempted edit isn't lost) is guarded by
+  object identity against the exact optimistic snapshot it made, so a
+  request that resolves after a newer edit or delete of the same entry
+  can't clobber the newer state. Two more e2e cases cover those races. The
+  same gap remains open for `Schedules.tsx` `toggleSchedule` and
   `WorkspaceContext.tsx` `archiveWorkspace`.
 
 - **The workspace toolbar explains a first run, truncates long names, shows

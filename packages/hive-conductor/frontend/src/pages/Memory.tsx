@@ -39,7 +39,11 @@ export default function Memory() {
 
   // Optimistic update (#1422): the edited fields are applied to local state
   // and `sel` before the PUT resolves, reconciled with the server's record
-  // on success, and rolled back to the pre-edit entry on failure.
+  // on success, and rolled back to the pre-edit entry on failure. Every
+  // write to `entries`/`sel` here is guarded by object identity against the
+  // exact `optimistic` snapshot this call created, so an in-flight request
+  // that resolves after a newer edit (or a delete) of the same entry can't
+  // clobber the newer state with its own stale one.
   async function updateEntry() {
     if (!sel) return;
     const previous = sel;
@@ -50,18 +54,32 @@ export default function Memory() {
     setEditing(false);
     try {
       const updated = await apiPut<Entry>(`/v1/memory/entries/${previous.id}`, { key: editForm.key || undefined, value: editForm.value || undefined, tags: editForm.tags ? tags : undefined });
-      setEntries((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
-      setSel(updated);
+      // `setEntries` cannot be conditioned on "is this still current" from out
+      // here: whether the updater above already ran is not observable
+      // synchronously, so the only reliable check is inside `setSel`'s own
+      // updater, which React always calls with the true current value.
+      setSel((current) => {
+        if (current !== optimistic) return current;
+        setEntries((prev) => prev.map((e) => (e === optimistic ? updated : e)));
+        return updated;
+      });
       toast("Entry updated", "ok");
     } catch {
-      setEntries((prev) => prev.map((e) => (e.id === previous.id ? previous : e)));
-      setSel(previous);
+      setSel((current) => {
+        if (current !== optimistic) return current;
+        setEntries((prev) => prev.map((e) => (e === optimistic ? previous : e)));
+        setEditing(true);
+        return previous;
+      });
       toast("Failed to update", "error");
     }
   }
 
   // Optimistic delete (#1422): the row and any matching `sel` are cleared
-  // before the DELETE resolves, and reinserted at their old index on failure.
+  // before the DELETE resolves, and reinserted at their old index on
+  // failure. `sel` is only restored if it is still empty -- if the user
+  // picked a different entry while the DELETE was in flight, that newer
+  // selection is left alone.
   async function deleteEntry(id: string) {
     const index = entries.findIndex((e) => e.id === id);
     const removed = index !== -1 ? entries[index] : null;
@@ -79,7 +97,7 @@ export default function Memory() {
           next.splice(Math.min(index, next.length), 0, removed);
           return next;
         });
-        if (wasSelected) setSel(removed);
+        if (wasSelected) setSel((current) => (current === null ? removed : current));
       }
       toast("Failed to delete", "error");
     }
