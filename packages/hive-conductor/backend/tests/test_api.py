@@ -344,6 +344,9 @@ def test_mission_create_dispatches_task() -> None:
     task_id = "abc123def456"
     fake_rec = MagicMock()
     fake_rec.id = task_id
+    # The canonical execution identity the receipt must carry back (#41);
+    # set explicitly because MagicMock auto-attributes are not valid strings.
+    fake_rec.run_id = "run-abc123"
     fake_rec.name = "Write hello world"
     fake_rec.description = "Write hello world"
     fake_rec.mission_status = "pending"
@@ -367,6 +370,7 @@ def test_mission_create_dispatches_task() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["id"] == task_id
+    assert body["run_id"] == "run-abc123"
     assert body["status"] == "pending"
     # workspace_id=None is the explicit "this deployment's default Workspace"
     # (#158) -- the route passes it rather than omitting it, so the default is

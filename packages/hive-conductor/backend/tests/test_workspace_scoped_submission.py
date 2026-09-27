@@ -31,6 +31,10 @@ def _clear_state():
 
 class _FakeTaskRecord:
     id = "task-1"
+    # The canonical execution identity the underlying TaskRecord exposes
+    # (#41): a mission response that drops it is the regression this suite
+    # guards against.
+    run_id = "run-canonical-1"
     name = "n"
     description = "d"
     mission_status = "pending"
@@ -115,6 +119,46 @@ def test_an_unscoped_submission_names_the_default_explicitly(admin_client, monke
     # lets the engine's default answer it, rather than omitting the argument
     # and leaving the answer to whatever the call chain happens to default to.
     assert engine.calls[0]["workspace_id"] is None
+
+
+def test_the_mission_response_exposes_its_canonical_run_id(admin_client, monkeypatch) -> None:
+    """#41: admission yields a canonical run_id, and the /v1/tasks receipt
+    must carry it back — the UI's run links and the operator's run queries
+    both key off this field, so dropping it severs the mission-to-Run spine."""
+    import routes.missions as missions_routes
+
+    engine = _CapturingEngine()
+    monkeypatch.setattr(missions_routes, "get_engine", lambda: engine)
+
+    r = admin_client.post("/v1/tasks", json={"name": "Ship it"})
+
+    assert r.status_code == 200
+    assert r.json()["run_id"] == "run-canonical-1"
+
+
+def test_mission_creation_is_audited_to_the_authenticated_principal(
+    admin_client, monkeypatch
+) -> None:
+    """#41 provenance: the audit trail names the human who submitted the
+    work, not a literal "system" — workspace scoping and later forensic
+    queries both depend on the actor being the authenticated principal."""
+    import routes.missions as missions_routes
+    import stores
+
+    engine = _CapturingEngine()
+    monkeypatch.setattr(missions_routes, "get_engine", lambda: engine)
+    before = set(stores.audit_log.keys())
+
+    r = admin_client.post("/v1/tasks", json={"name": "Ship it"})
+
+    assert r.status_code == 200
+    new_keys = stores.audit_log.keys() - before
+    creates = [
+        stores.audit_log[k] for k in new_keys if stores.audit_log[k]["action"] == "mission_create"
+    ]
+    assert len(creates) == 1
+    assert creates[0]["actor"] == "admin"
+    assert creates[0]["target"] == "task-1"
 
 
 # --- work items (POST /v1/work-items/{id}/confirm) ------------------------

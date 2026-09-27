@@ -231,14 +231,33 @@ async def test_no_key_at_all_behaves_exactly_as_before(wired) -> None:
 # ── the durable wire: claims that outlive the process ─────────────
 
 
+# Every connection _sqlite_claims opens, so an autouse fixture can close
+# them on the test's own loop. Left to garbage collection they die after the
+# loop is gone and aiosqlite's worker thread surfaces that as
+# PytestUnhandledThreadExceptionWarning ("Event loop is closed") — noise that
+# buries real regressions.
+_open_claim_connections: list[aiosqlite.Connection] = []
+
+
 async def _sqlite_claims(tmp_path: Path, name: str = "claims.db") -> SqliteTaskIdempotencyStore:
     """A claim tier on a real file — the durability a restart is measured
     against. Each call opens its own connection, which is what distinct
     processes (or replicas) actually are."""
     conn = await aiosqlite.connect(tmp_path / name)
+    _open_claim_connections.append(conn)
     store = SqliteTaskIdempotencyStore(conn)
     await store.ensure_schema()
     return store
+
+
+@pytest.fixture(autouse=True)
+async def _close_claim_connections() -> AsyncIterator[None]:
+    """Close this test's claim connections while its event loop still runs."""
+    try:
+        yield
+    finally:
+        while _open_claim_connections:
+            await _open_claim_connections.pop().close()
 
 
 @pytest.fixture

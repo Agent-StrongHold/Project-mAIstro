@@ -30,6 +30,7 @@ def _task_to_mission(rec: object) -> Mission:
         metadata["error"] = err
     return Mission(
         id=rec.id,  # type: ignore[attr-defined]
+        run_id=getattr(rec, "run_id", None),  # type: ignore[attr-defined]
         name=rec.name,  # type: ignore[attr-defined]
         description=rec.description,  # type: ignore[attr-defined]
         status=rec.mission_status,  # type: ignore[attr-defined]
@@ -134,7 +135,7 @@ async def create_mission(
         except WorkspaceNotRoutable as exc:
             logger.warning("workspace_not_routable %s", exc)
             raise HTTPException(status_code=501, detail=WORKSPACE_NOT_ROUTABLE_DETAIL) from exc
-        log_audit("mission_create", "system", target=rec.id, detail={"name": body.name})
+        log_audit("mission_create", _user_id(request), target=rec.id, detail={"name": body.name})
         return _task_to_mission(rec)
 
     mid = str(uuid4())[:12]
@@ -154,7 +155,7 @@ async def create_mission(
     )
     stores.missions[mid] = m
     stores.mission_steps[mid] = []
-    log_audit("mission_create", "system", target=mid, detail={"name": body.name})
+    log_audit("mission_create", _user_id(request), target=mid, detail={"name": body.name})
     return m
 
 
