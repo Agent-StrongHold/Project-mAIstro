@@ -13,7 +13,6 @@ from maistro.graph.definitions import Graph
 from maistro.projects.scope_store import ProjectScopeStore
 from maistro.runs.concurrency import (
     ACTIVE_ROOT_STATUS_VALUES,
-    RunConcurrencyExceeded,
     RunConcurrencyLimits,
 )
 from maistro.runs.evidence_json import json_of, model_of_json
@@ -489,7 +488,7 @@ class SqliteRunStore:
 
         Counted after the insert, under `_write_lock`, so a duplicate
         occurrence is refused as a duplicate rather than as backpressure. A
-        refusal rolls back to the savepoint `create_run` opened before the
+        refusal, or any failure to count, rolls back to the savepoint `create_run` opened before the
         insert, never the whole transaction and never a commit: this
         connection is shared with sibling stores, and either would discard or
         commit their unfinished writes along with this one. No `BEGIN
@@ -499,17 +498,20 @@ class SqliteRunStore:
         if run.parent_run_id is not None:
             return
         principal = run.actor_principal_id or None
-        row = await self._fetchone(
-            _ACTIVE_ROOT_COUNTS_SQL,
-            (run.workspace_id, principal),
-        )
-        assert row is not None  # nosec B101 - a scalar SELECT always yields a row
         try:
+            row = await self._fetchone(
+                _ACTIVE_ROOT_COUNTS_SQL,
+                (run.workspace_id, principal),
+            )
+            assert row is not None  # nosec B101 - a scalar SELECT always yields a row
             self._concurrency_limits.check(
                 workspace_active=int(row[0]) - 1,
                 principal_active=int(row[1]) - 1 if principal is not None else None,
             )
-        except RunConcurrencyExceeded:
+        except BaseException:
+            # A refusal, or a count that could not be read: either way the row
+            # is not admitted, and a savepoint left open would let the next
+            # writer's commit persist it.
             await self._conn.execute(f"ROLLBACK TO SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             await self._conn.execute(f"RELEASE SAVEPOINT {_ROOT_ADMISSION_SAVEPOINT}")
             raise

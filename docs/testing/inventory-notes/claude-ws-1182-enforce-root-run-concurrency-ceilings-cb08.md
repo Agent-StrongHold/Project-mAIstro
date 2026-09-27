@@ -1,13 +1,13 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +64
+  packages/maistro-core/tests: +65
   packages/maistro-server/tests: +1
 ---
 # claude-ws-1182-enforce-root-run-concurrency-ceilings-cb08
 
-All 65 new node IDs are for #1182: 64 in core and 1 in maistro-server. No existing test was removed or renamed.
+All 66 new node IDs are for #1182: 65 in core and 1 in maistro-server. No existing test was removed or renamed.
 
-- `tests/runs/test_run_concurrency_limits.py` adds 58 node IDs. Most are
+- `tests/runs/test_run_concurrency_limits.py` adds 59 node IDs. Most are
   parametrized over the memory, SQLite and PostgreSQL backends. They cover:
   the principal and Workspace ceilings, child Runs holding no slot, each
   parked or terminal status freeing a slot, resume not counting as
@@ -20,6 +20,8 @@ All 65 new node IDs are for #1182: 64 in core and 1 in maistro-server. No existi
   - `Container` chat admission re-raises the refusal;
   - the SQLite refusal neither commits nor ends a sibling's transaction, and
     opens none of its own;
+  - a SQLite count that fails unwinds its savepoint, so the next commit
+    cannot persist the unadmitted row;
   - both SQLite counts are served by the active-root partial indexes;
   - a ceiling full of stranded chat turns is reclaimed on refusal, and a
     failed reclamation leaves the refusal standing.

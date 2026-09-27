@@ -418,6 +418,39 @@ async def test_a_sqlite_refusal_with_no_open_transaction_leaves_none_open() -> N
         await conn.close()
 
 
+async def test_a_sqlite_count_that_fails_does_not_leave_its_row_for_the_next_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root whose ceiling could not be read is not admitted: its savepoint is
+    unwound, so the next writer's commit cannot persist it (review)."""
+    from maistro.runs.consumer_claim import ClaimingSqliteRunStore
+
+    scope_store = InMemoryProjectScopeStore()
+    projects = await _projects(scope_store, ("w1",))
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        store = ClaimingSqliteRunStore(conn, project_store=scope_store)
+        await store.ensure_schema()
+        spine = _Spine(store, projects)
+        real_fetchone = store._fetchone
+
+        async def _fails_once(query: str, params: tuple[object, ...]) -> Any:
+            monkeypatch.setattr(store, "_fetchone", real_fetchone)
+            raise aiosqlite.OperationalError("database is locked")
+
+        monkeypatch.setattr(store, "_fetchone", _fails_once)
+        with pytest.raises(aiosqlite.OperationalError):
+            await spine.root("w1", "alice")
+        assert not conn.in_transaction
+
+        admitted = await spine.root("w1", "alice")
+
+        async with conn.execute("SELECT run_id FROM canonical_runs") as cursor:
+            assert await cursor.fetchall() == [(admitted.run_id,)]
+    finally:
+        await conn.close()
+
+
 async def test_sqlite_counts_read_the_active_root_indexes() -> None:
     """Both counts are served by partial indexes over the live roots, so
     admission does not scan every Run a long-lived database still holds."""
