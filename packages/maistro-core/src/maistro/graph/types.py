@@ -228,7 +228,7 @@ class GraphNodeResult(BaseModel):
     candidates: list[str] = Field(default_factory=list)
     selected_candidate: int = 0
     parallel_group: int | None = None
-    # Per-node telemetry — populated by run_graph when available; used by the
+    # Per-node telemetry — populated by the traversal when available; used by the
     # optimizer for Phase 6 signal aggregation. Defaults keep existing tests
     # untouched.
     latency_ms: int = 0
