@@ -1,0 +1,13 @@
+{
+  "pack_id": "game",
+  "graph_template": "loop.explore-execute-evaluate-refine",
+  "run_identity": "canonical",
+  "backends": ["canvas", "builders"],
+  "artifact_kinds": ["loop", "verbs", "board"],
+  "fence_points": ["rubric-lock", "loop-accept"],
+  "rubric_dimensions": [
+    {"id": "verb-clarity", "label": "Verb clarity"},
+    {"id": "onboarding-beat", "label": "Onboarding beat"},
+    {"id": "fair-challenge", "label": "Fair challenge"}
+  ]
+}
