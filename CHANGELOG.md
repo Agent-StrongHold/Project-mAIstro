@@ -735,6 +735,18 @@ or placeholder-only section.
 
 ### Removed
 
+- **`RouterEngine` no longer takes a `quota_tracker` constructor argument
+  (#1196, partial).** The tracker was stored on `self._quota` and never read:
+  `select()` always calls `select_with_usage()` with an empty usage map, so
+  no quota check ever ran through the router. Removing the dead parameter
+  stops it from being mistaken for — or later wired up as — a second,
+  non-authoritative quota-enforcement point; enforcement belongs at the
+  canonical Invocation boundary. `RouterEngine()` now takes no arguments. A
+  new fitness test (`tests/fitness/test_quota_single_authority.py`)
+  AST-scans `maistro.router` for any `QuotaTracker` import, reference or
+  constructor parameter so the dependency cannot be quietly revived.
+  `Agent._quota_tracker` is unaffected by this change.
+
 - **The pre-durable `run_graph` execution API is retired from `maistro.graph` (#1154).**
   `maistro.graph.run_graph` and `maistro.graph.executor.run_graph` are gone.
   The wrapper built an ephemeral `GraphRun` and started it, recording no
