@@ -6,8 +6,11 @@ asyncio.Event resolved by the UI/CLI/API via resolve()."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal, cast
 
+from maistro.capabilities.authority import ApprovalAuthority
 from maistro.capabilities.slots.approval import ApprovalDecision, ApprovalRequest
 from maistro.capabilities.types import ProviderHealth
 
@@ -59,10 +62,36 @@ class InboxApproval:
     def pending(self) -> list[ApprovalRequest]:
         return [p.req for p in self._pending.values()]
 
-    def resolve(self, request_id: str, *, approved: bool, actor: str = "") -> bool:
+    def resolve(
+        self,
+        request_id: str,
+        *,
+        approved: bool,
+        actor: str = "",
+        authority: ApprovalAuthority | Mapping[str, str] | None = None,
+    ) -> bool:
         pending = self._pending.get(request_id)
         if pending is None:
             return False
-        pending.decision = ApprovalDecision(request_id=request_id, approved=approved, actor=actor)
+        if isinstance(authority, Mapping):
+            try:
+                kind = authority["kind"]
+                if kind not in ("human", "delegated"):
+                    raise ValueError("unknown approval authority kind")
+                authority = ApprovalAuthority(
+                    kind=cast(Literal["human", "delegated"], kind),
+                    principal=authority["principal"],
+                    scope=authority["scope"],
+                    evidence_id=authority["evidence_id"],
+                    signature=authority.get("signature", ""),
+                )
+            except (KeyError, TypeError, ValueError):
+                authority = None
+        pending.decision = ApprovalDecision(
+            request_id=request_id,
+            approved=approved,
+            actor=actor,
+            authority=authority,
+        )
         pending.event.set()
         return True

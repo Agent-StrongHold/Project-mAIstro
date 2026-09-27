@@ -49,6 +49,27 @@ async def test_record_usage_accumulates_on_conflict(tracker: SqliteQuotaTracker)
 
 
 @pytest.mark.asyncio
+async def test_record_usage_retry_with_same_event_id_counts_once(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    await tracker.record_usage("openai", "monthly", 7, 5, event_id="invocation-1")
+    result = await tracker.record_usage("openai", "monthly", 7, 5, event_id="invocation-1")
+
+    assert result["total_tokens"] == 12
+    assert result["request_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reusing_event_id_with_different_usage_is_rejected(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    await tracker.record_usage("openai", "monthly", 7, 5, event_id="invocation-1")
+
+    with pytest.raises(ValueError, match="event_id"):
+        await tracker.record_usage("openai", "monthly", 8, 5, event_id="invocation-1")
+
+
+@pytest.mark.asyncio
 async def test_get_usage_pct_zero_free_tokens_returns_zero(
     tracker: SqliteQuotaTracker,
 ) -> None:

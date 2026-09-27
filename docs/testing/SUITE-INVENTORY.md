@@ -113,6 +113,7 @@ file per change, alongside the delta itself.
 | Suite | Runs in CI |
 |---|---|
 | `packages/maistro-core/tests` | `ci.yml` |
+| `packages/maistro-registry/tests` | `registry.yml` |
 | `packages/maistro-evolve/tests` | `ci.yml` |
 | `packages/maistro-rsi/tests` | `ci.yml` |
 | `packages/maistro-server/tests` | `ci.yml` |

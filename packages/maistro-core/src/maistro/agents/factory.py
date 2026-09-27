@@ -30,6 +30,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from maistro.agents.base import Agent
 from maistro.agents.strategies.direct import DirectStrategy
+from maistro.runs.task_kinds import DIRECT_SUBMISSION_AGENT
 from maistro.types.agent import AgentIdentity
 from maistro.types.errors import ConfigError
 
@@ -303,6 +304,28 @@ def _instantiate(identity: AgentIdentity, *, agent_resolver: Any = None, **deps:
     )
 
 
+def _register_delegation_capabilities(agents: dict[str, Agent], a2a_delegator: Any | None) -> None:
+    """Project the loaded roster's allow-lists into the wired A2A receipt service.
+
+    ``A2ADelegator`` deliberately remains the receipt/transport registry; the
+    AgentIdentity is the configuration authority for who may delegate. Keeping
+    this projection at the one roster construction seam makes both filesystem
+    and database boot paths agree without creating a second agent registry.
+    """
+    if a2a_delegator is None:
+        return
+    register = getattr(a2a_delegator, "register_agent_capability", None)
+    if not callable(register):
+        raise ConfigError("configured A2A delegator cannot register agent capabilities")
+    for name, agent in agents.items():
+        register(name, list(agent.identity.sub_agents))
+    # Direct task/chat admissions are system-requested delegations, not an
+    # unnamed agent. Restrict that reserved principal to the roster actually
+    # loaded into this runtime so an absent target remains a real refusal.
+    if agents:
+        register(DIRECT_SUBMISSION_AGENT, list(agents))
+
+
 def instantiate_agent(identity: AgentIdentity, *, agent_resolver: Any = None, **deps: Any) -> Agent:
     """Build one runtime Agent from a ready identity -- the factory's single
     construction path, without the filesystem walk.
@@ -510,6 +533,7 @@ async def create_agents(
     rca_extractor: Any = None,
     learning_promoter: Any = None,
     tool_registry: Any = None,
+    a2a_delegator: Any = None,
     require_agents: bool = False,
 ) -> dict[str, Agent]:
     _register_custom_strategies()
@@ -537,6 +561,7 @@ async def create_agents(
     if sa_engine:
         db_agents = await _load_agents_from_db(sa_engine, prompt_manager, deps)
         if db_agents is not None:
+            _register_delegation_capabilities(db_agents, a2a_delegator)
             return db_agents
 
     agents_path = Path(agents_dir)
@@ -569,4 +594,5 @@ async def create_agents(
             raise ConfigError(f"required agents directory {agents_dir} contains no valid agents")
         logger.warning("No agents loaded from %s", agents_dir)
 
+    _register_delegation_capabilities(agents, a2a_delegator)
     return agents

@@ -111,6 +111,26 @@ _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
         "_generate_gemini",
         "httpx.post",
     ): ("MODEL_EFFECT", "gemini-image-http"),
+    # These three shipped model callers post through a package-local guarded
+    # ``_post`` helper since #1096/ADR-102 (the seam that carries the outbound
+    # SSRF policy). The helper receives the URL as a parameter, so URL-shape
+    # detection cannot see the model endpoint from the call alone; the exact
+    # triple keeps the effect counted at its real shipped call site.
+    (
+        "packages/maistro-bootstrap/src/maistro_bootstrap/builders/responses_callable.py",
+        "LiteLLMCallable._post_with_pacing",
+        "_post",
+    ): ("MODEL_EFFECT", "openai-compatible-http"),
+    (
+        "packages/maistro-rsi/src/maistro_rsi/autorun.py",
+        "make_llm_proposer._propose",
+        "_post",
+    ): ("MODEL_EFFECT", "openai-compatible-http"),
+    (
+        "packages/maistro-rsi/src/maistro_rsi/free_router.py",
+        "resolve_concrete_free_model",
+        "_post",
+    ): ("MODEL_EFFECT", "openai-compatible-http"),
 }
 
 
