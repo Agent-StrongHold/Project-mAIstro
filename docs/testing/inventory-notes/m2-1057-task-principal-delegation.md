@@ -144,3 +144,37 @@ check .` and `uv run ruff format --check .` pass; `uv run python
 scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
 --exclude '*/third_party/*'` passes with `unclassified: 0` and a clean
 ratchet (1415 reviewed identities → 1415 findings).
+
+## Independent verify round at merge head 739748394 (develop sync b1f49ce12 included)
+
+Post-sync re-validation, all commands executed in this worktree at
+`7397483948c66d71dd3cf932ebc0a733a62cda2b` (parents `6bfc2d519` + `origin/develop`
+`b1f49ce12`; tree clean, no unmerged entries, no conflict markers — the earlier
+develop-sync conflict block is resolved and committed):
+
+- `uv run pytest packages/maistro-server/tests -q` — 414 passed.
+- `uv run pytest packages/maistro-core/tests -q` — 10310 passed, 716 skipped,
+  1 xfailed (includes `tasks/` 371 passed, 14 skipped: delegated replay,
+  restart durable receipt, hostile-envelope tests).
+- `uv run pytest packages/hive-conductor/backend/tests -q` — 2918 passed,
+  6 skipped (includes `test_production_workspace_scope.py::
+  test_shared_bridge_keeps_two_authenticated_user_tasks_isolated`: two real
+  Hive sessions, body `user_id` spoofing ignored, own 200 / cross-read 404 /
+  cross-DELETE 404, `service_principal_id=conductor` alongside distinct
+  `user_id`s).
+- `uv run ruff check .` and `uv run ruff format --check .` — clean.
+- `uv run mypy packages/<six>/src` — Success, no issues in 725 files.
+- Vulture gate as CI invokes it (`.github/workflows/quality.yml`,
+  `vulture-ratchet.yml`: `packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'`) — exit 0, 1403 reviewed identities → 1403 findings.
+- `scripts/check-doc-links.py` — no broken links; `scripts/verify-monorepo-layout.sh`
+  — ok; alembic chain — single head `044`.
+- Observation (not a branch defect): the bare full-tree
+  `python scripts/check-vulture-baseline.py` (an invocation CI does not use)
+  fails with ~identical drift signatures on pure `origin/develop` `b1f49ce12`
+  and on this head — the ledger lags develop's own tree. The branch's only
+  marginal deltas are one stale route-handler ledger entry
+  (`maistro_server/api/tasks.py::cancel_task`) and ~2 new
+  pytest-discovered-test-surface identities from its own new test files.
+- PR/commit closure-keyword review: body says "Refs #1057"; no
+  fixes/closes/resolves keywords in any commit subject or body on the branch.
