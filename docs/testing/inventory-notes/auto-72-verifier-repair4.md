@@ -1,18 +1,16 @@
 ---
 inventory-delta:
-  added: []
-  removed: []
-  modified:
-    - tests/migrations/test_migration_chain.py::empty_database
-  rationale: >
-    Fixture repair for a reproduced shared-DB ordering failure; no net test
-    count change (11 tests before and after), so no new coverage is claimed.
-    The fixture now drops every table in `public` at setup and teardown
-    instead of only `alembic downgrade base`, because standalone-path stores
-    (`pg_strikes._SCHEMA` and siblings) create chain-owned tables with
-    `CREATE TABLE IF NOT EXISTS` outside the chain and one suite poisoned the
-    next ("relation security_strikes already exists" in migration 005).
+  packages/maistro-core/tests: +0
 ---
+
+Fixture repair only (tests/migrations/test_migration_chain.py::empty_database)
+for a reproduced shared-DB ordering failure; no net test count change (11
+tests before and after), so no new coverage is claimed.
+The fixture now drops every table in `public` at setup and teardown
+instead of only `alembic downgrade base`, because standalone-path stores
+(`pg_strikes._SCHEMA` and siblings) create chain-owned tables with
+`CREATE TABLE IF NOT EXISTS` outside the chain and one suite poisoned the
+next ("relation security_strikes already exists" in migration 005).
 
 # auto-72 verifier repair 4 — migration-chain fixture is order-independent
 
