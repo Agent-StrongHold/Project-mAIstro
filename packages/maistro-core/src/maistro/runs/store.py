@@ -236,6 +236,28 @@ def validate_child_scope(
         )
 
 
+def refuse_completion_while_children_open(
+    target: RunStatus, child_statuses: Sequence[RunStatus]
+) -> None:
+    """A parent Run cannot complete while a child Run is still non-terminal.
+
+    Delegation files the delegated work as a child Run of the delegating Run
+    and parks the parent until that child settles (#47). Completing the parent
+    anyway would report the work finished while the execution it spawned had
+    not. The check is only for ``COMPLETED``: failure, cancellation and timeout
+    are external dispositions, the same asymmetry ``check_completion_is_earned``
+    already uses, and blocking them would leave a caller unable to stop a
+    parent whose child is still in flight.
+    """
+    if target is not RunStatus.COMPLETED:
+        return
+    open_children = sum(status not in TERMINAL_RUN_STATUSES for status in child_statuses)
+    if open_children:
+        raise RunIntegrityError(
+            f"Run cannot complete while {open_children} child Run(s) are non-terminal"
+        )
+
+
 @runtime_checkable
 class ContinuationPurge(Protocol):
     """The slice of a Graph continuation store that a purge needs (#1175).
@@ -1142,6 +1164,10 @@ class InMemoryRunStore:
         run = self._require_run(run_id)
         check_completion_is_earned(target, self._node_runs_of(run_id))
         updated = transition_run(run, target, at=at, result=result, error=error)
+        refuse_completion_while_children_open(
+            target,
+            [child.status for child in self._runs.values() if child.parent_run_id == run_id],
+        )
         settled = (
             [
                 settle_open_node_run(node_run, target, at=at)
@@ -1477,6 +1503,7 @@ __all__ = [
     "RunStore",
     "StaleExecutionFence",
     "WorkspaceRetentionScope",
+    "refuse_completion_while_children_open",
     "run_in_purge_scope",
     "validate_accepted_outcome_against_attempt",
     "validate_child_scope",

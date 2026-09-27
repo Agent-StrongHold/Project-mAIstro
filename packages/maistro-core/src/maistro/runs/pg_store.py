@@ -82,6 +82,7 @@ from maistro.runs.store import (
     StaleExecutionFence,
     admit_in_state,
     outcome_embeds_attempt,
+    refuse_completion_while_children_open,
     repaired_accepted_outcome,
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
@@ -758,6 +759,16 @@ class PgRunStore:
             )
             check_completion_is_earned(target, [model_of(NodeRun, row["payload"]) for row in rows])
             updated = transition_run(run, target, at=at, result=result, error=error)
+            # After the parent row is locked: a concurrent child insert's foreign
+            # key takes KEY SHARE on this row and waits, so the statuses below
+            # are the children that will exist when this transaction commits.
+            child_rows = await conn.fetch(
+                "SELECT status FROM canonical_runs WHERE parent_run_id = $1",
+                run_id,
+            )
+            refuse_completion_while_children_open(
+                target, [RunStatus(row["status"]) for row in child_rows]
+            )
             # The cascade runs inside the Run's own transaction, with the Run
             # row already locked (ADR-082426-a47f). Lock order is Run then
             # NodeRun everywhere in this store — `create_node_run` and

@@ -25,6 +25,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
+import pytest
 
 from maistro.a2a.delegate import A2ADelegator
 from maistro.a2a.guest_peers import DelegationResult, GuestPeerManager, PeerTrust
@@ -45,6 +46,7 @@ from maistro.graph.nodes.agent_delegate_remote import (
 from maistro.http import set_test_transport
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore, RunStatus
+from maistro.runs.model import TERMINAL_RUN_STATUSES
 from maistro.runs.store import RunIntegrityError
 
 
@@ -184,6 +186,36 @@ class TestDelegationFilesAChildRun:
         assert result.status == "completed"
         assert result.output.status == "rejected"
         assert result.output.run_id == "", "a rejection has no child Run to name"
+
+    async def test_the_parent_cannot_complete_while_the_child_is_non_terminal(self) -> None:
+        """The pause is not the only thing keeping the parent open (#47).
+
+        A caller that terminalizes the delegating Run directly — the graph
+        fold, a mirror, a recovery — must not record success while the child
+        Run the delegation filed is still non-terminal. Failure stays legal:
+        stopping the parent is not the same claim as finishing it.
+        """
+        store, _projects, project = await _spine()
+        parent = await store.create_run(
+            _graph(workspace_id="workspace-1", project_id=project.project_id)
+        )
+        await store.transition_run(parent.run_id, RunStatus.QUEUED)
+        await store.transition_run(parent.run_id, RunStatus.RUNNING)
+        parent_node_run = await store.create_node_run(parent.run_id, node_id="delegate-1")
+
+        node = AgentDelegateRemoteNode(a2a_delegator=_delegator(), run_store=store)
+        result = await node.run(
+            {"from_agent": "planner", "task": "research X", "to_agent": "researcher"},
+            _ctx(run_id=parent.run_id, node_run_id=parent_node_run.node_run_id),
+        )
+
+        assert result.status == "paused"
+        child = await store.get_run(result.metadata["run_id"])
+        assert child is not None
+        assert child.status not in TERMINAL_RUN_STATUSES
+        with pytest.raises(RunIntegrityError, match="non-terminal"):
+            await store.transition_run(parent.run_id, RunStatus.COMPLETED)
+        assert (await store.get_run(parent.run_id)).status is RunStatus.RUNNING  # type: ignore[union-attr]
 
 
 class TestTheEscapeGuardsFire:

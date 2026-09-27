@@ -474,7 +474,10 @@ async def test_deleting_a_run_with_a_child_is_refused(spine) -> None:
     child_graph = parent.graph.materialize().model_copy(
         update={"graph_id": "child-graph"}, deep=True
     )
-    await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    child = await runs.create_run(child_graph, parent_run_id=parent.run_id)
+    await runs.transition_run(child.run_id, RunStatus.QUEUED)
+    await runs.transition_run(child.run_id, RunStatus.RUNNING)
+    await runs.transition_run(child.run_id, RunStatus.COMPLETED)
     await runs.transition_run(parent.run_id, RunStatus.COMPLETED)
 
     with pytest.raises(RunIntegrityError, match="child Run"):
