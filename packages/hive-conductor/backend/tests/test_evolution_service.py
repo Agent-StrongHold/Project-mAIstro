@@ -16,6 +16,9 @@ Covers:
   egress (Binding -> Invocation -> quota) instead of raw HTTP (#718)
 - _build_llm_call: a stub agent port (no canonical authority) keeps the raw
   fallback, mirroring the demo task backend's documented rule (#718)
+- _default_chat_model: reads the deployment default and fails closed to ""
+- _governed_llm_seam: an engine that cannot start yields no seam (raw fallback)
+- governed _llm_call: a malformed gateway body raises a named diagnostic
 - status: returns running, cycle_count, canonical run id, population, error, tournament
 """
 
@@ -921,6 +924,88 @@ async def test_build_llm_call_stub_port_keeps_the_raw_fallback(
     out = await llm([{"role": "user", "content": "hi"}])
     assert out == "raw answer"
     assert posted == ["http://test.example/api/v1/chat/completions"]
+
+
+def test_default_chat_model_reads_the_deployment_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real `_default_chat_model` reads the deployment's chat alias (#718).
+
+    The governed tests monkeypatch this helper, so its body needs direct
+    coverage: it must keep the cutover promise of selecting the same model the
+    raw path selected, and degrade to "" (router selects) when settings are
+    broken rather than raising out of llm-call construction.
+    """
+    import config
+    from services.evolution import _default_chat_model
+
+    class _Settings:
+        chat_default_model = "deployment-alias"
+
+    monkeypatch.setattr(config, "get_settings", lambda: _Settings())
+    assert _default_chat_model() == "deployment-alias"
+
+    def _broken() -> Any:
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(config, "get_settings", _broken)
+    assert _default_chat_model() == ""
+
+
+def test_governed_llm_seam_yields_nothing_when_the_engine_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`get_engine` raising means no canonical authority exists in this
+    process: the seam must return None so `_build_llm_call` keeps the raw
+    fallback instead of crashing cycle construction (#718).
+    """
+    import services.engine as engine_mod
+    from services.evolution import _EvolutionService
+
+    def _no_engine() -> Any:
+        raise RuntimeError("engine not started")
+
+    monkeypatch.setattr(engine_mod, "get_engine", _no_engine)
+    assert _EvolutionService()._governed_llm_seam() is None
+
+
+async def test_governed_llm_call_raises_a_named_diagnostic_on_malformed_gateway_bodies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A governed gateway answer with no choices, or no string content, is a
+    failed model call: the closure must raise its named diagnostic instead of
+    returning None/structured junk that the canonical cycle would read as a
+    successful completion (#718).
+    """
+    import services.engine as engine_mod
+    from services.evolution import _EvolutionService
+
+    class _Egress:
+        def __init__(self, body: Any) -> None:
+            self._body = body
+
+        async def complete(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(body=self._body)
+
+    def _mount(body: Any) -> None:
+        class _Port:
+            governed_egress = _Egress(body)
+            container = SimpleNamespace(config=SimpleNamespace(workspace_id="ws-hive"))
+
+        monkeypatch.setattr(engine_mod, "get_engine", lambda: SimpleNamespace(agent_port=_Port()))
+
+    monkeypatch.setattr("services.evolution._default_chat_model", lambda: "test-model")
+    s = _EvolutionService()
+
+    def _governed_call(body: Any) -> Any:
+        _mount(body)
+        return s._build_llm_call()
+
+    with pytest.raises(RuntimeError, match="returned no choices"):
+        await _governed_call({"choices": []})([{"role": "user", "content": "hi"}])
+
+    with pytest.raises(RuntimeError, match="returned no content"):
+        await _governed_call({"choices": [{"message": {"content": 42}}]})(
+            [{"role": "user", "content": "hi"}]
+        )
 
 
 # --- status -------------------------------------------------------------
