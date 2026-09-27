@@ -1176,7 +1176,6 @@
         "packages/maistro-core/src/maistro/resilience/retry_policy.py::unused function 'get_delay'",
         "packages/maistro-core/src/maistro/resilience/slo.py::unused method 'record_downtime'",
         "packages/maistro-core/src/maistro/resilience/slo.py::unused method 'should_throttle'",
-        "packages/maistro-core/src/maistro/router/selector.py::unused attribute '_quota'",
         "packages/maistro-core/src/maistro/runs/model.py::unused method '_default_legacy_projection'",
         "packages/maistro-core/src/maistro/runs/model.py::unused method '_validate_accepted_outcome'",
         "packages/maistro-core/src/maistro/runs/model.py::unused method '_validate_attempt'",
