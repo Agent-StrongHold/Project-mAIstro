@@ -61,6 +61,7 @@ from pydantic import BaseModel, Field
 from maistro.agents.types import LLMProviderError
 from maistro.constants import STREAM_CHUNK_SIZE
 from maistro.runs.chat_refusal import CHAT_TURN_RETRY_AFTER_S, ChatTurnRefused
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.model import TERMINAL_ATTEMPT_STATUSES, AttemptStatus, Run
 from maistro.runs.store import RunStore
 from maistro.security._types import AuthContext
@@ -231,6 +232,9 @@ async def _admit_turn(
     The turn's provenance travels with the admission: `session_id` keeps the
     conversation identity on the Run, and `request_id` the HTTP request that
     carried it, exactly as the task path records them.
+
+    A full active-Run ceiling (#1182) is answered with 429 instead: that is
+    backpressure, not an outage.
     """
     if _container is None:
         raise _unavailable()
@@ -247,6 +251,13 @@ async def _admit_turn(
             # its first Attempt, turning a live turn into a refusal.
             dispatch_pending=True,
         )
+    except RunConcurrencyExceeded as exc:
+        # Backpressure, not an admission outage (#1182): 429, not 503.
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many active runs for this {exc.scope}; retry shortly",
+            headers={"Retry-After": str(CHAT_TURN_RETRY_AFTER_S)},
+        ) from exc
     except ChatTurnRefused as exc:
         logger.warning("chat_completions_turn_refused", reason=exc.detail)
         raise _unavailable(exc.retry_after_s) from exc
