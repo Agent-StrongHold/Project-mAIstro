@@ -169,6 +169,16 @@ class AgentRemoteWorkNode(BaseNode[DelegateRemoteIn, RemoteWorkOut]):
     display_name: ClassVar[str] = "Agent: delegated external work"
     description: ClassVar[str] = "An opaque child Run whose work executes at an A2A peer."
     external_io: ClassVar[bool] = True
+    # Enforced, not descriptive (#1194): the work itself executes at the A2A
+    # peer, so whether a failed visit already produced its effect is never
+    # locally observable. Retrying here would re-dispatch the same logical
+    # work the delegation contract already filed under a stable Run/NodeRun
+    # identity; reconciliation of an interrupted delegation belongs to the
+    # delegation recovery path (lease reclaim, guest-peer settle), never to a
+    # blind second visit. ``_execute`` below refuses local replay for the
+    # same reason, and the executor's retry policy honours this declaration
+    # mechanically.
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
 
     async def _execute(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> RemoteWorkOut:
         raise DelegationNotConfiguredError(

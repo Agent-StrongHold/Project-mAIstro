@@ -50,12 +50,17 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     directory = ScriptDirectory.from_config(config)
 
     revision = directory.get_revision("043")
+    assert revision.revision == "043"
     # 043 followed 042 when written, then re-parented onto develop's
     # `039_quota_usage_event_identity` (#1204) when that branch also took 042
-    # as its parent — the same renumbering this chain performs on every
-    # develop collision. The invariant is one linear head, not any fixed
-    # parent.
-    assert revision.down_revision == "039_quota_usage_event_identity"
+    # as its parent, and once more onto #286's `044_canvas_store_tables`
+    # (PR #1620) when develop claimed that parent while this branch was open
+    # — the same renumbering this chain performs on every develop collision.
+    # The invariant is one linear head with 043 as its tip and the revisions
+    # it superseded on its ancestor path, not any fixed parent.
+    walked = {item.revision for item in directory.walk_revisions("base", "043")}
+    assert "039_quota_usage_event_identity" in walked
+    assert "044" in walked
     assert directory.get_heads() == ["043"]
 
 

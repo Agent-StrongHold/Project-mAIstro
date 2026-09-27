@@ -17,7 +17,12 @@ The develop merge then forked the chain again: #1204's
 ``039_quota_usage_event_identity`` (also a child of 042) landed while this
 branch was open, so this revision follows it instead — keeping one linear
 head, the same reconciliation this chain's other re-parented revisions
-document. Only the parent changes; the DDL is untouched.
+document. And it forked once more: #286's ``044_canvas_store_tables``
+(put the Canvas store tables into the root chain, PR #1620) claimed the same
+``039_quota_usage_event_identity`` parent from develop while this branch
+was open, so this revision follows 044 — the chain stays single-headed
+with 043 as its one head, the same reconciliation again. Only the parent
+changes; the DDL is untouched.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "043"
-down_revision = "039_quota_usage_event_identity"
+down_revision = "044"
 branch_labels = None
 depends_on = None
 

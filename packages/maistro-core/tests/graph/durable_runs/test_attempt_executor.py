@@ -16,7 +16,14 @@ from maistro.graph.durable_runs import (
     resume_durable_graph,
     run_durable_graph,
 )
-from maistro.graph.nodes import BaseNode, NodeContext, NodeResult, ReplaySemantics
+from maistro.graph.nodes import (
+    BaseNode,
+    NodeContext,
+    NodeResult,
+    ReplaySemantics,
+    compose_node,
+    get_node,
+)
 from maistro.runs import Attempt, AttemptStatus, GraphSnapshot, NodeRun, Run
 from maistro.runtime import PythonExecutionRuntime
 
@@ -161,6 +168,23 @@ def _never_retry_graph() -> Graph:
     )
 
 
+def _remote_work_graph() -> Graph:
+    """A graph whose only node is the production `agent.remote_work` kind."""
+    return Graph(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="Delegated external work",
+        nodes=[
+            Node(
+                node_id="remote",
+                node_type="agent.remote_work",
+                policies={"max_attempts": 3},
+            )
+        ],
+        metadata={"entry_node": "remote"},
+    )
+
+
 class _RecordingRuntime(PythonExecutionRuntime):
     def __init__(self) -> None:
         super().__init__()
@@ -233,6 +257,13 @@ def _never_retry_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
     del graph
     assert node_id == "never"
     return _NeverRetry()
+
+
+def _remote_work_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
+    """Resolve through the production registry, not a test double."""
+    del graph
+    assert node_id == "remote"
+    return compose_node("agent.remote_work", {})
 
 
 def _blocking_resolver(node_id: str, graph: Graph) -> BaseNode[Any, Any]:
@@ -352,6 +383,31 @@ async def test_non_retryable_contract_overrides_a_graph_retry_budget() -> None:
     assert record.status is RunStatus.FAILED
     assert _NeverRetry.calls == 1
     assert len(record.attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_production_remote_work_kind_is_not_retried_under_a_retry_budget() -> None:
+    """The shipped `agent.remote_work` kind declares NON_RETRYABLE (#1194).
+
+    The work executes at an A2A peer, so a failed visit must never be
+    re-dispatched locally: whether the remote effect already happened is not
+    observable here, and the delegation recovery path owns reconciliation.
+    This pins the *catalog* declaration to the executor's behaviour — the
+    graph's `max_attempts` budget must not override it.
+    """
+    assert get_node("agent.remote_work").replay_semantics is ReplaySemantics.NON_RETRYABLE
+
+    store = InMemoryDurableRunStore()
+
+    record = await run_durable_graph(
+        _remote_work_graph(),
+        store=store,
+        node_resolver=_remote_work_resolver,
+    )
+
+    assert record.status is RunStatus.FAILED
+    assert len(record.attempts) == 1
+    assert record.graph_state.visit_counts.get("remote") == 1
 
 
 @pytest.mark.asyncio
