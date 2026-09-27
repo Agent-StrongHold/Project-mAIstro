@@ -59,7 +59,6 @@ is also required live on both branches; because it is produced by
 | `coverage (PostgreSQL)` | ● | ● |
 | `coverage (no services)` | ● | ● |
 | `cross-product-parity` | ● | ● |
-| `cross-product-parity-strict` | adv | adv |
 | `docker-build` | adv | ● |
 | `durable-events` | adv | ● |
 | `exact-debt-ledger` | ● | ● |

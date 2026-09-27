@@ -294,12 +294,12 @@ or placeholder-only section.
   (#459, partial).** The #459 cross-product parity suite
   (`tests/cross_product_parity`) now runs as its own required `ci.yml` job
   instead of being folded, unnamed, into the general `test` job. A new
-  `workflow_dispatch`-only `cross-product-parity-strict` job runs the same
-  suite with `MAISTRO_PARITY_STRICT=1` (M1 closeout mode): under that flag,
-  `dependency_assessment` raises `DependencyUnavailable` instead of
-  returning a named blocker, so a scenario that only proves its dependency
-  missing fails the suite rather than passing it. The strict job is
-  advisory, not required — it fails today on the CONDUCTOR_INSPECTION
+  `workflow_dispatch`-only workflow, `cross-product-parity-strict.yml`, runs
+  the same suite with `MAISTRO_PARITY_STRICT=1` (M1 closeout mode): under
+  that flag, `dependency_assessment` raises `DependencyUnavailable` instead
+  of returning a named blocker, so a scenario that only proves its
+  dependency missing fails the suite rather than passing it. It is not part
+  of the PR check contract — it fails today on the CONDUCTOR_INSPECTION
   blocker until #1036 lands.
 
 - **Durable user model: `UserModelFact` and self-consented promotion

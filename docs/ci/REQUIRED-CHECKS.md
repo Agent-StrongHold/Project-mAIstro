@@ -93,7 +93,6 @@ wait forever for an `Expected` result.
 |---|---|---|
 | CI | `Compliance registry` | every PR |
 | CI | `cross-product-parity` | every PR |
-| CI | `cross-product-parity-strict` | every PR |
 | CI | `docker-build` | every PR |
 | CI | `durable-events` | every PR |
 | CI | `hive-conductor-e2e` | every PR |
