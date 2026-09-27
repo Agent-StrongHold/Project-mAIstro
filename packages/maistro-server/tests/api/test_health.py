@@ -1,7 +1,6 @@
 """Tests for health endpoint.
 
-Evidence: The health endpoint is the first smoke test for the platform.
-It must return status, uptime, service name, and version.
+Evidence: public health endpoints expose only probe status, not operational details.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from maistro.agents.circuit_breaker import CircuitState
 from maistro.config.settings import SandboxSettings, Settings, get_settings
 from maistro_server.api.health import ProbeResult, _check_docker, _check_postgres
 from maistro_server.api.health import router as health_router
-from maistro_server.main import APP_VERSION, app
+from maistro_server.main import app
 from maistro_server.startup import StartupPhase, set_startup_phase
 
 
@@ -29,17 +28,11 @@ class TestHealthEndpoint:
     def test_health_returns_ok(self, client: TestClient) -> None:
         response = client.get("/health")
         assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "ok"
-        assert data["service"] == "maistro-engine"
-        # Compare against the app's own computed version rather than a
-        # hardcoded literal (E1/#294) — see tests/api/test_health.py's twin.
-        assert data["version"] == APP_VERSION
-        assert "uptime_seconds" in data
+        assert response.json() == {"status": "ok"}
 
-    def test_health_uptime_is_number(self, client: TestClient) -> None:
+    def test_health_has_no_operational_details(self, client: TestClient) -> None:
         data = client.get("/health").json()
-        assert isinstance(data["uptime_seconds"], (int, float))
+        assert set(data) == {"status"}
 
 
 class TestLivenessEndpoint:
@@ -191,7 +184,7 @@ class TestCheckPostgres:
 
 
 class TestReadinessEndpoint:
-    """Evidence: /health/ready aggregates docker/postgres/llm-circuit checks."""
+    """Evidence: /health/ready checks dependencies but discloses only status."""
 
     def test_readiness_all_healthy_returns_200(self, client: TestClient) -> None:
         ok = ProbeResult(status="ok")
@@ -201,12 +194,7 @@ class TestReadinessEndpoint:
         ):
             response = client.get("/health/ready")
         assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "ok"
-        assert data["checks"]["docker"]["status"] == "ok"
-        assert data["checks"]["postgres"]["status"] == "ok"
-        assert data["checks"]["llm_provider"]["status"] == "ok"
-        assert data["checks"]["llm_provider"]["detail"] == "circuit=closed"
+        assert response.json() == {"status": "ok"}
 
     def test_readiness_docker_down_returns_503(self, client: TestClient) -> None:
         ok = ProbeResult(status="ok")
@@ -224,9 +212,7 @@ class TestReadinessEndpoint:
         finally:
             app.dependency_overrides.pop(get_settings, None)
         assert response.status_code == 503
-        data = response.json()
-        assert data["status"] == "degraded"
-        assert data["checks"]["docker"]["status"] == "error"
+        assert response.json() == {"status": "not_ready"}
 
     def test_readiness_does_not_require_an_unconfigured_docker_sandbox(
         self, client: TestClient
@@ -239,9 +225,7 @@ class TestReadinessEndpoint:
         ):
             response = client.get("/health/ready")
         assert response.status_code == 200
-        assert response.json()["checks"]["docker"]["detail"] == (
-            "Docker sandbox is not required by this deployment"
-        )
+        assert response.json() == {"status": "ok"}
         docker.assert_not_awaited()
 
     def test_readiness_circuit_open_returns_503(self, client: TestClient) -> None:
@@ -254,6 +238,4 @@ class TestReadinessEndpoint:
             mock_circuit.state = CircuitState.OPEN
             response = client.get("/health/ready")
         assert response.status_code == 503
-        data = response.json()
-        assert data["checks"]["llm_provider"]["status"] == "error"
-        assert data["checks"]["llm_provider"]["detail"] == "circuit=open"
+        assert response.json() == {"status": "not_ready"}

@@ -22,6 +22,7 @@ from maistro.runs.chat_admission import (
     CHAT_SOURCE,
     EXECUTION_NEVER_STARTED,
     SESSION_ID_KEY,
+    ChatRunAdmitter,
 )
 from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.lifecycle import InvalidLifecycleTransition
@@ -53,13 +54,16 @@ async def test_a_turn_yields_a_run_id_that_resolves() -> None:
     container.conduit = _Conduit()
 
     result = await container.route_request(
-        [{"role": "user", "content": "what broke?"}], session_id="sess-1"
+        [{"role": "user", "content": "what broke?"}],
+        session_id="sess-1",
+        request_id="req-1",
     )
 
     run = await container.run_store.get_run(result["run_id"])
     assert run is not None
     assert run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
     assert run.provenance[SESSION_ID_KEY] == "sess-1"
+    assert run.provenance["request_id"] == "req-1"
 
 
 async def test_the_openai_shape_is_untouched() -> None:
@@ -237,6 +241,58 @@ async def test_the_chat_admitter_is_wired_by_the_container() -> None:
 
     assert container.chat_admitter is not None
     assert container.chat_admitter.retained == 0
+
+
+async def test_terminalized_concurrent_chat_burst_is_swept() -> None:
+    """The bound still holds when no later admission arrives to sweep."""
+    container = await _container()
+    container.chat_admitter = ChatRunAdmitter(
+        container.run_store,
+        workspace_id=container.config.workspace_id,
+        project_store=container.project_scope_store,
+        max_retained=2,
+    )
+    container.conduit = _Conduit()
+
+    results = await asyncio.gather(
+        *(container.route_request([{"role": "user", "content": f"turn {i}"}]) for i in range(8))
+    )
+
+    assert all("run_id" in result for result in results)
+    assert container.chat_admitter.retained <= 2
+    terminal_chat_runs = [
+        run for run in _chat_runs(container) if run.provenance[ADMISSION_SOURCE] == CHAT_SOURCE
+    ]
+    assert len(terminal_chat_runs) <= 2
+    assert all(run.status in TERMINAL_RUN_STATUSES for run in terminal_chat_runs)
+
+
+async def test_stalled_admissions_cannot_grow_the_store_past_the_window() -> None:
+    """Admission alone, never executed, must not grow the store past the bound.
+
+    The repro: three turns through `_admit_chat_turn` that never reach an
+    executor leave three RUNNING Runs with nothing under them, over a window
+    of two. The sweep may not skip every non-terminal Run — a stalled turn
+    will never terminalize on its own, and a window that shields it grows
+    without limit exactly when the process is misbehaving.
+    """
+    container = await _container()
+    container.chat_admitter = ChatRunAdmitter(
+        container.run_store,
+        workspace_id=container.config.workspace_id,
+        project_store=container.project_scope_store,
+        max_retained=2,
+    )
+
+    admitted = [
+        await container._admit_chat_turn([{"role": "user", "content": f"turn {index}"}])
+        for index in range(3)
+    ]
+
+    assert all(run.status is RunStatus.RUNNING for run in admitted)
+    assert container.chat_admitter.retained <= 2
+    stored = [run for run in admitted if await container.run_store.get_run(run.run_id) is not None]
+    assert [run.run_id for run in stored] == [admitted[1].run_id, admitted[2].run_id]
 
 
 def _chat_runs(container: Container):
@@ -885,3 +941,41 @@ async def test_a_run_deleted_mid_tick_does_not_abort_the_rest_of_the_sweep(
     still_there = await container.run_store.get_run(vanished.run_id)
     assert still_there is not None
     assert still_there.status is RunStatus.RUNNING
+
+
+async def test_sweep_without_an_admitter_is_a_no_op() -> None:
+    """Retention rides on the admitter. A Container wired without one (the
+    minimal deployment that still closes chat Runs) reaches this guard on
+    every closure, and must pass through it without touching a store that is
+    not there."""
+    container = await _container()
+    container.chat_admitter = None  # type: ignore[assignment]
+
+    await container._sweep_chat_runs()
+
+
+async def test_a_failing_sweep_does_not_replace_the_turns_answer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Retention is housekeeping that runs after the Run is already terminal:
+    a sweep that raises must not fail a turn that was answered, and must be
+    logged so the missed trim is visible rather than silent."""
+    container = await _container()
+    container.conduit = _Conduit()
+
+    async def _explodes() -> int:
+        raise RuntimeError("retention exploded")
+
+    # The public `sweep()` hook is exactly what `_sweep_chat_runs` calls after
+    # terminalization; admission's internal `_sweep()` is a different method,
+    # so the turn itself is unaffected by this stub.
+    container.chat_admitter.sweep = _explodes  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="maistro.container"):
+        result = await container.route_request([{"role": "user", "content": "hi"}])
+
+    assert result["choices"][0]["message"]["content"] == "hi"
+    run = await container.run_store.get_run(result["run_id"])
+    assert run is not None
+    assert run.status is RunStatus.COMPLETED
+    assert "chat Run retention sweep failed" in caplog.text

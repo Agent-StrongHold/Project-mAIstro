@@ -41,6 +41,9 @@ async def _authenticate(websocket: WebSocket, permission: str | None = None) -> 
     if not origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
         await websocket.close(code=_POLICY_VIOLATION, reason="Origin not allowed")
         return None
+    # Resolve identity before touching activity. A denied handshake is not
+    # eligible activity: otherwise an unauthorized polling client can slide
+    # the session's idle window indefinitely.
     user = resolve_principal(websocket.cookies, websocket.headers.get("authorization"))
     if user is None:
         await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
@@ -51,9 +54,43 @@ async def _authenticate(websocket: WebSocket, permission: str | None = None) -> 
     return user
 
 
+async def _refresh_authenticated_activity(
+    websocket: WebSocket, permission: str | None = None
+) -> dict | None:
+    """Touch activity only after the complete handshake authorization path passes."""
+    # Resolve and authorize WITHOUT touching first: a denied handshake is not
+    # eligible activity — including one denied by a `dags.write` elevation
+    # withdrawn between the admission check above and this re-check. Touching
+    # on the denial path would let rejected (even mid-handshake-revoked)
+    # callers slide the idle window, diverging from the HTTP middleware's
+    # resolve -> authorize -> touch ordering.
+    user = resolve_principal(websocket.cookies, websocket.headers.get("authorization"))
+    if user is None:
+        await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
+        return None
+    if permission is not None and not principal_has_permission(user, permission):
+        await websocket.close(code=_POLICY_VIOLATION, reason=f"Permission '{permission}' required")
+        return None
+    # Authorization passed: the serialized touch re-validates the record under
+    # the session lock, so expiry or revocation winning between the check and
+    # this touch fails closed rather than accepting stale authorization.
+    user = resolve_principal(
+        websocket.cookies,
+        websocket.headers.get("authorization"),
+        refresh_activity=True,
+    )
+    if user is None:
+        await websocket.close(code=_POLICY_VIOLATION, reason="Authentication required")
+        return None
+    return user
+
+
 @router.websocket("/tasks/{task_id}")
 async def stream_task(websocket: WebSocket, task_id: str) -> None:
     user = await _authenticate(websocket)
+    if user is None:
+        return
+    user = await _refresh_authenticated_activity(websocket)
     if user is None:
         return
     await websocket.accept()
@@ -108,6 +145,15 @@ async def stream_dag_run(websocket: WebSocket, dag_id: str) -> None:
         await websocket.close(code=_POLICY_VIOLATION, reason="Workspace not found")
         return
 
+    user = await _refresh_authenticated_activity(websocket, permission="dags.write")
+    if user is None:
+        return
+    await _stream_dag_run(websocket, dag_id, user, scope=scope)
+
+
+async def _stream_dag_run(
+    websocket: WebSocket, dag_id: str, user: dict, *, scope: DagExecutionScope
+) -> None:
     await websocket.accept()
     if dag_id not in stores.dags:
         await websocket.send_json({"error": "dag not found"})

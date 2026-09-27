@@ -45,7 +45,7 @@ from maistro_canvas.types import (
 
 ROOT = Path(__file__).resolve().parents[3]
 CANVAS_TABLES = {"canvases", "layers", "generation_jobs", "composite_records", "canvas_blobs"}
-PARENT_REVISION = "042"
+MIGRATION = ROOT / "alembic" / "versions" / "044_canvas_store_tables.py"
 REVISION = "044"
 ORG = "org-migration"
 
@@ -60,6 +60,15 @@ def _inventory_gate() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _parent_revision() -> str:
+    found = re.search(r'^down_revision = "([^"]+)"$', MIGRATION.read_text(), re.MULTILINE)
+    assert found is not None
+    return found.group(1)
+
+
+PARENT_REVISION = _parent_revision()
 
 
 def _store_tables() -> set[str]:

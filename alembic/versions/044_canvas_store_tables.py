@@ -36,7 +36,7 @@ Downgrade drops all five tables, including rows an adopted table held before
 this migration ran.
 
 Revision ID: 044
-Revises: 042
+Revises: 039_quota_usage_event_identity
 Create Date: 2026-09-26
 """
 
@@ -45,7 +45,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "044"
-down_revision = "042"
+down_revision = "039_quota_usage_event_identity"
 branch_labels = None
 depends_on = None
 
