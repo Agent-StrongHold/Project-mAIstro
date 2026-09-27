@@ -793,6 +793,18 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Both shipped DAG Run controls are now proven to admit exactly one
+  canonical Run per request (#736, partial).** A new behavioral test counts
+  canonical Runs whose `provenance.admission_source == "hive_legacy_dag"` and
+  `legacy_dag_id` matches the requested DAG, before and after one `POST
+  /v1/dags/{id}/run` and one WS `/v1/ws/dags/{id}/run` in a real Workspace,
+  and asserts each request admits exactly one new canonical Run whose id
+  equals the response's `run_id` and the `DagRunStore` projection's
+  `canonical_run_id`. Test-only; no production behavior changed. The
+  WAITING/PAUSED projection half of #736's "cannot be contradicted"
+  criterion (`finished_at` stamped irreversibly on `waiting`, shared with
+  #1036) remains open.
+
 - **A streamed `/v1/chat/completions` turn no longer cancels a Run left open
   for recovery (#1108, partial).** When the model answered but the Attempt
   could not be recorded (`ChatDispatchUnrecorded`), `Container.route_request`
