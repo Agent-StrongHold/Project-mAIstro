@@ -9,9 +9,9 @@ Graph folding/routing helpers advance logical state.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from maistro.graph.definitions import Graph
 from maistro.graph.execution_state import GraphExecutionState
@@ -178,6 +178,27 @@ async def run_durable_graph(
     )
 
 
+async def _reconcile_before_resume(run_id: str, store: DurableRunStore) -> None:
+    """Repair a known cross-store split before reading resume eligibility."""
+    # `DurableRunStore` duck-types the repair affordance: legacy stores predate
+    # targeted reconcile and expose only the bounded sweep, if either. getattr
+    # cannot express that shape to a type checker, so each probe is narrowed
+    # with the signature it is immediately invoked under.
+    reconcile_run = cast(
+        "Callable[[str], Awaitable[None]] | None",
+        getattr(store, "reconcile_run", None),
+    )
+    if reconcile_run is not None:
+        await reconcile_run(run_id)
+        return
+    reconcile_persistence = cast(
+        "Callable[..., Awaitable[None]] | None",
+        getattr(store, "reconcile_persistence", None),
+    )
+    if reconcile_persistence is not None:
+        await reconcile_persistence(limit=1)
+
+
 async def resume_durable_graph(
     run_id: str,
     *,
@@ -189,6 +210,10 @@ async def resume_durable_graph(
     max_steps: int = DEFAULT_MAX_STEPS,
 ) -> DurableRunRecord:
     """Claim and resume persisted Graph work through canonical physical evidence."""
+    # A direct resume can be the first process to observe a crash between the
+    # continuation write and its canonical lifecycle mirror. Repair that
+    # narrow split before interpreting the spine's status.
+    await _reconcile_before_resume(run_id, store)
     record = await store.get(run_id)
     if record is None:
         raise KeyError(f"no such run: {run_id!r}")

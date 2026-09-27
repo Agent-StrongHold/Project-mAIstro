@@ -374,13 +374,14 @@ class JobAlreadyTerminalError(CanvasError):
 
 
 class JobLeaseLostError(CanvasError):
-    """A worker-owned completion write lost the race to lease reclamation.
+    """A fenced job write lost the race to a newer writer.
 
-    Raised by ``CanvasStore.update_job`` when called with ``expected_leased_by``
-    and the row's current ``leased_by`` no longer matches: another worker
-    reclaimed the job (the original lease expired and was reaped) before this
-    worker's own completion write landed. The caller's result is stale and
-    must be discarded rather than persisted over the new holder's state.
+    Raised by ``CanvasStore.update_job`` when a given ``expected_leased_by`` /
+    ``expected_attempts`` / ``expected_status`` no longer matches the row: the
+    lease expired and the job was reclaimed (possibly under the same worker
+    id, as a new claim generation), or a concurrent terminal write such as a
+    user cancellation landed first. The caller's result is stale and must be
+    discarded rather than persisted over the newer state.
     """
 
     code = "JOB_LEASE_LOST"

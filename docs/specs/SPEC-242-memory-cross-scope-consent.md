@@ -14,6 +14,7 @@ related:
   - maistro-engine#SPEC-240
   - maistro-engine#SPEC-241
   - maistro-engine#SPEC-243
+  - maistro-engine#ADR-092526-4391
 supersedes: []
 blocks: []
 blocked-by: []
@@ -90,6 +91,15 @@ def apply_widen(memory: EpisodicMemory, task: ConsentTask) -> EpisodicMemory:
 Scope comparison uses the existing ordering `global > org > team > user > agent > session`
 (ADR-013/068 axes) — `target_scope` must be broader-or-equal to `current_scope`, never narrower
 (narrowing needs no consent, it's always safe).
+
+## Amendment: same-user promotion (ADR-092526-4391, Proposed)
+
+[ADR-092526-4391](../adr/ADR-092526-4391-same-user-user-model-promotion-is-self-consented.md)
+proposes one case where this flow is not used. Promoting a fact scoped to a Workspace, Project or
+AGENT into the **same authenticated user's** `UserModelFact` user model is automatic self-consent.
+It writes an audit entry and creates no `ConsentTask`. Widening to another
+user, or to TEAM, ORGANIZATION or GLOBAL scope, still requires the
+`propose_widen -> resolve_consent -> apply_widen` flow above.
 
 ## Acceptance criteria
 

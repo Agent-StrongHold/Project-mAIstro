@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+import traceback
 from datetime import UTC, datetime
 from typing import Any
 
@@ -32,6 +33,7 @@ from maistro.runs.chat_execution import (
     ChatDispatchUnrecorded,
     attempt_result,
 )
+from maistro.runs.chat_refusal import ChatTurnRefused
 from maistro.runs.model import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -261,26 +263,24 @@ class TestAFailureIsRecordedAndKeepsTravelling:
             await container.route_request(MESSAGES)
 
 
-class TestATurnIsNeverRefusedForWantOfARecord:
-    async def test_a_turn_with_no_run_is_still_answered(self) -> None:
-        """The existing rule, unchanged. Without a chat admitter there is no
-        Run to hang a NodeRun on — and the chat path has no receipt to fall
-        back on, so refusing would turn "cannot record" into "cannot answer"."""
+class TestATurnWithoutARecordIsRefused:
+    """Owner decision on #1108 (amends ADR-082326-c126): no Run, no answer."""
+
+    async def test_a_turn_with_no_run_is_refused_and_never_dispatched(self) -> None:
         container = await _container()
         conduit = _Conduit(content="42")
         container.conduit = conduit
         container.chat_admitter = None  # type: ignore[assignment]
 
-        result = await container.route_request(MESSAGES)
+        with pytest.raises(ChatTurnRefused):
+            await container.route_request(MESSAGES)
 
-        assert result["choices"][0]["message"]["content"] == "42"
-        assert conduit.calls == 1
+        assert conduit.calls == 0
 
-    async def test_a_broken_spine_is_not_a_broken_turn(self) -> None:
-        """Same rule one layer down. `RunIntegrityError` means this process
-        could not write the spine — a Run deleted underneath the turn, or a
-        Graph that is not the one node a turn admits. The answer still goes
-        out; it is the record that is missing, and it was missing before."""
+    async def test_a_broken_spine_refuses_the_turn_before_the_model(self) -> None:
+        """`RunIntegrityError` before the dispatch -- here a Run deleted
+        underneath the turn -- proves nothing reached the model, so the turn is
+        refused retryably rather than answered outside the record."""
         container = await _container()
         conduit = _Conduit(content="42")
         container.conduit = conduit
@@ -290,10 +290,11 @@ class TestATurnIsNeverRefusedForWantOfARecord:
 
         container.run_store.get_run = _vanished  # type: ignore[method-assign]
 
-        result = await container.route_request(MESSAGES)
+        with pytest.raises(ChatTurnRefused) as refused:
+            await container.route_request(MESSAGES)
 
-        assert result["choices"][0]["message"]["content"] == "42"
-        assert conduit.calls == 1
+        assert isinstance(refused.value.__cause__, RunIntegrityError)
+        assert conduit.calls == 0
 
 
 class _RecordingVeto:
@@ -334,6 +335,14 @@ class _RecordingVeto:
         if method == self._method and target is self._target:
             self._target = None
             raise self._error("store hiccup after dispatch")
+
+
+class _DriverWrappedError(OSError):
+    """A store error explicitly raised from the driver error it wraps."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.__cause__ = ConnectionResetError("driver dropped the connection")
 
 
 class _FlakyFenceRead:
@@ -499,24 +508,24 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         assert isinstance(unrecorded.value.__cause__, RunIntegrityError)
         assert conduit.calls == 1
 
-    async def test_a_spine_refusal_before_the_dispatch_still_falls_back_to_answering(
+    async def test_a_spine_refusal_before_the_dispatch_refuses_the_turn(
         self,
     ) -> None:
         """The pre-dispatch rule, exercised where the spine itself refuses
         mid-flight rather than before the executor starts: the Attempt's
         RUNNING write fails, the model has not been called, so the plain
-        `RunIntegrityError` reaches the container and the turn is answered
-        once through the fallback."""
+        `RunIntegrityError` reaches the container and the turn is refused
+        (#1108) -- never answered through a fallback dispatch."""
         container = await _container()
         container.conduit = conduit = _Conduit(content="42")
         container.run_store = _RecordingVeto(  # type: ignore[assignment]
             container.run_store, method="transition_attempt", target=AttemptStatus.RUNNING
         )
 
-        result = await container.route_request(MESSAGES)
+        with pytest.raises(ChatTurnRefused):
+            await container.route_request(MESSAGES)
 
-        assert result["choices"][0]["message"]["content"] == "42"
-        assert conduit.calls == 1
+        assert conduit.calls == 0
 
     async def test_a_deadline_that_cuts_the_dispatch_off_still_arrives_as_a_deadline(
         self,
@@ -582,8 +591,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
         self,
     ) -> None:
         """Same rule under a deadline: the TIMED_OUT write fails after the
-        dispatch was cut off, and what reaches the caller is not a bare
-        `RunIntegrityError` its pre-dispatch fallback would answer again."""
+        dispatch was cut off, and what reaches the caller is the deadline, not
+        a bare `RunIntegrityError` its pre-dispatch fallback would answer
+        again. The store's failure stays visible behind it."""
         container = await _container()
         run = await container.chat_admitter.admit(MESSAGES)
         await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
@@ -601,8 +611,9 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
                 run.run_id, MESSAGES, _slow
             )
 
-        assert not isinstance(failed.value, RunIntegrityError)
+        assert isinstance(failed.value, RuntimeDeadlineExceeded)
         assert isinstance(failed.value.__cause__, RunIntegrityError)
+        assert "RunIntegrityError" in "".join(traceback.format_exception(failed.value))
 
     async def test_a_dispatch_that_outlives_its_deadline_is_not_an_unrecorded_answer(
         self,
@@ -620,10 +631,73 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
                 await asyncio.sleep(5)
             return {"choices": [{"message": {"content": "late"}, "finish_reason": "stop"}]}
 
-        with pytest.raises(RuntimeDeadlineExceeded):
+        with pytest.raises(RuntimeDeadlineExceeded) as late:
             await ChatAttemptExecutor(container.run_store, timeout_s=0.01).execute(
                 run.run_id, MESSAGES, _stubborn
             )
+
+        # Recorded, so it is the runtime's own deadline, not a copy wrapping it.
+        assert not isinstance(late.value.__cause__, RuntimeDeadlineExceeded)
+
+    async def test_a_late_answer_whose_deadline_record_fails_is_still_a_deadline(
+        self,
+    ) -> None:
+        """The dispatch catches the deadline and answers late, and then the
+        TIMED_OUT write fails. The store error reaches the executor with the
+        deadline only in its context; the late answer must still not be
+        handed back as one that merely went unrecorded."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _RecordingVeto(
+            container.run_store,
+            method="transition_attempt",
+            target=AttemptStatus.TIMED_OUT,
+            error=OSError,
+        )
+
+        async def _stubborn() -> dict[str, Any]:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(5)
+            return {"choices": [{"message": {"content": "late"}, "finish_reason": "stop"}]}
+
+        with pytest.raises(RuntimeDeadlineExceeded) as late:
+            await ChatAttemptExecutor(store, timeout_s=0.01).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _stubborn
+            )
+
+        assert isinstance(late.value.__cause__, OSError)
+        assert "store hiccup after dispatch" in "".join(traceback.format_exception(late.value))
+
+    async def test_a_deadline_behind_a_store_error_with_its_own_cause_is_found(
+        self,
+    ) -> None:
+        """A store error raised `from` a driver error keeps the deadline only
+        in its `__context__`. Following the cause alone would miss it and hand
+        the late answer back as merely unrecorded."""
+        container = await _container()
+        run = await container.chat_admitter.admit(MESSAGES)
+        await container.run_store.transition_run(run.run_id, RunStatus.QUEUED)
+        await container.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        store = _RecordingVeto(
+            container.run_store,
+            method="transition_attempt",
+            target=AttemptStatus.TIMED_OUT,
+            error=_DriverWrappedError,
+        )
+
+        async def _stubborn() -> dict[str, Any]:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(5)
+            return {"choices": [{"message": {"content": "late"}, "finish_reason": "stop"}]}
+
+        with pytest.raises(RuntimeDeadlineExceeded) as late:
+            await ChatAttemptExecutor(store, timeout_s=0.01).execute(  # type: ignore[arg-type]
+                run.run_id, MESSAGES, _stubborn
+            )
+
+        assert isinstance(late.value.__cause__, _DriverWrappedError)
 
     async def test_an_answer_behind_the_cancellation_fence_is_not_handed_back(
         self,
@@ -683,7 +757,8 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
     ) -> None:
         """A driver error before the dispatch is not dressed as one after it
         either: nothing physical happened, so there is no answer to hand back
-        and the store's own exception travels to the caller unchanged."""
+        -- the turn is refused retryably (#1108), the store's own exception
+        chained behind the refusal."""
         container = await _container()
         container.conduit = conduit = _Conduit(content="42")
 
@@ -692,16 +767,16 @@ class TestAPostDispatchRecordingFailureIsNeverRedispatched:
 
         container.run_store.get_run = _unreachable  # type: ignore[method-assign]
 
-        with pytest.raises(OSError, match="store unreachable") as refused:
+        with pytest.raises(ChatTurnRefused) as refused:
             await container.route_request(MESSAGES)
 
-        assert not isinstance(refused.value, ChatDispatchUnrecorded)
+        assert isinstance(refused.value.__cause__, OSError)
         assert conduit.calls == 0
 
     async def test_a_failure_before_the_dispatch_is_not_dressed_as_one_after_it(self) -> None:
         """The other half of the same signal. Nothing physical happened, so
         the plain `RunIntegrityError` still reaches the caller and its
-        pre-dispatch rule — answer anyway — still applies."""
+        pre-dispatch rule — refuse, retryably (#1108) — applies."""
         container = await _container()
         conduit = _Conduit(content="42")
 
@@ -821,16 +896,17 @@ class TestTheTurnNamesItselfToTheSessionStore:
 
         assert conduit.turn_ids == [run.run_id]
 
-    async def test_a_turn_with_no_run_names_no_identity(self) -> None:
-        """A container with no chat admitter has no Run, so it has no identity
-        to give — and an append with none is the unchanged one."""
+    async def test_a_turn_with_no_run_reaches_no_session_store(self) -> None:
+        """A container with no chat admitter has no Run and no identity to
+        give, so the turn is refused before it could append anything (#1108)."""
         container = await _container()
         container.chat_admitter = None
         container.conduit = conduit = _Conduit()
 
-        await container.route_request(MESSAGES)
+        with pytest.raises(ChatTurnRefused):
+            await container.route_request(MESSAGES)
 
-        assert conduit.turn_ids == [None]
+        assert conduit.turn_ids == []
 
 
 class TestTheAttemptResult:

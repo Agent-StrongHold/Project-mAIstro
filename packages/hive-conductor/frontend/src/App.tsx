@@ -23,6 +23,7 @@ const DagBuilder = lazy(() => import("./pages/DagBuilder"));
 const DagRuns = lazy(() => import("./pages/DagRuns"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const DesignStudio = lazy(() => import("./pages/DesignStudio"));
+const DeckBuilder = lazy(() => import("./pages/DeckBuilder"));
 const Docs = lazy(() => import("./pages/Docs"));
 const Evolution = lazy(() => import("./pages/Evolution"));
 const RSI = lazy(() => import("./pages/RSI"));
@@ -187,10 +188,11 @@ function AppRoutes() {
                   <Route path="agents" element={<Agents />} />
                   <Route path="work-items" element={<WorkItems />} />
                   <Route path="knowledge" element={<KnowledgeBase />} />
-                  {/* M0 containment for #311: model-authored Deck markup reaches
-                      raw browser HTML/SVG sinks. Keep the executable surface
-                      unreachable until the M2 sanitizer/structured renderer lands. */}
-                  <Route path="decks" element={<Navigate to="/dashboard" replace />} />
+                  {/* #311 M0 containment lifted: the M2 Deck sanitizer
+                      (lib/deckSanitizer.ts, #752/#873) now sanitizes every
+                      render sink, so the keyboard-complete Deck editor (#769)
+                      is reachable at /decks and from Design Studio. */}
+                  <Route path="decks" element={<DeckBuilder />} />
                   <Route path="skills" element={<Skills />} />
                   <Route path="mcp" element={<MCP />} />
                   <Route path="topology" element={<Topology />} />

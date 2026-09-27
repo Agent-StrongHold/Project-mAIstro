@@ -248,8 +248,9 @@ class TestSynthDepth:
             {"objective": "nested work"},
             _build_ctx(updated, "n1"),
         )
-        assert nested.output.success is False
-        assert "recursion depth cap reached" in nested.output.error
+        assert nested.status == "failed"
+        assert nested.error_code == "SynthDagFailed"
+        assert "recursion depth cap reached" in (nested.error_message or "")
 
     def test_refused_synth_does_not_count_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=False))
@@ -258,6 +259,14 @@ class TestSynthDepth:
     def test_dispatched_failed_synth_counts_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=False, dispatched=True))
         assert _actually_spawned("agent.synth_dag", result) is True
+
+    def test_failed_synth_whose_child_ran_counts_as_spawn(self) -> None:
+        result = NodeResult(success=False, status="failed", metadata={"dispatched": True})
+        assert _actually_spawned("agent.synth_dag", result) is True
+
+    def test_failed_synth_that_dispatched_nothing_does_not_count_as_spawn(self) -> None:
+        result = NodeResult(success=False, status="failed")
+        assert _actually_spawned("agent.synth_dag", result) is False
 
     def test_success_without_dispatch_does_not_count_as_spawn(self) -> None:
         result = NodeResult(success=True, output=_SynthOut(success=True, dispatched=False))

@@ -1,0 +1,489 @@
+"""Shared PostgreSQL owns canonical Workspace identity in the shipped stack (#37).
+
+Owner decision (2026-09-23): Hive's embedded runtime points at maistro-engine's
+database, so its Container's ``workspace_store`` is the one durable Workspace/
+Membership authority. On that path Hive's ``stores.workspaces`` recovery mirror
+is legacy import input only: imported once, never written, never replayed.
+
+Every test here boots the real ``MaistroCoreBridge`` against a real database
+URL and a real Hive ``PersistedStore`` on disk, then restarts both, because a
+restart against an in-process fake proves nothing about durability.
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+import stores
+import yaml
+from adapters.maistro_core import MaistroCoreBridge
+from config import Settings
+from models.workspace import Workspace, WorkspaceMember
+from services import workspace_authority
+
+from maistro.state import PersistedStore, State
+from maistro.testing.postgres import postgres_dsn
+from maistro.workspaces.model import WorkspaceRole as CanonicalWorkspaceRole
+from maistro.workspaces.store import InMemoryWorkspaceStore
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+pytestmark = [pytest.mark.contract("behavioral")]
+
+
+def _database_url(backend: str, tmp_path: Path) -> str:
+    if backend == "sqlite":
+        return f"sqlite:///{tmp_path / 'canonical.db'}"
+    dsn = postgres_dsn()
+    if not dsn:
+        if os.environ.get("MAISTRO_REQUIRE_PG_LEGS"):
+            msg = (
+                "MAISTRO_REQUIRE_PG_LEGS is set but MAISTRO_TEST_PG_DSN is empty: "
+                "the shared-PostgreSQL Workspace owner cannot be checked and must "
+                "not be silently skipped"
+            )
+            raise RuntimeError(msg)
+        pytest.skip("set MAISTRO_TEST_PG_DSN to a migrated PostgreSQL database")
+    return dsn
+
+
+class _HiveProcess:
+    """One Hive process lifetime: Hive's own state file plus the embedded bridge."""
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database_url: str):
+        self._state_db = tmp_path / "hive-state.db"
+        self._monkeypatch = monkeypatch
+        self._database_url = database_url
+        self.state: State | None = None
+        self.persisted: PersistedStore | None = None
+        self.bridge: MaistroCoreBridge | None = None
+
+    def open_hive_state(self) -> PersistedStore:
+        self.state = State(db_path=str(self._state_db))
+        self.persisted = PersistedStore(self.state)
+        self.persisted.initialize()
+        return self.persisted
+
+    async def boot(self) -> None:
+        import services.engine as engine_mod
+
+        persisted = self.open_hive_state()
+        self._monkeypatch.setattr(stores, "_persisted", persisted)
+        self._monkeypatch.setattr(stores.workspaces, "_persisted", persisted)
+        stores.workspaces.initialize()
+        workspace_authority.reset_for_tests()
+
+        self._monkeypatch.setenv("DATABASE_URL", self._database_url)
+        self.bridge = MaistroCoreBridge()
+        await self.bridge.start(
+            Settings(
+                maistro_router_api_key="k" * 32,
+                maistro_agents_dir=str(REPO_ROOT / "agents"),
+            )
+        )
+        self._monkeypatch.setattr(engine_mod.get_engine(), "_agent_port", self.bridge)
+
+    async def stop(self) -> None:
+        if self.bridge is not None and self.bridge.container is not None:
+            await self.bridge.container.aclose()
+        self.bridge = None
+        self.close_hive_state()
+
+    def close_hive_state(self) -> None:
+        if self.state is not None:
+            self.state.flush()
+            self.state.close()
+        self.state = None
+        self.persisted = None
+
+    def mirror_rows(self) -> dict[str, Workspace]:
+        assert self.persisted is not None
+        return {row.id: row for row in self.persisted.list_all("workspaces", Workspace)}
+
+    @property
+    def canonical(self) -> Any:
+        assert self.bridge is not None
+        return self.bridge.container.workspace_store
+
+
+@pytest.fixture
+async def hive(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[_HiveProcess]:
+    monkeypatch.setattr(stores.workspaces, "_data", {})
+    process = _HiveProcess(tmp_path, monkeypatch, _database_url(request.param, tmp_path))
+    try:
+        yield process
+    finally:
+        await process.stop()
+        workspace_authority.reset_for_tests()
+
+
+def _legacy(workspace_id: str, members: list[WorkspaceMember]) -> Workspace:
+    created = datetime(2024, 1, 2, 3, 4, tzinfo=UTC)
+    return Workspace(
+        id=workspace_id,
+        persona_template_id="pm_fleet",
+        name=f"Legacy {workspace_id}",
+        members=members,
+        checklist=["tool:jira"],
+        theme_id="default",
+        created_at=created,
+        updated_at=created,
+    )
+
+
+BACKENDS = pytest.mark.parametrize("hive", ["sqlite", "postgres"], indirect=True)
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-1")
+@BACKENDS
+@pytest.mark.asyncio
+async def test_bridge_with_database_url_makes_the_canonical_store_the_durable_authority(
+    hive: _HiveProcess,
+) -> None:
+    await hive.boot()
+
+    assert not isinstance(hive.canonical, InMemoryWorkspaceStore)
+    assert await workspace_authority.canonical_workspace_store() is hive.canonical
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-3")
+@BACKENDS
+@pytest.mark.asyncio
+async def test_restart_keeps_revocations_and_deletions_without_any_mirror_writes(
+    hive: _HiveProcess,
+) -> None:
+    await hive.boot()
+    kept = await workspace_authority.create_workspace(
+        creator_user_id="alice",
+        name="Kept",
+        persona_template_id="content_creator",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    doomed = await workspace_authority.create_workspace(
+        creator_user_id="alice",
+        name="Doomed",
+        persona_template_id="content_creator",
+        checklist=[],
+        theme_id="default",
+        voice_tone_override=None,
+    )
+    await workspace_authority.set_member(kept.id, user_id="bob", role="editor")
+    await workspace_authority.remove_member(kept.id, user_id="bob")
+    await workspace_authority.delete_workspace(doomed.id)
+
+    assert hive.mirror_rows() == {}
+    assert dict(stores.workspaces.items()) == {}
+
+    await hive.stop()
+    await hive.boot()
+
+    view = await workspace_authority.get_view(kept.id)
+    assert view is not None
+    assert view.members == [WorkspaceMember(user_id="alice", role="owner")]
+    assert not await workspace_authority.is_member("bob", kept.id)
+    assert await hive.canonical.get(doomed.id) is None
+    assert await workspace_authority.get_view(doomed.id) is None
+    assert hive.mirror_rows() == {}
+
+    await workspace_authority.delete_workspace(kept.id)
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-3")
+@BACKENDS
+@pytest.mark.asyncio
+async def test_legacy_mirror_rows_import_once_and_never_resurrect(
+    hive: _HiveProcess,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    kept_id, doomed_id = f"legacy-kept-{suffix}", f"legacy-doomed-{suffix}"
+    seeded = {
+        kept_id: _legacy(
+            kept_id,
+            [
+                WorkspaceMember(user_id="alice", role="owner"),
+                WorkspaceMember(user_id="bob", role="editor"),
+                WorkspaceMember(user_id="carol", role="viewer"),
+            ],
+        ),
+        doomed_id: _legacy(doomed_id, [WorkspaceMember(user_id="alice", role="owner")]),
+    }
+    persisted = hive.open_hive_state()
+    for workspace_id, row in seeded.items():
+        persisted.put("workspaces", workspace_id, row)
+    hive.close_hive_state()
+
+    await hive.boot()
+    view = await workspace_authority.visible_view("bob", kept_id)
+    assert view is not None
+    assert view.members == seeded[kept_id].members
+    assert view.created_at == seeded[kept_id].created_at
+    assert await hive.canonical.get(doomed_id) is not None
+
+    # Revocation and deletion made through the shared store directly, the way
+    # maistro-server's /v1/workspaces does against the same database.
+    await hive.canonical.remove_membership(kept_id, user_id="bob")
+    await hive.canonical.set_membership(
+        kept_id, user_id="carol", role=CanonicalWorkspaceRole.CONTRIBUTOR
+    )
+    await hive.canonical.delete(doomed_id)
+    assert hive.mirror_rows() == seeded
+
+    for _ in range(2):
+        await hive.stop()
+        await hive.boot()
+        assert await workspace_authority.is_member("alice", kept_id)
+        assert not await workspace_authority.is_member("bob", kept_id)
+        assert await workspace_authority.member_role("carol", kept_id) == "editor"
+        assert await hive.canonical.get(doomed_id) is None
+        assert not await workspace_authority.is_member("alice", doomed_id)
+        assert hive.mirror_rows() == seeded
+
+    await workspace_authority.delete_workspace(kept_id)
+    await hive.stop()
+    await hive.boot()
+    assert await hive.canonical.get(kept_id) is None
+    assert hive.mirror_rows() == seeded
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-4")
+@pytest.mark.asyncio
+async def test_a_configured_database_without_a_container_refuses_the_mirror_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed bridge must not quietly revive the mirror as the authority."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://maistro:pw@postgres:5432/maistro")
+    stores.workspaces["stale"] = _legacy("stale", [WorkspaceMember(user_id="alice", role="owner")])
+
+    with pytest.raises(workspace_authority.EmbeddedRuntimeUnavailable):
+        await workspace_authority.is_member("alice", "stale")
+    with pytest.raises(workspace_authority.EmbeddedRuntimeUnavailable):
+        await workspace_authority.canonical_workspace_store()
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-4")
+def test_readiness_fails_when_the_configured_canonical_store_is_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed bridge leaves every Workspace request refusing; the probe must say so.
+
+    Otherwise Compose and load balancers keep routing to an instance whose
+    Workspace API answers nothing but 500s.
+    """
+    from fastapi.testclient import TestClient
+    from main import app
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://maistro:pw@postgres:5432/maistro")
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["ready"] is False
+    assert body["checks"]["workspace_authority"] is False
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-4")
+@BACKENDS
+@pytest.mark.asyncio
+async def test_readiness_passes_once_the_canonical_store_is_running(hive: _HiveProcess) -> None:
+    from fastapi.testclient import TestClient
+    from main import app
+
+    await hive.boot()
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["checks"]["workspace_authority"] is True
+
+
+def test_readiness_reports_an_unreadable_authority_as_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected failure reading the authority is never reported as ready."""
+    from fastapi.testclient import TestClient
+    from main import app
+
+    def _broken() -> bool:
+        raise RuntimeError("authority state unreadable")
+
+    monkeypatch.setattr(workspace_authority, "canonical_store_available", _broken)
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["workspace_authority"] is False
+
+
+def test_a_server_database_url_survives_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://maistro:pw@postgres:5432/maistro")
+
+    assert workspace_authority._database_survives_restart()
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-3")
+@BACKENDS
+@pytest.mark.asyncio
+async def test_a_failed_durable_create_rolls_back_without_touching_the_mirror(
+    hive: _HiveProcess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await hive.boot()
+    created: list[str] = []
+    original_create = hive.canonical.create
+
+    async def _recording_create(**kwargs: Any) -> Any:
+        workspace = await original_create(**kwargs)
+        created.append(workspace.workspace_id)
+        return workspace
+
+    def _journal_down(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("journal unavailable")
+
+    monkeypatch.setattr(hive.canonical, "create", _recording_create)
+    monkeypatch.setattr(workspace_authority, "_write_journal", _journal_down)
+
+    with pytest.raises(OSError, match="journal unavailable"):
+        await workspace_authority.create_workspace(
+            creator_user_id="alice",
+            name="Half-made",
+            persona_template_id="content_creator",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+
+    assert len(created) == 1
+    assert await hive.canonical.get(created[0]) is None
+    assert hive.mirror_rows() == {}
+
+
+def _image_path_of_default_roster() -> tuple[str, dict[str, str]]:
+    """Where the image's default ``maistro_agents_dir`` lands, and its COPY map.
+
+    ``_construct_runtime`` resolves a relative roster dir against the backend
+    directory, which the runtime stage places at ``/app/backend``.
+    """
+    dockerfile = (REPO_ROOT / "packages/hive-conductor/Dockerfile").read_text(encoding="utf-8")
+    runtime_stage = dockerfile.rsplit("\nFROM ", 1)[1]
+    copies: dict[str, str] = {}
+    env_dir: str | None = None
+    for line in runtime_stage.splitlines():
+        words = line.split()
+        if words[:1] == ["COPY"] and not any(w.startswith("--from") for w in words):
+            source, dest = [w for w in words[1:] if not w.startswith("--")]
+            copies[dest.rstrip("/")] = source.rstrip("/")
+        if "MAISTRO_AGENTS_DIR=" in line:
+            env_dir = line.split("MAISTRO_AGENTS_DIR=", 1)[1].split()[0]
+    agents_dir = env_dir or Settings().maistro_agents_dir
+    if agents_dir.startswith("/"):
+        return agents_dir, copies
+    return f"/app/backend/{agents_dir}", copies
+
+
+@pytest.mark.contract("boundary")
+def test_the_image_packages_the_roster_its_bridge_requires() -> None:
+    """``create_agents(require_agents=True)`` rejects a missing roster (#37 review).
+
+    With ``DATABASE_URL`` now set in Compose, a bridge that cannot build its
+    roster leaves every Workspace request failing closed, so the shipped image
+    must carry the roster where Hive looks for it by default.
+    """
+    image_path, copies = _image_path_of_default_roster()
+    dest = max(
+        (d for d in copies if image_path == d or image_path.startswith(d + "/")),
+        key=len,
+        default=None,
+    )
+    assert dest is not None, f"nothing in the runtime stage is copied to {image_path}"
+    source = REPO_ROOT / copies[dest] / image_path[len(dest) :].lstrip("/")
+
+    assert (source / "PREAMBLE.md").is_file(), f"{image_path} <- {source} has no roster"
+    assert list(source.glob("*/agent.yaml")), f"{image_path} <- {source} has no agents"
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-5")
+@pytest.mark.asyncio
+async def test_without_a_database_the_ephemeral_fallback_still_serves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    for name in ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+
+    store = await workspace_authority.canonical_workspace_store()
+
+    assert isinstance(store, InMemoryWorkspaceStore)
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-1")
+@pytest.mark.ac("ADR-092326-97c4/AC-2")
+@pytest.mark.contract("boundary")
+def test_compose_hive_shares_the_engine_database_and_waits_for_its_migration() -> None:
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    engine_env = set(services["maistro-engine"]["environment"])
+    hive = services["hive-conductor"]
+    hive_env = set(hive["environment"])
+
+    shared = {
+        item
+        for item in engine_env
+        if item.split("=", 1)[0] in {"DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER"}
+        or item.startswith("DB_PASSWORD=")
+    }
+    assert len(shared) == 6
+    assert shared <= hive_env
+
+    # maistro-engine's entrypoint migrates before it serves, so "healthy" is
+    # "migrated". Hive never runs alembic itself.
+    depends = hive["depends_on"]
+    assert depends["maistro-engine"]["condition"] == "service_healthy"
+    assert depends["postgres"]["condition"] == "service_healthy"
+    assert services["maistro-engine"]["healthcheck"]["start_period"]
+    assert "alembic" not in yaml.safe_dump(hive)
+
+
+@pytest.mark.ac("ADR-092326-97c4/AC-5")
+@pytest.mark.asyncio
+async def test_a_pathless_sqlite_url_keeps_the_mirror_as_recovery_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sqlite://` is SQLite on `:memory:`: a restart loses it, so it is not durable."""
+    monkeypatch.setattr(stores.workspaces, "_data", {})
+    process = _HiveProcess(tmp_path, monkeypatch, "sqlite://")
+    try:
+        await process.boot()
+        view = await workspace_authority.create_workspace(
+            creator_user_id="alice",
+            name="Ephemeral",
+            persona_template_id="content_creator",
+            checklist=[],
+            theme_id="default",
+            voice_tone_override=None,
+        )
+
+        assert view.id in process.mirror_rows()
+
+        await process.stop()
+        await process.boot()
+
+        assert await workspace_authority.is_member("alice", view.id)
+    finally:
+        await process.stop()
+        workspace_authority.reset_for_tests()

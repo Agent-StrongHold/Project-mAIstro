@@ -204,20 +204,21 @@ async def test_ownerless_legacy_row_is_quarantined_without_blocking_valid_worksp
 
 
 @pytest.mark.asyncio
-async def test_durable_source_retirement_does_not_delete_materialized_agents(
+async def test_durable_import_leaves_the_mirror_and_materialized_agents_untouched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     canonical = InMemoryWorkspaceStore()
     monkeypatch.setattr(workspace_authority, "_engine_workspace_store", lambda: canonical)
     monkeypatch.setattr(workspace_authority, "_is_durable_store", lambda store: True)
-    stores.workspaces["legacy-ws"] = _legacy_workspace()
+    legacy = _legacy_workspace()
+    stores.workspaces["legacy-ws"] = legacy
     agent = _agent("legacy-ws")
     stores.agents[agent.id] = agent
 
     view = await workspace_authority.visible_view("alice", "legacy-ws")
 
     assert view is not None
-    assert "legacy-ws" not in stores.workspaces
+    assert stores.workspaces.get("legacy-ws") == legacy
     assert stores.agents.get(agent.id) is not None
 
 

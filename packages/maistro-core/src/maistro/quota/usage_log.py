@@ -15,6 +15,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from maistro.quota.rate_profile import LimitUnit
 
@@ -39,6 +40,8 @@ class UsageEvent:
     provider: str | None = None
     billing_cycle: str | None = None
     usage_reported: bool | None = None
+    # Generated once when the event is recorded and retained across restore.
+    event_id: str = field(default_factory=lambda: uuid4().hex)
 
     @property
     def total_tokens(self) -> int:
@@ -87,6 +90,7 @@ class InMemoryUsageLog:
         billing_cycle: str | None = None,
         usage_reported: bool | None = None,
         now: float | None = None,
+        event_id: str | None = None,
     ) -> None:
         now = now if now is not None else time.time()
         log = self._scopes[scope_key]
@@ -101,6 +105,7 @@ class InMemoryUsageLog:
                 provider=provider,
                 billing_cycle=billing_cycle,
                 usage_reported=usage_reported,
+                event_id=event_id if event_id is not None else uuid4().hex,
             )
         )
         self._prune(log, now)

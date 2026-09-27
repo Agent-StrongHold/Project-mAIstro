@@ -51,7 +51,9 @@ def test_credential_authority_ledger_records_live_and_retired_surfaces() -> None
     assert not (ROOT / retired[0]["path"]).exists()
 
 
-def test_reachable_credential_surfaces_are_classified_and_scoped() -> None:
+def test_reachable_credential_surfaces_are_classified_and_scoped(
+    real_repository_ratchet_base: None,
+) -> None:
     """The authority ledger must be joined to the production import graph."""
     assert _checker.audit() == []
 
@@ -620,11 +622,11 @@ def test_main_reports_each_failure(
     assert "demo credential failure" in capsys.readouterr().err
 
 
-def test_main_passes_on_the_committed_policy() -> None:
+def test_main_passes_on_the_committed_policy(real_repository_ratchet_base: None) -> None:
     assert _checker.main() == 0
 
 
-def test_script_entrypoint_exits_zero() -> None:
+def test_script_entrypoint_exits_zero(real_repository_ratchet_base: None) -> None:
     """`python scripts/check-credential-authority.py` is the CI invocation."""
     import runpy
 

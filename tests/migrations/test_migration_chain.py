@@ -108,6 +108,9 @@ EXPECTED_TABLES = frozenset(
         # #718): at-most-once quota accounting and explicit unreported usage
         # evidence, projected into `quota_usage`.
         "quota_invocation_evidence",
+        # Durable per-event identities that make `record_usage` retries and
+        # crash-ambiguous commits harmless (#1204).
+        "quota_usage_events",
         # Schedule definitions and their fire cursors (016). Durable so that a
         # cursor survives a restart and two scheduler replicas share one rather
         # than each keeping a private copy (#231).

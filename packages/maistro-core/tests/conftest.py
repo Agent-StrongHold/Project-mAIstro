@@ -107,6 +107,7 @@ def _reset_shared_http() -> Iterator[None]:
 #: and make a migrated database look unmigrated.
 _PG_SCRATCH_TABLES = (
     "quota_invocation_evidence",
+    "quota_usage_events",
     "quota_usage",
     "sessions",
     "audit_log",
