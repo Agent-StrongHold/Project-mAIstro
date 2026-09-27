@@ -526,8 +526,8 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
                 request_id=request_id,
             ),
         ).model_dump(),
-        # Kept, not rebuilt: a 503's Retry-After or a 401's WWW-Authenticate
-        # is part of the status the route chose.
+        # Kept, not rebuilt: a 429's or 503's Retry-After or a 401's
+        # WWW-Authenticate is part of the status the route chose.
         headers=exc.headers,
     )
 

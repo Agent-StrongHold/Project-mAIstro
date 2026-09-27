@@ -17,6 +17,8 @@ BASELINE_RATE_LIMIT_PER_MINUTE = 60
 BASELINE_RATE_LIMIT_BURST = 10
 BASELINE_CIRCUIT_FAILURE_THRESHOLD = 5
 BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S = 60.0
+BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL = 8
+BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE = 32
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,8 @@ class EffectiveResourcePolicy:
     rate_limit_burst: int
     circuit_breaker_failure_threshold: int
     circuit_breaker_recovery_timeout_s: float
+    max_active_root_runs_per_principal: int
+    max_active_root_runs_per_workspace: int
     unsafe_overrides_enabled: bool = False
 
     def as_dict(self) -> dict[str, int | float | bool]:
@@ -112,6 +116,8 @@ _FLOORS: tuple[_Floor, ...] = (
     _Floor("rate_limit_burst", BASELINE_RATE_LIMIT_BURST, True, zero_is_meaningful=True),
     _Floor("circuit_breaker_failure_threshold", BASELINE_CIRCUIT_FAILURE_THRESHOLD, True),
     _Floor("circuit_breaker_recovery_timeout_s", BASELINE_CIRCUIT_RECOVERY_TIMEOUT_S, False),
+    _Floor("max_active_root_runs_per_principal", BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL, True),
+    _Floor("max_active_root_runs_per_workspace", BASELINE_MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE, True),
 )
 
 _FLOOR_BY_NAME: dict[str, _Floor] = {floor.name: floor for floor in _FLOORS}
