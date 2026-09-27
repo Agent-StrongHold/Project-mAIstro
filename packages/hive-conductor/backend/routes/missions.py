@@ -43,14 +43,38 @@ def _task_to_mission(rec: object) -> Mission:
     )
 
 
+def _public_mission(mission: Mission) -> Mission:
+    """Do not report an agent a canonical Run did not record.
+
+    A hive mission row is a queue projection, not a Run. ``assigned_agents``
+    used to echo a seed name or the create body, and task detail rendered
+    that name as if the agent had been assigned. Nothing here reads a Run's
+    attempt agent, so the public row names none.
+    """
+    if not mission.assigned_agents:
+        return mission
+    return mission.model_copy(update={"assigned_agents": []})
+
+
+def _public_steps(steps: list[object]) -> list[MissionStep]:
+    """Same rule as ``_public_mission`` for step ``agent_id``."""
+    public: list[MissionStep] = []
+    for raw in steps:
+        step = raw if isinstance(raw, MissionStep) else MissionStep.model_validate(raw)
+        if step.agent_id is not None:
+            step = step.model_copy(update={"agent_id": None})
+        public.append(step)
+    return public
+
+
 @router.get("", response_model=list[Mission])
 def list_missions() -> list[Mission]:
     engine = get_engine()
     if engine.is_configured or engine._backend is not None:
         tasks = engine.list_tasks()
         if tasks:
-            return [_task_to_mission(t) for t in tasks]
-    return list(stores.missions.values())
+            return [_public_mission(_task_to_mission(t)) for t in tasks]
+    return [_public_mission(m) for m in stores.missions.values()]
 
 
 class ClearMissionsBody(BaseModel):
@@ -76,10 +100,10 @@ def get_mission(mission_id: str) -> Mission:
     if engine.is_configured or engine._backend is not None:
         rec = engine.get_task(mission_id)
         if rec is not None:
-            return _task_to_mission(rec)
+            return _public_mission(_task_to_mission(rec))
     if mission_id not in stores.missions:
         raise HTTPException(status_code=404, detail="mission not found")
-    return stores.missions[mission_id]
+    return _public_mission(stores.missions[mission_id])
 
 
 @router.get("/{mission_id}/steps", response_model=list[MissionStep])
@@ -100,8 +124,8 @@ def get_steps(mission_id: str) -> list[MissionStep]:
                     status=step_status,
                     order=1,
                 )
-            return [step] if step else []
-    return list(stores.mission_steps.get(mission_id, []))
+            return _public_steps([step] if step else [])
+    return _public_steps(list(stores.mission_steps.get(mission_id, [])))
 
 
 class CreateMissionBody(BaseModel):
@@ -110,7 +134,6 @@ class CreateMissionBody(BaseModel):
     name: str
     description: str = ""
     priority: str = "medium"
-    assigned_agents: list[str] = []
 
 
 def _user_id(request: Request) -> str:
@@ -135,10 +158,12 @@ async def create_mission(
             logger.warning("workspace_not_routable %s", exc)
             raise HTTPException(status_code=501, detail=WORKSPACE_NOT_ROUTABLE_DETAIL) from exc
         log_audit("mission_create", "system", target=rec.id, detail={"name": body.name})
-        return _task_to_mission(rec)
+        return _public_mission(_task_to_mission(rec))
 
     mid = str(uuid4())[:12]
     t = _now()
+    # ``assigned_agents`` stays empty. A name on the request is not a Run's
+    # agent, and this stub path does not create a Run.
     m = Mission(
         id=mid,
         name=body.name,
@@ -150,12 +175,11 @@ async def create_mission(
         progress=0.0,
         steps_total=0,
         steps_completed=0,
-        assigned_agents=body.assigned_agents,
     )
     stores.missions[mid] = m
     stores.mission_steps[mid] = []
     log_audit("mission_create", "system", target=mid, detail={"name": body.name})
-    return m
+    return _public_mission(m)
 
 
 class UpdateMissionStatusBody(BaseModel):
@@ -196,7 +220,7 @@ def update_mission_status(
         _revoke_task_elevation(request, mission_id)
     stores.missions[mission_id] = m
     log_audit("mission_status", "system", target=mission_id, detail={"status": body.status})
-    return m
+    return _public_mission(m)
 
 
 def _revoke_task_elevation(request: Request, task_id: str) -> None:
