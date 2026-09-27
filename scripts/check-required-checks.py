@@ -306,7 +306,9 @@ def collect() -> list[tuple[str, str, str]]:
             scope = _job_scope(job, trigger_scope)
             try:
                 names = (
-                    _reusable_check_names(job_id, job) if "uses" in job else _check_names(job_id, job)
+                    _reusable_check_names(job_id, job)
+                    if "uses" in job
+                    else _check_names(job_id, job)
                 )
             except ContractError as exc:
                 raise ContractError(f"{path.name}: {exc}") from exc

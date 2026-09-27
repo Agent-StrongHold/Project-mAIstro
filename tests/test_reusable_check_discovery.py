@@ -1,4 +1,4 @@
-"""Recover #1357 check-name discovery without weakening the existing gate."""
+"""Tests for #1357 check-name recovery and refusal of ambiguous contracts."""
 
 from __future__ import annotations
 
@@ -259,8 +259,8 @@ def test_composed_names_still_require_merge_group_on_the_caller(discovery, merge
             {
                 "branches": {
                     "develop": {
-                        "required_status_checks": {"contexts": ["Quality / lint / Lint"]}
-                    }
+                        "required_status_checks": {"contexts": ["Quality / lint / Lint"]},
+                    },
                 }
             }
         )
