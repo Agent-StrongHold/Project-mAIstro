@@ -559,7 +559,12 @@ jobs:
           # the rootless netns cannot grant. The escape suite was re-run
           # green (16 passed, 1 daemon-posture skip) against a daemon started
           # with these exact flags under dockerd 28.5.2 before this landed.
-          nohup dockerd-rootless.sh \
+          # Rootless Docker cannot read/manage the runner's AppArmor profiles.
+          # Keep securityfs discovery out of this daemon's PRIVATE mountns,
+          # not out of the host. Production sandbox flags remain unchanged.
+          MAISTRO_TEST_ROOTLESS_LANE=1 uv run pytest \
+            packages/maistro-bootstrap/tests/test_container_lane.py -v --tb=short
+          nohup bash scripts/ci-rootless-mountns.sh dockerd-rootless.sh \
             --iptables=false \
             --ip6tables=false \
             --userland-proxy=false \

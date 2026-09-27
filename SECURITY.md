@@ -323,7 +323,7 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    weakest available rung; a host with nothing refuses everything. That refusal is the current
    state of the guarantee: it is fail-closed, not satisfied. See
    [`docs/security/SANDBOX-SUPPORT-MATRIX.md`](docs/security/SANDBOX-SUPPORT-MATRIX.md). The
-   SPEC-190 conformance and escape suites run against real backends in CI (#80):
+   SPEC-190 conformance and escape suites target real backends (#80):
    `packages/maistro-bootstrap/tests/test_container_sandbox.py` exercises the production
    `ContainerBuilderSandbox` Docker backend's filesystem, process, namespace, network, device,
    host-socket, credential and privilege surfaces (including tracked-only seed inputs and blanked
@@ -337,8 +337,8 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    assertions, not selector or fake-backend tests. ADR-093 Decision 2's rootless requirement is
    **enforced at launch, not assumed**: the Docker backend reads its own container's
    `/proc/self/uid_map` and refuses whenever container uid 0 maps to host uid 0 (including a
-   partially remapped map), or whenever that mapping is unproven; the CI conformance lane runs
-   both branches — the refusal against the runner's rootful system daemon, and the full escape
+   partially remapped map), or whenever that mapping is unproven; the CI conformance lane is
+   configured for both branches — refusal against the runner's rootful system daemon, and the full escape
    suite (including a live uid_map probe that container root does not map to host root) against a
    rootless daemon the lane provisions itself. That provisioning deliberately keeps the
    firewall/bridge/port-publish plane off (`--iptables=false --ip6tables=false
@@ -347,8 +347,15 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    building NAT chains the rootless netns cannot authorize — the runner failure was reproduced
    locally against dockerd 28.5.2, the fixed recipe re-ran the suite 16-passed against that
    daemon, and the lane asserts cgroup memory-limit enforcement (via `loginctl enable-linger` +
-   a `memory.max` probe) before the suite executes. The
-   Docker backend remains a shared-kernel
+   a `memory.max` probe) before the suite executes. **Remote Builder escape execution is not
+   yet verified:** the last recorded CI run failed before the suite because rootless Docker
+   could not read the runner's AppArmor profiles. The repaired lane uses
+   `scripts/ci-rootless-mountns.sh` to mask securityfs only in the daemon's private mount
+   namespace, dropping host privilege before starting Docker; it neither changes host
+   AppArmor policy nor relaxes production sandbox flags. This lane does **not** prove
+   AppArmor confinement. Current executed evidence and remaining validation limits are in
+   [`docs/testing/inventory-notes/l80-securityfs-lane-repair.md`](docs/testing/inventory-notes/l80-securityfs-lane-repair.md).
+   The Docker backend remains a shared-kernel
    guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
    backends for untrusted autonomous execution. Unattended RSI (`maistro_rsi run`/`evolve`) is
    held to that posture from both sides: a stated Tier-3 backend refuses (ADR-093 decision 6

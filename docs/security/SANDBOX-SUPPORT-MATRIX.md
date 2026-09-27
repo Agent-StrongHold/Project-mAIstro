@@ -181,13 +181,20 @@ privilege, network-deny, seed hygiene, resource budget, timeout kill, cleanup â€
 runs on a qualifying daemon, including a live assertion that container uid 0
 does not map to host uid 0; on a rootful unmapped daemon the suite reduces to
 the fail-closed proof that the sandbox refuses to start and leaves no container
-behind. CI runs both: the refusal against the runner's own rootful system
+behind. CI is configured for both: refusal against the runner's own rootful system
 daemon, then the escape suite against a rootless daemon started in the lane â€”
 provisioned with the firewall/bridge plane off (`--iptables=false
 --ip6tables=false --userland-proxy=false --bridge=none`, safe because the
 contract's network default-deny is per-container) and a cgroup
 memory-enforcement probe, so the suite cannot run against a daemon that
-cannot enforce the resource budget.
+cannot enforce the resource budget. Remote escape execution remains **unverified**:
+the last recorded run failed at container creation because rootless Docker could
+not read the runner's AppArmor profiles. The repair masks securityfs only in a
+private daemon mount namespace (`scripts/ci-rootless-mountns.sh`) and drops host
+privilege before Docker starts. Host AppArmor policy and production sandbox
+flags are unchanged; AppArmor confinement is not part of this lane's evidence.
+See [current execution evidence](../testing/inventory-notes/l80-securityfs-lane-repair.md)
+for local results and the outstanding remote validation requirement.
 
 ## Verification
 

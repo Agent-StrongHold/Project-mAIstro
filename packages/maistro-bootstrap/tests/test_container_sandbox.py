@@ -21,6 +21,8 @@ evidence for the same Decision 2 requirement.
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -326,12 +328,47 @@ def _repo_with_file(tmp_path: Path) -> None:
 
 
 @_needs_isolating_daemon
-def test_container_environment_is_credential_default_deny(tmp_path: Path) -> None:
-    """Only the sandbox's deliberate HOME reaches candidate code."""
+def test_container_environment_is_credential_default_deny(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Populated host credentials and Docker proxy config must not cross."""
     _repo_with_file(tmp_path)
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "OPENAI_API_KEY"):
+        monkeypatch.setenv(name, "l80-host-secret-sentinel")
+    # Docker injects proxies from client config even without explicit --env.
+    # Set every supported proxy field, rather than passing vacuously on a host
+    # which has no credentials/proxies configured in the first place.
+    config = tmp_path / "docker-client"
+    config.mkdir()
+    (config / "config.json").write_text(
+        json.dumps(
+            {
+                "proxies": {
+                    "default": dict.fromkeys(
+                        ("httpProxy", "httpsProxy", "ftpProxy", "allProxy", "noProxy"),
+                        "http://l80-user:l80-proxy-secret@127.0.0.1:9",
+                    )
+                }
+            }
+        )
+    )
+    # Preserve the daemon selected by the caller even when it came from a
+    # Docker context: the fresh config must not switch this test to rootful.
+    endpoint = subprocess.run(
+        ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if "DOCKER_CONTEXT" in os.environ or "DOCKER_HOST" not in os.environ:
+        monkeypatch.setenv("DOCKER_HOST", endpoint)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    monkeypatch.setenv("DOCKER_CONFIG", str(config))
     with ContainerBuilderSandbox(tmp_path) as sb:
         env = sb.run_command("env")
 
+    assert "l80-host-secret-sentinel" not in env
+    assert "l80-proxy-secret" not in env
     values = dict(line.split("=", 1) for line in env.splitlines() if "=" in line)
     assert values.get("HOME") == "/tmp"
     assert not set(values).intersection(
