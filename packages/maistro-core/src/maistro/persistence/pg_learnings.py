@@ -524,7 +524,7 @@ def _load_keys(raw: object) -> list[str]:
 def _row_to_learning(row: asyncpg.Record) -> Learning:
     return Learning(
         id=row["id"],
-        category=row.get("category", ""),
+        category=row.get("category") or "",
         trigger_keys=_load_keys(row.get("trigger_keys")),
         learning=row["learning"],
         tool_name=row.get("tool_name", ""),
@@ -535,7 +535,7 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         user_id=row.get("user_id"),
         org_id=row.get("org_id") or "",
         team_id=row.get("team_id") or "",
-        scope=row.get("scope", "agent"),
+        scope=row.get("scope") or "agent",
         hit_count=row.get("hit_count", 0),
         status=row.get("status", "active"),
         rca_category=row.get("rca_category"),
