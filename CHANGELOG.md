@@ -306,6 +306,24 @@ or placeholder-only section.
 
 ### Added
 
+- **Named `cross-product-parity` CI job and M1 closeout strict mode
+  (#459, partial).** The #459 cross-product parity suite
+  (`tests/cross_product_parity`) now runs as its own required `ci.yml` job
+  instead of being folded, unnamed, into the general `test` job. A new
+  `workflow_dispatch`-only workflow, `cross-product-parity-strict.yml`, runs
+  the same suite with `MAISTRO_PARITY_STRICT=1` (M1 closeout mode): under
+  that flag, `dependency_assessment` raises `DependencyUnavailable` instead
+  of returning a named blocker, so a scenario that only proves its
+  dependency missing fails the suite rather than passing it. It is not part
+  of the PR check contract — it fails today on the CONDUCTOR_INSPECTION
+  blocker until #1036 lands. Four scenarios (Builders/schedule/Evolve
+  activation against Conductor, and the #463 golden-fixture check) also gain
+  their own permanently-evidenced blockers so a landed product dependency
+  alone cannot read as closure evidence while the scenario itself still only
+  checks import/source tokens, or — for the golden fixture — feeds the
+  fixture's own example back at itself instead of a real product
+  observation.
+
 - **The Canvas store's tables are in the root alembic chain (#286, partial).**
   Migration 044 creates `canvases`, `layers`, `generation_jobs` (with the
   SPEC-203 lease columns and the partial pending-claim index),

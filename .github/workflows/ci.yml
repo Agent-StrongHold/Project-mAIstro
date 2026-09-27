@@ -533,6 +533,27 @@ jobs:
       - name: Suite inventory matches collected node IDs (C1/#286)
         run: python scripts/check-suite-inventory.py
 
+  # #459: the cross-product parity suite already ran unnamed, folded into the
+  # `test` job's blanket `pytest tests/`. A named job is what #459's own
+  # acceptance criterion asks for -- one CI check whose pass/fail is legible as
+  # "did cross-product spine parity hold" rather than buried in one line of a
+  # much larger suite.
+  cross-product-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked --extra dev
+      - name: Cross-product spine parity suite (#459, development mode)
+        run: uv run pytest tests/cross_product_parity -v --tb=short
+        env:
+          REQUIRE_AUTH: "false"
+          MAISTRO_DRY_RUN: "1"
+
   durable-events:
     needs: workflow-lint
     if: >-
