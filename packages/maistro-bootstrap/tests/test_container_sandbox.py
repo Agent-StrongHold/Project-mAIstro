@@ -8,6 +8,15 @@ elsewhere (e.g. a CI box without Docker).
 `ContainerBuilderSandbox` — not a fake or a selector backend — so the network
 and privilege regressions below run here, against the real container this
 class really creates.
+
+#80 (reopened) adds the daemon privilege boundary: ADR-093 Decision 2 requires a
+retained container runtime to be *rootless*. `ContainerBuilderSandbox` now
+enforces that at entry (see `_verify_userns_boundary`), so this suite splits by
+daemon posture — on a rootless or userns-remapped daemon the full escape suite
+runs AND the user-namespace probe proves container uids are not host uids; on a
+rootful un-remapped daemon the sandbox must REFUSE to start, which the refusal
+test below proves against the production class. Both branches are conformance
+evidence for the same Decision 2 requirement.
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ from maistro_bootstrap.builders.container_sandbox import (
     _AGENT_UID_GID,
     DEFAULT_IMAGE,
     ContainerBuilderSandbox,
+    _uid_map_is_identity,
 )
 
 
@@ -34,11 +44,40 @@ def _docker_ready() -> bool:
     return r.returncode == 0
 
 
+def _daemon_provides_userns_boundary() -> bool:
+    """True when a container on this daemon gets non-host uids.
+
+    Uses the same production classifier (`_uid_map_is_identity`) the sandbox's
+    launch gate uses, applied to a throwaway probe container's
+    `/proc/self/uid_map` — exactly the evidence `__enter__` will demand of its
+    own container, so the qualification decision and the gate cannot drift.
+    """
+    probe = subprocess.run(
+        ["docker", "run", "--rm", "--network=none", DEFAULT_IMAGE, "cat", "/proc/self/uid_map"],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    return probe.returncode == 0 and not _uid_map_is_identity(probe.stdout)
+
+
 pytestmark = pytest.mark.skipif(
     not _docker_ready(), reason=f"docker or {DEFAULT_IMAGE} image unavailable"
 )
 
+_DAEMON_QUALIFIES = _docker_ready() and _daemon_provides_userns_boundary()
 
+_needs_isolating_daemon = pytest.mark.skipif(
+    not _DAEMON_QUALIFIES,
+    reason=(
+        "daemon is rootful without userns remapping: ContainerBuilderSandbox "
+        "refuses to start on it (ADR-093 Decision 2) — the refusal is proven "
+        "by test_sandbox_refuses_a_rootful_unmapped_daemon"
+    ),
+)
+
+
+@_needs_isolating_daemon
 def test_agent_edits_are_isolated_from_host(tmp_path: Path) -> None:
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -61,6 +100,7 @@ def test_agent_edits_are_isolated_from_host(tmp_path: Path) -> None:
     assert (tmp_path / "pkg" / "new.py").exists()
 
 
+@_needs_isolating_daemon
 def test_path_escape_blocked(tmp_path: Path) -> None:
     (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -101,6 +141,7 @@ except OSError:
 """
 
 
+@_needs_isolating_daemon
 def test_agent_commands_cannot_reach_any_network_by_default(tmp_path: Path) -> None:
     """The #77 regression: an agent-issued command in the supported unattended
     Builder environment must not be able to make network connections under
@@ -132,6 +173,7 @@ def test_agent_commands_cannot_reach_any_network_by_default(tmp_path: Path) -> N
     assert "DNS DENIED" in out
 
 
+@_needs_isolating_daemon
 def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
     """The other half of the regression: the agent used to be container root.
     Its commands must run as the sandbox's non-root uid and fail the things
@@ -150,6 +192,7 @@ def test_agent_execs_run_as_unprivileged_user(tmp_path: Path) -> None:
         assert rc != 0, "agent chowned the workspace — it retained CAP_CHOWN"
 
 
+@_needs_isolating_daemon
 def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
     """#77/#78: the seed must not carry the repo's ambient credential surface
     into the container — `.git`, dotenv files, root-level key material, and
@@ -281,6 +324,7 @@ def _repo_with_file(tmp_path: Path) -> None:
     subprocess.run(["git", "add", "hello.py"], cwd=tmp_path, check=True)
 
 
+@_needs_isolating_daemon
 def test_container_environment_is_credential_default_deny(tmp_path: Path) -> None:
     """Only the sandbox's deliberate HOME reaches candidate code."""
     _repo_with_file(tmp_path)
@@ -307,6 +351,7 @@ def test_container_environment_is_credential_default_deny(tmp_path: Path) -> Non
         assert values.get(name, "") == "", f"Docker proxy leaked through {name}"
 
 
+@_needs_isolating_daemon
 def test_rootfs_and_writable_scope_are_explicit(tmp_path: Path) -> None:
     """The live Docker config, not permissions in the image, sets the scope.
 
@@ -364,6 +409,7 @@ def test_rootfs_and_writable_scope_are_explicit(tmp_path: Path) -> None:
         )
 
 
+@_needs_isolating_daemon
 def test_process_namespace_devices_and_host_socket_are_not_reachable(tmp_path: Path) -> None:
     """Exercise the Docker backend's namespace, device and socket surfaces."""
     _repo_with_file(tmp_path)
@@ -387,6 +433,7 @@ def test_process_namespace_devices_and_host_socket_are_not_reachable(tmp_path: P
         assert rc == 0 and nnp.split()[-1] == "1"
 
 
+@_needs_isolating_daemon
 def test_timeout_kills_the_command_and_detached_descendants(
     tmp_path: Path,
 ) -> None:
@@ -406,6 +453,7 @@ def test_timeout_kills_the_command_and_detached_descendants(
         assert sb.run_argv_status(["kill", "-0", pid])[0] != 0
 
 
+@_needs_isolating_daemon
 def test_context_cleanup_removes_the_container(tmp_path: Path) -> None:
     """Exiting the sandbox force-removes its ephemeral container."""
     _repo_with_file(tmp_path)
@@ -414,6 +462,7 @@ def test_context_cleanup_removes_the_container(tmp_path: Path) -> None:
     assert subprocess.run(["docker", "inspect", cid], capture_output=True).returncode != 0
 
 
+@_needs_isolating_daemon
 def test_memory_exhaustion_is_contained_by_the_container_limit(tmp_path: Path) -> None:
     """An allocation above the configured cgroup budget fails in the container."""
     _repo_with_file(tmp_path)
@@ -428,3 +477,79 @@ def test_memory_exhaustion_is_contained_by_the_container_limit(tmp_path: Path) -
             timeout=30,
         )
         assert rc != 0
+
+
+@_needs_isolating_daemon
+def test_container_user_namespace_maps_container_uids_off_the_host(
+    tmp_path: Path,
+) -> None:
+    """#80 reopened: the privilege attack surface ADR-093 Decision 2 governs.
+
+    The container's `/proc/self/uid_map` — read through the sandbox's own
+    exec path, as the agent uid, exactly as the production launch gate reads
+    it — must NOT map container uids onto host uids. On a rootless or
+    userns-remapped daemon every inside uid, container root included (the
+    one-shot bootstrap chown), lands on an unallocated host subuid; only a
+    rootful un-remapped daemon yields the identity map, and that daemon is
+    refused below.
+    """
+    _repo_with_file(tmp_path)
+    with ContainerBuilderSandbox(tmp_path) as sb:
+        rc, uid_map = sb.run_argv_status(["cat", "/proc/self/uid_map"])
+        assert rc == 0, uid_map
+        assert not _uid_map_is_identity(uid_map), (
+            f"container uids map onto host uids — the daemon is rootful "
+            f"without userns remapping: {uid_map!r}"
+        )
+        # And specifically: container uid 0 (the only uid any escape or the
+        # bootstrap chown could claim) is not host uid 0.
+        root_line = next(line for line in uid_map.splitlines() if line.split()[0] == "0")
+        assert root_line.split()[1] != "0", uid_map
+
+
+@pytest.mark.skipif(
+    _DAEMON_QUALIFIES,
+    reason="this daemon provides the rootless/userns boundary, so the sandbox starts on it",
+)
+def test_sandbox_refuses_a_rootful_unmapped_daemon(tmp_path: Path) -> None:
+    """The other half of the Decision 2 conformance: a rootful daemon without
+    user-namespace remapping maps container uid 0 onto host uid 0 — every
+    container-root privilege (the bootstrap chown included) would be host
+    root. The production `ContainerBuilderSandbox` must refuse to start
+    there, name the ADR, and leave no container behind.
+
+    This is the branch this repository's own CI and dev hosts exercised before
+    #80 reopened: `docker info` reported `rootdir=/var/lib/docker` with no
+    rootless marker, and the sandbox ran anyway. Where the full escape suite
+    skips, this refusal is what still runs — the fail-closed behavior is the
+    guarantee, and it is proven against the real daemon that lacks the
+    boundary.
+    """
+    _repo_with_file(tmp_path)
+    # Only builder-sandbox containers (this image), and only "no new leftovers":
+    # on a shared daemon other work may legitimately remove or add unrelated
+    # containers between the two snapshots.
+    before = set(
+        subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"ancestor={DEFAULT_IMAGE}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    )
+
+    sandbox = ContainerBuilderSandbox(tmp_path)
+    with pytest.raises(RuntimeError, match="ADR-093 Decision 2"):
+        sandbox.__enter__()
+
+    # The refusal must clean up the container it created rather than leaving
+    # an admitted-but-refused sandbox lying around on the refused daemon.
+    after = set(
+        subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"ancestor={DEFAULT_IMAGE}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    )
+    assert not (after - before), "refused entry left a sandbox container behind"

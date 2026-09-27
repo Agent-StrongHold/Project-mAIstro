@@ -157,6 +157,33 @@ the workdir and refuses anything that escapes it. Those calls run on the host �
 they are how work gets in and results come out — so an unchecked path would be
 a host write with no sandbox involved.
 
+## The Builder container backend (Docker)
+
+The builders/RSI loop's `ContainerBuilderSandbox` (see
+`packages/maistro-bootstrap/src/maistro_bootstrap/builders/container_sandbox.py`)
+is not a rung of the selector ladder — it is a separate, transitional seam for
+supervised Builder sessions (autonomous RSI runs refuse `--isolation container`
+under the mode floors above). ADR-093 Decision 2 still governs it: a retained
+container runtime MUST be rootless and socket-less, and since #80 reopened that
+is **enforced at launch, not assumed**. The sandbox reads its own container's
+`/proc/self/uid_map` before any root exec or seed and refuses to start when the
+mapping is the identity map — the signature of a rootful, user-namespace-unmapped
+daemon, where container uid 0 *is* host uid 0. A rootless daemon
+(`dockerd-rootless-setuptool.sh`) or a `--userns-remap` daemon maps every
+container uid onto an unallocated subuid range and passes; unproven output fails
+closed. There is no flag or environment override, for the same reason there is
+none for `--network=none`.
+
+Both branches are conformance-tested against the production class
+(`packages/maistro-bootstrap/tests/test_container_sandbox.py`): the full escape
+suite — filesystem, process, namespace, device, host-socket, credential,
+privilege, network-deny, seed hygiene, resource budget, timeout kill, cleanup —
+runs on a qualifying daemon, including a live assertion that container uid 0
+does not map to host uid 0; on a rootful unmapped daemon the suite reduces to
+the fail-closed proof that the sandbox refuses to start and leaves no container
+behind. CI runs both: the refusal against the runner's own rootful system
+daemon, then the escape suite against a rootless daemon started in the lane.
+
 ## Verification
 
 - Flag construction is asserted on **every** host, because the flags are the

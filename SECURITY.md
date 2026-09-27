@@ -334,7 +334,13 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    descendants) and cleanup behavior.
    `packages/maistro-core/tests/sandbox/test_escape_conformance.py`
    provides the corresponding live Bubblewrap Tier-3 lane. These are real-kernel/container
-   assertions, not selector or fake-backend tests. The Docker backend remains a shared-kernel
+   assertions, not selector or fake-backend tests. ADR-093 Decision 2's rootless requirement is
+   **enforced at launch, not assumed**: the Docker backend reads its own container's
+   `/proc/self/uid_map` and refuses to start on a rootful, user-namespace-unmapped daemon (where
+   container uid 0 *is* host uid 0); CI proves both branches — the refusal against the runner's
+   rootful system daemon, and the full escape suite (including a live uid_map probe that container
+   root does not map to host root) against a rootless daemon started in the conformance lane. The
+   Docker backend remains a shared-kernel
    guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
    backends for untrusted autonomous execution.
 9. **The configurable floors cover six limits, not every cap in the inventory.** Request/webhook

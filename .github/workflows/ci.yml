@@ -470,6 +470,44 @@ jobs:
           docker build --tag maistro-builders:latest
           --file packages/maistro-bootstrap/tests/Dockerfile.sandbox
           packages/maistro-bootstrap/tests
+      # ADR-093 Decision 2 (#80 reopened): ContainerBuilderSandbox refuses a
+      # rootful, user-namespace-unmapped daemon -- container uid 0 there IS
+      # host uid 0, which is the D-04 regression this conformance suite exists
+      # to prevent. Prove the fail-closed branch first, against the runner's
+      # own rootful system daemon, before the lane switches to a rootless one.
+      - name: Rootful daemon is refused (ADR-093 Decision 2 fail-closed proof)
+        run: >-
+          uv run pytest
+          packages/maistro-bootstrap/tests/test_container_sandbox.py::test_sandbox_refuses_a_rootful_unmapped_daemon
+          -v --tb=short
+      # The escape suite itself runs where the sandbox actually starts: a
+      # daemon whose containers get non-host uids (rootless or userns-remapped).
+      # The bwrap step above already relaxed
+      # kernel.apparmor_restrict_unprivileged_userns for its own kernel probes;
+      # rootlesskit needs the same relaxation, so keep this step after it.
+      - name: Start a rootless Docker daemon for the conformance lane
+        run: |
+          set -eux
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          timeout 180 sudo apt-get install -y uidmap slirp4netns dbus-user-session || true
+          if ! command -v dockerd-rootless-setuptool.sh >/dev/null; then
+            timeout 180 sudo apt-get install -y docker-ce-rootless-extras
+          fi
+          # --force: the runner's rootful system daemon stays up (other steps
+          # and jobs use it); this user-local daemon is additive.
+          dockerd-rootless-setuptool.sh install --force
+          systemctl --user enable --now docker
+          # Verify against the rootless socket explicitly: the system daemon
+          # is still the default target at this point in this step.
+          docker --host "unix:///run/user/$(id -u)/docker.sock" info \
+            --format '{{json .SecurityOptions}}' | grep -q rootless
+          echo "DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> "$GITHUB_ENV"
+      # Seed the rootless daemon from the image built above instead of
+      # rebuilding it: the lane's budget belongs to the conformance run.
+      - name: Load the Builder sandbox image into the rootless daemon
+        run: >-
+          docker --host unix:///var/run/docker.sock save maistro-builders:latest
+          | docker --host unix:///run/user/$(id -u)/docker.sock load
       - name: Run the real Builder sandbox conformance lane
         run: uv run pytest packages/maistro-bootstrap/tests/test_container_sandbox.py -v --tb=short
       - run: uv run pytest packages/maistro-bootstrap/tests -v --tb=short

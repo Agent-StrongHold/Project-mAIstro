@@ -35,9 +35,10 @@ from maistro_bootstrap.builders.container_sandbox import (
 class _Recording:
     """A `subprocess.run` stand-in that records argv and never touches Docker."""
 
-    def __init__(self) -> None:
+    def __init__(self, uid_map: str = "0 165536 65536\n") -> None:
         self.calls: list[list[str]] = []
         self.envs: list[dict[str, str] | None] = []
+        self.uid_map = uid_map
 
     def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
         self.calls.append(list(argv))
@@ -49,6 +50,10 @@ class _Recording:
             stdout = b"x.py\0"  # binary NUL-delimited index listing
         elif argv[0] == "docker" and argv[-3:] == ["ps", "-eo", "pid=,ppid=,args="]:
             stdout = "7 1 sleep infinity\n"  # the --init child harness
+        elif argv[0] == "docker" and argv[-1] == "/proc/self/uid_map":
+            # The userns boundary probe (ADR-093 Decision 2): default is a
+            # remapped container uid 0 -> subuid 165536, i.e. not host uid 0.
+            stdout = self.uid_map
         elif argv[0] == "tar" and "-cf" in argv:
             stdout = b"SEED-ARCHIVE"  # binary pipe (no text=True)
         return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
@@ -235,6 +240,93 @@ def test_container_creation_pins_implicit_runtime_tmpfs_read_only(
     assert {"/dev/shm", "/dev/mqueue"} <= pinned, (
         f"implicit runtime tmpfs not pinned read-only: {sorted(pinned)}"
     )
+
+
+def test_entry_probes_the_container_user_namespace_before_any_root_work(
+    recorder: _Recording, tmp_path: Path
+) -> None:
+    """ADR-093 Decision 2 (#80 reopened): entry must verify, not assume, that
+    the container's uids are not host uids. The probe is a `cat
+    /proc/self/uid_map` exec — as the unprivileged agent uid — issued before
+    the harness-pid lookup, before the bootstrap chown, and before the seed."""
+    with ContainerBuilderSandbox(tmp_path):
+        pass
+
+    docker_calls = _docker_calls(recorder)
+    probe = next(argv for argv in docker_calls if argv[-1] == "/proc/self/uid_map")
+    assert probe[1] == "exec"
+    assert probe[probe.index("-u") + 1] == _AGENT_UID_GID
+    assert "chown" not in probe
+    # Everything the boundary admits must already have happened: the container
+    # create (`docker run`) precedes the probe, and the probe precedes the
+    # harness lookup, the chown and the seed archive.
+    run_ix = recorder.calls.index(_run_call(recorder))
+    harness_ix = next(
+        i for i, argv in enumerate(docker_calls) if argv[-3:] == ["ps", "-eo", "pid=,ppid=,args="]
+    )
+    probe_ix = docker_calls.index(probe)
+    chown_ix = next(i for i, argv in enumerate(docker_calls) if "chown" in argv)
+    seed_ix = next(i for i, argv in enumerate(recorder.calls) if argv[0] == "tar")
+    assert run_ix < probe_ix < harness_ix < chown_ix < seed_ix
+
+
+def test_identity_uid_map_refuses_the_sandbox_before_any_root_work(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A rootful, un-remapped daemon maps container uid 0 onto host uid 0
+    (identity `/proc/self/uid_map`), so even the one auditable bootstrap
+    chown would run as host root. Entry must refuse that daemon before the
+    chown, before the seed, and remove the container it created."""
+    rec = _Recording(uid_map="0 0 4294967295\n")
+    monkeypatch.setattr(csbx_mod.subprocess, "run", rec)
+
+    with pytest.raises(RuntimeError, match="rootless"):
+        ContainerBuilderSandbox(tmp_path).__enter__()
+
+    docker_calls = _docker_calls(rec)
+    assert ["docker", "rm", "-f", "fake-cid"] in docker_calls
+    # Nothing ran as container root and no repo content crossed the boundary
+    # on a daemon that was about to be refused.
+    assert not any("chown" in argv for argv in docker_calls)
+    assert not any(argv[0] == "tar" for argv in rec.calls)
+
+
+def test_an_unreadable_uid_map_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A boundary that cannot be proven is a boundary that does not exist."""
+    monkeypatch.setattr(
+        csbx_mod,
+        "_docker",
+        lambda args, **kwargs: subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="cat: read error"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="rootless"):
+        ContainerBuilderSandbox(Path("/unused"))._verify_userns_boundary("cid")
+
+
+@pytest.mark.parametrize(
+    ("uid_map", "identity"),
+    [
+        # Rootful daemon, no userns remap: container uid 0 *is* host uid 0.
+        ("0          0          4294967295\n", True),
+        # `dockerd --userns-remap=default`: container uids land on subuids.
+        ("0          165536     65536\n", False),
+        # Rootless daemon userns: uid 0 is the unprivileged daemon user, the
+        # rest are that user's subuids — two non-identity lines.
+        ("0          1000       1\n1          100000     65536\n", False),
+        # Multi-line full identity still means the host's own namespace.
+        ("0          0          1\n1          1          65535\n", True),
+        # Unproven output fails closed.
+        ("", True),
+        ("garbage", True),
+    ],
+)
+def test_uid_map_identity_detection(uid_map: str, identity: bool) -> None:
+    """The documented real-world shapes of `/proc/self/uid_map` classify the
+    way the launch gate depends on: identity == refuse (rootful daemon),
+    non-identity == the container's uids are unallocated host subuids."""
+    assert csbx_mod._uid_map_is_identity(uid_map) is identity
 
 
 def test_the_only_root_exec_is_the_pre_seed_chown(recorder: _Recording, tmp_path: Path) -> None:
