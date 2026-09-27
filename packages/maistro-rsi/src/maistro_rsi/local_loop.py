@@ -52,6 +52,12 @@ from maistro_rsi.contained_validation import (
     ContainmentUnavailable,
     run_validation_in_container,
 )
+from maistro_rsi.fail_first import (
+    DOC_CONTRACT,
+    FAIL_FIRST_CLAUSE,
+    REFACTOR_CONTRACT,
+    SPEC_DRAFT_CONTRACT,
+)
 from maistro_rsi.harvest_boundary import (
     HarvestCorrelation,
     HarvestInputRefused,
@@ -85,40 +91,38 @@ def _prompt_cache_enabled() -> bool:
 
 
 _DEFAULT_OBJECTIVE = (
-    "Make exactly one small, safe, self-contained improvement to this codebase, "
-    "in priority order: fix a real bug (test-first: add the failing test, then the "
-    "fix), add a focused unit test for currently-untested behavior, strengthen a "
-    "weak test assertion — and only if the code is already well-tested, improve a "
-    "type hint or docstring. Read files before you edit them, keep the diff "
-    "minimal, and do not break existing behavior. "
-    "Use only the read_file, write_file and search tools — do NOT run git, "
-    "commit, or shell commands: the harness stages, commits, and runs the tests "
-    "for you after you finish. If you cannot find a safe improvement, make no "
-    "changes and stop."
+    "Make exactly one small, safe, self-contained improvement to this codebase. "
+    f"{FAIL_FIRST_CLAUSE} "
+    f"{REFACTOR_CONTRACT}: a behavior-preserving refactor may change only non-test "
+    "code, must not edit tests, oracles, or configuration, and must leave the suite green. "
+    f"{DOC_CONTRACT}: a docstring, comment, or type-annotation edit must not change runtime "
+    "behavior, tests, oracles, or configuration, and must leave the suite green. "
+    "Read files before you edit them, keep the diff minimal, and do not break existing "
+    "behavior. Use only the read_file, write_file and search tools — do NOT run git, "
+    "commit, or shell commands: the harness stages, commits, and runs the tests for you "
+    "after you finish. If you cannot find a safe improvement, make no changes and stop."
 )
 
 
 def _targeted_objective(path: str) -> str:
     """Build a per-cycle objective that names one explicit file to improve.
 
-    Naming the file removes the discovery step that weak models fail at (they
-    can't reliably search for a target), so each cycle is a concrete, bounded
-    edit of a known file. Test-first by default: substantive verification work
-    (a new test, a stronger assertion, a bug-fix) outranks docstring/type
-    polish, which is a fallback only — mirroring the fitness signals
-    (new_test/coverage-delta reward, doc-regression veto).
+    The highest-priority contract is the same fail-first clause the sibling
+    fixer objectives use (#392): a new test must fail on this base revision
+    before the code change. Characterization (a test that already passes) is
+    not improvement evidence. Refactor and documentation are allowed only
+    under their alternative contracts.
     """
     return (
-        f"Improve the module `{path}`, in priority order: (1) add ONE focused unit test for "
-        f"currently-untested behavior in it — create or extend its test file — and make sure it "
-        f"passes; (2) fix a real bug if you find one, test-first (add the failing test, then the "
-        f"fix); (3) strengthen a test assertion that checks too little. Only if the module is "
-        f"already well-tested and correct, improve a type hint or docstring instead. First read "
-        f"`{path}` with the read_file tool; use edit_file for targeted exact-string changes and "
-        f"write_file only to create a new test file — do NOT rewrite existing files wholesale, "
-        f"and do not reformat or touch lines unrelated to your change. Keep the diff minimal and "
-        f"do not alter runtime behavior except to fix a bug. Edit only this module and its test "
-        f"file. Do not run git or shell commands."
+        f"Improve the module `{path}`. {FAIL_FIRST_CLAUSE} "
+        f"First read `{path}` with the read_file tool; use edit_file for targeted exact-string "
+        f"changes and write_file only to create a new test file — do NOT rewrite existing files "
+        f"wholesale, and do not reformat or touch lines unrelated to your change. Keep the diff "
+        f"minimal. Edit only this module and its test file. "
+        f"{REFACTOR_CONTRACT}: only when runtime behavior does not change and tests, oracles, "
+        f"and configuration stay untouched. "
+        f"{DOC_CONTRACT}: only a docstring, comment, or type annotation, with tests, oracles, "
+        f"and configuration untouched. Do not run git or shell commands."
     )
 
 
@@ -295,48 +299,68 @@ def _fixer_objective(path: str, kind: ImprovementKind, instruction: str) -> str:
     """The tiered base-fixer scaffold: implement one scout item, with rules keyed
     to its kind. SPEC finishes contracted acceptance criteria (the biggest reward,
     claimed via @pytest.mark.ac); BACKLOG drafts a new spec contract instead of
-    hacking a feature in raw; FEATURE (v2.0) work is ambitious and multi-file;
-    everything else is a bounded, test-first, single-module change. This is the
-    fixed task contract — the evolvable strategy layer is the genome's prompt."""
+    hacking a feature in raw; FEATURE (v2.0) work is ambitious and multi-file.
+    Behavior-changing kinds share ``FAIL_FIRST_CLAUSE`` with the default objective.
+    Refactor, documentation, and spec drafts use their alternative contracts
+    instead of a red test. The evolvable strategy layer is the genome's prompt.
+    """
     if kind is ImprovementKind.SPEC:
         return (
             f"Implement this UNFULFILLED acceptance criterion (related module: `{path}`):\n"
             f"  {instruction}\n"
             "This finishes work the repo has already contracted in docs/specs/ — the highest-"
-            "reward move available. Work test-first: write the test that PROVES the criterion, "
-            'decorated with @pytest.mark.ac("SPEC-<id>/AC-<n>") using the exact ids from the '
-            "instruction, confirm it fails, then implement until it passes with every existing "
-            "test still green. Use read_file, edit_file and write_file across the files the "
-            "criterion needs. Do not run git or shell commands."
+            "reward move available. "
+            f"{FAIL_FIRST_CLAUSE} "
+            'Decorate the proving test with @pytest.mark.ac("SPEC-<id>/AC-<n>") using the exact '
+            "ids from the instruction, and keep every existing test green. Use read_file, "
+            "edit_file and write_file across the files the criterion needs. "
+            "Do not run git or shell commands."
         )
     if kind is ImprovementKind.BACKLOG:
         return (
             f"Draft a NEW spec contract for this capability idea (related module: `{path}`):\n"
             f"  {instruction}\n"
-            "Create one markdown file under docs/specs/ following the existing SPEC-*.md "
-            "convention: YAML frontmatter with a unique `id: SPEC-<date>-<short>` plus title/"
-            "repo/kind/status/created, a short design section, and enumerated acceptance "
-            "criteria as '- [ ] **AC-n**' checkboxes — each one concrete and testable. Do NOT "
-            "implement the capability; the contract is the deliverable (implementation becomes "
-            "future spec work). Read a neighboring docs/specs/SPEC-*.md first to match the "
-            "format. Use read_file and write_file. Do not run git or shell commands."
+            f"{SPEC_DRAFT_CONTRACT}: create one markdown file under docs/specs/ and do not "
+            "change code, tests, or configuration. Follow the existing SPEC-*.md convention: "
+            "YAML frontmatter with a unique `id: SPEC-<date>-<short>` plus title/repo/kind/"
+            "status/created, a short design section, and enumerated acceptance criteria as "
+            "'- [ ] **AC-n**' checkboxes — each one concrete and testable. The contract is the "
+            "deliverable (implementation becomes future spec work). Read a neighboring "
+            "docs/specs/SPEC-*.md first to match the format. Use read_file and write_file. "
+            "Do not run git or shell commands."
         )
     if kind is ImprovementKind.FEATURE:
         return (
             f"Implement this enhancement to the `{path}` module:\n  {instruction}\n"
             "This is a substantial, ambitious change — design the improved capability or API and "
-            "implement it across the files it needs. Prove it with NEW tests written first that "
-            "specify the new behavior, and keep all existing tests green; preserve backward "
-            "compatibility unless the enhancement explicitly supersedes it. Use read_file, "
-            "edit_file and write_file across the files involved. Do not run git or shell commands."
+            "implement it across the files it needs. "
+            f"{FAIL_FIRST_CLAUSE} "
+            "Prove it with NEW tests written first that specify the new behavior, and keep all "
+            "existing tests green; preserve backward compatibility unless the enhancement "
+            "explicitly supersedes it. Use read_file, edit_file and write_file across the files "
+            "involved. Do not run git or shell commands."
+        )
+    if kind is ImprovementKind.REFACTOR:
+        return (
+            f"Refactor `{path}` without changing runtime behavior:\n  {instruction}\n"
+            f"{REFACTOR_CONTRACT}: do not edit tests, test oracles, or test configuration. "
+            "Existing tests must stay green on the unchanged assertions. Keep the diff minimal "
+            "and focused on this one item. Edit only this module, using read_file and edit_file. "
+            "Do not run git or shell commands."
+        )
+    if kind is ImprovementKind.DOC:
+        return (
+            f"Documentation-only change to `{path}`:\n  {instruction}\n"
+            f"{DOC_CONTRACT}: edit only docstrings, comments, or type annotations. Do not change "
+            "runtime behavior, tests, oracles, or configuration. Existing tests must stay green. "
+            "Use read_file and edit_file. Do not run git or shell commands."
         )
     return (
         f"Implement this specific improvement to `{path}`:\n  {instruction}\n"
-        "Work test-first: add or extend the test for this module (create or extend its test file) "
-        "so it fails against the current code, then change the code until it passes. Keep the diff "
-        "minimal and focused on this one item — do not reformat or touch unrelated lines, and all "
-        "existing tests must stay green. Edit only this module and its test file, using read_file, "
-        "edit_file and write_file. Do not run git or shell commands."
+        f"{FAIL_FIRST_CLAUSE} Keep the diff minimal and focused on this one item — do not "
+        "reformat or touch unrelated lines, and all existing tests must stay green. Edit only "
+        "this module and its test file, using read_file, edit_file and write_file. "
+        "Do not run git or shell commands."
     )
 
 
@@ -2415,6 +2439,11 @@ class LocalRsiLoop:
         )
         if inv_detail:
             trace["inventory"] = dict(inv_detail)
+        ff_detail = next(
+            (g.detail for g in scorecard.gates if g.name == "fail_first_evidence"), None
+        )
+        if ff_detail:
+            trace["fail_first"] = dict(ff_detail)
         return (
             scorecard.accepted,
             scorecard.composite,
@@ -2450,7 +2479,10 @@ class LocalRsiLoop:
         lists, and the override flag when a governance-authorized shrink
         passed). ``trace`` is the promoted tree's evidence (the merge's when a
         combination won); it defaults to the top variant's for single-winner
-        cycles."""
+        cycles. ``fail_first`` (#392) is the base SHA, failing test id, failure
+        digest, candidate SHA, and passing result — or the alternative contract
+        that stood in for a red test.
+        """
         from maistro_rsi.trace_notes import RewardVector, TraceNote, write_trace_note
 
         source = trace if trace is not None else top.trace
@@ -2471,6 +2503,9 @@ class LocalRsiLoop:
             gates={str(k): bool(v) for k, v in gates.items()},
             note=summary,
             inventory=source.get("inventory"),
+            fail_first=source.get("fail_first")
+            if isinstance(source.get("fail_first"), dict)
+            else None,
         )
         return write_trace_note(self._baseline, sha, trace_note)
 

@@ -601,6 +601,15 @@ def test_fitness_pipeline_fails_closed_on_unavailable_judge(tmp_path: Path, monk
 
     monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
     monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
+    # #392's fail-first gate would veto this source-only fixture before the
+    # judge runs. This test is about the judge's fail-closed path, not that gate.
+    from maistro_evolve.scorecard import GateResult
+
+    monkeypatch.setattr(
+        candidate_fitness,
+        "assess_promotion_evidence",
+        lambda **_k: GateResult("fail_first_evidence", True, "stubbed", {}),
+    )
 
     scorecard = candidate_fitness.evaluate_candidate(
         str(repo),
@@ -702,13 +711,34 @@ def test_fitness_trace_carries_inventory_evidence(tmp_path: Path, monkeypatch) -
     from maistro_rsi.trace_notes import read_trace_note
 
     repo = _mini_pytest_repo(tmp_path / "src")
+    (repo / "pkg.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "buggy pkg")
 
-    def delete_a_test(ws: Path) -> None:
-        f = ws / "tests" / "test_value.py"
-        f.write_text("def test_one():\n    assert True\n", encoding="utf-8")
+    def fix_and_delete(ws: Path) -> None:
+        # A real fail-first fix (red on the base, green after) plus an oracle
+        # shrink. The shrink is what this test is about; fail-first must also
+        # hold or #392 vetoes the promotion before the inventory override matters.
+        (ws / "pkg.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+        (ws / "tests" / "test_bug.py").write_text(
+            "from pkg import f\n\ndef test_f():\n    assert f() == 2\n",
+            encoding="utf-8",
+        )
+        (ws / "tests" / "test_value.py").write_text(
+            "def test_one():\n    assert True\n",
+            encoding="utf-8",
+        )
 
     monkeypatch.setattr(candidate_fitness, "_run", lambda *a, **k: (True, "exit 0"))
     monkeypatch.setattr(candidate_fitness, "measure_coverage_detailed", lambda *a, **k: (80.0, {}))
+    monkeypatch.setattr(candidate_fitness, "_lint_gates", lambda *_a, **_k: [])
+    from maistro_evolve.mutation_probe import MutationProbe
+
+    monkeypatch.setattr(
+        candidate_fitness,
+        "probe_diff_mutations",
+        lambda *_a, **_k: MutationProbe(available=False),
+    )
     # The baseline's real coverage is irrelevant here (the tiny suite measures
     # 100%, which would fail the coverage gate before the inventory gate got to
     # speak in the cycle note) — keep this test about the inventory veto.
@@ -725,7 +755,7 @@ def test_fitness_trace_carries_inventory_evidence(tmp_path: Path, monkeypatch) -
             regression_judge=False,
             allow_test_inventory_shrink=allow_shrink,
         )
-        return LocalRsiLoop(config, apply_patch=_make_apply(delete_a_test)).run()
+        return LocalRsiLoop(config, apply_patch=_make_apply(fix_and_delete)).run()
 
     # Without the override: the deletion vetoes promotion even though the
     # (now smaller) suite is green.
@@ -745,6 +775,13 @@ def test_fitness_trace_carries_inventory_evidence(tmp_path: Path, monkeypatch) -
     assert note.inventory["deleted"] == ["tests/test_value.py::test_two"]
     assert note.inventory["override"] is True
     assert note.gates.get("protected_test_inventory") is True
+    assert note.fail_first is not None
+    assert note.fail_first["contract"] == "fail-first"
+    assert note.fail_first["passed"] is True
+    assert note.fail_first["failing_test_id"]
+    assert note.fail_first["base_sha"]
+    assert note.fail_first["candidate_sha"]
+    assert note.fail_first["failure_output_digest"]
 
 
 def test_evaluate_candidate_vetoes_deleted_test_with_real_collection(

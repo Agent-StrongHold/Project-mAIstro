@@ -128,6 +128,7 @@ class LiveCodeFixer:
                 baseline_coverage=self._baseline_coverage(),
                 baseline_ref=self._baseline_branch,
                 timeout=self._timeout,
+                target=self._objective_for(target),
             )
             return (scorecard.accepted, scorecard.composite, False)
         except Exception as exc:
