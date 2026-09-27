@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from maistro.container import create_container
 from maistro.types.config import AgentConfig
 
@@ -19,6 +21,49 @@ async def test_create_container_defaults_to_in_memory_backend() -> None:
     container = await create_container(AgentConfig(router_api_key="test-key"))
     assert container.db_pool is None
     assert type(container.prompt_manager).__name__ == "InMemoryPromptManager"
+
+
+async def test_sqlite_usage_log_flushes_and_restores_with_container(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'usage.db'}"
+    first = await create_container(
+        AgentConfig(router_api_key="test-key", database_url=database_url)
+    )
+    first.usage_log.record("openai:gpt-5", input_tokens=7, output_tokens=5)
+    await first.aclose()
+
+    second = await create_container(
+        AgentConfig(router_api_key="test-key", database_url=database_url)
+    )
+    assert second.usage_log.count_since("openai:gpt-5", 60, now=time.time()) == 1.0
+    await second.aclose()
+
+
+async def test_shutdown_flush_failure_does_not_block_aclose(tmp_path) -> None:
+    """A failing shutdown flush (#1204) is swallowed, not raised.
+
+    The shutdown flush must never block the rest of the teardown: a snapshot
+    that fails (say, a commit whose result was lost) is logged and the
+    container still closes. The durable event identity makes the next
+    process's retry harmless, so dropping this one flush is safe.
+    """
+
+    class _ExplodingSnapshot:
+        async def snapshot(self, log: object) -> None:
+            raise RuntimeError("commit result lost")
+
+    container = await create_container(
+        AgentConfig(
+            router_api_key="test-key",
+            database_url=f"sqlite:///{tmp_path / 'usage.db'}",
+        )
+    )
+    container.usage_log.record("openai:gpt-5", input_tokens=1, output_tokens=1)
+    assert container.usage_log_persistence is not None
+    container.usage_log_persistence = _ExplodingSnapshot()
+
+    await container.aclose()  # must not raise
+
+    assert container.closed
 
 
 async def test_sqlite_backend_quota_tracker_write_then_read_back() -> None:

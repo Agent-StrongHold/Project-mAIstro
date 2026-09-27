@@ -104,6 +104,10 @@ def _text_leaves(value: object, *, path: str = "", depth: int = 0) -> Iterator[t
     if isinstance(value, Mapping):
         for key, item in value.items():
             child = f"{path}.{key}" if path else str(key)
+            # Mapping keys are part of a JSON result too (Airtable field names
+            # are a common attacker-controlled example), so scan them before
+            # walking their values rather than treating them as paths only.
+            yield f"{child}<key>", str(key)
             yield from _text_leaves(item, path=child, depth=depth + 1)
         return
     if isinstance(value, list | tuple):

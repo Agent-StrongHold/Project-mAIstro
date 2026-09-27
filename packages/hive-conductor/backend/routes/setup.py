@@ -287,6 +287,17 @@ def _maybe_generate_identity(
     mnemonic = seed.mnemonic_words()
     persisted = _persist_identity_root(mnemonic)
     seed.zero()
+    if not persisted:
+        # A selected identity root must survive the one-shot setup response;
+        # otherwise setup would report success while every later identity use
+        # failed after the only provisioning opportunity was consumed.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "crypto_identity could not be persisted to the encrypted vault. "
+                "No accounts were created; repair the vault and retry setup."
+            ),
+        )
     return user_did, mnemonic, persisted
 
 

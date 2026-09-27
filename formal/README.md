@@ -56,8 +56,8 @@ PYTHONPATH=packages/maistro-core/src pytest formal/models/test_strike_escalation
 # Deep exploration (10,000 examples)
 PYTHONPATH=packages/maistro-core/src pytest formal/models/ -v --nightly
 
-# Regenerate extracted constants
-PYTHONPATH=packages/maistro-core/src python -m formal.extractors.extract_security_constants
+# Run the security oracle directly against the candidate implementation
+PYTHONPATH=packages/maistro-core/src pytest formal/models/test_dangerous_tools.py -q
 ```
 
 ## How to read failures

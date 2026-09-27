@@ -364,6 +364,10 @@ jobs:
       # while its PostgreSQL leg was passing — in the other job, where it
       # skipped. A list of suites is a list of what gets measured, so a new
       # PostgreSQL store means an edit here, every time.
+      #
+      # The claim-driven `task_idempotency` purge (#325) is one file, not the
+      # whole `tasks` suite: its PostgreSQL legs, including the renewed-claim
+      # race, are the only ones under `tasks` that need a server.
       - name: Apply the chain, then the suites that need a schema (under coverage)
         run: |
           uv run alembic upgrade head
@@ -376,7 +380,8 @@ jobs:
             packages/maistro-core/tests/graph \
             packages/maistro-core/tests/projects \
             packages/maistro-core/tests/workspaces \
-            packages/maistro-core/tests/scheduling -v --tb=short
+            packages/maistro-core/tests/scheduling \
+            packages/maistro-core/tests/tasks/test_idempotency_purge_driven.py -v --tb=short
           # The canvas org-scope lane (#857) put PostgresAssetStore and the
           # PgCanvasStore job/composite writers behind MAISTRO_TEST_PG_DSN.
           # Their suites are dual-leg: the PostgreSQL half skips in
@@ -401,7 +406,16 @@ jobs:
   coverage-gate:
     name: Coverage gate (publish-set floor + diff coverage)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 -> 30 on 2026-09-26: capacity, not scope. The `combine` step below
+    # runs the non-publish suites serially after the publish-set floor (six
+    # when measured; maistro-registry has since made it seven), and they are
+    # essentially the whole job: on #1591 (run 36207106537) it took 11m07s of
+    # 11m25s, of which the root `tests/` suite (the `--source=scripts`
+    # producer) was 7m49s and hive-conductor 2m16s with its requirements
+    # install. #1576 took ~14 min and #1581 was cancelled at 15 twice; a
+    # cancelled gate never reports, so it blocks the PR without measuring
+    # anything. The suites, sources, floor and diff thresholds are unchanged.
+    timeout-minutes: 30
     needs: [coverage-unit, coverage-archive, coverage-postgres]
     env:
       # The combine step re-runs the root suite as the `scripts` producer, and
@@ -534,6 +548,18 @@ jobs:
             -m pytest packages/maistro-turing/backend/tests --timeout=30 -q
           uv run coverage run --append --branch --source=packages/maistro-design/src/maistro_design \
             -m pytest packages/maistro-design/tests --timeout=30 -q
+          # maistro-registry joins the measured set with #1096: its linker
+          # performs the caller-influenced GitHub fetch that the SSRF sweep
+          # (#67, ADR-102) routed through the central guard — the one tree
+          # where an unmeasured change would be indistinguishable from a
+          # tested one, because nothing else ran its suite under coverage.
+          # The #374 citation-status policy (maistro_registry.citations) is
+          # exercised by the root suite, not by this package's own five tests;
+          # without naming that file here the module's changed lines measure
+          # 0% in this producer and the diff-coverage gate fails on tests
+          # that exist and pass but were never pointed at this --source.
+          uv run coverage run --append --branch --source=packages/maistro-registry/src/maistro_registry \
+            -m pytest packages/maistro-registry/tests tests/test_check_citation_status.py --timeout=30 -q
           # hive-conductor's pytest-bdd is declared in that workspace member's
           # OWN `dev` extra, and `--all-extras` includes every optional
           # dependency of the ROOT project only — not of each member. So the

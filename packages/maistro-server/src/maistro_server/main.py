@@ -329,6 +329,10 @@ async def _runtime_lifespan(app: FastAPI) -> AsyncIterator[None]:
         # are durable.
         idempotency_store=container.task_idempotency,
     )
+    # Rebuild receipts from canonical QUEUED task Runs before starting workers.
+    # This is the restart-safe handoff for both admission/receipt gaps; the Run
+    # already contains the immutable payload needed to execute the original id.
+    await queue.recover(run_store)
     # The handles these APIs return must resolve against the exact stores the
     # Container selected, not lookalike stores reconstructed by the server.
     runs.configure_run_store(run_store)
@@ -447,7 +451,9 @@ app.add_middleware(
     # header is sent and then hidden: `response.headers` in browser JS only
     # exposes the CORS-safelisted set, so `X-Maistro-Run-Id` would have been
     # an advertised correlation path that no cross-origin UI could follow.
-    expose_headers=[RUN_ID_HEADER, "X-Request-ID"],
+    # `Retry-After` likewise: a refused chat turn's 503 (#1108) names its
+    # retry delay there, and it is not on the safelist either.
+    expose_headers=[RUN_ID_HEADER, "X-Request-ID", "Retry-After"],
 )
 
 # Rate limiting
@@ -482,6 +488,9 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
                 request_id=request_id,
             ),
         ).model_dump(),
+        # Kept, not rebuilt: a 503's Retry-After or a 401's WWW-Authenticate
+        # is part of the status the route chose.
+        headers=exc.headers,
     )
 
 

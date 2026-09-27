@@ -536,4 +536,13 @@ Full v1.0 detail in [`stronghold/ROADMAP-v1.0.md`](https://github.com/agent-stro
 - `scripts/check-backlog-consistency.py` gates this file: every item must parse, its status and
   gap marker must appear in the legends above, and every ADR/SPEC it cites must exist. The
   vocabulary is read from the legends themselves, so a legend and its usage cannot drift apart.
+- Closure is evidence, not assertion
+  ([#101](https://github.com/Agent-StrongHold/Project-mAIstro/issues/101)). The same gate fails
+  an `Implemented` item that carries neither a PR/issue link (`/pull/N`, `/issues/N` or `(#N)`)
+  nor a backticked path to a repo file that exists, and an `Abandoned` item with no reason
+  (header text after the milestone, or a bullet). A cited path rooted in a real top-level
+  directory that no longer exists fails as rotted evidence. Items closed before the rule sit,
+  with their status, in the script's `_LEGACY_UNEVIDENCED` set, which can only shrink:
+  evidencing, reopening, removing or re-closing one under another status fails until its id is
+  taken out.
 - External-library decisions (which to import, which to service-boundary, which to pattern-reference, which to reject) follow `engine#ADR-039`.

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from maistro.memory.episodic.retrieval import ScoredEpisodicRetrieval
 
 if TYPE_CHECKING:
-    from maistro.projects.store import ProjectStore
+    from maistro.projects.scope_store import ProjectScopeStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import EpisodicStore, OutcomeStore
     from maistro.types.memory import EpisodicMemory
@@ -84,7 +84,7 @@ class DefaultContextAssemblyPolicy:
         *,
         episodic_store: EpisodicStore,
         outcome_store: OutcomeStore,
-        project_store: ProjectStore,
+        project_store: ProjectScopeStore,
         embedding_client: EmbeddingClient | None = None,
     ) -> None:
         self.episodic_store = episodic_store
@@ -94,7 +94,16 @@ class DefaultContextAssemblyPolicy:
 
     async def layer0(self, project_id: str) -> str:
         project = await self.project_store.get(project_id)
-        return project.profile_markdown if project else ""
+        if project is None:
+            return ""
+        # Canonical Projects keep creation/context metadata in `metadata`; the
+        # legacy attribute remains readable for standalone policy callers.
+        profile = getattr(project, "profile_markdown", None)
+        if isinstance(profile, str):
+            return profile
+        metadata = getattr(project, "metadata", {})
+        value = metadata.get("profile_markdown", "")
+        return value if isinstance(value, str) else ""
 
     async def layer1(
         self,

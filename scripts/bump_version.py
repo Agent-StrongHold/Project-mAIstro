@@ -194,6 +194,13 @@ _INTERPKG_SITES = [
     _interpkg_dep("packages/maistro-rsi/pyproject.toml", "maistro-bootstrap"),
     _interpkg_dep("packages/maistro-design/pyproject.toml", "maistro-core"),
     _interpkg_dep("packages/maistro-design/pyproject.toml", "maistro-canvas"),
+    # Sibling lower bounds introduced with the central SSRF outbound guard:
+    # bootstrap, evolve, and registry all import `maistro.http` /
+    # `maistro.security.outbound`, so each must track the lockstep core
+    # version or the bumper (and --check) would leave these bounds stale.
+    _interpkg_dep("packages/maistro-bootstrap/pyproject.toml", "maistro-core"),
+    _interpkg_dep("packages/maistro-evolve/pyproject.toml", "maistro-core"),
+    _interpkg_dep("packages/maistro-registry/pyproject.toml", "maistro-core"),
     # Two rows, not one: hive-conductor names `maistro-core` twice under two
     # different extras, in two different tables (#514), and each expression
     # carries its own bound. A single row would check one and leave the other
