@@ -88,27 +88,21 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # task migrations landed, and develop's chain kept growing while this
     # branch was open (039 for #1531, then 040 for #1079, each taking the
     # parent this revision had claimed; 041 for #1194 after the merge). It
-    # therefore follows the then-chain tip (041, the tip of
-    # 035 -> ... -> 038 -> 039 -> 040 -> 041) so
-    # every deployment's ordinary ``upgrade head`` applies the audit scope
-<<<<<<< HEAD
-    # migration rather than leaving it on a competing branch. 041 (the
-    # #1194 canonical Run effect claim) re-parented this revision onto
-    # itself, and 042 (the #1120 manual-fire occurrence identity) and 043
-    # (the #1194 Invocation effect index, renumbered after 042 was taken)
-    # now extend the chain past it.
+    # 036 already existed on the historical 035 branch when the consumer and
+    # task migrations landed, and develop's chain kept growing while this
+    # branch was open (039 for #1531, then 040 for #1079, each taking the
+    # parent this revision had claimed). 041 (the #1194 canonical Run effect
+    # claim) re-parented this revision onto itself, so every deployment's
+    # ordinary ``upgrade head`` applies the audit scope migration rather than
+    # leaving it on a competing branch. The chain has since grown past it
+    # again, exactly as any tip-landing branch does: #1120's 042 and #1204's
+    # `039_quota_usage_event_identity` extend it, and #1194's 043 (the
+    # Invocation effect index) follows `039_quota_usage_event_identity` to
+    # keep the chain single-headed.
     assert revision.down_revision == "041"
-=======
-    # migration rather than leaving it on a competing branch. The chain has
-    # since grown past it again: #1204 appends `039_quota_usage_event_identity`
-    # as the new tip, exactly as any tip-landing branch does — the invariants
-    # that matter are that the chain still has one head and that this revision
-    # sits on the path `upgrade head` walks, not that it is the tip forever.
-    assert revision.down_revision == "040"
-    # #1120's manual-fire occurrence migration (042) re-parented onto this
-    # revision when the develop chain grew again while that branch was open —
-    # the same extension this revision's own docstring records for itself.
->>>>>>> 8bfd35903f497c6082bdc06d115ecefcb5d5f0b4
+    # The invariants that matter are that the chain still has one head and
+    # that this revision sits on the path ``upgrade head`` walks, not that it
+    # is the tip forever.
     # The contract under test is not that the audit migration IS the tip
     # (any later migration on any open branch would break that); it is that
     # a plain ``upgrade head`` still applies it: exactly one head, with the

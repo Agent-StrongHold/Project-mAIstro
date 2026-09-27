@@ -13,6 +13,11 @@ Renumbered from 042 after the #1120 merge: develop's manual-fire
 occurrence migration took the id 042 while this branch was open, so this
 revision re-parents onto it to keep the chain single-headed — the same
 renumbering this chain has done every time develop took a parent id.
+The develop merge then forked the chain again: #1204's
+``039_quota_usage_event_identity`` (also a child of 042) landed while this
+branch was open, so this revision follows it instead — keeping one linear
+head, the same reconciliation this chain's other re-parented revisions
+document. Only the parent changes; the DDL is untouched.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "043"
-down_revision = "042"
+down_revision = "039_quota_usage_event_identity"
 branch_labels = None
 depends_on = None
 

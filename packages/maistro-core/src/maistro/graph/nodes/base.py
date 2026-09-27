@@ -247,11 +247,10 @@ class BaseNode(Generic[InputT, OutputT]):
                 status="failed",
                 error_code=type(exc).__name__,
                 error_message=str(exc)[:512],
-<<<<<<< HEAD
-                metadata={"replay_effect_key": effect_key} if effect_key else {},
-=======
-                metadata=_failure_metadata(exc),
->>>>>>> 8bfd35903f497c6082bdc06d115ecefcb5d5f0b4
+                metadata={
+                    **_failure_metadata(exc),
+                    **({"replay_effect_key": effect_key} if effect_key else {}),
+                },
             )
 
     def replay_effect_key(self, inputs: InputT, ctx: NodeContext) -> str:

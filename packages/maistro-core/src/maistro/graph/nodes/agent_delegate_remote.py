@@ -22,13 +22,7 @@ only path that already defines one) rather than a new one.
 
 from __future__ import annotations
 
-<<<<<<< HEAD
-from collections.abc import Mapping
-=======
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
->>>>>>> 8bfd35903f497c6082bdc06d115ecefcb5d5f0b4
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
 
@@ -790,7 +784,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if self._run_store is None:
             return None
 
-        from maistro.runs.store import RunIntegrityError, validate_child_scope
+        from maistro.runs.store import validate_child_scope
 
         parent = await self._run_store.get_run(ctx.run_id)
         if parent is None:
@@ -806,20 +800,6 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             workspace_id=inputs.to_workspace_id or parent.workspace_id,
             project_id=inputs.to_project_id or parent.project_id,
         )
-
-        # A remote delegation is a child of the physical NodeRun that admitted
-        # it, not merely of the containing Run. Refuse an incomplete context
-        # before the A2A transport creates work we cannot correlate.
-        if not ctx.node_run_id:
-            raise RunIntegrityError(
-                "agent.delegate_remote requires node_run_id to create a correlated child Run"
-            )
-        parent_node_run = await self._run_store.get_node_run(ctx.node_run_id)
-        if parent_node_run is None or parent_node_run.run_id != parent.run_id:
-            raise RunIntegrityError(
-                f"parent_node_run_id {ctx.node_run_id!r} does not belong to parent_run_id "
-                f"{parent.run_id!r}"
-            )
         return parent
 
     async def _create_child_run(
@@ -868,6 +848,27 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if self._run_store is None or parent is None:
             return ""
 
+        from maistro.runs.store import RunIntegrityError
+
+        # A remote delegation is a child of the physical NodeRun that admitted
+        # it, not merely of the containing Run. Refuse an incomplete context
+        # before the A2A transport creates work we cannot correlate. The check
+        # guards creation only: a replay adopting an existing reservation under
+        # the same delegation key reconciles the durable child instead of
+        # re-deriving parentage from the retry's fresh physical identities
+        # (#1194 -- a lease-loss retry carries a new NodeRun that the store
+        # may not have made visible yet, and the replay must still adopt).
+        if not ctx.node_run_id:
+            raise RunIntegrityError(
+                "agent.delegate_remote requires node_run_id to create a correlated child Run"
+            )
+        parent_node_run = await self._run_store.get_node_run(ctx.node_run_id)
+        if parent_node_run is None or parent_node_run.run_id != parent.run_id:
+            raise RunIntegrityError(
+                f"parent_node_run_id {ctx.node_run_id!r} does not belong to parent_run_id "
+                f"{parent.run_id!r}"
+            )
+
         graph = self._child_graph(inputs, parent=parent, target=target)
         child = await self._run_store.create_run(
             graph,
@@ -877,20 +878,14 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             actor_principal_id=parent.actor_principal_id,
             provenance={
                 "admission_source": "a2a_delegation",
-<<<<<<< HEAD
-                # The A2A task id stays a receipt of the transport rather than
-                # the work's identity, the way TaskResponse does for the queue.
-                "a2a_task_id": task_id,
-                # One canonical replay identity, recorded under both store
-                # lookups: `delegation_key` for the transport reservation and
-                # `effect_key` for the executor's effect reconciliation.
-=======
                 # The A2A task id is *not* written here: no transport has run
                 # yet, so there is no receipt to record. It is attached once,
                 # after acceptance, by `_attach_receipt` -- a receipt of the
                 # transport rather than the work's identity, the way
                 # TaskResponse does for the queue.
->>>>>>> 8bfd35903f497c6082bdc06d115ecefcb5d5f0b4
+                # One canonical replay identity, recorded under both store
+                # lookups: `delegation_key` for the transport reservation and
+                # `effect_key` for the executor's effect reconciliation.
                 "delegation_key": self._delegation_key(inputs, ctx),
                 "effect_key": self._delegation_key(inputs, ctx),
                 "delegation_mode": mode,
