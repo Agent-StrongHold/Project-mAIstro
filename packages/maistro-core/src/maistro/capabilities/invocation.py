@@ -273,6 +273,7 @@ class InvocationStore(Protocol):
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]: ...
 
 
+@runtime_checkable
 class EffectClaimStore(Protocol):
     """Optional atomic claim used by multi-worker durable Invocation stores."""
 
@@ -465,10 +466,11 @@ class InvocationExecutionService:
         misleading race error.
         """
 
-        claim = getattr(self._store, "claim", None)
         try:
             invocation = (
-                await claim(candidate) if callable(claim) else await self._store.create(candidate)
+                await self._store.claim(candidate)
+                if isinstance(self._store, EffectClaimStore)
+                else await self._store.create(candidate)
             )
         except UnsafeEffectRetry:
             latest_history = await self._store.list_effect(
