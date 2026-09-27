@@ -25,6 +25,35 @@ or placeholder-only section.
 
 ### Security
 
+- **Active root Runs are capped per principal and per Workspace (#1182,
+  partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
+  refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for
+  its actor principal (across Workspaces) or 32 for its Workspace. "Active"
+  means CREATED, QUEUED or RUNNING. Child Runs, parked WAITING/PAUSED Runs and
+  terminal Runs hold no slot, and a parked Run resuming is not a new admission.
+  A duplicate schedule occurrence is still refused as a duplicate. PostgreSQL
+  serializes the insert and the count with transaction-scoped advisory locks,
+  so the ceiling holds across replicas. SQLite relies on the store's write
+  lock, since that tier is a single process. A SQLite refusal rolls back to a
+  savepoint, so a sibling store's open transaction on the shared connection
+  is neither committed nor ended. Partial indexes serve both SQLite counts.
+  - A chat turn that meets a full ceiling first reclaims slots held by dead
+    turns, then asks once more. `recover_stranded_chat_admissions` now also
+    cancels chat Runs stranded in CREATED or QUEUED.
+  - The ceilings are governed floors in `quality/security-resource-floors.json`
+    (`MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL`, `MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE`).
+    Operators may lower them, but raising either requires
+    `ALLOW_UNSAFE_RESOURCE_OVERRIDES`.
+  - Both values appear in maistro-server's `/health` `effective_resource_policy`.
+  - maistro-server `/v1/chat/completions` answers a refused turn with 429 and
+    `Retry-After`. `Container` chat admission re-raises the refusal instead of
+    answering unrecorded.
+  - The server's `HTTPException` handler now keeps the raiser's headers.
+  - The scheduler already keeps a refused occurrence owed and retries it on a
+    later tick.
+  - Not yet done: the other HTTP/WebSocket submit surfaces still need to map
+    the refusal to 429.
+
 - **Canonical Run reads have a Workspace-membership-scoped seam (#1152,
   partial).** `maistro.runs.scoped_reads.ScopedRunReader`, wired as
   `Container.run_reader` over the Container's own Run, Workspace and Project
@@ -323,6 +352,16 @@ or placeholder-only section.
   what replay returns) until Canvas blob storage takes them. Nothing ships a
   caller yet: the hive `ImageGenClient` adapter and the book-maker POC
   convergence (#52) will be its consumers.
+
+- **Proposed spec for Workspace work campaigns (#103, partial).**
+  SPEC-092626-1831 (Proposed), with its boundary decision ADR-092626-c1e7
+  (Proposed), records the campaign contract before any code: a
+  campaign is operator policy that narrows eligible BacklogItems and linked
+  Goals, with four autonomy modes, durable pin-next/pause/exclude/human-only
+  controls, human priority kept separate from the system selection score, and
+  audit keyed to actor and policy version. It grants no permissions and owns no
+  Goals. The priority combination rule and default mode stay open questions.
+  Documentation only: no store, route or runtime behaviour changes yet.
 
 - **The Canvas store's tables are in the root alembic chain (#286, partial).**
   Migration 044 creates `canvases`, `layers`, `generation_jobs` (with the
@@ -743,6 +782,18 @@ or placeholder-only section.
 
 ### Removed
 
+- **`RouterEngine` no longer takes a `quota_tracker` constructor argument
+  (#1196, partial).** The tracker was stored on `self._quota` and never read:
+  `select()` always calls `select_with_usage()` with an empty usage map, so
+  no quota check ever ran through the router. Removing the dead parameter
+  stops it from being mistaken for — or later wired up as — a second,
+  non-authoritative quota-enforcement point; enforcement belongs at the
+  canonical Invocation boundary. `RouterEngine()` now takes no arguments. A
+  new fitness test (`tests/fitness/test_quota_single_authority.py`)
+  AST-scans `maistro.router` for any `QuotaTracker` import, reference or
+  constructor parameter so the dependency cannot be quietly revived.
+  `Agent._quota_tracker` is unaffected by this change.
+
 - **The pre-durable `run_graph` execution API is retired from `maistro.graph` (#1154).**
   `maistro.graph.run_graph` and `maistro.graph.executor.run_graph` are gone.
   The wrapper built an ephemeral `GraphRun` and started it, recording no
@@ -759,6 +810,30 @@ or placeholder-only section.
   directly instead of passing `parallel_generations`.
 
 ### Fixed
+
+- **`/v1/schedules` writes the canonical Schedule definition first (#1199,
+  partial).** With a configured Container, create, update and delete now
+  write the canonical `ScheduleStore` before the Hive row, which becomes a
+  projection. Disabling a schedule disables its canonical row, and a cron or
+  timezone change clears `next_due_at` while `runs_so_far` and `last_run_id`
+  stay. Deleting a schedule (or clearing its template) removes the canonical
+  row, so `due()` no longer returns an orphaned enabled row. A Container
+  without a schedule or project store returns 503 and writes nothing; a
+  definition the canonical model refuses (such as an unreadable cron) returns
+  422; a create whose Hive write then fails deletes the canonical row it had
+  already committed rather than leaving an orphan no route can reach. On
+  startup the scheduler runs a one-shot backfill that puts every Hive row the
+  canonical store is missing *or* whose definition has drifted from it (the
+  residual case the old lazy tick could leave — enabled canonically, disabled
+  in Hive, from before these routes existed to sync it) — `ScheduleStore.put`
+  keeps the recorded cursors either way, so reconciling never rewinds them.
+  A tick — and now a manual fire too — re-reads the row under the same
+  per-schedule lock the routes hold, so a snapshot taken before an edit or
+  delete cannot re-enable, resurrect, or admit a Run for a schedule already
+  gone; that lock's process-global dict releases each schedule's entry once
+  idle rather than growing with create/delete churn. Standalone mode (no
+  Container) is unchanged. The tick still enumerates `stores.schedules`;
+  moving it onto `ScheduleStore.due()` is the rest of #1199.
 
 - **Run retention throttles and reports backlog per Workspace
   ([#1175](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1175)).**

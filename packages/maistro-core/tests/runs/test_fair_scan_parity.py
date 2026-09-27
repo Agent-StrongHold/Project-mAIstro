@@ -26,10 +26,18 @@ from maistro.graph.durable_runs.fair_scan import (
     ScanContinuation,
     fair_page_scan,
 )
+from maistro.runs.concurrency import RunConcurrencyLimits
 from maistro.runs.model import Run, RunStatus
 from maistro.runs.store import run_cursor_key
 
 pytestmark = [pytest.mark.contract("behavioral")]
+
+
+@pytest.fixture
+def spine_concurrency_limits() -> RunConcurrencyLimits:
+    """Room for the backlog: more active root Runs than the governed ceiling
+    admits (#1182), which is a backlog a scan must still cross."""
+    return RunConcurrencyLimits(per_workspace=DEFAULT_MAX_INSPECTED + 8)
 
 
 async def _queued_runs(store: Any, workspace: str, project_id: str, count: int) -> list[Run]:
