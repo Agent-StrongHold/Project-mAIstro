@@ -6,6 +6,7 @@ import aiosqlite
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from maistro.config.settings import get_settings
 from maistro.observability.middleware import REQUEST_ID_HEADER
 from maistro.runs.wiring import wire_execution_spine
 from maistro.tasks import queue as queue_module
@@ -83,6 +84,10 @@ async def test_delegated_users_keep_distinct_task_and_run_ownership(
     _scope_store, run_store = durable_spine
     monkeypatch.setenv("API_KEYS", '["conductor:service-secret"]')
     monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
+    # The durable-spine wiring reads settings (#1182 concurrency limits),
+    # which freezes the pre-test snapshot; drop it so the request sees the
+    # service credential this test just pinned.
+    get_settings.cache_clear()
 
     alice = await client.post(
         "/tasks",
@@ -144,6 +149,7 @@ async def test_a_forged_originating_principal_is_rejected(
     del durable_spine
     monkeypatch.setenv("API_KEYS", '["conductor:service-secret"]')
     monkeypatch.setenv("TASK_DELEGATION_KEY", DELEGATION_KEY)
+    get_settings.cache_clear()
     forged = sign_delegation_context(
         service_principal="other-service",
         originating_principal="alice",

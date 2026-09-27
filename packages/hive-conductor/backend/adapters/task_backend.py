@@ -12,8 +12,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import threading
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
+
+import httpx
 
 from maistro.http import shared_client, sync_client
 from maistro.observability.correlation import current_execution_context
@@ -135,6 +138,8 @@ class TaskBackend(Protocol):
 
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None: ...
 
+    async def get_async(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None: ...
+
     def list_tasks(self, *, user_id: str | None = None) -> list[TaskRecord]: ...
 
     async def cancel(self, task_id: str, *, user_id: str | None = None) -> bool: ...
@@ -176,6 +181,9 @@ class LocalTaskBackend:
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None:
         task = self._queue.get(task_id, user_id=user_id)
         return TaskRecord(task) if task is not None else None
+
+    async def get_async(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None:
+        return self.get(task_id, user_id=user_id)
 
     def list_tasks(self, *, user_id: str | None = None) -> list[TaskRecord]:
         items, _ = self._queue.list_tasks(limit=200, user_id=user_id)
@@ -256,6 +264,15 @@ class MaistroServerTaskBackend:
         ).strip()
         if not self._service_principal:
             raise ValueError("MAISTRO_SERVICE_PRINCIPAL must be non-empty")
+        # Sync callers are threadpool routes; async callers never touch this.
+        self._sync: httpx.Client | None = None
+        self._sync_lock = threading.Lock()
+
+    def _sync_client(self) -> httpx.Client:
+        with self._sync_lock:
+            if self._sync is None:
+                self._sync = sync_client(timeout=30.0)
+            return self._sync
 
     def _headers(self, *, user_id: str | None = None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -313,27 +330,31 @@ class MaistroServerTaskBackend:
             return TaskRecord(task)
 
     def get(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None:
-        # sync_client routes through the central SSRF guard (ADR-102) while the
-        # signed delegation envelope preserves the originating principal
-        # (#1057): neither concern replaces the other.
-        with sync_client(timeout=30.0) as client:
-            r = client.get(f"{self._base}/tasks/{task_id}", headers=self._headers(user_id=user_id))
-            if r.status_code == 404:
-                return None
-            r.raise_for_status()
-            return TaskRecord(TaskResponse.model_validate(r.json()))
+        # The persistent sync client routes through the central SSRF guard
+        # (ADR-102) while the signed delegation envelope preserves the
+        # originating principal (#1057): neither concern replaces the other.
+        r = self._sync_client().get(
+            f"{self._base}/tasks/{task_id}", headers=self._headers(user_id=user_id)
+        )
+        return _task_or_none(r)
+
+    async def get_async(self, task_id: str, *, user_id: str | None = None) -> TaskRecord | None:
+        async with shared_client(timeout=30.0) as client:
+            r = await client.get(
+                f"{self._base}/tasks/{task_id}", headers=self._headers(user_id=user_id)
+            )
+            return _task_or_none(r)
 
     def list_tasks(self, *, user_id: str | None = None) -> list[TaskRecord]:
-        with sync_client(timeout=30.0) as client:
-            r = client.get(
-                f"{self._base}/tasks",
-                headers=self._headers(user_id=user_id),
-                params={"limit": 200},
-            )
-            r.raise_for_status()
-            body = r.json()
-            items = [TaskResponse.model_validate(t) for t in body["items"]]
-            return [TaskRecord(t) for t in items]
+        r = self._sync_client().get(
+            f"{self._base}/tasks",
+            headers=self._headers(user_id=user_id),
+            params={"limit": 200},
+        )
+        r.raise_for_status()
+        body = r.json()
+        items = [TaskResponse.model_validate(t) for t in body["items"]]
+        return [TaskRecord(t) for t in items]
 
     async def cancel(self, task_id: str, *, user_id: str | None = None) -> bool:
         async with shared_client(timeout=30.0) as client:
@@ -370,4 +391,14 @@ class MaistroServerTaskBackend:
                 await asyncio.sleep(self._POLL_INTERVAL_S)
 
     async def stop(self) -> None:
+        with self._sync_lock:
+            client, self._sync = self._sync, None
+        if client is not None:
+            client.close()
+
+
+def _task_or_none(r: httpx.Response) -> TaskRecord | None:
+    if r.status_code == 404:
         return None
+    r.raise_for_status()
+    return TaskRecord(TaskResponse.model_validate(r.json()))

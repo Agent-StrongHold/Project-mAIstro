@@ -714,6 +714,51 @@ async def test_a_replayed_admission_after_restart_answers_from_the_durable_deleg
     assert retry.created_at == rows[-1].created_at
 
 
+async def test_a_delegated_replay_without_any_receipt_reconstructs_the_evidence(
+    scoped,
+) -> None:
+    """#1057 x #1176: the claim's stored request is the last-resort answer, and
+    it must carry the delegation evidence, not just the owning user id.
+
+    Neither the live receipt nor the durable row survives this restart, so
+    the replay is reconstructed from the claim's stored request — the exact
+    path that once answered `alice None None user` — and must still name the
+    service principal, the delegation id and the actor kind.
+    """
+    _projects, runs, _root, project = scoped
+    queue, store = _wired_queue(runs, project.project_id)
+    request = TaskCreate(description="Fix the parser", idempotency_key="retry-1")
+
+    first = await queue.submit(
+        request,
+        user_id="alice",
+        service_principal_id="conductor",
+        delegation_id="delegation-123",
+        actor_kind="user",
+    )
+    # The restart: a fresh queue over the same claim store — no live receipt,
+    # no durable row — so the replay answers from the stored request.
+    restarted = TaskQueue(
+        admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=project.project_id),
+        idempotency_store=store,
+    )
+
+    replay = await restarted.submit(
+        request,
+        user_id="alice",
+        service_principal_id="conductor",
+        delegation_id="delegation-123",
+        actor_kind="user",
+    )
+
+    assert replay.task_id == first.task_id
+    assert replay.run_id == first.run_id
+    assert replay.user_id == "alice"
+    assert replay.service_principal_id == "conductor"
+    assert replay.delegation_id == "delegation-123"
+    assert replay.actor_kind == "user"
+
+
 async def _drain_persisted_writes(queue: TaskQueue) -> None:
     while queue._persist_writes:
         await asyncio.gather(*queue._persist_writes)
