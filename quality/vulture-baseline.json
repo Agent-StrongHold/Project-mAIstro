@@ -51,7 +51,17 @@
         "packages/maistro-server/src/maistro_server/api/workspaces.py::unused function 'update_workspace'",
         "packages/maistro-server/src/maistro_server/api/ws.py::unused function 'stream_task'",
         "packages/maistro-server/src/maistro_server/main.py::unused function 'http_exception_handler'",
-        "packages/maistro-server/src/maistro_server/main.py::unused function 'unhandled_exception_handler'"
+        "packages/maistro-server/src/maistro_server/main.py::unused function 'unhandled_exception_handler'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'add_backlog_item_dependency'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'create_backlog_item'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'get_backlog_item'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'list_backlog_item_children'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'list_backlog_item_dependencies'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'list_backlog_item_dependents'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'list_backlog_items'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'remove_backlog_item_dependency'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'set_backlog_item_parent'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused function 'update_backlog_item'"
       ]
     },
     {
@@ -485,7 +495,33 @@
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'I_IMAGINED'",
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'I_WAS_TOLD'",
         "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'immutable'",
-        "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'origin_episode_id'"
+        "packages/maistro-turing/src/maistro_turing/types.py::unused variable 'origin_episode_id'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'ACCEPTED_SPEC'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'OBSOLETE'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'acceptance_refs'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'allowed_scope'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'autonomy_mode'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'claim_run_id'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'claimant_agent_id'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'claimant_principal_id'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'evidence_refs'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'fence_token'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'goal_id'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'goal_ref'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'goal_revision'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'owner_principal_id'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'protected_scope'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'scenario_refs'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused variable 'spec_refs'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'acceptance_refs'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'allowed_scope'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'autonomy_mode'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'evidence_refs'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'goal_ref'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'owner_principal_id'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'protected_scope'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'scenario_refs'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused variable 'spec_refs'"
       ]
     },
     {
@@ -1483,7 +1519,10 @@
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused method 'handle_memory_event'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused method 'handle_message'",
         "packages/maistro-turing/src/maistro_turing/runtime/__init__.py::unused method 'handle_tool_result'",
-        "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused class 'ActivationContributor'"
+        "packages/maistro-turing/src/maistro_turing/self_model/types.py::unused class 'ActivationContributor'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused method '_canonical'",
+        "packages/maistro-core/src/maistro/workspaces/backlog/model.py::unused method '_shape'",
+        "packages/maistro-server/src/maistro_server/api/backlog.py::unused method '_no_null_for_required_fields'"
       ]
     },
     {
