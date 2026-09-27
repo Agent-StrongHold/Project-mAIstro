@@ -32,19 +32,26 @@ def _write(gate, name, text):
 
 def _pair(gate, key="suffix", value='""', default=False):
     supplied = "" if default else f"    with:\n      {key}: {value}\n"
-    caller = (
-        "name: Caller\non: pull_request\njobs:\n"
-        "  quality:\n    name: Quality\n"
-        f"    uses: ./.github/workflows/reusable.yml\n{supplied}"
-    )
+    caller = f"""name: Caller
+on: pull_request
+jobs:
+  quality:
+    name: Quality
+    uses: ./.github/workflows/reusable.yml
+{supplied}"""
     _write(gate, "caller.yml", caller)
     definition = f"        default: {value}\n" if default else ""
     expression = "${{ inputs." + key + " }}"
-    callee = (
-        "name: Reusable\non:\n  workflow_call:\n    inputs:\n"
-        f"      {key}:\n        type: string\n{definition}"
-        f"jobs:\n  check:\n    name: Test{expression}\n"
-    )
+    callee = f"""name: Reusable
+on:
+  workflow_call:
+    inputs:
+      {key}:
+        type: string
+{definition}jobs:
+  check:
+    name: Test{expression}
+"""
     _write(gate, "reusable.yml", callee)
 
 
@@ -78,11 +85,12 @@ def test_duplicate_names_across_jobs_in_one_workflow_fail(gate, direct):
     if direct:
         extra = "  other:\n    name: Quality / Testvalue\n    runs-on: ubuntu-latest\n"
     else:
-        extra = (
-            "  other:\n    name: Quality\n"
-            "    uses: ./.github/workflows/reusable.yml\n"
-            "    with:\n      suffix: value\n"
-        )
+        extra = """  other:
+    name: Quality
+    uses: ./.github/workflows/reusable.yml
+    with:
+      suffix: value
+"""
     caller.write_text(caller.read_text() + extra)
     with pytest.raises(gate.ContractError, match="emit the check name"):
         gate.collect()
