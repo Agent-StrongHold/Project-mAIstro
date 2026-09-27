@@ -29,11 +29,27 @@ def _triggers(document):
     return document.get("on", document.get(True))
 
 
+def _assert_checkout_scope(job, owner):
+    """Root Ruff must see the whole candidate, not a substituted or sparse tree."""
+    checkouts = [
+        step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")
+    ]
+    assert len(checkouts) == 1
+    checkout = checkouts[0]
+    assert "if" not in checkout and "continue-on-error" not in checkout
+    assert job["steps"].index(checkout) < job["steps"].index(owner)
+    options = checkout.get("with", {})
+    forbidden = {"repository", "ref", "path", "sparse-checkout", "sparse-checkout-cone-mode", "filter"}
+    assert not forbidden.intersection(options)
+
+
 def _assert_owner(documents, command):
     ci = documents["ci"]
     quality = documents["quality"]
     for document in (ci, quality):
-        assert not document.get("defaults", {}).get("run", {}).get("working-directory")
+        defaults = document.get("defaults", {}).get("run", {})
+        assert not defaults.get("working-directory")
+        assert "shell" not in defaults
         events = _triggers(document)
         assert set(events) == {"push", "pull_request", "merge_group"}
         assert events["pull_request"] in (None, {})
@@ -41,7 +57,11 @@ def _assert_owner(documents, command):
         assert set(events["push"]) == {"branches"}
 
     ci_pushes = set(_triggers(ci)["push"]["branches"])
-    quality_pushes = set(_triggers(quality)["push"]["branches"])
+    quality_patterns = _triggers(quality)["push"]["branches"]
+    assert all(
+        isinstance(pattern, str) and not pattern.startswith("!") for pattern in quality_patterns
+    )
+    quality_pushes = set(quality_patterns)
     assert ci_pushes == {"main", "integration", "develop", FALLBACK_BRANCH}
     assert {"main", "integration", "develop"} <= quality_pushes
     assert ci_pushes - quality_pushes == {FALLBACK_BRANCH}
@@ -54,11 +74,15 @@ def _assert_owner(documents, command):
     ):
         job = document["jobs"][job_id]
         assert "if" not in job and "continue-on-error" not in job
-        assert not job.get("defaults", {}).get("run", {}).get("working-directory")
+        defaults = job.get("defaults", {}).get("run", {})
+        assert not defaults.get("working-directory")
+        assert "shell" not in defaults
         matches = [step for step in job["steps"] if step.get("run") == command]
         assert len(matches) == 1
         step = matches[0]
         assert "continue-on-error" not in step and "working-directory" not in step
+        assert "shell" not in step
+        _assert_checkout_scope(job, step)
         if condition is None:
             assert "if" not in step
         else:
@@ -134,5 +158,52 @@ def test_quality_cannot_become_advisory_after_deduplication(documents, branch):
     changed = copy.deepcopy(documents)
     required = changed["protection"]["branches"][branch]["required_status_checks"]
     required["contexts"].remove(changed["quality"]["jobs"]["quality-gate"]["name"])
+    with pytest.raises(AssertionError):
+        _assert_owner(changed, COMMANDS[0])
+
+
+@pytest.mark.parametrize(
+    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-gate")]
+)
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("sparse-checkout", "pyproject.toml\nuv.lock\npackages/maistro-core"),
+        ("repository", "another/repository"),
+        ("ref", "main"),
+        ("path", "partial-tree"),
+    ],
+)
+def test_checkout_scope_cannot_narrow_the_retained_owner(documents, workflow, job_id, option, value):
+    changed = copy.deepcopy(documents)
+    steps = changed[workflow]["jobs"][job_id]["steps"]
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    checkout.setdefault("with", {})[option] = value
+    with pytest.raises(AssertionError):
+        _assert_owner(changed, COMMANDS[0])
+
+
+@pytest.mark.parametrize("pattern", ["!feat/private", "!develop"])
+def test_negative_push_patterns_cannot_remove_an_owned_event(documents, pattern):
+    changed = copy.deepcopy(documents)
+    _triggers(changed["quality"])["push"]["branches"].append(pattern)
+    with pytest.raises(AssertionError):
+        _assert_owner(changed, COMMANDS[0])
+
+
+@pytest.mark.parametrize(
+    "workflow,job_id", [("ci", "lint-and-type-check"), ("quality", "quality-gate")]
+)
+@pytest.mark.parametrize("level", ["workflow", "job", "step"])
+def test_shell_tolerance_cannot_mask_the_retained_owner(documents, workflow, job_id, level):
+    changed = copy.deepcopy(documents)
+    document = changed[workflow]
+    job = document["jobs"][job_id]
+    if level == "step":
+        scope = next(step for step in job["steps"] if step.get("run") == COMMANDS[0])
+    else:
+        scope = document if level == "workflow" else job
+        scope = scope.setdefault("defaults", {}).setdefault("run", {})
+    scope["shell"] = "bash {0} || true"
     with pytest.raises(AssertionError):
         _assert_owner(changed, COMMANDS[0])
