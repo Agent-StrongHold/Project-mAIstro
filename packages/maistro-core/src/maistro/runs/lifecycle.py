@@ -263,16 +263,25 @@ def check_completion_is_earned(target: RunStatus, node_runs: list[NodeRun]) -> N
     expired, the fold between nodes raised — and refusing them would leave a
     domain unable to report what actually happened.
 
-    **Only *terminal* NodeRuns are consulted.** A latest NodeRun that is still
-    open is ADR-082426-a47f's case, not this one: that ADR decided such a node
-    is cascaded to CANCELLED by the very transition being validated here, and
-    it decided it for a reason this ADR does not reopen — a graph may abandon a
-    node whose result it no longer needs, and a first-wins race is a real
-    pattern rather than a bug. So the residual stands and is stated plainly: a
-    Run can still complete over a node it cancelled in the same breath.
+    **A paused human NodeRun blocks completion.** ``PAUSED`` is the human wait
+    itself — a person is owed an answer — not a side flag beside the spine and
+    not an abandoned node the completion cascade may cancel (#48). Completing
+    the Run would report the work finished and settle that NodeRun to
+    CANCELLED in the same write, so the parent would look finished while the
+    human wait was still non-terminal. The newest NodeRun for the node is the
+    one that counts, same as every other outcome here: a later visit that has
+    already finished does not stay condemned by an earlier pause.
 
-    What is refused is the contradiction: a Run reporting success while the
-    spine holds a *finished* node that failed, was cancelled, or timed out.
+    **Other open NodeRuns are still cascaded.** A latest NodeRun that is
+    RUNNING, WAITING, QUEUED or CREATED is ADR-082426-a47f's case: that ADR
+    decided such a node is cascaded to CANCELLED by the transition being
+    validated here, because a graph may abandon a node whose result it no
+    longer needs. The residual stands for those statuses only: a Run can still
+    complete over a node it cancelled in the same breath, but not over a human
+    wait.
+
+    What is also refused is the contradiction: a Run reporting success while
+    the spine holds a *finished* node that failed, was cancelled, or timed out.
     That is the combination #43's fourth criterion calls impossible, and it
     needs no race to produce — the ordinary path produces it.
 
@@ -284,7 +293,7 @@ def check_completion_is_earned(target: RunStatus, node_runs: list[NodeRun]) -> N
     for node_id, node_run in sorted(latest_node_runs(node_runs).items()):
         if node_run.status is RunStatus.COMPLETED:
             continue
-        if node_run.status in TERMINAL_RUN_STATUSES:
+        if node_run.status in TERMINAL_RUN_STATUSES or node_run.status is RunStatus.PAUSED:
             raise UnearnedRunCompletion(node_id, node_run.node_run_id, node_run.status)
 
 
