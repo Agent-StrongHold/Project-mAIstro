@@ -793,6 +793,29 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Both shipped DAG Run controls are now proven to admit exactly one
+  canonical Run per request (#736, partial).** A new behavioral test counts
+  canonical Runs whose `provenance.admission_source == "hive_legacy_dag"` and
+  `legacy_dag_id` matches the requested DAG, before and after one `POST
+  /v1/dags/{id}/run` and one WS `/v1/ws/dags/{id}/run` in a real Workspace,
+  and asserts each request admits exactly one new canonical Run whose id
+  equals the response's `run_id` and the `DagRunStore` projection's
+  `canonical_run_id`. Test-only; no production behavior changed. The
+  WAITING/PAUSED projection half of #736's "cannot be contradicted"
+  criterion (`finished_at` stamped irreversibly on `waiting`, shared with
+  #1036) remains open.
+
+- **A streamed `/v1/chat/completions` turn no longer cancels a Run left open
+  for recovery (#1108, partial).** When the model answered but the Attempt
+  could not be recorded (`ChatDispatchUnrecorded`), `Container.route_request`
+  deliberately leaves the Run RUNNING for `recover_abandoned_attempts` /
+  `AttemptLifecycleReconciler`; the SSE stream's abandoned-Run cleanup then
+  overwrote it as CANCELLED ("stream abandoned") even though the answer had
+  streamed. The cleanup now steps aside only when an Attempt under the Run is
+  still live or COMPLETED — the two shapes `ChatDispatchUnrecorded` leaves for
+  recovery — and still cancels a Run abandoned before dispatch or one whose
+  own close failed over a failed/refused turn.
+
 - **The Conductor task websocket no longer blocks the event loop on its
   ownership check (#1180, partial).** `EngineService.iter_task_events` ran its
   ownership check through `MaistroServerTaskBackend.get`, a synchronous
