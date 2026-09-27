@@ -458,6 +458,55 @@ async def run_optimizer(
     }
 
 
+_MIN_INDEPENDENT_RESULTS = 2
+
+
+def _result_identity(result: Any) -> str:
+    """Identity of one evaluation result, or empty when it cannot be told apart."""
+    if isinstance(result, str):
+        return result.strip()
+    if isinstance(result, dict):
+        for key in ("result_id", "run_id"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _independent_result_count(results: Any) -> int:
+    if not isinstance(results, list):
+        return 0
+    identities = {_result_identity(item) for item in results}
+    identities.discard("")
+    return len(identities)
+
+
+def _require_graph_apply_evidence(proposal: dict[str, Any]) -> None:
+    """Refuse a live graph apply that is not backed by governed evidence.
+
+    The apply path used to commit an accepted topology edit with no candidate
+    and no comparison to what is already serving (#861, #854). It now fails
+    closed unless ``proposal["evidence"]`` names an immutable ``candidate_id``,
+    carries at least two independent results (distinct ``result_id`` or
+    ``run_id`` values — a repeated id is one sample), and names
+    ``incumbent_id``. This is a gate on the existing apply, not a new
+    optimizer and not an unattended promotion loop.
+    """
+    evidence = proposal.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("refusing graph apply: evidence record is required")
+    candidate_id = evidence.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise ValueError("refusing graph apply: evidence record has no candidate id")
+    if _independent_result_count(evidence.get("independent_results")) < _MIN_INDEPENDENT_RESULTS:
+        raise ValueError(
+            "refusing graph apply: evidence record needs at least two independent results"
+        )
+    incumbent_id = evidence.get("incumbent_id")
+    if not isinstance(incumbent_id, str) or not incumbent_id.strip():
+        raise ValueError("refusing graph apply: evidence record does not name the incumbent")
+
+
 def record_decision(
     proposal_id: str,
     decision: str,
@@ -478,13 +527,18 @@ def record_decision(
     if payload is None:
         raise KeyError(proposal_id)
     payload = dict(payload)
+    applying_topology = decision == DECISION_ACCEPTED and payload.get("kind") == KIND_TOPOLOGY
+    # Refuse before the decision is stored, so a single sample or an
+    # anonymous edit cannot be recorded as accepted (#861, #854).
+    if applying_topology:
+        _require_graph_apply_evidence(payload)
     payload["decision"] = decision
     payload["decided_by"] = actor
     payload["decided_at"] = datetime.now(UTC).isoformat()
     stores.optimizer_proposals[proposal_id] = payload
 
     # Apply accepted topology mutations to the DAG
-    if decision == DECISION_ACCEPTED and payload.get("kind") == KIND_TOPOLOGY:
+    if applying_topology:
         _apply_topology_mutation(payload)
 
     # Track rejected edits so optimizer doesn't re-propose them (SkillOpt rejected-edit buffer)
@@ -645,7 +699,13 @@ def _apply_structural_mutation(
 
 
 def _apply_topology_mutation(proposal: dict[str, Any]) -> None:
-    """Apply an accepted topology mutation to the DAG in stores."""
+    """Apply an accepted topology mutation to the DAG in stores.
+
+    Fails closed (#861, #854) unless the proposal's evidence record names a
+    candidate, at least two independent results, and the incumbent. A missing
+    DAG is still a no-op after that gate: there is nothing to mutate.
+    """
+    _require_graph_apply_evidence(proposal)
     import stores
 
     dag_id = proposal.get("dag_id", "")

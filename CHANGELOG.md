@@ -25,6 +25,15 @@ or placeholder-only section.
 
 ### Security
 
+- **Optimizer topology apply fails closed without governed evidence (#861, #854, partial).**
+  Accepting a topology proposal, or calling the apply that writes it onto the
+  stored DAG, now refuses unless the proposal's evidence record names a
+  candidate id, at least two independent results, and the incumbent. A single
+  sample, a repeated result id, or a missing name leaves the DAG and the
+  pending decision unchanged. This is not a full candidate or promotion
+  lifecycle: champion selection, `promote_audited`, and `apply_auto` are
+  unchanged.
+
 - **Tool calls fail closed when Sentinel or caller auth is missing (#1165).**
   An `Agent` built without a Sentinel, or handed a turn with no `auth`, used
   to execute tool calls unauthorized; it now returns `Error: Permission denied
