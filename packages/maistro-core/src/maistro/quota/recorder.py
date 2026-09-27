@@ -12,9 +12,9 @@ path — the canonical Invocation recorder is the only live recording mechanism.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -89,8 +89,12 @@ class CanonicalInvocationUsageRecorder:
             )
         else:
             record_unreported = getattr(self._quota_tracker, "record_unreported", None)
-            if callable(record_unreported):
-                await record_unreported(provider, self._billing_cycle)
+            if record_unreported is not None:
+                # Not on the QuotaTracker protocol; a tracker that tracks
+                # unreported evidence still exposes this async hook.
+                await cast("Callable[[str, str], Awaitable[None]]", record_unreported)(
+                    provider, self._billing_cycle
+                )
 
 
 def record_llm_usage(
