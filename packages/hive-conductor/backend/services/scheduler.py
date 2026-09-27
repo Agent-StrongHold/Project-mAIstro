@@ -83,77 +83,129 @@ async def fire_now(sid: str, *, fire_id: str | None = None) -> str:
     header at the route — so a retried or concurrent double submit of the same
     logical request reconciles to the Run the first call created instead of
     minting a fresh identity per call.  A call carrying no token gets a
-    server-minted one, making each request its own deliberate firing.
+    server-minted one, making each request's own deliberate firing.
+
+    Takes the same per-schedule ``definition_lock`` the routes and the tick
+    hold (Codex, #1199): without it, a manual fire that read the Hive row
+    before a concurrent DELETE released it would still call
+    ``_definition_for``, whose ``store.put`` would write the captured
+    definition back and could admit a Run for a schedule already gone.
     """
     import stores
 
-    schedule = stores.schedules.get(sid)
-    if schedule is None:
-        raise ScheduleNotFireable(f"schedule {sid} does not exist")
+    async with definition_lock(sid):
+        schedule = stores.schedules.get(sid)
+        if schedule is None:
+            raise ScheduleNotFireable(f"schedule {sid} does not exist")
 
-    runner = _runner or _ScheduleRunner()
-    container = runner._canonical_container()
-    admitter = runner._canonical_admitter(container)
-    if admitter is not None:
-        assert container is not None  # for the type checker; the gate proved it
-        token = fire_id if fire_id else uuid.uuid4().hex
-        return await runner._fire_manual_canonical(
-            sid, schedule, container=container, admitter=admitter, fire_id=token
-        )
-    if container is not None:
-        raise ScheduleAdmissionUnavailable(
-            f"schedule {sid} cannot be fired: the configured Container is missing its "
-            "run/template/schedule store wiring, so canonical schedule admission is unavailable"
-        )
+        runner = _runner or _ScheduleRunner()
+        container = runner._canonical_container()
+        admitter = runner._canonical_admitter(container)
+        if admitter is not None:
+            assert container is not None  # for the type checker; the gate proved it
+            token = fire_id if fire_id else uuid.uuid4().hex
+            return await runner._fire_manual_canonical(
+                sid, schedule, container=container, admitter=admitter, fire_id=token
+            )
+        if container is not None:
+            raise ScheduleAdmissionUnavailable(
+                f"schedule {sid} cannot be fired: the configured Container is missing its "
+                "run/template/schedule store wiring, so canonical schedule admission is unavailable"
+            )
 
-    store = runner._canonical_store()
-    definition = await runner._definition_for(sid, schedule, store=store)
-    if definition is None:
-        raise ScheduleNotFireable(
-            f"schedule {sid} names no mission template, so there is nothing to run"
-        )
-    if definition.exhausted:
-        raise ScheduleNotFireable(f"schedule {sid} has used all {definition.max_runs} of its runs")
+        store = runner._canonical_store()
+        definition = await runner._definition_for(sid, schedule, store=store)
+        if definition is None:
+            raise ScheduleNotFireable(
+                f"schedule {sid} names no mission template, so there is nothing to run"
+            )
+        if definition.exhausted:
+            raise ScheduleNotFireable(
+                f"schedule {sid} has used all {definition.max_runs} of its runs"
+            )
 
-    now = datetime.now(UTC)
-    # Captured here, at the one call site with a trustworthy ambient context
-    # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
-    # already bound an id for, so forwarding it explicitly is what keeps the
-    # request/response and the resulting Run in the same trace.
-    # `_fire_schedule` never reads ambient context itself -- it is also
-    # reachable from the tick loop, which shares an event loop with whatever
-    # else is running and cannot make the same claim.
-    request_id = current_execution_context().request_id or None
-    run_id = await runner._fire_schedule(
-        sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
-    )
-    if run_id is None:
-        raise ScheduleNotFireable(
-            f"schedule {sid} could not create a Run; its target may not be registered"
+        now = datetime.now(UTC)
+        # Captured here, at the one call site with a trustworthy ambient context
+        # (#1063): this coroutine runs inside the HTTP request RequestIDMiddleware
+        # already bound an id for, so forwarding it explicitly is what keeps the
+        # request/response and the resulting Run in the same trace.
+        # `_fire_schedule` never reads ambient context itself -- it is also
+        # reachable from the tick loop, which shares an event loop with whatever
+        # else is running and cannot make the same claim.
+        request_id = current_execution_context().request_id or None
+        run_id = await runner._fire_schedule(
+            sid, schedule, scheduled_for=now, catchup=False, request_id=request_id
         )
+        if run_id is None:
+            raise ScheduleNotFireable(
+                f"schedule {sid} could not create a Run; its target may not be registered"
+            )
 
-    await runner._record_fire(
-        sid,
-        schedule,
-        definition,
-        store=store,
-        fire=FireDecision(scheduled_for=now, catchup=False),
-        run_id=run_id,
-    )
-    return run_id
+        await runner._record_fire(
+            sid,
+            schedule,
+            definition,
+            store=store,
+            fire=FireDecision(scheduled_for=now, catchup=False),
+            run_id=run_id,
+        )
+        return run_id
 
 
 _definition_locks: dict[str, asyncio.Lock] = {}
+_definition_lock_refs: dict[str, int] = {}
 
 
-def definition_lock(sid: str) -> asyncio.Lock:
+class _TrackedDefinitionLock:
+    """Proxy over one sid's ``asyncio.Lock`` that evicts it once idle.
+
+    ``_definition_locks`` is process-global and every schedule ID is a fresh
+    UUID, so without this create/delete churn grows the dict (and its Lock
+    objects) for the worker's lifetime (Codex, #1199). Attribute access
+    (``lock._waiters``, ``lock.locked()``) and identity across concurrent
+    ``async with definition_lock(sid):`` callers delegate to the one shared
+    ``asyncio.Lock`` per sid, so contention behaves exactly as before; only
+    the dict entry's lifetime changes. Refcounting is synchronous increment
+    on construction and decrement on ``__aexit__`` with no ``await`` between
+    a decrement and its eviction check, so no other coroutine can observe or
+    race an in-between state on this single-threaded event loop.
+    """
+
+    __slots__ = ("_lock", "_sid")
+
+    def __init__(self, sid: str, lock: asyncio.Lock) -> None:
+        self._sid = sid
+        self._lock = lock
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._lock, name)
+
+    async def __aenter__(self) -> None:
+        await self._lock.__aenter__()
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        try:
+            await self._lock.__aexit__(*exc_info)
+        finally:
+            _definition_lock_refs[self._sid] -= 1
+            if (
+                _definition_lock_refs[self._sid] <= 0
+                and _definition_locks.get(self._sid) is self._lock
+            ):
+                _definition_locks.pop(self._sid, None)
+                _definition_lock_refs.pop(self._sid, None)
+
+
+def definition_lock(sid: str) -> _TrackedDefinitionLock:
     """Serialise the writers of one schedule's canonical definition and row.
 
     Each writer builds the definition from the Hive row and then awaits the
     store, so without this two edits could land canonically in the opposite
     order to the row and leave the authority disagreeing with its projection.
     """
-    return _definition_locks.setdefault(sid, asyncio.Lock())
+    lock = _definition_locks.setdefault(sid, asyncio.Lock())
+    _definition_lock_refs[sid] = _definition_lock_refs.get(sid, 0) + 1
+    return _TrackedDefinitionLock(sid, lock)
 
 
 def _definition_authority() -> tuple[_ScheduleRunner, Any] | None:
@@ -216,11 +268,18 @@ async def delete_canonical_definition(sid: str) -> None:
 
 
 async def backfill_canonical_definitions() -> int:
-    """Put each Hive row the canonical store has never seen; return how many.
+    """Put each Hive row missing or drifted from the canonical store; return how many.
 
-    One-shot, before the first tick: rows created before the routes wrote
-    canonically. A row already present is never re-put, so the cursors
-    ``record_fire`` recorded are not rewound by a stale projection.
+    One-shot, before the first tick. A row with no canonical counterpart is
+    a first put — created before the routes wrote canonically. A row that
+    already has one is reconciled only if its definition has drifted: the
+    old lazy tick wrote a canonical row only when a schedule was enabled, so
+    a Hive PUT that disabled (or otherwise edited) a schedule before this
+    deploy's routes existed to sync it can leave the canonical row stale
+    (Codex, #1199) — exactly the orphan `due()` would keep returning that
+    this PR exists to stop. Either way ``ScheduleStore.put`` keeps the
+    cursors ``record_fire`` recorded, so reconciling the definition never
+    rewinds them.
     """
     import stores
 
@@ -239,14 +298,39 @@ async def backfill_canonical_definitions() -> int:
     return written
 
 
+def _definition_drifted(existing: Schedule, definition: Schedule) -> bool:
+    """Whether ``existing``'s definition fields disagree with the Hive row's.
+
+    Compares only what ``_as_definition``/``_scoped_definition`` derive from
+    the Hive row — never the cursors ``record_fire`` owns (``runs_so_far``,
+    ``last_run_id``, ``next_due_at``, ``last_fired_at``,
+    ``recovered_occurrences``, ``pending_fires``) — so a schedule the tick
+    has since advanced is never flagged as drifted merely for having moved
+    past its Hive snapshot.
+    """
+    return (
+        existing.name != definition.name
+        or existing.cron != definition.cron
+        or existing.timezone != definition.timezone
+        or existing.graph_template_id != definition.graph_template_id
+        or existing.max_runs != definition.max_runs
+        or existing.enabled != definition.enabled
+        or existing.workspace_id != definition.workspace_id
+        or existing.project_id != definition.project_id
+    )
+
+
 async def _backfill_one(runner: _ScheduleRunner, sid: str, container: Any) -> int:
     import stores
 
     schedule = stores.schedules.get(sid)
-    if schedule is None or await container.schedule_store.get(sid) is not None:
+    if schedule is None:
         return 0
     definition = await _scoped_definition(runner, sid, schedule, container)
     if definition is None:
+        return 0
+    existing = await container.schedule_store.get(sid)
+    if existing is not None and not _definition_drifted(existing, definition):
         return 0
     await container.schedule_store.put(definition)
     return 1

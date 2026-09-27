@@ -270,16 +270,65 @@ def test_backfill_puts_a_missing_row_once_and_never_rewinds_its_cursor(
                 next_due_at=fired_at + timedelta(days=1),
             )
         )
-        stores.schedules._data[row.id] = row.model_copy(
-            update={"name": "renamed in the projection only"}
+        assert asyncio.run(backfill_canonical_definitions()) == 0, (
+            "nothing in the Hive row changed, so nothing needs reconciling"
         )
-        assert asyncio.run(backfill_canonical_definitions()) == 0
         again = asyncio.run(store.get(row.id))
         assert again is not None
         assert again.runs_so_far == 1
         assert again.last_run_id == "run-1"
         assert again.next_due_at == fired_at + timedelta(days=1)
-        assert again.name == "legacy", "an existing canonical row is never re-put"
+        assert again.name == "legacy"
+    finally:
+        _drop_hive_row(row.id)
+
+
+def test_backfill_reconciles_a_drifted_row_without_rewinding_its_cursor(
+    configured: Any,
+) -> None:
+    """The residual case the old lazy tick could leave (Codex, #1199).
+
+    That tick wrote a canonical row only for an *enabled* schedule, so a Hive
+    PUT that disabled one before this deploy's routes existed to sync it
+    canonically left the canonical row stale. Skipping every row backfill
+    finds already present (the original behaviour) never corrects that on
+    restart -- exactly the orphan `due()` would keep returning that this PR
+    exists to stop -- so backfill must re-put a drifted row's definition too,
+    while `ScheduleStore.put` keeps its cursor untouched.
+    """
+    import stores
+    from services.scheduler import backfill_canonical_definitions
+
+    store = configured.schedule_store
+    workspace_id = configured.test_workspace
+    root = asyncio.run(configured.project_scope_store.root_for_workspace(workspace_id))
+    row = _legacy_row(workspace_id, root.project_id, enabled=True)
+    stores.schedules._data[row.id] = row
+    fired_at = datetime(2026, 9, 26, 3, 0, tzinfo=UTC)
+    try:
+        assert asyncio.run(backfill_canonical_definitions()) >= 1
+        asyncio.run(
+            store.record_fire(
+                row.id,
+                fired_at=fired_at,
+                run_id="run-1",
+                next_due_at=fired_at + timedelta(days=1),
+            )
+        )
+        # Disabled directly in the Hive row -- as a pre-#1199 PUT would have
+        # left it, with no route in between to sync the canonical row.
+        stores.schedules._data[row.id] = row.model_copy(
+            update={"enabled": False, "name": "renamed"}
+        )
+        assert asyncio.run(backfill_canonical_definitions()) >= 1, "the drifted row is reconciled"
+        reconciled = asyncio.run(store.get(row.id))
+        assert reconciled is not None
+        assert reconciled.enabled is False, "backfill catches up a stale enabled row"
+        assert reconciled.name == "renamed"
+        assert reconciled.runs_so_far == 1, "the cursor is not rewound by reconciliation"
+        assert reconciled.last_run_id == "run-1"
+        assert reconciled.next_due_at == fired_at + timedelta(days=1)
+        assert row.id not in _due_ids(configured)
     finally:
         _drop_hive_row(row.id)
 
@@ -456,3 +505,113 @@ def test_a_tick_holding_a_stale_snapshot_does_not_resurrect_a_deleted_schedule(
     _stale_tick(configured, monkeypatch, sid, snapshot)
     assert asyncio.run(configured.schedule_store.get(sid)) is None
     assert sid not in _due_ids(configured)
+
+
+def test_a_manual_fire_queued_behind_a_delete_finds_the_schedule_gone(
+    admin_client: Any, configured: Any
+) -> None:
+    """Codex, #1199: without taking ``definition_lock``, a manual fire that
+    had already read the Hive row before a concurrent delete released the
+    lock would still call ``_definition_for``, whose ``store.put`` could
+    write the captured definition back and admit a Run for a schedule
+    already gone.
+    """
+    import stores
+    from services.scheduler import ScheduleNotFireable, definition_lock, fire_now
+
+    sid = _create(admin_client, configured.test_workspace)["id"]
+    assert asyncio.run(configured.schedule_store.get(sid)) is not None
+
+    async def fire_waits_for_delete() -> BaseException | None:
+        from services.scheduler import delete_canonical_definition
+
+        lock = definition_lock(sid)
+        async with lock:
+            fire = asyncio.ensure_future(fire_now(sid))
+            for _ in range(1000):
+                if lock._waiters:
+                    break
+                await asyncio.sleep(0.001)
+            assert lock._waiters, "the fire never reached the lock"
+            # A delete holding the lock: what `delete_schedule` does under it.
+            await delete_canonical_definition(sid)
+            stores.schedules.pop(sid, None)
+        try:
+            await fire
+        except BaseException as exc:
+            return exc
+        return None
+
+    outcome = asyncio.run(fire_waits_for_delete())
+    assert isinstance(outcome, ScheduleNotFireable), outcome
+    assert "does not exist" in str(outcome)
+    assert stores.schedules.get(sid) is None
+    assert asyncio.run(configured.schedule_store.get(sid)) is None
+
+
+def test_a_failed_hive_write_after_create_leaves_no_canonical_orphan(
+    admin_client: Any, configured: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex, #1199: the canonical write commits before the Hive projection
+    does. If that second write then raises (a persisted-store outage, say),
+    the route must not leave an enabled canonical row that no Hive-keyed
+    route can reach: creation failed, so there is no Hive row for
+    GET/PUT/DELETE to find it by, and startup backfill only ever adds rows
+    missing from the canonical store, never removes an orphan.
+    """
+    import stores
+    from routes import schedules as routes
+
+    root = asyncio.run(configured.project_scope_store.root_for_workspace(configured.test_workspace))
+    before = asyncio.run(
+        configured.schedule_store.list_for_project(
+            workspace_id=configured.test_workspace, project_id=root.project_id
+        )
+    )
+
+    def failing_setitem(self: Any, key: str, value: Any) -> None:
+        raise RuntimeError("simulated persisted-store outage")
+
+    monkeypatch.setattr(type(stores.schedules), "__setitem__", failing_setitem)
+    with pytest.raises(RuntimeError, match="simulated persisted-store outage"):
+        asyncio.run(
+            routes.create_schedule(
+                routes.CreateScheduleBody(
+                    name="will-fail",
+                    cron_expression="0 3 * * *",
+                    mission_template_id=_TPL,
+                    workspace_id=configured.test_workspace,
+                ),
+                _request_as_admin(),
+            )
+        )
+    monkeypatch.undo()
+
+    after = asyncio.run(
+        configured.schedule_store.list_for_project(
+            workspace_id=configured.test_workspace, project_id=root.project_id
+        )
+    )
+    assert after == before, "the canonical write must be compensated, not left an orphan"
+
+
+def test_definition_lock_is_released_once_idle(admin_client: Any, configured: Any) -> None:
+    """Codex, #1199: ``_definition_locks`` is a process-global dict keyed by
+    ever-fresh schedule UUIDs. Without eviction, create/delete churn grows it
+    (and its ``asyncio.Lock`` objects) for the worker's lifetime.
+    """
+    import services.scheduler as scheduler
+    from services.scheduler import definition_lock
+
+    sid = _create(admin_client, configured.test_workspace)["id"]
+
+    async def hold_once() -> None:
+        async with definition_lock(sid):
+            pass
+
+    try:
+        asyncio.run(hold_once())
+        assert sid not in scheduler._definition_locks
+        assert sid not in scheduler._definition_lock_refs
+    finally:
+        _drop_hive_row(sid)

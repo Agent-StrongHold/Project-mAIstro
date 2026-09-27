@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,6 +15,8 @@ from services.dag_execution_scope import (
     authorize_hive_dag_scope,
     authorize_hive_dag_workspace,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["schedules"])
 
@@ -209,7 +212,25 @@ async def create_schedule(body: CreateScheduleBody, request: Request) -> Schedul
         updated_at=t,
     )
     await _write_canonical(schedule)
-    stores.schedules[sid] = schedule
+    try:
+        stores.schedules[sid] = schedule
+    except Exception:
+        # The canonical write above already committed (Codex, #1199): a
+        # failed second write must not leave an enabled canonical row behind
+        # that no Hive-keyed route can reach -- creation failed, so there is
+        # no Hive row for GET/PUT/DELETE to find it by, and startup backfill
+        # only ever adds rows, never removes one. Best-effort compensation;
+        # its own failure is logged and swallowed so the caller sees the real
+        # failure below, not this cleanup's.
+        from services.scheduler import delete_canonical_definition
+
+        try:
+            await delete_canonical_definition(sid)
+        except Exception:
+            logger.warning(
+                "Failed to compensate canonical schedule %s after a failed Hive write", sid
+            )
+        raise
     return schedule
 
 
