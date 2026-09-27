@@ -103,9 +103,7 @@ def _payload(
     return payload
 
 
-def _checked_images(response: httpx.Response) -> dict[str, object]:
-    """Return the persisted result shape, or refuse an image-less response."""
-
+def _response_data(response: httpx.Response) -> list[object]:
     if response.status_code >= 400:
         raise ImageGenerationError(
             f"image_http_error status={response.status_code}", status_code=response.status_code
@@ -117,20 +115,27 @@ def _checked_images(response: httpx.Response) -> dict[str, object]:
     data = body.get("data") if isinstance(body, dict) else None
     if not isinstance(data, list) or not data:
         raise ImageGenerationError("image gateway returned no images")
-    images: list[dict[str, str]] = []
-    for item in data:
-        encoded = item.get("b64_json") if isinstance(item, dict) else None
-        if not isinstance(encoded, str) or not encoded:
-            raise ImageGenerationError("image gateway returned an image without b64_json")
-        try:
-            base64.b64decode(encoded, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ImageGenerationError("image gateway returned invalid base64") from exc
-        revised = item.get("revised_prompt")
-        images.append(
-            {"b64_json": encoded, "revised_prompt": revised if isinstance(revised, str) else ""}
-        )
-    return {"images": images}
+    return data
+
+
+def _checked_image(item: object) -> dict[str, str]:
+    if not isinstance(item, dict):
+        raise ImageGenerationError("image gateway returned a non-object image entry")
+    encoded = item.get("b64_json")
+    if not isinstance(encoded, str) or not encoded:
+        raise ImageGenerationError("image gateway returned an image without b64_json")
+    try:
+        base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ImageGenerationError("image gateway returned invalid base64") from exc
+    revised = item.get("revised_prompt")
+    return {"b64_json": encoded, "revised_prompt": revised if isinstance(revised, str) else ""}
+
+
+def _checked_images(response: httpx.Response) -> dict[str, object]:
+    """Return the persisted result shape, or refuse an image-less response."""
+
+    return {"images": [_checked_image(item) for item in _response_data(response)]}
 
 
 async def execute_image_generation(

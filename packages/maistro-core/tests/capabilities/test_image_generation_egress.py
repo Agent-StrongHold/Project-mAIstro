@@ -25,7 +25,11 @@ from maistro.capabilities.image_generation import (
     ImageGenerationRequest,
 )
 from maistro.capabilities.invocation import CapabilityUnavailable, InvocationStatus
-from maistro.capabilities.providers.image_gateway import ImageGenerationError
+from maistro.capabilities.providers.image_gateway import (
+    ImageGenerationError,
+    LlmGatewayImageProvider,
+    execute_image_generation,
+)
 from maistro.capabilities.providers.llm_gateway import (
     DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
     GatewayEndpoint,
@@ -55,6 +59,10 @@ class _Gateway:
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if isinstance(self.body, Exception):
+            raise self.body
+        if isinstance(self.body, bytes):
+            return httpx.Response(self.status, content=self.body)
         return httpx.Response(self.status, json=self.body)
 
 
@@ -123,7 +131,6 @@ async def test_authorized_call_persists_correlated_invocation_and_returns_bytes(
     result = await _generate(egress, binding)
 
     assert result.images == [_PNG]
-    assert result.revised_prompts == ["a fox"]
     assert result.model == "flux-dev"
     (sent,) = gateway.requests
     assert str(sent.url) == "http://gw:4000/v1/images/generations"
@@ -175,11 +182,12 @@ async def test_request_model_is_used_when_binding_does_not_pin(gateway: _Gateway
         node_run_id="nr-1",
         attempt_id="att-1",
         effect_key="page-1",
-        request=ImageGenerationRequest(prompt="a fox", model="sdxl"),
+        request=ImageGenerationRequest(prompt="a fox", model="sdxl", quality="hd"),
     )
 
     assert result.model == "sdxl"
-    assert json.loads(gateway.requests[0].content)["model"] == "sdxl"
+    sent = json.loads(gateway.requests[0].content)
+    assert (sent["model"], sent["quality"]) == ("sdxl", "hd")
 
 
 async def test_unselected_model_is_unavailable_before_http(gateway: _Gateway) -> None:
@@ -254,11 +262,15 @@ async def test_policy_denial_makes_no_http(gateway: _Gateway) -> None:
         (503, {"error": "upstream down"}),
         (200, {"created": 1, "data": []}),
         (200, {"created": 1, "data": [{"url": "http://cdn/x.png"}]}),
+        (200, b"<html>bad gateway</html>"),
+        (200, {"created": 1, "data": ["not-an-object"]}),
+        (200, {"created": 1, "data": [{"b64_json": "!!not base64!!"}]}),
+        (200, httpx.ConnectError("gateway down")),
     ],
-    ids=["gateway-5xx", "empty-data", "no-b64"],
+    ids=["gateway-5xx", "empty-data", "no-b64", "non-json", "non-object", "bad-b64", "unreachable"],
 )
 async def test_failed_physical_call_is_failed_invocation_not_empty_success(
-    gateway: _Gateway, status: int, body: dict[str, Any]
+    gateway: _Gateway, status: int, body: Any
 ) -> None:
     gateway.status, gateway.body = status, body
     container = await _container()
@@ -287,3 +299,15 @@ async def test_failed_physical_call_is_failed_invocation_not_empty_success(
     )
     assert retried.images == [_PNG]
     assert len(gateway.requests) == 2
+
+
+async def test_physical_seam_refuses_foreign_provider_or_request(gateway: _Gateway) -> None:
+    request = ImageGenerationRequest(prompt="a fox")
+
+    with pytest.raises(TypeError, match="non-gateway provider"):
+        await execute_image_generation(object(), request, endpoint=_ENDPOINT)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="foreign request"):
+        await execute_image_generation(
+            LlmGatewayImageProvider(model="flux-dev"), {"prompt": "x"}, endpoint=_ENDPOINT
+        )
+    assert gateway.requests == []

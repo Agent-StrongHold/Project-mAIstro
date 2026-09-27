@@ -40,7 +40,6 @@ class ImageGenerationResult(BaseModel):
     invocation_id: str
     model: str
     images: list[bytes]
-    revised_prompts: list[str]
 
 
 def _require_image_binding(binding: Binding) -> None:
@@ -63,7 +62,6 @@ def _result(invocation: Invocation) -> ImageGenerationResult:
         invocation_id=invocation.invocation_id,
         model=invocation.binding.provider_name,
         images=[base64.b64decode(str(item["b64_json"])) for item in images],
-        revised_prompts=[str(item.get("revised_prompt") or "") for item in images],
     )
 
 
