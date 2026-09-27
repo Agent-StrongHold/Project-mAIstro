@@ -81,7 +81,7 @@ async def llm_binding_id() -> str:
     # credential is registered in this exact Workspace/Project/provider scope.
     effects.credentials.add(
         workspace_id="w1",
-        project_id="p",
+        project_id="p1",
         record=CredentialRecord(
             key_id=DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,
             provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER,
@@ -97,7 +97,7 @@ async def llm_binding_id() -> str:
     # into every later test reusing it. Reset health state explicitly so each
     # test starts from a clean, available credential.
     pool = effects.credentials.pool_for(
-        workspace_id="w1", project_id="p", provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER
+        workspace_id="w1", project_id="p1", provider=MODEL_GATEWAY_CREDENTIAL_PROVIDER
     )
     if pool is not None:
         pool.clear_cooldown(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF)
