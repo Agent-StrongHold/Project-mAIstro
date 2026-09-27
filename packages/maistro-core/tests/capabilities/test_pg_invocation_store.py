@@ -3,8 +3,9 @@ actually wires: `maistro.capabilities.pg_invocation_store.PgInvocationStore`
 (#1079 Finding 3).
 
 Exercised against a fake asyncpg-shaped pool whose query/row shapes mirror
-this store's real SQL -- `payload` (JSONB) and `created_at` (a float),
-matching Alembic revision 035's actual DDL. `test_invocation_store.py` used
+this store's real SQL -- `payload` (JSONB), `created_at` (a float), and
+`logical_effect` (a Boolean, migration 045), matching Alembic revision 035's
+actual DDL plus 045. `test_invocation_store.py` used
 to carry an equivalent suite against a *different*, unwired `PgInvocationStore`
 defined in `maistro.capabilities.invocation_store`; that class wrote columns
 (`payload_json`, a `datetime` timestamp) that never matched migration 035 and
@@ -15,7 +16,7 @@ file exists so the store the container actually uses keeps direct coverage.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -65,9 +66,15 @@ class _Row(dict):
 
 class _FakePgInvocationPool:
     """Records the exact INSERT/UPDATE/SELECT shape `PgInvocationStore`
-    issues against `payload`/`created_at`, matching migration 035's DDL --
-    standing in for a live asyncpg pool the way `_FakePgBindingPool` does for
-    `PgBindingStore` in `test_binding_invocation.py`."""
+    issues against `payload`/`created_at`/`logical_effect`, matching migration
+    035+045's DDL -- standing in for a live asyncpg pool the way
+    `_FakePgBindingPool` does for `PgBindingStore` in `test_binding_invocation.py`.
+    It enforces the same two admission indexes the real table carries: the
+    physical `(run_id, node_run_id, binding_id, effect_key)` active guard and
+    the Run-scoped `(run_id, binding_id, effect_key)` guard for
+    `logical_effect` rows (#1194)."""
+
+    _ACTIVE_STATUSES: ClassVar[frozenset[str]] = frozenset({"created", "running", "unknown"})
 
     def __init__(self) -> None:
         self._rows: dict[str, dict[str, Any]] = {}
@@ -76,6 +83,8 @@ class _FakePgInvocationPool:
         if "INSERT INTO" in query:
             invocation_id = args[0]
             if invocation_id in self._rows:
+                return None
+            if self._logical_admission_conflicts(args):
                 return None
             self._rows[invocation_id] = {
                 "invocation_id": invocation_id,
@@ -86,18 +95,25 @@ class _FakePgInvocationPool:
                 "effect_key": args[5],
                 "status": args[6],
                 "revision": args[7],
-                "created_at": args[8],
-                "payload": args[9],
+                "logical_effect": args[8],
+                "created_at": args[9],
+                "payload": args[10],
             }
             return _Row(invocation_id=invocation_id)
         if "ORDER BY created_at DESC" in query:
-            # `_find_effect`: latest row for this run/node/binding/effect_key.
-            run_id, node_run_id, binding_id, effect_key = args
+            # `_find_effect`: latest row for the admission scope. A physical
+            # candidate filters by node_run_id (4 args); a logical candidate
+            # searches the whole Run history (3 args, no node filter).
+            if "node_run_id=$2" in query:
+                run_id, node_run_id, binding_id, effect_key = args
+            else:
+                run_id, binding_id, effect_key = args
+                node_run_id = None
             matches = [
                 row
                 for row in self._rows.values()
                 if row["run_id"] == run_id
-                and row["node_run_id"] == node_run_id
+                and (node_run_id is None or row["node_run_id"] == node_run_id)
                 and row["binding_id"] == binding_id
                 and row["effect_key"] == effect_key
             ]
@@ -106,6 +122,19 @@ class _FakePgInvocationPool:
             row = self._rows.get(args[0])
             return _Row(payload=row["payload"]) if row is not None else None
         raise AssertionError(f"unexpected query: {query!r}")
+
+    def _logical_admission_conflicts(self, insert_args: tuple[Any, ...]) -> bool:
+        """Emulate ``uq_capability_invocation_active_logical_effect``."""
+        if not insert_args[8]:
+            return False
+        return any(
+            row["run_id"] == insert_args[1]
+            and row["binding_id"] == insert_args[4]
+            and row["effect_key"] == insert_args[5]
+            and row["logical_effect"]
+            and row["status"] in self._ACTIVE_STATUSES
+            for row in self._rows.values()
+        )
 
     async def execute(self, query: str, *args: Any) -> str:
         if "UPDATE capability_invocations" in query:
@@ -163,6 +192,7 @@ class _FakePgInvocationPool:
             "effect_key": invocation.effect_key,
             "status": invocation.status.value,
             "revision": invocation.revision,
+            "logical_effect": invocation.logical_effect,
             "created_at": invocation.created_at.timestamp(),
             "payload": invocation.model_dump_json(),
         }
@@ -306,6 +336,46 @@ async def test_pg_invocation_store_list_effect_without_node_run_id_spans_node_ru
         effect_key="test:pg-store",
     )
     assert [item.invocation_id for item in visit] == ["inv-2"]
+
+
+async def test_pg_invocation_store_logical_create_conflicts_across_node_runs() -> None:
+    """Run-scoped atomic admission on Postgres (#1194): the logical unique
+    index has no ``node_run_id``, and the conflict lookup widens with the
+    candidate, so a retry under a new NodeRun is refused -- not admitted
+    beside the canonical row and dispatched again."""
+    pool = _FakePgInvocationPool()
+    store = PgInvocationStore(pool)
+    await store.create(
+        _invocation(
+            invocation_id="inv-live",
+            node_run_id="node-run-1",
+            effect_key="harness:dispatch",
+            logical_effect=True,
+        )
+    )
+
+    with pytest.raises(UnsafeEffectRetry):
+        await store.create(
+            _invocation(
+                invocation_id="inv-retry",
+                node_run_id="node-run-2",
+                attempt_id="attempt-2",
+                effect_key="harness:dispatch",
+                logical_effect=True,
+            )
+        )
+    assert len(pool._rows) == 1
+
+    # Physical admission keeps its per-visit scope on the same table.
+    await store.create(
+        _invocation(
+            invocation_id="inv-physical",
+            node_run_id="node-run-2",
+            attempt_id="attempt-3",
+            effect_key="write:physical",
+        )
+    )
+    assert len(pool._rows) == 2
 
 
 async def test_pg_invocation_store_logical_invoke_replays_completed_effect_across_node_runs() -> (

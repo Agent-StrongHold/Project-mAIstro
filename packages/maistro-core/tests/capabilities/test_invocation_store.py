@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import aiosqlite
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
 from maistro.capabilities.invocation import (
+    InMemoryInvocationStore,
     Invocation,
     InvocationExecutionService,
     InvocationStatus,
@@ -273,3 +275,249 @@ async def test_invoke_race_reread_without_a_completed_winner_re_raises() -> None
         )
 
     assert store.create_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_in_memory_logical_admission_spans_node_runs() -> None:
+    """Store-level admission identity for a logical effect is the whole Run.
+
+    A retry under a new NodeRun must collide with the canonical active row
+    (#1194); an ordinary physical effect keeps its per-NodeRun scope, so a
+    different NodeRun is still a different admission.
+    """
+    store = InMemoryInvocationStore()
+    binding = Binding(
+        binding_id="binding-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+    resolved = ResolvedBinding.from_provider(binding, _Provider())
+    await store.create(
+        Invocation(
+            invocation_id="inv-live",
+            run_id="run-1",
+            node_run_id="node-run-1",
+            attempt_id="attempt-1",
+            binding=resolved,
+            effect_key="harness:dispatch",
+            logical_effect=True,
+            status=InvocationStatus.RUNNING,
+        )
+    )
+
+    with pytest.raises(UnsafeEffectRetry):
+        await store.create(
+            Invocation(
+                invocation_id="inv-retry",
+                run_id="run-1",
+                node_run_id="node-run-2",
+                attempt_id="attempt-2",
+                binding=resolved,
+                effect_key="harness:dispatch",
+                logical_effect=True,
+            )
+        )
+
+    # Physical admission keeps its per-visit scope: a different NodeRun's
+    # ordinary effect is a different admission, not a collision.
+    await store.create(
+        Invocation(
+            invocation_id="inv-physical",
+            run_id="run-1",
+            node_run_id="node-run-2",
+            attempt_id="attempt-3",
+            binding=resolved,
+            effect_key="write:physical",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_logical_admission_spans_node_runs_and_has_the_guard(tmp_path) -> None:
+    """SQLite admission for a logical effect is Run-scoped (#1194).
+
+    The transactional check and the ``uq_..._active_logical_effect`` partial
+    unique index both exist: the check reports the collision inside one
+    transaction, the index is the atomic cross-connection backstop.
+    """
+    async with aiosqlite.connect(tmp_path / "logical.db") as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        binding = Binding(
+            binding_id="binding-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+            capability="external_write",
+        )
+        resolved = ResolvedBinding.from_provider(binding, _Provider())
+        await store.create(
+            Invocation(
+                invocation_id="inv-live",
+                run_id="run-1",
+                node_run_id="node-run-1",
+                attempt_id="attempt-1",
+                binding=resolved,
+                effect_key="harness:dispatch",
+                logical_effect=True,
+                status=InvocationStatus.RUNNING,
+            )
+        )
+
+        with pytest.raises(UnsafeEffectRetry):
+            await store.create(
+                Invocation(
+                    invocation_id="inv-retry",
+                    run_id="run-1",
+                    node_run_id="node-run-2",
+                    attempt_id="attempt-2",
+                    binding=resolved,
+                    effect_key="harness:dispatch",
+                    logical_effect=True,
+                )
+            )
+
+        cursor = await conn.execute("PRAGMA index_list(capability_invocations)")
+        indexes = {str(row[1]) for row in await cursor.fetchall()}
+        assert "uq_capability_invocation_active_logical_effect" in indexes
+
+
+@pytest.mark.asyncio
+async def test_sqlite_logical_effect_race_across_node_runs_dispatches_once(tmp_path) -> None:
+    """#1194's reproduction: two services, one logical effect, new NodeRuns.
+
+    A lease-loss retry mints a new NodeRun for the same logical work. Before
+    the Run-scoped admission guard both workers passed admission (the
+    physical unique index keyed on ``node_run_id``) and both dispatched the
+    remote side effect: dispatches=2, invocations=2. Now exactly one
+    dispatch happens, the loser is refused while the winner is live, and a
+    later retry under another new NodeRun replays the completed winner.
+    """
+    db_path = tmp_path / "logical-race.db"
+    async with aiosqlite.connect(db_path) as winner_conn, aiosqlite.connect(db_path) as loser_conn:
+        winner_store = SqliteInvocationStore(winner_conn)
+        loser_store = SqliteInvocationStore(loser_conn)
+        await winner_store.ensure_schema()
+        await loser_store.ensure_schema()
+        winner = InvocationExecutionService(store=winner_store)
+        loser = InvocationExecutionService(store=loser_store)
+        binding = Binding(
+            binding_id="binding-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+            capability="external_write",
+        )
+        released = asyncio.Event()
+        winner_dispatched = asyncio.Event()
+        dispatches: list[str] = []
+
+        async def execute(_provider: _Provider, request: object) -> dict[str, str]:
+            dispatches.append(str(request["task"]))
+            winner_dispatched.set()
+            await released.wait()
+            return {"handle_id": "handle-1"}
+
+        async def invoke(
+            service: InvocationExecutionService, node_run_id: str, attempt_id: str
+        ) -> Invocation:
+            return await service.invoke(
+                binding=binding,
+                run_id="run-1",
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                effect_key="harness:dispatch",
+                request={"task": "same logical work"},
+                resolver=_resolver,
+                executor=execute,
+                logical_effect=True,
+            )
+
+        winner_task = asyncio.create_task(invoke(winner, "node-run-1", "attempt-1"))
+        await asyncio.wait_for(winner_dispatched.wait(), timeout=10)
+
+        # The winner is live and RUNNING: the retry under a new NodeRun is
+        # refused because its outcome cannot be proven absent.
+        with pytest.raises(UnsafeEffectRetry):
+            await invoke(loser, "node-run-2", "attempt-2")
+        assert dispatches == ["same logical work"]
+
+        released.set()
+        completed = await winner_task
+        assert completed.status is InvocationStatus.COMPLETED
+
+        history = await winner_store.list_effect(
+            run_id="run-1",
+            node_run_id=None,
+            binding_id="binding-1",
+            effect_key="harness:dispatch",
+        )
+        assert [item.invocation_id for item in history] == [completed.invocation_id]
+
+        # Lease loss again after completion: same logical effect, another new
+        # NodeRun -- the canonical row is replayed, not re-dispatched.
+        replay = await invoke(loser, "node-run-3", "attempt-3")
+        assert replay.invocation_id == completed.invocation_id
+        assert dispatches == ["same logical work"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_logical_admission_race_replays_completed_winner_across_node_runs() -> None:
+    """The post-admission re-read must use the logical Run scope (#1194).
+
+    A stale logical admission against a winner that completed under another
+    NodeRun is a replay: the re-read spans NodeRuns and returns the accepted
+    result instead of re-raising the race error.
+    """
+    binding = Binding(
+        binding_id="binding-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+    completed = Invocation(
+        invocation_id="inv-winner",
+        run_id="run-1",
+        node_run_id="node-run-1",
+        attempt_id="attempt-1",
+        binding=ResolvedBinding.from_provider(binding, _Provider()),
+        effect_key="harness:dispatch",
+        logical_effect=True,
+        status=InvocationStatus.COMPLETED,
+        finished_at=datetime.now(UTC),
+    )
+
+    class _RacyLogicalStore:
+        def __init__(self) -> None:
+            self.read_scopes: list[str | None] = []
+
+        async def list_effect(
+            self, *, run_id: str, node_run_id: str | None, binding_id: str, effect_key: str
+        ) -> list[Invocation]:
+            self.read_scopes.append(node_run_id)
+            # First read races empty; every later read sees the winner.
+            if len(self.read_scopes) == 1:
+                return []
+            return [completed] if node_run_id is None else []
+
+        async def create(self, invocation: Invocation) -> Invocation:
+            raise UnsafeEffectRetry("effect 'harness:dispatch' already has an active Invocation")
+
+    store = _RacyLogicalStore()
+    service = InvocationExecutionService(store=store)  # type: ignore[arg-type]
+
+    replay = await service.invoke(
+        binding=binding,
+        run_id="run-1",
+        node_run_id="node-run-2",
+        attempt_id="attempt-2",
+        effect_key="harness:dispatch",
+        request={"task": "same logical work"},
+        resolver=_resolver,
+        executor=_executor,
+        logical_effect=True,
+    )
+
+    assert replay.invocation_id == "inv-winner"
+    assert replay.status is InvocationStatus.COMPLETED
+    # Both the racing read and the re-read used the Run-wide scope.
+    assert store.read_scopes == [None, None]

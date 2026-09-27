@@ -74,12 +74,14 @@ class TestTheStoreStatesItsReachAndItsTable:
             if "capability_invocations" in path.read_text()
         ]
         # 035 creates the table; 043 recreates its effect index in the
-        # SQLite shape so both durable backends of the replay contract
-        # (#1194) stay aligned. Any further migration touching the table
-        # must be added here deliberately.
+        # SQLite shape; 045 adds the persisted logical-effect admission
+        # discriminator and its Run-scoped unique index. All three durable
+        # backends of the replay contract (#1194) stay aligned. Any further
+        # migration touching the table must be added here deliberately.
         assert touching == [
             "035_capability_invocations.py",
             "043_capability_invocation_effect_index.py",
+            "045_capability_invocation_logical_effect.py",
         ]
 
     def test_the_migration_scan_has_a_corpus(self) -> None:

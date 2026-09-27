@@ -119,3 +119,16 @@ async def get_a2a_task_by_idempotency_key(
     # The receipt is the canonical Run id -- the same value the admitting POST
     # returned as `task_id`, so a reconciling caller resumes the original work.
     return {"task_id": run.run_id}
+
+
+# The handlers are this module's public surface: FastAPI registers them from
+# the decorators, which static import scanning cannot see (the same statement
+# every api module's __all__ makes -- see projects.py / workspace_access.py).
+__all__ = [
+    "A2ATaskCreate",
+    "A2ATaskCreated",
+    "configure_a2a_admission",
+    "create_a2a_task",
+    "get_a2a_task_by_idempotency_key",
+    "router",
+]
