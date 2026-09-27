@@ -16,6 +16,29 @@ inventory-delta:
 
 # auto-72 verifier repair 4 — migration-chain fixture is order-independent
 
+## Vulture gate reconciliation (prior finding resolved, no ledger edit)
+
+Prior finding claimed `scripts/check-vulture-baseline.py` exits 1 at head
+0baf1eb and would fail CI. Actual evidence this round:
+
+- Both enforcing CI invocations
+  (`.github/workflows/quality.yml` and `vulture-ratchet.yml`) pass the
+  narrow scan `packages/*/src --min-confidence 60 --exclude '*/third_party/*'`
+  — verified exit 0 at 0baf1eb (throwaway worktree
+  `~/Git/worktrees/auto-72-vul-check`) and at the post-sync head.
+- The exit-1 shape comes from the no-arg default scan (`packages tests`,
+  including `hive-conductor/backend/`), which only `scripts/run-quality-scans.sh`
+  uses; no workflow references that script and its vulture step is explicitly
+  advisory (WARN, non-failing).
+- The ledger's last mutation (f0792d935, RouterEngine dead quota_tracker,
+  #1632) came from develop itself; once the develop sync (merge 75d9f293f)
+  reconciled the divergent src, the enforcing gate matches 1403↔1403 with no
+  unbanked/prune deltas.
+- Per the repair discipline (address actual evidence, not guessed scanner
+  findings), `quality/vulture-baseline.json` is left untouched: the enforcing
+  gate is green, so amending it would churn reviewed grants for an
+  advisory-only invocation.
+
 ## Evidence
 
 Reproduced against a live pgvector:pg18 (`auto-72-pg`, db `maistro`) at head
