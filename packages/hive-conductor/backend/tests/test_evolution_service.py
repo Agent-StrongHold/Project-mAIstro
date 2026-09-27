@@ -12,6 +12,10 @@ Covers:
 - _run_one_cycle: failed canonical Run is surfaced and not counted as a cycle
 - _build_llm_call: no settings -> None; with settings -> callable
 - _build_llm_call inner call: posts to base_url + parses content
+- _build_llm_call: with a started bridge, crosses the engine's governed
+  egress (Binding -> Invocation -> quota) instead of raw HTTP (#718)
+- _build_llm_call: a stub agent port (no canonical authority) keeps the raw
+  fallback, mirroring the demo task backend's documented rule (#718)
 - status: returns running, cycle_count, canonical run id, population, error, tournament
 """
 
@@ -792,6 +796,131 @@ async def test_build_llm_call_real_call_posts_and_extracts_content(
     assert out == "the answer"
     assert captured["url"] == "http://test.example/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+async def test_build_llm_call_crosses_the_engine_bridge_governed_egress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#718: with a started bridge, Evolve's llm_call crosses the canonical
+    model-chat authority (Binding -> Invocation -> quota), never raw HTTP.
+
+    The raw `_build_llm_call` egress left every production Evolve model call
+    off the Invocation/quota ledger. When the engine's bridge exposes
+    `governed_egress`, the llm_call this service hands to the canonical cycle
+    must be a governed closure over that one authority — the same rule the
+    demo task backend's executor follows, not a per-caller recording callback.
+    """
+    import services.engine as engine_mod
+    from services.evolution import _EvolutionService
+
+    class _Egress:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def complete(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            return SimpleNamespace(body={"choices": [{"message": {"content": "governed answer"}}]})
+
+    egress = _Egress()
+
+    class _Port:
+        governed_egress = egress
+        container = SimpleNamespace(config=SimpleNamespace(workspace_id="ws-hive"))
+
+    monkeypatch.setattr(engine_mod, "get_engine", lambda: SimpleNamespace(agent_port=_Port()))
+    monkeypatch.setattr("services.evolution._default_chat_model", lambda: "test-model")
+
+    def _bomb(*a: Any, **k: Any) -> Any:
+        raise AssertionError("raw gateway egress must not run when the bridge governs")
+
+    monkeypatch.setattr("services.evolution.shared_client", _bomb)
+
+    s = _EvolutionService()
+    llm = s._build_llm_call()
+    assert llm is not None
+
+    # Evolve callers pass either message lists or a bare prompt string.
+    out = await llm([{"role": "user", "content": "hi"}], max_tokens=99, temperature=0.5)
+    assert out == "governed answer"
+    out2 = await llm("bare prompt")
+    assert out2 == "governed answer"
+
+    assert len(egress.calls) == 2
+    first, second = egress.calls
+    binding = first["binding"]
+    assert binding.workspace_id == "ws-hive"
+    assert binding.project_id == "agent-runtime"
+    assert binding.capability == "model.chat"
+    assert binding.credential_refs == ("litellm-gateway",)
+    request = first["request"]
+    assert request.model == "test-model"
+    assert request.messages == [{"role": "user", "content": "hi"}]
+    assert request.max_tokens == 99
+    assert request.temperature == 0.5
+    # A bare prompt string is normalized into a message list.
+    assert second["request"].messages == [{"role": "user", "content": "bare prompt"}]
+    # Cycle-scoped run identity; per-call attempt/effect identity, so retries
+    # and repeated calls never double-charge the ledger.
+    assert first["run_id"] == "evolve-cycle-1"
+    assert second["run_id"] == "evolve-cycle-1"
+    assert first["attempt_id"] != second["attempt_id"]
+    assert first["effect_key"] != second["effect_key"]
+
+
+async def test_build_llm_call_stub_port_keeps_the_raw_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stub agent port has no canonical authority to cross and no ledger to
+    write to; that process keeps the raw call, exactly like the demo task
+    backend's documented fallback (#718).
+    """
+    import httpx
+    import services.engine as engine_mod
+    from services.evolution import _EvolutionService
+
+    class _Port:
+        governed_egress = None
+        container = None
+
+    monkeypatch.setattr(engine_mod, "get_engine", lambda: SimpleNamespace(agent_port=_Port()))
+
+    class _Settings:
+        litellm_api_base = "http://test.example/api"
+        maistro_llm_api_key = "test-key"
+        litellm_api_key = ""
+        chat_default_model = "test-model"
+
+    import config
+
+    monkeypatch.setattr(config, "get_settings", lambda: _Settings())
+
+    posted: list[str] = []
+
+    class _Resp:
+        def raise_for_status(self) -> None: ...
+
+        def json(self) -> Any:
+            return {"choices": [{"message": {"content": "raw answer"}}]}
+
+    class _Client:
+        def __init__(self, *a: Any, **kw: Any) -> None: ...
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None: ...
+
+        async def post(self, url: str, *, json: Any, headers: Any) -> _Resp:
+            posted.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    s = _EvolutionService()
+    llm = s._build_llm_call()
+    assert llm is not None
+    out = await llm([{"role": "user", "content": "hi"}])
+    assert out == "raw answer"
+    assert posted == ["http://test.example/api/v1/chat/completions"]
 
 
 # --- status -------------------------------------------------------------
