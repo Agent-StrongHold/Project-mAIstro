@@ -41,7 +41,6 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.projects.store import InMemoryProjectStore
 from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
@@ -118,7 +117,6 @@ if TYPE_CHECKING:
     from maistro.observability.tiers import PIIDetector
     from maistro.orchestrator.hierarchy import HarnessRegistry, HierarchicalOrchestrator
     from maistro.personas.golden import GoldenRecordStore
-    from maistro.projects.store import ProjectStore
     from maistro.protocols.embeddings import EmbeddingClient
     from maistro.protocols.memory import (
         ContextAssemblyPolicy,
@@ -187,7 +185,8 @@ class Container:
     prompt_manager: PromptManager = None  # type: ignore[assignment]
     capabilities: CapabilityRegistry = None  # type: ignore[assignment]  # wired in create_container
     episodic_store: EpisodicStore = None  # type: ignore[assignment]  # wired in create_container
-    project_store: ProjectStore = None  # type: ignore[assignment]  # wired in create_container
+    # Compatibility name retained for callers; it is the canonical scope store.
+    project_store: ProjectScopeStore = None  # type: ignore[assignment]  # wired in create_container
     # Canonical execution spine (#41): the Project scope tree work is filed in,
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
@@ -308,8 +307,9 @@ class Container:
     # process-wide singleton (quota/usage_log.py) so this container and any
     # caller using build_node_resolver's standalone default share state.
     usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
-    #: SQLite's hot-path usage log is memory-backed with an explicit
-    #: write-behind persistence layer. `None` means the deployment chose an
+    #: Durable write-behind owner for the SQLite usage log, when configured.
+    #: Callers may flush it periodically via `flush_usage_log()`; `aclose()`
+    #: performs the shutdown flush. `None` means the deployment chose an
     #: ephemeral backend; health reports that mixed mode rather than implying
     #: quota-rate accounting survives restart.
     usage_log_persistence: Any = None
@@ -396,6 +396,22 @@ class Container:
         if self.usage_log_persistence is not None:
             await self.usage_log_persistence.snapshot(self.usage_log)
 
+    async def _flush_usage_log_on_shutdown(self) -> None:
+        """Flush the usage log during `aclose`, without failing the shutdown.
+
+        The final flush of the write-behind `SqliteUsageLog` (#1204): a
+        container wired with `usage_log_persistence` must not drop the events
+        recorded since the last periodic snapshot just because the process is
+        going down. Idempotent by the durable event identity, so a shutdown
+        racing a periodic flush cannot double-persist. A failure here must not
+        block the rest of the shutdown, which is why the exception is only
+        logged.
+        """
+        try:
+            await self.flush_usage_log()
+        except Exception:
+            logger.exception("container: the usage log did not flush cleanly")
+
     async def aclose(self) -> None:
         """Release what this container took. Idempotent.
 
@@ -430,6 +446,7 @@ class Container:
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
+        await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool
 
@@ -1659,6 +1676,8 @@ async def create_container(
     pg_pool = None
     holds_pg_pool = False
     holds_db_pool = False
+    usage_log = get_default_usage_log()
+    usage_log_persistence: Any = None
     stores_memory_backed = False
     if config.database_url.startswith("sqlite:"):
         # A pathless `sqlite://` selects SQLite's in-memory database: the
@@ -1678,6 +1697,11 @@ async def create_container(
         # `aclose` closes them. The pg branch below sets its flag for the same
         # reason.
         holds_db_pool = True
+        from maistro.quota.sqlite_usage_log import SqliteUsageLog
+
+        usage_log_persistence = SqliteUsageLog(db_pool)
+        await usage_log_persistence.ensure_schema()
+        usage_log = await usage_log_persistence.restore()
     elif config.database_url.startswith(POSTGRES_SCHEMES):
         (
             pg_pool,
@@ -1707,7 +1731,6 @@ async def create_container(
     episodic_store = await _wire_episodic_store(
         database_url=config.database_url, pg_pool=pg_pool, db_pool=db_pool
     )
-    project_store = InMemoryProjectStore()
     archive_store = build_archive_store(config.archive_url)
     # Built here rather than below, because the admission seam routes on it: a
     # separately-constructed default registry would disagree with the one the
@@ -1755,7 +1778,7 @@ async def create_container(
     context_assembly_policy = DefaultContextAssemblyPolicy(
         episodic_store=episodic_store,
         outcome_store=outcome_store,
-        project_store=project_store,
+        project_store=project_scope_store,
         # The same client #188 wires for durable memory similarity. Absent, the
         # hybrid score is its lexical term alone rather than a second formula.
         embedding_client=embeddings,
@@ -1966,7 +1989,7 @@ async def create_container(
         intent_registry=intent_registry,
         capabilities=capabilities,
         episodic_store=episodic_store,
-        project_store=project_store,
+        project_store=project_scope_store,
         project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         run_store=run_store,
@@ -2238,6 +2261,7 @@ _REQUIRED_PG_TABLES: Final = (
     "learnings",
     "outcomes",
     "quota_usage",
+    "quota_usage_events",
     "sessions",
     # A turn's at-most-once marker, a row of its own since 023 (#327). Listed
     # for the same reason as `prompt_labels`: without it a database migrated

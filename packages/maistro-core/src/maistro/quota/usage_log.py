@@ -12,10 +12,10 @@ this is a pure record of what we actually observed locally.
 from __future__ import annotations
 
 import time
-import uuid
 from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from maistro.quota.rate_profile import LimitUnit
 
@@ -30,13 +30,12 @@ _TOKEN_UNITS: tuple[LimitUnit, ...] = (
 @dataclass(frozen=True)
 class UsageEvent:
     timestamp: float
-    # Stable identity lets write-behind persistence retry a flush without
-    # counting the same logical provider call twice.
-    event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     input_tokens: int = 0
     output_tokens: int = 0
     images: int = 0
     cost_usd: float = 0.0
+    # Generated once when the event is recorded and retained across restore.
+    event_id: str = field(default_factory=lambda: uuid4().hex)
 
     @property
     def total_tokens(self) -> int:
@@ -88,11 +87,11 @@ class InMemoryUsageLog:
         log.events.append(
             UsageEvent(
                 timestamp=now,
-                event_id=event_id or uuid.uuid4().hex,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 images=images,
                 cost_usd=cost_usd,
+                event_id=event_id if event_id is not None else uuid4().hex,
             )
         )
         self._prune(log, now)

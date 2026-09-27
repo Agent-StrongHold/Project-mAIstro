@@ -74,6 +74,14 @@ async def test_sqlite_backend_wires_sqlite_durable_event_stores() -> None:
     assert restored.tokens_since("provider:model", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 7
 
 
+async def test_context_assembly_uses_the_canonical_scope_store() -> None:
+    container = await _container(database_url="sqlite://")
+
+    assert container.project_store is container.project_scope_store
+    root = await container.project_scope_store.create_root("context-wiring")
+    assert await container.context_assembly_policy.layer0(root.project_id) == ""
+
+
 # --- Resilience (ADR-066) ----------------------------------------------------
 
 

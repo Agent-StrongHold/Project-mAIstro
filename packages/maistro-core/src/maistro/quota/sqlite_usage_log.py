@@ -22,12 +22,17 @@ protocol -- it's a periodic snapshot layer that sits *beside* the live
     # on restart:
     log = await persist.restore()
 
-`snapshot` only ever appends events newer than the last one it persisted per
-scope. Stable event identities preserve events sharing a timestamp and make
-overlapping flushes and crash/retry idempotent. `restore` rehydrates by calling
-`InMemoryUsageLog.record` for each row in timestamp order, which reproduces
-`sum_between`'s (start, end] boundary semantics exactly rather than re-deriving
-them.
+Each `UsageEvent` carries a generated identity. SQLite enforces that identity
+with a unique index, and `snapshot` uses conflict-ignore inserts. This makes a
+retry after an ambiguous commit safe even when the in-memory process has not
+recorded that the commit completed. A per-instance lock also keeps selection,
+insert, commit, and any local bookkeeping one operation for ordinary concurrent
+callers; the database identity remains the authority when multiple persistence
+instances share a database.
+
+`restore` rehydrates by calling `InMemoryUsageLog.record` for each row in
+(timestamp, event-id) order, which reproduces `sum_between`'s (start, end]
+boundary semantics exactly rather than re-deriving them.
 """
 
 from __future__ import annotations
@@ -43,7 +48,7 @@ if TYPE_CHECKING:
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_events (
-    event_id TEXT,
+    event_id TEXT NOT NULL UNIQUE,
     scope_key TEXT NOT NULL,
     timestamp REAL NOT NULL,
     input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -68,67 +73,67 @@ class SqliteUsageLog:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
-        self._persisted_event_ids: set[str] = set()
-        # A connection is shared by several quota users in one process. The
-        # lock prevents overlapping snapshots from racing before SQLite gets
-        # to the unique event identity; the unique index covers other
-        # processes and crash/retry after commit.
-        self._snapshot_lock = asyncio.Lock()
+        self._operation_lock = asyncio.Lock()
 
     async def ensure_schema(self) -> None:
-        """Create or upgrade usage_events without losing existing events."""
-        async with serialized_schema_upgrade(self._conn):
+        """Create the usage_events table and its indexes.
+
+        The event-id column is added and backfilled for databases created by
+        the timestamp-only schema. Existing rows receive identities derived
+        from their stable SQLite rowids; new rows always come from
+        `UsageEvent.event_id`. The upgrade runs through the shared
+        `serialized_schema_upgrade` discipline (per-connection asyncio lock +
+        ``BEGIN IMMEDIATE``) so concurrent store initializations sharing one
+        database cannot interleave; this instance's operation lock keeps the
+        migration exclusive of `snapshot`/`restore` on the same connection.
+        """
+        async with self._operation_lock, serialized_schema_upgrade(self._conn):
             await self._conn.execute(_SCHEMA)
             cursor = await self._conn.execute("PRAGMA table_info(usage_events)")
-            columns = {row[1] for row in await cursor.fetchall()}
-            if "event_id" not in columns:
+            columns = await cursor.fetchall()
+            if not any(row[1] == "event_id" for row in columns):
                 await self._conn.execute("ALTER TABLE usage_events ADD COLUMN event_id TEXT")
-                await self._conn.execute(
-                    "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
-                )
-            await self._conn.execute(_INDEX)
             await self._conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_usage_events_event_id ON usage_events (event_id)"
+                "UPDATE usage_events SET event_id = 'legacy:' || rowid WHERE event_id IS NULL"
             )
-            await self._conn.execute("PRAGMA busy_timeout = 5000")
-            await self._conn.commit()
+            await self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_event_id "
+                "ON usage_events (event_id)"
+            )
+            await self._conn.execute(_INDEX)
 
     async def snapshot(self, log: InMemoryUsageLog) -> None:
-        """Persist events recorded since the last `snapshot` call.
+        """Persist the currently retained events, idempotently.
 
-        Best-effort and additive: call this periodically (every N recorded
-        events, or every T seconds) rather than synchronously on every
-        `record()` -- the in-memory log stays the sole source of truth for
-        live reads; this only makes it survive a restart.
+        The live log remains the source of truth for reads. Replaying retained
+        events on each flush is intentional: the unique event identity makes
+        this safe and avoids a process-local watermark whose update could be
+        lost after a successful commit.
         """
-        async with self._snapshot_lock:
-            rows: list[tuple[str, str, float, int, int, int, float]] = []
-            for scope_key in log.scope_keys():
-                for event in log.events_for(scope_key):
-                    if event.event_id in self._persisted_event_ids:
-                        continue
-                    rows.append(
-                        (
-                            event.event_id,
-                            scope_key,
-                            event.timestamp,
-                            event.input_tokens,
-                            event.output_tokens,
-                            event.images,
-                            event.cost_usd,
-                        )
-                    )
-
+        async with self._operation_lock:
+            rows = [
+                (
+                    event.event_id,
+                    scope_key,
+                    event.timestamp,
+                    event.input_tokens,
+                    event.output_tokens,
+                    event.images,
+                    event.cost_usd,
+                )
+                for scope_key in log.scope_keys()
+                for event in log.events_for(scope_key)
+            ]
             if not rows:
                 return
             await self._conn.executemany(
-                "INSERT OR IGNORE INTO usage_events "
+                "INSERT INTO usage_events "
                 "(event_id, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (event_id) DO NOTHING",
                 rows,
             )
             await self._conn.commit()
-            self._persisted_event_ids.update(row[0] for row in rows)
 
     async def restore(self, *, max_retention_s: float = 86_400.0) -> InMemoryUsageLog:
         """Rehydrate a fresh `InMemoryUsageLog` from persisted events.
@@ -139,29 +144,17 @@ class SqliteUsageLog:
         continuously-running one, and `sum_between`'s boundary semantics are
         reproduced exactly rather than re-derived.
 
-        It also seeds the event-id set from the rows just read, so this same
-        instance's next `snapshot()` call is a no-op rather than a duplicate
-        insert after a restart.
+        Event identities are restored along with their usage values, so a
+        later snapshot of the restored log remains idempotent as well.
         """
         log = InMemoryUsageLog(max_retention_s=max_retention_s)
-        cursor = await self._conn.execute(
-            "SELECT event_id, rowid, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd "
-            "FROM usage_events ORDER BY timestamp ASC, rowid ASC"
-        )
-        rows = await cursor.fetchall()
-        for (
-            event_id,
-            rowid,
-            scope_key,
-            timestamp,
-            input_tokens,
-            output_tokens,
-            images,
-            cost_usd,
-        ) in rows:
-            # A legacy row receives a stable identity during restore; current
-            # schemas populate it at insert time.
-            stable_id = str(event_id or f"legacy:{rowid}")
+        async with self._operation_lock:
+            cursor = await self._conn.execute(
+                "SELECT event_id, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd "
+                "FROM usage_events ORDER BY timestamp ASC, event_id ASC"
+            )
+            rows = await cursor.fetchall()
+        for event_id, scope_key, timestamp, input_tokens, output_tokens, images, cost_usd in rows:
             log.record(
                 scope_key,
                 input_tokens=input_tokens,
@@ -169,9 +162,8 @@ class SqliteUsageLog:
                 images=images,
                 cost_usd=cost_usd,
                 now=timestamp,
-                event_id=stable_id,
+                event_id=event_id,
             )
-            self._persisted_event_ids.add(stable_id)
         return log
 
 

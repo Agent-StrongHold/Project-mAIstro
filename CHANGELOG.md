@@ -536,6 +536,17 @@ or placeholder-only section.
   evidence is present, not that it proves the claim; a reviewer still judges
   that.
 
+- **The Coverage gate's job timeout is 30 minutes instead of 15.**
+  (no linked issue: base-branch CI capacity) The timeout change itself landed
+  with #1592; this records it. The gate runs its non-publish suites serially
+  after the publish-set floor (six when measured, seven since
+  maistro-registry joined; the root `tests/` suite alone took 7m49s on
+  #1591), so it was finishing at ~14 minutes and being cancelled at 15 on
+  some PRs, which blocks the PR without measuring anything. The measured
+  suites, `--source` set, the 87% publish-set floor and the 90% line / 80%
+  branch diff thresholds are unchanged. Running those suites as parallel
+  producers is tracked separately in #1605.
+
 - **A chat turn that cannot get its canonical Run is refused with a retryable
   503 instead of answered ungoverned (#1108, partial).**
   Owner decision 2026-09-23, amending ADR-082326-c126 and superseding #223 AC4.
@@ -682,6 +693,19 @@ or placeholder-only section.
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
 ### Fixed
+
+- **Agent builder, intent routing and RSI Stop work from the keyboard (#370,
+  partial).** The Agents builder's strategy cards are a named radio group of
+  native radio inputs (arrow keys change the strategy; each is named by its
+  strategy and described by its summary). The Intent Map's click-only agent
+  cell is now an "Edit routing for <intent>" disclosure button that reveals
+  the agent select; Escape collapses it and returns focus to the button (the
+  Intent Map is still client-side only and not persisted). On
+  the RSI page the Stop control for a running run was a `<span>` nested inside
+  the run row's `<button>`, so it could not be reached by keyboard; it is now
+  a sibling "Stop run <id>" button (same `POST /v1/rsi/runs/{id}/stop`), and
+  the row is a `<button aria-pressed>`. A Playwright journey drives all three
+  with keys only and runs axe on `main` (color-contrast excluded).
 
 - **Expired task idempotency claims are now purged (#325, partial).**
   `purge_expired` existed on every `task_idempotency` backend, but nothing in

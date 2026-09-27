@@ -1,4 +1,4 @@
-"""One suite over both durable Project scope stores (#132).
+"""One suite over every Project scope store: memory, SQLite, PostgreSQL.
 
 Was `test_sqlite_scope_store.py`, which held the whole contract and exercised
 only SQLite. `PgProjectScopeStore` landed with #132 and nothing but
@@ -7,6 +7,13 @@ visibility, the cross-Workspace and cycle refusals and the non-empty delete
 refusal were all *claimed* for PostgreSQL and checked for SQLite. Two stores
 implementing one contract, with one of them tested, is how they come to
 disagree.
+
+The in-memory store joined the same suite for #38: it is the store the
+container wires when no durable substrate is configured, so a membership
+primitive only the durable backends exercise (merge_membership landing for
+#1148) ships untested against the store those callers actually run -- which
+is how a branch passed review with the in-memory leg at 16.7% line coverage
+on exactly the lines the gate exists to measure.
 
 The bodies below are the SQLite suite's, generalised. "Reopen" becomes "a fresh
 store instance on the same durable substrate", which is what the SQLite version
@@ -38,6 +45,31 @@ from maistro.projects.scope import (
     ProjectScopedResource,
 )
 from maistro.testing.postgres import postgres_dsn
+
+
+class _MemoryBackend:
+    """The store the container wires when no durable substrate is configured.
+
+    `store()` hands out the same object every call: for the in-memory store
+    the object *is* the substrate, so "does it survive the object that wrote
+    it" is answered by construction rather than by reopening. That makes the
+    reopen-shaped assertions trivially true here instead of false -- the
+    honest weaker leg, not a pretend durable one. The concurrency tests still
+    mean something on it: two `store()` handles are two callers, and the
+    single-event-loop store must keep the same invariants the serialized
+    durable writers keep (#1147/#1148).
+    """
+
+    def __init__(self) -> None:
+        from maistro.projects.scope_store import InMemoryProjectScopeStore
+
+        self._store = InMemoryProjectScopeStore()
+
+    async def store(self):
+        return self._store
+
+    async def close(self) -> None:
+        return None
 
 
 class _SqliteBackend:
@@ -83,8 +115,12 @@ class _PostgresBackend:
         return None
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def backend(request, tmp_path):
+    if request.param == "memory":
+        yield _MemoryBackend()
+        return
+
     if request.param == "sqlite":
         made = _SqliteBackend(tmp_path)
         yield made
@@ -381,6 +417,33 @@ async def test_a_membership_must_match_its_projects_workspace(backend) -> None:
         )
 
 
+async def test_a_delegated_merge_must_match_its_projects_workspace(backend) -> None:
+    """`merge_membership` carries the same Workspace invariant
+    `set_membership` does, decided inside the same critical section as the
+    merge itself. A delegated re-grant filed under the wrong Workspace would
+    otherwise union its grants onto a row a different Workspace's owner never
+    made -- the cross-Workspace leak #38's scope tree exists to prevent,
+    arriving through the one write path that bypasses the owner-only checks.
+    """
+    store = await backend.store()
+    workspace_id = _workspace()
+    other = _workspace("other-")
+    root = await store.create_root(workspace_id)
+
+    with pytest.raises(ProjectIntegrityError, match="Workspace does not match"):
+        await store.merge_membership(
+            ProjectMembership(
+                workspace_id=other,
+                project_id=root.project_id,
+                principal_id="principal-1",
+                grants={"read"},
+            )
+        )
+
+    # Fail closed: the refused merge wrote nothing.
+    assert await store.memberships_for(root.project_id, principal_id="principal-1") == []
+
+
 async def test_a_resource_must_match_its_projects_workspace(backend) -> None:
     store = await backend.store()
     workspace_id = _workspace()
@@ -434,7 +497,13 @@ async def test_a_tree_deeper_than_the_purge_bound_fails_rather_than_spinning(
     would prove something about the number sixty-five, not about the branch.
     """
     store = await backend.store()
-    monkeypatch.setattr(sys.modules[type(store).__module__], "_MAX_PURGE_PASSES", 2)
+    module = sys.modules[type(store).__module__]
+    if not hasattr(module, "_MAX_PURGE_PASSES"):
+        pytest.skip(
+            "this backend drains a Workspace in one pass by construction, so "
+            "the iterative bound the failure mode lives in does not exist here"
+        )
+    monkeypatch.setattr(module, "_MAX_PURGE_PASSES", 2)
 
     workspace_id = _workspace()
     root = await store.create_root(workspace_id)
@@ -628,6 +697,108 @@ async def test_concurrent_membership_writes_leave_exactly_one_row(backend) -> No
     memberships = await fresh.memberships_for(root.project_id, principal_id="principal-1")
     assert len(memberships) == 1
     assert memberships[0].grants in ({"publish"}, {"review"})
+
+
+async def test_a_revocation_racing_a_delegated_merge_cannot_resurrect_revoked_grants(
+    backend,
+) -> None:
+    """`merge_membership` must decide what to preserve inside the same critical
+    section that writes the row (#1148). An owner revocation racing a
+    delegated re-grant therefore has exactly two valid outcomes: the
+    revocation commits first and the merge starts a fresh row carrying only
+    the delegated grant, or the merge commits first and the revocation then
+    removes the whole row. The invalid outcome -- the row coming back with
+    the revoked grant unioned in -- is what reading the row with
+    `memberships_for` and then upserting through `set_membership` produced
+    when the revocation landed between the two calls."""
+    store_a = await backend.store()
+    store_b = await backend.store()
+    workspace_id = _workspace()
+    root = await store_a.create_root(workspace_id)
+
+    for _ in range(5):
+        await store_a.set_membership(
+            ProjectMembership(
+                workspace_id=workspace_id,
+                project_id=root.project_id,
+                principal_id="cara",
+                grants={"publish"},
+            )
+        )
+        await asyncio.gather(
+            store_b.remove_membership(root.project_id, principal_id="cara"),
+            store_a.merge_membership(
+                ProjectMembership(
+                    workspace_id=workspace_id,
+                    project_id=root.project_id,
+                    principal_id="cara",
+                    grants={"read"},
+                )
+            ),
+        )
+
+        fresh = await backend.store()
+        memberships = await fresh.memberships_for(root.project_id, principal_id="cara")
+        assert len(memberships) <= 1
+        if memberships:
+            assert memberships[0].grants == {"read"}
+
+
+async def test_a_delegated_merge_preserves_the_row_it_finds(backend) -> None:
+    """A delegated merge into an existing row unions the caller's grants and
+    delegable authority onto it and carries the row's identity, `created_at`,
+    `denies` and `role` forward -- the same preservation `set_membership`'s
+    callers relied on, now decided atomically inside the store."""
+    store = await backend.store()
+    workspace_id = _workspace()
+    root = await store.create_root(workspace_id)
+    owner_issued = await store.set_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            role="editor",
+            grants={"publish"},
+            denies={"delete"},
+            delegable_grants={"publish"},
+        )
+    )
+
+    merged = await store.merge_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"read"},
+            delegable_grants={"read"},
+        )
+    )
+
+    assert merged.membership_id == owner_issued.membership_id
+    assert merged.created_at == owner_issued.created_at
+    assert merged.role == "editor"
+    assert merged.grants == {"publish", "read"}
+    assert merged.denies == {"delete"}
+    assert merged.delegable_grants == {"publish", "read"}
+    fresh = await backend.store()
+    reloaded = await fresh.memberships_for(root.project_id, principal_id="cara")
+    assert len(reloaded) == 1
+    assert reloaded[0].grants == {"publish", "read"}
+
+    # With no row left -- as after an owner revocation -- the merge starts a
+    # fresh row carrying only the delegated authority.
+    await store.remove_membership(root.project_id, principal_id="cara")
+    re_granted = await store.merge_membership(
+        ProjectMembership(
+            workspace_id=workspace_id,
+            project_id=root.project_id,
+            principal_id="cara",
+            grants={"read"},
+            delegable_grants={"read"},
+        )
+    )
+    assert re_granted.grants == {"read"}
+    assert re_granted.membership_id != owner_issued.membership_id
 
 
 async def test_a_membership_survives_a_fresh_store_and_a_removal(backend) -> None:
