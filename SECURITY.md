@@ -355,6 +355,11 @@ Stronghold's `SECURITY.md` carries several caps the engine does not (yet) have a
    AppArmor policy nor relaxes production sandbox flags. This lane does **not** prove
    AppArmor confinement. Current executed evidence and remaining validation limits are in
    [`docs/testing/inventory-notes/l80-securityfs-lane-repair.md`](docs/testing/inventory-notes/l80-securityfs-lane-repair.md).
+   The subsequent [seed-path repair and live validation](docs/testing/inventory-notes/l80-seed-path-replacement.md)
+   also prove refusal when an indexed file is replaced by a directory or has a
+   symlinked parent: neither authorizes copying unrelated host contents. Seed
+   preparation assumes a stable, trusted host worktree, not concurrent host-side
+   mutation. This additional local evidence does not verify hosted CI execution.
    The Docker backend remains a shared-kernel
    guardrail rather than a Tier-1/Tier-2 hostile-code boundary; ADR-093 requires those stronger
    backends for untrusted autonomous execution. Unattended RSI (`maistro_rsi run`/`evolve`) is

@@ -46,6 +46,7 @@ this, for the same reason there is none for `--network=none`.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -393,6 +394,7 @@ class ContainerBuilderSandbox:
                 str(self._repo_root),
                 "--null",
                 "--verbatim-files-from",
+                "--no-recursion",
                 "--files-from=-",
             ],
             input=tracked,
@@ -512,7 +514,13 @@ class ContainerBuilderSandbox:
             return listed.stdout
 
     def _tracked_seed_files(self) -> bytes:
-        """Return a NUL-delimited allowlist of existing indexed paths."""
+        """Return indexed files without traversing symlink parents or directories.
+
+        The trusted host must keep the worktree stable during seed preparation.
+        An index entry authorizes one leaf, not whatever a replacement directory
+        or symlinked ancestor exposes at that path. Leaf symlinks are archived as
+        links (tar never dereferences them), not as their host-side targets.
+        """
         listed = self._list_indexed_paths(self._git_index_path())
         existing: list[bytes] = []
         for entry in listed.split(b"\0"):
@@ -531,9 +539,19 @@ class ContainerBuilderSandbox:
             path = PurePosixPath(os.fsdecode(raw_path))
             if path.is_absolute() or ".." in path.parts:
                 raise RuntimeError(f"git returned an unsafe seed path: {path}")
-            candidate = self._repo_root.joinpath(*path.parts)
-            if candidate.exists() or candidate.is_symlink():
-                existing.append(raw_path)
+            candidate = self._repo_root
+            try:
+                for part in path.parts[:-1]:
+                    candidate /= part
+                    if not stat.S_ISDIR(candidate.lstat().st_mode):
+                        raise RuntimeError(f"git returned an unsafe seed path: {path}")
+                leaf_mode = (self._repo_root / path).lstat().st_mode
+            except FileNotFoundError:
+                # An unstaged deletion is intentionally absent from the seed.
+                continue
+            if not (stat.S_ISREG(leaf_mode) or stat.S_ISLNK(leaf_mode)):
+                raise RuntimeError(f"git returned an unsafe seed path: {path}")
+            existing.append(raw_path)
         return b"".join(path + b"\0" for path in existing)
 
     def _extract_seed(

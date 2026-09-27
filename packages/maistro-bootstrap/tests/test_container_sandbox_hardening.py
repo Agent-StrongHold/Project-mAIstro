@@ -18,6 +18,7 @@ backend — see that file for why the fake here is not sufficient evidence).
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,51 @@ def test_seed_allowlist_reads_split_git_index(tmp_path: Path) -> None:
     listed = ContainerBuilderSandbox(tmp_path)._tracked_seed_files()
 
     assert listed.split(b"\0") == [b"added.py", b"tracked.py", b""]
+
+
+@pytest.mark.parametrize("replacement", ["directory", "symlink-parent", "fifo"])
+def test_seed_allowlist_refuses_replaced_index_paths(tmp_path: Path, replacement: str) -> None:
+    """Real Git index entries authorize files, not traversal or recursion."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tracked = repo / "nested" / "config.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("indexed content\n")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    tracked.parent.rename(repo / "original-nested")
+    if replacement == "directory":
+        tracked.mkdir(parents=True)
+        (tracked / "unrelated-host-secret.txt").write_text("sentinel")
+    elif replacement == "fifo":
+        tracked.parent.mkdir()
+        os.mkfifo(tracked)
+    else:
+        private = tmp_path / "host-private"
+        private.mkdir()
+        (private / "config.txt").write_text("sentinel")
+        tracked.parent.symlink_to(private, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="unsafe seed path"):
+        ContainerBuilderSandbox(repo)._tracked_seed_files()
+
+
+@pytest.mark.parametrize("replacement", ["missing-file", "missing-parent", "leaf-symlink"])
+def test_seed_allowlist_preserves_safe_worktree_changes(tmp_path: Path, replacement: str) -> None:
+    tracked = tmp_path / "nested" / "config.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("indexed content\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    tracked.unlink()
+    if replacement == "missing-parent":
+        tracked.parent.rmdir()
+    elif replacement == "leaf-symlink":
+        # A dangling leaf is copied as a link, never read through on the host.
+        tracked.symlink_to("missing-target")
+
+    listed = ContainerBuilderSandbox(tmp_path)._tracked_seed_files()
+    assert listed == (b"nested/config.txt\0" if replacement == "leaf-symlink" else b"")
 
 
 def test_missing_or_replaced_harness_refuses_the_sandbox(
@@ -380,6 +426,7 @@ def test_seed_is_a_host_side_tar_with_index_allowlist_and_denylist(
     assert create[create.index("-C") + 1] == str(tmp_path)
     assert "--null" in create
     assert "--verbatim-files-from" in create
+    assert "--no-recursion" in create
     assert "--files-from=-" in create
     # macOS bsdtar must not smugggle ._* AppleDouble files into the seed.
     create_env = recorder.envs[recorder.calls.index(create)]

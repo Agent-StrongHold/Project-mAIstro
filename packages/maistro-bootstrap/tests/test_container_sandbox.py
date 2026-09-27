@@ -321,6 +321,35 @@ def test_seed_leaves_ambient_credentials_on_the_host(tmp_path: Path) -> None:
         assert '+print("EDITED")' in patch
 
 
+@_needs_isolating_daemon
+@pytest.mark.parametrize("replacement", ["directory", "symlink-parent"])
+def test_seed_refuses_replaced_index_paths(tmp_path: Path, replacement: str) -> None:
+    """An index entry must not authorize unrelated contents at the same path."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _repo_with_file(repo)
+    tracked = repo / "nested" / "config.txt"
+    tracked.parent.mkdir()
+    tracked.write_text("indexed content\n")
+    subprocess.run(["git", "add", "nested/config.txt"], cwd=repo, check=True)
+    # Preserve the indexed file while replacing its worktree path, as happens
+    # during an unstaged file/directory or directory/symlink type change.
+    tracked.parent.rename(repo / "original-nested")
+    if replacement == "directory":
+        tracked.mkdir(parents=True)
+        (tracked / "unrelated-host-secret.txt").write_text("l80-secret-sentinel")
+    else:
+        private = tmp_path / "host-private"
+        private.mkdir()
+        (private / "config.txt").write_text("l80-secret-sentinel")
+        tracked.parent.symlink_to(private, target_is_directory=True)
+
+    sandbox = ContainerBuilderSandbox(repo)
+    with pytest.raises(RuntimeError, match="unsafe seed path"), sandbox:
+        pytest.fail("unsafe host content was admitted into the sandbox")
+    assert sandbox._cid is None, "seed refusal must clean up the container"
+
+
 def _repo_with_file(tmp_path: Path) -> None:
     (tmp_path / "hello.py").write_text('print("original")\n', encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)

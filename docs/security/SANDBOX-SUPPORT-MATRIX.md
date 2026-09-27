@@ -195,6 +195,11 @@ privilege before Docker starts. Host AppArmor policy and production sandbox
 flags are unchanged; AppArmor confinement is not part of this lane's evidence.
 See [current execution evidence](../testing/inventory-notes/l80-securityfs-lane-repair.md)
 for local results and the outstanding remote validation requirement.
+The [seed-path regression record](../testing/inventory-notes/l80-seed-path-replacement.md)
+adds a subsequent live rootless run and independent rootful refusal. Indexed
+paths with symlinked parents or replacement directories are refused before
+archiving; tar never recurses from an indexed leaf. The host worktree must stay
+stable during seed preparation. Hosted CI execution remains unverified.
 
 ## Verification
 
