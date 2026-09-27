@@ -34,6 +34,14 @@ IMAGE_GENERATE_CAPABILITY = "image.generate"
 
 _GATEWAY_TRUST_TIER = "t1"
 
+_IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a")
+
+
+def _is_image(data: bytes) -> bool:
+    if data.startswith(_IMAGE_SIGNATURES):
+        return True
+    return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+
 
 class ImageGenerationError(EffectNotApplied):
     """The gateway produced no image; ``status_code`` feeds credential rotation."""
@@ -125,9 +133,11 @@ def _checked_image(item: object) -> dict[str, str]:
     if not isinstance(encoded, str) or not encoded:
         raise ImageGenerationError("image gateway returned an image without b64_json")
     try:
-        base64.b64decode(encoded, validate=True)
+        decoded = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ImageGenerationError("image gateway returned invalid base64") from exc
+    if not _is_image(decoded):
+        raise ImageGenerationError("image gateway returned bytes that are not a PNG/JPEG/GIF/WebP")
     revised = item.get("revised_prompt")
     return {"b64_json": encoded, "revised_prompt": revised if isinstance(revised, str) else ""}
 

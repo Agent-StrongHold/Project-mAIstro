@@ -16,7 +16,11 @@ import httpx
 import pytest
 
 from maistro.capabilities.binding import Binding
-from maistro.capabilities.binding_store import BindingDisabled, BindingScopeDenied
+from maistro.capabilities.binding_store import (
+    BindingDisabled,
+    BindingNotFound,
+    BindingScopeDenied,
+)
 from maistro.capabilities.effect_context import new_effect_context
 from maistro.capabilities.governed_invocation import InvocationDenied
 from maistro.capabilities.image_generation import (
@@ -149,6 +153,12 @@ async def test_authorized_call_persists_correlated_invocation_and_returns_bytes(
     assert (stored.run_id, stored.node_run_id, stored.attempt_id) == ("run-1", "nr-1", "att-1")
     assert stored.binding.capability == IMAGE_GENERATE_CAPABILITY
     assert stored.binding.binding_id == "img-p1"
+    assert stored.usage is not None
+    assert (stored.usage.units, stored.usage.output_units, stored.usage.model) == (
+        "images",
+        1,
+        "flux-dev",
+    )
     assert "sk-gateway" not in stored.model_dump_json()
     history = await container.capability_effects.invocation_store.list_effect(
         run_id="run-1", node_run_id="nr-1", binding_id="img-p1", effect_key="page-1"
@@ -217,14 +227,16 @@ async def test_disabled_or_foreign_capability_binding_makes_no_http(gateway: _Ga
     egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
     chat_binding = await container.capability_effects.bindings.get("chat-p1")
     assert chat_binding is not None
-    disabled = Binding(
-        binding_id="img-off",
-        workspace_id="ws1",
-        project_id="p1",
-        capability=IMAGE_GENERATE_CAPABILITY,
-        provider_name="flux-dev",
-        disabled=True,
-        credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+    disabled = await container.capability_effects.bindings.put(
+        Binding(
+            binding_id="img-off",
+            workspace_id="ws1",
+            project_id="p1",
+            capability=IMAGE_GENERATE_CAPABILITY,
+            provider_name="flux-dev",
+            disabled=True,
+            credential_refs=(DEFAULT_MODEL_GATEWAY_CREDENTIAL_REF,),
+        )
     )
 
     with pytest.raises(BindingScopeDenied):
@@ -243,12 +255,14 @@ async def test_policy_denial_makes_no_http(gateway: _Gateway) -> None:
 
     effects = new_effect_context(policy_evaluator=deny)
     egress = ImageGenerationEgress(effects, endpoint=_ENDPOINT)
-    binding = Binding(
-        binding_id="img-p1",
-        workspace_id="ws1",
-        project_id="p1",
-        capability=IMAGE_GENERATE_CAPABILITY,
-        provider_name="flux-dev",
+    binding = await effects.bindings.put(
+        Binding(
+            binding_id="img-p1",
+            workspace_id="ws1",
+            project_id="p1",
+            capability=IMAGE_GENERATE_CAPABILITY,
+            provider_name="flux-dev",
+        )
     )
 
     with pytest.raises(InvocationDenied):
@@ -265,9 +279,19 @@ async def test_policy_denial_makes_no_http(gateway: _Gateway) -> None:
         (200, b"<html>bad gateway</html>"),
         (200, {"created": 1, "data": ["not-an-object"]}),
         (200, {"created": 1, "data": [{"b64_json": "!!not base64!!"}]}),
+        (200, {"created": 1, "data": [{"b64_json": base64.b64encode(b"plain text").decode()}]}),
         (200, httpx.ConnectError("gateway down")),
     ],
-    ids=["gateway-5xx", "empty-data", "no-b64", "non-json", "non-object", "bad-b64", "unreachable"],
+    ids=[
+        "gateway-5xx",
+        "empty-data",
+        "no-b64",
+        "non-json",
+        "non-object",
+        "bad-b64",
+        "not-an-image",
+        "unreachable",
+    ],
 )
 async def test_failed_physical_call_is_failed_invocation_not_empty_success(
     gateway: _Gateway, status: int, body: Any
@@ -311,3 +335,32 @@ async def test_physical_seam_refuses_foreign_provider_or_request(gateway: _Gatew
             LlmGatewayImageProvider(model="flux-dev"), {"prompt": "x"}, endpoint=_ENDPOINT
         )
     assert gateway.requests == []
+
+
+async def test_unregistered_or_tampered_binding_makes_no_http(gateway: _Gateway) -> None:
+    container = await _container()
+    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+    registered = await _image_binding(container)
+    forged = registered.model_copy(update={"binding_id": "never-registered"})
+    widened = registered.model_copy(update={"project_id": "p2"})
+
+    with pytest.raises(BindingNotFound):
+        await _generate(egress, forged)
+    with pytest.raises(BindingScopeDenied, match="registered definition"):
+        await _generate(egress, widened)
+    assert gateway.requests == []
+
+
+@pytest.mark.parametrize(
+    "image",
+    [b"\xff\xd8\xff\xe0jpeg", b"GIF89a-gif", b"RIFF\x00\x00\x00\x00WEBPVP8 "],
+    ids=["jpeg", "gif", "webp"],
+)
+async def test_other_image_formats_are_accepted(gateway: _Gateway, image: bytes) -> None:
+    gateway.body = {"created": 1, "data": [{"b64_json": base64.b64encode(image).decode()}]}
+    container = await _container()
+    egress = ImageGenerationEgress(container.capability_effects, endpoint=_ENDPOINT)
+
+    result = await _generate(egress, await _image_binding(container))
+
+    assert result.images == [image]

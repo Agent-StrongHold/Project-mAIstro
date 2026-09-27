@@ -297,10 +297,14 @@ or placeholder-only section.
   `LlmGatewayImageProvider` (`POST {gateway}/v1/images/generations`,
   `response_format=b64_json`, same LiteLLM gateway and credential pool as
   `model.chat`). The Invocation carries Run/NodeRun/Attempt correlation and
-  returns decoded image bytes; a replayed effect key returns the recorded
-  result without a second call. A gateway error, an empty `data[]` or an image
-  without `b64_json` is a `FAILED` Invocation plus `ImageGenerationError`,
-  never an empty success, and a later Attempt may retry it. Nothing ships a
+  returns decoded image bytes, with usage recorded in `images`; a replayed
+  effect key returns the recorded result without a second call. The Binding
+  must match its registered record, so a caller-built or altered Binding is
+  refused before any HTTP. A gateway error, an empty `data[]`, or a payload
+  that is not base64 PNG/JPEG/GIF/WebP is a `FAILED` Invocation plus
+  `ImageGenerationError`, never an empty success, and a later Attempt may
+  retry it. Generated image bytes are stored in the Invocation result (that is
+  what replay returns) until Canvas blob storage takes them. Nothing ships a
   caller yet: the hive `ImageGenClient` adapter and the book-maker POC
   convergence (#52) will be its consumers.
 

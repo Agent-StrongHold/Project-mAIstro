@@ -1,7 +1,8 @@
 """One governed image egress: Binding -> Invocation -> approved Provider (#286).
 
 Mirrors :mod:`maistro.capabilities.model_chat`. This module owns no HTTP: the
-Binding is checked for the ``image.generate`` capability, policy and
+Binding must match its registered record in the effect context's Binding store
+and authorize the ``image.generate`` capability; policy and
 credential routing run inside the canonical Invocation service, and only then
 does :func:`execute_image_generation` post to the gateway. A Binding pin
 selects the image model; otherwise the request must name one, and an
@@ -16,9 +17,14 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
-from maistro.capabilities.binding_store import BindingDisabled, BindingScopeDenied
+from maistro.capabilities.binding_store import (
+    BindingDisabled,
+    BindingNotFound,
+    BindingScopeDenied,
+    BindingStore,
+)
 from maistro.capabilities.credential_routing import CredentialBackedProvider
-from maistro.capabilities.invocation import Invocation
+from maistro.capabilities.invocation import Invocation, InvocationUsage
 from maistro.capabilities.providers.image_gateway import (
     IMAGE_GENERATE_CAPABILITY,
     ImageGenerationRequest,
@@ -42,7 +48,15 @@ class ImageGenerationResult(BaseModel):
     images: list[bytes]
 
 
-def _require_image_binding(binding: Binding) -> None:
+async def _require_image_binding(bindings: BindingStore, binding: Binding) -> None:
+    # A caller-built Binding is not authority: only the registered record is.
+    registered = await bindings.get(binding.binding_id)
+    if registered is None:
+        raise BindingNotFound(f"Binding {binding.binding_id!r} is not registered")
+    if registered != binding:
+        raise BindingScopeDenied(
+            f"Binding {binding.binding_id!r} does not match its registered definition"
+        )
     if binding.capability != IMAGE_GENERATE_CAPABILITY:
         raise BindingScopeDenied(
             f"Binding {binding.binding_id!r} authorizes Capability {binding.capability!r}, "
@@ -52,6 +66,15 @@ def _require_image_binding(binding: Binding) -> None:
         raise BindingDisabled(
             f"Binding {binding.binding_id!r} is disabled and cannot authorize effects"
         )
+
+
+def _usage(provider: LlmGatewayImageProvider, body: dict[str, Any]) -> InvocationUsage:
+    return InvocationUsage(
+        units="images",
+        output_units=len(body["images"]),
+        model=provider.name,
+        provider="llm-gateway",
+    )
 
 
 def _result(invocation: Invocation) -> ImageGenerationResult:
@@ -84,7 +107,8 @@ class ImageGenerationEgress:
     ) -> ImageGenerationResult:
         """Run one governed image generation and return the decoded images."""
 
-        _require_image_binding(binding)
+        await _require_image_binding(self._effects.bindings, binding)
+        selected: list[LlmGatewayImageProvider] = []
 
         async def resolve(candidate: Binding) -> ResolvedCapabilityProvider | Unavailable:
             model = candidate.provider_name or request.model
@@ -93,7 +117,8 @@ class ImageGenerationEgress:
                     slot=IMAGE_GENERATE_CAPABILITY,
                     reason="neither the Binding nor the request selects an image model",
                 )
-            return LlmGatewayImageProvider(model=model)
+            selected[:] = [LlmGatewayImageProvider(model=model)]
+            return selected[0]
 
         async def execute(provider: ResolvedCapabilityProvider, payload: Any) -> Any:
             if not isinstance(provider, CredentialBackedProvider):
@@ -111,6 +136,7 @@ class ImageGenerationEgress:
             request=request,
             resolver=routing.resolver(resolve),
             executor=routing.executor(execute),
+            usage_from=lambda body: _usage(selected[0], body),
         )
         return _result(invocation)
 
