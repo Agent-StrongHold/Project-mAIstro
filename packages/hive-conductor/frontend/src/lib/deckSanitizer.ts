@@ -19,12 +19,15 @@ import {
 } from "./visualArtifactRenderer";
 
 /**
- * @deprecated Use sanitizeVisualArtifactMarkup for all Design Studio modes.
+ * Sanitize untrusted Deck markup through the one shared #768 boundary.
+ *
+ * @deprecated New Deck code should call `sanitizeVisualArtifactMarkup`
+ * directly; this wrapper stays so Deck consumers cannot fork the allowlist.
  * The unknown input type is intentional: stored JSON can outlive the
- * TypeScript model, so a malformed value must fail closed at this boundary
- * too.
+ * TypeScript model, so a malformed value must fail closed at this boundary.
  */
 export function sanitizeDeckMarkup(markup: unknown): string {
+  if (typeof markup !== "string" || !markup) return "";
   return sanitizeVisualArtifactMarkup(markup);
 }
 

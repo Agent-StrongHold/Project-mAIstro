@@ -9,7 +9,7 @@ inside "ignore" defeats a word-boundary regex while the model reads the word
 unimpeded. Every scanner therefore folds its input through this module first,
 so a bypass fixed for one boundary is fixed for all of them.
 
-Four folds, applied in order where applicable:
+The detection view applies entity/CSS escape decoding before these folds:
 
 1. NFKD — compatibility decomposition (fullwidth forms, ligatures, composed
    accents) so ``ｉｇｎｏｒｅ`` and ``ﬁ`` match their ASCII spellings.
@@ -35,10 +35,39 @@ model-visible representation.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import unicodedata
 from typing import Any
+
+# The whitespace classes are single-escaped regex tokens: [ \t\r\n\f] must
+# match actual tab/CR/LF/FF. Doubling the backslashes would make the class
+# match the literal letters t/r/n/f instead, so a terminator like the `r` in
+# `\\75rl(` would be consumed as the escape's whitespace terminator and the
+# decoded view would read `ul(` where a CSS parser reads `url(`.
+_CSS_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})(?:[ \t\r\n\f]?|(?=$))|\\([^ \t\r\n\f])")
+
+
+def _decode_css_escapes(text: str) -> str:
+    """Decode CSS escapes in the detection view, including hex escapes.
+
+    CSS permits protocol and function names to be written as ``u\\72l`` or
+    ``j\\61vascript``. Decoding these only for matching leaves caller content
+    unchanged while making the scanner see the same tokens as a CSS parser.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        hexadecimal, escaped = match.groups()
+        if escaped is not None:
+            return escaped
+        codepoint = int(hexadecimal, 16)
+        if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+            return "\\ufffd"
+        return chr(codepoint)
+
+    return _CSS_ESCAPE_RE.sub(replace, text)
+
 
 # Invisible characters that are not category Cf but still interrupt a token
 # without rendering. U+034F exists specifically to break character sequences.
@@ -136,20 +165,33 @@ def fold_bounded_leetspeak(text: str) -> str:
 
     def replace(match: re.Match[str]) -> str:
         token = match.group()
-        if not any(ch.isalpha() for ch in token) or not any(ch in "013457@$" for ch in token):
+        # An `@` at the start of a token is an at-rule (`@import`, `@media`),
+        # not leetspeak. Folding it to `a` rewrote `@import` into `aimport`
+        # in the detection view, and the CSS network/code vocabulary — which
+        # matches the at-rule verbatim — could never fire: `@import
+        # "https://evil.example/x.css"` carried no `url(` token for the other
+        # arm to catch and passed every scanner while the reviewed TS sink
+        # blocked it (#817). Mid-token `@` (`m@il`, `h@cker`) still folds.
+        body = token[1:] if token[0] == "@" else token
+        if not any(ch.isalpha() for ch in body) or not any(ch in "013457@$" for ch in body):
             return token
-        return token.translate(_LEETSPEAK)
+        folded = body.translate(_LEETSPEAK)
+        return token[: len(token) - len(body)] + folded
 
     return _LEET_TOKEN_RE.sub(replace, text)
 
 
 def normalize_for_detection(text: str) -> str:
-    """Canonical Warden fold: Unicode, invisibles, homoglyphs, then leetspeak.
+    """Decode markup/CSS escapes, then apply the full Warden detection fold.
 
-    The leetspeak step is intentionally bounded to mixed ASCII tokens; callers
-    that need the user's original text must retain ``text`` separately.
+    Entity and CSS escape decoding happen first so protocol/function tokens are
+    compared as a browser/CSS parser would see them. NFKD then decomposes
+    compatibility forms before the other folds look at them. The leetspeak
+    step is intentionally bounded to mixed ASCII tokens; callers that need the
+    user's original text must retain ``text`` separately.
     """
-    canonical = fold_homoglyphs(strip_invisibles(unicodedata.normalize("NFKD", text)))
+    decoded = _decode_css_escapes(html.unescape(text))
+    canonical = fold_homoglyphs(strip_invisibles(unicodedata.normalize("NFKD", decoded)))
     return fold_bounded_leetspeak(canonical)
 
 
