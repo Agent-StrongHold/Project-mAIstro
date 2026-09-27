@@ -16,9 +16,7 @@ blocks: []
 blocked-by: []
 contracts:
   - behavioral
-tests:
-  - packages/maistro-core/tests/runs/test_chat_admission.py
-  - packages/maistro-core/tests/test_container_chat_runs.py
+tests: []
 history:
   - status: Proposed
     date: 2026-08-23
