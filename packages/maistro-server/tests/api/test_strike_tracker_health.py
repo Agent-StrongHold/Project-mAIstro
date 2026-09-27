@@ -1,4 +1,4 @@
-"""Readiness diagnostics identify the configured strike tracker backend."""
+"""Anonymous readiness does not identify the configured strike tracker backend."""
 
 from __future__ import annotations
 
@@ -34,7 +34,8 @@ def test_readiness_reports_disabled_strike_tracker() -> None:
         app.state.container = previous
 
     assert response.status_code == 200
-    assert response.json()["strike_tracker"] == {"enabled": False, "backend": "none"}
+    assert response.json() == {"status": "ok"}
+    assert "strike_tracker" not in response.text
 
 
 def test_readiness_reports_in_memory_strike_tracker() -> None:
@@ -54,7 +55,5 @@ def test_readiness_reports_in_memory_strike_tracker() -> None:
         app.state.container = previous
 
     assert response.status_code == 200
-    assert response.json()["strike_tracker"] == {
-        "enabled": True,
-        "backend": "InMemoryStrikeTracker",
-    }
+    assert response.json() == {"status": "ok"}
+    assert "InMemoryStrikeTracker" not in response.text
