@@ -25,9 +25,7 @@ from maistro.runs.recovery_events import (
 )
 from maistro.runs.store import StaleExecutionFence
 
-LEDGER = (
-    Path(__file__).resolve().parents[4] / "docs" / "testing" / "recovery-evidence-ledger.json"
-)
+LEDGER = Path(__file__).resolve().parents[4] / "docs" / "testing" / "recovery-evidence-ledger.json"
 
 
 class _RecordingCanonicalSink:
@@ -111,22 +109,32 @@ async def test_stale_worker_cannot_rewrite_after_fence_rotation() -> None:
         node_run_id, lease_holder="worker-old", lease_ttl=timedelta(seconds=30)
     )
     assert attempt.execution_lease is not None
+    stale_token = attempt.execution_lease.fencing_token
     after = attempt.execution_lease.expires_at + timedelta(seconds=1)
     reclaimed = await store.reclaim_expired_attempts(now=after)
     assert len(reclaimed) == 1
 
+    # A newer Attempt now owns the NodeRun. Its fence is not the dead worker's.
+    successor = await store.create_attempt(node_run_id, lease_holder="worker-new")
+    assert successor.execution_lease is not None
+    assert successor.execution_lease.lease_epoch != attempt.execution_lease.lease_epoch
+
     with pytest.raises(StaleExecutionFence):
         await store.transition_attempt(
-            attempt.attempt_id,
+            successor.attempt_id,
             AttemptStatus.COMPLETED,
             result={"text": "stale success"},
-            expected_fence=attempt.execution_lease.epoch,
+            fencing_token=stale_token,
         )
 
     current = await store.get_attempt(attempt.attempt_id)
     assert current is not None
     assert current.status is not AttemptStatus.COMPLETED
     assert current.result != {"text": "stale success"}
+    owned = await store.get_attempt(successor.attempt_id)
+    assert owned is not None
+    assert owned.status is not AttemptStatus.COMPLETED
+    assert owned.result != {"text": "stale success"}
 
 
 async def test_replayed_recovery_fact_keeps_one_event_id() -> None:
