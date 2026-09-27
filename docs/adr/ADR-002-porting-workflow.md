@@ -6,7 +6,7 @@ kind: adr
 status: Accepted
 created: 2026-04-26
 substrate:
-  - maistro-engine#ADR-001
+  - maistro-engine#ADR-095
 implements: []
 related:
   - maistro-engine#ADR-000
@@ -30,7 +30,7 @@ history:
 **Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T0  
-**Depends on:** ADR-001
+**Depends on:** ADR-095
 
 ---
 

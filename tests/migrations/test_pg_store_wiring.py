@@ -150,7 +150,9 @@ async def container(migrated_url):
         AgentConfig(router_api_key="test-key", database_url=migrated_url)
     )
     try:
-        await wired.pg_pool.execute("TRUNCATE learnings, outcomes, sessions, quota_usage")
+        await wired.pg_pool.execute(
+            "TRUNCATE learnings, outcomes, sessions, quota_usage_events, quota_usage"
+        )
         yield wired
     finally:
         await close_pool()
