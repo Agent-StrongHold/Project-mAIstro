@@ -368,7 +368,6 @@ class InvocationQuota(Protocol):
     async def observe(self, invocation: Invocation) -> None: ...
 
 
-
 # Shared across service instances in one worker so a second composition root
 # cannot reconcile a dispatch that is still running in the first one.
 _PROCESS_ACTIVE_DISPATCHES: set[str] = set()
@@ -460,6 +459,101 @@ class InvocationExecutionService:
         if (on_completed := self._on_completed) is not None:
             await on_completed(completed)
 
+    async def _prior_effect(self, history: list[Invocation], effect_key: str) -> Invocation | None:
+        """Replay a completed effect or refuse an outcome that is not FAILED."""
+
+        if not history:
+            return None
+        latest = history[-1]
+        if latest.status is InvocationStatus.COMPLETED:
+            await self._repair_quota(latest)
+            await self._notify_completion(latest)
+            return latest
+        if latest.status is InvocationStatus.FAILED:
+            await self._repair_quota(latest)
+        if latest.status in {
+            InvocationStatus.CREATED,
+            InvocationStatus.RUNNING,
+            InvocationStatus.UNKNOWN,
+        }:
+            raise UnsafeEffectRetry(
+                f"effect {effect_key!r} has outcome {latest.status.value!r}; "
+                "manual/reconciliation evidence is required before retry"
+            )
+        return None
+
+    async def _completed_after_race(
+        self,
+        *,
+        run_id: str,
+        node_run_id: str,
+        binding_id: str,
+        effect_key: str,
+    ) -> Invocation | None:
+        """Return a completion that landed between the history read and create."""
+
+        latest_history = await self._store.list_effect(
+            run_id=run_id,
+            node_run_id=node_run_id,
+            binding_id=binding_id,
+            effect_key=effect_key,
+        )
+        if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
+            latest = latest_history[-1]
+            await self._repair_quota(latest)
+            await self._notify_completion(latest)
+            return latest
+        return None
+
+    async def _run_provider(
+        self,
+        invocation: Invocation,
+        provider: Any,
+        request: Any,
+        executor: ProviderExecutor,
+        usage_from: UsageExtractor | None,
+    ) -> Invocation:
+        """Dispatch one admitted Invocation and terminalize whatever comes back."""
+
+        try:
+            result = await executor(provider, request)
+        except EffectNotApplied as exc:
+            await self._terminalize(invocation, InvocationStatus.FAILED, error=str(exc))
+            raise
+        except asyncio.CancelledError:
+            await self._terminalize(
+                invocation,
+                InvocationStatus.UNKNOWN,
+                error="provider invocation cancelled with unknown external outcome",
+            )
+            raise
+        except Exception as exc:
+            await self._terminalize(
+                invocation,
+                InvocationStatus.UNKNOWN,
+                error=str(exc) or type(exc).__name__,
+            )
+            raise
+
+        try:
+            usage = usage_from(result) if usage_from is not None else None
+            if usage is not None and not isinstance(usage, InvocationUsage):
+                raise TypeError("usage extractor must return InvocationUsage or None")
+        except (Exception, asyncio.CancelledError):
+            await self._terminalize(
+                invocation,
+                InvocationStatus.COMPLETED,
+                result=result,
+                error="provider completed but usage extraction failed",
+            )
+            raise
+        return await self._terminalize(
+            invocation,
+            InvocationStatus.COMPLETED,
+            result=result,
+            usage=usage,
+        )
+
     async def invoke(
         self,
         *,
@@ -491,23 +585,8 @@ class InvocationExecutionService:
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
             )
-            if history:
-                latest = history[-1]
-                if latest.status is InvocationStatus.COMPLETED:
-                    await self._repair_quota(latest)
-                    await self._notify_completion(latest)
-                    return latest
-                if latest.status is InvocationStatus.FAILED:
-                    await self._repair_quota(latest)
-                if latest.status in {
-                    InvocationStatus.CREATED,
-                    InvocationStatus.RUNNING,
-                    InvocationStatus.UNKNOWN,
-                }:
-                    raise UnsafeEffectRetry(
-                        f"effect {effect_key!r} has outcome {latest.status.value!r}; "
-                        "manual/reconciliation evidence is required before retry"
-                    )
+            if (prior := await self._prior_effect(history, effect_key)) is not None:
+                return prior
 
             provider = await resolver(binding)
             if isinstance(provider, Unavailable):
@@ -534,16 +613,15 @@ class InvocationExecutionService:
                 # initial history read. Re-read the canonical row so a stale
                 # admission returns the accepted result instead of dispatching
                 # or surfacing a misleading race error.
-                latest_history = await self._store.list_effect(
-                    run_id=run_id,
-                    node_run_id=node_run_id,
-                    binding_id=binding.binding_id,
-                    effect_key=effect_key,
-                )
-                if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
-                    await self._repair_quota(latest_history[-1])
-                    await self._notify_completion(latest_history[-1])
-                    return latest_history[-1]
+                if (
+                    raced := await self._completed_after_race(
+                        run_id=run_id,
+                        node_run_id=node_run_id,
+                        binding_id=binding.binding_id,
+                        effect_key=effect_key,
+                    )
+                ) is not None:
+                    return raced
                 raise
             try:
                 if self._quota is not None:
@@ -571,52 +649,7 @@ class InvocationExecutionService:
             _PROCESS_ACTIVE_DISPATCHES.add(invocation.invocation_id)
 
         try:
-            try:
-                result = await executor(provider, request)
-            except EffectNotApplied as exc:
-                await self._terminalize(
-                    invocation,
-                    InvocationStatus.FAILED,
-                    error=str(exc),
-                )
-                raise
-            except asyncio.CancelledError:
-                # Cancellation after provider dispatch has indeterminate external
-                # outcome unless the slot-specific adapter proves otherwise.
-                await self._terminalize(
-                    invocation,
-                    InvocationStatus.UNKNOWN,
-                    error="provider invocation cancelled with unknown external outcome",
-                )
-                raise
-            except Exception as exc:
-                await self._terminalize(
-                    invocation,
-                    InvocationStatus.UNKNOWN,
-                    error=str(exc) or type(exc).__name__,
-                )
-                raise
-
-            try:
-                usage = usage_from(result) if usage_from is not None else None
-                if usage is not None and not isinstance(usage, InvocationUsage):
-                    raise TypeError("usage extractor must return InvocationUsage or None")
-            except (Exception, asyncio.CancelledError):
-                # A broken usage parser cannot make a completed physical effect
-                # retryable. Preserve the result; unmeasured quota stays held.
-                await self._terminalize(
-                    invocation,
-                    InvocationStatus.COMPLETED,
-                    result=result,
-                    error="provider completed but usage extraction failed",
-                )
-                raise
-            return await self._terminalize(
-                invocation,
-                InvocationStatus.COMPLETED,
-                result=result,
-                usage=usage,
-            )
+            return await self._run_provider(invocation, provider, request, executor, usage_from)
         finally:
             self._active_dispatches.discard(invocation.invocation_id)
             _PROCESS_ACTIVE_DISPATCHES.discard(invocation.invocation_id)
