@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from maistro.events.envelope import EventEnvelope
 from maistro.graph import Graph, Node
 from maistro.projects.scope_store import InMemoryProjectScopeStore
 from maistro.runs import InMemoryRunStore
@@ -19,7 +20,6 @@ from maistro.runs.recovery_events import (
     RecoveryDispositionEvent,
 )
 from maistro.runs.store import StaleExecutionFence
-from maistro.events.envelope import EventEnvelope
 
 LEDGER = (
     Path(__file__).resolve().parents[4]
@@ -92,9 +92,10 @@ async def test_kill_mid_attempt_parks_and_emits_recovery_event() -> None:
 
     reclaimed = await store.reclaim_expired_attempts(now=after)
     assert len(reclaimed) == 1
-    await AttemptLifecycleReconciler(store, events=sink, source="evidence.kill-mid-attempt").reconcile(
-        reclaimed[0]
+    reconciler = AttemptLifecycleReconciler(
+        store, events=sink, source="evidence.kill-mid-attempt"
     )
+    await reconciler.reconcile(reclaimed[0])
 
     assert recorded.events[0].payload["disposition"] == "recovered_and_parked"
     assert recorded.events[0].type == RECOVERY_EVENT_TYPE
@@ -192,9 +193,15 @@ async def test_second_reconcile_does_not_rewrite_attempt_history() -> None:
     )
     recorded = _RecordingCanonicalSink()
     sink = CanonicalRecoveryEventSink(store, recorded)
-    reconciler = AttemptLifecycleReconciler(store, events=sink, source="evidence.crash-loop")
-    first = await reconciler.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
-    second = await reconciler.reconcile(attempt, cancellation=CancellationCause.RECOVERED)
+    reconciler = AttemptLifecycleReconciler(
+        store, events=sink, source="evidence.crash-loop"
+    )
+    first = await reconciler.reconcile(
+        attempt, cancellation=CancellationCause.RECOVERED
+    )
+    second = await reconciler.reconcile(
+        attempt, cancellation=CancellationCause.RECOVERED
+    )
     again = await store.get_attempt(attempt.attempt_id)
     assert again is not None
     assert again.error == "process lost"
