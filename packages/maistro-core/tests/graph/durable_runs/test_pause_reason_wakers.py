@@ -1,9 +1,15 @@
 """Every parked Graph pause reason names a reachable production waker (#1192).
 
 `PAUSE_RESUME_CONDITIONS` says what each pause waits *for*; nothing said who
-delivers it. `awaiting_remote_delegation` is answer-gated, parks WAITING, and
-the only production answer path (`answer_record` behind Hive HITL) accepts
-PAUSED alone -- so a dispatched delegation can wait forever and no test fails.
+delivers it. `awaiting_remote_delegation` began here as a ledgered gap: it is
+answer-gated but parked WAITING, and the only production answer path
+(`answer_record` behind Hive HITL) accepts PAUSED alone -- so a dispatched
+delegation could wait forever and no test failed. #147 closed that gap by
+giving the delegation pause the same durable answer seam every other
+externally answered node uses: it is human-owned, parks PAUSED, and
+`answer_human_work` delivers the A2A response (the branch decision recorded in
+tests/runs/test_human_pause_reasons.py). Its waker entry below is that
+closure, not a new claim -- removing a ledger entry is how #1192 closes.
 
 `PAUSE_REASON_WAKERS` below is the missing statement, kept test-local on
 purpose: a production registry nobody imports would itself be unreachable
@@ -172,14 +178,24 @@ PAUSE_REASON_WAKERS: dict[str, tuple[Waker, ...]] = {
     PAUSE_AWAITING_HUMAN_APPROVAL: _HUMAN_WAKERS,
     PAUSE_AWAITING_HUMAN_REVIEW: _HUMAN_WAKERS,
     PAUSE_AWAITING_ROLE_DELEGATE: _HUMAN_WAKERS,
+    # Same waker as every other answer-gated reason: the delegating node parks
+    # PAUSED and `answer_human_work` delivers the remote agent's response,
+    # stamping the pause the node wrote (child Run id included) onto the
+    # answer. The A2A receipt it carries is proven where #147's acceptance
+    # lives (tests/graph/nodes/test_agent_delegate_remote_*.py); this entry
+    # asserts only the waker architecture: reachable, canonical-API, accepted
+    # parked status, and a drain for the QUEUED Run it leaves behind.
+    PAUSE_AWAITING_REMOTE_DELEGATION: _HUMAN_WAKERS,
     PAUSE_WAITING_ON_JIRA_SUBTASKS: _TIMER_WAKERS,
     PAUSE_AWAITING_DELEGATION_RECONCILIATION: _TIMER_WAKERS,
 }
 
 #: Known gaps: answer-gated reasons that park WAITING, which no production
 #: path delivers an answer to. Removing an entry is how #1192 closes.
+#: `awaiting_remote_delegation` left this ledger when #147 made the delegation
+#: pause human-owned and answered (see the map above); `awaiting_harness`
+#: remains the open gap.
 UNWOKEN: dict[str, str] = {
-    PAUSE_AWAITING_REMOTE_DELEGATION: "#1192",
     PAUSE_AWAITING_HARNESS: "#1192",
 }
 
@@ -560,13 +576,12 @@ def test_every_ledgered_gap_cites_its_issue() -> None:
 
 
 def test_a_reason_without_a_waker_or_ledger_entry_fails() -> None:
-    ledger = {k: v for k, v in UNWOKEN.items() if k != PAUSE_AWAITING_REMOTE_DELEGATION}
+    ledger = {k: v for k, v in UNWOKEN.items() if k != PAUSE_AWAITING_HARNESS}
 
     problems = coverage_problems(PAUSE_RESUME_CONDITIONS, PAUSE_REASON_WAKERS, ledger)
 
     assert problems == [
-        f"{PAUSE_AWAITING_REMOTE_DELEGATION}: no reachable production waker "
-        "and not in the UNWOKEN ledger"
+        f"{PAUSE_AWAITING_HARNESS}: no reachable production waker and not in the UNWOKEN ledger"
     ]
 
 
@@ -594,8 +609,12 @@ def test_a_ledgered_reason_that_gains_a_waker_fails() -> None:
     )
 
 
-def test_the_hitl_answer_path_cannot_wake_a_waiting_delegation() -> None:
-    problems = kind_problems(PAUSE_AWAITING_REMOTE_DELEGATION, _HITL_ANSWER)
+def test_the_hitl_answer_path_cannot_wake_a_waiting_pause() -> None:
+    """The negative half of the delegation entry above, kept on a reason that
+    still parks WAITING: reconciliation is system-owned and timer-resumable,
+    so the answer path must refuse it on both grounds -- the parked status it
+    holds and the owner its reason declares."""
+    problems = kind_problems(PAUSE_AWAITING_DELEGATION_RECONCILIATION, _HITL_ANSWER)
 
     assert any("parks waiting but submit_hitl_answer accepts ['paused']" in p for p in problems)
     assert any("human-owned reasons only" in p for p in problems)
@@ -776,6 +795,44 @@ def test_a_mixed_frontier_only_its_timer_could_wake_fails() -> None:
 # -- VIA_ACCEPTS is pinned to the shipped APIs, not asserted -------------------
 
 
+def _delegation_record_at(status: RunStatus) -> DurableRunRecord:
+    """A delegation Run at `status`, holding the pause the node actually writes.
+
+    Mirrors `_hitl_record` below for `agent.delegate_remote`: the pause
+    metadata carries the child Run id the node stamped (`#147`), which is what
+    `answer_record` must hand back to the resuming node."""
+    node_run = NodeRun(run_id="run-1192", node_id="d", ordinal=1)
+    for step in (RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.PAUSED):
+        node_run = transition_node_run(node_run, step, at=_DEADLINE - timedelta(hours=1))
+    # Answerable, so the delegation's resume deadline must be ahead of now;
+    # `_DEADLINE` itself is a past fixture date on purpose elsewhere.
+    resume_at = datetime.now(UTC) + timedelta(days=1)
+    pause = {
+        "kind": "hitl",
+        "metadata": {
+            "paused_reason": PAUSE_AWAITING_REMOTE_DELEGATION,
+            "task_id": "remote-1",
+            "run_id": "child-run-1",
+            "mode": "in_process",
+        },
+        "resume_at": resume_at.isoformat(),
+    }
+    return durable_record(
+        {"id": "delegate", "nodes": [{"id": "d", "kind": "agent.delegate_remote"}], "edges": []},
+        run_id="run-1192",
+        status=status,
+        active_node_id="d",
+        node_runs=(node_run,),
+        metadata={
+            "initial_inputs": {},
+            "hitl_answers": {},
+            "pauses": {"d": pause},
+            "pause": pause,
+        },
+        resume_at=resume_at,
+    )
+
+
 def _waiting_delegation_record() -> DurableRunRecord:
     return durable_record(
         {"id": "delegate", "nodes": [{"id": "d", "kind": "agent.delegate_remote"}], "edges": []},
@@ -783,6 +840,18 @@ def _waiting_delegation_record() -> DurableRunRecord:
         status=RunStatus.WAITING,
         active_node_id="d",
     )
+
+
+def test_the_answer_path_delivers_a_paused_delegations_answer() -> None:
+    """The waker entry the map claims, pinned at the shipped API: a PAUSED
+    delegation Run is accepted, queued for its drain, and the node's own pause
+    -- child Run id included -- rides the answer it is resumed with."""
+    answered = answer_record(_delegation_record_at(RunStatus.PAUSED), "d", {"status": "completed"})
+
+    assert answered.run.status is RunStatus.QUEUED
+    stamp = answered.graph_state.metadata["hitl_answers"]["d"]
+    assert stamp["_pause"]["metadata"]["run_id"] == "child-run-1"
+    assert stamp["_pause"]["metadata"]["task_id"] == "remote-1"
 
 
 def test_the_hitl_answer_api_refuses_a_waiting_run() -> None:
@@ -807,7 +876,11 @@ def test_timed_resume_accepts_exactly_its_declared_statuses() -> None:
 
 def test_parked_status_follows_the_executor() -> None:
     assert parked_status(PAUSE_AWAITING_HUMAN_ANSWER) is RunStatus.PAUSED
-    assert parked_status(PAUSE_AWAITING_REMOTE_DELEGATION) is RunStatus.WAITING
+    # The delegation parks PAUSED (answer-gated, human-owned -- see the map
+    # above); its timer-resumable reconciliation sibling parks WAITING. Both
+    # halves of the owner split stay pinned.
+    assert parked_status(PAUSE_AWAITING_REMOTE_DELEGATION) is RunStatus.PAUSED
+    assert parked_status(PAUSE_AWAITING_DELEGATION_RECONCILIATION) is RunStatus.WAITING
 
 
 def test_the_due_ticks_admit_exactly_their_own_node_kinds() -> None:

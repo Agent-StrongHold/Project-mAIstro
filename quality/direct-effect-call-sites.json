@@ -304,7 +304,7 @@
       "line": 518,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
-      "callee": "httpx.post",
+      "callee": "_post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
@@ -513,7 +513,7 @@
       "line": 223,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
-      "callee": "httpx.post",
+      "callee": "_post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
@@ -524,7 +524,7 @@
       "line": 66,
       "category": "MODEL_EFFECT",
       "entry_point": "openai-compatible-http",
-      "callee": "httpx.post",
+      "callee": "_post",
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#56",
       "rationale": "Shipped model call bypasses canonical Provider/Binding/Invocation execution; #56 owns governed model egress."
