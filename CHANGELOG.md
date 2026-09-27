@@ -25,6 +25,35 @@ or placeholder-only section.
 
 ### Security
 
+- **Active root Runs are capped per principal and per Workspace (#1182,
+  partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
+  refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for
+  its actor principal (across Workspaces) or 32 for its Workspace. "Active"
+  means CREATED, QUEUED or RUNNING. Child Runs, parked WAITING/PAUSED Runs and
+  terminal Runs hold no slot, and a parked Run resuming is not a new admission.
+  A duplicate schedule occurrence is still refused as a duplicate. PostgreSQL
+  serializes the insert and the count with transaction-scoped advisory locks,
+  so the ceiling holds across replicas. SQLite relies on the store's write
+  lock, since that tier is a single process. A SQLite refusal rolls back to a
+  savepoint, so a sibling store's open transaction on the shared connection
+  is neither committed nor ended. Partial indexes serve both SQLite counts.
+  - A chat turn that meets a full ceiling first reclaims slots held by dead
+    turns, then asks once more. `recover_stranded_chat_admissions` now also
+    cancels chat Runs stranded in CREATED or QUEUED.
+  - The ceilings are governed floors in `quality/security-resource-floors.json`
+    (`MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL`, `MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE`).
+    Operators may lower them, but raising either requires
+    `ALLOW_UNSAFE_RESOURCE_OVERRIDES`.
+  - Both values appear in maistro-server's `/health` `effective_resource_policy`.
+  - maistro-server `/v1/chat/completions` answers a refused turn with 429 and
+    `Retry-After`. `Container` chat admission re-raises the refusal instead of
+    answering unrecorded.
+  - The server's `HTTPException` handler now keeps the raiser's headers.
+  - The scheduler already keeps a refused occurrence owed and retries it on a
+    later tick.
+  - Not yet done: the other HTTP/WebSocket submit surfaces still need to map
+    the refusal to 429.
+
 - **Canonical Run reads have a Workspace-membership-scoped seam (#1152,
   partial).** `maistro.runs.scoped_reads.ScopedRunReader`, wired as
   `Container.run_reader` over the Container's own Run, Workspace and Project
