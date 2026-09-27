@@ -832,7 +832,9 @@ or placeholder-only section.
   re-running the nodes it already committed. It acts only when every Attempt
   is terminal or its heartbeat-renewed lease has lapsed, the spine has been
   quiet, and the same unclaimed continuation version has been observed, both
-  for 60 seconds. An open Attempt with no lease is never presumed dead.
+  for 60 seconds. An open Attempt with no lease is never presumed dead. What
+  the reconcile remembers about each observed Run is dropped once the Run
+  leaves RUNNING, so it no longer grows for the life of the process.
 
 - **Hive now ticks the Container's canonical recovery seams (#62).**
   `recover_abandoned_attempts`, `recover_stranded_chat_admissions` and

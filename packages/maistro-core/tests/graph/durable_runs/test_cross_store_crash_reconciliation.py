@@ -828,3 +828,47 @@ async def test_a_claimed_walk_is_not_reclaimed(spine: _Spine) -> None:
     assert await spine.store.reconcile_persistence() == 0
     held = await spine.continuations.get(run_id)
     assert held is not None and held.resume_at == claim
+
+
+async def test_a_walk_that_finished_is_forgotten(spine: _Spine) -> None:
+    """A Run observed while RUNNING and then settled by its own walker leaves no residue.
+
+    The RUNNING sweep never visits a finished Run again, and the per-status
+    loop reads only a bounded, oldest-first prefix of a COMPLETED bucket that
+    only grows -- here one older completed Run fills a one-Run prefix. So the
+    first sighting would otherwise live as long as the process. This reads the
+    store's private bookkeeping because that growth is the defect.
+    """
+    older = _graph(spine, _Step(), name="already finished")
+    admitted = await spine.run_store.create_run(older, initial_status=RunStatus.QUEUED)
+    await run_durable_graph(
+        older,
+        store=spine.store,
+        node_resolver=lambda node_id, current: _Step(),
+        run_id=admitted.run_id,
+        run_store=spine.run_store,
+    )
+    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
+    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
+    assert await patient.reconcile_persistence() == 0
+    assert run_id in patient._stalled_first_seen
+
+    assert await _resume_due(spine, now=datetime.now(UTC) + timedelta(hours=1)) == 1
+    finished = await spine.run_store.get_run(run_id)
+    assert finished is not None and finished.status is RunStatus.COMPLETED
+
+    assert await patient.reconcile_persistence(limit=1) == 0
+    assert run_id not in patient._stalled_first_seen
+
+
+async def test_a_run_still_running_keeps_its_first_sighting(spine: _Spine) -> None:
+    """Forgetting settled Runs must not restart the observation of a stalled one."""
+    run_id = await _die_after_frontier_checkpoint(spine, _two_step_graph(spine))
+    patient = CanonicalDurableRunStore(spine.run_store, spine.continuations)
+    quiet = datetime.now(UTC) + TERMINAL_SETTLE_QUIET_PERIOD * 2
+
+    assert await patient.reconcile_persistence(now=quiet) == 0
+    first = patient._stalled_first_seen[run_id]
+    assert await patient.reconcile_persistence(now=quiet + timedelta(seconds=30)) == 0
+    assert patient._stalled_first_seen[run_id] == first
+    assert await patient.reconcile_persistence(now=quiet + TERMINAL_SETTLE_QUIET_PERIOD) == 1

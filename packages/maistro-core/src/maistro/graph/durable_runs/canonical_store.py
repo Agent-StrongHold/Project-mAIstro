@@ -63,6 +63,9 @@ TERMINAL_SETTLE_QUIET_PERIOD = timedelta(seconds=60)
 #: prefix is occupied by projections the canonical Run disqualifies. Six
 #: doublings read at most 64x the requested work before giving up on a tick.
 _CANDIDATE_PAGES = 6
+#: How many remembered first sightings `reconcile_persistence` re-checks per
+#: tick for Runs that have since left RUNNING. See `_forget_settled`.
+_FORGET_BATCH = 32
 
 logger = logging.getLogger(__name__)
 
@@ -345,7 +348,26 @@ class CanonicalDurableRunStore:
                 limit=remaining,
             )
             changed += await self._reconcile_unseen(run_ids, seen, moment)
+        await self._forget_settled()
         return changed
+
+    async def _forget_settled(self) -> None:
+        """Drop first sightings of Runs that are no longer RUNNING.
+
+        Both repairs remember when they first saw a continuation version, and
+        forget it only when they visit that Run again in a state that no
+        longer qualifies. A Run whose walker finished normally is never
+        visited again by the RUNNING sweep, so without this its entry would
+        outlive it for the life of the process. A bounded batch is checked per
+        tick; a Run still RUNNING is rotated to the back with its first
+        sighting unchanged, so this can delay no repair.
+        """
+        for first_seen in (self._terminal_first_seen, self._stalled_first_seen):
+            for run_id in list(first_seen)[:_FORGET_BATCH]:
+                run = await self._run_store.get_run(run_id)
+                sighting = first_seen.pop(run_id, None)
+                if sighting is not None and run is not None and run.status is RunStatus.RUNNING:
+                    first_seen[run_id] = sighting
 
     async def _reconcile_unseen(
         self, run_ids: Iterable[str], seen: set[str], moment: datetime
