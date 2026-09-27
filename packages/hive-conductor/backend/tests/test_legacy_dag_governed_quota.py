@@ -244,6 +244,56 @@ async def test_dag_node_without_provider_usage_records_unreported_evidence(
     assert charge["invocation_id"] == event.invocation_id
 
 
+def test_dag_node_runtime_refuses_partial_composition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The governed runtime composes only from a complete authority set.
+
+    A missing Container, a missing collaborator, or an unconfigured gateway
+    each yield None — the node's signal to stay on its compatibility fallback —
+    never a half-wired runtime that would look governed and record nothing.
+    """
+    from services.governed_model import GovernedModelRuntime, dag_node_runtime
+
+    assert dag_node_runtime(None) is None
+
+    monkeypatch.delenv("MAISTRO_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("MAISTRO_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_API_BASE", raising=False)
+    monkeypatch.delenv("LITELLM_PROXY_URL", raising=False)
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_PROXY_KEY", raising=False)
+
+    effects = SimpleNamespace(credentials=SimpleNamespace(add=lambda **kw: None))
+    full = SimpleNamespace(
+        capability_effects=effects,
+        provider_registry=_UnknownModelRegistry(),
+        llm_router=SimpleNamespace(),
+    )
+    # get_settings is lru_cached suite-wide; pin the one attribute `_endpoint`
+    # reads so the unconfigured refusal is deterministic.
+    import config as hive_config
+
+    monkeypatch.setattr(
+        hive_config,
+        "get_settings",
+        lambda: SimpleNamespace(litellm_api_base=None, litellm_api_key=None),
+    )
+    # Any missing collaborator refuses the composition.
+    assert dag_node_runtime(SimpleNamespace(capability_effects=effects)) is None
+    assert (
+        dag_node_runtime(SimpleNamespace(capability_effects=effects, provider_registry=full))
+        is None
+    )
+    # With every collaborator present but no gateway configured: still None.
+    assert dag_node_runtime(full) is None
+
+    monkeypatch.setenv("MAISTRO_LLM_BASE_URL", "http://gateway.test")
+    monkeypatch.setenv("MAISTRO_LLM_API_KEY", "k")
+    runtime = dag_node_runtime(full)
+    assert isinstance(runtime, GovernedModelRuntime)
+    assert runtime.endpoint.base_url == "http://gateway.test"
+    assert runtime.effects is effects
+
+
 @pytest.mark.asyncio
 async def test_dag_node_without_effect_authority_falls_back_and_records_nothing(
     monkeypatch: pytest.MonkeyPatch,

@@ -4,8 +4,10 @@ The live path is :class:`CanonicalInvocationUsageRecorder`, installed once at
 Invocation terminalization by ``CapabilityEffectContext``. It records provider,
 cycle, usage evidence and Invocation identity exactly once, including an
 explicit unreported marker when a provider omits usage. The raw
-``on_response`` hook below remains a compatibility adapter for older callers
-and ambient header reconciliation; it is not the production authority.
+``on_response`` hook below is a compatibility adapter for older raw-HTTP call
+sites; after the #718 cutover no shipped production call site supplies it, and
+ambient/header reconciliation with it is explicitly not a wired production
+path — the canonical Invocation recorder is the only live recording mechanism.
 """
 
 from __future__ import annotations
@@ -153,7 +155,12 @@ def build_quota_recording_hook(
     """Build a compatibility `on_response` callback for legacy raw HTTP sites.
 
     Canonical model calls do not supply this callback: their Invocation
-    terminalization invokes ``CanonicalInvocationUsageRecorder`` once.
+    terminalization invokes ``CanonicalInvocationUsageRecorder`` once. After
+    the #718 cutover no shipped production entry point passes this hook —
+    ambient/header reconciliation through it is retained for compatibility
+    callers and tests only, not as a wired production recording path (the
+    explicit-verifier wiring is recorded as owed in
+    ``quality/reachability-dispositions.json``, id ``quota-verification``).
 
     For older `(response_json, response) -> None` callback sites this still
     wires both recording paths in one line:
