@@ -1037,8 +1037,13 @@ def _merge_frontier_blackboards(
 
 def _actually_spawned(kind: str, result: NodeResult) -> bool:
     """Return whether a node result represents a synthetic spawn that was dispatched."""
+    # A synth node that dispatched nothing fails without spending a level; one
+    # whose dispatched child failed also fails (#1193), but the child ran, so
+    # its NodeResult metadata still records the spawn.
     if kind == "agent.synth_dag":
-        return bool(getattr(result.output, "dispatched", False))
+        return bool(getattr(result.output, "dispatched", False)) or bool(
+            result.metadata.get("dispatched")
+        )
     return True
 
 

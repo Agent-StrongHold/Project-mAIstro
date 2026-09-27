@@ -39,7 +39,7 @@ decorative wears it.
 colour that means something cannot be a matter of taste:
 
 - **You** — blue `#1D49B0` (dark `#A3C0FF`). A human acted.
-- **Agent** — lilac `#5C4396` (dark `#C9B8EE`). An agent acted autonomously; always shown with "as <role>".
+- **Agent** — lilac `#5C4396` (dark `#C9B8EE`). An agent acted autonomously; always shown with "as [role]".
 - **Gate** — teal-green `#14604C` (dark `#6FD3B8`). A policy allowed or blocked something, with its reason.
 - **System** — grey `#4D5867` (dark `#B8BFCB`). Infrastructure acted on a schedule.
 - **Warn** `#784D0E` (dark `#F2C46F`) — a stale wait, a blocked goal, a partial undo.
@@ -99,7 +99,7 @@ existing JetBrains Mono package).
   warn colour when older than `--age-stale-after` (eight hours), a 14px muted second line, a
   chevron. The whole row is the target.
 - **Provenance entry.** A glass panel on a vertical spine; the node dot is
-  the actor colour. Header: name, badge, "as <role>" and the delegation
+  the actor colour. Header: name, badge, "as [role]" and the delegation
   note, time on the right. Then the sentence, the machine line, the
   actions, and, when open, the why-panel and the outcome.
 - **Why-panel.** Unfolds inside the card like a footnote: a 3px left rule
