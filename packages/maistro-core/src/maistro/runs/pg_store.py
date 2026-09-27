@@ -606,7 +606,9 @@ class PgRunStore:
 
     async def _require_locked_parent_scope(
         self,
-        conn: asyncpg.Connection,
+        # PoolConnectionProxy at the one call site; `Any` like every other
+        # connection-taking helper in this store (#1194 repair).
+        conn: Any,
         graph: Graph,
         *,
         parent_run_id: str | None,
