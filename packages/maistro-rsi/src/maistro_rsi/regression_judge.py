@@ -28,6 +28,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from maistro.security.warden.detector import Warden
+from maistro_rsi.harvest_boundary import AuditSink, WardenHarvestBoundary
+
 LlmCall = Callable[..., dict[str, Any]]
 
 # A parsed score below this is a flagged regression: the verdict becomes
@@ -82,7 +85,14 @@ class JudgeVerdict:
     cause: str | None = None  # failure class; None whenever the judge ruled
 
 
-def judge_regression_verdict(diff_text: str, target: str, llm_call: LlmCall) -> JudgeVerdict:
+def judge_regression_verdict(
+    diff_text: str,
+    target: str,
+    llm_call: LlmCall,
+    *,
+    warden_boundary: WardenHarvestBoundary | None = None,
+    audit_sink: AuditSink | None = None,
+) -> JudgeVerdict:
     """Single-candidate LLM judge of regression risk for an already-passing diff.
 
     Never raises: every judge failure returns a ``JudgeVerdict`` with
@@ -105,6 +115,18 @@ def judge_regression_verdict(diff_text: str, target: str, llm_call: LlmCall) -> 
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": f"Target: {target}\n\nDiff:\n{sliced}"},
     ]
+    boundary = warden_boundary or WardenHarvestBoundary(Warden(), audit_sink=audit_sink)
+    # The system rubric is code-owned. Diff and target are harvested material
+    # and are admitted separately before the model call.
+    admission = boundary.scan_sync({"target": target, "diff": sliced}, allow_thread=True)
+    if not admission.admitted:
+        cause = "warden_blocked" if admission.outcome == "blocked" else "warden_unavailable"
+        return JudgeVerdict(
+            "unavailable",
+            None,
+            "harvested judge context was not admitted by Warden",
+            cause,
+        )
     try:
         result = llm_call(messages, max_tokens=400)
     except TimeoutError:

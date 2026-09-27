@@ -21,6 +21,7 @@ import httpx
 from maistro.http import shared_client, sync_client
 from maistro.observability.correlation import current_execution_context
 from maistro.observability.middleware import REQUEST_ID_HEADER
+from maistro.security.outbound import configure_outbound_policy
 from maistro.tasks.http_contract import (
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
@@ -218,6 +219,10 @@ class MaistroServerTaskBackend:
     ) -> None:
         self._base = base_url.rstrip("/")
         self._key = api_key or ""
+        # This endpoint is supplied by deployment configuration. Keep its
+        # exact origin reachable while the shared transports guard everything
+        # else, including redirect hops.
+        configure_outbound_policy(self._base)
         # Production compose supplies a service-only proof key to both Hive and
         # maistro-server. Explicit constructor injection keeps focused tests and
         # non-compose deployments deterministic.

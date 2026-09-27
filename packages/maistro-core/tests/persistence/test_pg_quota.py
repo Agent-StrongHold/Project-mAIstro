@@ -33,6 +33,13 @@ class FakeConnection:
     def queue_fetch(self, rows: list[dict[str, Any]]) -> None:
         self._fetch_results.append([FakeRecord(r) for r in rows])
 
+    def transaction(self) -> _Transaction:
+        return _Transaction()
+
+    async def execute(self, query: str, *args: Any) -> str:
+        self.calls.append(Call("execute", query, args))
+        return "OK"
+
     async def fetchrow(self, query: str, *args: Any) -> FakeRecord | None:
         self.calls.append(Call("fetchrow", query, args))
         return self._fetchrow_results.pop(0) if self._fetchrow_results else None
@@ -40,6 +47,14 @@ class FakeConnection:
     async def fetch(self, query: str, *args: Any) -> list[FakeRecord]:
         self.calls.append(Call("fetch", query, args))
         return self._fetch_results.pop(0) if self._fetch_results else []
+
+
+class _Transaction:
+    async def __aenter__(self) -> _Transaction:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
 
 
 class FakePool:
@@ -96,6 +111,7 @@ def test_cycle_key_resolves_the_cycle_running_now() -> None:
 async def test_record_usage_upserts_and_returns_row(
     tracker: PgQuotaTracker, conn: FakeConnection
 ) -> None:
+    conn.queue_fetchrow({"event_id": "event-1"})
     conn.queue_fetchrow(
         {
             "input_tokens": 100,
@@ -104,11 +120,11 @@ async def test_record_usage_upserts_and_returns_row(
             "request_count": 1,
         }
     )
-    result = await tracker.record_usage("openai", "  Monthly  ", 100, 50)
+    result = await tracker.record_usage("openai", "  Monthly  ", 100, 50, event_id="event-1")
     call = conn.calls[0]
     assert call.method == "fetchrow"
-    assert "ON CONFLICT (provider, cycle_key) DO UPDATE" in call.query
-    assert call.args == ("openai", canonical_cycle_key("monthly"), 100, 50, 150)
+    assert "quota_usage_events" in call.query
+    assert call.args == ("event-1", "openai", canonical_cycle_key("monthly"), 100, 50)
     assert result == {
         "provider": "openai",
         "cycle_key": canonical_cycle_key("monthly"),
@@ -123,8 +139,9 @@ async def test_record_usage_upserts_and_returns_row(
 async def test_record_usage_no_row_returns_zero_defaults(
     tracker: PgQuotaTracker, conn: FakeConnection
 ) -> None:
+    conn.queue_fetchrow({"event_id": "event-1"})
     conn.queue_fetchrow(None)
-    result = await tracker.record_usage("openai", "monthly", 10, 20)
+    result = await tracker.record_usage("openai", "monthly", 10, 20, event_id="event-1")
     assert result == {
         "provider": "openai",
         "cycle_key": canonical_cycle_key("monthly"),
@@ -133,6 +150,60 @@ async def test_record_usage_no_row_returns_zero_defaults(
         "total_tokens": 0,
         "request_count": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_record_usage_conflicting_retry_with_same_payload_counts_once(
+    tracker: PgQuotaTracker, conn: FakeConnection
+) -> None:
+    """The crash-ambiguous retry: the INSERT conflicts (RETURNING gave no row),
+    the stored event matches, so the retry must not double-count."""
+    conn.queue_fetchrow(None)  # ON CONFLICT DO NOTHING -> RETURNING is empty
+    conn.queue_fetchrow(
+        {
+            "provider": "openai",
+            "cycle_key": canonical_cycle_key("monthly"),
+            "input_tokens": 100,
+            "output_tokens": 50,
+        }
+    )
+    conn.queue_fetchrow(
+        {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150, "request_count": 1}
+    )
+    result = await tracker.record_usage("openai", "monthly", 100, 50, event_id="event-1")
+    assert result["request_count"] == 1
+    assert result["total_tokens"] == 150
+
+
+@pytest.mark.asyncio
+async def test_record_usage_conflicting_retry_with_different_payload_is_rejected(
+    tracker: PgQuotaTracker, conn: FakeConnection
+) -> None:
+    """A stored identity re-submitted with different usage must be rejected,
+    not silently counted again or overwritten."""
+    conn.queue_fetchrow(None)  # ON CONFLICT DO NOTHING -> RETURNING is empty
+    conn.queue_fetchrow(
+        {
+            "provider": "openai",
+            "cycle_key": canonical_cycle_key("monthly"),
+            "input_tokens": 100,
+            "output_tokens": 50,
+        }
+    )
+    with pytest.raises(ValueError, match="event_id"):
+        await tracker.record_usage("openai", "monthly", 111, 50, event_id="event-1")
+
+
+@pytest.mark.asyncio
+async def test_record_usage_conflicting_retry_with_vanished_row_is_rejected(
+    tracker: PgQuotaTracker, conn: FakeConnection
+) -> None:
+    """A conflict whose event row cannot be read back is treated as a reuse
+    with different usage, never as a silently successful retry."""
+    conn.queue_fetchrow(None)  # ON CONFLICT DO NOTHING -> RETURNING is empty
+    conn.queue_fetchrow(None)  # ... and the SELECT finds no stored row either
+    with pytest.raises(ValueError, match="event_id"):
+        await tracker.record_usage("openai", "monthly", 100, 50, event_id="event-1")
 
 
 @pytest.mark.asyncio

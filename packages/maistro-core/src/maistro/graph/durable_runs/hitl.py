@@ -342,6 +342,7 @@ async def _due_candidates(
     moment: datetime,
     limit: int,
     authorization: HitlAuthorization,
+    project_ids: Collection[str] | None = None,
 ) -> list[DurableRunRecord]:
     """Page the due index until an authorized settlement page is complete."""
     requested = limit
@@ -357,8 +358,11 @@ async def _due_candidates(
             if record.run_id in seen:
                 continue
             seen.add(record.run_id)
-            if record.run.workspace_id in authorization.workspace_ids:
-                candidates.append(record)
+            if record.run.workspace_id not in authorization.workspace_ids:
+                continue
+            if project_ids is not None and record.run.project_id not in project_ids:
+                continue
+            candidates.append(record)
         if len(candidates) >= limit or len(page) < requested:
             return candidates[:limit]
         requested *= 2
@@ -383,6 +387,7 @@ async def expire_hitl_pauses(
     now: datetime | None = None,
     limit: int = 100,
     authorization: HitlAuthorization,
+    project_ids: Collection[str] | None = None,
 ) -> list[DurableRunRecord]:
     """Settle at most ``limit`` paused Runs whose persisted deadline elapsed.
 
@@ -415,11 +420,17 @@ async def expire_hitl_pauses(
     # not due, so the keyset walk is not needed here. `fair_page_scan` still
     # carries the timed-resume path in `canonical_store.scan_due_page`, which
     # has no equivalent index.
+    # ``project_ids``, when supplied, narrows the tick to Projects the caller
+    # holds settlement authority over (#1110): the tick settles human
+    # decisions, so it must not cross a Project the requesting principal could
+    # not settle through the door itself. Workspace scope is always enforced
+    # through the authorization's own live membership predicate.
     candidates = await _due_candidates(
         store,
         moment=moment,
         limit=limit,
         authorization=authorization,
+        project_ids=project_ids,
     )
     settled: list[DurableRunRecord] = []
     for record in candidates:
