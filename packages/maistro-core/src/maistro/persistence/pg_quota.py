@@ -118,6 +118,79 @@ class PgQuotaTracker:
             "request_count": row["request_count"] if row else 0,
         }
 
+    async def record_invocation(
+        self,
+        invocation_id: str,
+        provider: str,
+        billing_cycle: str,
+        input_tokens: int,
+        output_tokens: int,
+        usage_reported: bool,
+    ) -> dict[str, object]:
+        """Record one canonical Invocation without double-counting it.
+
+        The evidence row is the idempotency key. The aggregate projection
+        runs only when this process inserted that row.
+        """
+        ck = cycle_key(billing_cycle)
+        async with self._pool.acquire() as conn, conn.transaction():
+            inserted = await conn.fetchrow(
+                """INSERT INTO quota_invocation_evidence
+                       (invocation_id, provider, cycle_key, input_tokens, output_tokens,
+                        usage_reported)
+                       VALUES ($1, $2, $3, $4, $5, $6)
+                       ON CONFLICT (invocation_id) DO NOTHING
+                       RETURNING invocation_id""",
+                invocation_id,
+                provider,
+                ck,
+                input_tokens,
+                output_tokens,
+                usage_reported,
+            )
+        if inserted is not None:
+            if usage_reported:
+                await self.record_usage(provider, billing_cycle, input_tokens, output_tokens)
+            else:
+                await self._record_unreported(provider, ck)
+        return await self._fetch_usage(provider, ck)
+
+    async def _record_unreported(self, provider: str, ck: str) -> None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """INSERT INTO quota_usage
+                       (provider, cycle_key, input_tokens, output_tokens, total_tokens,
+                        request_count, unreported_count)
+                       VALUES ($1, $2, 0, 0, 0, 1, 1)
+                       ON CONFLICT (provider, cycle_key) DO UPDATE SET
+                         request_count = quota_usage.request_count + 1,
+                         unreported_count = quota_usage.unreported_count + 1""",
+                provider,
+                ck,
+            )
+
+    async def _fetch_usage(self, provider: str, ck: str) -> dict[str, object]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT input_tokens, output_tokens, total_tokens, request_count,
+                          unreported_count
+                       FROM quota_usage WHERE provider = $1 AND cycle_key = $2""",
+                provider,
+                ck,
+            )
+        result: dict[str, object] = {
+            "provider": provider,
+            "cycle_key": ck,
+            "input_tokens": row["input_tokens"] if row else 0,
+            "output_tokens": row["output_tokens"] if row else 0,
+            "total_tokens": row["total_tokens"] if row else 0,
+            "request_count": row["request_count"] if row else 0,
+        }
+        if row and row["unreported_count"]:
+            result["unreported_count"] = row["unreported_count"]
+            result["usage_complete"] = False
+        return result
+
     async def get_usage_pct(
         self,
         provider: str,

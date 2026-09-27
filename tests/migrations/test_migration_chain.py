@@ -60,6 +60,7 @@ EXPECTED_TABLES = frozenset(
         # after a collision with 032_asset_instance_org_scope; #1079).
         # Bindings and Invocations are separate tables: Bindings are immutable
         # authorization records, Invocations the logical effect ledger.
+        "capability_approvals",
         "capability_bindings",
         "capability_invocations",
         "consumer_cursors",
@@ -89,6 +90,10 @@ EXPECTED_TABLES = frozenset(
         "graph_continuations",
         "graph_templates",
         "handler_invocations",
+        "invocation_quota_allocations",
+        "invocation_quota_budgets",
+        "invocation_quota_evidence",
+        "invocation_quota_reservations",
         "knowledge_nodes",
         "learnings",
         "memory_entries",
@@ -103,6 +108,7 @@ EXPECTED_TABLES = frozenset(
         # (#328).
         "prompt_labels",
         "prompts",
+        "quota_invocation_evidence",
         "quota_usage",
         "quota_usage_events",
         # Schedule definitions and their fire cursors (016). Durable so that a

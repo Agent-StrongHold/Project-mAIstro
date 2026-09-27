@@ -24,7 +24,12 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    configure_default_effect_context,
+    new_effect_context,
+    release_default_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.events.consumer_cursor import (
@@ -431,6 +436,7 @@ class Container:
         # leave the container looking open and invite a second attempt at a pool
         # that is already going down.
         self.closed = True
+        release_default_effect_context(self.capability_effects)
         await self._flush_usage_log_on_shutdown()
         if self.holds_pg_pool and self.pg_pool is not None:
             from maistro.persistence import forget_pool, release_pool
@@ -1862,17 +1868,6 @@ async def create_container(
         trigger_store = InMemoryTriggerStore()
         invocation_store = InMemoryInvocationStore()
         consumer_cursor_store = InMemoryConsumerCursorStore()
-        if pg_pool is not None:
-            # The durable-event stores (ADR-086) have a SQLite implementation
-            # and no PostgreSQL one, so a PostgreSQL deployment gets in-memory
-            # here even though it configured a durable database. Saying so is
-            # the whole point of #122: the operator learns it now rather than
-            # after a restart drops the event log, triggers and invocations.
-            logger.warning(
-                "Durable events are in-memory despite a PostgreSQL backend: the event log, "
-                "triggers and invocations are lost on restart. No PostgreSQL implementation "
-                "exists yet (#135)."
-            )
     handler_caller = HTTPHandlerCaller()
 
     event_bus = EventBus()
@@ -1921,10 +1916,14 @@ async def create_container(
 
     # --- Agent-harness DAG node adapters (ADR-062 spawn_harness) -----------
     wired_harness_adapters = _wire_harness_adapters(harness_adapters)
-    capability_invocation_store = await _wire_capability_invocations(
-        pg_pool=pg_pool, db_pool=db_pool
+    capability_effects = await _wire_capability_effects(
+        pg_pool=pg_pool,
+        db_pool=db_pool,
+        database_url=config.database_url,
+        quota_tracker=quota_tracker,
+        usage_log=usage_log,
     )
-    capability_effects = new_effect_context(invocation_store=capability_invocation_store)
+    configure_default_effect_context(capability_effects)
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 
     await bootstrap_model_bindings(config, capability_effects)
@@ -2570,6 +2569,94 @@ async def _wire_sqlite_backend(
         learning_store,
         outcome_store,
         session_store,
+    )
+
+
+async def _wire_capability_effects(
+    *,
+    pg_pool: Any,
+    db_pool: Any,
+    database_url: str,
+    quota_tracker: QuotaTracker | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+) -> CapabilityEffectContext:
+    """Compose the sole governed effect context from the selected backend.
+
+    Invocation rows stay on the canonical capability Invocation store. Quota
+    admission and usage recording are collaborators of that service, not a
+    second executor. Binding, approval, and canonical Event stores follow the
+    same backend so a durable deployment cannot silently keep an in-memory door.
+    """
+    from maistro.capabilities.approval_store import (
+        InMemoryApprovalStore,
+        PgApprovalStore,
+        SqliteApprovalStore,
+    )
+    from maistro.capabilities.binding_store import (
+        InMemoryBindingStore,
+        PgBindingStore,
+        SqliteBindingStore,
+    )
+    from maistro.capabilities.invocation import Invocation
+    from maistro.events.wiring import wire_canonical_events
+    from maistro.quota.invocation_quota import QuotaEstimate
+
+    if quota_tracker is None:
+        quota_tracker = InMemoryQuotaTracker()
+    if usage_log is None:
+        usage_log = get_default_usage_log()
+    canonical_events = await wire_canonical_events(pg_pool=pg_pool, db_pool=db_pool)
+    invocation_store = await _wire_capability_invocations(pg_pool=pg_pool, db_pool=db_pool)
+
+    async def estimate(invocation: Invocation, _binding: Any) -> QuotaEstimate:
+        request = invocation.request
+        if isinstance(request, dict):
+            max_tokens = request.get("max_tokens")
+            messages = request.get("messages", "")
+        else:
+            max_tokens = getattr(request, "max_tokens", None)
+            messages = getattr(request, "messages", "")
+        if isinstance(max_tokens, int) and max_tokens > 0:
+            tokens = max_tokens + max(1, len(str(messages)) // 4)
+        else:
+            tokens = None
+        return QuotaEstimate(
+            principal_id=invocation.actor_id or "system",
+            tokens=tokens,
+        )
+
+    quota = None
+    if pg_pool is not None:
+        from maistro.quota.pg_invocation_quota import PgInvocationQuota
+
+        bindings = PgBindingStore(pg_pool)
+        approvals = PgApprovalStore(pg_pool)
+        quota = PgInvocationQuota(pg_pool, estimate=estimate)
+        await quota.ensure_schema()
+        await approvals.ensure_schema()
+    elif db_pool is not None:
+        bindings = SqliteBindingStore(db_pool)
+        approvals = SqliteApprovalStore(db_pool)
+        await bindings.ensure_schema()
+        await approvals.ensure_schema()
+        sqlite_path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://")
+        if sqlite_path and sqlite_path != ":memory:":
+            from maistro.quota.sqlite_invocation_quota import SqliteInvocationQuota
+
+            quota = SqliteInvocationQuota(sqlite_path, estimate=estimate)
+            await quota.ensure_schema()
+    else:
+        bindings = InMemoryBindingStore()
+        approvals = InMemoryApprovalStore()
+
+    return new_effect_context(
+        invocation_store=invocation_store,
+        binding_store=bindings,
+        event_store=canonical_events.store,
+        approval_store=approvals,
+        quota=quota,
+        usage_log=usage_log,
+        quota_tracker=quota_tracker,
     )
 
 

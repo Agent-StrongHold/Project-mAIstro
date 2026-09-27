@@ -155,6 +155,7 @@ class ModelChatEgress:
         effect_key: str,
         request: ModelChatRequest,
         setup: Callable[[], Awaitable[None]] | None = None,
+        actor_id: str = "",
     ) -> ModelCallResult:
         """Run one governed model call, optionally performing provider setup.
 
@@ -206,6 +207,7 @@ class ModelChatEgress:
             resolver=routed_resolver,
             executor=routed_executor,
             usage_from=usage_from,
+            actor_id=actor_id,
         )
         body = invocation.result if isinstance(invocation.result, dict) else {}
         return ModelCallResult(

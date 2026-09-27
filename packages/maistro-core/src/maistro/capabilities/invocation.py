@@ -19,6 +19,7 @@ Invocation stores.
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -102,8 +103,10 @@ class InvocationUsage(BaseModel):
             raise ValueError("units must be a non-empty string")
         if self.input_units < 0 or self.output_units < 0:
             raise ValueError("usage units cannot be negative")
-        if self.cost_cents is not None and self.cost_cents < 0:
-            raise ValueError("cost_cents cannot be negative")
+        if self.cost_cents is not None and (
+            self.cost_cents < 0 or not math.isfinite(self.cost_cents)
+        ):
+            raise ValueError("cost_cents must be finite and nonnegative")
         return self
 
 
@@ -180,6 +183,9 @@ class Invocation(BaseModel):
     attempt_id: str
     workspace_id: str = ""
     project_id: str = ""
+    # Principal the quota door attributes this physical effect to. Empty when
+    # the caller has no actor; budget matching treats that as "system".
+    actor_id: str = ""
     binding: ResolvedBinding
     effect_key: str
     status: InvocationStatus = InvocationStatus.CREATED
@@ -342,6 +348,27 @@ ProviderResolver = Callable[
 ProviderExecutor = Callable[[ResolvedCapabilityProvider, Any], Awaitable[Any]]
 UsageExtractor = Callable[[Any], "InvocationUsage | None"]
 
+
+# Installed once by the composition root: terminal physical effects cross this
+# hook so provider-usage evidence is recorded by the Invocation authority, not
+# by a per-caller response callback.
+InvocationCompletionHook = Callable[["Invocation"], Awaitable[None]]
+
+
+class InvocationQuota(Protocol):
+    """Accounting collaborator at the sole physical Invocation boundary.
+
+    A reservation must commit before dispatch. Observation is idempotent and
+    preserves holds for missing usage or unknown outcomes. Implementations
+    finish an in-flight reservation transaction before propagating cancellation.
+    """
+
+    async def reserve(self, invocation: Invocation, binding: Binding) -> None: ...
+
+    async def observe(self, invocation: Invocation) -> None: ...
+
+
+
 # Shared across service instances in one worker so a second composition root
 # cannot reconcile a dispatch that is still running in the first one.
 _PROCESS_ACTIVE_DISPATCHES: set[str] = set()
@@ -378,8 +405,18 @@ class InvocationExecutionService:
     state.
     """
 
-    def __init__(self, *, store: InvocationStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: InvocationStore,
+        quota: InvocationQuota | None = None,
+        on_completed: InvocationCompletionHook | None = None,
+    ) -> None:
         self._store = store
+        # One quota authority for every strategy. Callers cannot pass a
+        # per-invoke override that would fork admission.
+        self._quota = quota
+        self._on_completed = on_completed
         self._effect_lock = asyncio.Lock()
         # This process-local guard closes the window where an operator could
         # settle a dispatch that is still executing in any service instance in
@@ -405,6 +442,24 @@ class InvocationExecutionService:
         )
         return history[-1] if history else None
 
+    async def _repair_quota(self, invocation: Invocation) -> None:
+        """Re-apply a terminal fact. Observation is absolute, not another charge."""
+
+        if self._quota is not None and invocation.status in {
+            InvocationStatus.COMPLETED,
+            InvocationStatus.FAILED,
+            InvocationStatus.UNKNOWN,
+        }:
+            await self._quota.observe(invocation)
+
+    async def _notify_completion(self, completed: Invocation) -> None:
+        """Hand a completed effect to the composition-root usage recorder."""
+
+        if completed.status is not InvocationStatus.COMPLETED:
+            return
+        if (on_completed := self._on_completed) is not None:
+            await on_completed(completed)
+
     async def invoke(
         self,
         *,
@@ -417,6 +472,7 @@ class InvocationExecutionService:
         resolver: ProviderResolver,
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
+        actor_id: str = "",
     ) -> Invocation:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
@@ -438,7 +494,11 @@ class InvocationExecutionService:
             if history:
                 latest = history[-1]
                 if latest.status is InvocationStatus.COMPLETED:
+                    await self._repair_quota(latest)
+                    await self._notify_completion(latest)
                     return latest
+                if latest.status is InvocationStatus.FAILED:
+                    await self._repair_quota(latest)
                 if latest.status in {
                     InvocationStatus.CREATED,
                     InvocationStatus.RUNNING,
@@ -463,6 +523,7 @@ class InvocationExecutionService:
                         attempt_id=attempt_id,
                         workspace_id=binding.workspace_id,
                         project_id=binding.project_id,
+                        actor_id=actor_id,
                         binding=resolved,
                         effect_key=effect_key,
                         request=request,
@@ -480,16 +541,32 @@ class InvocationExecutionService:
                     effect_key=effect_key,
                 )
                 if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
+                    await self._repair_quota(latest_history[-1])
+                    await self._notify_completion(latest_history[-1])
                     return latest_history[-1]
                 raise
-            running = invocation.model_copy(
-                update={
-                    "status": InvocationStatus.RUNNING,
-                    "started_at": datetime.now(UTC),
-                    "dispatch_active": True,
-                }
-            )
-            invocation = await self._store.save(running)
+            try:
+                if self._quota is not None:
+                    await self._quota.reserve(invocation, binding)
+                running = invocation.model_copy(
+                    update={
+                        "status": InvocationStatus.RUNNING,
+                        "started_at": datetime.now(UTC),
+                        "dispatch_active": True,
+                    }
+                )
+                invocation = await self._store.save(running)
+            except BaseException:
+                # The physical executor has not been entered. Persist proof of
+                # non-dispatch before releasing any quota reservation. A quota
+                # denial stays FAILED so a later attempt can be admitted, and
+                # the denial evidence itself is not rewritten into a release.
+                await self._terminalize(
+                    invocation,
+                    InvocationStatus.FAILED,
+                    error="provider dispatch did not start",
+                )
+                raise
             self._active_dispatches.add(invocation.invocation_id)
             _PROCESS_ACTIVE_DISPATCHES.add(invocation.invocation_id)
 
@@ -520,7 +597,20 @@ class InvocationExecutionService:
                 )
                 raise
 
-            usage = usage_from(result) if usage_from is not None else None
+            try:
+                usage = usage_from(result) if usage_from is not None else None
+                if usage is not None and not isinstance(usage, InvocationUsage):
+                    raise TypeError("usage extractor must return InvocationUsage or None")
+            except (Exception, asyncio.CancelledError):
+                # A broken usage parser cannot make a completed physical effect
+                # retryable. Preserve the result; unmeasured quota stays held.
+                await self._terminalize(
+                    invocation,
+                    InvocationStatus.COMPLETED,
+                    result=result,
+                    error="provider completed but usage extraction failed",
+                )
+                raise
             return await self._terminalize(
                 invocation,
                 InvocationStatus.COMPLETED,
@@ -748,12 +838,18 @@ class InvocationExecutionService:
         else:
             update["error"] = reason
         try:
-            return await self._store.save(invocation.model_copy(update=update))
+            settled = await self._store.save(invocation.model_copy(update=update))
         except StaleInvocationUpdate:
             current = await self._store.get(invocation.invocation_id)
             if current is None:
                 raise
             return current
+        await self._repair_quota(settled)
+        if disposition is ReconciliationDisposition.APPLIED:
+            # APPLIED settles a physical call whose outcome had been UNKNOWN.
+            # The recorder deduplicates on Invocation identity.
+            await self._notify_completion(settled)
+        return settled
 
     async def _terminalize(
         self,
@@ -775,12 +871,15 @@ class InvocationExecutionService:
             }
         )
         try:
-            return await self._store.save(terminal)
+            persisted = await self._store.save(terminal)
         except StaleInvocationUpdate:
             current = await self._store.get(invocation.invocation_id)
             if current is None:
                 raise
             return current
+        await self._repair_quota(persisted)
+        await self._notify_completion(persisted)
+        return persisted
 
 
 __all__ = [
@@ -788,7 +887,9 @@ __all__ = [
     "EffectNotApplied",
     "InMemoryInvocationStore",
     "Invocation",
+    "InvocationCompletionHook",
     "InvocationExecutionService",
+    "InvocationQuota",
     "InvocationReconciliation",
     "InvocationReconciliationEvidence",
     "InvocationStatus",

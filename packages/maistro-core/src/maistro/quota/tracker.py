@@ -12,6 +12,8 @@ UsagePayload = tuple[str, str, int, int]
 
 class InMemoryQuotaTracker:
     def __init__(self) -> None:
+        self._invocations: set[str] = set()
+        self._unreported: dict[tuple[str, str], int] = defaultdict(int)
         self._usage: dict[tuple[str, str], dict[str, int]] = defaultdict(
             lambda: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "request_count": 0},
         )
@@ -42,6 +44,40 @@ class InMemoryQuotaTracker:
         entry["request_count"] += 1
         return {"provider": provider, "cycle_key": key[1], **entry}
 
+    async def record_invocation(
+        self,
+        invocation_id: str,
+        provider: str,
+        billing_cycle: str,
+        input_tokens: int,
+        output_tokens: int,
+        usage_reported: bool,
+    ) -> dict[str, object]:
+        """Record one physical Invocation once, including missing evidence."""
+        key = (provider, cycle_key(billing_cycle))
+        if invocation_id in self._invocations:
+            return self._snapshot(provider, key)
+        self._invocations.add(invocation_id)
+        if usage_reported:
+            return await self.record_usage(provider, billing_cycle, input_tokens, output_tokens)
+        return await self.record_unreported(provider, billing_cycle)
+
+    async def record_unreported(self, provider: str, billing_cycle: str) -> dict[str, object]:
+        """Keep missing provider usage visible without charging zero tokens."""
+        key = (provider, cycle_key(billing_cycle))
+        self._unreported[key] += 1
+        entry = self._usage[key]
+        entry["request_count"] += 1
+        return self._snapshot(provider, key)
+
+    def _snapshot(self, provider: str, key: tuple[str, str]) -> dict[str, object]:
+        result: dict[str, object] = {"provider": provider, "cycle_key": key[1], **self._usage[key]}
+        unreported = self._unreported.get(key, 0)
+        if unreported:
+            result["unreported_count"] = unreported
+            result["usage_complete"] = False
+        return result
+
     async def get_usage_pct(
         self,
         provider: str,
@@ -57,5 +93,10 @@ class InMemoryQuotaTracker:
     async def get_all_usage(self) -> list[dict[str, object]]:
         result = []
         for (provider, ck), entry in self._usage.items():
-            result.append({"provider": provider, "cycle_key": ck, **entry})
+            item: dict[str, object] = {"provider": provider, "cycle_key": ck, **entry}
+            unreported = self._unreported.get((provider, ck), 0)
+            if unreported:
+                item["unreported_count"] = unreported
+                item["usage_complete"] = False
+            result.append(item)
         return result

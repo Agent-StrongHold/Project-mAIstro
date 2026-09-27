@@ -10,6 +10,8 @@ canonical Run until the harness result is supplied on resume.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
@@ -103,6 +105,18 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
         self._effects = effect_context or default_effect_context()
 
     @staticmethod
+    def _effect_key(request: dict[str, Any]) -> str:
+        """Name one logical dispatch without conflating different requests.
+
+        The idempotency key is the canonical effect identity. Two tasks that
+        share a harness type are not the same physical effect.
+        """
+
+        canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), default=str)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+        return f"agent.spawn_harness.dispatch:{digest}"
+
+    @staticmethod
     def _resume_output(resumed: Any) -> SpawnHarnessOut:
         """Rebuild the node output from a paused run's recorded resume answer."""
         return SpawnHarnessOut(
@@ -179,7 +193,7 @@ class AgentSpawnHarnessNode(BaseNode[SpawnHarnessIn, SpawnHarnessOut]):
                 "harness_type": handle.harness_type,
             }
 
-        effect_key = f"agent.spawn_harness.dispatch:{inputs.harness_type}"
+        effect_key = self._effect_key(request_payload)
         invocation = await invoke_capability_effect(
             lambda: self._effects.invocations.invoke(
                 binding=binding,

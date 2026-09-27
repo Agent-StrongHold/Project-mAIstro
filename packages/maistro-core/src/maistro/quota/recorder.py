@@ -32,8 +32,72 @@ from maistro.quota.reconciliation import (
     ReconciliationState,
     reconcile_ambient,
 )
+from maistro.capabilities.invocation import Invocation
 from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.quota.usage_report import extract_usage
+
+
+class CanonicalInvocationUsageRecorder:
+    """Record completed model Invocations exactly once on the quota ledger.
+
+    Canonical effects call this from Invocation terminalization, so retries and
+    deduplicated effects cannot charge twice. Missing usage is recorded as
+    unreported evidence, never as a measured zero. This is not an executor:
+    it cannot admit or dispatch a provider call.
+    """
+
+    def __init__(
+        self,
+        log: InMemoryUsageLog,
+        quota_tracker: Any | None = None,
+        *,
+        billing_cycle: str = "monthly",
+    ) -> None:
+        self._log = log
+        self._quota_tracker = quota_tracker
+        self._billing_cycle = billing_cycle
+        self._recorded: set[str] = set()
+
+    async def record(self, invocation: Invocation) -> None:
+        """Record one completed physical effect, keyed by Invocation identity."""
+        if invocation.invocation_id in self._recorded:
+            return
+        self._recorded.add(invocation.invocation_id)
+        provider = invocation.binding.provider_name
+        usage = invocation.usage
+        input_tokens = usage.input_units if usage is not None else 0
+        output_tokens = usage.output_units if usage is not None else 0
+        self._log.record(
+            provider,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=((usage.cost_cents or 0.0) / 100.0) if usage is not None else 0.0,
+            invocation_id=invocation.invocation_id,
+            provider=provider,
+            billing_cycle=self._billing_cycle,
+            usage_reported=usage is not None,
+        )
+        if self._quota_tracker is None:
+            return
+        record_invocation = getattr(self._quota_tracker, "record_invocation", None)
+        if record_invocation is not None:
+            await record_invocation(
+                invocation.invocation_id,
+                provider,
+                self._billing_cycle,
+                input_tokens,
+                output_tokens,
+                usage is not None,
+            )
+            return
+        if usage is not None:
+            await self._quota_tracker.record_usage(
+                provider, self._billing_cycle, input_tokens, output_tokens
+            )
+            return
+        record_unreported = getattr(self._quota_tracker, "record_unreported", None)
+        if callable(record_unreported):
+            await record_unreported(provider, self._billing_cycle)
 
 
 def record_llm_usage(

@@ -10,9 +10,9 @@ a provider merely because one happens to be registered elsewhere.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
 from typing import Any
 
+from maistro.capabilities.approval_store import ApprovalStore
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import BindingStore, InMemoryBindingStore
 from maistro.capabilities.credential_routing import CredentialRouting
@@ -24,11 +24,14 @@ from maistro.capabilities.governed_invocation import (
 from maistro.capabilities.invocation import (
     InMemoryInvocationStore,
     InvocationExecutionService,
+    InvocationQuota,
     InvocationStore,
 )
 from maistro.credentials.router import CredentialRouter
 from maistro.events.envelope import EventStore, InMemoryEventStore
 from maistro.policy.types import Decision, PolicyVerdict
+from maistro.quota.recorder import CanonicalInvocationUsageRecorder
+from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 
 
 async def _m1_binding_authorized_policy(
@@ -68,6 +71,11 @@ class CapabilityEffectContext:
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
+    approval_store: ApprovalStore | None = None
+    # Budget admission (reserve/observe) lives on the Invocation service. This
+    # field is the same object, exposed so composition tests can see it.
+    quota: InvocationQuota | None = None
+    usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
 
     def credential_routing(self) -> CredentialRouting:
@@ -86,8 +94,14 @@ class CapabilityEffectContext:
 def new_effect_context(
     *,
     invocation_store: InvocationStore | None = None,
+    binding_store: BindingStore | None = None,
+    event_store: EventStore | None = None,
+    approval_store: ApprovalStore | None = None,
     policy_evaluator: PolicyEvaluator | None = None,
     credentials: CredentialRouter | None = None,
+    quota: InvocationQuota | None = None,
+    usage_log: InMemoryUsageLog | None = None,
+    quota_tracker: Any | None = None,
 ) -> CapabilityEffectContext:
     """Compose one canonical effect authority from caller-selected stores.
 
@@ -97,50 +111,120 @@ def new_effect_context(
     means durability changes storage lifetime only; it cannot create a second
     policy or Invocation execution path.
 
-    ``binding_store``/``event_store`` remain in-memory even when
-    ``invocation_store`` is durable: #1133 durable-izes those separately, and
-    this constructor's job here is only the Invocation authority #1091 needed
-    for governed model egress.
+    Omitted binding and event stores stay in memory so a caller that only
+    selects an Invocation ledger does not silently gain a second durable
+    authority. The Container passes the backend-selected stores explicitly.
+    ``quota`` is the budget door and ``quota_tracker``/``usage_log`` are the
+    usage ledger; both attach to this same Invocation service.
     """
 
-    binding_store = InMemoryBindingStore()
+    selected_bindings = binding_store or InMemoryBindingStore()
     store = invocation_store or InMemoryInvocationStore()
-    event_store = InMemoryEventStore()
-    invocation_service = InvocationExecutionService(store=store)
+    events = event_store or InMemoryEventStore()
+    selected_usage_log = usage_log or get_default_usage_log()
+    usage_recorder = CanonicalInvocationUsageRecorder(selected_usage_log, quota_tracker)
+    invocation_service = InvocationExecutionService(
+        store=store,
+        quota=quota,
+        on_completed=usage_recorder.record,
+    )
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
-        event_store=event_store,
+        event_store=events,
         policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+        approval_store=approval_store,
     )
     return CapabilityEffectContext(
-        bindings=binding_store,
+        bindings=selected_bindings,
         invocations=governed,
         invocation_store=store,
-        event_store=event_store,
+        event_store=events,
+        approval_store=approval_store,
+        quota=quota,
+        usage_log=selected_usage_log,
         credentials=credentials or CredentialRouter(),
     )
 
 
-@lru_cache(maxsize=1)
+_process_effect_context: CapabilityEffectContext | None = None
+
+
+def configure_default_effect_context(context: CapabilityEffectContext) -> None:
+    """Publish the Container-owned context. There is no second process authority."""
+
+    global _process_effect_context
+    _process_effect_context = context
+
+
+def release_default_effect_context(context: CapabilityEffectContext) -> None:
+    """Drop the process default when the Container that published it closes."""
+
+    global _process_effect_context
+    if _process_effect_context is context:
+        _process_effect_context = None
+
+
 def default_effect_context() -> CapabilityEffectContext:
     """Process-wide canonical context used by registry-constructed effect nodes.
 
-    The shared instance matters: a Node must resolve the same Binding authority
-    an application populated, and retries must consult the same Invocation
-    ledger. No default Binding is created here; absence remains a hard refusal.
-    Production Containers do not use this fallback: they inject their selected
-    backend-specific context explicitly.
+    When a Container has published its context, this returns that exact
+    instance. Otherwise one ephemeral context is cached so nodes do not each
+    receive a private ledger. No default Binding is created; absence remains
+    a hard refusal.
     """
 
-    return new_effect_context()
+    global _process_effect_context
+    if _process_effect_context is None:
+        _process_effect_context = new_effect_context()
+    return _process_effect_context
+
+
+def _clear_default_effect_context() -> None:
+    global _process_effect_context
+    _process_effect_context = None
+
+
+# Tests and fixtures still call the lru_cache-style clearer.
+default_effect_context.cache_clear = _clear_default_effect_context  # type: ignore[attr-defined]
 
 
 new_in_memory_effect_context = new_effect_context
 
 
+async def new_sqlite_effect_context(connection: Any) -> CapabilityEffectContext:
+    """Compose durable effect stores on one SQLite connection.
+
+    This is the same ``new_effect_context`` door with backend-selected stores.
+    It does not construct a second Invocation service.
+    """
+
+    from maistro.capabilities.approval_store import SqliteApprovalStore
+    from maistro.capabilities.binding_store import SqliteBindingStore
+    from maistro.capabilities.invocation_store import SqliteInvocationStore
+    from maistro.events.envelope import SqliteEventStore
+
+    bindings = SqliteBindingStore(connection)
+    invocations = SqliteInvocationStore(connection)
+    approvals = SqliteApprovalStore(connection)
+    events = SqliteEventStore(connection)
+    await bindings.ensure_schema()
+    await invocations.ensure_schema()
+    await approvals.ensure_schema()
+    await events.ensure_schema()
+    return new_effect_context(
+        binding_store=bindings,
+        invocation_store=invocations,
+        approval_store=approvals,
+        event_store=events,
+    )
+
+
 __all__ = [
     "CapabilityEffectContext",
+    "configure_default_effect_context",
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",
+    "new_sqlite_effect_context",
+    "release_default_effect_context",
 ]

@@ -137,7 +137,14 @@ async def test_missing_provider_fails_closed_without_invocation_record() -> None
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key="agent.spawn_harness.dispatch:claude_code",
+        effect_key=AgentSpawnHarnessNode._effect_key(
+            {
+                "harness_type": "claude_code",
+                "task": "do something",
+                "context": {},
+                "timeout_seconds": 3600,
+            }
+        ),
     )
     assert history == []
 
@@ -168,7 +175,14 @@ async def test_dispatch_pauses_after_completed_correlated_invocation() -> None:
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key="agent.spawn_harness.dispatch:claude_code",
+        effect_key=AgentSpawnHarnessNode._effect_key(
+            {
+                "harness_type": "claude_code",
+                "task": "implement feature Y",
+                "context": {},
+                "timeout_seconds": 3600,
+            }
+        ),
     )
     assert len(history) == 1
     invocation = history[0]
@@ -200,10 +214,39 @@ async def test_completed_effect_replay_does_not_dispatch_twice() -> None:
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key="agent.spawn_harness.dispatch:claude_code",
+        effect_key=AgentSpawnHarnessNode._effect_key(
+            {
+                "harness_type": "claude_code",
+                "task": "once",
+                "context": {},
+                "timeout_seconds": 3600,
+            }
+        ),
     )
     assert len(history) == 1
     assert history[0].attempt_id == "a1"
+
+
+async def test_distinct_requests_do_not_replay_one_another() -> None:
+    adapter = FakeHarnessAdapter()
+    effects = await _effects_with_binding()
+    node = AgentSpawnHarnessNode(
+        adapters={"claude_code": adapter},
+        effect_context=effects,
+    )
+
+    first = await node.run(
+        {"harness_type": "claude_code", "task": "task one", "binding_id": "b1"},
+        _ctx(),
+    )
+    second = await node.run(
+        {"harness_type": "claude_code", "task": "task two", "binding_id": "b1"},
+        _ctx(attempt_id="a2"),
+    )
+
+    assert first.status == second.status == "paused"
+    assert len(adapter.dispatched) == 2
+    assert first.metadata["invocation_id"] != second.metadata["invocation_id"]
 
 
 async def test_dispatch_passes_domain_context_to_provider_adapter() -> None:
