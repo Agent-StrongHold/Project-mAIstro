@@ -105,49 +105,62 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
                 all_match=True,
                 timed_out=False,
             )
+        return _await_remaining_subtasks(
+            inputs, ctx=ctx, statuses=statuses, poll_number=poll_number
+        )
 
-        first_seen = _first_seen(ctx)
-        now = now_utc()
-        if first_seen is None:
-            pause_until(
-                PAUSE_WAITING_ON_JIRA_SUBTASKS,
-                resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
-                metadata={
-                    "parent_key": inputs.parent_key,
-                    "current_statuses": statuses,
-                    "first_seen": now.isoformat(),
-                    "deadline": (now + timedelta(seconds=inputs.timeout_seconds)).isoformat(),
-                    "poll_number": poll_number + 1,
-                },
-            )
-            return WaitForSubtasksOut(parent_key=inputs.parent_key)
 
-        try:
-            from datetime import datetime as _dt
+def _await_remaining_subtasks(
+    inputs: WaitForSubtasksIn,
+    *,
+    ctx: NodeContext,
+    statuses: dict[str, str],
+    poll_number: int,
+) -> WaitForSubtasksOut:
+    """Pause until the next poll, or time out once the deadline has passed."""
 
-            first = _dt.fromisoformat(first_seen)
-        except Exception:
-            first = now
-        if (now - first).total_seconds() >= inputs.timeout_seconds:
-            return WaitForSubtasksOut(
-                parent_key=inputs.parent_key,
-                subtask_keys=list(statuses.keys()),
-                statuses=statuses,
-                all_match=False,
-                timed_out=True,
-            )
-
+    first_seen = _first_seen(ctx)
+    now = now_utc()
+    if first_seen is None:
         pause_until(
             PAUSE_WAITING_ON_JIRA_SUBTASKS,
             resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
             metadata={
                 "parent_key": inputs.parent_key,
                 "current_statuses": statuses,
-                "first_seen": first_seen,
+                "first_seen": now.isoformat(),
+                "deadline": (now + timedelta(seconds=inputs.timeout_seconds)).isoformat(),
                 "poll_number": poll_number + 1,
             },
         )
         return WaitForSubtasksOut(parent_key=inputs.parent_key)
+
+    try:
+        from datetime import datetime as _dt
+
+        first = _dt.fromisoformat(first_seen)
+    except Exception:
+        first = now
+    if (now - first).total_seconds() >= inputs.timeout_seconds:
+        return WaitForSubtasksOut(
+            parent_key=inputs.parent_key,
+            subtask_keys=list(statuses.keys()),
+            statuses=statuses,
+            all_match=False,
+            timed_out=True,
+        )
+
+    pause_until(
+        PAUSE_WAITING_ON_JIRA_SUBTASKS,
+        resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
+        metadata={
+            "parent_key": inputs.parent_key,
+            "current_statuses": statuses,
+            "first_seen": first_seen,
+            "poll_number": poll_number + 1,
+        },
+    )
+    return WaitForSubtasksOut(parent_key=inputs.parent_key)
 
 
 def _first_seen(ctx: NodeContext) -> Any:
