@@ -752,6 +752,30 @@ or placeholder-only section.
 
 ### Fixed
 
+- **`/v1/schedules` writes the canonical Schedule definition first (#1199,
+  partial).** With a configured Container, create, update and delete now
+  write the canonical `ScheduleStore` before the Hive row, which becomes a
+  projection. Disabling a schedule disables its canonical row, and a cron or
+  timezone change clears `next_due_at` while `runs_so_far` and `last_run_id`
+  stay. Deleting a schedule (or clearing its template) removes the canonical
+  row, so `due()` no longer returns an orphaned enabled row. A Container
+  without a schedule or project store returns 503 and writes nothing; a
+  definition the canonical model refuses (such as an unreadable cron) returns
+  422; a create whose Hive write then fails deletes the canonical row it had
+  already committed rather than leaving an orphan no route can reach. On
+  startup the scheduler runs a one-shot backfill that puts every Hive row the
+  canonical store is missing *or* whose definition has drifted from it (the
+  residual case the old lazy tick could leave — enabled canonically, disabled
+  in Hive, from before these routes existed to sync it) — `ScheduleStore.put`
+  keeps the recorded cursors either way, so reconciling never rewinds them.
+  A tick — and now a manual fire too — re-reads the row under the same
+  per-schedule lock the routes hold, so a snapshot taken before an edit or
+  delete cannot re-enable, resurrect, or admit a Run for a schedule already
+  gone; that lock's process-global dict releases each schedule's entry once
+  idle rather than growing with create/delete churn. Standalone mode (no
+  Container) is unchanged. The tick still enumerates `stores.schedules`;
+  moving it onto `ScheduleStore.due()` is the rest of #1199.
+
 - **Run retention throttles and reports backlog per Workspace
   ([#1175](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1175)).**
   `RunRetentionSweeper` used to keep one last-sweep time for all Workspaces.
