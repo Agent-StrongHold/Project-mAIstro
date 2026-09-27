@@ -118,3 +118,42 @@ def test_scoped_scraper_works_through_forwarded_proxy_headers(
     )
 
     assert response.status_code == 200
+
+
+def test_metrics_auth_provider_loads_scraper_from_canonical_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drive the real cached factory, which every other test stubs out.
+
+    The endpoint dependency resolves its provider through the lru_cache'd
+    ``_metrics_auth_provider``; patching it in the tests above proves the
+    scope contract but leaves the production loader — ServiceKeyRegistry
+    built from the SERVICE_KEY_*/SERVICE_SCOPES_* env contract — unexercised.
+    This test runs that path end to end: env-configured scraper identity,
+    scope check, and the authenticated/unauthenticated endpoint outcomes
+    through the unpatched dependency.
+    """
+    monkeypatch.setenv("SERVICE_KEY_PROMETHEUS", _KEY)
+    monkeypatch.setenv("SERVICE_SCOPES_PROMETHEUS", Scope.METRICS_READ.value)
+    monkeypatch.delenv("SERVICE_KEYS_FILE", raising=False)
+    metrics_api._metrics_auth_provider.cache_clear()
+    try:
+        provider = metrics_api._metrics_auth_provider()
+
+        # Starlette lowercases header names, and the provider reads the
+        # lowercase form — mirror the production dict(request.headers) shape.
+        identity = provider.authenticate({"x-service-key": _KEY})
+        assert identity is not None
+        assert identity.has_scope(Scope.METRICS_READ)
+        assert provider.authenticate({}) is None
+
+        app = FastAPI()
+        app.include_router(metrics_api.router)
+        scoped = TestClient(app).get("/metrics", headers={"X-Service-Key": _KEY})
+        assert scoped.status_code == 200
+        anonymous = TestClient(app).get("/metrics")
+        assert anonymous.status_code == 401
+    finally:
+        # Drop the real provider from the cache so no later test resolves the
+        # dependency against this test's (monkeypatched-away) env state.
+        metrics_api._metrics_auth_provider.cache_clear()

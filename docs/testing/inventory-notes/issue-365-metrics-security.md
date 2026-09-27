@@ -615,3 +615,44 @@ inherited):
   16-hex digest label; the raw service key never reaches the exposition.
 - Closure-keyword review: PR #1457 body ("Draft auto-opened … Refs #365")
   and all branch commit messages contain no fixes/closes/resolves tokens.
+
+## Eleventh verification (CI-repair round, head f55482575 + coverage repair)
+
+CI finding reproduced from the run log itself (quality run 36281960135, job
+"Coverage gate (publish-set floor + diff coverage)"): the `combine` step and
+87% publish-set floor passed; the per-file diff gate failed with exactly one
+file — `packages/maistro-server/src/maistro_server/api/metrics.py: 80.0% of
+15 changed lines (need 90%); uncovered 19, 20, 21`. Those lines are the body
+of the `lru_cache`d `_metrics_auth_provider()` factory: every existing
+metrics test monkeypatches the factory, so the production loader
+(`ServiceKeyRegistry.load_all()` over the `SERVICE_KEY_*` env contract plus
+`ServiceKeyAuthProvider` construction) had zero coverage. Prior "gates green"
+claims did not cover this gate; the CI log is the authority.
+
+Repair (tests only, no production change): new
+`test_metrics_auth_provider_loads_scraper_from_canonical_registry` in
+`packages/maistro-server/tests/api/test_metrics.py` drives the real,
+unpatched factory end to end — env-configured scraper identity, production
+lowercase header shape, `admin:metrics` scope check, `authenticate({})` →
+None, and both endpoint outcomes through the live dependency (200 with the
+scoped key, 401 anonymous), with `cache_clear()` before and after so no
+cached provider leaks across tests. Count delta recorded in
+`docs/testing/inventory-notes/auto-365-33b6.md` (+1 server node ID).
+
+Local re-validation at the repaired tree:
+
+- Diff-coverage gate reproduced with the CI's own base SHA
+  (8bfd35903f497c6082bdc06d115ecefcb5d5f0b4): core producer (10572 passed;
+  one unrelated Docker-startup flake in `test_container_postgres.py` that
+  passes in isolation) + server producer (401 passed) →
+  `scripts/check-diff-coverage.py coverage.xml --base 8bfd3590…`:
+  "ok: every measured file this change touches is at or above 90% lines /
+  80% branch arcs", exit 0 — same "6 changed file(s) measured" scope as CI.
+- `uv run ruff check .` and `ruff format --check .` (2585 files): pass.
+- `scripts/check-vulture-baseline.py packages/*/src --min-confidence 60`:
+  exit 0, ratchet clean (1402 findings / 1403 reviewed) — no ledger
+  amendment needed; this repair adds no dead code.
+- Suite inventory: core 11287 ok; server drifted +1 as expected and was
+  recorded via `--update`.
+- Develop-sync block from the prior round confirmed already resolved:
+  origin/develop 8bfd35903 is an ancestor of HEAD (merge commit 07957e3f5).
