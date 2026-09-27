@@ -375,16 +375,6 @@
       "issue": "#55",
       "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
     },
-    "packages/maistro-core/src/maistro/capabilities/approval_store.py": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#55",
-      "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
-    },
-    "packages/maistro-core/src/maistro/capabilities/authority.py": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#55",
-      "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
-    },
     "packages/maistro-core/src/maistro/capabilities/binding.py": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#55",
@@ -405,11 +395,6 @@
       "issue": "#55",
       "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
     },
-    "packages/maistro-core/src/maistro/capabilities/governed_invocation.py": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#55",
-      "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
-    },
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#55",
@@ -421,21 +406,6 @@
       "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
     },
     "packages/maistro-core/src/maistro/capabilities/http_client.py": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#55",
-      "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
-    },
-    "packages/maistro-core/src/maistro/capabilities/invocation.py": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#55",
-      "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
-    },
-    "packages/maistro-core/src/maistro/capabilities/invocation_store.py": {
-      "owner": "@BlakeMatthews-dev",
-      "issue": "#55",
-      "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
-    },
-    "packages/maistro-core/src/maistro/capabilities/pg_invocation_store.py": {
       "owner": "@BlakeMatthews-dev",
       "issue": "#55",
       "reason": "M1 effect door (#55 / #1362) composes Invocation, quota, and the canonical event envelope on the container promotion path. These modules were library code off that path. The door is the one physical-effect authority; leaving them unwired would keep a second composition. This grant lands first so #1362 cannot approve its own closure."
