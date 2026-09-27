@@ -173,6 +173,88 @@ GOLDEN_BASELINES = Dependency(
     ),
 )
 
+# A dependency's source-level seam landing is necessary but not sufficient for a
+# scenario to count as executed: #459's own scenarios 1-3 currently activate into
+# import/source-token checks rather than a real Run created and observed through
+# the landed seam, and scenario 6 currently feeds #463's own fixture example back
+# into itself rather than a converged product's observation. Each of these stays a
+# named, permanently-evidenced blocker -- probing for a marker/rewrite that does
+# not exist yet -- so strict mode cannot go green on that scaffold once the named
+# dependency above it lands. Implementing the real scenario clears the blocker by
+# construction: the marker only exists once real assertions replace the scaffold.
+_TEST_SUITE_PATH = "tests/cross_product_parity/test_cross_product_parity.py"
+
+REAL_BUILDERS_CONDUCTOR_SCENARIO = Dependency(
+    key="Builders->Conductor real executed scenario",
+    issue=459,
+    pr=None,
+    description=(
+        "Scenario 1 must create a real canonical Run through Builders' executor and "
+        "observe it through Conductor's landed inspection seam; import/source-token "
+        "checks alone do not exercise the real product path."
+    ),
+    probes=(
+        SourceProbe(
+            _TEST_SUITE_PATH,
+            required_tokens=("REAL_SCENARIO_EVIDENCE: builders-conductor",),
+        ),
+    ),
+)
+
+REAL_SCHEDULE_CONDUCTOR_SCENARIO = Dependency(
+    key="schedule fire->Conductor real executed scenario",
+    issue=459,
+    pr=None,
+    description=(
+        "Scenario 2 must admit a real schedule occurrence and observe its canonical "
+        "Run through Conductor's landed inspection seam; source-token checks alone "
+        "do not exercise the real product path."
+    ),
+    probes=(
+        SourceProbe(
+            _TEST_SUITE_PATH,
+            required_tokens=("REAL_SCENARIO_EVIDENCE: schedule-conductor",),
+        ),
+    ),
+)
+
+REAL_EVOLVE_CONDUCTOR_SCENARIO = Dependency(
+    key="Evolve->Conductor real executed scenario",
+    issue=459,
+    pr=None,
+    description=(
+        "Scenario 3 must run a real Evolve cycle and observe its canonical Run "
+        "through Conductor's landed inspection seam; source-token checks alone do "
+        "not exercise the real product path."
+    ),
+    probes=(
+        SourceProbe(
+            _TEST_SUITE_PATH,
+            required_tokens=("REAL_SCENARIO_EVIDENCE: evolve-conductor",),
+        ),
+    ),
+)
+
+REAL_GOLDEN_PRODUCT_OBSERVATION = Dependency(
+    key="#463 golden fixtures checked against a real product observation",
+    issue=459,
+    pr=None,
+    description=(
+        "Scenario 6 must feed a converged product's own observation to the #463 "
+        "matcher; feeding the fixture's own example_observation back at itself "
+        "only proves oracle wiring, not product behavior."
+    ),
+    probes=(
+        SourceProbe(
+            _TEST_SUITE_PATH,
+            forbidden_tokens=(
+                'assert_matches_golden("builders", "retry_keeps_logical_run", '
+                'scenario["example_observation"])',
+            ),
+        ),
+    ),
+)
+
 _DEPENDENCY_LIST: Final = (
     BUILDERS,
     EVOLVE,
@@ -180,6 +262,10 @@ _DEPENDENCY_LIST: Final = (
     CONDUCTOR_INSPECTION,
     ONTOLOGY,
     GOLDEN_BASELINES,
+    REAL_BUILDERS_CONDUCTOR_SCENARIO,
+    REAL_SCHEDULE_CONDUCTOR_SCENARIO,
+    REAL_EVOLVE_CONDUCTOR_SCENARIO,
+    REAL_GOLDEN_PRODUCT_OBSERVATION,
 )
 DEPENDENCIES: Final = {dependency.key: dependency for dependency in _DEPENDENCY_LIST}
 

@@ -20,6 +20,10 @@ from tests.cross_product_parity.harness import (
     EVOLVE,
     GOLDEN_BASELINES,
     ONTOLOGY,
+    REAL_BUILDERS_CONDUCTOR_SCENARIO,
+    REAL_EVOLVE_CONDUCTOR_SCENARIO,
+    REAL_GOLDEN_PRODUCT_OBSERVATION,
+    REAL_SCHEDULE_CONDUCTOR_SCENARIO,
     SCHEDULER,
     Dependency,
     DependencyUnavailable,
@@ -112,8 +116,17 @@ def test_second_run_id_mapping_and_private_terminal_state_are_rejected() -> None
 
 
 def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
-    """Scenario 1 activation contract for Builders -> Conductor parity."""
-    dependency = dependency_assessment(BUILDERS, CONDUCTOR_INSPECTION)
+    """Scenario 1 activation contract for Builders -> Conductor parity.
+
+    ``REAL_BUILDERS_CONDUCTOR_SCENARIO`` stays an evidenced blocker even once
+    ``CONDUCTOR_INSPECTION`` lands: the assertions below only check that the
+    import/source seams exist, not that a real Run was created and observed
+    through them, so this scenario cannot be trusted as closure evidence until
+    that dependency's own marker lands alongside real executable assertions.
+    """
+    dependency = dependency_assessment(
+        BUILDERS, CONDUCTOR_INSPECTION, REAL_BUILDERS_CONDUCTOR_SCENARIO
+    )
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -134,8 +147,14 @@ def test_builders_created_work_has_public_conductor_inspection_seams() -> None:
 
 
 def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> None:
-    """Scenario 2 activation contract for the live schedule fire path."""
-    dependency = dependency_assessment(SCHEDULER, CONDUCTOR_INSPECTION)
+    """Scenario 2 activation contract for the live schedule fire path.
+
+    See ``REAL_SCHEDULE_CONDUCTOR_SCENARIO`` in harness.py: source-token checks
+    alone do not prove a real schedule occurrence was observed through Conductor.
+    """
+    dependency = dependency_assessment(
+        SCHEDULER, CONDUCTOR_INSPECTION, REAL_SCHEDULE_CONDUCTOR_SCENARIO
+    )
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -153,8 +172,12 @@ def test_schedule_fire_has_canonical_admission_and_shared_inspection_seams() -> 
 
 
 def test_evolve_has_canonical_run_identity_and_shared_inspection_seams() -> None:
-    """Scenario 3 activation contract for the shipped Evolve cycle path."""
-    dependency = dependency_assessment(EVOLVE, CONDUCTOR_INSPECTION)
+    """Scenario 3 activation contract for the shipped Evolve cycle path.
+
+    See ``REAL_EVOLVE_CONDUCTOR_SCENARIO`` in harness.py: source-token checks
+    alone do not prove a real Evolve cycle was observed through Conductor.
+    """
+    dependency = dependency_assessment(EVOLVE, CONDUCTOR_INSPECTION, REAL_EVOLVE_CONDUCTOR_SCENARIO)
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -196,8 +219,14 @@ def test_shared_identity_contract_consumes_executable_ontology() -> None:
 
 
 def test_463_golden_fixtures_are_consumed_as_independent_oracle() -> None:
-    """Scenario 6 consumes, rather than duplicates, the locked #463 matcher."""
-    dependency = dependency_assessment(GOLDEN_BASELINES)
+    """Scenario 6 consumes, rather than duplicates, the locked #463 matcher.
+
+    ``REAL_GOLDEN_PRODUCT_OBSERVATION`` keeps this an evidenced blocker until a
+    converged product's own observation replaces the fixture's own
+    ``example_observation`` below -- feeding a fixture its own example only
+    proves oracle wiring, not product behavior (#459).
+    """
+    dependency = dependency_assessment(GOLDEN_BASELINES, REAL_GOLDEN_PRODUCT_OBSERVATION)
     if not dependency.ready:
         assert dependency.blockers
         return
@@ -271,3 +300,34 @@ def test_non_strict_mode_still_reports_named_blockers(
     assert len(assessment.blockers) == 1
     assert "synthetic unavailable dependency" in assessment.blockers[0]
     assert "issue #1036" in assessment.blockers[0]
+
+
+def test_scaffold_only_scenarios_stay_blocked_until_real_execution_lands() -> None:
+    """A source-probe-only scenario must not read as M1 closure evidence.
+
+    Codex review (PR #1641): once a scenario's named product dependency lands,
+    an import/source-token check alone is not proof the scenario executed a
+    real cross-product Run through the product's own path. Each of scenarios
+    1, 2, 3 and 6 carries its own permanent, evidence-backed blocker
+    (``REAL_*`` in harness.py) precisely so the compound
+    ``dependency_assessment`` call stays unavailable -- and strict mode stays
+    red -- until that scaffold is replaced with a real execution.
+    """
+    for dependency in (
+        REAL_BUILDERS_CONDUCTOR_SCENARIO,
+        REAL_SCHEDULE_CONDUCTOR_SCENARIO,
+        REAL_EVOLVE_CONDUCTOR_SCENARIO,
+        REAL_GOLDEN_PRODUCT_OBSERVATION,
+    ):
+        assert not dependency.available(), (
+            f"{dependency.key} reads as available -- its scaffold-only scenario "
+            "would now pass as if it were real execution evidence"
+        )
+
+    # Scenario 6 concretely, right now: GOLDEN_BASELINES alone is already
+    # satisfied on this branch, so REAL_GOLDEN_PRODUCT_OBSERVATION is the only
+    # thing keeping that scenario from reading as closure evidence. Checked via
+    # `.available()`, not `dependency_assessment()`, so this assertion holds
+    # regardless of MAISTRO_PARITY_STRICT in the ambient test environment.
+    assert GOLDEN_BASELINES.available()
+    assert not REAL_GOLDEN_PRODUCT_OBSERVATION.available()

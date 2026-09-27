@@ -300,7 +300,13 @@ or placeholder-only section.
   of returning a named blocker, so a scenario that only proves its
   dependency missing fails the suite rather than passing it. It is not part
   of the PR check contract — it fails today on the CONDUCTOR_INSPECTION
-  blocker until #1036 lands.
+  blocker until #1036 lands. Four scenarios (Builders/schedule/Evolve
+  activation against Conductor, and the #463 golden-fixture check) also gain
+  their own permanently-evidenced blockers so a landed product dependency
+  alone cannot read as closure evidence while the scenario itself still only
+  checks import/source tokens, or — for the golden fixture — feeds the
+  fixture's own example back at itself instead of a real product
+  observation.
 
 - **Durable user model: `UserModelFact` and self-consented promotion
   (#1047, partial).** New `maistro.memory.user_model` package: a frozen,
