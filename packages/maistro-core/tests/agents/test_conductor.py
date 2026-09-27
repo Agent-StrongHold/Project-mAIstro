@@ -10,7 +10,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from maistro.agents.circuit_breaker import CircuitOpenError, llm_circuit
+from maistro.agents.circuit_breaker import CircuitOpenError, llm_breakers, llm_circuit
 from maistro.agents.conductor import (
     ConductorCall,
     _call_gateway,
@@ -35,7 +35,7 @@ def _dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_circuit() -> None:
-    llm_circuit.record_success()
+    llm_breakers.reset()
 
 
 def _patched_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:

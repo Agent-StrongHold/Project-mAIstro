@@ -24,6 +24,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
+from maistro.agents.circuit_breaker import (
+    SHARED_GATEWAY_DOMAIN,
+    domain_blocks_routing,
+    failure_domain,
+)
 from maistro.capabilities.binding import Binding, ResolvedCapabilityProvider
 from maistro.capabilities.credential_routing import CredentialBackedProvider
 from maistro.capabilities.invocation import (
@@ -91,6 +96,11 @@ def resolve_model_chat_provider(
     """
 
     async def resolve(binding: Binding) -> ResolvedCapabilityProvider | Unavailable:
+        if domain_blocks_routing(SHARED_GATEWAY_DOMAIN):
+            return Unavailable(
+                slot=MODEL_CHAT_CAPABILITY,
+                reason="shared model gateway circuit is open",
+            )
         selection = binding.provider_name or alias
         if selection:
             try:
@@ -103,6 +113,18 @@ def resolve_model_chat_provider(
                     reason=(
                         f"selected model {selection!r} is unavailable and a pinned "
                         "selection does not fall back"
+                    ),
+                )
+            domain = failure_domain(
+                provider=metadata.provider if metadata is not None else None,
+                model=selection,
+            )
+            if domain_blocks_routing(domain):
+                return Unavailable(
+                    slot=MODEL_CHAT_CAPABILITY,
+                    reason=(
+                        f"selected model {selection!r} is circuit-open for {domain} "
+                        "and a pinned selection does not fall back"
                     ),
                 )
             return LlmGatewayProvider(metadata, model=selection)

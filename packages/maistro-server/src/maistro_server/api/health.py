@@ -171,10 +171,10 @@ async def readiness(
     )
     postgres_result = await _check_postgres(settings)
 
-    circuit_state = circuit_breaker.llm_circuit.state
+    circuit_state, circuit_detail = circuit_breaker.llm_health_detail()
     llm_result = ProbeResult(
         status="ok" if circuit_state == "closed" else "error",
-        detail=f"circuit={circuit_state}",
+        detail=circuit_detail,
     )
 
     # The outbound pool is a process resource rather than an external
