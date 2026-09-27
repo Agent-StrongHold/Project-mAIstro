@@ -25,6 +25,12 @@ or placeholder-only section.
 
 ### Security
 
+- **Org-bound global memories stay hidden without caller org context (#1247).**
+  Project-only `list_by_scope` still skips the scope hierarchy for changelog
+  recall, but that skip no longer returns a `global` memory bound to an
+  organization. The in-memory, SQLite, and PostgreSQL stores apply the same
+  no-caller global clause.
+
 - **Tool calls fail closed when Sentinel or caller auth is missing (#1165).**
   An `Agent` built without a Sentinel, or handed a turn with no `auth`, used
   to execute tool calls unauthorized; it now returns `Error: Permission denied
