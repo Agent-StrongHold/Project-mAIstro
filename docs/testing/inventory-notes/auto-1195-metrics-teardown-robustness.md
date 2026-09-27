@@ -1,16 +1,13 @@
 ---
 inventory-delta:
-  package: maistro-core
-  path: packages/maistro-core/tests/test_metrics.py
-  added: 0
-  modified: 1
-  summary: >-
-    test_empty_registry_exposes_only_uptime patched the global `time.monotonic`
-    with a finite iterator; pytest's own teardown timing consumed a third read
-    and raised StopIteration at teardown. The fake now falls back to the last
-    scripted value, so harness timing reads are harmless while the two scripted
-    values still decide the asserted uptime.
+  packages/maistro-core/tests: +0
 ---
+
+Delta note: `+0` — the repair rewrites the body of
+`test_empty_registry_exposes_only_uptime` in
+`packages/maistro-core/tests/test_metrics.py` (1 test modified, 0 added or
+removed), so the collected node-ID count for the suite is unchanged. The
+detailed behavior record follows.
 
 # test_metrics teardown robustness (auto-1195 merge validation)
 

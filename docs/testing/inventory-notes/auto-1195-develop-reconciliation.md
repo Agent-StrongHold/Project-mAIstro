@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +0
+  packages/maistro-core/tests: +3
 ---
 # auto-1195 develop reconciliation
 
@@ -28,7 +28,12 @@ conflicts were resolved semantically rather than textually:
   Binding-scope correlation stays enforced at the `Invocation` validator
   whenever the snapshot carries scope.
 
-Test delta: no net count change. One develop test
+Test delta: corrected to `+3` after a full `pytest --collect-only` node-ID
+diff against the develop base. One develop test
 (`test_container_wires_capability_store_to_sqlite_connection`) was rewired to
 the surviving `_wire_capability_effects` seam, and two doc-pinning tests
-collapsed to develop's names with identical assertions.
+collapsed to develop's names with identical assertions — but develop's
+`test_container_node_composition.py` parametrizes over every node kind, so the
+three PM nodes' `optional_authorities = {"effect_context": "effect_context"}`
+declarations added three new collected cases
+(`[airtable.poll]`, `[jira.poll]`, `[jira.wait_for_subtasks]`).
