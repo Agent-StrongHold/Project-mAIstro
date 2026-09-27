@@ -1488,7 +1488,6 @@
         "packages/maistro-rsi/src/maistro_rsi/rate_pacer.py::unused class 'RatePacer'",
         "packages/maistro-rsi/src/maistro_rsi/test_inventory.py::unused property 'skip_gated'",
         "packages/maistro-server/src/maistro_server/api/backlog.py::unused method '_no_null_for_required_fields'",
-        "packages/maistro-server/src/maistro_server/api/principal.py::unused property 'is_admin'",
         "packages/maistro-server/src/maistro_server/api/projects.py::unused method '_delegation_requires_grant'",
         "packages/maistro-server/src/maistro_server/api/projects.py::unused method '_require_non_blank_actions'",
         "packages/maistro-turing/src/maistro_turing/bridge.py::unused class 'TuringClassifier'",
