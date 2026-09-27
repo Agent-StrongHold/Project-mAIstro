@@ -6,6 +6,7 @@ configuration and credentials belong to the Workspace/Project Binding.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -59,6 +60,9 @@ class JiraPollNode(BaseNode[JiraPollIn, JiraPollOut]):
     idempotent: ClassVar[bool] = True
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Jira: query (JQL)"
+    # The resolver must hand over the container's Binding/Invocation authority;
+    # the constructor default is a process-wide context that authorizes nothing.
+    optional_authorities: ClassVar[Mapping[str, str]] = {"effect_context": "effect_context"}
     description: ClassVar[str] = (
         "Run a JQL search through the pre-authorized Jira capability Binding. "
         "Endpoint and credentials are supplied by Binding configuration."

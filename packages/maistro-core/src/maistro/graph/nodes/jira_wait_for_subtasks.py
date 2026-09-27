@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, ClassVar
 
@@ -53,6 +54,9 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
     idempotent: ClassVar[bool] = True
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Jira: wait for subtasks"
+    # The resolver must hand over the container's Binding/Invocation authority;
+    # the constructor default is a process-wide context that authorizes nothing.
+    optional_authorities: ClassVar[Mapping[str, str]] = {"effect_context": "effect_context"}
     description: ClassVar[str] = (
         "Pause until Jira subtasks reach a target status through a governed "
         "Jira capability Binding."
