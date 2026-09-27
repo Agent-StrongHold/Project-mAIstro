@@ -207,6 +207,90 @@ def _workflow_files() -> list[Path]:
     return sorted([*WORKFLOW_DIR.glob("*.yml"), *WORKFLOW_DIR.glob("*.yaml")])
 
 
+_INPUT_EXPRESSION_RE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
+_LOCAL_WORKFLOW_RE = re.compile(r"\./\.github/workflows/[^/@\\]+\.ya?ml\Z")
+
+
+def _load_reusable_workflow(uses: str) -> dict:
+    """Load a same-revision local callee, refusing paths Actions cannot call."""
+    if not _LOCAL_WORKFLOW_RE.fullmatch(uses):
+        raise ContractError(f"unsupported or external reusable workflow {uses!r}")
+    callee_path = (REPO_ROOT / uses[2:]).resolve()
+    if callee_path.parent != WORKFLOW_DIR.resolve():
+        raise ContractError(f"reusable workflow {uses!r} escapes the workflow directory")
+    if not callee_path.is_file():
+        raise ContractError(f"references missing reusable workflow {uses!r}")
+    try:
+        callee = yaml.safe_load(callee_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ContractError(f"cannot read reusable workflow {uses!r}: {exc}") from exc
+    if not isinstance(callee, dict) or _trigger_block(callee, ("workflow_call",)) is None:
+        raise ContractError(f"reusable workflow {uses!r} has no workflow_call trigger")
+    if not isinstance(callee.get("jobs"), dict) or not callee["jobs"]:
+        raise ContractError(f"reusable workflow {uses!r} has no jobs")
+    return callee
+
+
+def _literal_check_name(value: object) -> str:
+    """Only a nonempty literal can name an actual required check context."""
+    if not isinstance(value, str) or not value.strip() or "${{" in value:
+        raise ContractError(f"unsupported check name {value!r}")
+    return value
+
+
+def _resolve_reusable_name(template: str, supplied: dict, declared: dict) -> str:
+    """Resolve name inputs only; command and environment inputs stay opaque."""
+
+    def substitute(match: re.Match[str]) -> str:
+        key = match.group(1)
+        definition = declared.get(key)
+        if not isinstance(definition, dict):
+            raise ContractError(f"reusable check name references undeclared input {key!r}")
+        if key in supplied:
+            return _literal_check_name(supplied[key])
+        if "default" not in definition:
+            raise ContractError(f"reusable check name needs unresolved input {key!r}")
+        return _literal_check_name(definition["default"])
+
+    return _literal_check_name(_INPUT_EXPRESSION_RE.sub(substitute, template))
+
+
+def _reusable_check_names(job_id: str, job: dict) -> list[str]:
+    """Recover #1357's caller / callee names without migrating any producers.
+
+    This bounded implementation supports the original single-level local
+    callers with literal string name inputs. Matrix, nested and conditional
+    callee jobs are refused rather than reported under guessed names or scope.
+    Other workflow-policy consumers must support a topology before it ships.
+    """
+    if "strategy" in job:
+        raise ContractError("reusable caller matrices are not supported by this contract")
+    caller_name = _literal_check_name(job.get("name", job_id))
+    uses = str(job.get("uses", ""))
+    callee = _load_reusable_workflow(uses)
+    supplied = job.get("with") or {}
+    trigger = _trigger_block(callee, ("workflow_call",))
+    if not isinstance(trigger, dict):
+        raise ContractError(f"invalid workflow_call configuration in {uses!r}")
+    declared = trigger.get("inputs") or {}
+    if not isinstance(supplied, dict) or not isinstance(declared, dict):
+        raise ContractError(f"invalid reusable input mapping in {uses!r}")
+    names: list[str] = []
+    for called_id, called_job in callee["jobs"].items():
+        if not isinstance(called_job, dict):
+            raise ContractError(f"invalid reusable job {called_id!r}")
+        if any(key in called_job for key in ("uses", "strategy", "if")):
+            raise ContractError(f"nested, matrix or conditional reusable job {called_id!r}")
+        template = called_job.get("name", called_id)
+        if not isinstance(template, str):
+            raise ContractError(f"invalid reusable job name {template!r}")
+        name = f"{caller_name} / {_resolve_reusable_name(template, supplied, declared)}"
+        if name in names:
+            raise ContractError(f"duplicate reusable check name {name!r}")
+        names.append(name)
+    return names
+
+
 def collect() -> list[tuple[str, str, str]]:
     """(workflow, check name, scope) for every job reachable from a PR."""
     rows: list[tuple[str, str, str]] = []
@@ -221,7 +305,9 @@ def collect() -> list[tuple[str, str, str]]:
             job = job or {}
             scope = _job_scope(job, trigger_scope)
             try:
-                names = _check_names(job_id, job)
+                names = (
+                    _reusable_check_names(job_id, job) if "uses" in job else _check_names(job_id, job)
+                )
             except ContractError as exc:
                 raise ContractError(f"{path.name}: {exc}") from exc
             rows.extend((workflow, name, scope) for name in names)
