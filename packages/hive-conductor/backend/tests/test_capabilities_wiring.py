@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from config import Settings
 from models.schemas import CapabilitySetting, SettingsModel
 from pydantic import SecretStr
@@ -280,3 +281,105 @@ def test_engine_exposes_a_capability_registry_in_stub_mode() -> None:
     svc._wire_capabilities(_cfg(host_health_url="http://host:8150"))
     assert "inbox" in svc.capabilities.installed("approval")
     assert "host_health" in svc.capabilities.installed("infra_action")
+
+
+# --- #846: self_repair registration must fail closed on a hostile composition
+
+
+class _NoBootSeamStore:
+    """A BindingStore without the composition-time registration seam."""
+
+    async def resolve(self, binding_id, *, workspace_id, project_id, node_id, capability):
+        raise NotImplementedError
+
+    def register(self, binding):
+        raise NotImplementedError
+
+    async def revoke(self, binding_id):
+        raise NotImplementedError
+
+
+def test_no_self_repair_registered_without_monitor_provider() -> None:
+    # A monitor provider is a hard precondition: without it the actor would
+    # hold an invoker with nothing to observe, so nothing is registered.
+    reg = default_capability_registry(entry_points=[])
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+
+    _register_self_repair(reg, _cfg(), effects)
+
+    assert reg.installed("self_repair") == []
+    assert reg.provider("self_repair", "rule_based_repair") is None
+
+
+def test_self_repair_disabled_when_binding_store_lacks_boot_seam() -> None:
+    import dataclasses
+
+    reg = default_capability_registry(entry_points=[])
+    reg.register(_WiringMonitor())
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    degraded = dataclasses.replace(effects, bindings=_NoBootSeamStore())
+
+    _register_self_repair(reg, _cfg(), degraded)
+
+    assert reg.installed("self_repair") == []
+    assert reg.provider("self_repair", "rule_based_repair") is None
+
+
+async def test_self_repair_disabled_when_boot_binding_was_revoked() -> None:
+    reg = default_capability_registry(entry_points=[])
+    reg.register(_WiringMonitor())
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
+    await effects.bindings.revoke("builtin:self-repair:infra-action")
+
+    _register_self_repair(reg, _cfg(), effects)
+
+    # A revoked identity is never re-granted by boot wiring: the actor that
+    # would have held the invoker is not registered at all.
+    assert reg.installed("self_repair") == []
+    assert reg.provider("self_repair", "rule_based_repair") is None
+
+
+async def test_self_repair_invoker_refuses_a_redirected_binding() -> None:
+    """The invoker admits only the boot-registered identity (#846).
+
+    If a BindingStore resolves an identity other than the one the composition
+    root registered, the guarded invoker must refuse before any provider work —
+    a redirected or swapped Binding can never borrow self_repair's admission.
+    """
+    import dataclasses
+
+    from services.capabilities_wiring import (
+        _build_self_repair_effect_invoker,
+        _self_repair_binding,
+    )
+
+    from maistro.capabilities.binding_store import InMemoryBindingStore
+    from maistro.capabilities.invocation import CapabilityUnavailable
+
+    reg = default_capability_registry(entry_points=[])
+    action = _WiringAction()
+    reg.register(_WiringMonitor())
+    reg.register(action)
+    reg.activate("infra_monitor", "host_health")
+    reg.activate("infra_action", "host_health")
+
+    binding = _self_repair_binding()
+
+    class _RedirectingStore(InMemoryBindingStore):
+        """A hostile store that resolves a different identity than requested."""
+
+        async def resolve(self, binding_id, **kwargs):
+            resolved = await super().resolve(binding_id, **kwargs)
+            return resolved.model_copy(update={"binding_id": "builtin:redirected"})
+
+    store = _RedirectingStore()
+    store.register(binding)
+    effects = dataclasses.replace(
+        new_effect_context(policy_evaluator=binding_scope_policy), bindings=store
+    )
+
+    invoke_action = _build_self_repair_effect_invoker(reg, effects, binding)
+    with pytest.raises(CapabilityUnavailable, match="invalid self_repair binding"):
+        await invoke_action("restart_container", {"name": "litellm"}, "effect-k")
+
+    assert action.calls == []  # refused before any provider call

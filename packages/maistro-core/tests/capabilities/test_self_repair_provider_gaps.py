@@ -131,3 +131,28 @@ class TestDispatchAsyncFailure:
         (r,) = result.results
         assert r.decision.value == "pending_approval"
         await asyncio.gather(*list(p._tasks))  # drain — must not raise
+
+
+class TestGovernedInvokerBoundary:
+    async def test_missing_governed_invoker_fails_the_effect_closed(self) -> None:
+        """The effect boundary itself refuses when no governed invoker is held (#846).
+
+        ``run_once`` suppresses earlier in ``_handle``; this drives the boundary
+        seam directly so an actor that somehow reaches it still cannot act.
+        """
+        from maistro.capabilities.slots.self_repair import RepairProposal
+
+        p = RuleBasedRepair(infra_monitor=_FakeMonitor())
+        assert p._effect_invoker is None
+
+        proposal = RepairProposal(
+            resource="docker:litellm",
+            symptom="unhealthy",
+            action="restart_container",
+            params={"name": "litellm"},
+            tier="reversible",
+        )
+        result = await p._invoke_action(proposal)
+
+        assert result.ok is False
+        assert result.detail == "no governed infra_action"
