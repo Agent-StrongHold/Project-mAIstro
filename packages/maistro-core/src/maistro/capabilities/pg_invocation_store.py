@@ -35,10 +35,29 @@ CREATE INDEX IF NOT EXISTS idx_capability_invocation_effect
     ON capability_invocations (run_id, node_run_id, binding_id, effect_key, created_at, invocation_id);
 CREATE INDEX IF NOT EXISTS idx_capability_invocation_attempt
     ON capability_invocations (attempt_id, created_at, invocation_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_capability_invocation_active_effect
-    ON capability_invocations (run_id, node_run_id, binding_id, effect_key)
-    WHERE status IN ('created', 'running', 'unknown');
 """
+
+_CLAIM_DDL = """
+UPDATE capability_invocations SET effect_scope = node_run_id WHERE effect_scope = '';
+DROP INDEX IF EXISTS uq_capability_invocation_active_effect;
+CREATE UNIQUE INDEX uq_capability_invocation_active_effect
+    ON capability_invocations (run_id, effect_scope, binding_id, effect_key)
+    WHERE status IN ('created', 'running', 'completed', 'unknown');
+"""
+"""The active-effect claim is keyed by the logical effect identity, not the
+physical NodeRun (#42, #1194). ``Invocation.effect_identity`` is
+``effect_scope or node_run_id``; ``create`` normalizes an empty scope to the
+node_run_id, so the partial unique index spans NodeRun visits exactly like the
+in-memory store's ``effect_identity`` guard. The predicate covers every
+non-FAILED status: a completed prior record must also refuse a second claim,
+closing the check-then-insert window where the first visit terminalizes
+between the loser's history read and its insert. The UPDATE + DROP + CREATE
+trio also reconciles databases deployed by Alembic revision 035's earlier
+node_run_id-keyed index; backfilling the scope of pre-column rows keeps index
+creation safe because the old contract never admitted two non-failed rows for
+one ``(run_id, node_run_id, binding_id, effect_key)``. Runs after every
+``ensure_schema`` so the runtime-backed schema agrees with migration 035
+without waiting for a re-migration."""
 
 
 class PgInvocationStore:
@@ -55,6 +74,10 @@ class PgInvocationStore:
 
     async def ensure_schema(self) -> None:
         async with self._pool.acquire() as connection, connection.transaction():
+            # Column ALTERs must precede the claim DDL: a database deployed by
+            # an earlier revision 035 lacks ``effect_scope`` and ``revision``,
+            # and both the backfill UPDATE and the claim index reference the
+            # column.
             for statement in _SCHEMA.split(";"):
                 if statement.strip():
                     await connection.execute(statement)
@@ -66,6 +89,9 @@ class PgInvocationStore:
                 "ALTER TABLE capability_invocations "
                 "ADD COLUMN IF NOT EXISTS effect_scope TEXT NOT NULL DEFAULT ''"
             )
+            for statement in _CLAIM_DDL.split(";"):
+                if statement.strip():
+                    await connection.execute(statement)
 
     async def create(self, invocation: Invocation) -> Invocation:
         payload = json.loads(invocation.model_dump_json())
@@ -189,10 +215,10 @@ class PgInvocationStore:
     async def _find_effect(self, invocation: Invocation) -> Invocation | None:
         row = await self._pool.fetchrow(
             """SELECT payload FROM capability_invocations
-               WHERE run_id=$1 AND node_run_id=$2 AND binding_id=$3 AND effect_key=$4
+               WHERE run_id=$1 AND effect_scope=$2 AND binding_id=$3 AND effect_key=$4
                ORDER BY created_at DESC, invocation_id DESC LIMIT 1""",
             invocation.run_id,
-            invocation.node_run_id,
+            invocation.effect_scope or invocation.node_run_id,
             invocation.binding.binding_id,
             invocation.effect_key,
         )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -162,6 +164,202 @@ async def test_sqlite_store_preserves_effect_and_resolved_provider_across_reopen
     assert persisted.binding.provider_trust_tier == "trusted"
     assert persisted.binding.config == {"region": "us"}
     assert persisted.result == {"written": {"value": 1}}
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _resolved_binding(binding_id: str = "binding-1") -> Any:
+    from maistro.capabilities.binding import ResolvedBinding
+
+    binding = Binding(
+        binding_id=binding_id,
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+    return ResolvedBinding.from_provider(binding, _Provider())
+
+
+def _durable_invocation(**overrides: Any) -> Any:
+    from maistro.capabilities.invocation import Invocation
+
+    defaults: dict[str, Any] = {
+        "invocation_id": "inv-1",
+        "run_id": "run-1",
+        "node_run_id": "node-run-1",
+        "attempt_id": "attempt-1",
+        "binding": _resolved_binding(),
+        "effect_key": "charge:order-42",
+        "effect_scope": "run-1:charge:order-42",
+    }
+    defaults.update(overrides)
+    return Invocation(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_sqlite_store_rejects_cross_node_run_active_effect_claim(tmp_path) -> None:
+    """The durable claim is keyed by the logical effect identity, so a second
+    NodeRun visit of the same stable effect cannot create its own Invocation
+    while the first visit's outcome is still active (#42, #1194). Only a
+    proven-FAILED record -- ``EffectNotApplied`` evidence -- admits a new
+    chronological visit."""
+
+    db_path = tmp_path / "invocations.db"
+    async with aiosqlite.connect(db_path) as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+
+        first = await store.create(
+            _durable_invocation(status=InvocationStatus.RUNNING, started_at=_now())
+        )
+        with pytest.raises(UnsafeEffectRetry, match="active or completed"):
+            await store.create(
+                _durable_invocation(
+                    invocation_id="inv-2",
+                    node_run_id="node-run-2",
+                    attempt_id="attempt-2",
+                )
+            )
+
+        # A second visit of the same logical effect is allowed only after the
+        # prior record proves the external effect did not occur.
+        await store.save(
+            first.model_copy(
+                update={
+                    "status": InvocationStatus.FAILED,
+                    "finished_at": _now(),
+                    "error": "provider proved effect not applied",
+                }
+            )
+        )
+        retry = await store.create(
+            _durable_invocation(
+                invocation_id="inv-3",
+                node_run_id="node-run-3",
+                attempt_id="attempt-3",
+            )
+        )
+        history = await store.list_effect(
+            run_id="run-1",
+            node_run_id="node-run-3",
+            binding_id="binding-1",
+            effect_key="charge:order-42",
+            effect_scope="run-1:charge:order-42",
+        )
+
+    assert retry.node_run_id == "node-run-3"
+    assert [item.invocation_id for item in history] == ["inv-1", "inv-3"]
+
+
+@pytest.mark.asyncio
+async def test_sqlite_service_deduplicates_logical_effect_across_node_run_visits(
+    tmp_path,
+) -> None:
+    """The durable counterpart of the in-memory contract: a completed prior
+    Invocation for the same logical effect is returned to a later NodeRun
+    visit without another provider call."""
+
+    db_path = tmp_path / "invocations.db"
+    calls = 0
+
+    async def execute(_provider: _Provider, request: object) -> object:
+        nonlocal calls
+        calls += 1
+        return {"written": request}
+
+    async with aiosqlite.connect(db_path) as conn:
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+        service = InvocationExecutionService(store=store)
+        binding = Binding(
+            binding_id="binding-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+            capability="external_write",
+        )
+
+        async def visit(node_run_id: str, attempt_id: str) -> object:
+            return await service.invoke(
+                binding=binding,
+                run_id="run-1",
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                effect_key="charge:order-42",
+                effect_scope="run-1:charge:order-42",
+                request={"order": 42},
+                resolver=_resolver,
+                executor=execute,
+            )
+
+        first = await visit("node-run-1", "attempt-1")
+        replay = await visit("node-run-2", "attempt-2")
+
+    assert calls == 1
+    assert replay.invocation_id == first.invocation_id
+    assert replay.node_run_id == "node-run-1"
+    assert replay.attempt_id == "attempt-1"
+
+
+@pytest.mark.asyncio
+async def test_sqlite_ensure_schema_migrates_legacy_node_run_scoped_claim(tmp_path) -> None:
+    """A database deployed by the pre-scope schema (no ``effect_scope``
+    column, node_run_id-keyed claim index) is reconciled in place: legacy rows
+    get their logical scope backfilled and the claim index is replaced, so the
+    durable store honors the cross-NodeRun contract without a re-migration."""
+
+    db_path = tmp_path / "invocations.db"
+    legacy_schema = """
+    CREATE TABLE IF NOT EXISTS capability_invocations (
+        invocation_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        node_run_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        binding_id TEXT NOT NULL,
+        effect_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        payload_json TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_capability_invocation_active_effect
+        ON capability_invocations (run_id, node_run_id, binding_id, effect_key)
+        WHERE status IN ('created', 'running', 'unknown');
+    """
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.executescript(legacy_schema)
+        await conn.execute(
+            """INSERT INTO capability_invocations (
+                   invocation_id, run_id, node_run_id, attempt_id, binding_id,
+                   effect_key, status, created_at, payload_json
+               ) VALUES ('inv-legacy', 'run-1', 'node-run-1', 'attempt-0',
+                         'binding-1', 'charge:order-42', 'completed', 1.0, '{}')"""
+        )
+        await conn.commit()
+
+        store = SqliteInvocationStore(conn)
+        await store.ensure_schema()
+
+        index_sql = await conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'uq_capability_invocation_active_effect'"
+        )
+        row = await index_sql.fetchone()
+        assert row is not None and "effect_scope" in str(row[0])
+
+        # The backfilled legacy row is now part of the logical identity: a new
+        # visit normalizing to the same scope (empty scope -> node_run_id)
+        # cannot create a second active Invocation.
+        with pytest.raises(UnsafeEffectRetry, match="active or completed"):
+            await store.create(
+                _durable_invocation(
+                    invocation_id="inv-new",
+                    node_run_id="node-run-1",
+                    attempt_id="attempt-9",
+                    effect_scope="",
+                    status=InvocationStatus.CREATED,
+                )
+            )
 
 
 # Coverage for `maistro.capabilities.pg_invocation_store.PgInvocationStore` --

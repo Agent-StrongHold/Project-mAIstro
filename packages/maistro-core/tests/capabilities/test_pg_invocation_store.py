@@ -19,7 +19,12 @@ from typing import Any
 import pytest
 
 from maistro.capabilities.binding import Binding, ResolvedBinding
-from maistro.capabilities.invocation import Invocation, InvocationStatus
+from maistro.capabilities.invocation import (
+    Invocation,
+    InvocationExecutionService,
+    InvocationStatus,
+    UnsafeEffectRetry,
+)
 from maistro.capabilities.pg_invocation_store import PgInvocationStore
 
 
@@ -27,6 +32,12 @@ class _Provider:
     name = "provider-a"
     slot = "external_write"
     trust_tier = "trusted"
+
+
+def _finished_at() -> Any:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
 
 
 def _resolved_binding(binding_id: str = "binding-1") -> ResolvedBinding:
@@ -70,7 +81,7 @@ class _FakePgInvocationPool:
             invocation_id = args[0]
             if invocation_id in self._rows:
                 return None
-            self._rows[invocation_id] = {
+            row = {
                 "invocation_id": invocation_id,
                 "run_id": args[1],
                 "node_run_id": args[2],
@@ -83,15 +94,24 @@ class _FakePgInvocationPool:
                 "created_at": args[9],
                 "payload": args[10],
             }
+            if self._claim_conflicts(row):
+                # Emulates migration 035's partial unique index
+                # uq_capability_invocation_active_effect on
+                # (run_id, effect_scope, binding_id, effect_key): the store's
+                # INSERT binds the normalized logical scope, so a concurrent
+                # NodeRun visit of the same stable effect collides here and
+                # `ON CONFLICT DO NOTHING` returns no row.
+                return None
+            self._rows[invocation_id] = row
             return _Row(invocation_id=invocation_id)
         if "ORDER BY created_at DESC" in query:
-            # `_find_effect`: latest row for this run/node/binding/effect_key.
-            run_id, node_run_id, binding_id, effect_key = args
+            # `_find_effect`: latest row for this run/logical-scope/binding/effect_key.
+            run_id, effect_scope, binding_id, effect_key = args
             matches = [
                 row
                 for row in self._rows.values()
                 if row["run_id"] == run_id
-                and row["node_run_id"] == node_run_id
+                and row["effect_scope"] == effect_scope
                 and row["binding_id"] == binding_id
                 and row["effect_key"] == effect_key
             ]
@@ -101,12 +121,33 @@ class _FakePgInvocationPool:
             return _Row(payload=row["payload"]) if row is not None else None
         raise AssertionError(f"unexpected query: {query!r}")
 
+    _CLAIM_STATUSES = frozenset({"created", "running", "completed", "unknown"})
+
+    def _claim_conflicts(self, candidate: dict[str, Any]) -> bool:
+        """Emulates migration 035's partial unique index: every non-FAILED
+        status occupies the claim, so only a proven-FAILED record admits a
+        new physical dispatch under the same logical identity."""
+
+        if candidate["status"] not in self._CLAIM_STATUSES:
+            return False
+        return any(
+            row["status"] in self._CLAIM_STATUSES
+            and row["run_id"] == candidate["run_id"]
+            and row["effect_scope"] == candidate["effect_scope"]
+            and row["binding_id"] == candidate["binding_id"]
+            and row["effect_key"] == candidate["effect_key"]
+            for row in self._rows.values()
+        )
+
     async def execute(self, query: str, *args: Any) -> str:
         if "UPDATE capability_invocations" in query:
             invocation_id, revision = args[-2], args[-1]
             existing = self._rows.get(invocation_id)
             if existing is None or existing["revision"] != revision:
                 return "UPDATE 0"
+            # The real UPDATE does not touch the effect_scope column; the
+            # fake must preserve it the same way or the emulated claim index
+            # would lose the scope after any terminal write.
             self._rows[invocation_id] = {
                 "invocation_id": invocation_id,
                 "run_id": args[0],
@@ -114,6 +155,7 @@ class _FakePgInvocationPool:
                 "attempt_id": args[2],
                 "binding_id": args[3],
                 "effect_key": args[4],
+                "effect_scope": existing["effect_scope"],
                 "status": args[5],
                 "revision": args[6],
                 "created_at": args[7],
@@ -122,16 +164,22 @@ class _FakePgInvocationPool:
             return "UPDATE 1"
         raise AssertionError(f"unexpected query: {query!r}")
 
-    async def fetch(self, _query: str, *args: Any) -> list[_Row]:
-        run_id, node_run_id, binding_id, effect_key = args
+    async def fetch(self, query: str, *args: Any) -> list[_Row]:
+        if "effect_scope=$2" in query:
+            run_id, scope_value, binding_id, effect_key = args
+            scope_field = "effect_scope"
+        else:
+            run_id, scope_value, binding_id, effect_key = args
+            scope_field = "node_run_id"
         matches = [
             row
             for row in self._rows.values()
             if row["run_id"] == run_id
-            and row["node_run_id"] == node_run_id
+            and row[scope_field] == scope_value
             and row["binding_id"] == binding_id
             and row["effect_key"] == effect_key
         ]
+        # Insertion order stands in for the real query's `ORDER BY created_at`.
         return [_Row(payload=row["payload"]) for row in matches]
 
     def seed(self, invocation: Invocation) -> None:
@@ -238,3 +286,126 @@ async def test_pg_invocation_store_list_effect_filters_and_orders_rows() -> None
     )
 
     assert [item.invocation_id for item in history] == ["inv-1"]
+
+
+async def test_pg_invocation_store_rejects_cross_node_run_active_effect_claim() -> None:
+    """The durable claim index is keyed by the logical effect identity
+    (``effect_scope or node_run_id``, migration 035), so a second NodeRun
+    visit of the same stable effect cannot create its own Invocation while
+    the first visit's outcome is still active (#42, #1194). The conflicting
+    row is reported as an unsafe retry -- the effect-contract error -- and
+    not as a generic id collision."""
+
+    pool = _FakePgInvocationPool()
+    store = PgInvocationStore(pool)
+    await store.create(
+        _invocation(
+            invocation_id="inv-1",
+            effect_scope="run-1:charge:order-42",
+            status=InvocationStatus.RUNNING,
+        )
+    )
+
+    with pytest.raises(UnsafeEffectRetry, match="active or completed"):
+        await store.create(
+            _invocation(
+                invocation_id="inv-2",
+                node_run_id="node-run-2",
+                attempt_id="attempt-2",
+                effect_scope="run-1:charge:order-42",
+            )
+        )
+
+
+async def test_pg_invocation_store_completed_claim_refuses_later_cross_node_visit() -> None:
+    """The claim predicate covers every non-FAILED status, so a visit that
+    arrives after the first visit terminalized cannot slip a second physical
+    dispatch past the index: the insert collides and the outcome surfaces as
+    the effect-contract error (``InvocationExecutionService`` re-reads the
+    scoped history on this error and returns the completed result)."""
+
+    pool = _FakePgInvocationPool()
+    store = PgInvocationStore(pool)
+    await store.create(
+        _invocation(
+            invocation_id="inv-1",
+            effect_scope="run-1:charge:order-42",
+            status=InvocationStatus.COMPLETED,
+            finished_at=_finished_at(),
+        )
+    )
+
+    with pytest.raises(UnsafeEffectRetry, match="active or completed"):
+        await store.create(
+            _invocation(
+                invocation_id="inv-2",
+                node_run_id="node-run-2",
+                attempt_id="attempt-2",
+                effect_scope="run-1:charge:order-42",
+            )
+        )
+
+    # A proven-FAILED record keeps the retry door open for a new visit.
+    failed = _invocation(
+        invocation_id="inv-3",
+        node_run_id="node-run-3",
+        attempt_id="attempt-3",
+        effect_scope="run-1:charge:order-42",
+        status=InvocationStatus.FAILED,
+        finished_at=_finished_at(),
+        error="provider proved effect not applied",
+    )
+    await store.create(failed)
+    assert failed.invocation_id == "inv-3"
+
+
+async def test_pg_service_deduplicates_logical_effect_across_node_run_visits() -> None:
+    """The durable PostgreSQL counterpart of the in-memory contract: a
+    completed prior Invocation for the same logical effect is returned to a
+    later NodeRun visit through the scoped history read, without another
+    provider call, and the persisted record keeps the dispatching visit's
+    identities."""
+
+    class _Provider:
+        name = "provider-a"
+        slot = "external_write"
+        trust_tier = "trusted"
+
+    async def resolver(_binding: Binding) -> _Provider:
+        return _Provider()
+
+    calls = 0
+
+    async def execute(_provider: _Provider, request: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"committed": request}
+
+    binding = Binding(
+        binding_id="binding-1",
+        workspace_id="ws-1",
+        project_id="project-1",
+        capability="external_write",
+    )
+    service = InvocationExecutionService(store=PgInvocationStore(_FakePgInvocationPool()))
+
+    async def visit(node_run_id: str, attempt_id: str) -> Invocation:
+        return await service.invoke(
+            binding=binding,
+            run_id="run-1",
+            node_run_id=node_run_id,
+            attempt_id=attempt_id,
+            effect_key="charge:order-42",
+            effect_scope="run-1:charge:order-42",
+            request={"order": 42},
+            resolver=resolver,
+            executor=execute,
+        )
+
+    first = await visit("node-run-1", "attempt-1")
+    replay = await visit("node-run-2", "attempt-2")
+
+    assert calls == 1
+    assert replay.invocation_id == first.invocation_id
+    assert replay.node_run_id == "node-run-1"
+    assert replay.attempt_id == "attempt-1"
