@@ -3,12 +3,11 @@ id: SPEC-192
 title: "Persona authoring pipeline — interview, research, two-tier refinement, and agent-roster expansion"
 repo: maistro-engine
 kind: spec
-status: Accepted
+status: Proposed
 created: 2026-06-01
 substrate:
   - maistro-engine#ADR-006
   - maistro-engine#ADR-019
-  - maistro-engine#ADR-060
 implements:
   - maistro-engine#ADR-060
 related:
@@ -16,6 +15,7 @@ related:
   - maistro-engine#SPEC-188
   - maistro-engine#SPEC-190
   - maistro-engine#SPEC-191
+  - maistro-engine#ADR-060
 supersedes: []
 blocks: []
 blocked-by:
@@ -36,6 +36,10 @@ history:
   - status: Proposed
     date: 2026-06-01
   - status: Accepted
+  - status: Proposed
+    date: 2026-09-26
+    reason: >-
+      Governing-authority reconciliation (#374): the only decision this SPEC implements is itself not an accepted, shipped decision, and an accepted plan cannot rest on one, so the SPEC returns to Proposed while the decision stays named in implements: and stays marked in prose as design context, not shipped authority.
 ---
 
 # SPEC-192: Persona authoring pipeline

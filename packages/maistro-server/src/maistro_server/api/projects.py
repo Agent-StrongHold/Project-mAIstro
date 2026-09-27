@@ -264,6 +264,9 @@ async def add_project_membership(
     await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
 
     denies = body.denies
+    grants = body.grants
+    delegable_grants = body.delegable_grants
+    role = body.role
     if not requester_membership.can_administer:
         if body.denies:
             raise HTTPException(
@@ -271,7 +274,7 @@ async def add_project_membership(
                 detail="Workspace owner permission required to issue Project denies",
             )
         # Holding an action is not enough to grant it. Every action this record
-        # would confer must already be explicitly delegable at this scope.
+        # would *add* must already be explicitly delegable at this scope.
         for action in sorted(body.grants):
             try:
                 await require_delegable_grant(
@@ -282,21 +285,36 @@ async def add_project_membership(
                 )
             except PermissionError as exc:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-        # set_membership upserts the one canonical row per (project, principal)
-        # -- a non-owner's request must not be read as "clear whatever denies
-        # already exist" just because it says nothing about them, or a
-        # delegated re-grant would silently launder away an owner-issued deny.
-        existing = await project_store.memberships_for(project_id, principal_id=body.principal_id)
-        denies = existing[0].denies if existing else set()
+        # A non-owner may only *add* authority they can themselves delegate;
+        # everything already on the canonical row survives until the owner
+        # revokes it (#1148: revocation is owner-only and explicit). What
+        # decides "everything already on the row" must be the store itself,
+        # inside the same critical section that writes the row: reading it
+        # here with `memberships_for` and merging in Python left a window in
+        # which an owner's `remove_membership` committed between the read and
+        # the `set_membership` write, and the upsert then resurrected the
+        # revoked principal carrying the stale grants the stale read had
+        # "preserved".
+        return await project_store.merge_membership(
+            ProjectMembership(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                principal_id=body.principal_id,
+                role=role,
+                grants=grants,
+                denies=denies,
+                delegable_grants=delegable_grants,
+            )
+        )
 
     membership = ProjectMembership(
         workspace_id=workspace_id,
         project_id=project_id,
         principal_id=body.principal_id,
-        role=body.role,
-        grants=body.grants,
+        role=role,
+        grants=grants,
         denies=denies,
-        delegable_grants=body.delegable_grants,
+        delegable_grants=delegable_grants,
     )
     try:
         return await project_store.set_membership(membership)
@@ -304,4 +322,19 @@ async def add_project_membership(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-__all__ = ["get_project_scope_store", "router"]
+@router.delete("/{project_id}/memberships/{principal_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_project_membership(
+    workspace_id: str,
+    project_id: str,
+    principal_id: str,
+    auth: RequireAuth,
+    workspace_store: Annotated[WorkspaceStore, Depends(get_workspace_store)],
+    project_store: Annotated[ProjectScopeStore, Depends(get_project_scope_store)],
+) -> None:
+    """Revoke one Project membership without leaving a stale grant row."""
+    await require_workspace_owner(workspace_store, workspace_id, user_id(auth))
+    await _require_project(project_store, workspace_id=workspace_id, project_id=project_id)
+    await project_store.remove_membership(project_id, principal_id=principal_id)
+
+
+__all__ = ["get_project_scope_store", "remove_project_membership", "router"]
