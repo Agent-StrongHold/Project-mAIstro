@@ -694,6 +694,14 @@ or placeholder-only section.
 
 ### Fixed
 
+- **Schedules and MCP work from the keyboard alone (#370, partial).** The
+  Schedules and MCP view tabs are now ARIA tabs (arrow keys, Home and End); a
+  schedule's enable toggle is a labelled switch, so a keyboard user can enable
+  or disable a schedule; cron presets are toggle buttons; and an MCP server
+  expands through a disclosure button, with its remove button a separate
+  control. For pointer users, an MCP server now expands or collapses only
+  from its header row, not from its details area or the card's padding.
+
 - **Agent builder, intent routing and RSI Stop work from the keyboard (#370,
   partial).** The Agents builder's strategy cards are a named radio group of
   native radio inputs (arrow keys change the strategy; each is named by its
