@@ -290,6 +290,20 @@ or placeholder-only section.
 
 ### Added
 
+- **Governed `image.generate` Capability for Canvas/Design Studio generation
+  (#286, partial).** `maistro.capabilities.ImageGenerationEgress.generate`
+  runs one image generation through the canonical Binding → policy →
+  Binding-scoped credential → Invocation path, via the approved
+  `LlmGatewayImageProvider` (`POST {gateway}/v1/images/generations`,
+  `response_format=b64_json`, same LiteLLM gateway and credential pool as
+  `model.chat`). The Invocation carries Run/NodeRun/Attempt correlation and
+  returns decoded image bytes; a replayed effect key returns the recorded
+  result without a second call. A gateway error, an empty `data[]` or an image
+  without `b64_json` is a `FAILED` Invocation plus `ImageGenerationError`,
+  never an empty success, and a later Attempt may retry it. Nothing ships a
+  caller yet: the hive `ImageGenClient` adapter and the book-maker POC
+  convergence (#52) will be its consumers.
+
 - **Durable user model: `UserModelFact` and self-consented promotion
   (#1047, partial).** New `maistro.memory.user_model` package: a frozen,
   revisioned `UserModelFact` owned by the canonical user id (evidence refs,
