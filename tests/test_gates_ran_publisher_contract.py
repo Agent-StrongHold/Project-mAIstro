@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -93,7 +94,8 @@ def _run_publish_script(script: str, env: dict[str, str]) -> dict:
     Returns the observed calls so tests assert the behaviour of the artifact
     that actually ships, not a restatement of it.
     """
-    if shutil.which("node") is None:
+    node = shutil.which("node")
+    if node is None:
         pytest.skip("node is required to execute the publish script")
     # The prelude defines the fakes the inline script expects (``github``,
     # ``core``, ``context``) and swaps ``process.env`` for the step env under
@@ -115,8 +117,19 @@ def _run_publish_script(script: str, env: dict[str, str]) -> dict:
         "JSON.stringify({ statuses: __statuses, failed: __failed, infos: __infos }));\n});"
     )
     result = subprocess.run(
-        ["node", "--input-type=module", "-e", prelude + wrapped + epilogue],
-        env={"__FAKE_ENV": json.dumps(env), "PATH": "/usr/bin:/bin"},
+        # Invoke node by its resolved absolute path: GitHub runners install it
+        # under the hosted toolcache, so a bare "node" looked up through a
+        # hand-picked PATH finds /usr/bin/node on a dev box but nothing on the
+        # runner, and the subprocess would crash with FileNotFoundError there
+        # (observed as the CI root-suite failure at ca41eb74d). The publish
+        # script never sees this PATH anyway — the prelude swaps process.env
+        # for __FAKE_ENV — so the directory is listed only so a child process
+        # spawned by the harness could still resolve node.
+        [node, "--input-type=module", "-e", prelude + wrapped + epilogue],
+        env={
+            "__FAKE_ENV": json.dumps(env),
+            "PATH": os.pathsep.join([str(Path(node).parent), "/usr/bin", "/bin"]),
+        },
         capture_output=True,
         text=True,
         check=False,
