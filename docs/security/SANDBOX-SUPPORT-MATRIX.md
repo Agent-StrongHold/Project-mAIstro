@@ -166,13 +166,13 @@ supervised Builder sessions (autonomous RSI runs refuse `--isolation container`
 under the mode floors above). ADR-093 Decision 2 still governs it: a retained
 container runtime MUST be rootless and socket-less, and since #80 reopened that
 is **enforced at launch, not assumed**. The sandbox reads its own container's
-`/proc/self/uid_map` before any root exec or seed and refuses to start when the
-mapping is the identity map — the signature of a rootful, user-namespace-unmapped
-daemon, where container uid 0 *is* host uid 0. A rootless daemon
-(`dockerd-rootless-setuptool.sh`) or a `--userns-remap` daemon maps every
-container uid onto an unallocated subuid range and passes; unproven output fails
-closed. There is no flag or environment override, for the same reason there is
-none for `--network=none`.
+`/proc/self/uid_map` before any root exec or seed and refuses to start when
+container uid 0 maps to host uid 0 — including a partially remapped map — or
+when the uid-0 mapping is unproven. A rootless daemon
+(`dockerd-rootless-setuptool.sh`) may map container root to its unprivileged
+daemon user, while a `--userns-remap` daemon maps it to a subuid; neither maps
+container root to host root. There is no flag or environment override, for the
+same reason there is none for `--network=none`.
 
 Both branches are conformance-tested against the production class
 (`packages/maistro-bootstrap/tests/test_container_sandbox.py`): the full escape

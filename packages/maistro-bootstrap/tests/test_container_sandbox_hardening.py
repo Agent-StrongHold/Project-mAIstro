@@ -306,27 +306,30 @@ def test_an_unreadable_uid_map_fails_closed(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.parametrize(
-    ("uid_map", "identity"),
+    ("uid_map", "maps_root_to_host_root"),
     [
         # Rootful daemon, no userns remap: container uid 0 *is* host uid 0.
         ("0          0          4294967295\n", True),
         # `dockerd --userns-remap=default`: container uids land on subuids.
         ("0          165536     65536\n", False),
         # Rootless daemon userns: uid 0 is the unprivileged daemon user, the
-        # rest are that user's subuids — two non-identity lines.
+        # rest are that user's subuids — neither maps container root to host root.
         ("0          1000       1\n1          100000     65536\n", False),
+        # A partially remapped map is still unsafe when its uid-0 range maps
+        # to host root: the bootstrap chown executes as container uid 0.
+        ("0          0          1\n1          100000     65536\n", True),
         # Multi-line full identity still means the host's own namespace.
         ("0          0          1\n1          1          65535\n", True),
-        # Unproven output fails closed.
+        # A map which cannot prove what container root maps to fails closed.
+        ("1          100000     65536\n", True),
         ("", True),
         ("garbage", True),
     ],
 )
-def test_uid_map_identity_detection(uid_map: str, identity: bool) -> None:
-    """The documented real-world shapes of `/proc/self/uid_map` classify the
-    way the launch gate depends on: identity == refuse (rootful daemon),
-    non-identity == the container's uids are unallocated host subuids."""
-    assert csbx_mod._uid_map_is_identity(uid_map) is identity
+def test_uid_map_root_mapping_detection(uid_map: str, maps_root_to_host_root: bool) -> None:
+    """The launch gate refuses every map that maps container root to host root,
+    including a partially remapped map, and rejects an unproven uid-0 mapping."""
+    assert csbx_mod._uid_map_maps_container_root_to_host_root(uid_map) is maps_root_to_host_root
 
 
 def test_the_only_root_exec_is_the_pre_seed_chown(recorder: _Recording, tmp_path: Path) -> None:

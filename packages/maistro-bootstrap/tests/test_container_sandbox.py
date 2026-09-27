@@ -31,7 +31,7 @@ from maistro_bootstrap.builders.container_sandbox import (
     _AGENT_UID_GID,
     DEFAULT_IMAGE,
     ContainerBuilderSandbox,
-    _uid_map_is_identity,
+    _uid_map_maps_container_root_to_host_root,
 )
 
 
@@ -47,10 +47,11 @@ def _docker_ready() -> bool:
 def _daemon_provides_userns_boundary() -> bool:
     """True when a container on this daemon gets non-host uids.
 
-    Uses the same production classifier (`_uid_map_is_identity`) the sandbox's
-    launch gate uses, applied to a throwaway probe container's
-    `/proc/self/uid_map` — exactly the evidence `__enter__` will demand of its
-    own container, so the qualification decision and the gate cannot drift.
+    Uses the same production classifier
+    (`_uid_map_maps_container_root_to_host_root`) the sandbox's launch gate
+    uses, applied to a throwaway probe container's `/proc/self/uid_map` —
+    exactly the evidence `__enter__` will demand of its own container, so the
+    qualification decision and the gate cannot drift.
     """
     probe = subprocess.run(
         ["docker", "run", "--rm", "--network=none", DEFAULT_IMAGE, "cat", "/proc/self/uid_map"],
@@ -58,7 +59,7 @@ def _daemon_provides_userns_boundary() -> bool:
         text=True,
         timeout=180,
     )
-    return probe.returncode == 0 and not _uid_map_is_identity(probe.stdout)
+    return probe.returncode == 0 and not _uid_map_maps_container_root_to_host_root(probe.stdout)
 
 
 pytestmark = pytest.mark.skipif(
@@ -497,9 +498,8 @@ def test_container_user_namespace_maps_container_uids_off_the_host(
     with ContainerBuilderSandbox(tmp_path) as sb:
         rc, uid_map = sb.run_argv_status(["cat", "/proc/self/uid_map"])
         assert rc == 0, uid_map
-        assert not _uid_map_is_identity(uid_map), (
-            f"container uids map onto host uids — the daemon is rootful "
-            f"without userns remapping: {uid_map!r}"
+        assert not _uid_map_maps_container_root_to_host_root(uid_map), (
+            f"container uid 0 maps to host root (or the map is unproven): {uid_map!r}"
         )
         # And specifically: container uid 0 (the only uid any escape or the
         # bootstrap chown could claim) is not host uid 0.

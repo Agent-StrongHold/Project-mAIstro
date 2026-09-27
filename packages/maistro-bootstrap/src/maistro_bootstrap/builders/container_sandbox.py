@@ -34,14 +34,13 @@ exists) is explicit and auditable below.
 Privilege boundary (ADR-093 Decision 2, #80): a container runtime retained
 transitionally MUST be rootless and socket-less. Enforced, not assumed: right
 after creation the sandbox reads the container's `/proc/self/uid_map` and
-REFUSES to proceed when the mapping is the identity map — the signature of a
-rootful, un-remapped daemon, where container uid 0 *is* host uid 0 and a
-kernel/runc escape lands on host root. A rootless daemon (`dockerd-rootless-setuptool.sh`)
-or a user-namespace-remapped daemon (`dockerd --userns-remap`) maps every
-container uid, root and the agent's alike, into an unallocated subuid range,
-which is what the check demands. Unproven output fails closed like an identity
-map. There is deliberately no constructor parameter or environment override
-that relaxes this, for the same reason there is none for `--network=none`.
+REFUSES to proceed when container uid 0 maps to host uid 0 — including a
+partially remapped map — or when that mapping cannot be proven. A rootless
+daemon (`dockerd-rootless-setuptool.sh`) may map container root to its
+unprivileged daemon user, while a user-namespace-remapped daemon
+(`dockerd --userns-remap`) maps it to a subuid; neither is host root. There is
+deliberately no constructor parameter or environment override that relaxes
+this, for the same reason there is none for `--network=none`.
 """
 
 from __future__ import annotations
@@ -155,31 +154,38 @@ _REAP_AGENT_PROCESSES = (
 )
 
 
-def _uid_map_is_identity(uid_map: str) -> bool:
-    """True when a ``/proc/self/uid_map`` maps container uids onto themselves.
+def _uid_map_maps_container_root_to_host_root(uid_map: str) -> bool:
+    """True when container uid 0 maps to host uid 0, or the map is unproven.
 
-    A rootful daemon without user-namespace remapping runs every container in
-    the host's user namespace, whose uid_map is the full identity mapping
-    (``0 0 4294967295``): container uid 0 *is* host uid 0. Rootless daemons and
-    ``--userns-remap`` daemons both map container uids into an unallocated
-    subuid range (``0 100000 65536``, or the rootless pair ``0 1000 1`` /
-    ``1 100000 65536``), so no uid the container can assume — container root or
-    the agent's — is a host uid. A map is "identity" only when *every* line
-    maps an inside uid onto the same outside uid. Empty or unparseable output
-    counts as identity: an unproven boundary fails closed (ADR-093 Decision 2).
+    A rootful daemon without user-namespace remapping uses ``0 0 4294967295``;
+    its container root is host root. The critical boundary is therefore not
+    whether *all* ranges are identity mappings: a partial map such as
+    ``0 0 1; 1 100000 65536`` is equally unsafe because the bootstrap chown
+    runs as container uid 0. Rootless daemons may map container uid 0 to the
+    unprivileged daemon user (for example ``0 1000 1``), while userns-remapped
+    daemons map it to a subuid. Both are acceptable because neither maps it to
+    host root.
+
+    The map must contain one well-formed, non-negative range covering container
+    uid 0. Empty, malformed, non-positive, or non-covering output fails closed
+    (ADR-093 Decision 2).
     """
-    mappings: list[tuple[int, int]] = []
+    root_mapping: int | None = None
     for line in uid_map.splitlines():
         fields = line.split()
         if len(fields) != 3:
-            continue
+            return True
         try:
-            mappings.append((int(fields[0]), int(fields[1])))
+            inside, outside, length = (int(field) for field in fields)
         except ValueError:
-            continue
-    if not mappings:
-        return True
-    return all(inside == outside for inside, outside in mappings)
+            return True
+        if inside < 0 or outside < 0 or length <= 0:
+            return True
+        if inside <= 0 < inside + length:
+            if root_mapping is not None:
+                return True
+            root_mapping = outside
+    return root_mapping in (None, 0)
 
 
 def _docker(
@@ -311,24 +317,24 @@ class ContainerBuilderSandbox:
         """Refuse a container whose uids are host uids (ADR-093 Decision 2).
 
         Reads the created container's ``/proc/self/uid_map`` through the same
-        unprivileged exec prefix every agent command uses. A full identity
-        mapping — or any failure to prove otherwise, including an unreadable
-        map — means the daemon is rootful without user-namespace remapping:
-        container root (the one-shot bootstrap `chown` included) would be host
-        root, which ADR-093 forbids for a retained container runtime. Fail
-        closed; the caller's exception path removes the container.
+        unprivileged exec prefix every agent command uses. Any map that sends
+        container uid 0 to host uid 0 — including a partially remapped map —
+        or any failure to prove the uid-0 mapping means the bootstrap `chown`
+        could run as host root, which ADR-093 forbids for a retained container
+        runtime. Fail closed; the caller's exception path removes the container.
         """
         proc = _docker(
             [*self._exec_prefix(), cid, "cat", "/proc/self/uid_map"],
             check=False,
             timeout=30,
         )
-        if proc.returncode != 0 or _uid_map_is_identity(proc.stdout):
+        if proc.returncode != 0 or _uid_map_maps_container_root_to_host_root(proc.stdout):
             detail = proc.stderr.strip()[:200] if proc.returncode != 0 else proc.stdout.strip()
             raise RuntimeError(
                 "refusing to start the Builder sandbox: the Docker daemon is "
                 "rootful without user-namespace remapping (container "
-                f"uid_map is identity: {detail!r}), so container uid 0 would "
+                f"uid_map maps container uid 0 to host uid 0 or is unproven: {detail!r}), "
+                "so container uid 0 would "
                 "be host uid 0. ADR-093 Decision 2 requires a retained "
                 "container runtime to be rootless and socket-less; use a "
                 "rootless daemon (dockerd-rootless-setuptool.sh install) or a "
