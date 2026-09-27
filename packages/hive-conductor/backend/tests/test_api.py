@@ -376,6 +376,84 @@ def test_mission_create_dispatches_task() -> None:
     )
 
 
+def test_mission_detail_does_not_show_an_agent_the_run_does_not_have() -> None:
+    """A stored name is not a Run's agent. List, detail, steps, status, and create must not report it."""
+    from datetime import UTC, datetime
+
+    import stores
+    from models.schemas import Mission, MissionStep
+
+    c = _login()
+    mid = "lie-agent-mission"
+    t = datetime.now(UTC)
+    stores.missions[mid] = Mission(
+        id=mid,
+        name="Unassigned work",
+        description="No Run recorded an agent",
+        status="running",
+        priority="medium",
+        created_at=t,
+        updated_at=t,
+        assigned_agents=["agent-1"],
+    )
+    stores.mission_steps[mid] = [
+        MissionStep(
+            id="lie-step",
+            mission_id=mid,
+            name="Pretend assign",
+            description="No executor",
+            status="running",
+            order=0,
+            agent_id="agent-1",
+        )
+    ]
+    mock_engine = MagicMock()
+    mock_engine.is_configured = False
+    mock_engine._backend = None
+    created_id: str | None = None
+    try:
+        with patch("services.engine._singleton", mock_engine):
+            listed = c.get("/v1/tasks")
+            assert listed.status_code == 200
+            row = next(item for item in listed.json() if item["id"] == mid)
+            assert row["assigned_agents"] == []
+            # The store still holds the planted name. The lie is the response.
+            assert stores.missions[mid].assigned_agents == ["agent-1"]
+
+            detail = c.get(f"/v1/tasks/{mid}")
+            assert detail.status_code == 200
+            assert detail.json()["assigned_agents"] == []
+
+            steps = c.get(f"/v1/tasks/{mid}/steps")
+            assert steps.status_code == 200
+            assert steps.json()[0]["agent_id"] is None
+            assert stores.mission_steps[mid][0].agent_id == "agent-1"
+
+            patched = c.patch(f"/v1/tasks/{mid}/status", json={"status": "paused"})
+            assert patched.status_code == 200
+            assert patched.json()["assigned_agents"] == []
+
+            created = c.post(
+                "/v1/tasks",
+                json={
+                    "name": "Ghost assign",
+                    "description": "client named an agent",
+                    "assigned_agents": ["ghost"],
+                },
+            )
+            assert created.status_code == 200
+            body = created.json()
+            created_id = body["id"]
+            assert body["assigned_agents"] == []
+            assert stores.missions[created_id].assigned_agents == []
+    finally:
+        stores.missions.pop(mid, None)
+        stores.mission_steps.pop(mid, None)
+        if created_id is not None:
+            stores.missions.pop(created_id, None)
+            stores.mission_steps.pop(created_id, None)
+
+
 def test_mission_status_maps_correctly() -> None:
     from adapters.task_backend import _STATUS_MAP
 
