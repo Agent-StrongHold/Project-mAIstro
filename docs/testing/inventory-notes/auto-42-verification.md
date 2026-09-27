@@ -208,3 +208,54 @@ Executed at this head (all pass):
 - Upstream re-checked read-only: #1169 CLOSED, #1170 CLOSED, **#1194 still
   OPEN** (code shipped and regression-locked in-tree; administrative closure
   remains an orchestrator action), PR 1326 still draft.
+
+---
+
+## Deep-review resolution addendum (L42 repair, head 1054aae4b)
+
+Resolution round for the prior `NEEDS-DEEP-REVIEW` request: every acceptance
+criterion re-verified independently at the exact head `1054aae4beb4` (tree
+clean, no prior claims trusted). No in-tree defect was found; nothing in
+`packages/` or `alembic/` changed in this round.
+
+Executed at this head (all pass):
+
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` (exact CI invocation): **exit 0**, 1403 → 1403 reviewed
+  identities, `unclassified: 0`, `never_allowlist: 0`. The exact-debt-ledger
+  debt from `api/a2a.py:62 create_a2a_task` is fully banked (1054aae4b);
+  no ledger amendment was needed this round.
+- `ruff check .` and `ruff format --check .`: clean.
+- `check-execution-lifecycles`, `check-lifecycle-provenance`,
+  `check-ratchet-provenance`, `check-shipped-surface-truth`: all exit 0.
+- pytest: core capabilities + durable_runs + runs + graph/nodes + a2a
+  **2220 passed, 248 skipped**; maistro-server **394 passed**.
+- `mypy packages/maistro-core/src`: Success, 638 source files.
+
+Acceptance evidence spot-checked in production code (not just suites):
+
+- Durable effect claim keyed on logical identity in all three schema surfaces
+  (`capabilities/invocation_store.py` `_CLAIM_DDL`,
+  `capabilities/pg_invocation_store.py` `_CLAIM_DDL`,
+  `alembic/versions/035_capability_invocations.py`): partial unique index
+  `(run_id, effect_scope, binding_id, effect_key)` over every non-FAILED
+  status, with legacy-scope backfill; regression-locked by
+  `test_sqlite_store_rejects_cross_node_run_active_effect_claim`,
+  `test_sqlite_service_deduplicates_logical_effect_across_node_run_visits`,
+  and `test_sqlite_ensure_schema_migrates_legacy_node_run_scoped_claim`.
+- Retry is a new chronological visit, not history rewriting:
+  `durable_runs/executor.py` `_may_revisit_after` fails closed for
+  non-retryable replay semantics and for `EFFECT_KEY` nodes without a
+  concrete key; proven end to end by
+  `test_ambiguous_effect_replay_guard.py` (NodeRun ordinals [1, 2, 3], one
+  Attempt each, exactly one physical dispatch, Run failed truthfully).
+- Catalog UI metadata is derived from the executable contract
+  (`graph/nodes/__init__.py` `catalog_json`), leaving no second boolean
+  policy to drift.
+
+Residual (unchanged, outside lane authority): issue #1194 remains OPEN on
+GitHub read-only re-check; #42's completion condition requires it closed, and
+issue closure is explicitly prohibited for this lane. The implementation,
+tests and CI gates for #1194 are complete and verified in-tree, so the branch
+is handed off for integration; closure of #1194 (and #42) is the
+orchestrator-side administrative step.
