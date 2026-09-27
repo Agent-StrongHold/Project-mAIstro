@@ -183,12 +183,35 @@ def _tables() -> set[str]:
     }
 
 
+def _drop_all_tables() -> None:
+    """Empty `public` entirely, not only the chain's own tables.
+
+    `downgrade base` unwinds only what the chain created, but standalone-path
+    stores bootstrap their tables with `CREATE TABLE IF NOT EXISTS` outside the
+    chain — `pg_strikes._SCHEMA` among them — and the strike conformance suite
+    exercises exactly that path. One suite then poisoned the next: the raw
+    `security_strikes` survived the downgrade, `alembic_version` sat at base,
+    and `upgrade head` died in 005 with `relation security_strikes already
+    exists` (reproduced by running the strike suite against this shared DB
+    before this suite). Dropping everything is what this fixture's name
+    promises, and it cannot strand a later suite: runtime stores recreate
+    their own tables on connect, and a chain table is one `upgrade head` away.
+    """
+    for (name,) in _query("select tablename from pg_tables where schemaname = 'public'"):
+        # Identifiers come from the catalog, not users; still quote them so a
+        # mixed-case or reserved name cannot turn the drop into something else.
+        quoted = str(name).replace('"', '""')
+        _execute(f'drop table if exists "{quoted}" cascade')
+
+
 @pytest.fixture
 def empty_database():
     """Start each test from `base`, so one failure cannot cascade into the next."""
     _alembic("downgrade", "base")
+    _drop_all_tables()
     yield
     _alembic("downgrade", "base")
+    _drop_all_tables()
 
 
 class TestTheChainApplies:
