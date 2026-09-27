@@ -24,6 +24,7 @@ from maistro.agents.conductor import (
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.config.models import DEFAULT_TIERS, Tier
 from maistro.http import set_test_transport
+from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.tasks.models import TaskCreate
 
 
@@ -223,6 +224,119 @@ class TestCallGateway:
             call, "do thing", max_tokens=512, timeout=10, on_response=broken_hook
         )
         assert result == '{"success": true}'
+
+
+@pytest.fixture
+def fallback_usage_log(monkeypatch: pytest.MonkeyPatch) -> InMemoryUsageLog:
+    """Isolate the conductor's ungoverned-fallback recording from the
+    process-wide default usage log singleton."""
+    log = InMemoryUsageLog()
+    monkeypatch.setattr("maistro.agents.conductor.get_default_usage_log", lambda: log)
+    return log
+
+
+class TestUngovernedFallbackUsageEvidence:
+    """#718: the raw-gateway fallback crosses no canonical Invocation, so it
+    must leave its own usage evidence — reported tokens when the gateway said
+    them, an explicit unreported marker when it did not. Never invisible, and
+    never a fabricated Invocation identity."""
+
+    @pytest.mark.asyncio
+    async def test_reported_usage_is_recorded_with_provenance(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 5
+        assert event.output_tokens == 7
+        assert event.provider == "m"
+        assert event.usage_reported is True
+        assert event.invocation_id is None  # identity is never invented here
+
+    @pytest.mark.asyncio
+    async def test_missing_usage_is_an_unreported_marker_not_a_zero(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 0
+        assert event.output_tokens == 0
+        assert event.usage_reported is False
+
+    @pytest.mark.asyncio
+    async def test_governed_egress_leaves_no_fallback_evidence(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        """The canonical path owns recording; the fallback must stay silent
+        when an egress crossed the Invocation authority."""
+
+        class _Egress:
+            async def complete(self, **kwargs: Any) -> Any:
+                return type("Result", (), {"body": {"choices": [{"message": {"content": "{}"}}]}})()
+
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(
+            call,
+            "do thing",
+            max_tokens=512,
+            timeout=10,
+            governed_egress=_Egress(),  # type: ignore[arg-type]
+        )
+
+        assert fallback_usage_log.events_for("m") == ()
+
+    @pytest.mark.asyncio
+    async def test_run_task_raw_path_records_usage_evidence(
+        self, monkeypatch: pytest.MonkeyPatch, fallback_usage_log: InMemoryUsageLog
+    ) -> None:
+        """The ordinary entry point (``run_task`` without an egress) is the
+        call class the fallback evidence exists for."""
+        monkeypatch.setenv("MAISTRO_DRY_RUN", "0")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": '{"success": true, "final_answer": "ok"}'}}
+                    ],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        with patch(
+            "maistro.agents.conductor.resolve_model",
+            return_value=("m", "http://gw", False),
+        ):
+            task = TaskCreate(description="Implement feature")
+            result = await run_task(task)
+
+        assert result.success is True
+        (event,) = fallback_usage_log.events_for("m")
+        assert event.input_tokens == 3
+        assert event.output_tokens == 4
+        assert event.usage_reported is True
 
 
 class TestIsRetryable:

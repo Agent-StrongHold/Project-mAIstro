@@ -38,6 +38,8 @@ from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.http import shared_client
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
+from maistro.quota.usage_log import get_default_usage_log
+from maistro.quota.usage_report import reported_usage
 from maistro.tasks.models import TaskCreate
 
 OnResponseHook = Callable[[dict[str, Any], httpx.Response], None]
@@ -153,6 +155,31 @@ async def _governed_completion(
     return content
 
 
+def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
+    """Record one raw-gateway call's usage evidence on the process usage log.
+
+    #718: the canonical recording path is Invocation terminalization, and the
+    production server crosses it via ``governed_egress``. A composition that
+    crosses no canonical authority (e.g. a demo bridge with no egress) still
+    leaves evidence here — actual tokens when the gateway reported usage, an
+    explicit ``usage_reported=False`` marker when it did not. Never a silent
+    zero, and never a fabricated Invocation identity: the event carries
+    provider provenance only.
+
+    Returns whether the gateway reported usage, for the caller's log line.
+    """
+    reported = reported_usage(data)
+    input_tokens, output_tokens = reported or (0, 0)
+    get_default_usage_log().record(
+        model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        provider=model,
+        usage_reported=reported is not None,
+    )
+    return reported is not None
+
+
 async def _call_gateway(
     call: ConductorCall,
     user_prompt: str,
@@ -168,8 +195,11 @@ async def _call_gateway(
     """POST one chat-completion to the OpenAI-compatible gateway; return the message content.
 
     The production server supplies ``governed_egress`` so this call crosses
-    canonical Binding -> Invocation. ``on_response`` is retained only for
-    legacy callers that have not migrated to that authority.
+    canonical Binding -> Invocation. Without it, the raw HTTP fallback below
+    still records usage evidence on the process usage log (#718) — an
+    explicitly marked ungoverned call, never invisible usage. ``on_response``
+    is retained only for legacy callers that have not migrated to that
+    authority.
     """
     if governed_egress is not None:
         return await _governed_completion(
@@ -202,6 +232,16 @@ async def _call_gateway(
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
+    # This physical call crossed no canonical Invocation authority, so the
+    # canonical recorder never sees it. Record its usage evidence on the
+    # process usage log and say so loudly: an ungoverned call class must stay
+    # visible instead of silently shrinking the quota ledger (#718).
+    usage_reported = _record_ungoverned_fallback_usage(call.model, data)
+    await logger.awarning(
+        "conductor_ungoverned_llm_call",
+        model=call.model,
+        usage_reported=usage_reported,
+    )
     if on_response is not None:
         try:
             on_response(data, resp)

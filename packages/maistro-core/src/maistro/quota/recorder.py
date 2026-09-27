@@ -3,11 +3,16 @@
 The live path is :class:`CanonicalInvocationUsageRecorder`, installed once at
 Invocation terminalization by ``CapabilityEffectContext``. It records provider,
 cycle, usage evidence and Invocation identity exactly once, including an
-explicit unreported marker when a provider omits usage. The raw
+explicit unreported marker when a provider omits usage. A second live entry
+point covers the one call class that crosses no canonical authority: the
+conductor's raw-gateway fallback (``agents/conductor.py``) records its usage
+evidence on the process default usage log with explicit provenance, so an
+ungoverned composition can no longer be silently invisible. The raw
 ``on_response`` hook below is a compatibility adapter for older raw-HTTP call
 sites; after the #718 cutover no shipped production call site supplies it, and
 ambient/header reconciliation with it is explicitly not a wired production
-path — the canonical Invocation recorder is the only live recording mechanism.
+path — the canonical Invocation recorder is the only Invocation-keyed
+recording mechanism.
 """
 
 from __future__ import annotations
@@ -52,14 +57,55 @@ class CanonicalInvocationUsageRecorder:
         self._recorded: set[str] = set()
 
     async def record(self, invocation: Invocation) -> None:
-        """Record one completed physical effect, keyed by Invocation identity."""
+        """Record one completed physical effect, keyed by Invocation identity.
+
+        At-least-once: the Invocation is marked recorded only after every
+        write succeeds, so a transient ledger failure raised here leaves the
+        effect unmarked and the next ``record`` attempt (a terminalization
+        retry, or a deduplicated effect hand-out re-confirming evidence)
+        repairs the ledger instead of permanently omitting it. Charging stays
+        at-most-once: durable trackers are idempotent on Invocation identity
+        (``record_invocation``), and this in-process guard plus the tracker's
+        own dedupe keep retries charge-free.
+        """
         if invocation.invocation_id in self._recorded:
             return
-        self._recorded.add(invocation.invocation_id)
         provider = invocation.binding.provider_name
         usage = invocation.usage
         input_tokens = usage.input_units if usage is not None else 0
         output_tokens = usage.output_units if usage is not None else 0
+        # Durable ledger first: it is the authoritative sink and is idempotent
+        # on Invocation identity, so a failure here records nothing rather
+        # than half the evidence. The usage-log append that follows cannot
+        # fail in practice, and only after both succeed is the Invocation
+        # marked recorded.
+        if self._quota_tracker is not None:
+            record_invocation = getattr(self._quota_tracker, "record_invocation", None)
+            if record_invocation is not None:
+                await record_invocation(
+                    invocation.invocation_id,
+                    provider,
+                    self._billing_cycle,
+                    input_tokens,
+                    output_tokens,
+                    usage is not None,
+                )
+            elif usage is not None:
+                # Compatibility for external trackers predating canonical
+                # evidence. Not identity-keyed, so it charges on the first
+                # successful attempt only — the mark below plus this guard
+                # make retries no-ops in-process.
+                await self._quota_tracker.record_usage(
+                    provider, self._billing_cycle, input_tokens, output_tokens
+                )
+            else:
+                record_unreported = getattr(self._quota_tracker, "record_unreported", None)
+                if record_unreported is not None:
+                    # Not on the QuotaTracker protocol; a tracker that tracks
+                    # unreported evidence still exposes this async hook.
+                    await cast("Callable[[str, str], Awaitable[None]]", record_unreported)(
+                        provider, self._billing_cycle
+                    )
         self._log.record(
             provider,
             input_tokens=input_tokens,
@@ -70,31 +116,7 @@ class CanonicalInvocationUsageRecorder:
             billing_cycle=self._billing_cycle,
             usage_reported=usage is not None,
         )
-        if self._quota_tracker is None:
-            return
-        record_invocation = getattr(self._quota_tracker, "record_invocation", None)
-        if record_invocation is not None:
-            await record_invocation(
-                invocation.invocation_id,
-                provider,
-                self._billing_cycle,
-                input_tokens,
-                output_tokens,
-                usage is not None,
-            )
-        elif usage is not None:
-            # Compatibility for external trackers predating canonical evidence.
-            await self._quota_tracker.record_usage(
-                provider, self._billing_cycle, input_tokens, output_tokens
-            )
-        else:
-            record_unreported = getattr(self._quota_tracker, "record_unreported", None)
-            if record_unreported is not None:
-                # Not on the QuotaTracker protocol; a tracker that tracks
-                # unreported evidence still exposes this async hook.
-                await cast("Callable[[str, str], Awaitable[None]]", record_unreported)(
-                    provider, self._billing_cycle
-                )
+        self._recorded.add(invocation.invocation_id)
 
 
 def record_llm_usage(

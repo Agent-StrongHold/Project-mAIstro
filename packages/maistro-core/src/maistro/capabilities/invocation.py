@@ -19,6 +19,7 @@ Invocation stores.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -29,6 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maistro.capabilities.binding import Binding, ResolvedBinding, ResolvedCapabilityProvider
 from maistro.capabilities.types import Unavailable
+
+logger = logging.getLogger("maistro.capabilities.invocation")
 
 
 def _id() -> str:
@@ -456,10 +459,28 @@ class InvocationExecutionService:
 
         Branchless from the caller's side: `invoke` sits at the complexity
         ceiling, and the recorder decision belongs to the hook owner.
+
+        A recorder failure is isolated rather than raised: the physical effect
+        is already terminal, so failing the caller now would misreport its
+        outcome and could drive a duplicate physical call under attempt retry.
+        The recorder only marks an Invocation recorded after its writes
+        succeed, so the next hand-out of the same completed effect re-confirms
+        evidence and repairs the ledger. The failure itself is surfaced as an
+        error event — it is never swallowed silently (#718).
         """
 
-        if (on_completed := self._on_completed) is not None:
+        if (on_completed := self._on_completed) is None:
+            return
+        try:
             await on_completed(completed)
+        except Exception as exc:
+            logger.error(
+                "quota evidence recording failed for %s (effect %s, provider %s): %s",
+                completed.invocation_id,
+                completed.effect_key,
+                completed.binding.provider_name,
+                exc,
+            )
 
     async def invoke(
         self,
@@ -494,6 +515,14 @@ class InvocationExecutionService:
             if history:
                 latest = history[-1]
                 if latest.status is InvocationStatus.COMPLETED:
+                    # A deduplicated hand-out re-confirms ledger evidence: a
+                    # recorder whose durable write failed transiently left
+                    # this Invocation unmarked, and this is the retry that
+                    # repairs it (the recorder and the durable tracker are
+                    # idempotent on Invocation identity, so a healthy ledger
+                    # sees a no-op). At-least-once recording, at-most-once
+                    # charging (#718).
+                    await self._notify_completion(latest)
                     return latest
                 if latest.status in {
                     InvocationStatus.CREATED,
@@ -536,6 +565,7 @@ class InvocationExecutionService:
                     effect_key=effect_key,
                 )
                 if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
+                    await self._notify_completion(latest_history[-1])
                     return latest_history[-1]
                 raise
             running = invocation.model_copy(
