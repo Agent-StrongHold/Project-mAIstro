@@ -5,7 +5,7 @@ missing provider usage report by itself.  Keep one immutable evidence row per
 canonical physical Invocation, then project it into the existing aggregate.
 
 Revision ID: 041_quota_invocation_evidence
-Revises: 040
+Revises: 042_task_receipt_dispatch_inputs
 Create Date: 2026-09-08
 
 Re-ID'd twice during the develop integration. First 035 -> 039: the same
@@ -18,6 +18,12 @@ chaining after the develop chain tip 040 keeps exactly one head; the id stays
 under alembic's 32-character `alembic_version.version_num` limit (the live
 chain test applies the whole chain to an empty database, which is where a
 too-long id fails).
+
+Re-parented once more when develop's #1057 branch also took 040's child slot
+(`041_task_identity_provenance` -> `042_task_receipt_dispatch_inputs`): the
+sync merge forked the chain between the two claimants, so this revision now
+follows that chain tip and `036_audit_log_org_scope` follows this revision,
+restoring the single linear head.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "041_quota_invocation_evidence"
-down_revision = "040"
+down_revision = "042_task_receipt_dispatch_inputs"
 branch_labels = None
 depends_on = None
 

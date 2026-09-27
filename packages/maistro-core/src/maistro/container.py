@@ -24,7 +24,11 @@ from maistro.a2a.guest_peers import GuestPeerManager
 from maistro.agents.context_builder import ContextBuilder
 from maistro.agents.intents import IntentRegistry, build_intent_registry
 from maistro.archive.wiring import build_archive_store
-from maistro.capabilities.effect_context import CapabilityEffectContext, new_effect_context
+from maistro.capabilities.effect_context import (
+    CapabilityEffectContext,
+    binding_scope_policy,
+    new_effect_context,
+)
 from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.events.consumer_cursor import (
@@ -2018,6 +2022,9 @@ async def create_container(
         invocation_store=capability_invocation_store,
         usage_log=get_default_usage_log(),
         quota_tracker=quota_tracker,
+        # The container is an explicit composition root. Bare contexts remain
+        # read-only until an application supplies policy authority.
+        policy_evaluator=binding_scope_policy,
     )
     from maistro.capabilities.model_binding_bootstrap import bootstrap_model_bindings
 

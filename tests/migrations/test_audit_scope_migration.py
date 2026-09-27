@@ -87,16 +87,25 @@ def test_audit_scope_migration_is_the_single_head() -> None:
     # 036 already existed on the historical 035 branch when the consumer and
     # task migrations landed, and develop's chain kept growing while this
     # branch was open (039 for #1531, then 040 for #1079, each taking the
-    # parent this revision had claimed; finally the quota-evidence migration
-    # was re-ID'd to 041 after its own numeric slots collided twice). It
-    # therefore follows the current chain tip (041_quota_invocation_evidence,
-    # the tip of 035 -> ... -> 038 -> 039 -> 040 -> 041) so every
-    # deployment's ordinary ``upgrade head`` applies the audit scope
+    # parent this revision had claimed). Merging that state into the #1057
+    # branch — which had already taken 040's child slot with
+    # ``041_task_identity_provenance`` — forked the chain again, so the #1057
+    # side re-parented this revision onto that branch's chain tip
+    # (042_task_receipt_dispatch_inputs). Syncing develop into the #718
+    # branch — whose own quota-evidence migration had also taken 040's child
+    # slot as ``041_quota_invocation_evidence`` — forked it once more, so the
+    # quota-evidence migration now follows 042_task_receipt_dispatch_inputs
+    # and this revision follows the quota-evidence migration (the tip of
+    # 035 -> ... -> 040 -> 041_task_identity_provenance ->
+    # 042_task_receipt_dispatch_inputs -> 041_quota_invocation_evidence) so
+    # every deployment's ordinary ``upgrade head`` applies the audit scope
     # migration rather than leaving it on a competing branch. The chain has
-    # since grown past it again: #1204 appends `039_quota_usage_event_identity`
-    # as the new tip, exactly as any tip-landing branch does — the invariants
-    # that matter are that the chain still has one head and that this revision
-    # sits on the path `upgrade head` walks, not that it is the tip forever.
+    # since grown past it again on both sides: #1120 re-parented its
+    # manual-fire occurrence migration (042) onto this revision, and #1204
+    # appends `039_quota_usage_event_identity` as the new tip, exactly as any
+    # tip-landing branch does — the invariants that matter are that the chain
+    # still has one head and that this revision sits on the path ``upgrade
+    # head`` walks, not that it is the tip forever.
     assert revision.down_revision == "041_quota_invocation_evidence"
     # #1120's manual-fire occurrence migration (042) re-parented onto this
     # revision when the develop chain grew again while that branch was open —
