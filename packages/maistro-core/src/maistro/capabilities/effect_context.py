@@ -42,9 +42,23 @@ async def binding_scope_policy(
     policy boundary. This evaluator is suitable only for a composition root
     that deliberately chooses the M1 baseline; it is never installed by
     ``new_effect_context`` implicitly.
+
+    It also carries the legacy-tool effect floor: legacy workflow tools are
+    still compatibility providers, but their actual calls must not inherit the
+    workflow admission approval. A binding marked destructive/mutating
+    therefore gets its own governed decision.
     """
 
-    del binding, request, context
+    del request, context
+    if binding.capability.startswith("legacy_tool:") and binding.config.get("effect") in {
+        "mutate",
+        "destroy",
+    }:
+        return PolicyVerdict(
+            Decision.REQUIRE_APPROVAL,
+            reason="legacy workflow effect requires independent approval",
+            rule="m1.legacy-tool-effect",
+        )
     return PolicyVerdict(
         Decision.ALLOW,
         reason="canonical Binding scope resolved before provider invocation",

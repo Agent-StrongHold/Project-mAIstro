@@ -6,7 +6,6 @@ kind: spec
 status: Accepted
 created: 2026-06-03
 substrate:
-  - maistro-engine#SPEC-200
   - maistro-engine#ADR-090
 implements:
   - maistro-engine#ADR-090
@@ -14,6 +13,7 @@ related:
   - maistro-engine#SPEC-190
   - maistro-engine#ADR-049
   - maistro-engine#ADR-075
+  - maistro-engine#SPEC-200
 supersedes: []
 blocks: []
 blocked-by: []
@@ -50,7 +50,10 @@ history:
 
 ## Context
 
-ADR-090 defines the Builders stage machine and worker roles. SPEC-200 defines the safety layer.
+ADR-090 defines the Builders stage machine and worker roles and is the governing authority for this
+spec. SPEC-200 (Builders Safety Layer, **AC Defined**) is non-authoritative design context for the
+safety layer's execution contexts and ephemeral workspace — related background, not a governing
+dependency.
 This spec describes the interactive builders session — a hybrid opencode/Claude Code-style TUI
 that takes a task description, routes through a LiteLLM proxy for model access, and runs a ReAct
 agent loop (think -> act -> observe) with human-in-the-loop approval gates.
@@ -169,5 +172,5 @@ packages/maistro-bootstrap/src/maistro_bootstrap/builders/
 ## References
 
 - ADR-090 — Builders Pipeline stage machine and worker roles
-- SPEC-200 — Builders Safety Layer
+- SPEC-200 — Builders Safety Layer (AC Defined — design context, not governing authority)
 - [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/prod)
