@@ -175,10 +175,7 @@ def test_fix_leaves_the_reviewed_columns_alone(sandbox) -> None:
         if (m := row.match(line))
     }
     assert before == after
-    # 83 base rows + ADR-102 (this branch) + ADR-091626-ba4f + ADR-091726-7c2a
-    # + ADR-092326-97c4 + ADR-092526-4391 + ADR-092526-c41d... (develop merge):
-    # counted from the merged corpus, not asserted from either side alone.
-    assert len(after) == 89
+    assert len(after) == 90
 
 
 def test_fix_is_idempotent(sandbox) -> None:

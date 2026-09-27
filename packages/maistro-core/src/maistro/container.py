@@ -57,6 +57,7 @@ from maistro.runs.chat_execution import (
     ChatDispatchUnrecorded,
 )
 from maistro.runs.chat_refusal import ChatTurnRefused
+from maistro.runs.concurrency import RunConcurrencyExceeded
 from maistro.runs.lifecycle import RUN_TRANSITIONS, InvalidLifecycleTransition
 from maistro.runs.model import (
     TERMINAL_RUN_STATUSES,
@@ -64,6 +65,7 @@ from maistro.runs.model import (
     Run,
     RunStatus,
 )
+from maistro.runs.scoped_reads import ScopedRunReader
 from maistro.runs.store import RunIntegrityError, RunNotFound, RunStore
 from maistro.runs.wiring import (
     SPINE_PG_TABLES,
@@ -165,6 +167,12 @@ RESUME_SCAN_LIMIT = 1000
 #: a turn still in flight.
 DEFAULT_STRANDED_ADMISSION_AGE = timedelta(minutes=5)
 
+#: How many abandoned Attempts, and separately how many stranded chat Runs, a
+#: chat turn refused at a full active-Run ceiling reclaims before asking again
+#: (#1182). The operator ticks' own default, so a refused turn costs no more
+#: than one scheduled tick would.
+_CHAT_SLOT_RECLAIM_LIMIT = 100
+
 
 @dataclass
 class Container:
@@ -201,6 +209,9 @@ class Container:
     #: Workspace/Project-scoped BacklogItems (#98), on the Project store's backend.
     backlog_store: BacklogItemStore = None  # type: ignore[assignment]
     run_store: RunStore = None  # type: ignore[assignment]
+    #: The product read seam over `run_store` (#1152): Workspace membership
+    #: decides who may read a Run tree, and foreign ids answer like missing ones.
+    run_reader: ScopedRunReader = None  # type: ignore[assignment]
     # Routing rather than bound: one Conductor process serves every Workspace
     # its users belong to, so the Workspace is chosen per submission (#158).
     # `config.workspace_id` remains the default for a submission that names none.
@@ -679,7 +690,9 @@ class Container:
         A turn that cannot get its canonical Run -- no admitter wired, or
         admission failing -- raises `ChatTurnRefused` so the door answers a
         retryable 503 and nothing reaches the model (owner decision
-        2026-09-23, amending ADR-082326-c126). Whatever admission already
+        2026-09-23, amending ADR-082326-c126). A full active-Run ceiling
+        (#1182) is re-raised as `RunConcurrencyExceeded` instead: that is
+        backpressure, which the door answers with 429. Whatever admission already
         persisted is compensated first, so the refusal strands nothing.
 
         `dispatch_pending` says a dispatch follows in this process: the Run is
@@ -693,14 +706,31 @@ class Container:
             raise ChatTurnRefused("no chat admitter is wired, so the turn cannot get a Run")
         run: Run | None = None
         try:
-            run = await self.chat_admitter.admit(
-                messages,
-                session_id=session_id,
-                request_id=request_id,
-                intent_hint=intent_hint,
-                known_task_types=self.config.task_types,
-                actor_principal_id=getattr(auth, "user_id", None) or None,
-            )
+            admitter = self.chat_admitter
+            principal = getattr(auth, "user_id", None) or None
+            try:
+                run = await admitter.admit(
+                    messages,
+                    session_id=session_id,
+                    request_id=request_id,
+                    intent_hint=intent_hint,
+                    known_task_types=self.config.task_types,
+                    actor_principal_id=principal,
+                )
+            except RunConcurrencyExceeded:
+                # The slots may be held by turns a crashed process left behind,
+                # which no successful admission will ever sweep. Reclaim once,
+                # then ask again; a ceiling still full of live turns refuses.
+                if not await self._reclaim_stranded_chat_slots():
+                    raise
+                run = await admitter.admit(
+                    messages,
+                    session_id=session_id,
+                    request_id=request_id,
+                    intent_hint=intent_hint,
+                    known_task_types=self.config.task_types,
+                    actor_principal_id=principal,
+                )
             # Two hops: a Run is born CREATED and the lifecycle has no edge
             # from there to RUNNING. Queued is momentarily true here — the turn
             # is admitted and about to be dispatched — rather than a fiction
@@ -724,11 +754,34 @@ class Container:
             await asyncio.shield(self._cancel_incomplete_admission(run))
             self._release_chat_dispatch(run)
             raise
+        except RunConcurrencyExceeded:
+            # Backpressure, not an admission outage (#1182): the door answers
+            # it with 429, not the 503 a `ChatTurnRefused` gets.
+            raise
         except Exception as exc:
             logger.warning("chat turn could not be admitted as a Run", exc_info=True)
             await self._cancel_incomplete_admission(run)
             self._release_chat_dispatch(run)
             raise ChatTurnRefused("chat turn could not be admitted as a Run") from exc
+
+    async def _reclaim_stranded_chat_slots(self) -> int:
+        """Free active root-Run slots held by dead turns (#1182); say how many.
+
+        The recovery halves of the two ticks an operator schedules, run on
+        demand when a chat turn meets a full ceiling -- a deployment that
+        schedules neither (maistro-server) would otherwise stay locked out for
+        good. Both are bounded, idempotent and judged by a lease or an age,
+        never by this request, so a live turn on another replica is never
+        reclaimed. Recovery is housekeeping: its failure leaves the refusal
+        standing.
+        """
+        try:
+            return await self._reclaim_abandoned_attempts(
+                now=None, limit=_CHAT_SLOT_RECLAIM_LIMIT
+            ) + await self._recover_stranded_chat_runs(now=None, limit=_CHAT_SLOT_RECLAIM_LIMIT)
+        except Exception:
+            logger.warning("chat slot reclamation failed", exc_info=True)
+            return 0
 
     async def _cancel_incomplete_admission(self, run: Run | None) -> None:
         """Compensate a chat Run whose admission never reached RUNNING (#338).
@@ -1001,8 +1054,19 @@ class Container:
         from maistro.observability.metrics import (
             non_terminal_runs,
             oldest_non_terminal_run_age_seconds,
-            recovered_attempts_total,
         )
+
+        reclaimed = await self._reclaim_abandoned_attempts(now=now, limit=limit)
+        open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
+        non_terminal_runs.set(open_runs)
+        moment = now if now is not None else datetime.now(UTC)
+        age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
+        oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
+        return reclaimed
+
+    async def _reclaim_abandoned_attempts(self, *, now: datetime | None, limit: int) -> int:
+        """Settle Attempts whose lease lapsed; the recovery half of the tick."""
+        from maistro.observability.metrics import recovered_attempts_total
         from maistro.runs.reconciliation import AttemptLifecycleReconciler
 
         reclaimed = await self.run_store.reclaim_expired_attempts(now=now, limit=limit)
@@ -1029,18 +1093,12 @@ class Container:
                     )
             recovered_attempts_total.inc(len(reclaimed))
             logger.info("recovered %d abandoned Attempt(s)", len(reclaimed))
-
-        open_runs, oldest_created_at = await self.run_store.non_terminal_run_stats()
-        non_terminal_runs.set(open_runs)
-        moment = now if now is not None else datetime.now(UTC)
-        age = (moment - oldest_created_at).total_seconds() if oldest_created_at else 0.0
-        oldest_non_terminal_run_age_seconds.set(max(age, 0.0))
         return len(reclaimed)
 
     async def recover_stranded_chat_admissions(
         self, *, now: datetime | None = None, limit: int = 100
     ) -> int:
-        """Compensate a chat Run that reached RUNNING but never got a NodeRun (#338).
+        """Compensate a chat Run stranded before its turn got a NodeRun (#338).
 
         `_admit_chat_turn` persists RUNNING durably before returning, and only
         then does `_execute_chat_turn` construct `ChatAttemptExecutor` and call
@@ -1057,16 +1115,39 @@ class Container:
         with RUNNING (#251), so "RUNNING with no NodeRun" is a defect only
         chat's two-step admission can produce.
 
+        A crash one step earlier -- between `create_run` and the RUNNING
+        write -- leaves the Run CREATED or QUEUED, and those are swept on the
+        same terms (#1182). Harmless bookkeeping once, they now each hold an
+        active root-Run slot, so without this a handful of crashes would lock
+        a principal, or chat's whole Workspace, out of new turns for good.
+
         `limit` bounds recoveries, not visibility into RUNNING, the same
         contract `execute_admitted_runs` documents for the same reason: a page
         of RUNNING Runs that are all ineligible must not stall the tick before
         it reaches the one that is not.
         """
+        return await self._recover_stranded_chat_runs(now=now, limit=limit)
+
+    async def _recover_stranded_chat_runs(self, *, now: datetime | None, limit: int) -> int:
+        """Every stranded status's walk for `recover_stranded_chat_admissions`."""
+        moment = now if now is not None else datetime.now(UTC)
+        cutoff = moment - DEFAULT_STRANDED_ADMISSION_AGE
+        recovered = 0
+        for status in (RunStatus.RUNNING, RunStatus.QUEUED, RunStatus.CREATED):
+            if recovered >= limit:
+                break
+            recovered += await self._recover_stranded_chat_runs_in(
+                status, cutoff=cutoff, limit=limit - recovered
+            )
+        return recovered
+
+    async def _recover_stranded_chat_runs_in(
+        self, status: RunStatus, *, cutoff: datetime, limit: int
+    ) -> int:
+        """One status's page walk for `recover_stranded_chat_admissions`."""
         from maistro.runs.sources import CHAT_SOURCE
         from maistro.runs.store import run_cursor_key
 
-        moment = now if now is not None else datetime.now(UTC)
-        cutoff = moment - DEFAULT_STRANDED_ADMISSION_AGE
         recovered = 0
         after = None
         while recovered < limit:
@@ -1079,7 +1160,7 @@ class Container:
             # it does not replace the per-candidate check, which still
             # re-derives eligibility from the record it is handed.
             page = await self.run_store.list_by_status(
-                RunStatus.RUNNING,
+                status,
                 limit=limit,
                 after=after,
                 admission_source=CHAT_SOURCE,
@@ -1118,7 +1199,13 @@ class Container:
             await self.run_store.transition_run(
                 run.run_id,
                 RunStatus.CANCELLED,
-                error=EXECUTION_NEVER_STARTED,
+                # Never reached RUNNING: the same word the in-request
+                # compensation uses for an admission that did not finish.
+                error=(
+                    EXECUTION_NEVER_STARTED
+                    if run.status is RunStatus.RUNNING
+                    else ADMISSION_INCOMPLETE
+                ),
             )
         except RunNotFound:
             # The Run vanished between the page that listed it and this lookup:
@@ -1771,7 +1858,7 @@ async def create_container(
         embedding_client=embeddings,
     )
 
-    router = RouterEngine(quota_tracker)
+    router = RouterEngine()
     classifier = ClassifierEngine()
     context_builder = ContextBuilder()
 
@@ -1982,6 +2069,7 @@ async def create_container(
         workspace_store=workspace_store,
         backlog_store=backlog_store,
         run_store=run_store,
+        run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
         task_admitter=task_admitter,
         chat_admitter=chat_admitter,
         template_store=graph_template_store,

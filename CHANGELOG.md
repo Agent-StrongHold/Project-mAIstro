@@ -25,6 +25,51 @@ or placeholder-only section.
 
 ### Security
 
+- **Active root Runs are capped per principal and per Workspace (#1182,
+  partial).** Every `RunStore.create_run` (in-memory, SQLite, PostgreSQL) now
+  refuses a new root Run with `RunConcurrencyExceeded` once 8 are active for
+  its actor principal (across Workspaces) or 32 for its Workspace. "Active"
+  means CREATED, QUEUED or RUNNING. Child Runs, parked WAITING/PAUSED Runs and
+  terminal Runs hold no slot, and a parked Run resuming is not a new admission.
+  A duplicate schedule occurrence is still refused as a duplicate. PostgreSQL
+  serializes the insert and the count with transaction-scoped advisory locks,
+  so the ceiling holds across replicas. SQLite relies on the store's write
+  lock, since that tier is a single process. A SQLite refusal rolls back to a
+  savepoint, so a sibling store's open transaction on the shared connection
+  is neither committed nor ended. Partial indexes serve both SQLite counts.
+  - A chat turn that meets a full ceiling first reclaims slots held by dead
+    turns, then asks once more. `recover_stranded_chat_admissions` now also
+    cancels chat Runs stranded in CREATED or QUEUED.
+  - The ceilings are governed floors in `quality/security-resource-floors.json`
+    (`MAX_ACTIVE_ROOT_RUNS_PER_PRINCIPAL`, `MAX_ACTIVE_ROOT_RUNS_PER_WORKSPACE`).
+    Operators may lower them, but raising either requires
+    `ALLOW_UNSAFE_RESOURCE_OVERRIDES`.
+  - Both values appear in maistro-server's `/health` `effective_resource_policy`.
+  - maistro-server `/v1/chat/completions` answers a refused turn with 429 and
+    `Retry-After`. `Container` chat admission re-raises the refusal instead of
+    answering unrecorded.
+  - The server's `HTTPException` handler now keeps the raiser's headers.
+  - The scheduler already keeps a refused occurrence owed and retries it on a
+    later tick.
+  - Not yet done: the other HTTP/WebSocket submit surfaces still need to map
+    the refusal to 429.
+
+- **Canonical Run reads have a Workspace-membership-scoped seam (#1152,
+  partial).** `maistro.runs.scoped_reads.ScopedRunReader`, wired as
+  `Container.run_reader` over the Container's own Run, Workspace and Project
+  scope stores, reads a Run, its NodeRuns and its Attempts only for a member
+  of the Run's Workspace whose Project belongs to it. The initiating
+  principal is provenance, not a gate. Missing and foreign ids, a blank
+  principal, and a NodeRun or Attempt id from another Run all raise the same
+  `RunNotVisible`, and membership is resolved before the Run lookup. Hive's
+  DAG-run inspection now reads its canonical lifecycle overlay through this
+  reader, so a projection row naming another Workspace's Run no longer
+  borrows that Run's status, result or error; the list path batches those
+  reads through `ScopedRunReader.get_runs`. maistro-server `/v1/runs`, Hive
+  Canvas eval, Hive DAG-run cancel (which still acts on the unscoped
+  `run_store`), `actor_principal_id` validation, accounting identity and
+  delegation identity are still open.
+
 - **Tool calls fail closed when Sentinel or caller auth is missing (#1165).**
   An `Agent` built without a Sentinel, or handed a turn with no `auth`, used
   to execute tool calls unauthorized; it now returns `Error: Permission denied
@@ -301,6 +346,31 @@ or placeholder-only section.
   owners write it, and a stale `expected_version` gets 409 with the current
   item. On PostgreSQL the store is still in-process and logs a warning.
   BACKLOG.md remains the authority.
+
+- **Proposed spec for Workspace work campaigns (#103, partial).**
+  SPEC-092626-1831 (Proposed), with its boundary decision ADR-092626-c1e7
+  (Proposed), records the campaign contract before any code: a
+  campaign is operator policy that narrows eligible BacklogItems and linked
+  Goals, with four autonomy modes, durable pin-next/pause/exclude/human-only
+  controls, human priority kept separate from the system selection score, and
+  audit keyed to actor and policy version. It grants no permissions and owns no
+  Goals. The priority combination rule and default mode stay open questions.
+  Documentation only: no store, route or runtime behaviour changes yet.
+
+- **The Canvas store's tables are in the root alembic chain (#286, partial).**
+  Migration 044 creates `canvases`, `layers`, `generation_jobs` (with the
+  SPEC-203 lease columns and the partial pending-claim index),
+  `composite_records` and `canvas_blobs`, which `PgCanvasStore` reads and
+  writes but no migration here ever created. It adopts rather than assumes an
+  empty database: `CREATE TABLE IF NOT EXISTS` plus `ADD COLUMN IF NOT EXISTS`
+  for every column, so a deployment whose tables were created outside the
+  repository gains any missing columns and keeps its rows. On tables 044
+  creates, the `(canvas_id, z_index)` uniqueness is deferred to commit, so
+  layer reorder and removal no longer collide on intermediate states; an
+  adopted table keeps its own constraints and foreign keys as they were. The five tables move
+  from `created_outside_this_repo` into the durable-table retention inventory.
+  Operators: `alembic upgrade head` now touches these tables, and `downgrade`
+  past 044 drops them, including rows an adopted table held before.
 
 - **Durable user model: `UserModelFact` and self-consented promotion
   (#1047, partial).** New `maistro.memory.user_model` package: a frozen,
@@ -704,7 +774,73 @@ or placeholder-only section.
   explicitly and are unaffected; a caller that omits it now gets a
   `TypeError` at the call site instead of a wrong terminal status at runtime.
 
+### Removed
+
+- **`RouterEngine` no longer takes a `quota_tracker` constructor argument
+  (#1196, partial).** The tracker was stored on `self._quota` and never read:
+  `select()` always calls `select_with_usage()` with an empty usage map, so
+  no quota check ever ran through the router. Removing the dead parameter
+  stops it from being mistaken for — or later wired up as — a second,
+  non-authoritative quota-enforcement point; enforcement belongs at the
+  canonical Invocation boundary. `RouterEngine()` now takes no arguments. A
+  new fitness test (`tests/fitness/test_quota_single_authority.py`)
+  AST-scans `maistro.router` for any `QuotaTracker` import, reference or
+  constructor parameter so the dependency cannot be quietly revived.
+  `Agent._quota_tracker` is unaffected by this change.
+
+- **The pre-durable `run_graph` execution API is retired from `maistro.graph` (#1154).**
+  `maistro.graph.run_graph` and `maistro.graph.executor.run_graph` are gone.
+  The wrapper built an ephemeral `GraphRun` and started it, recording no
+  canonical Run/NodeRun/Attempt evidence and no restart recovery, so physical
+  Graph work reached through it was invisible to every recovery sweep — a
+  second execution universe beside the durable one. It had no non-test callers.
+  Importers use `maistro.graph.durable_runs` for canonical execution, which
+  shares no code with the retired path — it never imported `GraphRun`.
+  `GraphRun` is still importable from `maistro.graph.run` as Graph-domain
+  traversal, but it is not an execution authority and is no longer re-exported
+  as one; with the wrapper gone it and `maistro.graph.executor` are reachable
+  only from tests. The private
+  `_ensure_node_configs` helper went with it — set `NodeConfig.beam_width`
+  directly instead of passing `parallel_generations`.
+
 ### Fixed
+
+- **`/v1/schedules` writes the canonical Schedule definition first (#1199,
+  partial).** With a configured Container, create, update and delete now
+  write the canonical `ScheduleStore` before the Hive row, which becomes a
+  projection. Disabling a schedule disables its canonical row, and a cron or
+  timezone change clears `next_due_at` while `runs_so_far` and `last_run_id`
+  stay. Deleting a schedule (or clearing its template) removes the canonical
+  row, so `due()` no longer returns an orphaned enabled row. A Container
+  without a schedule or project store returns 503 and writes nothing; a
+  definition the canonical model refuses (such as an unreadable cron) returns
+  422; a create whose Hive write then fails deletes the canonical row it had
+  already committed rather than leaving an orphan no route can reach. On
+  startup the scheduler runs a one-shot backfill that puts every Hive row the
+  canonical store is missing *or* whose definition has drifted from it (the
+  residual case the old lazy tick could leave — enabled canonically, disabled
+  in Hive, from before these routes existed to sync it) — `ScheduleStore.put`
+  keeps the recorded cursors either way, so reconciling never rewinds them.
+  A tick — and now a manual fire too — re-reads the row under the same
+  per-schedule lock the routes hold, so a snapshot taken before an edit or
+  delete cannot re-enable, resurrect, or admit a Run for a schedule already
+  gone; that lock's process-global dict releases each schedule's entry once
+  idle rather than growing with create/delete churn. Standalone mode (no
+  Container) is unchanged. The tick still enumerates `stores.schedules`;
+  moving it onto `ScheduleStore.due()` is the rest of #1199.
+
+- **Run retention throttles and reports backlog per Workspace
+  ([#1175](https://github.com/Agent-StrongHold/Project-mAIstro/issues/1175)).**
+  `RunRetentionSweeper` used to keep one last-sweep time for all Workspaces.
+  The Turing plane shares one sweeper across every per-user Workspace, so a
+  busy Workspace used up the interval and a quiet Workspace's expired Runs
+  were almost never swept. The sweeper now keeps a last-sweep time per
+  scope, in an LRU-bounded map, and still runs only one sweep at a time.
+  `maistro_retention_backlog_remaining{mode}` now counts the scopes whose
+  last completed sweep left a backlog. Before, the last sweep to finish
+  overwrote the value, so one Workspace draining hid another's backlog. A
+  failed sweep leaves the count unchanged. The label is still the mode,
+  never a Workspace id (#818).
 
 - **Agent builder, intent routing and RSI Stop work from the keyboard (#370,
   partial).** The Agents builder's strategy cards are a named radio group of
@@ -1121,6 +1257,26 @@ or placeholder-only section.
   from the mutation's own response instead. `tests/e2e/optimistic-mutations.spec.ts`
   asserts no collection GET follows a toggle, create, or delete; against
   the unfixed build both specs fail on exactly that assertion.
+
+- **Memory entry delete and update are optimistic, with rollback (#1422,
+  partial).** Beyond the single-request fix above, `Memory.tsx`'s
+  `deleteEntry` and `updateEntry` still awaited the DELETE/PUT before
+  touching local state at all, so the row or edit only appeared after the
+  round trip. Both now apply the change (row removal, or the edited fields
+  merged into the entry and `sel`) to local state immediately, reconcile
+  with the server's response on success, and revert to the pre-mutation
+  state on failure. New cases in `tests/e2e/optimistic-mutations.spec.ts`
+  hold the DELETE/PUT via `page.route`, assert the UI already reflects the
+  change while the request is in flight, then fail it with a 500 and assert
+  the rollback; both fail against the unfixed code. Both rollbacks are also
+  race-safe: a failed delete restores `sel` only if nothing else was
+  selected in the meantime, and a failed update's `entries`/`sel` write (and
+  reopening the edit form so the attempted edit isn't lost) is guarded by
+  object identity against the exact optimistic snapshot it made, so a
+  request that resolves after a newer edit or delete of the same entry
+  can't clobber the newer state. Two more e2e cases cover those races. The
+  same gap remains open for `Schedules.tsx` `toggleSchedule` and
+  `WorkspaceContext.tsx` `archiveWorkspace`.
 
 - **The workspace toolbar explains a first run, truncates long names, shows
   personas by name and tagline, and forgets an account on sign-out (#1426,
