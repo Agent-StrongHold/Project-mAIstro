@@ -174,7 +174,10 @@ def load_baseline() -> tuple[dict[str, int], list[str]]:
     if not BASELINE.is_file():
         raise LedgerError(f"{BASELINE.relative_to(REPO_ROOT)} is missing")
     try:
-        doc = json.loads(BASELINE.read_text(encoding="utf-8"))
+        try:
+            doc = json.loads(BASELINE.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"cannot read baseline {BASELINE}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise LedgerError(f"{BASELINE.relative_to(REPO_ROOT)} is not valid JSON: {exc}") from exc
 
@@ -267,7 +270,12 @@ def parse_delta(text: str, where: str) -> dict[str, int]:
         suite, raw = m.group(2).strip(), m.group(3)
         if suite in delta:
             raise LedgerError(f"{where}: `{suite}` appears twice under `{DELTA_KEY}:`")
-        delta[suite] = int(raw)
+        try:
+            delta[suite] = int(raw)
+        except ValueError as exc:
+            raise LedgerError(
+                f"{where}: `{suite}`: `{raw.strip()}` is not an integer"
+            ) from exc
     if seen_key and not delta:
         raise LedgerError(
             f"{where}: `{DELTA_KEY}:` is present but records nothing. Remove the "
@@ -397,7 +405,10 @@ def collect(suite: str, recipe: Recipe) -> tuple[int, str]:
         detail = f"{errs.group(0)} during collection" if errs else f"exit {proc.returncode}"
         tail = "\n".join(out.strip().splitlines()[-15:])
         raise RuntimeError(f"collection failed ({detail}) for `{suite}`\n  {cmd}\n{tail}")
-    return int(matches[-1]), cmd
+    try:
+        return int(matches[-1]), cmd
+    except ValueError as exc:
+        raise RuntimeError(f"collection produced a non-integer count for `{suite}`\n  {cmd}\n  {exc}") from exc
 
 
 # --------------------------------------------------------------------------
