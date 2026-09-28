@@ -14,8 +14,8 @@ Each audited entry records current status, next steps, a concise current-state s
 
 ## ADR-002: Per-port spec-first workflow
 
-**Status:** Superseded  
+**Status:** Accepted  
 **Last updated:** 2026-09-28  
-**Next steps:** None in ADR-002. Use the active pre-1.0 development standards and current repository governance for new work.  
-**Current state:** The original fixed 12-step porting ceremony is historical. Its specification, meaningful-testing, verification, and traceability principles remain useful, but mandatory ADR-only review staging, `integration` targeting, sequential numbering, and manual ceremony no longer govern pre-1.0 development.  
+**Next steps:** Create a successor ADR defining the canonical pre-1.0 agent-native development workflow. Once that successor is accepted, transition ADR-002 to `Superseded` and set `superseded-by` to the successor ADR.  
+**Current state:** ADR-002 remains lifecycle-valid `Accepted`, but parts of its fixed 12-step ceremony are stale against current standards and repository topology. Specification-first intent, meaningful tests, verification, and traceability remain useful; mandatory ADR-only review staging, the retired `integration` target, sequential numbering, and routine manual ceremony are not current operating guidance.  
 **ADR:** [ADR-002: Per-port spec-first workflow](../../../adr/ADR-002-porting-workflow.md)
