@@ -168,7 +168,7 @@ async def execute_image_generation(
                 headers=endpoint.authorization_header(),
                 json=_payload(provider, request),
             )
-    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+    except httpx.HTTPError as exc:
         raise ImageGenerationError(f"image gateway unreachable, no effect occurred: {exc}") from exc
     return _checked_images(response)
 
