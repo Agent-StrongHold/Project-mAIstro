@@ -85,6 +85,29 @@ async def test_effect_claim_is_atomic_and_survives_store_reload(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_find_run_by_effect_resolves_the_claim_and_none_when_unclaimed(
+    tmp_path: Path,
+) -> None:
+    """The read half of the effect claim: callers recovering after a crash
+    resolve the Run that already holds the effect, and None means unclaimed."""
+    project_store, project_id = await _project_store()
+    conn = await aiosqlite.connect(tmp_path / "find.db")
+    store = SqliteRunStore(conn, project_store=project_store)
+    await store.ensure_schema()
+    try:
+        assert await store.find_run_by_effect("remote-effect-find") is None
+
+        claim = await store.claim_run_by_effect(_graph(project_id), effect_key="remote-effect-find")
+        assert claim.claimed is True
+
+        found = await store.find_run_by_effect("remote-effect-find")
+        assert found is not None
+        assert found.run_id == claim.run.run_id
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_delegation_transport_claim_is_durable_and_single_use(tmp_path: Path) -> None:
     project_store, project_id = await _project_store()
     db_path = tmp_path / "delegation.db"

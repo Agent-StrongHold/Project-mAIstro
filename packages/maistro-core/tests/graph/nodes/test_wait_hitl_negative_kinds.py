@@ -323,6 +323,47 @@ async def test_compliance_block_replay_upserts_one_logical_penalty() -> None:
     assert len(bb.metadata["penalties"]) == 1
 
 
+async def test_compliance_block_keeps_distinct_penalties_coexisting() -> None:
+    """A second, different rule appends without clobbering the first: the
+    upsert loop must walk past non-matching penalties and only replace its own
+    logical effect."""
+    from maistro.graph.types import GraphBlackboard
+
+    bb = GraphBlackboard(task_objective="x", workspace="")
+    bb.metadata["penalties"] = [
+        {
+            "id": "other-rule-penalty",
+            "node_id": "block-0",
+            "rule_id": "policy.other",
+            "severity": 1.0,
+            "reason": "already recorded",
+            "evidence": {},
+            "halt_run": False,
+        }
+    ]
+    ctx = NodeContext(run_id="r1", dag_id="d1", node_id="block-1", blackboard=bb)
+    Node = get_node("compliance.block")
+    result = await Node().run(
+        {
+            "rule_id": "pii.email_in_summary",
+            "severity": 3.0,
+            "reason": "contains an email",
+            "evidence": {"matched": "alice@example.com"},
+        },
+        ctx,
+    )
+
+    assert result.success
+    penalties = bb.metadata["penalties"]
+    assert [penalty["rule_id"] for penalty in penalties] == [
+        "policy.other",
+        "pii.email_in_summary",
+    ]
+    assert penalties[0]["id"] == "other-rule-penalty"
+    assert penalties[1]["id"] == result.output.penalty_id
+    assert penalties[1]["severity"] == 3.0
+
+
 async def test_compliance_block_with_halt_sets_halt_flag() -> None:
     from maistro.graph.types import GraphBlackboard
 

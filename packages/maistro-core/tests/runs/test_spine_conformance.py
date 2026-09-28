@@ -233,6 +233,103 @@ async def test_effect_claim_refuses_an_unanchored_parent_node_reference(spine: A
     assert retry.claimed is True
 
 
+async def test_effect_claim_recovery_returns_the_same_run_without_readmission(
+    spine: Any,
+) -> None:
+    """A retried admission is the same logical effect, not a second Run.
+
+    The second claimant — the same process after a crash, a peer process, or
+    a replay — gets the winner's Run back with ``claimed=False``. History is
+    never rewritten and no duplicate Run is minted (#42): the store's answer,
+    on every backend, is the one canonical Run for the effect key.
+    """
+    store, workspace, project_id = spine
+
+    first = await store.claim_run_by_effect(
+        _graph(workspace, project_id),
+        effect_key="agent.delegate_remote:recover-me",
+        provenance={"admission_source": "a2a_delegation"},
+    )
+    second = await store.claim_run_by_effect(
+        _graph(workspace, project_id),
+        effect_key="agent.delegate_remote:recover-me",
+        provenance={"admission_source": "a2a_delegation"},
+    )
+
+    assert first.claimed is True
+    assert second.claimed is False
+    assert second.run.run_id == first.run.run_id
+    reloaded = await store.get_run(first.run.run_id)
+    assert reloaded is not None
+    assert reloaded.provenance.get("effect_key") == "agent.delegate_remote:recover-me"
+
+
+async def test_effect_claim_anchors_parent_lineage(spine: Any) -> None:
+    """An effect claim may anchor itself to the delegating Run and NodeRun."""
+    store, workspace, project_id = spine
+    parent_run = await _run(spine)
+    parent_node_run = await store.create_node_run(parent_run.run_id, node_id="node-1")
+
+    claim = await store.claim_run_by_effect(
+        _graph(workspace, project_id),
+        effect_key="delegation:anchored",
+        parent_run_id=parent_run.run_id,
+        parent_node_run_id=parent_node_run.node_run_id,
+    )
+
+    assert claim.claimed is True
+    assert claim.run.parent_run_id == parent_run.run_id
+    assert claim.run.parent_node_run_id == parent_node_run.node_run_id
+
+
+async def test_effect_claim_refuses_a_parent_node_run_from_another_run(
+    spine: Any,
+) -> None:
+    """Parent evidence must correlate: a NodeRun from an unrelated Run is a
+    corrupted lineage, refused before insert on every backend."""
+    store, workspace, project_id = spine
+    other_run = await _run(spine)
+    foreign_node_run = await store.create_node_run(other_run.run_id, node_id="node-1")
+    parent_run = await _run(spine)
+
+    with pytest.raises(RunIntegrityError, match="does not belong to parent_run_id"):
+        await store.claim_run_by_effect(
+            _graph(workspace, project_id),
+            effect_key="delegation:mismatched-parent",
+            parent_run_id=parent_run.run_id,
+            parent_node_run_id=foreign_node_run.node_run_id,
+        )
+
+
+async def test_effect_claim_refuses_an_empty_effect_key(spine: Any) -> None:
+    """An empty effect key claims nothing and must be refused up front."""
+    store, workspace, project_id = spine
+
+    with pytest.raises(ValueError, match="effect_key must be non-empty"):
+        await store.claim_run_by_effect(_graph(workspace, project_id), effect_key="")
+
+
+async def test_a_durable_store_resolves_a_claimed_effect_key(spine: Any) -> None:
+    """The durable stores' read half: `find_run_by_effect` resolves the Run
+    that holds an effect claim, and None means unclaimed. The in-memory store
+    does not expose the read, so only the durable backends conformance here."""
+    store, workspace, project_id = spine
+    if not hasattr(store, "find_run_by_effect"):
+        pytest.skip("find_run_by_effect is a durable-store read")
+
+    unclaimed = await store.find_run_by_effect("no-such-effect")
+    assert unclaimed is None
+
+    claim = await store.claim_run_by_effect(
+        _graph(workspace, project_id), effect_key="durable:findable"
+    )
+    assert claim.claimed is True
+
+    found = await store.find_run_by_effect("durable:findable")
+    assert found is not None
+    assert found.run_id == claim.run.run_id
+
+
 async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_run(
     spine: Any,
 ) -> None:
