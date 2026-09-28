@@ -423,7 +423,9 @@ class _StageNode(BaseNode[_StageInput, _StageOutput]):
     output_schema: ClassVar[type[BaseModel]] = _StageOutput
     display_name: ClassVar[str] = "Execute Builders pipeline stage"
     description: ClassVar[str] = "Run one Builders stage under canonical Attempt evidence."
-    idempotent: ClassVar[bool] = False
+    # Replay policy lives only in the inherited ReplaySemantics contract
+    # (PURE here); the former dead `idempotent: ClassVar[bool]` flag was a
+    # lying second source of truth (#1194 residual).
     external_io: ClassVar[bool] = True
 
     def __init__(

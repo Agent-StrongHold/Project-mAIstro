@@ -11,16 +11,20 @@ Revision ID: 036_audit_log_org_scope
 Revises: 042_task_receipt_dispatch_inputs
 Create Date: 2026-09-10
 
-Re-parented three times, each time because develop or a sibling branch took
+Re-parented four times, each time because develop or a sibling branch took
 the same parent while this revision was open: first onto 038, then onto 039
 after `039_canvas_job_admission_key` landed (#1531), then onto develop's `040`
-(`down_revision = "039"`). Merging that state into the #1057 branch — which
-had already taken 040's child slot with `041_task_identity_provenance` —
-restored a two-head fork that fails every deployment's ``upgrade head`` with
-"Multiple head revisions are present". This revision now follows that
-branch's chain tip `042_task_receipt_dispatch_inputs`, keeping the chain
-linear with the audit scope migration as its single head — the same
-reconciliation revision 040's own docstring records for its two renumberings.
+(`down_revision = "039"`). The #1194 branch then re-parented this revision
+onto its own `041` (the canonical Run effect claim) after merging that same
+`040`, while the #1057 branch had already taken 040's child slot with
+`041_task_identity_provenance` → `042_task_receipt_dispatch_inputs`; merging
+the two restored a two-head fork that fails every deployment's
+``upgrade head`` with "Multiple head revisions are present". This revision
+now follows that chain tip `042_task_receipt_dispatch_inputs` — with
+`041_task_identity_provenance` re-parented onto #1194's `041` so the two
+forks weave back into one line — keeping the chain linear with the audit
+scope migration as its single head — the same reconciliation revision 040's
+own docstring records for its two renumberings.
 """
 
 from __future__ import annotations

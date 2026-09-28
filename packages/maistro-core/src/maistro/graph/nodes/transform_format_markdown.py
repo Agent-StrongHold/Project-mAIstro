@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class FormatMarkdownIn(BaseModel):
@@ -43,7 +43,7 @@ class TransformFormatMarkdownNode(BaseNode[FormatMarkdownIn, FormatMarkdownOut])
     input_schema: ClassVar[type[BaseModel]] = FormatMarkdownIn
     output_schema: ClassVar[type[BaseModel]] = FormatMarkdownOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.PURE
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Format Markdown"
     description: ClassVar[str] = (
