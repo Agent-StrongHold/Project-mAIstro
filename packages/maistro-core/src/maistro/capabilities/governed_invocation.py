@@ -386,34 +386,18 @@ class GovernedInvocationExecutionService:
                 effect_scope=effect_scope,
             )
         if existing is not None:
-            if existing.request_digest != request_digest:
-                raise InvocationDenied(
-                    f"approval {existing.request.request_id!r} does not match the current request"
-                )
-            if existing.status is ApprovalStatus.APPROVED:
-                return await self._resume_approved_effect(
-                    binding=binding,
-                    run_id=run_id,
-                    node_run_id=node_run_id,
-                    attempt_id=attempt_id,
-                    effect_key=effect_key,
-                    effect_scope=effect_scope,
-                    request=request,
-                    policy_event=policy_event,
-                    approval=existing,
-                )
-            if existing.status is ApprovalStatus.DENIED:
-                raise InvocationDenied(f"approval {existing.request.request_id!r} was denied")
-            await self._emit_approval_required(
+            return await self._handle_existing_approval(
                 approval=existing,
+                request_digest=request_digest,
                 binding=binding,
+                run_id=run_id,
+                node_run_id=node_run_id,
                 attempt_id=attempt_id,
+                effect_key=effect_key,
+                effect_scope=effect_scope,
+                request=request,
                 verdict=verdict,
                 policy_event=policy_event,
-            )
-            raise InvocationApprovalPending(
-                existing.request.request_id,
-                verdict.reason or "capability invocation requires approval",
             )
 
         approval_request = ApprovalRequest(
@@ -442,6 +426,52 @@ class GovernedInvocationExecutionService:
                 request_digest=request_digest,
             )
         )
+        await self._emit_approval_required(
+            approval=approval,
+            binding=binding,
+            attempt_id=attempt_id,
+            verdict=verdict,
+            policy_event=policy_event,
+        )
+        raise InvocationApprovalPending(
+            approval.request.request_id,
+            verdict.reason or "capability invocation requires approval",
+        )
+
+    async def _handle_existing_approval(
+        self,
+        *,
+        approval: DurableApproval,
+        request_digest: str,
+        binding: Binding,
+        run_id: str,
+        node_run_id: str,
+        attempt_id: str,
+        effect_key: str,
+        effect_scope: str | None,
+        request: Any,
+        verdict: PolicyVerdict,
+        policy_event: EventEnvelope,
+    ) -> EventEnvelope:
+        """Resume a matching approval or preserve its pending/denied decision."""
+        if approval.request_digest != request_digest:
+            raise InvocationDenied(
+                f"approval {approval.request.request_id!r} does not match the current request"
+            )
+        if approval.status is ApprovalStatus.APPROVED:
+            return await self._resume_approved_effect(
+                binding=binding,
+                run_id=run_id,
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                effect_key=effect_key,
+                effect_scope=effect_scope,
+                request=request,
+                policy_event=policy_event,
+                approval=approval,
+            )
+        if approval.status is ApprovalStatus.DENIED:
+            raise InvocationDenied(f"approval {approval.request.request_id!r} was denied")
         await self._emit_approval_required(
             approval=approval,
             binding=binding,

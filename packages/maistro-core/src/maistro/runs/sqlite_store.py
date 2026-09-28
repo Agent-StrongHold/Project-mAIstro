@@ -62,6 +62,7 @@ from maistro.runs.store import (
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_effect_claim_parent,
 )
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
@@ -531,7 +532,32 @@ class SqliteRunStore:
         )
         return model_of_json(Run, row[0]) if row is not None else None
 
-    async def claim_run_by_effect(  # noqa: C901
+    async def _effect_claim_parent(
+        self,
+        graph: Graph,
+        *,
+        parent_run_id: str | None,
+        parent_node_run_id: str | None,
+        allow_cross_project: bool,
+    ) -> None:
+        """Load and validate optional parent evidence for an effect-keyed Run."""
+        parent = await self._require_run(parent_run_id) if parent_run_id else None
+        parent_node_run = (
+            await self._require_node_run(parent_node_run_id)
+            if parent is not None and parent_node_run_id is not None
+            else None
+        )
+        validate_effect_claim_parent(
+            parent,
+            parent_node_run,
+            parent_run_id=parent_run_id,
+            parent_node_run_id=parent_node_run_id,
+            workspace_id=graph.workspace_id,
+            project_id=graph.project_id,
+            allow_cross_project=allow_cross_project,
+        )
+
+    async def claim_run_by_effect(
         self,
         graph: Graph,
         *,
@@ -561,22 +587,12 @@ class SqliteRunStore:
                 if row is not None:
                     await self._conn.commit()
                     return RunEffectClaim(model_of_json(Run, row[0]), False)
-                if parent_node_run_id is not None and parent_run_id is None:
-                    raise RunIntegrityError("parent_node_run_id requires parent_run_id")
-                parent = await self._require_run(parent_run_id) if parent_run_id else None
-                if parent is not None:
-                    validate_child_scope(
-                        parent,
-                        workspace_id=graph.workspace_id,
-                        project_id=graph.project_id,
-                        allow_cross_project=allow_cross_project,
-                    )
-                    if parent_node_run_id is not None:
-                        parent_node_run = await self._require_node_run(parent_node_run_id)
-                        if parent_node_run.run_id != parent_run_id:
-                            raise RunIntegrityError(
-                                "parent_node_run_id does not belong to parent_run_id"
-                            )
+                await self._effect_claim_parent(
+                    graph,
+                    parent_run_id=parent_run_id,
+                    parent_node_run_id=parent_node_run_id,
+                    allow_cross_project=allow_cross_project,
+                )
                 run = admit_in_state(
                     Run(
                         workspace_id=graph.workspace_id,

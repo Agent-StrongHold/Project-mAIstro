@@ -216,6 +216,23 @@ async def test_a_node_run_under_a_terminal_run_is_refused(spine: Any) -> None:
         await store.create_node_run(run.run_id, node_id="node-1")
 
 
+async def test_effect_claim_refuses_an_unanchored_parent_node_reference(spine: Any) -> None:
+    """All store implementations validate effect-claim parent correlation before insert."""
+    store, workspace, project_id = spine
+
+    with pytest.raises(RunIntegrityError, match="parent_node_run_id requires parent_run_id"):
+        await store.claim_run_by_effect(
+            _graph(workspace, project_id),
+            effect_key="effect-with-unanchored-parent",
+            parent_node_run_id="node-run-without-parent",
+        )
+
+    retry = await store.claim_run_by_effect(
+        _graph(workspace, project_id), effect_key="effect-with-unanchored-parent"
+    )
+    assert retry.claimed is True
+
+
 async def test_legacy_completed_node_run_can_backfill_evidence_under_terminal_run(
     spine: Any,
 ) -> None:

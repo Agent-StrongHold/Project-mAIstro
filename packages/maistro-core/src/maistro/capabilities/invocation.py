@@ -418,6 +418,19 @@ class InvocationExecutionService:
         )
         return history[-1] if history else None
 
+    @staticmethod
+    async def _resolve_provider(
+        binding: Binding,
+        resolver: ProviderResolver,
+    ) -> ResolvedCapabilityProvider:
+        """Resolve an eligible provider before creating its Invocation record."""
+        provider = await resolver(binding)
+        if isinstance(provider, Unavailable):
+            raise CapabilityUnavailable(
+                f"capability {binding.capability!r} unavailable: {provider.reason}"
+            )
+        return provider
+
     async def invoke(
         self,
         *,
@@ -464,11 +477,7 @@ class InvocationExecutionService:
                         "manual/reconciliation evidence is required before retry"
                     )
 
-            provider = await resolver(binding)
-            if isinstance(provider, Unavailable):
-                raise CapabilityUnavailable(
-                    f"capability {binding.capability!r} unavailable: {provider.reason}"
-                )
+            provider = await self._resolve_provider(binding, resolver)
             resolved = ResolvedBinding.from_provider(binding, provider)
             try:
                 invocation = await self._store.create(
