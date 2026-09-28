@@ -8,7 +8,7 @@ Batching independent Agent inference, reusing stable prefix or KV state, and cac
 
 ## Canonical seam
 
-Shipped model calls already have one routing and serving path. `CostAwareRouter` in `packages/maistro-core/src/maistro/providers/router.py` selects a model. `packages/maistro-core/src/maistro/capabilities/model_chat.py` admits the call as Binding, then Invocation, then the single approved gateway provider in `packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py`. That provider is the module allowed to hold the HTTP client for model egress. The path does not share a batch, a prefix cache, or a response cache across Agents.
+Shipped model calls already have one routing and serving path. `CostAwareRouter` in `packages/maistro-core/src/maistro/providers/router.py` selects a model when the request does not name one; a Binding pin or request-named alias outranks it. `packages/maistro-core/src/maistro/capabilities/model_chat.py` admits the call as Binding, then Invocation, then the single approved gateway provider in `packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py`. That provider is the module allowed to hold the HTTP client for model egress. The path does not share a batch, a prefix cache, or a response cache across Agents.
 
 ## Record
 
