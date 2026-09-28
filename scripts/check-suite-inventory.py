@@ -273,9 +273,7 @@ def parse_delta(text: str, where: str) -> dict[str, int]:
         try:
             delta[suite] = int(raw)
         except ValueError as exc:
-            raise LedgerError(
-                f"{where}: `{suite}`: `{raw.strip()}` is not an integer"
-            ) from exc
+            raise LedgerError(f"{where}: `{suite}`: `{raw.strip()}` is not an integer") from exc
     if seen_key and not delta:
         raise LedgerError(
             f"{where}: `{DELTA_KEY}:` is present but records nothing. Remove the "
@@ -408,7 +406,9 @@ def collect(suite: str, recipe: Recipe) -> tuple[int, str]:
     try:
         return int(matches[-1]), cmd
     except ValueError as exc:
-        raise RuntimeError(f"collection produced a non-integer count for `{suite}`\n  {cmd}\n  {exc}") from exc
+        raise RuntimeError(
+            f"collection produced a non-integer count for `{suite}`\n  {cmd}\n  {exc}"
+        ) from exc
 
 
 # --------------------------------------------------------------------------

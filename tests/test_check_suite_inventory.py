@@ -794,3 +794,19 @@ class TestReviewFindings:
         drift, failures = ledger.run_checks(["tests/"], expected)
         assert failures == []
         assert drift == [("tests/", 3, 4)], "the interaction must surface as drift"
+
+
+def test_compact_with_malformed_baseline_names_the_path(ledger, tmp_path):
+    """A corrupt baseline file fails with the path named, not a bare JSON traceback."""
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text("{not json", encoding="utf-8")
+    ledger.BASELINE = baseline
+    with pytest.raises(RuntimeError, match="baseline"):
+        ledger.compact({"tests/": 1}, {})
+
+
+def test_compact_with_missing_baseline_names_the_path(ledger, tmp_path):
+    """A missing baseline file fails with the path named, not FileNotFoundError."""
+    ledger.BASELINE = tmp_path / "absent-baseline.json"
+    with pytest.raises(RuntimeError, match="baseline"):
+        ledger.compact({"tests/": 1}, {})
