@@ -313,6 +313,28 @@ async def _reconcile_orphaned_attempts(
     return latest
 
 
+def _replay_refused(node_id: str, attempt: Attempt, semantics: ReplaySemantics) -> NodeResult:
+    """The durable refusal evidence for re-dispatching non-retryable work.
+
+    Returned as the fresh recovery Attempt's own result, so the physical record
+    carries why nothing ran: the prior Attempt's outcome is unknown and the
+    node's executable contract forbids a second physical try (#1194). The fold
+    fails the Run with this code, putting the ambiguity in front of a person —
+    the explicit new-work path — instead of silently repeating the effect.
+    """
+    return NodeResult(
+        success=False,
+        status="failed",
+        error_code="ReplayRefused",
+        error_message=(
+            f"node {node_id!r} declares {semantics.value} replay semantics and its "
+            f"prior Attempt {attempt.attempt_id!r} never completed; its physical "
+            "effect may already have happened, so this recovery did not re-execute "
+            "it — reconcile the effect externally and re-submit explicit new work"
+        ),
+    )
+
+
 def _requires_continuation_redispatch(
     record: DurableRunRecord,
     node_id: str,
@@ -554,6 +576,9 @@ async def _execute_frontier(
     ) -> Any:
         prior_completion_accepted = False
         attempts = await execution_store.list_attempts(node_run.node_run_id)
+        semantics = ReplaySemantics(
+            getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
+        )
         if attempts and attempts[-1].status is AttemptStatus.COMPLETED:
             persisted_result = NodeResult.model_validate(attempts[-1].result)
             prior_completion_accepted = _requires_continuation_redispatch(
@@ -568,15 +593,33 @@ async def _execute_frontier(
                     node_run,
                     ctx,
                     persisted_result,
-                    ReplaySemantics(
-                        getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)
-                    ),
+                    semantics,
                 )
+
+        # A prior Attempt that never completed means this NodeRun's work was
+        # dispatched before and its outcome is unknown — the orphan-recovery
+        # re-dispatch of a process loss, or a failed try this walk is re-entering.
+        # The executable replay contract decides what may happen next (#1194):
+        # retryable semantics may run again (EFFECT_KEY reconciles through its
+        # claim, IDEMPOTENT/PURE by contract), but NON_RETRYABLE work must not
+        # re-execute on an ambiguous physical effect. Recovery still follows
+        # ADR-082826-08f0's canonical row — the orphaned Attempt is cancelled
+        # with RECOVERED and a fresh chronological Attempt is dispatched — but
+        # that fresh Attempt records the refusal as its own durable evidence
+        # instead of invoking the node body, and the fold's exhausted-failure
+        # rule (which already consumes this same contract) fails the Run. The
+        # reconciliation with the ADR is deliberate: the table governs the
+        # physical lifecycle (never strand, never steal live work, never rewrite
+        # history); the replay contract governs whether the *effect* may repeat.
+        interrupted = bool(attempts) and attempts[-1].status is not AttemptStatus.COMPLETED
 
         raw_result: NodeResult | None = None
 
         async def executor(work_item: Any, execution_context: Any) -> NodeResult:
             nonlocal raw_result
+            if interrupted and not semantics.retryable:
+                raw_result = _replay_refused(node_id, attempts[-1], semantics)
+                return raw_result
             result: NodeResult = await node.run(work_item, execution_context)
             raw_result = result
             return result
@@ -609,7 +652,7 @@ async def _execute_frontier(
             node_run,
             ctx,
             raw_result,
-            ReplaySemantics(getattr(node, "replay_semantics", ReplaySemantics.NON_RETRYABLE)),
+            semantics,
         )
 
     return tuple(
