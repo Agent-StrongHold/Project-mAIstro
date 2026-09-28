@@ -14,11 +14,17 @@ unique index -- identical on SQLite, PostgreSQL, and
 ``SqliteInvocationStore``/``PgInvocationStore`` runtime DDL -- enforces
 Run-scoped admission ``(run_id, binding_id, effect_key)`` for exactly those
 rows. Physical per-NodeRun admission is unchanged.
+
+The DDL is guarded (``ADD COLUMN IF NOT EXISTS`` / ``CREATE UNIQUE INDEX IF
+NOT EXISTS``), matching the runtime stores' own DDL and the adoption rule
+044 states for the chain: a database that already carries the column -- a
+schema stamped back and re-upgraded, or a live deployment repaired by hand
+-- is adopted untouched instead of failing on ``DuplicateColumn``, and a
+fresh database is built to exactly the same definition.
 """
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "045"
@@ -28,12 +34,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "capability_invocations",
-        sa.Column("logical_effect", sa.Boolean(), nullable=False, server_default=sa.false()),
+    op.execute(
+        "ALTER TABLE capability_invocations "
+        "ADD COLUMN IF NOT EXISTS logical_effect BOOLEAN NOT NULL DEFAULT FALSE"
     )
     op.execute(
-        """CREATE UNIQUE INDEX uq_capability_invocation_active_logical_effect
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_capability_invocation_active_logical_effect
            ON capability_invocations (run_id, binding_id, effect_key)
            WHERE status IN ('created', 'running', 'unknown') AND logical_effect"""
     )
