@@ -1,15 +1,19 @@
 """Quota admission tables and canonical Invocation usage evidence.
 
 Revision ID: 043_invocation_quota_door
-Revises: 039_quota_usage_event_identity
+Revises: 046
 Create Date: 2026-09-27
 
 The effect door's budget reservations (#1196) and the at-most-once provider
 usage evidence (#718) attach to the canonical Invocation. They follow the
 current chain tip so they do not reuse revision ids 033/035/036, which
-develop already assigned. Capability approvals are created here when missing:
-the SQLite store already bootstraps that table, and PostgreSQL needs the
-same effect-identity unique key without a second Invocation DDL.
+develop already assigned. Re-parented onto 046 when develop merged in: a
+migration must append after the deployed head, never fork beside it, or
+`alembic upgrade head` refuses with multiple heads.
+
+Capability approvals are created here when missing: the SQLite store
+already bootstraps that table, and PostgreSQL needs the same
+effect-identity unique key without a second Invocation DDL.
 
 Revision identifiers stay within Alembic's 32-character version_num column.
 """
@@ -21,7 +25,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "043_invocation_quota_door"
-down_revision = "039_quota_usage_event_identity"
+down_revision = "046"
 branch_labels = None
 depends_on = None
 
