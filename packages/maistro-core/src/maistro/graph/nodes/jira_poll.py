@@ -20,7 +20,7 @@ from maistro.capabilities.pm_polling import (
 )
 
 from . import register_node
-from .base import BaseNode, NodeContext
+from .base import BaseNode, NodeContext, ReplaySemantics
 
 
 class JiraPollIn(BaseModel):
@@ -57,7 +57,7 @@ class JiraPollNode(BaseNode[JiraPollIn, JiraPollOut]):
     input_schema: ClassVar[type[BaseModel]] = JiraPollIn
     output_schema: ClassVar[type[BaseModel]] = JiraPollOut
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.IDEMPOTENT
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Jira: query (JQL)"
     # The resolver must hand over the container's Binding/Invocation authority;

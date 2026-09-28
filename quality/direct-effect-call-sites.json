@@ -408,17 +408,6 @@
       "owner": "#55",
       "rationale": "Canonical capabilities-layer Invocation plumbing; this is the governed seam, not a bypass."
     },
-    "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.send::HARNESS_EFFECT:harness.send#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
-      "qualname": "HarnessSessionManager.send",
-      "line": 68,
-      "category": "HARNESS_EFFECT",
-      "entry_point": "harness.send",
-      "callee": "safe.send",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#56",
-      "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
-    },
     "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.send_invocation::CANONICAL_INVOCATION:GovernedInvocationExecutionService.invoke#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
       "qualname": "HarnessSessionManager.send_invocation",
@@ -429,39 +418,6 @@
       "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
       "owner": "#55",
       "rationale": "Canonical capabilities-layer Invocation plumbing; this is the governed seam, not a bypass."
-    },
-    "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.start::HARNESS_EFFECT:harness.start_session#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
-      "qualname": "HarnessSessionManager.start",
-      "line": 55,
-      "category": "HARNESS_EFFECT",
-      "entry_point": "harness.start_session",
-      "callee": "provider.start_session",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#56",
-      "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
-    },
-    "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.stop::HARNESS_EFFECT:harness.stop#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
-      "qualname": "HarnessSessionManager.stop",
-      "line": 207,
-      "category": "HARNESS_EFFECT",
-      "entry_point": "harness.stop",
-      "callee": "safe.stop",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#56",
-      "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
-    },
-    "packages/maistro-core/src/maistro/capabilities/harness_manager.py::HarnessSessionManager.stream::HARNESS_EFFECT:harness.stream#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/harness_manager.py",
-      "qualname": "HarnessSessionManager.stream",
-      "line": 201,
-      "category": "HARNESS_EFFECT",
-      "entry_point": "harness.stream",
-      "callee": "safe.stream",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#56",
-      "rationale": "Terminal harness/provider lifecycle egress inside capabilities infrastructure; #56 owns governed caller convergence."
     },
     "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py::execute_model_chat::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/capabilities/providers/llm_gateway.py",

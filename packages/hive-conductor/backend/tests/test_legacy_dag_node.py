@@ -191,7 +191,10 @@ async def test_legacy_tool_uses_the_canonical_governed_invocation_boundary(
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
 
-    from maistro.capabilities.effect_context import new_effect_context
+    from maistro.capabilities.effect_context import (
+        binding_scope_policy,
+        new_effect_context,
+    )
 
     calls: list[str] = []
 
@@ -200,7 +203,10 @@ async def test_legacy_tool_uses_the_canonical_governed_invocation_boundary(
         return {"query": query}
 
     monkeypatch.setattr(tools, "web_search", fake_search)
-    effects = new_effect_context()
+    # Explicit M1 baseline selection, exactly as default_effect_context() and
+    # the Container composition root do; since #846 an unnamed context fails
+    # closed instead of installing any policy implicitly (#846).
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
     binding_id = "legacy-tool:ws-1:proj-1:n1:web_search"
     results: dict[str, dict[str, Any]] = {}
     ctx = NodeContext(
@@ -242,7 +248,10 @@ async def test_legacy_mutation_is_refused_by_independent_effect_policy(
     import services.legacy_dag_node as adapter
     import services.tool_executor as tools
 
-    from maistro.capabilities.effect_context import new_effect_context
+    from maistro.capabilities.effect_context import (
+        binding_scope_policy,
+        new_effect_context,
+    )
 
     calls: list[str] = []
 
@@ -251,7 +260,10 @@ async def test_legacy_mutation_is_refused_by_independent_effect_policy(
         return {"ok": True}
 
     monkeypatch.setattr(tools, "TOOLS", {"jira_write": fake_write})
-    effects = new_effect_context()
+    # Explicit M1 baseline selection, exactly as default_effect_context() and
+    # the Container composition root do; since #846 an unnamed context fails
+    # closed instead of installing any policy implicitly (#846).
+    effects = new_effect_context(policy_evaluator=binding_scope_policy)
     results: dict[str, dict[str, Any]] = {}
     ctx = NodeContext(
         run_id="run-1",

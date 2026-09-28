@@ -188,6 +188,13 @@ class Invocation(BaseModel):
     actor_id: str = ""
     binding: ResolvedBinding
     effect_key: str
+    # Persisted replay-scope discriminator (#1194): when True this Invocation
+    # is one logical effect for the whole Run -- admission, dedup, and the
+    # unsafe-retry guard key on (run_id, binding_id, effect_key) across every
+    # physical NodeRun -- so a concurrent retry under a new NodeRun collides
+    # with the canonical row instead of double-dispatching. Ordinary
+    # capability effects keep their physical per-NodeRun scope.
+    logical_effect: bool = False
     status: InvocationStatus = InvocationStatus.CREATED
     request: Any | None = None
     result: Any | None = None
@@ -223,12 +230,6 @@ class Invocation(BaseModel):
                 object.__setattr__(self, field, _utc(value))
         return self
 
-    @property
-    def effect_identity(self) -> tuple[str, str, str, str]:
-        """Logical effect identity stable across physical Attempt retries."""
-
-        return (self.run_id, self.node_run_id, self.binding.binding_id, self.effect_key)
-
 
 @runtime_checkable
 class InvocationStore(Protocol):
@@ -244,7 +245,7 @@ class InvocationStore(Protocol):
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]: ...
@@ -264,7 +265,7 @@ class InMemoryInvocationStore:
             if invocation.invocation_id in self._items:
                 raise ValueError(f"Invocation {invocation.invocation_id!r} already exists")
             if any(
-                item.effect_identity == invocation.effect_identity
+                _same_admission_effect(item, invocation)
                 and item.status
                 in {
                     InvocationStatus.CREATED,
@@ -302,15 +303,17 @@ class InMemoryInvocationStore:
         self,
         *,
         run_id: str,
-        node_run_id: str,
+        node_run_id: str | None,
         binding_id: str,
         effect_key: str,
     ) -> list[Invocation]:
-        identity = (run_id, node_run_id, binding_id, effect_key)
         return [
             item.model_copy(deep=True)
             for item in sorted(self._items.values(), key=lambda candidate: candidate.created_at)
-            if item.effect_identity == identity
+            if item.run_id == run_id
+            and (node_run_id is None or item.node_run_id == node_run_id)
+            and item.binding.binding_id == binding_id
+            and item.effect_key == effect_key
         ]
 
     async def list_ambiguous(self, *, stale_before: datetime) -> list[Invocation]:
@@ -335,6 +338,31 @@ class StaleInvocationUpdate(RuntimeError):
 
 class UnsafeEffectRetry(RuntimeError):
     """Recovery cannot safely repeat an effect whose outcome may already exist."""
+
+
+def _same_admission_effect(stored: Invocation, candidate: Invocation) -> bool:
+    """One admission identity for two Invocations (#1194).
+
+    A logical-effect Invocation is admitted against the Run-scoped identity
+    ``(run_id, binding_id, effect_key)`` -- spanning every physical NodeRun --
+    while an ordinary capability effect stays scoped to its own NodeRun
+    visit. Either side opting into the logical scope widens the comparison,
+    so a retry that carries a new NodeRun cannot be admitted beside the
+    canonical row still recording the same logical effect.
+    """
+    if (
+        stored.run_id,
+        stored.binding.binding_id,
+        stored.effect_key,
+    ) != (
+        candidate.run_id,
+        candidate.binding.binding_id,
+        candidate.effect_key,
+    ):
+        return False
+    if stored.logical_effect or candidate.logical_effect:
+        return True
+    return stored.node_run_id == candidate.node_run_id
 
 
 class CapabilityUnavailable(RuntimeError):
@@ -430,12 +458,15 @@ class InvocationExecutionService:
         run_id: str,
         node_run_id: str,
         effect_key: str,
+        logical_effect: bool = False,
     ) -> Invocation | None:
         """Return the latest canonical Invocation for one logical effect identity."""
 
+        # Only an executable EFFECT_KEY contract may widen history across
+        # NodeRuns; ordinary capability keys remain physical-visit scoped.
         history = await self._store.list_effect(
             run_id=run_id,
-            node_run_id=node_run_id,
+            node_run_id=None if logical_effect else node_run_id,
             binding_id=binding.binding_id,
             effect_key=effect_key,
         )
@@ -482,20 +513,32 @@ class InvocationExecutionService:
             )
         return None
 
-    async def _completed_after_race(
+    async def _completed_replay_after_admission_race(
         self,
         *,
         run_id: str,
         node_run_id: str,
-        binding_id: str,
+        binding: Binding,
         effect_key: str,
+        logical_effect: bool = False,
     ) -> Invocation | None:
-        """Return a completion that landed between the history read and create."""
+        """Re-read canonical history after an admission race with another worker.
 
+        Another worker may have completed the effect between our initial
+        history read and the store-level admission guard. Returns the accepted
+        completed Invocation, or None when the race outcome is not a replay.
+        The re-read uses the caller's scope: a logical effect re-reads its
+        whole Run history, so a completed canonical row under a different
+        NodeRun is a replay rather than a re-raised race error (#1194).
+
+        A replay found here is a terminal fact the quota ledger has not yet
+        observed in this process, so it repairs and notifies on the way out
+        exactly as `_prior_effect` does.
+        """
         latest_history = await self._store.list_effect(
             run_id=run_id,
-            node_run_id=node_run_id,
-            binding_id=binding_id,
+            node_run_id=None if logical_effect else node_run_id,
+            binding_id=binding.binding_id,
             effect_key=effect_key,
         )
         if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
@@ -567,6 +610,7 @@ class InvocationExecutionService:
         executor: ProviderExecutor,
         usage_from: UsageExtractor | None = None,
         actor_id: str = "",
+        logical_effect: bool = False,
     ) -> Invocation:
         """Execute one effect, deduplicating or blocking unsafe recovery.
 
@@ -575,13 +619,20 @@ class InvocationExecutionService:
         history blocks repetition because the remote outcome cannot be proven
         absent. Only a prior ``FAILED`` record, produced by ``EffectNotApplied``,
         is eligible for a new physical Invocation under a later Attempt.
+
+        Admission is atomic against the same scope the caller declared: with
+        ``logical_effect=True`` the persisted discriminator makes the store's
+        admission guard Run-scoped across NodeRuns, so two workers racing a
+        retry under different NodeRuns cannot both dispatch (#1194).
         """
 
         _require(effect_key, "effect_key")
         async with self._effect_lock:
+            # An EFFECT_KEY node opts into a stable Run/node identity; all
+            # other capability effects stay scoped to their physical NodeRun.
             history = await self._store.list_effect(
                 run_id=run_id,
-                node_run_id=node_run_id,
+                node_run_id=None if logical_effect else node_run_id,
                 binding_id=binding.binding_id,
                 effect_key=effect_key,
             )
@@ -606,6 +657,7 @@ class InvocationExecutionService:
                         binding=resolved,
                         effect_key=effect_key,
                         request=request,
+                        logical_effect=logical_effect,
                     )
                 )
             except UnsafeEffectRetry:
@@ -613,15 +665,15 @@ class InvocationExecutionService:
                 # initial history read. Re-read the canonical row so a stale
                 # admission returns the accepted result instead of dispatching
                 # or surfacing a misleading race error.
-                if (
-                    raced := await self._completed_after_race(
-                        run_id=run_id,
-                        node_run_id=node_run_id,
-                        binding_id=binding.binding_id,
-                        effect_key=effect_key,
-                    )
-                ) is not None:
-                    return raced
+                replay = await self._completed_replay_after_admission_race(
+                    run_id=run_id,
+                    node_run_id=node_run_id,
+                    binding=binding,
+                    effect_key=effect_key,
+                    logical_effect=logical_effect,
+                )
+                if replay is not None:
+                    return replay
                 raise
             try:
                 if self._quota is not None:

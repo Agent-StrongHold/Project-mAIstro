@@ -8,6 +8,7 @@ from typing import Any
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
+    binding_scope_policy,
     new_in_memory_effect_context,
 )
 from maistro.capabilities.invocation import InvocationStatus
@@ -68,7 +69,7 @@ async def _effects_with_binding(
     node_id: str = "h-node-1",
     provider_name: str = "claude_code",
 ) -> CapabilityEffectContext:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.put(
         Binding(
             binding_id=binding_id,
@@ -93,7 +94,7 @@ def test_protocol_satisfied() -> None:
 
 async def test_missing_binding_fails_closed_without_dispatch() -> None:
     adapter = FakeHarnessAdapter()
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     node = AgentSpawnHarnessNode(
         adapters={"claude_code": adapter},
         effect_context=effects,
@@ -137,14 +138,7 @@ async def test_missing_provider_fails_closed_without_invocation_record() -> None
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key=AgentSpawnHarnessNode._effect_key(
-            {
-                "harness_type": "claude_code",
-                "task": "do something",
-                "context": {},
-                "timeout_seconds": 3600,
-            }
-        ),
+        effect_key=str(result.metadata["replay_effect_key"]),
     )
     assert history == []
 
@@ -175,14 +169,7 @@ async def test_dispatch_pauses_after_completed_correlated_invocation() -> None:
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key=AgentSpawnHarnessNode._effect_key(
-            {
-                "harness_type": "claude_code",
-                "task": "implement feature Y",
-                "context": {},
-                "timeout_seconds": 3600,
-            }
-        ),
+        effect_key=str(result.metadata["replay_effect_key"]),
     )
     assert len(history) == 1
     invocation = history[0]
@@ -214,39 +201,36 @@ async def test_completed_effect_replay_does_not_dispatch_twice() -> None:
         run_id="r1",
         node_run_id="nr1",
         binding_id="b1",
-        effect_key=AgentSpawnHarnessNode._effect_key(
-            {
-                "harness_type": "claude_code",
-                "task": "once",
-                "context": {},
-                "timeout_seconds": 3600,
-            }
-        ),
+        effect_key=str(first.metadata["replay_effect_key"]),
     )
     assert len(history) == 1
     assert history[0].attempt_id == "a1"
 
 
-async def test_distinct_requests_do_not_replay_one_another() -> None:
+async def test_completed_effect_replay_survives_a_new_node_run() -> None:
+    """A graph retry visits a new NodeRun but keeps one logical effect."""
     adapter = FakeHarnessAdapter()
     effects = await _effects_with_binding()
     node = AgentSpawnHarnessNode(
         adapters={"claude_code": adapter},
         effect_context=effects,
     )
+    inputs = {"harness_type": "claude_code", "task": "once", "binding_id": "b1"}
 
-    first = await node.run(
-        {"harness_type": "claude_code", "task": "task one", "binding_id": "b1"},
-        _ctx(),
-    )
-    second = await node.run(
-        {"harness_type": "claude_code", "task": "task two", "binding_id": "b1"},
-        _ctx(attempt_id="a2"),
-    )
+    first = await node.run(inputs, _ctx(node_run_id="nr1", attempt_id="a1"))
+    second = await node.run(inputs, _ctx(node_run_id="nr2", attempt_id="a2"))
 
     assert first.status == second.status == "paused"
-    assert len(adapter.dispatched) == 2
-    assert first.metadata["invocation_id"] != second.metadata["invocation_id"]
+    assert first.metadata["invocation_id"] == second.metadata["invocation_id"]
+    assert len(adapter.dispatched) == 1
+    history = await effects.invocation_store.list_effect(
+        run_id="r1",
+        node_run_id=None,
+        binding_id="b1",
+        effect_key=str(first.metadata["replay_effect_key"]),
+    )
+    assert len(history) == 1
+    assert history[0].node_run_id == "nr1"
 
 
 async def test_dispatch_passes_domain_context_to_provider_adapter() -> None:
@@ -428,3 +412,26 @@ async def test_provider_returning_an_invalid_handle_fails_the_node() -> None:
     assert result.error_code == "RuntimeError"
     assert "invalid dispatch handle" in (result.error_message or "")
     assert len(adapter.dispatched) == 1
+
+
+async def test_distinct_requests_do_not_replay_one_another() -> None:
+    """Two different tasks are two effects, not a replay of one (#1362)."""
+    adapter = FakeHarnessAdapter()
+    effects = await _effects_with_binding()
+    node = AgentSpawnHarnessNode(
+        adapters={"claude_code": adapter},
+        effect_context=effects,
+    )
+
+    first = await node.run(
+        {"harness_type": "claude_code", "task": "task one", "binding_id": "b1"},
+        _ctx(),
+    )
+    second = await node.run(
+        {"harness_type": "claude_code", "task": "task two", "binding_id": "b1"},
+        _ctx(attempt_id="a2"),
+    )
+
+    assert first.status == second.status == "paused"
+    assert len(adapter.dispatched) == 2
+    assert first.metadata["invocation_id"] != second.metadata["invocation_id"]
