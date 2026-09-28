@@ -3,7 +3,7 @@ id: ADR-002
 title: Per-port spec-first workflow
 repo: maistro-engine
 kind: adr
-status: Superseded
+status: Accepted
 created: 2026-04-26
 substrate:
   - maistro-engine#ADR-095
@@ -23,15 +23,13 @@ history:
     date: 2026-04-26
   - status: Accepted
     date: 2026-04-26
-  - status: Superseded
-    date: 2026-09-28
 ---
 
 # ADR-002: Per-port spec-first workflow
 
-> **Superseded on 2026-09-28 by the active pre-1.0 development standards in [`docs/development-standards/pre-v1-development.md`](../development-standards/pre-v1-development.md).** The fixed 12-step porting ceremony below is historical. Current work remains specification- and verification-driven, but autonomous delivery is the normal path, manual ceremony is not a routine prerequisite, `develop` is the active integration branch, and obsolete compatibility/process constraints are not preserved merely because they existed.
+> **Reconciliation note (2026-09-28):** This ADR remains lifecycle-valid `Accepted` until a successor ADR is created and accepted. Several fixed workflow details below conflict with the active pre-1.0 development standards in [`docs/development-standards/pre-v1-development.md`](../development-standards/pre-v1-development.md), including mandatory manual ceremony, the retired `integration` target, and historical sequential numbering. Those conflicting details are not current operating guidance.
 
-**Status:** Superseded  
+**Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T0  
 **Depends on:** ADR-095
@@ -40,9 +38,9 @@ history:
 
 ## Context
 
-maistro-engine was receiving improvements ported from two adjacent repos: `stronghold` (production multi-agent platform) and `Project_mAIstro` (Python conductor + TypeScript app layer). At the time, each port was required to follow a repeatable, auditable 12-step engineering workflow.
+maistro-engine was receiving improvements ported from two adjacent repos: `stronghold` and `Project_mAIstro`. At the time, each port was required to follow a repeatable, auditable 12-step engineering workflow.
 
-## Historical decision
+## Decision as accepted
 
 Every port followed this sequence without collapsing steps:
 
@@ -61,9 +59,11 @@ Every port followed this sequence without collapsing steps:
 
 Trivial typo/rename fixes were exempt from the full workflow.
 
-## Current disposition
+## Current reconciliation
 
-The useful principles survive: define intended behavior, test meaningful behavior, verify quality, and keep architecture decisions traceable. The fixed ceremony does not. Current development follows the active pre-1.0 standards and current repository governance, including progressive disclosure and automated verification.
+The durable principles remain useful: define intended behavior, test meaningful behavior, verify quality, and keep architecture decisions traceable. The fixed ceremony conflicts with the active pre-1.0 agent-native development model and current repository topology.
+
+A successor ADR must define the canonical agent-native development workflow. Once that ADR is accepted, this record can transition `Accepted -> Superseded` with a valid `superseded-by` relationship.
 
 ## Historical spec format
 
@@ -73,8 +73,9 @@ The original decision used ADR-style records at `docs/adr/ADR-XXX-name.md` and s
 
 - [x] ADR template exists at `docs/adr/ADR-000-template.md`
 - [x] Historical workflow is retained for provenance
-- [x] Current guidance points to the active pre-1.0 development standards instead of requiring this ceremony
+- [x] Conflicting historical details are explicitly identified as non-current guidance
+- [ ] Successor ADR defines the canonical pre-1.0 agent-native development workflow
 
 ## Out of scope
 
-The replacement development standards own current workflow policy; this ADR remains only as the historical record of the former per-port process.
+Defining the successor workflow in this historical ADR. That belongs in the successor decision record.
