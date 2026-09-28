@@ -44,22 +44,40 @@ a substitute for revoking leaked upstream tokens.
    ```
 
 2. **Back up the data directory** (encrypted, off-box). Rotation is atomic and
-   verified, but a backup costs nothing:
+   verified, but a backup costs nothing. Prefer the atomic backup over a bare
+   `tar`: it captures the whole directory — the database, the vault, and both
+   halves of each coupled key pair — in one consistent, verified archive
+   (#331):
 
    ```bash
-   tar czf ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tgz -C "$CONDUCTOR_DATA_DIR" .
+   maistro security backup --data-dir "$CONDUCTOR_DATA_DIR" \
+     --out ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz
+   # or, from a Compose deployment:
+   docker compose run --rm --entrypoint maistro -v "$HOME:/backup" hive-conductor \
+     security backup --data-dir /data --out "/backup/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
    ```
 
-   Treat that tarball as compromised material: it contains the *old* key. Delete
+   A bare tarball also works if you prefer (`tar czf ~/conductor-backup-$(date -u +%Y%m%dT%H%M%SZ).tgz -C "$CONDUCTOR_DATA_DIR" .`),
+   but nothing verifies it, and a directory restored from a partial or
+   corrupt tar can boot while unable to decrypt itself.
+
+   Treat that archive as compromised material: it contains the *old* key. Delete
    it once rotation is confirmed.
 3. Know your data directory. It is `CONDUCTOR_DATA_DIR` from `backend/.env`
-   (default `~/.conductor`). It contains:
+   (default `~/.conductor`; `/data` under Compose). It contains:
 
    | File | What |
    |------|------|
    | `credential_master.key` | Fernet master key, mode `0600` |
    | `user_credentials.enc`  | Fernet-encrypted `{user: {provider: secret}}` |
-   | `state.db`              | SQLite: sessions, missions, DAGs, audit log |
+   | `state.db`              | SQLite: sessions, missions, DAGs, audit log, accounts, settings, registration policy |
+   | `secrets.age`           | age-encrypted vault entries (if the deployment uses the vault) |
+   | `admin.key`             | age identity that opens `secrets.age` |
+
+   These files are coupled — the vault needs `admin.key`, the store needs
+   `credential_master.key` — so back up and restore them as one unit.
+   `maistro security restore` enforces that atomicity; the full inventory,
+   migration, and deletion instructions live in the [Conductor README](../packages/hive-conductor/README.md).
 
 ---
 

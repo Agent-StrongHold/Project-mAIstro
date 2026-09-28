@@ -56,8 +56,20 @@ class Foundation:
         self.reactor_available = False
 
     async def start(self, settings: Settings) -> None:
-        data_dir = Path(settings.conductor_data_dir).expanduser()
-        data_dir.mkdir(parents=True, exist_ok=True)
+        # Before the vault, state, privilege, or reactor touch a single file:
+        # refuse a data directory that cannot hold this deployment's durable
+        # state (unwritable, or — inside a container — not a mounted volume,
+        # i.e. silently ephemeral across recreate). #331. A refusal here
+        # propagates out of the lifespan, which stops the process: the
+        # alternative to refusing is a Conductor that provisions accounts and
+        # accepts vault entries into storage it is about to throw away.
+        from services.data_dir_guard import DataDirRefused, verify_durable_data_dir
+
+        try:
+            data_dir = verify_durable_data_dir(Path(settings.conductor_data_dir))
+        except DataDirRefused as exc:
+            logger.error("%s", exc)
+            raise
 
         self._init_vault(settings, data_dir)
         self._init_credentials(data_dir)

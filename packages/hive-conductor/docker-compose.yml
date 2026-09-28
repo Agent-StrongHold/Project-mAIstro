@@ -7,8 +7,31 @@ services:
       - "8101:8101"
     environment:
       - PYTHONUNBUFFERED=1
+      # Durable foundation state — SQLite state.db (accounts, sessions,
+      # settings, registration policy), the age vault (secrets.age) and its
+      # identity key (admin.key), and the encrypted user-credential store
+      # (credential_master.key, user_credentials.enc) — lives on a named
+      # volume so `docker compose down/up` and image replacement keep every
+      # account and vault entry (#331). The image pre-creates /data owned by
+      # the nonroot runtime uid 65532, so an empty named volume inherits that
+      # least-privilege ownership on first use; no root-owned volume, no
+      # chmod choreography. Without this mount the startup guard refuses to
+      # serve (DATA_DIR_EPHEMERAL) rather than silently discarding state on
+      # the next recreate. Inventory, backup/restore, migration, and
+      # deletion instructions: README.md, section "Persistent state".
+      - CONDUCTOR_DATA_DIR=/data
       # maistro-core integration — set these to enable real agents:
       # - MAISTRO_ROUTER_API_KEY=your-key
       # - MAISTRO_LLM_BASE_URL=http://litellm:4000/v1
       # - MAISTRO_LLM_API_KEY=sk-your-key
       # - MAISTRO_MODEL=gpt-4o
+    volumes:
+      - conductor-data:/data
+
+# One volume holds ALL Conductor durable state; there is deliberately no
+# second store to keep consistent. `docker compose down` preserves it;
+# `docker compose down -v` deletes it — and with it every account, session,
+# setting, and vault entry. See README.md ("Persistent state") for
+# backup/restore and volume-migration instructions.
+volumes:
+  conductor-data:

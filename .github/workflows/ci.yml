@@ -736,6 +736,41 @@ jobs:
         working-directory: packages/hive-conductor
         run: docker compose -f docker-compose.test.yml down -v
 
+  # #331: the standalone Compose file's persistence contract, exercised
+  # end-to-end: the guard refuses unwritable/ephemeral data dirs, and a full
+  # create -> write -> recreate -> read -> backup -> restore round trip
+  # preserves accounts, sessions, settings, and vault-backed credentials.
+  # Runs against the same docker-compose.yml users run, not a test double.
+  hive-conductor-compose-durability:
+    needs: workflow-lint
+    if: >-
+      github.event_name != 'merge_group' ||
+      github.event.merge_group.base_ref != 'refs/heads/develop' ||
+      needs.workflow-lint.outputs.hive_e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      # The script's first `up --build` builds the hive image with zero
+      # registry retry of its own — same reason as the two e2e jobs above.
+      - name: Pre-pull base images (retry transient registry faults)
+        run: >-
+          scripts/prepull-base-images.sh
+          packages/hive-conductor/Dockerfile
+      - name: Create, write, recreate, read, backup, restore; guard refuses bad data dirs
+        working-directory: packages/hive-conductor
+        run: scripts/verify-compose-durability.sh
+      - name: Diagnose — container state and service logs
+        if: always()
+        working-directory: packages/hive-conductor
+        run: |
+          docker compose -f docker-compose.yml ps -a || true
+          docker compose -f docker-compose.yml logs --no-color --tail=200 || true
+      - name: Tear down
+        if: always()
+        working-directory: packages/hive-conductor
+        run: docker compose -f docker-compose.yml down -v
+
   wheel-imports:
     needs: workflow-lint
     if: >-
