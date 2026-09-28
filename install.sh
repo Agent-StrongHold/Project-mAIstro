@@ -336,9 +336,10 @@ verify_env_file() {
 }
 
 write_new_env() {
-    local token router_key db_pass litellm_key langfuse_secret langfuse_salt
+    local token router_key delegation_key db_pass litellm_key langfuse_secret langfuse_salt
     token="$(random_secret "" 32)"
     router_key="$(random_secret "" 32)"
+    delegation_key="$(random_secret "" 32)"
     db_pass="$(random_secret "" 24)"
     litellm_key="$(random_secret "sk-" 32)"
     langfuse_secret="$(random_secret "" 32)"
@@ -356,6 +357,7 @@ write_new_env() {
 MAISTRO_ACCESS_TOKEN=${token}
 API_KEYS=["conductor:${token}"]
 ROUTER_API_KEY=${router_key}
+TASK_DELEGATION_KEY=${delegation_key}
 REQUIRE_AUTH=true
 MAISTRO_BIND_HOST=${BIND_HOST}
 MAISTRO_PORT=${PORT}
@@ -411,7 +413,7 @@ EOF
 }
 
 repair_existing_env() {
-    local token router_key db_pass litellm_key
+    local token router_key delegation_key db_pass litellm_key
 
     warn "$ENV_FILE exists; preserving values and appending missing installer keys."
 
@@ -425,6 +427,12 @@ repair_existing_env() {
     if [[ -z "$router_key" ]]; then
         router_key="$(random_secret "" 32)"
         fill_env_value ROUTER_API_KEY "$router_key"
+    fi
+
+    delegation_key="$(env_get TASK_DELEGATION_KEY)"
+    if [[ -z "$delegation_key" ]]; then
+        delegation_key="$(random_secret "" 32)"
+        fill_env_value TASK_DELEGATION_KEY "$delegation_key"
     fi
 
     db_pass="$(env_get DB_PASSWORD)"

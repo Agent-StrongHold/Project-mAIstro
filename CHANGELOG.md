@@ -811,6 +811,54 @@ or placeholder-only section.
 
 ### Fixed
 
+- **The Run purge's dependent-reference inventory names every `run_id` table
+  (#1175, partial).** `maistro.runs.retention_scope` now records a policy for
+  `capability_invocations`, `capability_approvals` and `task_idempotency`
+  (preserved as receipt history; `task_idempotency`'s replay window is swept
+  by the claim-driven purge below, #325/#1577) and
+  for `durable_graph_runs` (not reached by the canonical purge; retention
+  still undecided), and exports the inventory as `RUN_REFERENCING_TABLES`. A
+  new test scans the Alembic chains (including loop-built `add_column`),
+  `.sql` migrations, runtime DDL and ORM models for tables with a `run_id`
+  column and fails on any the inventory omits. The
+  `PurgeOutcome` docstring no longer claims the purge deletes
+  `durable_graph_runs`, and the inventory no longer claims event or
+  occurrence-claim counts the purge does not produce.
+
+- **Both shipped DAG Run controls are now proven to admit exactly one
+  canonical Run per request (#736, partial).** A new behavioral test counts
+  canonical Runs whose `provenance.admission_source == "hive_legacy_dag"` and
+  `legacy_dag_id` matches the requested DAG, before and after one `POST
+  /v1/dags/{id}/run` and one WS `/v1/ws/dags/{id}/run` in a real Workspace,
+  and asserts each request admits exactly one new canonical Run whose id
+  equals the response's `run_id` and the `DagRunStore` projection's
+  `canonical_run_id`. Test-only; no production behavior changed. The
+  WAITING/PAUSED projection half of #736's "cannot be contradicted"
+  criterion (`finished_at` stamped irreversibly on `waiting`, shared with
+  #1036) remains open.
+
+- **A streamed `/v1/chat/completions` turn no longer cancels a Run left open
+  for recovery (#1108, partial).** When the model answered but the Attempt
+  could not be recorded (`ChatDispatchUnrecorded`), `Container.route_request`
+  deliberately leaves the Run RUNNING for `recover_abandoned_attempts` /
+  `AttemptLifecycleReconciler`; the SSE stream's abandoned-Run cleanup then
+  overwrote it as CANCELLED ("stream abandoned") even though the answer had
+  streamed. The cleanup now steps aside only when an Attempt under the Run is
+  still live or COMPLETED — the two shapes `ChatDispatchUnrecorded` leaves for
+  recovery — and still cancels a Run abandoned before dispatch or one whose
+  own close failed over a failed/refused turn.
+
+- **The Conductor task websocket no longer blocks the event loop on its
+  ownership check (#1180, partial).** `EngineService.iter_task_events` ran its
+  ownership check through `MaistroServerTaskBackend.get`, a synchronous
+  `httpx.Client` GET (30s timeout) on the loop thread, so one slow
+  maistro-server response stalled every coroutine in the worker. The
+  `TaskBackend` port gains `async get_async`, which the stream now awaits over
+  the pooled async client, so a stalled probe no longer pins the loop and
+  cancelling the stream takes effect immediately. The remaining synchronous
+  `get`/`list_tasks` (threadpool routes only) reuse one owned,
+  outbound-guarded client closed by `stop()` instead of building one per call.
+
 - **`/v1/schedules` writes the canonical Schedule definition first (#1199,
   partial).** With a configured Container, create, update and delete now
   write the canonical `ScheduleStore` before the Hive row, which becomes a

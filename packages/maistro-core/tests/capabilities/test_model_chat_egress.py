@@ -21,6 +21,7 @@ from maistro.capabilities.binding import Binding
 from maistro.capabilities.credential_routing import CredentialBackedProvider, CredentialRouting
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
+    binding_scope_policy,
     new_in_memory_effect_context,
 )
 from maistro.capabilities.invocation import (
@@ -90,9 +91,13 @@ def _effects() -> CapabilityEffectContext:
     """An in-memory effect context with the gateway credential every
     ``_binding()`` authorizes already registered (#1091, Binding-scoped
     credential routing): without it every governed call in this file refuses
-    with ``CredentialScopeError`` before reaching the gateway."""
+    with ``CredentialScopeError`` before reaching the gateway.
 
-    effects = new_in_memory_effect_context()
+    It also opts into the explicit ``binding_scope_policy`` baseline: since
+    #846 an omitted policy evaluator fails closed, so tests that exercise a
+    governed call must name their policy instead of inheriting silence."""
+
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     effects.credentials.add(
         workspace_id="ws1",
         project_id="p1",
