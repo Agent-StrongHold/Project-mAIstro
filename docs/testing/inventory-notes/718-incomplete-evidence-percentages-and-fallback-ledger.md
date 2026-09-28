@@ -13,8 +13,11 @@ round (head caa54de7, verdict NEEDS-REPAIR) against the #718 quota ledger.
 `InMemoryUsageLog`; a process that *carried* a quota ledger could still
 present complete per-provider rows while omitting that call class. The
 fallback now also writes to a process-default quota ledger
-(`quota/tracker.py:get_default_quota_tracker`/`set_default_quota_tracker`,
-mirroring the default usage-log singleton), registered once by the Container
+(`quota/default_tracker.py:get_default_quota_tracker`/
+`set_default_quota_tracker`, mirroring the default usage-log singleton; the
+registry lives outside `quota/tracker.py` because the promotion path imports
+that module and must not inherit the protocols package), registered once by
+the Container
 composition root (`container.py:create_container`, all three backends
 converge there). Reported fallback tokens reach the ledger as usage; a
 missing report becomes an unreported marker — never a measured zero, never a

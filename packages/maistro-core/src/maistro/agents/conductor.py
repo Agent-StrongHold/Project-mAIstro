@@ -38,7 +38,7 @@ from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.http import shared_client
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
-from maistro.quota.tracker import get_default_quota_tracker
+from maistro.quota.default_tracker import get_default_quota_tracker
 from maistro.quota.usage_log import get_default_usage_log
 from maistro.quota.usage_report import reported_usage
 from maistro.tasks.models import TaskCreate

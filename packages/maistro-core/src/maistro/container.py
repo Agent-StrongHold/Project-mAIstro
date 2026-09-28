@@ -45,7 +45,8 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.quota.tracker import InMemoryQuotaTracker, set_default_quota_tracker
+from maistro.quota.default_tracker import set_default_quota_tracker
+from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import (
