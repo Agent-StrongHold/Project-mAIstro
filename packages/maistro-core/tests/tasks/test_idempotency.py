@@ -753,7 +753,7 @@ async def test_same_key_in_distinct_projects_mints_distinct_runs(scoped) -> None
         admitter=TaskRunAdmitter(runs, workspace_id="w1", project_id=second_project.project_id),
         idempotency_store=store,
     )
-    request = TaskCreate(description="same textual key", idempotency_key="shared")
+    request = TaskCreate(description="same textual key", idempotency_key="shared")  # gitleaks:allow — "shared" is a dedup fixture value, not a credential
 
     first = await first_queue.submit(request, user_id="alice")
     second = await second_queue.submit(request, user_id="alice")
