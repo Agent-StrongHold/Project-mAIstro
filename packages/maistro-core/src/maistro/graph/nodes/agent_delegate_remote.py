@@ -22,8 +22,6 @@ only path that already defines one) rather than a new one.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
@@ -48,8 +46,10 @@ from .base import (
     BaseNode,
     KindCategory,
     NodeContext,
+    ReplaySemantics,
     now_utc,
     pause_until,
+    replay_effect_key,
 )
 
 if TYPE_CHECKING:
@@ -169,6 +169,16 @@ class AgentRemoteWorkNode(BaseNode[DelegateRemoteIn, RemoteWorkOut]):
     display_name: ClassVar[str] = "Agent: delegated external work"
     description: ClassVar[str] = "An opaque child Run whose work executes at an A2A peer."
     external_io: ClassVar[bool] = True
+    # Enforced, not descriptive (#1194): the work itself executes at the A2A
+    # peer, so whether a failed visit already produced its effect is never
+    # locally observable. Retrying here would re-dispatch the same logical
+    # work the delegation contract already filed under a stable Run/NodeRun
+    # identity; reconciliation of an interrupted delegation belongs to the
+    # delegation recovery path (lease reclaim, guest-peer settle), never to a
+    # blind second visit. ``_execute`` below refuses local replay for the
+    # same reason, and the executor's retry policy honours this declaration
+    # mechanically.
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.NON_RETRYABLE
 
     async def _execute(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> RemoteWorkOut:
         raise DelegationNotConfiguredError(
@@ -201,7 +211,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
     input_schema: ClassVar[type[BaseModel]] = DelegateRemoteIn
     output_schema: ClassVar[type[BaseModel]] = DelegateRemoteOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = False
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.EFFECT_KEY
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Agent: delegate to remote session"
     description: ClassVar[str] = (
@@ -238,23 +248,19 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             return await self._dispatch_cross_instance(inputs, ctx)
         return await self._dispatch_in_process(inputs, ctx)
 
-    def _delegation_key(self, _inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
-        """Stable identity for one parent NodeRun's logical delegation.
+    def _delegation_key(self, inputs: DelegateRemoteIn, ctx: NodeContext) -> str:
+        """The canonical replay identity for one logical delegation.
 
-        The request is not part of the key. A retry may deserialize equivalent
-        inputs differently, or receive a changed payload after a crash, but it
-        must still adopt the child reservation already made for this parent
-        NodeRun. The request details remain durable on the child graph and
+        Bound to the executable replay contract (``replay_effect_key``) rather
+        than a node-private scheme: Run + graph node scopes the logical effect,
+        and the input digest distinguishes explicit new work at the same node.
+        Neither the Attempt nor the NodeRun visit takes part -- a lease-loss
+        retry gets new physical identities but the same durable inputs, so it
+        adopts the child reservation already made instead of filing a second
+        delegation. The request details remain durable on the child graph and
         provenance; they are not a second admission identity.
         """
-        payload = {
-            "run_id": ctx.run_id,
-            "node_run_id": ctx.node_run_id or None,
-            "node_id": ctx.node_id,
-        }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        return replay_effect_key(ctx, self.kind, inputs.model_dump(mode="json"))
 
     async def _existing_child(self, key: str) -> Run | None:
         if self._run_store is None:
@@ -788,7 +794,7 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if self._run_store is None:
             return None
 
-        from maistro.runs.store import RunIntegrityError, validate_child_scope
+        from maistro.runs.store import validate_child_scope
 
         parent = await self._run_store.get_run(ctx.run_id)
         if parent is None:
@@ -804,20 +810,6 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
             workspace_id=inputs.to_workspace_id or parent.workspace_id,
             project_id=inputs.to_project_id or parent.project_id,
         )
-
-        # A remote delegation is a child of the physical NodeRun that admitted
-        # it, not merely of the containing Run. Refuse an incomplete context
-        # before the A2A transport creates work we cannot correlate.
-        if not ctx.node_run_id:
-            raise RunIntegrityError(
-                "agent.delegate_remote requires node_run_id to create a correlated child Run"
-            )
-        parent_node_run = await self._run_store.get_node_run(ctx.node_run_id)
-        if parent_node_run is None or parent_node_run.run_id != parent.run_id:
-            raise RunIntegrityError(
-                f"parent_node_run_id {ctx.node_run_id!r} does not belong to parent_run_id "
-                f"{parent.run_id!r}"
-            )
         return parent
 
     async def _create_child_run(
@@ -866,6 +858,27 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
         if self._run_store is None or parent is None:
             return ""
 
+        from maistro.runs.store import RunIntegrityError
+
+        # A remote delegation is a child of the physical NodeRun that admitted
+        # it, not merely of the containing Run. Refuse an incomplete context
+        # before the A2A transport creates work we cannot correlate. The check
+        # guards creation only: a replay adopting an existing reservation under
+        # the same delegation key reconciles the durable child instead of
+        # re-deriving parentage from the retry's fresh physical identities
+        # (#1194 -- a lease-loss retry carries a new NodeRun that the store
+        # may not have made visible yet, and the replay must still adopt).
+        if not ctx.node_run_id:
+            raise RunIntegrityError(
+                "agent.delegate_remote requires node_run_id to create a correlated child Run"
+            )
+        parent_node_run = await self._run_store.get_node_run(ctx.node_run_id)
+        if parent_node_run is None or parent_node_run.run_id != parent.run_id:
+            raise RunIntegrityError(
+                f"parent_node_run_id {ctx.node_run_id!r} does not belong to parent_run_id "
+                f"{parent.run_id!r}"
+            )
+
         graph = self._child_graph(inputs, parent=parent, target=target)
         child = await self._run_store.create_run(
             graph,
@@ -880,7 +893,11 @@ class AgentDelegateRemoteNode(BaseNode[DelegateRemoteIn, DelegateRemoteOut]):
                 # after acceptance, by `_attach_receipt` -- a receipt of the
                 # transport rather than the work's identity, the way
                 # TaskResponse does for the queue.
+                # One canonical replay identity, recorded under both store
+                # lookups: `delegation_key` for the transport reservation and
+                # `effect_key` for the executor's effect reconciliation.
                 "delegation_key": self._delegation_key(inputs, ctx),
+                "effect_key": self._delegation_key(inputs, ctx),
                 "delegation_mode": mode,
                 "delegating_agent": inputs.from_agent,
                 "target_agent": target,

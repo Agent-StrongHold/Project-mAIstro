@@ -21,6 +21,7 @@ from .base import (
     PAUSE_WAITING_ON_JIRA_SUBTASKS,
     BaseNode,
     NodeContext,
+    ReplaySemantics,
     now_utc,
     pause_until,
     resumed_pause,
@@ -51,7 +52,7 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
     input_schema: ClassVar[type[BaseModel]] = WaitForSubtasksIn
     output_schema: ClassVar[type[BaseModel]] = WaitForSubtasksOut
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = True
+    replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.IDEMPOTENT
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Jira: wait for subtasks"
     # The resolver must hand over the container's Binding/Invocation authority;

@@ -264,6 +264,46 @@ async def test_snapshot_survives_pruning_of_the_live_log(persist: SqliteUsageLog
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_same_timestamp_events_are_both_persisted(persist: SqliteUsageLog) -> None:
+    log = InMemoryUsageLog()
+    log.record("groq:kimi-k2", input_tokens=10, now=1000.0)
+    log.record("groq:kimi-k2", input_tokens=20, now=1000.0)
+
+    await persist.snapshot(log)
+    restored = await persist.restore()
+
+    assert restored.tokens_since("groq:kimi-k2", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 30.0
+    assert restored.count_since("groq:kimi-k2", 3600, now=1000.0) == 2.0
+
+
+@pytest.mark.asyncio
+async def test_overlapping_snapshots_are_idempotent(persist: SqliteUsageLog) -> None:
+    log = InMemoryUsageLog()
+    log.record("groq:kimi-k2", input_tokens=10, now=1000.0)
+    await asyncio.gather(persist.snapshot(log), persist.snapshot(log))
+
+    restored = await persist.restore()
+    assert restored.tokens_since("groq:kimi-k2", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 10.0
+    assert restored.count_since("groq:kimi-k2", 3600, now=1000.0) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_crash_retry_with_same_event_id_is_idempotent(persist: SqliteUsageLog) -> None:
+    first = InMemoryUsageLog()
+    first.record("groq:kimi-k2", input_tokens=10, now=1000.0, event_id="logical-call-1")
+    await persist.snapshot(first)
+
+    retry = InMemoryUsageLog()
+    retry.record("groq:kimi-k2", input_tokens=10, now=1000.0, event_id="logical-call-1")
+    await persist.snapshot(retry)
+
+    restored = await persist.restore()
+    assert restored.tokens_since("groq:kimi-k2", 3600, LimitUnit.INPUT_TOKENS, now=1000.0) == 10.0
+    assert restored.count_since("groq:kimi-k2", 3600, now=1000.0) == 1.0
+
+
+@pytest.mark.asyncio
 async def test_empty_log_snapshot_is_a_no_op(persist: SqliteUsageLog) -> None:
     log = InMemoryUsageLog()
     await persist.snapshot(log)  # must not raise

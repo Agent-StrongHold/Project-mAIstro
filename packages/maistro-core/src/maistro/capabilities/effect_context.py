@@ -9,15 +9,15 @@ a provider merely because one happens to be registered elsewhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.binding_store import (
-    BindingStore,
     InMemoryBindingStore,
     PgBindingStore,
+    RevocableBindingStore,
     SqliteBindingStore,
 )
 from maistro.capabilities.credential_routing import CredentialRouting
@@ -39,16 +39,22 @@ from maistro.events.pg_envelope import PgEventStore
 from maistro.policy.types import Decision, PolicyVerdict
 
 
-async def _m1_binding_authorized_policy(
+async def binding_scope_policy(
     binding: Binding,
     request: Any,
     context: InvocationPolicyContext,
 ) -> PolicyVerdict:
-    """M1 Binding policy plus the legacy-tool effect floor.
+    """Explicit M1 baseline after canonical Binding scope resolution.
 
-    Legacy workflow tools are still compatibility providers, but their actual
-    calls must not inherit the workflow admission approval. A binding marked
-    destructive/mutating therefore gets its own governed decision.
+    Binding authorization is evaluated by ``BindingStore.resolve`` before this
+    policy boundary. This evaluator is suitable only for a composition root
+    that deliberately chooses the M1 baseline; it is never installed by
+    ``new_effect_context`` implicitly.
+
+    It also carries the legacy-tool effect floor: legacy workflow tools are
+    still compatibility providers, but their actual calls must not inherit the
+    workflow admission approval. A binding marked destructive/mutating
+    therefore gets its own governed decision.
     """
 
     del request, context
@@ -68,15 +74,37 @@ async def _m1_binding_authorized_policy(
     )
 
 
+async def _unconfigured_policy(
+    binding: Binding,
+    request: Any,
+    context: InvocationPolicyContext,
+) -> PolicyVerdict:
+    """Deny contexts whose application has not supplied an effect policy."""
+
+    del binding, request, context
+    return PolicyVerdict(
+        Decision.DENY,
+        reason="capability invocation policy unavailable",
+        rule="invocation.unconfigured",
+    )
+
+
 @dataclass(frozen=True)
 class CapabilityEffectContext:
     """Wired canonical Binding and Invocation authorities for effect consumers."""
 
-    bindings: BindingStore
+    bindings: RevocableBindingStore
     invocations: GovernedInvocationExecutionService
     invocation_store: InvocationStore
     event_store: EventStore
     credentials: CredentialRouter = field(default_factory=CredentialRouter)
+
+    def with_policy_evaluator(self, policy_evaluator: PolicyEvaluator) -> CapabilityEffectContext:
+        """Narrow policy without creating competing Binding or Invocation stores."""
+        return replace(
+            self,
+            invocations=self.invocations.with_policy_evaluator(policy_evaluator),
+        )
 
     def credential_routing(self) -> CredentialRouting:
         """Credential routing for this context's Provider selection seam (#58).
@@ -118,7 +146,9 @@ def new_effect_context(
     governed = GovernedInvocationExecutionService(
         invocation_service=invocation_service,
         event_store=event_store,
-        policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+        # Omitted policy is an unavailable dependency, not an authorization
+        # decision. Application composition must opt into a real evaluator.
+        policy_evaluator=policy_evaluator or _unconfigured_policy,
     )
     return CapabilityEffectContext(
         bindings=binding_store,
@@ -146,7 +176,7 @@ async def new_sqlite_effect_context(
     governed = GovernedInvocationExecutionService(
         invocation_service=InvocationExecutionService(store=invocation_store),
         event_store=event_store,
-        policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+        policy_evaluator=policy_evaluator or binding_scope_policy,
     )
     return CapabilityEffectContext(
         bindings=bindings,
@@ -174,7 +204,7 @@ async def new_postgres_effect_context(
     governed = GovernedInvocationExecutionService(
         invocation_service=InvocationExecutionService(store=invocation_store),
         event_store=event_store,
-        policy_evaluator=policy_evaluator or _m1_binding_authorized_policy,
+        policy_evaluator=policy_evaluator or binding_scope_policy,
     )
     return CapabilityEffectContext(
         bindings=bindings,
@@ -196,7 +226,9 @@ def default_effect_context() -> CapabilityEffectContext:
     backend-specific context explicitly.
     """
 
-    return new_effect_context()
+    # This named composition root deliberately selects the narrow M1 policy;
+    # unnamed contexts stay read-only until their application supplies one.
+    return new_effect_context(policy_evaluator=binding_scope_policy)
 
 
 new_in_memory_effect_context = new_effect_context
@@ -204,6 +236,7 @@ new_in_memory_effect_context = new_effect_context
 
 __all__ = [
     "CapabilityEffectContext",
+    "binding_scope_policy",
     "default_effect_context",
     "new_effect_context",
     "new_in_memory_effect_context",

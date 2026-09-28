@@ -12,6 +12,7 @@ import httpx
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
+    binding_scope_policy,
     new_in_memory_effect_context,
     new_sqlite_effect_context,
 )
@@ -39,7 +40,7 @@ def _ctx(node_id: str = "n1", **overrides: Any) -> NodeContext:
 async def _effects(
     capability: str, *, config: dict[str, Any], provider: str
 ) -> CapabilityEffectContext:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     binding = Binding(
         binding_id=f"{provider}-binding",
         workspace_id="ws-1",
@@ -121,7 +122,7 @@ async def test_jira_poll_crosses_binding_and_invocation_without_secret_in_payloa
 
 
 async def test_missing_binding_fails_before_airtable_http(monkeypatch: Any) -> None:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     called = False
 
     class Client:
@@ -255,7 +256,7 @@ async def test_wait_poll_assigns_a_new_effect_key_to_each_resume(monkeypatch: An
 
 
 async def test_disabled_binding_fails_before_http(monkeypatch: Any) -> None:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.put(
         Binding(
             binding_id="disabled-airtable-binding",

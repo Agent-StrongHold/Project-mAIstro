@@ -134,8 +134,10 @@ class ResolvedBinding(BaseModel):
             provider_trust_tier=provider.trust_tier,
             # Evidence for the authorization snapshot (#1195): carried from the
             # operator kill-switch, so a disabled Binding can never resolve to
-            # an enabled-looking Invocation decision.
-            enabled=not binding.disabled,
+            # an enabled-looking Invocation decision. A caller may also re-resolve
+            # an already-resolved Binding, which carries `enabled` rather than
+            # `disabled`; that state is the same kill-switch, already read.
+            enabled=getattr(binding, "enabled", not getattr(binding, "disabled", False)),
             config=binding.config,
             credential_refs=binding.credential_refs,
             policy_refs=binding.policy_refs,
