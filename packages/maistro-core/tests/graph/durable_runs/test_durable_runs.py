@@ -921,12 +921,16 @@ def _failing_synth_graph(policies: dict[str, Any], *, then: str | None = None) -
     )
 
 
-async def test_a_retried_synth_dag_after_a_failed_child_starts_one_level_deeper(
+async def test_a_synth_dag_whose_child_failed_burns_depth_but_is_not_revisited_inline(
     mem_store: DurableRunStore,
 ) -> None:
     """The dispatched child ran, so it spent a recursion level even though the
-    synth NodeRun failed (#1193): the retry's child starts one level deeper,
-    rather than every retry spawning again at the same depth."""
+    synth NodeRun failed (#1193): the spent depth stays charged on the Run
+    record, so anything dispatching later starts one level deeper. The node's
+    executable replay contract is NON_RETRYABLE (#1194) — a revisit would
+    re-synthesize and re-dispatch a whole sub-graph, an ambiguous external
+    effect that is not blindly re-executed — so `max_attempts: 2` buys no
+    second dispatch: the Run fails with the one child it spawned."""
     from maistro.graph.durable_runs import run_durable_graph
 
     result = await run_durable_graph(
@@ -936,11 +940,17 @@ async def test_a_retried_synth_dag_after_a_failed_child_starts_one_level_deeper(
     )
 
     assert result.status == RunStatus.FAILED
+    # The level the failed child spent is charged to the persisted blackboard.
+    persisted = await mem_store.get(result.run_id)
+    assert persisted is not None
+    assert persisted.graph_state.blackboard_snapshot["metadata"]["synth_depth"] == 1
+    # And the enforced contract means no in-Run revisit: exactly one dispatch,
+    # at depth 1 — never a same-depth re-spawn.
     children = await _child_runs_of(mem_store, result.run_id)
     depths = sorted(
         child.graph_state.blackboard_snapshot["metadata"]["synth_depth"] for child in children
     )
-    assert depths == [1, 2]
+    assert depths == [1]
 
 
 async def test_a_failed_child_still_burns_depth_for_a_continue_on_failure_successor(
