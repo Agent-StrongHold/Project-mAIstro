@@ -23,6 +23,11 @@ CI-repair vulture ratchet found no unbanked identities, so the permitted
   physical execution through the canonical spine. The skips are
   capability-conditioned tests without a live PostgreSQL DSN; this round does
   not claim a live-PostgreSQL result.
+- `uv run pytest packages/maistro-core/tests/observability/test_execution_correlation.py
+  packages/maistro-core/tests/runs/test_execution_is_correlated.py -x -q`
+  passed: **59 passed**, proving runtime work and emitted envelopes carry
+  Run/NodeRun/Attempt correlation and retries retain Run identity while using
+  a new Attempt.
 
 ## External acceptance blocker
 
