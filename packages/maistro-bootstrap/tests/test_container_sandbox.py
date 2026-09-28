@@ -17,6 +17,16 @@ runs AND the user-namespace probe proves container uids are not host uids; on a
 rootful un-remapped daemon the sandbox must REFUSE to start, which the refusal
 test below proves against the production class. Both branches are conformance
 evidence for the same Decision 2 requirement.
+
+The posture probe is TRI-STATE and runs at import (collection) time, so it is
+time-bounded and exception-safe: a daemon that errors or stalls past the probe
+timeout yields "unproven", which skips BOTH branches instead of erroring the
+whole pytest collection (the hosted-infra `test` gate failure: an unhandled
+`subprocess.TimeoutExpired` from `docker run` at import) or running the refusal
+test against a slow-but-boundary-providing daemon (which would fail with DID
+NOT RAISE). A skipped suite loses coverage for that run only; the dedicated
+conformance lane in ci.yml re-proves both postures on daemons it provisions
+itself.
 """
 
 from __future__ import annotations
@@ -38,44 +48,72 @@ from maistro_bootstrap.builders.container_sandbox import (
 
 
 def _docker_ready() -> bool:
+    """Docker answers and has the image.
+
+    Bounded and exception-safe because this executes at import during
+    *collection*: a stalled daemon must degrade to "not ready" (skip) rather
+    than hang the run (the image-inspect call previously had no timeout at
+    all) or fail the collection with an unhandled exception.
+    """
     if shutil.which("docker") is None:
         return False
-    r = subprocess.run(
-        ["docker", "image", "inspect", DEFAULT_IMAGE], capture_output=True, text=True
-    )
+    try:
+        r = subprocess.run(
+            ["docker", "image", "inspect", DEFAULT_IMAGE],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
     return r.returncode == 0
 
 
-def _daemon_provides_userns_boundary() -> bool:
-    """True when a container on this daemon gets non-host uids.
+def _daemon_uid_boundary() -> bool | None:
+    """Tri-state daemon posture for the ADR-093 Decision 2 conformance split.
 
     Uses the same production classifier
     (`_uid_map_maps_container_root_to_host_root`) the sandbox's launch gate
     uses, applied to a throwaway probe container's `/proc/self/uid_map` —
     exactly the evidence `__enter__` will demand of its own container, so the
     qualification decision and the gate cannot drift.
+
+    True: boundary proven (container uids are not host uids) — the escape
+    suite runs. False: identity map proven (container uid 0 IS host uid 0) —
+    the refusal test runs. None: unproven (docker errored, or the probe timed
+    out on a stalled daemon). None skips BOTH branches: on unproven evidence
+    the refusal test would fire against a boundary-providing daemon that
+    merely answered slowly and fail with DID NOT RAISE — the flake-to-red
+    conversion this module used to ship.
     """
-    probe = subprocess.run(
-        ["docker", "run", "--rm", "--network=none", DEFAULT_IMAGE, "cat", "/proc/self/uid_map"],
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-    return probe.returncode == 0 and not _uid_map_maps_container_root_to_host_root(probe.stdout)
+    try:
+        probe = subprocess.run(
+            ["docker", "run", "--rm", "--network=none", DEFAULT_IMAGE, "cat", "/proc/self/uid_map"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    return not _uid_map_maps_container_root_to_host_root(probe.stdout)
 
 
 pytestmark = pytest.mark.skipif(
     not _docker_ready(), reason=f"docker or {DEFAULT_IMAGE} image unavailable"
 )
 
-_DAEMON_QUALIFIES = _docker_ready() and _daemon_provides_userns_boundary()
+_DAEMON_UID_BOUNDARY = _daemon_uid_boundary() if _docker_ready() else None
 
 _needs_isolating_daemon = pytest.mark.skipif(
-    not _DAEMON_QUALIFIES,
+    _DAEMON_UID_BOUNDARY is not True,
     reason=(
-        "daemon is rootful without userns remapping: ContainerBuilderSandbox "
-        "refuses to start on it (ADR-093 Decision 2) — the refusal is proven "
-        "by test_sandbox_refuses_a_rootful_unmapped_daemon"
+        "daemon is rootful without userns remapping (or its posture is "
+        "unproven): ContainerBuilderSandbox refuses to start on an identity "
+        "uid_map (ADR-093 Decision 2) — the refusal is proven by "
+        "test_sandbox_refuses_a_rootful_unmapped_daemon when the identity map "
+        "is positively observed"
     ),
 )
 
@@ -644,8 +682,12 @@ def test_no_host_listening_ports_visible(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(
-    _DAEMON_QUALIFIES,
-    reason="this daemon provides the rootless/userns boundary, so the sandbox starts on it",
+    _DAEMON_UID_BOUNDARY is not False,
+    reason=(
+        "this daemon provably provides the rootless/userns boundary (or its "
+        "posture is unproven), so there is no identity uid_map to be refused "
+        "here — the escape suite is this daemon's conformance branch"
+    ),
 )
 def test_sandbox_refuses_a_rootful_unmapped_daemon(tmp_path: Path) -> None:
     """The other half of the Decision 2 conformance: a rootful daemon without
