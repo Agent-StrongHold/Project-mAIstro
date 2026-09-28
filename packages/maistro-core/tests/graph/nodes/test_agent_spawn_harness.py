@@ -8,6 +8,7 @@ from typing import Any
 from maistro.capabilities.binding import Binding
 from maistro.capabilities.effect_context import (
     CapabilityEffectContext,
+    binding_scope_policy,
     new_in_memory_effect_context,
 )
 from maistro.capabilities.invocation import InvocationStatus
@@ -68,7 +69,7 @@ async def _effects_with_binding(
     node_id: str = "h-node-1",
     provider_name: str = "claude_code",
 ) -> CapabilityEffectContext:
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     await effects.bindings.put(
         Binding(
             binding_id=binding_id,
@@ -93,7 +94,7 @@ def test_protocol_satisfied() -> None:
 
 async def test_missing_binding_fails_closed_without_dispatch() -> None:
     adapter = FakeHarnessAdapter()
-    effects = new_in_memory_effect_context()
+    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
     node = AgentSpawnHarnessNode(
         adapters={"claude_code": adapter},
         effect_context=effects,

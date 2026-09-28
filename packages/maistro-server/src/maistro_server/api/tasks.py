@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
 from maistro.tasks.http_contract import (
+    DELEGATION_HEADER,
     IDEMPOTENCY_KEY_HEADER,
     WORKSPACE_ID_HEADER,
     WORKSPACE_SCOPE_SIGNATURE_HEADER,
@@ -18,10 +19,16 @@ from maistro.tasks.models import TaskCreate, TaskResponse, TaskResult
 from maistro.tasks.queue import TaskQueue, get_task_queue
 from maistro.tools.sandbox.workspace import validate_workspace_path
 from maistro_server.api.auth import RequireAuth
+from maistro_server.api.delegation import resolve_delegated_identity
 from maistro_server.api.principal import AuthenticatedPrincipal
 from maistro_server.api.schemas import PaginatedTasks, TaskCancelledResponse, TaskCreatedResponse
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
+    """Compatibility view of the non-delegated effective owner."""
+    return "dev" if auth is None else auth.user_id
 
 
 def _validate_task_workspace(workspace: str) -> None:
@@ -32,12 +39,6 @@ def _validate_task_workspace(workspace: str) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Workspace path is not allowed",
         ) from exc
-
-
-def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
-    if auth is None:
-        return "dev"
-    return auth.user_id
 
 
 def _authorize_workspace_scope(workspace_id: str, signature: str | None) -> None:
@@ -67,6 +68,7 @@ async def create_task(
     response: Response,
     auth: RequireAuth,
     queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    delegation: Annotated[str | None, Header(alias=DELEGATION_HEADER)] = None,
     workspace_id: Annotated[str | None, Header(alias=WORKSPACE_ID_HEADER)] = None,
     workspace_signature: Annotated[
         str | None, Header(alias=WORKSPACE_SCOPE_SIGNATURE_HEADER)
@@ -81,14 +83,20 @@ async def create_task(
                 detail="Workspace id must be a non-empty string",
             )
         _authorize_workspace_scope(workspace_id, workspace_signature)
-    uid = _owner_id(auth)
+    uid, service_principal, delegation_id, actor_kind = resolve_delegated_identity(auth, delegation)
     try:
         # The queue owns key validation and reconciliation (#1176); this layer
         # only translates the two refusal shapes into their status codes —
         # 422 for a key the request itself makes ambiguous, 409 for a reused
         # key that admitted a different payload.
         task = await queue.submit(
-            request, user_id=uid, workspace_id=workspace_id, idempotency_key=idempotency_key
+            request,
+            user_id=uid,
+            workspace_id=workspace_id,
+            service_principal_id=service_principal,
+            delegation_id=delegation_id,
+            actor_kind=actor_kind,
+            idempotency_key=idempotency_key,
         )
     except InvalidIdempotencyKey as exc:
         raise HTTPException(
@@ -114,8 +122,10 @@ async def get_task(
     task_id: str,
     auth: RequireAuth,
     queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    delegation: Annotated[str | None, Header(alias=DELEGATION_HEADER)] = None,
 ) -> TaskResponse:
-    task = queue.get(task_id, user_id=_owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    task = queue.get(task_id, user_id=owner)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
@@ -126,9 +136,11 @@ async def get_task_result(
     task_id: str,
     auth: RequireAuth,
     queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    delegation: Annotated[str | None, Header(alias=DELEGATION_HEADER)] = None,
 ) -> TaskResult:
     """Return only the result portion of a task. 404 if no result yet."""
-    task = queue.get(task_id, user_id=_owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    task = queue.get(task_id, user_id=owner)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     if task.result is None:
@@ -141,8 +153,10 @@ async def cancel_task(
     task_id: str,
     auth: RequireAuth,
     queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    delegation: Annotated[str | None, Header(alias=DELEGATION_HEADER)] = None,
 ) -> TaskCancelledResponse:
-    task = queue.get(task_id, user_id=_owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    task = queue.get(task_id, user_id=owner)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     cancelled = await queue.cancel(task_id)
@@ -155,10 +169,12 @@ async def cancel_task(
 async def list_tasks(
     auth: RequireAuth,
     queue: Annotated[TaskQueue, Depends(get_task_queue)],
+    delegation: Annotated[str | None, Header(alias=DELEGATION_HEADER)] = None,
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = None,
 ) -> PaginatedTasks:
-    items, next_cursor = queue.list_tasks(limit=limit, cursor=cursor, user_id=_owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    items, next_cursor = queue.list_tasks(limit=limit, cursor=cursor, user_id=owner)
     return PaginatedTasks(
         items=items,
         next_cursor=next_cursor,

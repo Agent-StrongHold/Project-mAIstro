@@ -319,6 +319,7 @@ class TaskRunner:
                 branch=task.branch,
                 constraints=list(task.constraints),
                 user_id=task.user_id or None,
+                session_id=task.session_id,
                 lane=task.lane,
                 priority_tier=task.priority_tier,
             )
