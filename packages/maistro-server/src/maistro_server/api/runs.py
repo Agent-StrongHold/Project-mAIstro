@@ -13,15 +13,16 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from maistro.runs.chat_execution import ATTEMPT_AGENT_KEY, CHAT_EXECUTOR_ID
 from maistro.runs.model import Attempt
 from maistro.runs.service import RunExecutionService
 from maistro.runs.store import RunStore
 from maistro.runtime import PythonExecutionRuntime
+from maistro.tasks.http_contract import DELEGATION_HEADER
 from maistro_server.api.auth import RequireAuth
-from maistro_server.api.principal import AuthenticatedPrincipal
+from maistro_server.api.delegation import resolve_delegated_identity
 from maistro_server.api.schemas import AttemptSummary, NodeRunSummary, RunSummary
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -42,13 +43,6 @@ def get_run_store() -> RunStore:
             detail="No Run store is configured",
         )
     return _run_store
-
-
-def _owner_id(auth: AuthenticatedPrincipal | None) -> str:
-    """Mirrors `tasks._owner_id`: "dev" only where auth is disabled entirely."""
-    if auth is None:
-        return "dev"
-    return auth.user_id
 
 
 async def _require_visible_run(store: RunStore, run_id: str, owner: str) -> Any:
@@ -73,9 +67,11 @@ async def get_run(
     run_id: str,
     auth: RequireAuth,
     store: Annotated[RunStore, Depends(get_run_store)],
+    delegation: str | None = Header(default=None, alias=DELEGATION_HEADER),
 ) -> RunSummary:
     """The canonical execution state behind a submitted task."""
-    run = await _require_visible_run(store, run_id, _owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    run = await _require_visible_run(store, run_id, owner)
     return RunSummary(
         run_id=run.run_id,
         status=run.status.value,
@@ -95,9 +91,11 @@ async def cancel_run(
     run_id: str,
     auth: RequireAuth,
     store: Annotated[RunStore, Depends(get_run_store)],
+    delegation: str | None = Header(default=None, alias=DELEGATION_HEADER),
 ) -> RunSummary:
     """Request cancellation through the canonical physical execution seam."""
-    await _require_visible_run(store, run_id, _owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    await _require_visible_run(store, run_id, owner)
     run = await RunExecutionService(
         store=store,
         runtime=PythonExecutionRuntime(),
@@ -121,6 +119,7 @@ async def list_node_runs(
     run_id: str,
     auth: RequireAuth,
     store: Annotated[RunStore, Depends(get_run_store)],
+    delegation: str | None = Header(default=None, alias=DELEGATION_HEADER),
 ) -> list[NodeRunSummary]:
     """Per-node execution state under a Run.
 
@@ -130,7 +129,8 @@ async def list_node_runs(
     Still empty for a Run whose work has not been picked up, which is the true
     answer rather than an advertised gap.
     """
-    await _require_visible_run(store, run_id, _owner_id(auth))
+    owner, _, _, _ = resolve_delegated_identity(auth, delegation)
+    await _require_visible_run(store, run_id, owner)
     return [
         NodeRunSummary(
             node_run_id=node_run.node_run_id,

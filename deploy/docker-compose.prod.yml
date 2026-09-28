@@ -36,6 +36,8 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379/0
       API_KEYS: ${API_KEYS:?Set API_KEYS in .env}
       REQUIRE_AUTH: "true"
+      # Shared only with the trusted Hive delegation bridge, never clients.
+      TASK_DELEGATION_KEY: ${TASK_DELEGATION_KEY:?Set TASK_DELEGATION_KEY in .env}
       LITELLM_BASE_URL: ${LITELLM_BASE_URL:-}
       FILE_STORE_PATH: /var/lib/maistro/files
     volumes:

@@ -96,7 +96,12 @@ def _engine_over(server: _StallingTaskServer) -> Any:
     from services.engine import EngineService
 
     svc = EngineService()
-    svc._backend = MaistroServerTaskBackend(base_url=_origin(server), api_key=None)
+    # The scoped stream reads carry the signed delegation envelope (#1057):
+    # fail-closed without a key is that contract's own behavior, so this
+    # scoped-stream fixture satisfies it by explicit injection.
+    svc._backend = MaistroServerTaskBackend(
+        base_url=_origin(server), api_key=None, delegation_key="test-delegation-key"
+    )
     return svc
 
 
