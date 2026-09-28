@@ -168,3 +168,72 @@ is unavailable remotely. Local success cannot prove a hosted run. Handoff
 remains **BLOCKED**: checked 1, done 0 (acceptance incomplete), skipped 0 issues,
 errors 1 (exact remote ref lookup); next is authorized publication and hosted
 validation, not another speculative code repair.
+
+## Follow-up repair job 9df5bbdc — current head revalidated
+
+Starting HEAD `50259c3152ff034cdaef43bda64ca0a3eb37ec8a` was verified clean
+in the assigned `auto-80` worktree. Scope remained issue #80 plus the expressly
+requested vulture gate. No driver `check-*.log` files existed at the initial
+snapshot. Fresh command logs are in
+`/home/dev/maistro/jobs/9df5bbdcba964b06847a1b02e84fa435/check-*.log`.
+Only this evidence record changes; no tests, runtime, workflow, or ledger
+identities changed, and the inventory delta remains zero.
+
+Executed independently rather than relying on prior verification:
+
+- `MAISTRO_TEST_ROOTLESS_LANE=1 XDG_RUNTIME_DIR=/run/user/1000
+  DOCKER_HOST=unix:///run/user/1000/docker.sock uv run pytest
+  packages/maistro-bootstrap/tests -x -q -rs`: **273 passed, 2 skipped**.
+  All 18 qualifying-daemon production conformance cases and the actual CI
+  private-namespace provisioning regression ran. Only Windows-specific behavior
+  and the inverse rootful refusal test skipped. The existing local daemon
+  reported rootless, built-in seccomp, cgroup v2 and systemd; this does not
+  establish fresh hosted-runner provisioning.
+- `DOCKER_HOST=unix:///var/run/docker.sock uv run pytest
+  packages/maistro-bootstrap/tests/test_container_sandbox.py::test_sandbox_refuses_a_rootful_unmapped_daemon
+  -x -q -rs`: **1 passed**, including cleanup on refusal.
+- `DOCKER_HOST=unix:///run/user/1000/docker.sock docker run --rm
+  --network=none --memory=64m --memory-swap=64m maistro-builders:latest
+  cat /sys/fs/cgroup/memory.max`: **67108864**.
+- `uv run pytest packages/maistro-rsi/tests/test_autonomous_isolation_tier.py
+  -x -q`: **15 passed**.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: **passed**, 1403 reviewed
+  identities / 1403 findings, **zero unclassified**. There is no evidenced
+  identity delta to amend; no speculative ledger change was made.
+- `uv run ruff check .` and `uv run ruff format --check .`: **passed**,
+  2602 files formatted.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-bootstrap/tests`: **275, matches**.
+- `uv run python scripts/<gate>.py`: **passed** for `check-merge-markers`,
+  `check-build-context`, `check-security-inventory`,
+  `check-workflow-write-safety`, `check-required-checks`, and `check-doc-links`.
+
+The production class and adjacent tests were inspected before this note.
+The acceptance table above is supported by the fresh live tests: filesystem,
+process, namespace/kernel surface, network, devices, sockets, credentials and
+privilege; network/credential default deny; `.env`/`.git`/unrelated-secret seed
+exclusion; non-root candidate execution; read-only scope; timeout, detached
+process kill, cleanup and memory exhaustion. Tests directly instantiate the
+same `ContainerBuilderSandbox` imported by the production contained-validation
+path, not an independently hardened fixture. SECURITY.md limitation 8 and the
+support matrix already cite real evidence and explicitly retain hosted and
+shared-kernel limitations. Accepted ADR-093's supervised Tier-3 allowance, not
+proposed SPEC-190's eventual VM goal, bounds this evidence. No canonical
+execution or authorization path changed.
+
+The exact candidate's read-only remote lookup was executed once:
+
+```text
+gh api repos/Agent-StrongHold/Project-mAIstro/commits/50259c3152ff034cdaef43bda64ca0a3eb37ec8a/check-runs
+HTTP 422: No commit found for SHA
+```
+
+Remote ref **not found; skipped** further remote inspection. Hosted current-head
+conformance execution remains **UNVERIFIED**. The existing private-securityfs
+repair and its passing local regression do not prove a successful hosted run.
+No push, dispatch, or other GitHub mutation was attempted. Handoff remains
+**BLOCKED**: checked 1, done 0 (acceptance incomplete), skipped 0 issues,
+errors 1 (remote lookup). Next: an authorized owner must publish the candidate
+and obtain hosted conformance results; another speculative sandbox or image-load
+edit would not resolve the demonstrated blocker.
