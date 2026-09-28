@@ -6,8 +6,11 @@ cycle, usage evidence and Invocation identity exactly once, including an
 explicit unreported marker when a provider omits usage. A second live entry
 point covers the one call class that crosses no canonical authority: the
 conductor's raw-gateway fallback (``agents/conductor.py``) records its usage
-evidence on the process default usage log with explicit provenance, so an
-ungoverned composition can no longer be silently invisible. The raw
+evidence on the process default usage log with explicit provenance and, when
+the Container composition root registered a process default quota ledger, on
+that ledger too — reported tokens as usage, a missing report as an unreported
+marker — so an ungoverned composition can neither be silently invisible nor
+present complete quota percentages while omitting the call. The raw
 ``on_response`` hook below is a compatibility adapter for older raw-HTTP call
 sites; after the #718 cutover no shipped production call site supplies it, and
 ambient/header reconciliation with it is explicitly not a wired production

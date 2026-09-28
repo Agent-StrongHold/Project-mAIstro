@@ -38,6 +38,7 @@ from maistro.constants import DESCRIPTION_LOG_PREVIEW_LEN
 from maistro.http import shared_client
 from maistro.observability.metrics import llm_errors_total, llm_requests_total
 from maistro.observability.tracing import trace_agent
+from maistro.quota.tracker import get_default_quota_tracker
 from maistro.quota.usage_log import get_default_usage_log
 from maistro.quota.usage_report import reported_usage
 from maistro.tasks.models import TaskCreate
@@ -155,7 +156,7 @@ async def _governed_completion(
     return content
 
 
-def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
+async def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
     """Record one raw-gateway call's usage evidence on the process usage log.
 
     #718: the canonical recording path is Invocation terminalization, and the
@@ -165,6 +166,14 @@ def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
     explicit ``usage_reported=False`` marker when it did not. Never a silent
     zero, and never a fabricated Invocation identity: the event carries
     provider provenance only.
+
+    When the process registered a quota ledger (the Container composition
+    root sets the process default), the same evidence also reaches that
+    ledger — reported tokens as usage, a missing report as an unreported
+    marker — so a process that carries a ledger can never present complete
+    quota percentages while omitting this call class. The ledger write is
+    isolated: a failing ledger must not take down a call that already
+    succeeded.
 
     Returns whether the gateway reported usage, for the caller's log line.
     """
@@ -177,6 +186,25 @@ def _record_ungoverned_fallback_usage(model: str, data: dict[str, Any]) -> bool:
         provider=model,
         usage_reported=reported is not None,
     )
+    tracker = get_default_quota_tracker()
+    if tracker is not None:
+        # Same billing-cycle default as CanonicalInvocationUsageRecorder, so
+        # ungoverned evidence lands in the provider/cycle rows the ledger's
+        # readers already reconcile. This call has no Invocation identity by
+        # construction (egress was None), so it never charges through
+        # ``record_invocation`` — usage tokens via the event-log path, a
+        # missing report via the unreported marker.
+        try:
+            if reported is not None:
+                await tracker.record_usage(model, "monthly", input_tokens, output_tokens)
+            else:
+                record_unreported = getattr(tracker, "record_unreported", None)
+                if record_unreported is not None:
+                    await record_unreported(model, "monthly")
+        except Exception:
+            await logger.awarning(
+                "conductor_ungoverned_quota_ledger_write_failed", model=model, exc_info=True
+            )
     return reported is not None
 
 
@@ -234,9 +262,10 @@ async def _call_gateway(
         data = resp.json()
     # This physical call crossed no canonical Invocation authority, so the
     # canonical recorder never sees it. Record its usage evidence on the
-    # process usage log and say so loudly: an ungoverned call class must stay
+    # process usage log and the process default quota ledger (when one is
+    # registered) and say so loudly: an ungoverned call class must stay
     # visible instead of silently shrinking the quota ledger (#718).
-    usage_reported = _record_ungoverned_fallback_usage(call.model, data)
+    usage_reported = await _record_ungoverned_fallback_usage(call.model, data)
     await logger.awarning(
         "conductor_ungoverned_llm_call",
         model=call.model,

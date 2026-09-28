@@ -45,7 +45,7 @@ from maistro.memory.learnings.extractor import ToolCorrectionExtractor
 from maistro.memory.learnings.store import InMemoryLearningStore
 from maistro.memory.outcomes import InMemoryOutcomeStore
 from maistro.projects.scope_store import ProjectScopeStore
-from maistro.quota.tracker import InMemoryQuotaTracker
+from maistro.quota.tracker import InMemoryQuotaTracker, set_default_quota_tracker
 from maistro.quota.usage_log import InMemoryUsageLog, get_default_usage_log
 from maistro.router.selector import RouterEngine
 from maistro.runs.chat_admission import (
@@ -1791,6 +1791,16 @@ async def create_container(
         outcome_store = InMemoryOutcomeStore()
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
+
+    # The Container is the process's one composition root, so its ledger is
+    # the process default (#718): the conductor's raw-gateway fallback — the
+    # single call class that crosses no canonical Invocation authority —
+    # marks its ungoverned evidence there instead of leaving a
+    # ledger-carrying process presenting complete quota percentages while
+    # omitting that call. Authoritative recording stays on the canonical
+    # effect path above; this default only receives the fallback's
+    # non-Invocation evidence.
+    set_default_quota_tracker(quota_tracker)
 
     # Prompt persistence is selected by the same backend decision as the
     # rest of the Container, but kept out of this composition function so adding a

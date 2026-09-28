@@ -196,17 +196,29 @@ class SqliteQuotaTracker:
         provider: str,
         billing_cycle: str,
         free_tokens: int,
-    ) -> float:
-        """Get usage as a percentage of free tier."""
+    ) -> float | None:
+        """Usage as a fraction of the free allowance, or ``None`` when unknown.
+
+        #718: incomplete evidence (``unreported_count`` set for this
+        provider/cycle) must not present a measured percentage — the
+        unreported calls' tokens are unknowable, so the ratio over the
+        reported remainder would read as complete while understating spend.
+        """
         if free_tokens <= 0:
             return 0.0
         ck = cycle_key(billing_cycle)
         cursor = await self._conn.execute(
-            "SELECT total_tokens FROM quota_usage WHERE provider = ? AND cycle_key = ?",
+            "SELECT total_tokens, unreported_count FROM quota_usage "
+            "WHERE provider = ? AND cycle_key = ?",
             (provider, ck),
         )
         row = await cursor.fetchone()
-        total: int = row[0] if row else 0
+        if row is None:
+            # No call was ever recorded: a measured zero, not missing evidence.
+            return 0.0
+        if row[1]:
+            return None
+        total: int = row[0]
         return total / free_tokens
 
     async def get_all_usage(self) -> list[dict[str, object]]:

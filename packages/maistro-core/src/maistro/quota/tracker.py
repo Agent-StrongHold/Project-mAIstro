@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from maistro.quota.billing import cycle_key
+
+if TYPE_CHECKING:
+    from maistro.protocols.quota import QuotaTracker
 
 UsagePayload = tuple[str, str, int, int]
 
@@ -81,11 +85,26 @@ class InMemoryQuotaTracker:
         provider: str,
         billing_cycle: str,
         free_tokens: int,
-    ) -> float:
+    ) -> float | None:
+        """Usage as a fraction of the free allowance, or ``None`` when unknown.
+
+        #718: a provider/cycle whose evidence is incomplete (at least one call
+        recorded without a provider usage report) must not present a measured
+        percentage. The unreported call's tokens are unknowable, so any ratio
+        computed over the reported remainder would read as complete while
+        understating spend — the false ``0.0``/full-headroom presentation this
+        method used to produce. Callers convey ``None`` as "usage unknown",
+        never as zero.
+        """
         if free_tokens <= 0:
             return 0.0
-        key = (provider, cycle_key(billing_cycle))
-        entry = self._usage[key]
+        entry = self._usage.get((provider, cycle_key(billing_cycle)))
+        if entry is None:
+            # No call was ever recorded for this provider/cycle: vacuously
+            # complete, a measured zero, not missing evidence.
+            return 0.0
+        if entry.get("usage_complete") is False or entry.get("unreported_count"):
+            return None
         return entry["total_tokens"] / free_tokens
 
     async def get_all_usage(self) -> list[dict[str, object]]:
@@ -93,3 +112,34 @@ class InMemoryQuotaTracker:
         for (provider, ck), entry in self._usage.items():
             result.append({"provider": provider, "cycle_key": ck, **entry})
         return result
+
+
+_default_quota_tracker: QuotaTracker | None = None
+
+
+def get_default_quota_tracker() -> QuotaTracker | None:
+    """The process-wide shared quota ledger, when a composition registered one.
+
+    Mirrors ``quota.usage_log.get_default_usage_log``'s module-level-singleton
+    pattern for the one recording site that crosses no canonical Invocation
+    authority: the conductor's raw-gateway fallback (``agents/conductor.py``)
+    marks its ungoverned call here so a process that *does* carry a ledger
+    never presents complete quota evidence while omitting that call class.
+    ``None`` (no composition root registered a tracker) keeps the fallback on
+    the usage-log-only evidence path — evidence is never fabricated where no
+    ledger exists to receive it.
+    """
+    return _default_quota_tracker
+
+
+def set_default_quota_tracker(tracker: QuotaTracker | None) -> None:
+    """Register (or, with ``None``, clear) the process-wide quota ledger.
+
+    Set once by the Container composition root (``maistro.container``), which
+    is the single place every production process gets its ledger — never by
+    agents or runners themselves (#718 stop condition: the canonical effect
+    path owns authoritative recording; this default only receives the
+    ungoverned fallback's non-Invocation evidence).
+    """
+    global _default_quota_tracker
+    _default_quota_tracker = tracker

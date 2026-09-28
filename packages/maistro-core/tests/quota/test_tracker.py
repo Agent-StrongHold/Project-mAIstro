@@ -116,3 +116,60 @@ class TestInMemoryQuotaTracker:
         assert result["total_tokens"] == 0
         assert result["unreported_count"] == 1
         assert result["usage_complete"] is False
+
+    async def test_get_usage_pct_missing_evidence_is_unknown_not_zero(self) -> None:
+        """#718: the verifier's false-complete reproduction. A provider/cycle
+        whose calls could not report usage must not present ``0.0`` used with
+        full headroom — the ratio over the reported remainder is unknowable,
+        so the percentage is ``None`` (unknown), never a measured zero."""
+        tracker = InMemoryQuotaTracker()
+
+        await tracker.record_invocation("inv-u1", "openai", "daily", 0, 0, False)
+
+        assert await tracker.get_usage_pct("openai", "daily", 100) is None
+
+    async def test_get_usage_pct_mixed_evidence_stays_unknown(self) -> None:
+        """One reported call does not repair the cycle's completeness: the
+        unreported call's tokens are still missing, so the ratio would
+        understate spend while reading as complete."""
+        tracker = InMemoryQuotaTracker()
+
+        await tracker.record_invocation("inv-r1", "openai", "daily", 50, 50, True)
+        await tracker.record_invocation("inv-u1", "openai", "daily", 0, 0, False)
+
+        assert await tracker.get_usage_pct("openai", "daily", 200) is None
+
+    async def test_get_usage_pct_no_evidence_at_all_is_a_measured_zero(self) -> None:
+        """No call ever recorded is vacuously complete — ``0.0``, distinct from
+        the ``None`` that marks calls whose usage went unreported. The read
+        also must not fabricate a zero usage row for the provider."""
+        tracker = InMemoryQuotaTracker()
+
+        assert await tracker.get_usage_pct("never-called", "daily", 100) == 0.0
+        assert await tracker.get_all_usage() == []
+
+    async def test_get_usage_pct_reported_evidence_keeps_computing_ratio(self) -> None:
+        tracker = InMemoryQuotaTracker()
+
+        await tracker.record_invocation("inv-r1", "openai", "daily", 50, 50, True)
+
+        assert await tracker.get_usage_pct("openai", "daily", 200) == 0.5
+
+
+class TestDefaultQuotaTrackerSingleton:
+    async def test_registered_tracker_is_returned_until_cleared(self) -> None:
+        from maistro.quota.tracker import (
+            get_default_quota_tracker,
+            set_default_quota_tracker,
+        )
+
+        # Save/restore: container-creating tests in the same process register
+        # their own default via the composition root, so the ambient value is
+        # not asserted — only this test's own registration round-trip is.
+        previous = get_default_quota_tracker()
+        tracker = InMemoryQuotaTracker()
+        try:
+            set_default_quota_tracker(tracker)
+            assert get_default_quota_tracker() is tracker
+        finally:
+            set_default_quota_tracker(previous)

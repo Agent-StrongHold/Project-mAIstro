@@ -125,6 +125,28 @@ async def test_get_usage_pct_computes_ratio(tracker: SqliteQuotaTracker) -> None
 
 
 @pytest.mark.asyncio
+async def test_get_usage_pct_missing_evidence_is_unknown_not_zero(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    """#718: unreported evidence must not present as 0% used / full headroom
+    — the ratio over the reported remainder is unknowable, so the percentage
+    is ``None`` (unknown), never a measured zero."""
+    await tracker.record_invocation("inv-u1", "openai", "monthly", 0, 0, False)
+
+    assert await tracker.get_usage_pct("openai", "monthly", 100) is None
+
+
+@pytest.mark.asyncio
+async def test_get_usage_pct_mixed_evidence_stays_unknown(
+    tracker: SqliteQuotaTracker,
+) -> None:
+    await tracker.record_invocation("inv-r1", "openai", "monthly", 30, 20, True)
+    await tracker.record_invocation("inv-u1", "openai", "monthly", 0, 0, False)
+
+    assert await tracker.get_usage_pct("openai", "monthly", 100) is None
+
+
+@pytest.mark.asyncio
 async def test_get_all_usage_empty(tracker: SqliteQuotaTracker) -> None:
     assert await tracker.get_all_usage() == []
 

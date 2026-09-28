@@ -51,8 +51,16 @@ class QuotaTracker(Protocol):
         provider: str,
         billing_cycle: str,
         free_tokens: int,
-    ) -> float:
-        """Get usage as a percentage of free tier (0.0 to 1.0+)."""
+    ) -> float | None:
+        """Usage as a fraction of the free allowance (0.0 to 1.0+), or ``None``.
+
+        ``None`` means the provider/cycle carries incomplete evidence (at
+        least one call recorded without a provider usage report): the true
+        ratio is unknowable and must not be presented as a measured value —
+        in particular not as ``0.0`` with full headroom, which would read as
+        complete accounting while omitting spend (#718). A provider/cycle
+        with no recorded call at all is vacuously complete and returns ``0.0``.
+        """
         ...
 
     async def get_all_usage(self) -> list[dict[str, object]]:

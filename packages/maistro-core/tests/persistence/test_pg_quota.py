@@ -251,6 +251,29 @@ async def test_get_usage_pct_no_row_defaults_total_to_zero(
 
 
 @pytest.mark.asyncio
+async def test_get_usage_pct_missing_evidence_is_unknown_not_zero(
+    tracker: PgQuotaTracker, conn: FakeConnection
+) -> None:
+    """#718: a row with unreported evidence must not present ``0.0`` used /
+    full headroom — the ratio over the reported remainder is unknowable, so
+    the percentage is ``None`` (unknown), never a measured zero."""
+    conn.queue_fetchrow({"total_tokens": 0, "unreported_count": 1})
+    pct = await tracker.get_usage_pct("openai", "monthly", 100)
+    assert pct is None
+
+
+@pytest.mark.asyncio
+async def test_get_usage_pct_mixed_evidence_stays_unknown(
+    tracker: PgQuotaTracker, conn: FakeConnection
+) -> None:
+    """Reported neighbours do not repair completeness: the unreported call's
+    tokens are still missing, so a ratio would understate spend."""
+    conn.queue_fetchrow({"total_tokens": 50, "unreported_count": 1})
+    pct = await tracker.get_usage_pct("openai", "monthly", 100)
+    assert pct is None
+
+
+@pytest.mark.asyncio
 async def test_get_all_usage_returns_ordered_list(
     tracker: PgQuotaTracker, conn: FakeConnection
 ) -> None:

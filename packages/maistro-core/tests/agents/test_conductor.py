@@ -24,6 +24,7 @@ from maistro.agents.conductor import (
 from maistro.agents.types import ConductorOutput, LLMProviderError
 from maistro.config.models import DEFAULT_TIERS, Tier
 from maistro.http import set_test_transport
+from maistro.quota.tracker import InMemoryQuotaTracker
 from maistro.quota.usage_log import InMemoryUsageLog
 from maistro.tasks.models import TaskCreate
 
@@ -229,10 +230,22 @@ class TestCallGateway:
 @pytest.fixture
 def fallback_usage_log(monkeypatch: pytest.MonkeyPatch) -> InMemoryUsageLog:
     """Isolate the conductor's ungoverned-fallback recording from the
-    process-wide default usage log singleton."""
+    process-wide default usage log singleton — and from the process default
+    quota ledger, which container-creating tests elsewhere in the same
+    process register via the composition root."""
     log = InMemoryUsageLog()
     monkeypatch.setattr("maistro.agents.conductor.get_default_usage_log", lambda: log)
+    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: None)
     return log
+
+
+@pytest.fixture
+def fallback_quota_tracker(monkeypatch: pytest.MonkeyPatch) -> InMemoryQuotaTracker:
+    """Register an isolated quota ledger as the conductor module's process
+    default, for tests of the fallback's ledger evidence (#718)."""
+    tracker = InMemoryQuotaTracker()
+    monkeypatch.setattr("maistro.agents.conductor.get_default_quota_tracker", lambda: tracker)
+    return tracker
 
 
 class TestUngovernedFallbackUsageEvidence:
@@ -336,6 +349,101 @@ class TestUngovernedFallbackUsageEvidence:
         (event,) = fallback_usage_log.events_for("m")
         assert event.input_tokens == 3
         assert event.output_tokens == 4
+        assert event.usage_reported is True
+
+    @pytest.mark.asyncio
+    async def test_registered_ledger_receives_reported_fallback_usage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+        fallback_quota_tracker: InMemoryQuotaTracker,
+    ) -> None:
+        """#718: when the process registered a quota ledger (the Container
+        composition root does), the raw fallback's reported tokens reach it
+        too — the call class can no longer be absent from the ledger a
+        process actually carries."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 7},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (row,) = await fallback_quota_tracker.get_all_usage()
+        assert row["provider"] == "m"
+        assert row["input_tokens"] == 5
+        assert row["output_tokens"] == 7
+        assert row["total_tokens"] == 12
+        assert row["request_count"] == 1
+        assert "usage_complete" not in row  # reported evidence, complete
+
+    @pytest.mark.asyncio
+    async def test_registered_ledger_gets_unreported_marker_not_zero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+        fallback_quota_tracker: InMemoryQuotaTracker,
+    ) -> None:
+        """A fallback call whose gateway reported no usage marks the ledger
+        incomplete — never a measured zero — so the provider's percentage
+        presents as unknown (#718)."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": '{"success": true}'}}]}
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        (row,) = await fallback_quota_tracker.get_all_usage()
+        assert row["provider"] == "m"
+        assert row["total_tokens"] == 0
+        assert row["unreported_count"] == 1
+        assert row["usage_complete"] is False
+        assert await fallback_quota_tracker.get_usage_pct("m", "monthly", 100) is None
+
+    @pytest.mark.asyncio
+    async def test_failing_ledger_does_not_take_down_the_fallback_call(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fallback_usage_log: InMemoryUsageLog,
+    ) -> None:
+        """The ledger write is isolated: a ledger that blows up must not
+        crash a provider call that already succeeded — evidence stays on the
+        usage log and the failure is surfaced, not raised."""
+
+        class ExplodingTracker:
+            async def record_usage(self, *args: object, **kwargs: object) -> dict[str, object]:
+                raise RuntimeError("ledger unavailable")
+
+        monkeypatch.setattr(
+            "maistro.agents.conductor.get_default_quota_tracker", lambda: ExplodingTracker()
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": '{"success": true}'}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+
+        _patched_client(monkeypatch, handler)
+        call = ConductorCall(model="m", base_url="http://gw", api_key="key", system_prompt="sys")
+        result = await _call_gateway(call, "do thing", max_tokens=512, timeout=10)
+
+        assert result == '{"success": true}'
+        (event,) = fallback_usage_log.events_for("m")
         assert event.usage_reported is True
 
 
