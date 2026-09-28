@@ -131,6 +131,10 @@ _PG_SCRATCH_TABLES = (
     "security_violations",
     "security_strikes",
     "security_rate_limits",
+    # (#72) Signed elevation grants are security evidence with deterministic
+    # test principals; a leftover valid grant from a previous run would sit at
+    # the top of find_valid's id DESC ordering and answer for the wrong test.
+    "elevation_grants",
     "handler_invocations",
     "trigger_definitions",
     "event_log",
