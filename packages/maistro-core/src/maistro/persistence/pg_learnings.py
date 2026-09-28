@@ -14,7 +14,7 @@ from maistro.persistence.learning_contract import (
     LEARNING_PERSISTED_FIELDS,
 )
 from maistro.persistence.learning_scope import learning_scope_predicate
-from maistro.types.memory import Learning
+from maistro.types.memory import Learning, MemoryScope
 
 if TYPE_CHECKING:
     import asyncpg
@@ -535,7 +535,7 @@ def _row_to_learning(row: asyncpg.Record) -> Learning:
         user_id=row.get("user_id"),
         org_id=row.get("org_id") or "",
         team_id=row.get("team_id") or "",
-        scope=row.get("scope") or "agent",
+        scope=MemoryScope(row.get("scope") or "agent"),
         hit_count=row.get("hit_count", 0),
         status=row.get("status", "active"),
         rca_category=row.get("rca_category"),

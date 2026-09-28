@@ -292,8 +292,9 @@ class TestTheChainApplies:
                     'effect-1', 'completed', 0.0, '{}', true)
             """
         )
-        # 044's parent: the re-application walks 044, 043 and 045 over the
-        # existing schema — the exact walk the Canvas conformance suite drives.
+        # 044's parent: the re-application walks 044, 043, 045 and 046 over
+        # the existing schema — the exact walk the Canvas conformance suite
+        # drives.
         assert _alembic("stamp", "039_quota_usage_event_identity").returncode == 0
         result = _alembic("upgrade", "head")
         assert result.returncode == 0, result.stderr
