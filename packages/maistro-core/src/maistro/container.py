@@ -323,8 +323,16 @@ class Container:
     # caller using build_node_resolver's standalone default share state.
     usage_log: InMemoryUsageLog = field(default_factory=get_default_usage_log)
     #: Durable write-behind owner for the SQLite usage log, when configured.
-    #: Callers may flush it periodically; `aclose()` performs the shutdown flush.
+    #: Callers may flush it periodically via `flush_usage_log()`; `aclose()`
+    #: performs the shutdown flush. `None` means the deployment chose an
+    #: ephemeral backend; health reports that mixed mode rather than implying
+    #: quota-rate accounting survives restart.
     usage_log_persistence: Any = None
+    #: True when the relational stores run on SQLite's in-memory database
+    #: (pathless `sqlite://`): the store classes are the durable twins, but
+    #: the backing database evaporates with the process, so health must
+    #: report them as restart-ephemeral rather than durable (#72).
+    stores_memory_backed: bool = False
     #: Where `resume_parked_runs`' next scan of each parked status resumes.
     #: In-process and deliberately not durable: losing it on restart costs one
     #: lap back to the oldest page, which is where a fresh process would start
@@ -394,8 +402,17 @@ class Container:
 
             self.capabilities = default_capability_registry()
 
+    async def flush_usage_log(self) -> None:
+        """Flush durable SQLite usage snapshots when that layer is configured.
+
+        Recording remains synchronous on the quota hot path; callers that own a
+        response boundary can await this method at a checkpoint or shutdown.
+        """
+        if self.usage_log_persistence is not None:
+            await self.usage_log_persistence.snapshot(self.usage_log)
+
     async def _flush_usage_log_on_shutdown(self) -> None:
-        """Write the usage log's retained events to its SQLite persistence.
+        """Flush the usage log during `aclose`, without failing the shutdown.
 
         The final flush of the write-behind `SqliteUsageLog` (#1204): a
         container wired with `usage_log_persistence` must not drop the events
@@ -405,10 +422,8 @@ class Container:
         block the rest of the shutdown, which is why the exception is only
         logged.
         """
-        if self.usage_log_persistence is None:
-            return
         try:
-            await self.usage_log_persistence.snapshot(self.usage_log)
+            await self.flush_usage_log()
         except Exception:
             logger.exception("container: the usage log did not flush cleanly")
 
@@ -1754,7 +1769,12 @@ async def create_container(
     holds_db_pool = False
     usage_log = get_default_usage_log()
     usage_log_persistence: Any = None
+    stores_memory_backed = False
     if config.database_url.startswith("sqlite:"):
+        # A pathless `sqlite://` selects SQLite's in-memory database: the
+        # store classes are the durable twins, but nothing survives restart.
+        # Recorded so health reports the real disposition (#72).
+        stores_memory_backed = _sqlite_database_path(config.database_url) == ":memory:"
         (
             db_pool,
             session_conn,
@@ -1791,6 +1811,8 @@ async def create_container(
         outcome_store = InMemoryOutcomeStore()
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
+
+    usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
 
     # Prompt persistence is selected by the same backend decision as the
     # rest of the Container, but kept out of this composition function so adding a
@@ -1867,7 +1889,6 @@ async def create_container(
         build_permission_table,
         describe_permission_table,
     )
-    from maistro.security.sentinel.elevation import InMemoryElevationStore
     from maistro.security.sentinel.policy import Sentinel
 
     audit_log = await _wire_audit_log(pg_pool=pg_pool, db_pool=db_pool)
@@ -1886,7 +1907,7 @@ async def create_container(
     # the budget check and the BLOCKED check have all already passed -- a grant
     # can therefore never flip authorized False -> True, only needs
     # "self_elevation"/"scoped_2fa" -> "none".
-    elevation_store = InMemoryElevationStore()
+    elevation_store = await _wire_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
     # Canonical capability state is created BEFORE Sentinel so the permission
     # source can hold the same registry the container exposes (#1165,
     # ADR-072726-0d6b): a runtime capability disable (set_enabled) must reach
@@ -2081,13 +2102,14 @@ async def create_container(
         agents=agents,
         audit_log=audit_log,
         db_pool=db_pool,
-        usage_log=usage_log,
-        usage_log_persistence=usage_log_persistence,
         session_conn=session_conn,
         schedule_conn=schedule_conn,
         pg_pool=pg_pool,
         holds_pg_pool=holds_pg_pool,
         holds_db_pool=holds_db_pool,
+        usage_log=usage_log,
+        usage_log_persistence=usage_log_persistence,
+        stores_memory_backed=stores_memory_backed,
         resilience_policies=resilience_policies,
         event_bus=event_bus,
         durable_event_log=durable_event_log,
@@ -2212,6 +2234,30 @@ async def _wire_audit_log(*, pg_pool: Any, db_pool: Any) -> Any:
     from maistro.security.sentinel.audit import InMemoryAuditLog
 
     return InMemoryAuditLog()
+
+
+async def _wire_usage_log(db_pool: Any) -> tuple[InMemoryUsageLog, Any]:
+    """Restore SQLite rate-accounting events without changing hot-path reads."""
+    if db_pool is None:
+        return get_default_usage_log(), None
+    import importlib
+
+    SqliteUsageLog = importlib.import_module("maistro.quota.sqlite_usage_log").SqliteUsageLog
+    persistence = SqliteUsageLog(db_pool)
+    await persistence.ensure_schema()
+    return await persistence.restore(), persistence
+
+
+async def _wire_elevation_store(*, pg_pool: Any, db_pool: Any) -> ElevationStore:
+    """Keep grants beside the audit and enforcement state they authorize."""
+    from maistro.security.sentinel.elevation_durable import build_elevation_store
+
+    return await build_elevation_store(pg_pool=pg_pool, db_pool=db_pool)
+
+
+def _sqlite_database_path(database_url: str) -> str:
+    """Map a ``sqlite:`` URL to the database file it names; pathless is memory."""
+    return database_url.removeprefix("sqlite:///").removeprefix("sqlite://") or ":memory:"
 
 
 def _configure_strike_recovery_policy() -> dict[tuple[str, str], Any]:
@@ -2344,6 +2390,7 @@ _REQUIRED_PG_TABLES: Final = (
     "security_strikes",
     "security_violations",
     "security_rate_limits",
+    "elevation_grants",
     # The canonical Workspace (#516). Same reasoning as the spine's tables: a
     # `postgresql://` deployment that skipped `alembic upgrade head` should hear
     # about it once, at startup, naming every table it lacks.
@@ -2608,7 +2655,7 @@ async def _wire_sqlite_backend(
     from maistro.persistence.sqlite_quota import SqliteQuotaTracker
     from maistro.persistence.sqlite_sessions import SqliteSessionStore
 
-    path = database_url.removeprefix("sqlite:///").removeprefix("sqlite://") or ":memory:"
+    path = _sqlite_database_path(database_url)
     if path == ":memory:":
         # A pathless `sqlite://` is a real SQLite backend and a legitimate dev
         # choice, so it is allowed — but warned, unlike `memory://`. `memory://`

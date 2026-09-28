@@ -91,6 +91,10 @@ EXPECTED_TABLES = frozenset(
         "child_profiles",
         "design_outputs",
         "design_projects",
+        # Short-lived elevation grants (#72): durable so a grant issued before
+        # a restart still answers `find_valid` instead of silently failing
+        # closed and re-prompting. Lives at the end of the chain (039).
+        "elevation_grants",
         "episodic_memories",
         "event_log",
         "graph_continuations",
@@ -179,12 +183,35 @@ def _tables() -> set[str]:
     }
 
 
+def _drop_all_tables() -> None:
+    """Empty `public` entirely, not only the chain's own tables.
+
+    `downgrade base` unwinds only what the chain created, but standalone-path
+    stores bootstrap their tables with `CREATE TABLE IF NOT EXISTS` outside the
+    chain — `pg_strikes._SCHEMA` among them — and the strike conformance suite
+    exercises exactly that path. One suite then poisoned the next: the raw
+    `security_strikes` survived the downgrade, `alembic_version` sat at base,
+    and `upgrade head` died in 005 with `relation security_strikes already
+    exists` (reproduced by running the strike suite against this shared DB
+    before this suite). Dropping everything is what this fixture's name
+    promises, and it cannot strand a later suite: runtime stores recreate
+    their own tables on connect, and a chain table is one `upgrade head` away.
+    """
+    for (name,) in _query("select tablename from pg_tables where schemaname = 'public'"):
+        # Identifiers come from the catalog, not users; still quote them so a
+        # mixed-case or reserved name cannot turn the drop into something else.
+        quoted = str(name).replace('"', '""')
+        _execute(f'drop table if exists "{quoted}" cascade')
+
+
 @pytest.fixture
 def empty_database():
     """Start each test from `base`, so one failure cannot cascade into the next."""
     _alembic("downgrade", "base")
+    _drop_all_tables()
     yield
     _alembic("downgrade", "base")
+    _drop_all_tables()
 
 
 class TestTheChainApplies:
@@ -265,8 +292,9 @@ class TestTheChainApplies:
                     'effect-1', 'completed', 0.0, '{}', true)
             """
         )
-        # 044's parent: the re-application walks 044, 043 and 045 over the
-        # existing schema — the exact walk the Canvas conformance suite drives.
+        # 044's parent: the re-application walks 044, 043, 045 and 046 over
+        # the existing schema — the exact walk the Canvas conformance suite
+        # drives.
         assert _alembic("stamp", "039_quota_usage_event_identity").returncode == 0
         result = _alembic("upgrade", "head")
         assert result.returncode == 0, result.stderr
