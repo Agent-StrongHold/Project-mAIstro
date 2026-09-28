@@ -770,7 +770,12 @@ class TaskQueue:
         with the receipt the first call got, header key included. A
         reconstructed receipt says ``queued`` because that is what admission
         said — the Run behind it has moved on without the queue, and current
-        state is read from the task/Run endpoints, not from a replay.
+        state is read from the task/Run endpoints, not from a replay. Only the
+        live receipt short-circuits: a receipt this process still holds in
+        ``_tasks`` is this process's queue's to dispatch, so answering it is
+        the end of the replay. The durable row and the reconstruction both
+        fall through to the resume gate below — a persisted row proves the
+        receipt was written, never that a live queue still holds the work.
 
         Reconstructing is not quite enough: a claimant can die anywhere in the
         window after the Run exists but before ``_enqueue`` lands the receipt
@@ -791,39 +796,47 @@ class TaskQueue:
         documented ephemerality, and the one way this path could re-run work
         that had already finished.
         """
+        task: TaskResponse | None = None
         if record.task_id is not None:
             live = self._tasks.get(record.task_id)
             if live is not None:
                 return live
-            persisted = await self._persisted_receipt(record.task_id)
-            if persisted is not None:
-                return persisted
-        stored = TaskCreate.model_validate_json(record.request)
-        if record.task_id is None:  # pragma: no cover - replayed claims are admitted
-            raise RuntimeError("replayed admission claim carries no receipt id")
-        task = TaskResponse(
-            task_id=record.task_id,
-            status=TaskStatus.QUEUED,
-            description=stored.description,
-            workspace=stored.workspace,
-            user_id=stored.user_id or "",
-            service_principal_id=stored.service_principal_id,
-            delegation_id=stored.delegation_id,
-            actor_kind=stored.actor_kind,
-            task_type=stored.task_type,
-            agent_id=stored.agent_id,
-            capability=stored.capability,
-            program_context=stored.program_context,
-            tier=stored.tier or 2,
-            lane=stored.lane,
-            priority_tier=stored.priority_tier,
-            session_id=stored.session_id,
-            idempotency_key=stored.idempotency_key,
-            run_id=record.run_id,
-            phase="queued",
-            progress=TaskProgress(),
-            created_at=from_epoch_us(record.created_at_us),
-        )
+            # The durable row answers the receipt's identity questions, but it
+            # must not bypass the resume gate below. A row only proves the
+            # receipt was once persisted — `_persist` lands inside `_enqueue`, a
+            # process death (or a replica picking the replay up) can leave the
+            # row readable while no queue anywhere holds the work. Returning it
+            # here answered every later replay "queued" while the Run sat
+            # stranded past every queue, exactly the loss the resume path
+            # exists to stop.
+            task = await self._persisted_receipt(record.task_id)
+        if task is None:
+            stored = TaskCreate.model_validate_json(record.request)
+            if record.task_id is None:  # pragma: no cover - replayed claims are admitted
+                raise RuntimeError("replayed admission claim carries no receipt id")
+            task = TaskResponse(
+                task_id=record.task_id,
+                status=TaskStatus.QUEUED,
+                description=stored.description,
+                workspace=stored.workspace,
+                user_id=stored.user_id or "",
+                service_principal_id=stored.service_principal_id,
+                delegation_id=stored.delegation_id,
+                actor_kind=stored.actor_kind,
+                task_type=stored.task_type,
+                agent_id=stored.agent_id,
+                capability=stored.capability,
+                program_context=stored.program_context,
+                tier=stored.tier or 2,
+                lane=stored.lane,
+                priority_tier=stored.priority_tier,
+                session_id=stored.session_id,
+                idempotency_key=stored.idempotency_key,
+                run_id=record.run_id,
+                phase="queued",
+                progress=TaskProgress(),
+                created_at=from_epoch_us(record.created_at_us),
+            )
         admitter = self._admitter
         if admitter is None or task.run_id is None:
             return task

@@ -919,7 +919,10 @@ async def test_a_replayed_admission_after_restart_answers_from_the_durable_deleg
     )
     await _drain_persisted_writes(queue)
     # The restart: this process loses the live receipt but keeps the claim
-    # store and the durable row.
+    # store and the durable row. The row as it stood is what the replay must
+    # answer from; the resumed admission legitimately re-persists the receipt
+    # when it re-enqueues, so the discriminator is snapshotted first.
+    row_at_restart = rows[-1]
     queue._tasks.clear()
 
     retry = await queue.submit(
@@ -938,7 +941,7 @@ async def test_a_replayed_admission_after_restart_answers_from_the_durable_deleg
     assert retry.actor_kind == "user"
     # The answer came from the durable row, not the claim's request sketch:
     # the row's own created_at is what the receipt reports.
-    assert retry.created_at == rows[-1].created_at
+    assert retry.created_at == row_at_restart.created_at
 
 
 async def test_a_delegated_replay_without_any_receipt_reconstructs_the_evidence(
