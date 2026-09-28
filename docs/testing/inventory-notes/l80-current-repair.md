@@ -96,3 +96,75 @@ still assumes a stable trusted host worktree.
 completed, no implementation defect reproduced, no issue skipped; remote
 validation unavailable. Next: authorized publication and hosted conformance
 execution of the repaired candidate, then inspect its actual results.
+
+## Follow-up repair job 9458faa2 — independently rerun, still blocked
+
+Exact assigned starting HEAD: `ac0497aa05d1634cdbd59b7795912a87ece5226b`,
+clean on `auto-80`. Scope frozen to issue #80; no incoming edits were discarded.
+The job directory contained no driver `check-*.log` files. Fresh logs are under
+`/home/dev/maistro/jobs/9458faa2d88746c185f294add7019bff/worker-*.log`.
+This follow-up changes only this evidence note (inventory delta remains zero).
+
+The previous block was checked against the exact assigned candidate, not a
+substituted remote branch:
+
+```text
+gh api repos/Agent-StrongHold/Project-mAIstro/commits/ac0497aa05d1634cdbd59b7795912a87ece5226b/check-runs
+HTTP 422: No commit found for SHA
+```
+
+Remote ref **not found; skipped** further remote inspection. Publishing or
+triggering hosted validation is outside this worker's authority. The inherited
+image-load/AppArmor failure is already addressed by the committed private
+mount-namespace wrapper; its regression executed successfully below. No new
+implementation failure justified changing that repair or the sandbox flags.
+
+Fresh commands and outcomes:
+
+- `MAISTRO_TEST_ROOTLESS_LANE=1 XDG_RUNTIME_DIR=/run/user/1000
+  DOCKER_HOST=unix:///run/user/1000/docker.sock uv run pytest
+  packages/maistro-bootstrap/tests -x -q -rs`: **273 passed, 2 skipped**.
+  All 18 real qualifying-daemon conformance cases and the private namespace
+  provisioning regression ran. Skips were Windows-only behavior and the
+  inverse rootful refusal case. Docker independently reported rootless,
+  seccomp, cgroup v2 and systemd; an existing daemon was used, not a freshly
+  provisioned hosted runner.
+- `DOCKER_HOST=unix:///var/run/docker.sock uv run pytest
+  packages/maistro-bootstrap/tests/test_container_sandbox.py::test_sandbox_refuses_a_rootful_unmapped_daemon
+  -x -q -rs`: **1 passed**; this daemon independently reported no rootless
+  security option.
+- `DOCKER_HOST=unix:///run/user/1000/docker.sock docker run --rm
+  --network=none --memory=64m --memory-swap=64m maistro-builders:latest
+  cat /sys/fs/cgroup/memory.max`: **67108864**.
+- `uv run pytest packages/maistro-rsi/tests -x -q`: **801 passed**, seven
+  existing Pydantic deprecation warnings.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'`: **passed**, 1403 reviewed
+  identities / 1403 findings, **zero unclassified**. No unbanked or eliminated
+  identity requires a ledger amendment in this CI-repair round.
+- `uv run ruff check .` and `uv run ruff format --check .`: **passed**,
+  2602 files formatted.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-bootstrap/tests`: **275, matches**.
+- `uv run python scripts/<gate>`: **passed** for `check-merge-markers.py`,
+  `check-build-context.py`, `check-security-inventory.py`,
+  `check-workflow-write-safety.py`, and `check-required-checks.py`.
+
+The acceptance table above is re-proven locally by these executions: all eight
+attack surfaces, network/credential default deny, seed exclusions and unsafe
+replacement refusal, non-root candidate execution, read-only write scope,
+timeout/detached-process kill, cleanup and memory exhaustion. Tests instantiate
+the production `ContainerBuilderSandbox` imported by
+`maistro_rsi.contained_validation` (lines 73–81), not a separately hardened
+fixture. SECURITY.md limitation 8 and the support matrix accurately retain
+both hosted-execution and shared-kernel limitations. ADR-093's supervised
+Tier-3 allowance does not establish hardware/kernel-exploit containment;
+SPEC-190 remains proposed. No execution authority or canonical lifecycle was
+changed.
+
+**Remaining acceptance: hosted conformance lane execution UNVERIFIED.** The
+suite is configured in `.github/workflows/ci.yml:615–616`, but this candidate
+is unavailable remotely. Local success cannot prove a hosted run. Handoff
+remains **BLOCKED**: checked 1, done 0 (acceptance incomplete), skipped 0 issues,
+errors 1 (exact remote ref lookup); next is authorized publication and hosted
+validation, not another speculative code repair.
