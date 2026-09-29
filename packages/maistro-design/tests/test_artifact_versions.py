@@ -853,3 +853,4 @@ class TestOneMixedControlProject:
         locked_tip = await service.tip(org_id=ORG, project_id=PROJECT, lineage_id="locked")
         assert locked_tip is not None
         assert (locked_tip.version, locked_tip.state) == (1, VersionState.ACCEPTED)
+

@@ -520,6 +520,33 @@ class CreativeArtifactService:
             brief_ref=brief_ref,
             decision_inputs=dict(decision_inputs or {}),
         )
+        # Get active locks for lock checking
+        locks = await self._store.active_locks(org_id, project_id, lineage_id)
+
+        # For generation (version 1), check branch and decision locks
+        # Version and region locks can't exist yet (version 1 doesn't exist)
+
+        conflicts: list[tuple[str, str]] = []
+        details: list[str] = []
+
+        for lock in locks:
+            blocked = False
+            if lock.scope is LockScope.BRANCH:
+                blocked = True
+            elif lock.scope is LockScope.DECISION and lock.decision_ref is not None:
+                cited = (decision_inputs or {}).get(lock.decision_ref)
+                blocked = cited is not None and cited != lock.decision_digest
+
+            if blocked:
+                conflicts.append((lock.lock_id, lock.scope.value))
+                details.append(f"{lock.scope.value} lock {lock.lock_id}")
+
+        if conflicts:
+            raise ArtifactLockConflict(
+                f"change to lineage {lineage_id!r} v1 "
+                f"conflicts with {len(conflicts)} active lock(s): {', '.join(details)}",
+                conflicts=tuple(conflicts),
+            )
         return await self._store.append_version(version)
 
     async def record_manual_edit(
