@@ -38,7 +38,19 @@ services:
       REQUIRE_AUTH: "true"
       # Shared only with the trusted Hive delegation bridge, never clients.
       TASK_DELEGATION_KEY: ${TASK_DELEGATION_KEY:?Set TASK_DELEGATION_KEY in .env}
-      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-}
+      # This stack runs no model gateway, so it needs one it can reach (#808).
+      # It used to pass LITELLM_BASE_URL alone, defaulting to empty, and no
+      # key at all -- while LITELLM_API_BASE, the name most of the code
+      # reads, was never set. A deployment booted, passed /health/ready, and
+      # could not call a single model. Required now, like every other
+      # dependency this file names, and every alias derived from the one
+      # input so no two components pick different gateways.
+      LITELLM_BASE_URL: "${LITELLM_BASE_URL:?Set LITELLM_BASE_URL in .env — this stack runs no model gateway of its own}"
+      LITELLM_URL: "${LITELLM_BASE_URL:?Set LITELLM_BASE_URL in .env — this stack runs no model gateway of its own}"
+      LITELLM_PROXY_URL: "${LITELLM_BASE_URL:?Set LITELLM_BASE_URL in .env — this stack runs no model gateway of its own}"
+      LITELLM_API_BASE: "${LITELLM_API_BASE:-${LITELLM_BASE_URL:?Set LITELLM_BASE_URL in .env — this stack runs no model gateway of its own}/v1}"
+      LITELLM_API_KEY: "${LITELLM_API_KEY:?Set LITELLM_API_KEY in .env — the gateway key}"
+      LITELLM_PROXY_KEY: "${LITELLM_API_KEY:?Set LITELLM_API_KEY in .env — the gateway key}"
       FILE_STORE_PATH: /var/lib/maistro/files
     volumes:
       - file-store:/var/lib/maistro/files
