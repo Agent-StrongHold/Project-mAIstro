@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Decide whether this ADR is primarily normative architectural vocabulary/invariants or mandates a shared runtime `Repertoire/repertoire_run` abstraction. If vocabulary, revise/supersede the generic-runtime requirements and let subsystems conform conceptually without forced indirection. If a shared runtime is intended, wire at least one canonical reachable subsystem through it and reconcile signed/executable entries with the post-ADR-069 Capability Provider/Invocation architecture before promotion.  
 **Current state:** SPEC-258 built the generic protocol/cascade but explicitly deferred migrating any existing subsystem, leaving the machinery unreachable. The reuse-first / verify-before-store / outcome-demotion pattern remains useful, but production value does not require every subsystem to call one generic helper. The ADR's signing dependency also inherits ADR-069's unresolved execution boundary.  
 **ADR:** [ADR-070: The Repertoire Pattern — reuse-first cascade](../../../adr/ADR-070-repertoire-pattern.md)
+
+## ADR-075: Universal Artifact Versioning and Release Channels
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Create a successor ADR mapping runtime-artifact identity/versioning onto current canonical artifacts: Persona, NodeTemplate/GraphTemplate, Capability Provider/Binding, governed policy/config, and other actual runtime definitions. Preserve version pinning/history where it serves reproducibility, evaluation, safe promotion, and rollback of evolving artifacts, but explicitly separate that from pre-1.0 backward compatibility for deployments, which is not a goal. Remove Recipe/CodeRegistry-era assumptions and define the real registry/storage authority.  
+**Current state:** The learn-forward vs stable-promotion problem remains valid, especially for evolve-generated artifacts. The concrete artifact taxonomy and dependencies are stale, and "rollback any prior version" should not be interpreted as an obligation to preserve compatibility with old pre-1.0 deployments. This ADR needs a current successor rather than literal implementation against obsolete artifact kinds.  
+**ADR:** [ADR-075: Universal Artifact Versioning and Release Channels](../../../adr/ADR-075-universal-artifact-versioning.md)
