@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Audit ADR-044 Phase 4 and complete the legacy `canvas` → `canvas_asset` convergence. Under the current pre-1.0 development standard, preserving the old LayerType tool for backward compatibility has no architectural value; if the new path satisfies current requirements, remove the legacy path rather than maintaining dual behavior. Then verify canonical tool/capability registration and the executor/tool acceptance suite before promoting ADR-043.  
 **Current state:** AssetExecutor, AssetTool, and dedicated tests exist, and Davinci currently registers both `canvas` and `canvas_asset`. The ADR intentionally preserved dual legacy/new flows during migration, but that compatibility strategy conflicts with the current pre-1.0 rule to prefer architectural convergence over backward compatibility. ADR-044 is named as the retirement owner, so lifecycle completion depends on that convergence audit.  
 **ADR:** [ADR-043: Canvas Asset Executor and Tool — Agent Integration](../../../adr/ADR-043-canvas-asset-executor-and-tool.md)
+
+## ADR-044: LayerRecord → AssetInstance Migration Plan
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** **Create a successor ADR for direct pre-1.0 Canvas cutover, then supersede ADR-044.** The successor should make AssetInstance/canvas_asset canonical, remove legacy LayerRecord/tool/compositor/schema paths wherever the current architecture does not require them, and explicitly reject bridge/backfill/deprecation-delay work whose only purpose is backward compatibility. Pre-1.0 deployments are rebuilt from scratch, so preserving old production rows/callers has no architectural value.  
+**Current state:** ADR-044's four-phase six-week migration strategy conflicts with the current pre-1.0 development standard. It deliberately preserves dual models, builds compatibility bridges/backfills, waits through deprecation periods, and delays deletion for legacy consumers. That work is now counterproductive because backward compatibility is not a design objective before 1.0 and may conceal failure to converge on the new architecture.  
+**ADR:** [ADR-044: LayerRecord → AssetInstance Migration Plan](../../../adr/ADR-044-layerrecord-to-assetinstance-migration.md)
