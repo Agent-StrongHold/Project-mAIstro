@@ -67,3 +67,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Correct the document's stale internal `Status: Proposed` line and broken/misleading related-ADR commentary, then refresh examples against current canonical architecture. Preserve the principle that security, interpretability, auditability, and governed authority justify structural cost, while unnecessary scaffolding does not. Any "trusted local lane" must still have explicit authority/effect boundaries rather than becoming a bypass around canonical principals, Sentinel, or Invocation evidence.  
 **Current state:** The front matter/history make this an Accepted architectural posture, while the body still says Proposed and one related reference mislabels ADR-091 as durable execution. The core decision remains highly relevant: MAIstro intentionally accepts some capability/smoothness cost for control, but must continuously prove that each structural constraint serves a real governance requirement.  
 **ADR:** [ADR-092: Capability-vs-control posture](../../../adr/ADR-092-capability-vs-control-posture.md)
+
+## ADR-062226-674b: Constant tunability ladder
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep the Tunable → Enumerated → Locked evidence ladder, but apply it only after ADR-078's real ConfigStore exists and only to genuine operational tuning knobs. Do not force configuration indirection onto constants that are already architectural invariants or implementation details with no plausible deployment-specific value. Require evidence for narrowing as the ADR states.  
+**Current state:** The maturity model is useful governance, but its universal default of ConfigStore-backing every new implementation-defined numeric constant currently depends on an unfinished configuration control plane and risks over-configuration. Treat it as a target policy, not proof that existing constants are dynamically tunable today.  
+**ADR:** [ADR-062226-674b: Constant tunability ladder](../../../adr/ADR-062226-674b-constant-tunability-ladder.md)
