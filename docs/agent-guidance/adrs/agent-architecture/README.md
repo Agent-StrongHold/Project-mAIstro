@@ -83,3 +83,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Preserve measured competence and cost as routing evidence, but remove `Permission` as an independently stored authorization truth if it can drift from canonical principal/Binding policy. A profile may expose only currently authorized capabilities, while authority itself remains derived at decision time. Map competence/cost to Persona/NodeTemplate/provider observations and canonical Invocation telemetry before designing the reasoning router.  
 **Current state:** Separating "allowed," "good at," and "costly" is conceptually correct, especially for delegation/routing. The permission dimension is dangerous if persisted as a parallel authorization bit, and the agent-centric schema predates current Persona/Capability Binding architecture. Keep Proposed until ownership is clarified.  
 **ADR:** [ADR-070426-c4b2: CapabilityProfile](../../../adr/ADR-070426-c4b2-capability-profile.md)
+
+## ADR-081226-e626: Persona and Product Surface Model
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep Persona strictly as Workspace preference/product configuration and continue removing any permission, identity, lifecycle, or hidden-surface behavior that leaks into it. Surface configuration remains deferred until a real Persona use case exists; do not recreate inert Simple/Power modes. Map preferred providers/capabilities only after authorization/resource visibility produces the legal candidate set.  
+**Current state:** This is the canonical Persona distinction: one live Persona per Workspace, never an actor or principal. The September amendment correctly removed a UI mode that had no observable effect rather than preserving an inert compatibility surface.  
+**ADR:** [ADR-081226-e626: Persona and Product Surface Model](../../../adr/ADR-081226-e626-persona-surface-model.md)
