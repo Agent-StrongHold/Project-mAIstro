@@ -123,3 +123,48 @@ execution/Goal authorities.
   reconciliation, #774 CreativeBrief records, #775 creative Graph, #776
   working graph), then implement #777 as the consumer projection.
 - No closure keywords used anywhere; `Refs #777` only.
+
+## Re-verification at lane head 58dbcaf89 (2026 addendum)
+
+The original record above was written at base `55be1459b`. The lane head under
+review is now `58dbcaf893007abefb3716daf9e8642d70f6bd05` = merge of develop
+`f876b77e168fc92e2c41fb067e96daadcb424dde` into `auto-777`; the earlier
+"Branch state" section is therefore superseded by this addendum.
+
+**Develop delta since `55be1459b` (7 commits, none #777-related):** `f876b77e1`
+(mutation baseline for `secret_equal`, #1658) and six orphaned-lane rebuild
+commits (L74/L1113/L446/L1134/L847/L155). No dependency issue (#458, #804,
+#805, #806, #774, #775, #776) landed.
+
+**Dependency audit re-confirmed at `58dbcaf89` by direct inspection:**
+- No `GoalRevision`/`goal_store`/`CreativeBrief` implementation anywhere under
+  `packages/*/src` — only future-consumer docstrings in
+  `packages/maistro-core/src/maistro/agents/brief_interview.py:1-5,447`.
+- No "ladybug" match under `packages/*/src` (#776 absent).
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-6`: physical
+  Attempt/NodeRun "lifecycle bookkeeping only" — not #804 Goal reconciliation.
+- `packages/maistro-core/src/maistro/security/sentinel/permission_source.py:79`:
+  #804 governed tool-use "plugs in as another PermissionSource" — future work.
+- `packages/hive-conductor/backend/services/brief_store.py:4-6`: interview is
+  "chat state, not a Goal: nothing here is a Goal or CreativeBrief record".
+- `packages/hive-conductor/backend/routes/design.py` has zero
+  `workspace_agent` references; no control-mode/mixed-control state exists in
+  `maistro-design` or hive-conductor backend production code.
+- `tests/test_shared_interop_ontology.py:133-134` still pins
+  `workspace_agent`/`design_studio` as M3 consumers (declarations only).
+
+**Executed at `58dbcaf89` (all by the re-verifier):**
+- `uv run ruff check .` — All checks passed.
+- `uv run pytest packages/maistro-design/tests -x -q` — 351 passed.
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py -q` — 18 passed.
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_agent_materialization.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q` —
+  53 passed.
+
+**Conclusion unchanged:** all 13 #777 acceptance criteria remain UNMET at this
+head; the issue stays blocked on its unlanded canonical dependencies and the
+stop condition still forbids any Design-Studio-private substitute. No closure
+keywords in branch commits or the PR body (`Refs #777` only).
