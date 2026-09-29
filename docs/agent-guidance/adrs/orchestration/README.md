@@ -99,3 +99,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Audit whether IntentClassifier remains a canonical reachable pre-admission/routing component. If retained, remap its outputs to current GraphTemplate/NodeTemplate selection, Provider/model routing, and canonical child-Run decomposition for multi-intent requests; remove ADR-010 lane/Task-era assumptions and only source thresholds from ADR-078 once ConfigStore is implemented. If the current harness/planner architecture makes a separate intent classifier redundant, create a successor/supersession decision rather than maintaining another routing authority.  
 **Current state:** The cheap deterministic → model-on-ambiguity pattern is sensible, but the ADR's downstream consumers and multi-intent execution model predate current canonical execution. This audit did not establish production reachability, so the decision remains Accepted pending an authority/reachability check.  
 **ADR:** [ADR-089: Intent Classifier — thresholded escalation and multi-intent routing](../../../adr/ADR-089-intent-classifier.md)
+
+## ADR-070426-b5e9: Six-tier priority system (P0-P5)
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Decide whether one six-tier label still usefully spans scheduling, routing, spend, and observability after TaskQueue/TaskRunner retirement. If retained, attach it to canonical Run admission/scheduling and treat model/token/cost behavior as policy mappings rather than immutable tier semantics. Remove Builders-specific P4/P5 meanings and all legacy compatibility defaults.  
+**Current state:** A shared priority label can prevent cross-subsystem disagreement, but this proposal hard-codes workload meanings and resource multipliers around obsolete Task/Builders architecture. Priority should describe urgency/service class, not permanently encode which historical subsystem created the work.  
+**ADR:** [ADR-070426-b5e9: Six-tier priority system](../../../adr/ADR-070426-b5e9-six-tier-priority-system.md)
