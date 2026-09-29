@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Remeasure all ADR-063 acceptance criteria against the post-#58 canonical Invocation integration, add direct request/outcome evidence for any criteria still only declared/passing, and update the historical body sections that describe the removed detached `execute_with_pool` retry loop. If selection/rotation/cooldown/blocking are all proven reachable through Provider resolution and Invocation outcomes, transition ADR-063 to `Implemented`.  
 **Current state:** #58 materially converged this design: credential selection now flows through `maistro.container → effect_context → credential_routing → credentials.pool`, and rotation reacts to real Invocation outcomes rather than an invisible library retry loop. The credential modules left the unreachable baseline. The ADR remains Accepted pending a clean post-convergence AC/evidence reconciliation rather than relying on the old mechanism description.  
 **ADR:** [ADR-063: Credential Pool and Automatic Key Rotation](../../../adr/ADR-063-credential-pool-and-rotation.md)
+
+## ADR-066: P1 Resilience and Control
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Split/rewrite this proposal before acceptance so each concern lands at its current canonical boundary: delegation/subgraph depth on child Runs and delegation provenance; context compaction in the canonical context/harness path; steering as durable Run guidance/input; rate-limit coordination in provider/credential/quota routing; retry policy on Attempts/Invocations; model-context probing in provider/model capability resolution. Remove GraphRun-as-execution-owner and file-local coordination assumptions where they conflict with current architecture.  
+**Current state:** The six operational concerns remain legitimate, but the proposal was built as an extension of ADR-062's now-retired GraphRun execution authority and bundles independently evolving subsystems into one decision. Keeping it Proposed is correct; accepting it unchanged would recreate non-canonical control and retry paths.  
+**ADR:** [ADR-066: P1 Resilience and Control](../../../adr/ADR-066-p1-resilience-and-control.md)
