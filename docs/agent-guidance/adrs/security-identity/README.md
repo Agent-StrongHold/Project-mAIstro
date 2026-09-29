@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile ADR-023 with ADR-021's later opt-in seed amendment and the current HITL/authorization architecture before any implementation. If crypto operations remain desired, create a current spec that preserves propose/sign/execute separation, bounded spending authority, explicit human escalation, and auditability without making seed/wallet infrastructure a baseline dependency; otherwise supersede this ADR.  
 **Current state:** No CryptoOps/SpendingPolicy implementation was located. This remains an optional future capability. Its statement that the Conductor Seed is generated regardless is stale against ADR-021's later decision that seed/DID/wallet functionality is opt-in, so agents must not infer any current wallet, payment, signing, or crypto authority from this accepted ADR.  
 **ADR:** [ADR-023: Agent Crypto Operations & Spending Policy](../../../adr/ADR-023-agent-crypto-ops.md)
+
+## ADR-024: Agent Identity & Verifiable Credentials (DID + VC)
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Reconcile this ADR with the canonical principal/workspace/delegation/Run identity model and ADR-021's opt-in seed amendment. If DID/VC remains desired, redefine and implement it explicitly as an optional federation/cryptographic-attestation layer over canonical runtime identities, with mappings and authority boundaries that prevent a DID from becoming an alternate authorization principal. Otherwise identify/create the successor decision and supersede ADR-024.  
+**Current state:** No IdentityService, DID-document publication, or VC signing/verification implementation was located. Current runtime identity and authorization use canonical principals, Workspace scope, delegation identity, and Run provenance. ADR-024's claim that every conductor automatically has a seed-derived `did:key` is stale against ADR-021's later opt-in decision; DID/VC is therefore not current authentication or execution identity.  
+**ADR:** [ADR-024: Agent Identity & Verifiable Credentials (DID + VC)](../../../adr/ADR-024-agent-identity-did-vc.md)
