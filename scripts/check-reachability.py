@@ -71,11 +71,6 @@ _EXCLUDED_PACKAGE_PYTHON = frozenset(
         "packages/hive-conductor/dags/marketing.py",
         "packages/hive-conductor/dags/press_releases.py",
         "packages/hive-conductor/dags/product_management.py",
-        # Canvas migration environment
-        # (packages/maistro-canvas/frontend/alembic/).
-        "packages/maistro-canvas/frontend/alembic/env.py",
-        "packages/maistro-canvas/frontend/alembic/versions/001_initial_schema.py",
-        "packages/maistro-canvas/frontend/alembic/versions/003_canvas_job_lease_203.py",
         # Book-maker POC backend surfaces with no runtime path
         # (packages/maistro-canvas/frontend/server/).
         "packages/maistro-canvas/frontend/server/config.py",
