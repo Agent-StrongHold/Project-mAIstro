@@ -1,6 +1,7 @@
 ---
 inventory-delta:
   scripts/: +2
+  docs/testing/soak/evidence/: +4 (repair-round validation artifacts, not collected tests)
 ---
 
 # M3-A #860 multi-replica load & concurrency soak harness
@@ -57,6 +58,25 @@ repaired the three harness-side ones:
   `CREATE INDEX IF NOT EXISTS idx_learnings_scope` race reproduced against
   pinned pg18 (`duplicate key value violates unique constraint
   "pg_class_relname_nsp_index"`); must be fixed before the promotion soak.
+
+### Mini soak at the repair head (functional validation, NOT promotion evidence)
+
+`--sustain-seconds 120 --rps 4 --workers 4` on a clean tree at the repair
+commit, evidence in `evidence/m3a-repair-validation*.json|.log` (120 s ≪ the
+4 h minimum; this run validates the harness, it does not sign the RC):
+
+- Repairs live: real SIGKILL failover (killed → rejoined in 15 s, vs run 1's
+  <1 s no-op), `rate_limit_enforced=true` on the `/tasks` probe,
+  `exactly_once_schedule_occurrence=true` (per-occurrence gate),
+  `hashes.git_clean=true`.
+- F3 reproduced unchanged (1671/2271 sustained requests = 502 through the
+  LB while all phase/burst requests succeed) — still the promotion blocker.
+- New gate observation, handled: `exactly_once_task_admission` failed
+  strictly because 4/6 duplicate submissions got LB 502s while the 2
+  delivered agreed on one run_id — exactly-once unproven under the storm,
+  not falsified; the phase now records `delivered` + `cause` so run 2 can
+  tell transport degradation from a duplicate (gate strictness unchanged).
+- Teardown left no orphans (replica/LB ports free after exit).
 
 No pytest nodes added or removed; deltas remain `scripts/soak/` tooling and
 evidence prose.

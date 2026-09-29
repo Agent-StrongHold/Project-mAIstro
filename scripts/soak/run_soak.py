@@ -536,9 +536,24 @@ async def phase_exactly_once_tasks(base: str, headers: dict[str, str], n: int) -
         await asyncio.gather(*(submit(client) for _ in range(n)))
 
     distinct = {r for r in run_ids if isinstance(r, str)}
+    delivered = sum(1 for s in statuses if s in (200, 202, 409))
+    if len(distinct) <= 1 and delivered == len(statuses):
+        cause = "ok"
+    elif len(distinct) <= 1:
+        # Reproduced in the repair-round mini soak: 4 of 6 duplicate
+        # submissions died as LB 502s (the F3 storm) while the 2 delivered
+        # agreed on one run_id. The strict gate stays failed — the probe did
+        # not exercise 6-way concurrency — but the evidence must say whether
+        # that is because duplicates were refused or because the LB never
+        # delivered the requests.
+        cause = "transport-degraded (LB 5xx): exactly-once unproven, not falsified"
+    else:
+        cause = "duplicate-or-refused run ids across concurrent submissions"
     return {
         "concurrent_submissions": n,
         "statuses": statuses,
+        "delivered": delivered,
+        "cause": cause,
         "distinct_run_ids": sorted(distinct),
         "duplicate_run_ids": len(run_ids) - len(distinct) - run_ids.count(None),
         "ok": len(distinct) <= 1 and all(s in (200, 202, 409) for s in statuses),
