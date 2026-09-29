@@ -75,3 +75,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep the Tunable → Enumerated → Locked evidence ladder, but apply it only after ADR-078's real ConfigStore exists and only to genuine operational tuning knobs. Do not force configuration indirection onto constants that are already architectural invariants or implementation details with no plausible deployment-specific value. Require evidence for narrowing as the ADR states.  
 **Current state:** The maturity model is useful governance, but its universal default of ConfigStore-backing every new implementation-defined numeric constant currently depends on an unfinished configuration control plane and risks over-configuration. Treat it as a target policy, not proof that existing constants are dynamically tunable today.  
 **ADR:** [ADR-062226-674b: Constant tunability ladder](../../../adr/ADR-062226-674b-constant-tunability-ladder.md)
+
+## ADR-081226-9944: Canonical Product Hierarchy and Ownership
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat this as the ownership constitution for convergence. Every durable object must carry Workspace identity; project-scoped objects additionally carry exactly one Project; Templates are the intentional Workspace-wide reusable-definition exception. Continue deleting obsolete compatibility facades after callers move, exactly as this ADR's migration posture requires.  
+**Current state:** This decision resolves the product hierarchy and explicitly adopts the pre-1.0 posture we are enforcing in this audit: build canonical model → move useful behavior → change real callers → delete obsolete system. It cleanly separates Persona, Templates, Project objects, execution hierarchy, and capability fulfillment.  
+**ADR:** [ADR-081226-9944: Canonical Product Hierarchy and Ownership](../../../adr/ADR-081226-9944-canonical-product-hierarchy-and-ownership.md)
+
+## ADR-081226-bb3a: Template, Object and Provenance Semantics
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep immutable template-version provenance and explicit instantiate/save-as-template semantics as canonical. Finish replacing older Recipe/Agent/GraphConfig reusable definitions with NodeTemplate/GraphTemplate or clearly domain-specific templates, and enforce exact version pinning inside GraphTemplate snapshots. Do not interpret immutable provenance as a pre-1.0 compatibility promise.  
+**Current state:** This ADR cleanly separates reusable immutable definitions from mutable Project objects. Instantiation is copy-plus-provenance, existing objects never silently follow template updates, and execution state cannot leak into templates. This is the right successor for much of ADR-053/075-era artifact versioning.  
+**ADR:** [ADR-081226-bb3a: Template, Object and Provenance Semantics](../../../adr/ADR-081226-bb3a-template-object-provenance-semantics.md)
