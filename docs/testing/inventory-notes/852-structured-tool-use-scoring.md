@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-evolve/tests: +69
+  packages/maistro-evolve/tests: +1
 ---
 # Issue #852 structured-only tool-use scoring (tau-bench, BFCL)
 
@@ -23,9 +23,15 @@ observed calls only:
 
 Test deltas: `tests/benchmarks/test_bfcl.py` and
 `tests/benchmarks/test_tau_bench.py` rewritten to the structured contract
-(+69 tests across both), each including the adversarial cases that used to
+(each including the adversarial cases that used to
 score: negation prose, name concatenation in prose, prose call syntax, and
 prose-only conversations asserting an exact 0.0 benchmark score. Structural
 positives (JSON objects/lists, key fallbacks, precision clamping, turn
 simulation with real structured calls) keep equivalent coverage to before;
 no test was deleted without a structured replacement.
+
+Net collected node-ID delta (test_bfcl.py 42→41, test_tau_bench.py 26→28):
+**+1** — the rewrite is count-neutral by design: every prose-tolerant case
+was replaced 1:1 by its structured-contract counterpart, so the suite grew
+by exactly the two new conversation-loop cases and the dropped duplicate
+prose-parse case.

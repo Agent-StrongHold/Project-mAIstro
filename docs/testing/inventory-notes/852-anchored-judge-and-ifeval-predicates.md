@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-evolve/tests: +33
+  packages/maistro-evolve/tests: +26
 ---
 # Issue #852 anchored judge parsing and bidirectional IFEval predicates
 
@@ -25,7 +25,9 @@ Test deltas:
 
 - `tests/test_scoring.py`: TestJudgeScore rewritten to the adversarial
   contract (negation, bare numbers, malformed input, JSON schema, clamping)
-  plus TestJsonFieldMatchBidirectional (+33 tests total across both files).
+  plus TestJsonFieldMatchBidirectional. Net collected node-ID delta across
+  both files (test_scoring.py 36→48, test_ifeval.py 0→14): **+26** — the
+  ledger records deltas, not totals in the rewritten files.
 - `tests/benchmarks/test_ifeval.py` (new): bidirectional rule evaluation,
   fail-closed unknown rules, and mutation-killing assertions for value
   redaction and permissive-parser regressions.
