@@ -419,12 +419,28 @@ class InvalidationReport:
 
 
 def _shared_signature(brief: CreativeBrief) -> dict[str, Any]:
-    """The shared-decision fields whose change invalidates all descendants."""
+    """The shared-decision fields whose change invalidates all descendants.
+
+    Mirrors the slice :func:`maistro_design.creative_nodes.shared_decision_digest`
+    digests — the shared decisions every branch consumes through the relayed
+    shared context, including who owns/delegates the Goal and who benefits.
+    The invalidation answer and the decision identities the message/visual
+    stages cite must never disagree about what counts as a shared decision:
+    a field whose change moves the digest without invalidating descendants
+    would re-plan branches onto stale decisions (#775 repair).
+    """
     return {
         "goal_revision": brief.goal_revision,
+        "goal_owner_agent_id": brief.goal_owner_agent_id,
+        "goal_delegation_ref": (
+            brief.goal_delegation_ref.model_dump(mode="json")
+            if brief.goal_delegation_ref is not None
+            else None
+        ),
         "persona": (brief.persona.ref_id, brief.persona.version),
         "design_system": (brief.design_system.ref_id, brief.design_system.version),
         "audience": brief.audience,
+        "beneficiaries": list(brief.beneficiaries),
         "required_messages": list(brief.required_messages),
         "cta": brief.cta,
         "required_facts": [fact.model_dump(mode="json") for fact in brief.required_facts],

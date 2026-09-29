@@ -44,7 +44,11 @@ from maistro_design.creative_graph import (
     plan_creative_graph,
     run_creative_graph,
 )
-from maistro_design.creative_nodes import CreativeArtifactGenerate
+from maistro_design.creative_nodes import (
+    CreativeArtifactGenerate,
+    shared_context_from_brief,
+    shared_decision_digest,
+)
 
 WS = "ws-creative"
 PROJ = "proj-campaign"
@@ -545,6 +549,75 @@ def test_changing_one_poster_dimension_does_not_regenerate_website_copy() -> Non
     assert report.invalidated_request_ids == ("poster-launch",)
     assert report.unchanged_request_ids == ("landing-page", "launch-deck")
     assert "dimensions" in report.reasons["poster-launch"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("beneficiaries", ("creative small teams",), id="beneficiaries"),
+        pytest.param("goal_owner_agent_id", "agent-delegate-design", id="goal_owner_agent_id"),
+        pytest.param("goal_delegation_ref", None, id="delegation-removed"),
+        pytest.param(
+            "goal_delegation_ref",
+            BriefReference(kind="delegation", ref_id="delegation-other", workspace_id=WS),
+            id="delegation-moved",
+        ),
+    ],
+)
+def test_relayed_shared_field_changes_invalidate_every_descendant(
+    field: str, value: object
+) -> None:
+    """Every field the shared-decision identity covers invalidates everything.
+
+    ``beneficiaries``, ``goal_owner_agent_id`` and ``goal_delegation_ref`` are
+    relayed to every branch through the shared context and digested into the
+    message-decision identity (:func:`shared_decision_digest`), so a change to
+    any of them is a shared-decision change: the invalidation signature and
+    the decision identities the message/visual stages cite are one authority.
+    Under-invalidating them would re-plan branches whose durable records cite
+    decision ids that no longer match the brief version they claim to fulfill
+    (#775 repair).
+    """
+    old = _brief()
+    new = old.new_version(change_note=f"{field} changed", **{field: value})
+    report = invalidated_requests(old, new)
+
+    assert report.goal_revision_changed is False
+    assert report.shared_context_changed is True
+    assert report.invalidated_request_ids == ("landing-page", "launch-deck", "poster-launch")
+    assert report.unchanged_request_ids == ()
+    assert field in report.reasons["*"]
+
+
+def test_shared_decision_identity_covers_the_relayed_agent_and_beneficiary_fields() -> None:
+    """The decision-identity side of the agreement: holding the brief fixed,
+    each relayed shared field moves the message-decision digest. Combined
+    with the invalidation tests above, this pins that neither authority
+    covers a field the other ignores."""
+    base_context = shared_context_from_brief(_brief())
+    base_digest = shared_decision_digest(base_context)
+
+    for field, value in (
+        ("beneficiaries", ["creative small teams"]),
+        ("goal_owner_agent_id", "agent-delegate-design"),
+        ("goal_delegation_ref", {"kind": "delegation", "ref_id": "delegation-other"}),
+    ):
+        mutated = {**base_context, field: value}
+        assert shared_decision_digest(mutated) != base_digest, field
+
+
+def test_new_version_with_unchanged_decisions_invalidates_nothing() -> None:
+    """Version minting alone is not a semantic change: same audience,
+    messages, persona, owner and delegation means nothing is invalidated and
+    no branch is re-planned."""
+    old = _brief()
+    new = old.new_version(change_note="editorial note only")
+    report = invalidated_requests(old, new)
+
+    assert report.goal_revision_changed is False
+    assert report.shared_context_changed is False
+    assert report.invalidated_request_ids == ()
+    assert report.unchanged_request_ids == ("landing-page", "launch-deck", "poster-launch")
 
 
 def _goal_revision_brief() -> tuple[CreativeBrief, CreativeBrief]:

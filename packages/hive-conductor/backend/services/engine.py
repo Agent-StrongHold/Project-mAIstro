@@ -106,6 +106,18 @@ class EngineService:
         return getattr(container, "run_reader", None)
 
     @property
+    def graph_run_store(self) -> Any:
+        """The core Container's durable graph-continuation store, or None.
+
+        The DurableRunStore the canonical graph executor checkpoints into —
+        Run + GraphExecutionState + NodeRuns + Attempts. None without the
+        bridge, like `run_store`: inspection then answers from the projection
+        alone rather than inventing graph state it cannot read (#775).
+        """
+        container = getattr(self._agent_port, "container", None)
+        return getattr(container, "graph_run_store", None)
+
+    @property
     def schedule_store(self) -> Any:
         """The core Container's canonical Schedule store, or None.
 
