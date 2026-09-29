@@ -19,27 +19,52 @@ Emits ranked proposals into stores.optimizer_proposals. Each proposal
 has a class:
 
   AUTO_APPLY — model swap / edge weight tune / retry-count adjustment.
-                Applied immediately UNLESS the target field is
-                edit_lock.is_locked() (manual user override). All
-                auto-applies write an audit_log entry.
+                Applied ONLY through the canonical candidate/promotion
+                contract (#861): the proposed change is registered as an
+                immutable candidate GraphTemplate version and promoted via
+                promote_audited. A proposal without a concrete target value
+                cannot be applied and is reported as `unsupported` — never
+                as applied. Every application outcome is audited with what
+                actually committed.
 
   PROPOSE    — topology mutations / prompt rewrites. The user reviews +
                approves via POST /v1/optimizer/proposals/{id}/accept.
-               The accept/reject is itself a Signal #4-style outcome
-               (the user's vote refines the next optimizer round).
+               Acceptance is a PromotionApproval: the mutation becomes a
+               candidate bound to the exact source DAG content hash and is
+               promoted through the canonical audited contract (#116,
+               ADR-082926-65bf). Verdict/evaluator output never mutates the
+               DAG directly — it is evidence; only the promoted candidate
+               changes state.
+
+Execution-tier kinds (upgrade_execution_tier) are REQUESTS ONLY: accepting one
+records an escalation request for the delegated authority (#845/#60) and never
+mutates the DAG or stamps an approval field.
 
 The optimizer never raises on data anomalies; missing / empty stores
-produce zero proposals and an empty result.
+produce zero proposals and an empty result. Unmeasured metrics are absent
+values (ADR-083026-a91e): missing latency contributes nothing to a score
+rather than crashing a None comparison or ranking as ideal.
 """
 
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+from services.optimizer_candidates import (
+    ESCALATION_KINDS,
+    MANUAL,
+    STALE,
+    UNSUPPORTED,
+    commit_candidate,
+    record_escalation,
+    snapshot_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,14 +172,19 @@ async def _collect_thumbs(
 
 
 def _collect_eval_verdicts(dag_id: str) -> list[dict[str, Any]]:
-    """Return eval-judge verdicts for this DAG (or all if none match)."""
+    """Return eval-judge verdicts that name exactly this DAG.
+
+    The old fallback — "use all verdicts when none match" — let verdicts
+    authored against one DAG surface as proposals for another, and an accepted
+    wrong-DAG proposal then mutated whichever DAG was being optimized (#861).
+    A verdict that does not name this dag_id is unattributable evidence here:
+    it contributes nothing. Missing evidence is absent, not a wildcard.
+    """
     import stores
 
-    matched = [v for v in stores.eval_verdicts.values() if v.get("dag_id") == dag_id]
-    if matched:
-        return matched
-    # Fallback: use all verdicts as signal (dag_id not always set)
-    return list(stores.eval_verdicts.values())
+    if not dag_id:
+        return []
+    return [v for v in stores.eval_verdicts.values() if v.get("dag_id") == dag_id]
 
 
 def _collect_user_edits(dag_id: str) -> list[dict[str, Any]]:
@@ -221,9 +251,16 @@ async def _build_snapshot_for_dag(
         # Signal #4 thumbs: (down - up) capped at 5 each → weight
         thumb_score = (th["down"] - th["up"]) * WEIGHT_THUMB
         thumb_score = max(0.0, thumb_score)  # only down moves the needle
-        # Signal #5 latency: p95 above threshold → weight
-        p95 = m.get("latency_ms_p95", 0)
-        latency_score = WEIGHT_LATENCY if p95 > LATENCY_P95_THRESHOLD_MS else 0.0
+        # Signal #5 latency: p95 above threshold → weight. An unmeasured p95
+        # is `None` (the metrics store reports absent, not zero — ADR-083026-a91e);
+        # `None > threshold` used to raise TypeError here, crashing the whole
+        # optimizer pass on ordinary missing-latency data. Absent latency
+        # contributes nothing: not a crash, and not an ideal score.
+        p95 = m.get("latency_ms_p95")
+        if p95 is None:
+            latency_score = 0.0
+        else:
+            latency_score = WEIGHT_LATENCY if p95 > LATENCY_P95_THRESHOLD_MS else 0.0
         # eval_judge: baseline contributes to every node in the latest run
         eval_score = eval_baseline * WEIGHT_EVAL_JUDGE
 
@@ -240,6 +277,9 @@ async def _build_snapshot_for_dag(
                 "thumbs": th,
                 "eval_verdicts": eval_context,
                 "user_edit_count": len(edits),
+                # How many observations actually carried a latency measure, so
+                # a zero latency_score is readable as "unmeasured", not "fast".
+                "latency_ms_measured": m.get("latency_ms_measured", 0),
             },
         )
     return snapshots
@@ -275,6 +315,11 @@ def _propose_for_snapshot(
                 "class": CLASS_AUTO_APPLY,
                 "kind": KIND_RETRY_COUNT,
                 "field_path": f"nodes[{snapshot.target_node_id}].config.max_retries",
+                # The one auto-apply kind with a concrete, auditable target:
+                # without a value to commit there is nothing to apply, and
+                # claiming an application would be the fake-success shape
+                # #861 removes.
+                "to_value": 3,
                 "rationale": (
                     f"Node {snapshot.target_node_id} fails intermittently. "
                     "A retry budget of 3 with exponential backoff would "
@@ -322,6 +367,9 @@ def _propose_for_snapshot(
                 "rationale": tp.get("expected_improvement", "")
                 or "Eval-judge proposed this topology mutation.",
                 "topology_proposal": tp,
+                # Provenance of the evidence this proposal surfaces: which
+                # evaluator authored the verdict it came from (#861).
+                "evaluator_version": v.get("evaluator_version", ""),
             }
         )
 
@@ -362,13 +410,20 @@ async def run_optimizer(
         {
           "dag_id": <id>,
           "proposals": [<proposal>, ...],   # ranked by priority_score desc
-          "auto_applied": int,
+          "auto_applied": int,              # only truthfully-committed applies
           "blocked_by_edit_lock": int,
         }
 
-    When `apply_auto=True`, AUTO_APPLY proposals that are NOT
-    edit-locked are immediately committed (model swap / retry count /
-    edge weight) and an audit_log entry is written per application.
+    Every proposal binds the exact source it was computed against
+    (`source_dag_hash`, `source_template_version`) plus the evaluator version
+    of the verdict evidence it surfaced, so a stale proposal can never be
+    applied to a different DAG state (#861).
+
+    When `apply_auto=True`, AUTO_APPLY proposals that are NOT edit-locked go
+    through the candidate/promotion path in services.optimizer_candidates and
+    report a truthful per-proposal `apply_outcome`: `applied` only after the
+    candidate version actually promoted, else `no_op` / `unsupported` /
+    `stale` / `failed`. `auto_applied` counts real applications only.
     When False (default), every proposal is recorded as PENDING and the
     user reviews via the UI.
     """
@@ -379,6 +434,7 @@ async def run_optimizer(
     from routes.audit import log_audit
 
     from services.edit_lock import is_locked
+    from services.optimizer_candidates import APPLIED, active_template_version
 
     snapshots = await _build_snapshot_for_dag(
         dag_id,
@@ -387,6 +443,13 @@ async def run_optimizer(
         project_id=project_id,
     )
     ranked = sorted(snapshots.values(), key=lambda s: s.priority_score, reverse=True)
+
+    # The exact-source binding every proposal from this pass inherits: the
+    # content hash of the DAG snapshot the signals were computed against, and
+    # the currently-active canonical template version when one exists (#861).
+    source_snapshot = stores.dags.get(dag_id)
+    source_hash = snapshot_hash(source_snapshot) if source_snapshot else ""
+    source_version = await active_template_version(dag_id)
 
     out_proposals: list[dict[str, Any]] = []
     auto_applied = 0
@@ -400,23 +463,34 @@ async def run_optimizer(
             proposal_id = str(uuid.uuid4())
             decision = DECISION_PENDING
             applied = False
+            apply_outcome: str | None = None
+            apply_detail = ""
+            resulting_version: int | None = None
+            candidate_hash_value: str | None = None
             field_path = raw["field_path"]
             blocked_by_lock = is_locked(dag_id, field_path, now=edit_lock_now)
             if raw["class"] == CLASS_AUTO_APPLY and apply_auto and not blocked_by_lock:
-                applied = True
-                auto_applied += 1
-                decision = DECISION_ACCEPTED
-                log_audit(
-                    action="optimizer_auto_apply",
+                # Application goes through the same candidate/promotion
+                # contract a human acceptance does — `applied` means a
+                # candidate version actually promoted, nothing less (#861).
+                outcome = await _apply_auto_proposal(
+                    raw,
+                    dag_id=dag_id,
+                    source_hash=source_hash,
+                    proposal_id=proposal_id,
                     actor=actor,
-                    target=dag_id,
-                    detail={
-                        "proposal_id": proposal_id,
-                        "kind": raw["kind"],
-                        "field_path": field_path,
-                        "rationale": raw["rationale"][:200],
-                    },
+                    target_node_id=snap.target_node_id,
                 )
+                apply_outcome = outcome["outcome"]
+                apply_detail = outcome["detail"]
+                resulting_version = outcome.get("resulting_version")
+                candidate_hash_value = outcome.get("candidate_hash")
+                if apply_outcome == APPLIED:
+                    applied = True
+                    auto_applied += 1
+                    decision = DECISION_ACCEPTED
+                elif apply_outcome == "escalated":
+                    decision = DECISION_PENDING  # a request is not a decision
             elif raw["class"] == CLASS_AUTO_APPLY and blocked_by_lock:
                 blocked += 1
                 decision = DECISION_PENDING  # surface as propose for human
@@ -429,8 +503,22 @@ async def run_optimizer(
                 "field_path": field_path,
                 "rationale": raw["rationale"],
                 "priority_score": snap.priority_score,
+                # The concrete target value for the one auto-apply kind that
+                # carries one (retry_count_tune); a human accept of this
+                # proposal applies the same committed value (#861).
+                "to_value": raw.get("to_value"),
+                # Exact-source binding: proposals from a stale snapshot are
+                # refused at apply time by content hash, never silently
+                # re-targeted at whatever the DAG now holds (#861).
+                "source_dag_hash": source_hash,
+                "source_template_version": source_version,
+                "evaluator_version": raw.get("evaluator_version", ""),
                 "blocked_by_edit_lock": blocked_by_lock,
                 "applied": applied,
+                "apply_outcome": apply_outcome,
+                "apply_detail": apply_detail,
+                "resulting_version": resulting_version,
+                "candidate_hash": candidate_hash_value,
                 "decision": decision,
                 "created_at": created_at,
                 "topology_proposal": raw.get("topology_proposal"),
@@ -447,6 +535,8 @@ async def run_optimizer(
             "auto_applied": auto_applied,
             "blocked_by_edit_lock": blocked,
             "apply_auto_flag": apply_auto,
+            "source_dag_hash": source_hash,
+            "source_template_version": source_version,
         },
     )
 
@@ -458,7 +548,69 @@ async def run_optimizer(
     }
 
 
-def record_decision(
+async def _apply_auto_proposal(
+    raw: dict[str, Any],
+    *,
+    dag_id: str,
+    source_hash: str,
+    proposal_id: str,
+    actor: str,
+    target_node_id: str = "",
+) -> dict[str, Any]:
+    """Attempt one auto-apply through the candidate/promotion contract.
+
+    Returns the apply record. Kinds that name no concrete value to commit are
+    `unsupported` — recorded as evidence, never reported as applied (#861).
+    """
+    from routes.audit import log_audit
+
+    candidate, outcome, detail = _mutated_snapshot(
+        {
+            "id": proposal_id,
+            "dag_id": dag_id,
+            "source_dag_hash": source_hash,
+            "kind": raw["kind"],
+            "topology_proposal": raw.get("topology_proposal")
+            or {
+                "kind": raw["kind"],
+                "target_node_id": target_node_id,
+                "to_value": raw.get("to_value"),
+            },
+        }
+    )
+    record: dict[str, Any] = {
+        "outcome": outcome,
+        "detail": detail,
+        "resulting_version": None,
+        "candidate_hash": None,
+    }
+    if outcome != BUILT:
+        log_audit(
+            action="optimizer_auto_apply",
+            actor=actor,
+            target=dag_id,
+            detail={
+                "proposal_id": proposal_id,
+                "kind": raw["kind"],
+                "outcome": outcome,
+                "detail": detail,
+            },
+        )
+        return record
+    from services.optimizer_candidates import commit_candidate as _commit
+
+    committed = await _commit(
+        dag_id,
+        candidate,
+        actor=actor,
+        proposal_id=proposal_id,
+        source_hash=source_hash,
+        reason=raw.get("rationale", ""),
+    )
+    return committed
+
+
+async def record_decision(
     proposal_id: str,
     decision: str,
     *,
@@ -466,7 +618,16 @@ def record_decision(
 ) -> dict[str, Any]:
     """Record an accept/reject on a proposal. The decision itself flows
     back into outcome_store as a Signal #4-equivalent so the next
-    optimizer pass treats user-approval as positive reinforcement."""
+    optimizer pass treats user-approval as positive reinforcement.
+
+    An accepted topology mutation is NOT written into the DAG record
+    directly (#861). It becomes an immutable candidate version of the DAG,
+    bound to the exact source content hash the proposal was computed
+    against, and is promoted through the canonical audited contract
+    (`promote_audited`) with the accepting user named as the approver. The
+    payload's `apply_outcome` says what actually happened; `applied` is
+    only ever true when a candidate version really promoted.
+    """
     if decision not in (DECISION_ACCEPTED, DECISION_REJECTED):
         raise ValueError(
             f"decision must be one of {(DECISION_ACCEPTED, DECISION_REJECTED)}, got {decision!r}"
@@ -481,11 +642,41 @@ def record_decision(
     payload["decision"] = decision
     payload["decided_by"] = actor
     payload["decided_at"] = datetime.now(UTC).isoformat()
-    stores.optimizer_proposals[proposal_id] = payload
 
-    # Apply accepted topology mutations to the DAG
-    if decision == DECISION_ACCEPTED and payload.get("kind") == KIND_TOPOLOGY:
-        _apply_topology_mutation(payload)
+    if decision == DECISION_ACCEPTED:
+        if payload.get("kind") == KIND_TOPOLOGY:
+            payload.update(await _apply_accepted_topology(payload, actor=actor))
+        elif payload.get("class") == CLASS_AUTO_APPLY:
+            # A human accepted what the optimizer would have auto-applied;
+            # same contract, the human is the approver of record.
+            raw = {
+                "kind": payload.get("kind", ""),
+                "rationale": payload.get("rationale", ""),
+                "to_value": payload.get("to_value"),
+                "topology_proposal": payload.get("topology_proposal"),
+            }
+            outcome = await _apply_auto_proposal(
+                raw,
+                dag_id=payload.get("dag_id", ""),
+                source_hash=payload.get("source_dag_hash", ""),
+                proposal_id=proposal_id,
+                actor=actor,
+                target_node_id=payload.get("target_node_id", ""),
+            )
+            payload["apply_outcome"] = outcome["outcome"]
+            payload["apply_detail"] = outcome["detail"]
+            payload["resulting_version"] = outcome.get("resulting_version")
+            payload["candidate_hash"] = outcome.get("candidate_hash")
+            payload["applied"] = outcome["outcome"] == "applied"
+        else:
+            # A proposal the optimizer cannot author itself (e.g. a prompt
+            # rewrite needs the human's words). The DECISION is recorded; the
+            # change itself is authored in the editor. Saying nothing here
+            # would leave the only apply-ish signal the old fake `applied`.
+            payload["apply_outcome"] = MANUAL
+            payload["apply_detail"] = "decision recorded; author the change in the DAG editor"
+
+    stores.optimizer_proposals[proposal_id] = payload
 
     # Track rejected edits so optimizer doesn't re-propose them (SkillOpt rejected-edit buffer)
     if decision == DECISION_REJECTED:
@@ -499,9 +690,63 @@ def record_decision(
             "proposal_id": proposal_id,
             "decision": decision,
             "kind": payload.get("kind"),
+            "apply_outcome": payload.get("apply_outcome"),
+            "resulting_version": payload.get("resulting_version"),
         },
     )
     return payload
+
+
+async def _apply_accepted_topology(payload: dict[str, Any], *, actor: str) -> dict[str, Any]:
+    """Apply an accepted topology proposal through the candidate contract.
+
+    Updates the payload dict in place with the truthful apply record keys and
+    returns them. Never writes the verdict-authored values into the live DAG
+    directly: the only mutation is a promoted, audited candidate version.
+    """
+    dag_id = payload.get("dag_id", "")
+    tp = payload.get("topology_proposal") or {}
+    mutation_kind = tp.get("kind", "")
+
+    # Execution-tier/authorization changes are REQUESTS ONLY (#861; #845/#60
+    # own the effective authority). Recording the request never mutates the
+    # DAG and never stamps an approval field — the historical behavior wrote
+    # `tier_approved_by: "admin"` here, certifying an approval nobody gave.
+    if mutation_kind in ESCALATION_KINDS or payload.get("kind", "") in ESCALATION_KINDS:
+        escalation = record_escalation(payload, actor=actor)
+        return {
+            "apply_outcome": escalation["outcome"],
+            "apply_detail": escalation["detail"],
+            "resulting_version": None,
+            "candidate_hash": None,
+            "applied": False,
+        }
+
+    candidate, outcome, detail = _mutated_snapshot(payload)
+    if outcome != BUILT:
+        return {
+            "apply_outcome": outcome,
+            "apply_detail": detail,
+            "resulting_version": None,
+            "candidate_hash": None,
+            "applied": False,
+        }
+    assert candidate is not None  # for the type checker: non-built outcomes returned above
+    committed = await commit_candidate(
+        dag_id,
+        candidate,
+        actor=actor,
+        proposal_id=payload.get("id", ""),
+        source_hash=payload.get("source_dag_hash", ""),
+        reason=payload.get("rationale", ""),
+    )
+    return {
+        "apply_outcome": committed["outcome"],
+        "apply_detail": committed["detail"],
+        "resulting_version": committed.get("resulting_version"),
+        "candidate_hash": committed.get("candidate_hash"),
+        "applied": committed["outcome"] == "applied",
+    }
 
 
 # SkillOpt rejected-edit buffer — prevents re-proposing failed mutations
@@ -531,7 +776,13 @@ def get_rejected_buffer(dag_id: str = "") -> list[dict[str, Any]]:
 
 
 def _apply_node_field_mutation(node: dict[str, Any], kind: str, tp: dict[str, Any]) -> None:
-    """Mutate a single matched node's field in place, per `kind`."""
+    """Mutate a single matched node's field in place, per `kind`.
+
+    Only kinds with a concrete content effect are handled here. Authorization
+    posture (execution tier) is deliberately absent: those proposals are
+    requests, decided by the delegated authority, never materialized by the
+    optimizer — and never self-stamped with an approval (#861, #845/#60).
+    """
     if kind == "swap_model":
         node["model"] = tp.get("to_value", node.get("model"))
     elif kind == "rewrite_prompt":
@@ -550,11 +801,6 @@ def _apply_node_field_mutation(node: dict[str, Any], kind: str, tp: dict[str, An
         node["name"] = tp.get("to_value", node.get("name"))
     elif kind == "change_role":
         node["role"] = tp.get("to_value", node.get("role"))
-    elif kind == "upgrade_execution_tier":
-        # REQUIRES ADMIN APPROVAL — optimizer can propose but never auto-apply
-        # Upgrading from light→heavy or heavy→container is a security decision
-        node.setdefault("config", {})["execution_tier"] = tp.get("to_value", "")
-        node["config"]["tier_approved_by"] = "admin"  # must be set by admin accept
 
 
 def _apply_edge_field_mutation(edge: dict[str, Any], kind: str, tp: dict[str, Any]) -> None:
@@ -577,11 +823,30 @@ _NODE_FIELD_KINDS = frozenset(
         "change_strategy",
         "rename_node",
         "change_role",
-        "upgrade_execution_tier",
     }
 )
+# `upgrade_execution_tier` is deliberately absent from both mutation sets:
+# it is an escalation request (see ESCALATION_KINDS), not an optimizer-applied
+# mutation. Adding it back here would reintroduce the self-stamped approval.
 # Kinds that mutate a matched edge's field (matched on from_node==target, to_node==from_value).
 _EDGE_FIELD_KINDS = frozenset({"tune_edge_weight", "set_edge_condition"})
+# Kinds applied as whole-snapshot structural mutations (nodes/edges/dag-level).
+_STRUCTURAL_KINDS = frozenset(
+    {
+        "add_node",
+        "drop_node",
+        "reorder",
+        "add_edge",
+        "remove_edge",
+        "change_max_cycles",
+        "change_entry",
+    }
+)
+
+#: `_mutated_snapshot` success marker: a candidate snapshot was built and the
+#: caller may commit it. Any other outcome string is already a truthful apply
+#: outcome (stale / unsupported) and committing must not proceed.
+BUILT = "built"
 
 
 def _reorder_node(nodes: list[dict[str, Any]], target: str) -> None:
@@ -644,37 +909,106 @@ def _apply_structural_mutation(
     return nodes, edges
 
 
-def _apply_topology_mutation(proposal: dict[str, Any]) -> None:
-    """Apply an accepted topology mutation to the DAG in stores."""
+def _mutate_node_fields(
+    nodes: list[dict[str, Any]], kind: str, target: str, tp: dict[str, Any]
+) -> str:
+    """Apply a node-field mutation to the one matching node. Empty detail = ok."""
+    for n in nodes:
+        if n.get("id") == target:
+            _apply_node_field_mutation(n, kind, tp)
+            return ""
+    return f"no node {target!r} in the bound snapshot"
+
+
+def _mutate_edge_fields(
+    edges: list[dict[str, Any]], kind: str, target: str, tp: dict[str, Any]
+) -> str:
+    """Apply an edge-field mutation to the matching edge. Empty detail = ok."""
+    for e in edges:
+        if e.get("from_node") == target and e.get("to_node") == tp.get("from_value"):
+            _apply_edge_field_mutation(e, kind, tp)
+            return ""
+    return f"no edge {target!r} -> {tp.get('from_value')!r}"
+
+
+def _mutate_retry_count(nodes: list[dict[str, Any]], target: str, tp: dict[str, Any]) -> str:
+    """The one auto-apply kind: set the target node's retry budget to the
+    proposal's concrete value (defaulting to the rationale's 3)."""
+    try:
+        to_value = int(tp.get("to_value", 3))
+    except (TypeError, ValueError):
+        return "retry-count proposal carries no integer target value"
+    for n in nodes:
+        if n.get("id") == target:
+            n.setdefault("config", {})["max_retries"] = to_value
+            return ""
+    return f"no node {target!r} in the bound snapshot"
+
+
+def _bound_source(proposal: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
+    """The DAG snapshot a proposal is bound to, or a refusal.
+
+    The binding check is the anti-retarget guard: a proposal whose recorded
+    source hash no longer matches the current DAG content is refused (`stale`)
+    rather than applied to whatever the DAG now holds — which is how verdict
+    fallback used to mutate a different DAG than the one the proposal was
+    authored against (#861).
+    """
     import stores
 
     dag_id = proposal.get("dag_id", "")
+    if not dag_id or dag_id not in stores.dags:
+        return {}, STALE, "no DAG record to bind the proposal to"
+    current = stores.dags[dag_id]
+    source_hash = proposal.get("source_dag_hash", "")
+    if not source_hash or snapshot_hash(current) != source_hash:
+        return {}, STALE, "DAG changed since the proposal was created; refusing to re-target"
+    return current, "", ""
+
+
+def _mutated_snapshot(proposal: dict[str, Any]) -> tuple[dict[str, Any] | None, str, str]:
+    """Build the candidate snapshot an accepted proposal would produce.
+
+    Returns (candidate_snapshot, outcome, detail). The mutation is computed on
+    a deep copy — the live DAG record is never touched here.
+    """
     tp = proposal.get("topology_proposal") or {}
-    kind = tp.get("kind", "")
+    kind = tp.get("kind", "") or proposal.get("kind", "")
     target = tp.get("target_node_id", "")
 
-    if not dag_id or dag_id not in stores.dags:
-        return
+    # Kind vocabulary first: a proposal whose kind has no applicable mutation
+    # can never be applied to *any* DAG state, so `unsupported` outranks the
+    # binding check (a valueless model_swap on a missing DAG is unsupported,
+    # not stale).
+    if kind in ESCALATION_KINDS:
+        return None, UNSUPPORTED, f"{kind!r} is an authorization request, never applied"
+    if kind not in _NODE_FIELD_KINDS | _EDGE_FIELD_KINDS | _STRUCTURAL_KINDS | {KIND_RETRY_COUNT}:
+        return None, UNSUPPORTED, f"kind {kind!r} has no applicable mutation"
 
-    dag = dict(stores.dags[dag_id])
-    nodes = dag.get("nodes", [])
-    edges = dag.get("edges", [])
+    current, outcome, detail = _bound_source(proposal)
+    if outcome:
+        return None, outcome, detail
+
+    candidate = copy.deepcopy(current)
+    nodes = candidate.get("nodes", [])
+    edges = candidate.get("edges", [])
 
     if kind in _NODE_FIELD_KINDS:
-        for n in nodes:
-            if n.get("id") == target:
-                _apply_node_field_mutation(n, kind, tp)
+        detail = _mutate_node_fields(nodes, kind, target, tp)
     elif kind in _EDGE_FIELD_KINDS:
-        for e in edges:
-            if e.get("from_node") == target and e.get("to_node") == tp.get("from_value"):
-                _apply_edge_field_mutation(e, kind, tp)
+        detail = _mutate_edge_fields(edges, kind, target, tp)
+    elif kind == KIND_RETRY_COUNT:
+        detail = _mutate_retry_count(nodes, target, tp)
     else:
-        nodes, edges = _apply_structural_mutation(dag, nodes, edges, kind, target, tp)
+        nodes, edges = _apply_structural_mutation(candidate, nodes, edges, kind, target, tp)
+        detail = ""
 
-    dag["nodes"] = nodes
-    dag["edges"] = edges
-    stores.dags[dag_id] = dag
-    logger.info("topology_mutation_applied dag=%s kind=%s target=%s", dag_id, kind, target)
+    if detail:
+        return None, UNSUPPORTED, detail
+
+    candidate["nodes"] = nodes
+    candidate["edges"] = edges
+    return candidate, BUILT, ""
 
 
 def list_proposals(

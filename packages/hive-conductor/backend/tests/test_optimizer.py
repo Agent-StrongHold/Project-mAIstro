@@ -27,6 +27,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
 from typing import Any
@@ -411,18 +412,29 @@ async def test_run_optimizer_default_does_not_apply() -> None:
     assert any(p["class"] == "auto_apply" for p in out["proposals"])
 
 
-async def test_run_optimizer_apply_auto_true_applies_unless_locked() -> None:
+async def test_run_optimizer_apply_auto_reports_truthful_outcomes() -> None:
+    """apply_auto=True without a concrete target value commits nothing.
+
+    The optimizer cannot author a model swap target, so the proposal is
+    reported `unsupported` — never `applied` (#861 removed the fake path that
+    marked valueless proposals applied with audit entries and no mutation).
+    """
     from services.optimizer import run_optimizer
 
     _seed_metrics("d2", "n-target", count=10, failed=8, p95=100)
     out = await run_optimizer("d2", apply_auto=True, actor="optimizer-bot")
-    # At least the model_swap auto-applies (no edit lock)
-    assert out["auto_applied"] >= 1
-    # Audit log has the auto-apply entry
+    # The model_swap proposal carries no target value → unsupported, not applied
+    assert out["auto_applied"] == 0
+    swap = next(p for p in out["proposals"] if p["kind"] == "model_swap")
+    assert swap["applied"] is False
+    assert swap["apply_outcome"] == "unsupported"
+    # No proposal claims an application it did not commit
+    assert all(not p["applied"] for p in out["proposals"])
     import stores
 
     apply_entries = [e for e in stores.audit_log.values() if e["action"] == "optimizer_auto_apply"]
     assert len(apply_entries) >= 1
+    assert all(e["detail"]["outcome"] != "applied" for e in apply_entries)
 
 
 async def test_run_optimizer_edit_lock_blocks_auto_apply() -> None:
@@ -475,9 +487,13 @@ async def test_record_decision_accepts_proposal() -> None:
     _seed_metrics("d-dec", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d-dec")
     pid = out["proposals"][0]["id"]
-    decision = record_decision(pid, "accepted", actor="alice")
+    decision = await record_decision(pid, "accepted", actor="alice")
     assert decision["decision"] == "accepted"
     assert decision["decided_by"] == "alice"
+    # The apply outcome is recorded and is truthful: the model-swap proposal
+    # names no target value, so nothing applied (#861).
+    assert decision["apply_outcome"] == "unsupported"
+    assert decision["applied"] is False
     # Audit log has the decision entry
     assert any(
         e["action"] == "optimizer_decision" and e["detail"]["proposal_id"] == pid
@@ -491,7 +507,7 @@ async def test_record_decision_rejects_proposal() -> None:
     _seed_metrics("d-rej", "n1", count=10, failed=8, p95=100)
     out = await run_optimizer("d-rej")
     pid = out["proposals"][0]["id"]
-    d = record_decision(pid, "rejected", actor="bob")
+    d = await record_decision(pid, "rejected", actor="bob")
     assert d["decision"] == "rejected"
 
 
@@ -499,14 +515,14 @@ def test_record_decision_invalid_raises_value_error() -> None:
     from services.optimizer import record_decision
 
     with pytest.raises(ValueError, match="decision must be one of"):
-        record_decision("any", "maybe", actor="u")
+        asyncio.run(record_decision("any", "maybe", actor="u"))
 
 
 def test_record_decision_unknown_id_raises_key_error() -> None:
     from services.optimizer import record_decision
 
     with pytest.raises(KeyError):
-        record_decision("missing-id", "accepted", actor="u")
+        asyncio.run(record_decision("missing-id", "accepted", actor="u"))
 
 
 # --- list_proposals ------------------------------------------------------
@@ -533,7 +549,7 @@ async def test_list_proposals_filter_by_decision() -> None:
     out = await run_optimizer("d")
     assert len(out["proposals"]) >= 2  # spec invariant for this test
     # Accept the first; leave the rest pending.
-    record_decision(out["proposals"][0]["id"], "accepted", actor="u")
+    await record_decision(out["proposals"][0]["id"], "accepted", actor="u")
     accepted = list_proposals(decision="accepted")
     assert len(accepted) == 1
     pending = list_proposals(decision="pending")
@@ -573,11 +589,16 @@ def test_run_endpoint_returns_ranked_proposals(admin_client: Any) -> None:
 
 
 def test_run_endpoint_with_apply_auto_true(admin_client: Any) -> None:
+    """apply_auto over HTTP is truthful: without a concrete target value the
+    model-swap proposal is `unsupported`, so nothing claims an application
+    and auto_applied stays 0 (#861 removed the fake apply path)."""
     _seed_metrics("d-apply", "n1", count=10, failed=8, p95=100)
     workspace_id = _optimizer_workspace(admin_client)
     r = admin_client.post(f"/v1/optimizer/d-apply/run?apply_auto=true&workspace_id={workspace_id}")
     assert r.status_code == 200
-    assert r.json()["auto_applied"] >= 1
+    body = r.json()
+    assert body["auto_applied"] == 0
+    assert all(not p["applied"] for p in body["proposals"])
 
 
 def test_run_endpoint_requires_an_authorized_workspace(admin_client: Any) -> None:
