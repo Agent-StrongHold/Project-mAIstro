@@ -157,10 +157,20 @@ def run_migrations() -> None:
     """Same migration path the RC entrypoint runs (maistro_server.entrypoint)."""
     env = dict(os.environ)
     env["DATABASE_URL"] = f"postgresql+asyncpg://maistro:soak@127.0.0.1:{PG_HOST_PORT}/maistro"
+    # `--package maistro-server` is load-bearing: the root workspace project
+    # does not depend on maistro-server, so the documented `uv sync` does not
+    # install it into the root environment (verified: `uv sync --locked
+    # --extra dev --dry-run` reports "Would uninstall maistro-server"). A bare
+    # `uv run python -c "import maistro_server"` is whatever the local venv
+    # happens to contain — the undocumented state that made this harness fail
+    # with ModuleNotFoundError on a clean checkout. Naming the workspace
+    # member makes the requirement explicit and self-satisfying.
     r = sh(
         [
             "uv",
             "run",
+            "--package",
+            "maistro-server",
             "python",
             "-c",
             "from maistro_server.entrypoint import run_migrations; run_migrations()",
@@ -173,13 +183,38 @@ def run_migrations() -> None:
         raise RuntimeError(f"migrations failed: {r.stderr[-2000:]}")
 
 
+def kill_replica(proc: subprocess.Popen[Any]) -> None:
+    """SIGKILL the replica's whole process group, not the `uv` wrapper.
+
+    start_new_session makes the wrapper a session leader; kill() alone hits
+    only the wrapper and the uvicorn child keeps serving (observed in run 1:
+    `rejoined=true` seconds after a "kill"). Boot-failure cleanup had the
+    same bug and left an orphan bound to the replica port.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+
+
+def port_closed(port: int, timeout: float = 1.0) -> bool:
+    """True when nothing accepts TCP connections on 127.0.0.1:<port>."""
+    import socket
+
+    with socket.socket() as s:
+        s.settimeout(timeout)
+        return s.connect_ex(("127.0.0.1", port)) != 0
+
+
 def start_replica(port: int, out_dir: Path, env: dict[str, str]) -> subprocess.Popen[Any]:
     """Boot one replica exactly as the RC image does, minus the container."""
     log_file = open(out_dir / f"replica-{port}.log", "ab")  # noqa: SIM115
+    # --package maistro-server: see run_migrations for why the member is
+    # named explicitly (the documented root `uv sync` does not install it).
     proc = subprocess.Popen(
         [
             "uv",
             "run",
+            "--package",
+            "maistro-server",
             "python",
             "-m",
             "uvicorn",
@@ -284,7 +319,7 @@ def sample_once(procs: dict[str, subprocess.Popen[Any]]) -> dict[str, Any]:
 # ──────────────────────────── claim probe (subprocess mode) ─────────────────
 
 
-async def _claim_one(dsn: str, workspace: str) -> dict[str, Any]:
+async def _claim_one(dsn: str, workspace: str, due_at_text: str | None = None) -> dict[str, Any]:
     """Claim one due occurrence through the canonical admission authority.
 
     Runs in its own OS process (two of these race in the exactly-once phase).
@@ -322,6 +357,19 @@ async def _claim_one(dsn: str, workspace: str) -> dict[str, Any]:
             )
         )
         now = datetime.now(UTC)
+        # The due instant is pinned by the parent (floor(now, 1h)) and handed
+        # to both racing processes, so they construct byte-identical schedules
+        # and the window (due_at - 1min, now] contains exactly one hourly
+        # occurrence: due_at itself. Deriving it per-process from now-90min
+        # instead made the due count depend on the wall-clock minute (two
+        # occurrences whenever minute <= 30), so the old "total runs == 1"
+        # gate false-failed on hour-straddling runs and could not tell a
+        # duplicate claim from a skipped occurrence.
+        due_at = (
+            datetime.fromisoformat(due_at_text)
+            if due_at_text
+            else now.replace(minute=0, second=0, microsecond=0)
+        )
         schedule = Schedule(
             schedule_id=f"soak-claim-{workspace}",
             workspace_id=workspace,
@@ -331,10 +379,11 @@ async def _claim_one(dsn: str, workspace: str) -> dict[str, Any]:
             overlap_policy=OverlapPolicy.ALLOW,
             catchup_window_seconds=6 * 3600,
             created_at=now - timedelta(days=1),
-            # Exactly one due occurrence (the :00 instant ~1h ago) so the
-            # two-process race decides a single claim.
-            last_fired_at=now - timedelta(minutes=90),
-            next_due_at=now - timedelta(minutes=1),
+            # Exactly one due occurrence by construction: the pinned :00
+            # instant, never more than an hour old, with the cursor just
+            # below it.
+            last_fired_at=due_at - timedelta(minutes=1),
+            next_due_at=due_at,
         )
         await PgScheduleStore(pool).put(schedule)
         admitter = ScheduleRunAdmitter(
@@ -346,6 +395,7 @@ async def _claim_one(dsn: str, workspace: str) -> dict[str, Any]:
             "already_fired": [str(o) for o in admission.already_fired],
             "failures": [str(e) for e in admission.failures],
             "skipped": [str(s) for s in admission.skipped],
+            "schedule_id": schedule.schedule_id,
         }
     finally:
         await pool.close()
@@ -551,9 +601,20 @@ async def phase_rate_limit(
 def phase_claim_probe(python: str, dsn: str) -> dict[str, Any]:
     """Two OS processes race to claim the same due schedule occurrence."""
     workspace = f"soak-claim-{uuid.uuid4().hex[:12]}"
+    # Pin the occurrence: the most recent hourly :00, strictly in the past,
+    # identical for both racers (see _claim_one).
+    due_at = datetime.now(UTC).replace(minute=0, second=0, microsecond=0).isoformat()
     procs = [
         subprocess.Popen(
-            [python, str(Path(__file__).resolve()), "--claim-probe", dsn, workspace],
+            [
+                python,
+                str(Path(__file__).resolve()),
+                "--claim-probe",
+                dsn,
+                workspace,
+                "--claim-due-at",
+                due_at,
+            ],
             cwd=REPO,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -568,14 +629,55 @@ def phase_claim_probe(python: str, dsn: str) -> dict[str, Any]:
             results.append(json.loads(out.strip().splitlines()[-1]))
         except Exception:
             results.append({"error": (out[-400:] + err[-400:])})
-    admitted_runs = [r for res in results if "run_ids" in res for r in res["run_ids"]]
-    already = [res.get("already_fired", []) for res in results if "run_ids" in res]
+    ok_results = [res for res in results if "run_ids" in res]
+    admitted_runs = [r for res in ok_results for r in res["run_ids"]]
+    already = [res.get("already_fired", []) for res in ok_results]
+    failures = [f for res in ok_results for f in res.get("failures", [])]
+    schedule_ids = {res.get("schedule_id") for res in ok_results if res.get("schedule_id")}
+
+    # Per-occurrence verification against the durable occurrence claim
+    # (migration 015/016: (schedule_id, scheduled_for) is the occurrence
+    # identity, with a unique expression index). Counting total run_ids, as
+    # the first version did, cannot distinguish "one occurrence claimed
+    # once" from "two occurrences, one skipped" — the gate below counts
+    # physical Runs per occurrence instead.
+    duplicate_rows = 0
+    occurrence_rows = 0
+    if len(schedule_ids) == 1:
+        schedule_id = schedule_ids.pop()
+        quoted = schedule_id.replace("'", "''")
+        rows = pg_sql(
+            "SELECT coalesce(string_agg(n::text, ','), '') FROM ("
+            "SELECT count(*) AS n FROM canonical_runs WHERE "
+            "payload -> 'provenance' ->> 'schedule_id' = '" + quoted + "' "
+            "GROUP BY payload -> 'provenance' ->> 'scheduled_for') t"
+        )
+        if not rows.startswith("__error__"):
+            counts = [int(x) for x in rows.split(",") if x.strip()]
+            occurrence_rows = len(counts)
+            duplicate_rows = sum(1 for n in counts if n > 1)
+
     return {
         "workspace": workspace,
+        "due_at": due_at,
         "processes": results,
         "runs_created_for_occurrence": len(admitted_runs),
+        "occurrences_with_runs": occurrence_rows,
+        "occurrences_with_multiple_runs": duplicate_rows,
         "duplicate_claims_reported": sum(len(a) for a in already),
-        "ok": len(admitted_runs) == 1,
+        "admission_failures": failures,
+        # The pinned window holds exactly one occurrence, so both views must
+        # agree: exactly one physical Run exists, it is the only occurrence
+        # with runs, the loser saw it as already_fired, and nobody failed.
+        "ok": (
+            len(admitted_runs) == 1
+            and occurrence_rows == 1
+            and duplicate_rows == 0
+            and sum(len(a) for a in already) == 1
+            and not failures
+        )
+        if len(ok_results) == 2
+        else False,
     }
 
 
@@ -636,7 +738,17 @@ async def boot_stack(
     log(f"replica boot completed in {boot_seconds}s (r1={ok1}, r2={ok2})")
     if not (ok1 and ok2):
         for p in procs.values():
-            p.kill()
+            kill_replica(p)
+        # A "cleaned up" replica that still serves is worse than one that
+        # crashed: the next boot fails on the bound port and mid-run evidence
+        # keeps flowing from a process the harness believes dead. Fail loudly
+        # instead of leaving an orphan.
+        orphans = [port for port in (18201, 18202) if not port_closed(port)]
+        if orphans:
+            raise RuntimeError(
+                f"replicas failed to become ready (r1={ok1}, r2={ok2}) and "
+                f"orphaned servers still accept on ports {orphans}"
+            )
         raise RuntimeError(f"replicas failed to become ready (r1={ok1}, r2={ok2})")
     log("both replicas ready")
 
@@ -793,7 +905,10 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
 
     for proc in procs.values():
         if proc.poll() is None:
-            proc.terminate()
+            # The wrapper is a session leader (start_new_session): terminate()
+            # would reach only it, so address the group and escalate to
+            # SIGKILL like the boot-failure path does.
+            kill_replica(proc)
     sh(["docker", "rm", "-f", "maistro-soak-lb"])
     return evidence
 
@@ -840,8 +955,8 @@ def _fd_growth(path: Path) -> dict[str, Any]:
     return out
 
 
-def claim_probe_cli(dsn: str, workspace: str) -> None:
-    result = asyncio.run(_claim_one(dsn, workspace))
+def claim_probe_cli(dsn: str, workspace: str, due_at: str | None = None) -> None:
+    result = asyncio.run(_claim_one(dsn, workspace, due_at))
     print(json.dumps(result))
 
 
@@ -862,10 +977,17 @@ def main() -> None:
     parser.add_argument("--sample-interval", type=float, default=2.0)
     parser.add_argument("--out-dir", default="docs/testing/soak/evidence")
     parser.add_argument("--claim-probe", nargs=2, metavar=("DSN", "WORKSPACE"), default=None)
+    parser.add_argument(
+        "--claim-due-at",
+        dest="claim_due_at",
+        default=None,
+        metavar="ISO_DATETIME",
+        help="pin the due occurrence for --claim-probe (parent passes the same value to both racers)",
+    )
     args = parser.parse_args()
 
     if args.claim_probe:
-        claim_probe_cli(args.claim_probe[0], args.claim_probe[1])
+        claim_probe_cli(args.claim_probe[0], args.claim_probe[1], args.claim_due_at)
         return
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)

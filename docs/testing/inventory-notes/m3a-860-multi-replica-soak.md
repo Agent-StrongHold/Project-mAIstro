@@ -35,3 +35,28 @@ admission-race pattern already covered by
 `packages/maestro-core/tests/scheduling/test_pg_admission.py` (path as on
 disk: `packages/maistro-core/tests/scheduling/test_pg_admission.py`) rather
 than duplicating it as a unit test; the soak evidence is the deliverable.
+
+## Repair round (2026-09-29, this lane)
+
+Verdict on run 1 stands: **NEEDS-REPAIR and re-soak** — no promotion claim
+changes. The round confirmed all six prior findings against this head and
+repaired the three harness-side ones:
+
+- F6 (undocumented env): `uv sync --locked --extra dev --dry-run` reports
+  `Would uninstall maistro-server` → harness now pins
+  `uv run --package maistro-server` (clean-env check: 91 packages installed,
+  `maistro_server.entrypoint.run_migrations` imports OK); harness's own
+  `run_migrations()` executed OK against the soak DB.
+- Boot-failure orphan: `boot_stack`/teardown now `killpg` + fail loudly if a
+  replica port still accepts connections.
+- Claim gate: due occurrence pinned to the most recent hourly instant;
+  `phase_claim_probe` verifies per occurrence against the durable
+  `(schedule_id, scheduled_for)` claim. Live two-process rerun: 1 Run,
+  loser `already_fired`, SQL 1 occurrence × 1 run, `ok=true`.
+- F7 (production, filed not fixed here): concurrent-boot
+  `CREATE INDEX IF NOT EXISTS idx_learnings_scope` race reproduced against
+  pinned pg18 (`duplicate key value violates unique constraint
+  "pg_class_relname_nsp_index"`); must be fixed before the promotion soak.
+
+No pytest nodes added or removed; deltas remain `scripts/soak/` tooling and
+evidence prose.

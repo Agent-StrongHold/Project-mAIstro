@@ -30,8 +30,11 @@ correctness claim in this pack is promotion evidence yet.
   `kill_restart.rejoined=true` arrived **< 1 s** after `SIGKILL` — impossible
   for an ~87 s boot. Cause: the harness spawns `uv run python -m uvicorn …`;
   the signal hit the `uv` wrapper and the uvicorn child in the session kept
-  serving. `run_soak.py` now kills the process group (`os.killpg`). **The H4
-  failover/drain/recovery claim is UNPROVEN in run 1** and needs the re-soak.
+  serving. `run_soak.py` now kills the process group (`os.killpg`) — for the
+  mid-load kill, the boot-failure cleanup (which had the same bug and left an
+  orphan bound to :18202), and final teardown — and the boot-failure path now
+  fails loudly if either replica port still accepts connections.
+  **The H4 failover/drain/recovery claim is UNPROVEN in run 1** and needs the re-soak.
 - **F2 (harness, fixed in this branch): the rate-limit probe targeted an
   exempt path.** `RateLimitMiddleware` deliberately skips `/health*`
   (`packages/maistro-server/src/maistro_server/api/rate_limit.py:120-121`), so
@@ -53,6 +56,35 @@ correctness claim in this pack is promotion evidence yet.
   factors; no replica-side error appears in the replica logs for them).
   **Until reproduced and root-caused, the "supported production profile"
   multi-replica serving claim is not demonstrated under sustained load.**
+- **F6 (harness, fixed in the repair round): the harness required an
+  undocumented environment.** The root workspace project does not depend on
+  `maistro-server`, so the documented `uv sync` does **not** install it —
+  `uv sync --locked --extra dev --dry-run` reports `Would uninstall
+  maistro-server` — yet `run_migrations()`/`start_replica()` ran bare
+  `uv run python -c "import maistro_server…"`, which is ModuleNotFoundError on
+  any clean checkout (reproduced by the first repair attempt). Both now run
+  `uv run --package maistro-server …`, which names the workspace member and
+  self-satisfies it (verified: a throwaway clean `UV_PROJECT_ENVIRONMENT`
+  installs 91 packages and the entrypoint import succeeds). The README's
+  "`uv sync` — install every package in the workspace" claim is false for the
+  API server with uv 0.12.11 and is filed here for the docs owners; the
+  harness no longer depends on it.
+- **F7 (production defect, FILED — not fixed in this lane): concurrent
+  replica boot on a fresh database can kill a replica at startup.**
+  `PgLearningStore.ensure_schema()` runs `CREATE INDEX IF NOT EXISTS
+  idx_learnings_scope` on every app boot (container.py), no alembic migration
+  creates that index (001 creates only `ix_learnings_org_tool`/
+  `ix_learnings_status`), and concurrent `CREATE INDEX IF NOT EXISTS` on the
+  same missing index is not race-safe in PostgreSQL: reproduced against the
+  pinned `pgvector/pgvector:pg18` image with two backends racing the same
+  statement — the loser dies with `duplicate key value violates unique
+  constraint "pg_class_relname_nsp_index"` (asyncpg: UniqueViolationError),
+  matching the crash a prior repair attempt observed booting two replicas
+  concurrently on a fresh DB. Earliest broken invariant: M3-A replica-boot
+  availability under the supported multi-replica profile (#89), in the
+  durable-state/scheduler-replica-safety family (#333/#850). Must be repaired
+  (advisory lock or tolerate-and-recheck) before the promotion soak, since
+  the profile requires two replicas booting against one store.
 - **F4 (observation, expected by design): `/health/ready` returns 503 with no
   LiteLLM in the cell** (LLM circuit open ⇒ `degraded`, not dead). Boot
   readiness therefore uses `/health/live`, the RC image's own healthcheck
@@ -65,15 +97,29 @@ correctness claim in this pack is promotion evidence yet.
 
 ## Re-soak checklist (what run 2 must do)
 
-1. Run 1's harness fixes (process-group kill; non-exempt rate-limit probe) are
-   in `scripts/soak/run_soak.py` on this branch.
-2. Root-cause F3 (first suspect: nginx host-gateway upstreaming under mirrored
+1. Run 1's harness fixes are on this branch and repair-round-hardened:
+   process-group kill for the mid-load kill *and* boot-failure/teardown paths
+   (with a loud failure if a killed replica's port still accepts
+   connections); the rate-limit probe targets the non-exempt `GET /tasks`;
+   migrations/replicas pin `--package maistro-server` so the documented
+   `uv sync` suffices; the schedule-claim race pins one due occurrence and
+   the gate verifies **per occurrence** against the durable
+   `(schedule_id, scheduled_for)` claim (repair-round live rerun: two
+   processes raced, exactly one Run, loser `already_fired`, SQL shows 1
+   occurrence × 1 run, gate `ok=true`).
+2. Repair F7 before the promotion soak: two replicas booting concurrently on
+   a fresh DB is the profile's own boot step, and F7 makes that a crash
+   lottery.
+3. Root-cause F3 (first suspect: nginx host-gateway upstreaming under mirrored
    WSL networking; alternative: run the replicas inside the docker network on
    the prod compose topology itself).
-3. `--sustain-seconds 14400` (profile minimum), kill at 35% with verification
+4. `--sustain-seconds 14400` (profile minimum), kill at 35% with verification
    that the victim actually stopped serving (assert port closed) before the
    restart, and a post-kill reconciliation of mid-flight Attempts.
-4. File F3/F2 to the earliest broken milestone invariant before promotion.
+5. File F3/F2 to the earliest broken milestone invariant before promotion.
+6. Run 2 must execute on a clean tree at the promotion head — run 1's
+   committed evidence is self-invalidating as RC-soak evidence (it recorded
+   `git_clean=false` at the pre-commit base `b268f053`, not the RC artifact).
 
 ## RC artifact identity (run 1)
 
