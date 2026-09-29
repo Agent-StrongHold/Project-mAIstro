@@ -155,3 +155,67 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep decision-weighted reachable-AC coverage as the primary "distance to designed state" metric and harden its inputs against gaming: missing criteria score zero, generated evidence cannot self-judge, branch-note folding must be deterministic, and reachability must remain stronger than passing tests. Use it alongside debt ratchets, not as a replacement for them.  
 **Current state:** This solves a real measurement problem: criterion-weighted coverage hid the 76/99 accepted decisions with no criteria. Decision-weighting makes undocumented/unmeasured design visible instead of disappearing from the denominator. Later August/September ADRs refine the metric's evidence and branch aggregation.  
 **ADR:** [ADR-082226-ff3c: Design coverage metric](../../../adr/ADR-082226-ff3c-design-coverage-metric.md)
+
+## ADR-082526-0d30: CI cost is measured per PR head
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep CI cost measurement tied to the concrete PR head and actual job-minutes so optimization work cannot hide behind time-window estimates. Use the metric to identify expensive gates without weakening required evidence.  
+**Current state:** Direct tooling tests make this a measured repository-governance instrument.  
+**ADR:** [ADR-082526-0d30](../../../adr/ADR-082526-0d30-ci-runner-cost-is-measured-per-head.md)
+
+## ADR-082526-1899: Gate wired-but-unread DI attributes
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep the wiring-read gate as a complement to import reachability: constructing/storing a dependency is not evidence it has a production consumer. New Container attributes must demonstrate a real read or be explicitly authorized as transitional debt.  
+**Current state:** This catches exactly the class that let the unused local A2A broker and other fake-supported surfaces survive ordinary dead-code scans.  
+**ADR:** [ADR-082526-1899](../../../adr/ADR-082526-1899-wired-but-unread-di-attributes-gate.md)
+
+## ADR-082526-3011: One pinned uv setup wrapper
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep one reviewed wrapper as the source of both setup-uv action version and uv tool pin; prevent workflow-local drift. Update deliberately in one place when either pin changes.  
+**Current state:** This separates action-release flake fixes from tool-version determinism while centralizing both controls.  
+**ADR:** [ADR-082526-3011](../../../adr/ADR-082526-3011-one-pinned-uv-in-one-place.md)
+
+## ADR-082526-547c: Suite inventory count is sum of deltas
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve per-change delta accounting so concurrent PRs cannot overwrite one shared baseline row and silently erase each other's inventory movement.  
+**Current state:** This is a concurrency-safe ratchet design for repository quality inventory.  
+**ADR:** [ADR-082526-547c](../../../adr/ADR-082526-547c-the-inventory-count-is-a-sum-of-deltas.md)
+
+## ADR-082526-9fa2: The gates are gated too
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep repo-truth scripts inside diff-coverage measurement even when their workflows are temporarily parked. Exempt only tooling that genuinely does not assert repository truth, with explicit reasons.  
+**Current state:** This prevents CI/security/quality gates from becoming untested privileged code.  
+**ADR:** [ADR-082526-9fa2](../../../adr/ADR-082526-9fa2-the-gates-are-gated-too.md)
+
+## ADR-082526-aef8: Reachability for repository tooling
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep workflow-executed scripts in the same reachable-evidence ladder as production modules and maintain the unreached tooling ledger. Dynamic plugin/string loads must remain modeled so live gates are not falsely classified dead.  
+**Current state:** This lets governance ADRs truthfully reach the top design-coverage rung instead of being structurally capped at passing.  
+**ADR:** [ADR-082526-aef8](../../../adr/ADR-082526-aef8-reachability-for-repo-tooling.md)
+
+## ADR-082526-cb51: Diff coverage declares measured scope
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep measured roots and workflow producers mechanically synchronized. A changed measured file absent from coverage is a failure, while exemptions must be explicit and reasoned rather than inferred from missing data.  
+**Current state:** This closes a dangerous false-green path where broken measurement looked identical to intentional exclusion.  
+**ADR:** [ADR-082526-cb51](../../../adr/ADR-082526-cb51-diff-coverage-measured-scope-is-declared.md)
+
+## ADR-082526-ef55: Missing ADR→Spec→AC links are per-change violations
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep legacy absence populations ratcheted while enforcing zero newly introduced orphan decisions/specs/criteria per change. Continue deriving base and head with the same text-only logic so comparison artifacts cannot create false violations.  
+**Current state:** This prevents new design debt from being paid for by unrelated legacy cleanup and makes traceability a per-change mandate rather than only an aggregate ceiling.  
+**ADR:** [ADR-082526-ef55](../../../adr/ADR-082526-ef55-absent-link-chain-per-change-mandate.md)
