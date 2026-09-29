@@ -131,3 +131,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Enforce the date/hash ID rule in repository lint/CI so new sequential IDs cannot reappear and duplicate IDs are rejected before merge. Reconcile lifecycle metadata: the ADR carries an `implemented` date but no Implemented history/status transition.  
 **Current state:** The decision solved a real concurrent-PR collision and the registry accepts both legacy sequential IDs and current date/hash IDs. The foreign-harness duplication discovered during this audit shows that unique IDs alone do not prevent duplicate decision content, so decision-level duplication detection/review still matters.  
 **ADR:** [ADR-062026-9b30: Date-based ADR/SPEC IDs](../../../adr/ADR-062026-9b30-date-based-adr-spec-ids.md)
+
+## ADR-081226-034b: Package Ownership and Dependency Direction
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Enforce inward dependency direction mechanically and continue moving canonical semantics into maistro-core while specialized packages remain extensions. Remove the phrase/assumption that physical moves require compatibility planning before 1.0 unless preserving user data or an external stable contract is explicitly justified; parity/reachability tests should protect useful behavior, not obsolete interfaces.  
+**Current state:** This is the current package-ownership map: core owns reusable semantics/platform mechanisms, server is transport/control-plane composition, Hive is product/UI, specialized packages extend core, and bootstrap owns installation/environment setup. It directly supports the convergence work in M1.  
+**ADR:** [ADR-081226-034b: Package Ownership and Dependency Direction](../../../adr/ADR-081226-034b-package-ownership-dependency-direction.md)
