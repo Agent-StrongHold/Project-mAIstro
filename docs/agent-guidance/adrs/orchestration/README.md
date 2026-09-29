@@ -195,3 +195,35 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep admission provenance descriptive and record the actually selected/dispatching agent/provider on the Attempt/Invocation that physically performed work. Do not guess dispatch identity before routing has occurred.  
 **Current state:** This aligns attribution with the canonical physical execution boundary and fixes chat/delegation provenance ambiguity.  
 **ADR:** [ADR-082526-7f02](../../../adr/ADR-082526-7f02-dispatch-identity-belongs-to-the-attempt.md)
+
+## ADR-082826-b601: Canonical consumer executes undriven Runs
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Ensure every admission source either drives its Run inline or hands it to the canonical consumer. No producer may admit durable work that nobody executes.  
+**Current state:** This closes the recurrence gap where schedules produced canonical Runs without a driver.  
+**ADR:** [ADR-082826-b601](../../../adr/ADR-082826-b601-canonical-run-consumer.md)
+
+## ADR-082826-d9f5: Durable Graph store is a RunStore projection
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Finish retiring document-shaped durable Graph lifecycle authority; retain only GraphContinuationStore traversal state keyed by canonical run_id plus legacy read/archive support where needed.  
+**Current state:** Extensive tests prove durable Graph identity/state is converging onto canonical RunStore.  
+**ADR:** [ADR-082826-d9f5](../../../adr/ADR-082826-d9f5-durable-graph-store-as-canonical-projection.md)
+
+## ADR-083026-6c72: Durable HITL deadline and cancellation
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep absolute persisted HITL deadlines and one canonical settlement write. Answer/timeout/cancel races must be idempotent and recovery must rediscover overdue waits after restart.  
+**Current state:** This closes indefinitely parked human nodes and product-owned synthetic cancellation.  
+**ADR:** [ADR-083026-6c72](../../../adr/ADR-083026-6c72-hitl-deadline-and-cancellation.md)
+
+## ADR-083026-6e2a: Graph continuation is the recovery checkpoint
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Remove the unused canonical-looking events checkpoint store. RunStore plus GraphContinuationStore is the Graph recovery authority; domain checkpoint records must not become universal lifecycles.  
+**Current state:** This resolves a checkpoint ownership collision found during M1.  
+**ADR:** [ADR-083026-6e2a](../../../adr/ADR-083026-6e2a-canonical-graph-recovery-checkpoint.md)
