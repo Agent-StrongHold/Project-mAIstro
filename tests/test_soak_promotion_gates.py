@@ -64,3 +64,27 @@ def test_abrupt_kill_does_not_claim_a_graceful_drain(soak: ModuleType) -> None:
     checks["graceful_drain"] = {"required": False, "ok": False}  # type: ignore[index]
 
     assert soak.failed_promotion_checks(evidence) == []
+
+
+def test_missing_drain_record_cannot_pass(soak: ModuleType) -> None:
+    """An evidence doc with no graceful_drain key at all must fail the gate.
+
+    Round-4 verify finding: the gate used to inspect only dicts carrying a
+    truthy `required` flag, so omitting the key entirely bypassed the drain
+    check. The driver always writes the key; its absence means pre-probe or
+    hand-edited evidence.
+    """
+    evidence = _passing_evidence()
+    checks = evidence["thresholds"]["checks"]  # type: ignore[index]
+    del checks["graceful_drain"]
+
+    assert soak.failed_promotion_checks(evidence) == ["graceful_drain"]
+
+
+def test_null_drain_record_cannot_pass(soak: ModuleType) -> None:
+    """A null drain record is as absent as a missing key."""
+    evidence = _passing_evidence()
+    checks = evidence["thresholds"]["checks"]  # type: ignore[index]
+    checks["graceful_drain"] = None  # type: ignore[assignment]
+
+    assert soak.failed_promotion_checks(evidence) == ["graceful_drain"]

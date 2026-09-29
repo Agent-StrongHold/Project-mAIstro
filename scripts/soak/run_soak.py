@@ -147,6 +147,41 @@ def pg_image_digest() -> str:
     return r.stdout.strip() or PG_IMAGE
 
 
+def reset_db_schema() -> None:
+    """Drop and recreate the public schema of the dedicated soak database.
+
+    H5 (`0 non-terminal Runs after settle`) and every status count in the
+    evidence are claims about *this run*. The soak database persists across
+    runs, and the claim probe's schedule Run is intentionally never executed
+    (the probe races admission, then exits), so without a reset the queued
+    debt of every previous run accumulates and makes the H5 gate
+    structurally unsatisfiable — the round-4 preflight's "10 queued" were
+    all prior probes, zero of them stalled task work. The container is
+    soak-dedicated (maistro-soak-pg, port 18433) and migrations re-create
+    the full schema right after, so the reset cannot touch any other
+    surface. The flag is part of soak_env_sha256, so the config identity
+    says which mode the evidence was taken in.
+    """
+    r = sh(
+        [
+            "docker",
+            "exec",
+            PG_CONTAINER,
+            "psql",
+            "-U",
+            "maistro",
+            "-d",
+            "maistro",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+        ]
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"soak schema reset failed: {r.stderr[-500:]}")
+
+
 def pg_sql(sql: str) -> str:
     r = sh(["docker", "exec", PG_CONTAINER, "psql", "-U", "maistro", "-d", "maistro", "-tAc", sql])
     return r.stdout.strip() if r.returncode == 0 else f"__error__ {r.stderr.strip()[:200]}"
@@ -521,7 +556,16 @@ def failed_promotion_checks(evidence: dict[str, Any]) -> list[str]:
     )
     failed = [name for name in required if not _check_ok(checks.get(name))]
     drain = checks.get("graceful_drain")
-    if isinstance(drain, dict) and drain.get("required") and not _check_ok(drain):
+    if not isinstance(drain, dict):
+        # Hardening from the round-4 verify: a doc that omits the key entirely
+        # used to bypass this gate because only `required`-flagged dicts were
+        # inspected. The driver always writes the key (required = SIGTERM was
+        # selected), so a missing record means the evidence predates the
+        # drain probe or was hand-edited — either way it cannot sign a
+        # promotion. A SIGKILL-mode run still passes by recording
+        # {"required": false} explicitly.
+        failed.append("graceful_drain")
+    elif drain.get("required") and not _check_ok(drain):
         failed.append("graceful_drain")
     return failed
 
@@ -666,7 +710,7 @@ async def phase_exactly_once_tasks(base: str, headers: dict[str, str], n: int) -
 
 
 async def phase_rate_limit(
-    lb: str, replica_direct: str, headers: dict[str, str], total: int
+    lb: str, replica_direct: str, headers: dict[str, str], total: int, burst: int
 ) -> dict[str, Any]:
     """Burst unauthenticated + authenticated traffic; 429 must hold per replica."""
 
@@ -717,11 +761,54 @@ async def phase_rate_limit(
         "through_lb_authenticated": lb_auth,
         "direct_replica_unauthenticated": direct_unauth,
         "enforced_everywhere": limited,
+        # The round-4 preflight recorded enforced_everywhere=false with a
+        # 20-request probe against a burst budget of 60: no burst smaller
+        # than the budget can observe the limiter, so an undersized probe is
+        # a probe-design fact that must travel with the verdict. The gate
+        # itself stays strict — an undersized probe fails H3, it does not
+        # silently count as a pass.
+        "probe_requests": total,
+        "rate_limit_burst": burst,
+        "probe_below_burst": total <= burst,
     }
 
 
-def phase_claim_probe(python: str, dsn: str) -> dict[str, Any]:
-    """Two OS processes race to claim the same due schedule occurrence."""
+async def _terminalize_probe_run(dsn: str, run_id: str) -> str:
+    """Cancel the claim probe's Run through the canonical store, not SQL.
+
+    The probe races *admission*; nothing executes its Run (the racer
+    processes exit after admit_due). Left alone it stays QUEUED forever and
+    every later run's H5 count inherits it as debt. Cancelling through
+    PgRunStore (QUEUED→CANCELLED is a legal transition, lifecycle.py) keeps
+    the lifecycle table authoritative — the cleanup is recorded in the
+    evidence instead of being invisible. Only ever called after the H2
+    verification has counted the rows; a failed race must preserve the
+    duplicate rows for forensics.
+    """
+    import asyncpg
+
+    from maistro.runs.model import RunStatus
+    from maistro.runs.pg_store import PgRunStore
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
+    assert pool is not None
+    try:
+        run = await PgRunStore(pool).transition_run(
+            run_id,
+            RunStatus.CANCELLED,
+            error="soak claim probe: admission race verified, execution out of probe scope",
+        )
+        return run.status.value
+    finally:
+        await pool.close()
+
+
+async def phase_claim_probe(python: str, dsn: str) -> dict[str, Any]:
+    """Two OS processes race to claim the same due schedule occurrence.
+
+    Async so the verified probe Run can be terminalized on the driver's own
+    loop (the H2 SQL verdict is computed first; see probe_run_cleanup).
+    """
     workspace = f"soak-claim-{uuid.uuid4().hex[:12]}"
     # Pin the occurrence: the most recent hourly :00, strictly in the past,
     # identical for both racers (see _claim_one).
@@ -779,6 +866,24 @@ def phase_claim_probe(python: str, dsn: str) -> dict[str, Any]:
             occurrence_rows = len(counts)
             duplicate_rows = sum(1 for n in counts if n > 1)
 
+    race_verified = (
+        len(admitted_runs) == 1
+        and occurrence_rows == 1
+        and duplicate_rows == 0
+        and sum(len(a) for a in already) == 1
+        and not failures
+    )
+    # H2 is decided on the rows above; the cleanup below is evidence hygiene
+    # and must not run when the race failed (duplicate rows are forensic
+    # evidence) or when the SQL view disagreed (nothing verified to clean).
+    cleanup: dict[str, Any] = {"attempted": False, "reason": "race not verified"}
+    if len(admitted_runs) == 1 and occurrence_rows == 1 and duplicate_rows == 0:
+        cleanup = {"attempted": True, "run_id": admitted_runs[0]}
+        try:
+            cleanup["terminal_status"] = await _terminalize_probe_run(dsn, admitted_runs[0])
+        except Exception as exc:
+            cleanup["error"] = str(exc)[:200]
+
     return {
         "workspace": workspace,
         "due_at": due_at,
@@ -788,25 +893,18 @@ def phase_claim_probe(python: str, dsn: str) -> dict[str, Any]:
         "occurrences_with_multiple_runs": duplicate_rows,
         "duplicate_claims_reported": sum(len(a) for a in already),
         "admission_failures": failures,
+        "probe_run_cleanup": cleanup,
         # The pinned window holds exactly one occurrence, so both views must
         # agree: exactly one physical Run exists, it is the only occurrence
         # with runs, the loser saw it as already_fired, and nobody failed.
-        "ok": (
-            len(admitted_runs) == 1
-            and occurrence_rows == 1
-            and duplicate_rows == 0
-            and sum(len(a) for a in already) == 1
-            and not failures
-        )
-        if len(ok_results) == 2
-        else False,
+        "ok": race_verified if len(ok_results) == 2 else False,
     }
 
 
 # ─────────────────────────────────── main ───────────────────────────────────
 
 
-def collect_hashes(out_dir: Path, rate_per_min: int, burst: int) -> dict[str, Any]:
+def collect_hashes(out_dir: Path, rate_per_min: int, burst: int, fresh_db: bool) -> dict[str, Any]:
     head = sh(["git", "rev-parse", "HEAD"], cwd=REPO).stdout.strip()
     diff = sh(["git", "diff", "HEAD"], cwd=REPO).stdout
     status = sh(["git", "status", "--porcelain"], cwd=REPO).stdout
@@ -816,6 +914,10 @@ def collect_hashes(out_dir: Path, rate_per_min: int, burst: int) -> dict[str, An
         "rate_limit_burst": burst,
         "allow_unsafe_resource_overrides": True,
         "api_keys": [SOAK_API_KEY],
+        # Part of the config identity: --no-fresh-db evidence carries prior
+        # runs' rows, so the hash must distinguish it from a fresh-database
+        # run whose counts measure exactly that run.
+        "fresh_db": fresh_db,
     }
     return {
         "git_head": head,
@@ -836,6 +938,8 @@ async def boot_stack(
 ) -> tuple[dict[str, subprocess.Popen[Any]], dict[str, str]]:
     """Postgres + migrations + two replicas + nginx LB; returns procs and env."""
     ensure_postgres()
+    if args.fresh_db:
+        reset_db_schema()
     run_migrations()
     env1 = replica_env(
         18201, args.pool_size, args.max_overflow, args.rate_limit_per_minute, args.rate_limit_burst
@@ -940,7 +1044,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         "started_at": datetime.now(UTC).isoformat(),
     }
     evidence["hashes"] = collect_hashes(
-        Path(args.out_dir), args.rate_limit_per_minute, args.rate_limit_burst
+        Path(args.out_dir), args.rate_limit_per_minute, args.rate_limit_burst, args.fresh_db
     )
     procs, envs = await boot_stack(args)
     env2 = envs["env2"]
@@ -1058,9 +1162,9 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     evidence["exactly_once_tasks"] = await phase_exactly_once_tasks(
         lb, headers, args.eo_concurrency
     )
-    evidence["exactly_once_schedule_claim"] = phase_claim_probe(sys.executable, dsn)
+    evidence["exactly_once_schedule_claim"] = await phase_claim_probe(sys.executable, dsn)
     evidence["rate_limit"] = await phase_rate_limit(
-        lb, "http://127.0.0.1:18201", headers, args.rate_limit_probe_requests
+        lb, "http://127.0.0.1:18201", headers, args.rate_limit_probe_requests, args.rate_limit_burst
     )
     evidence["kill_restart"] = kill_record
     evidence["replica_boot_seconds"] = boot_seconds
@@ -1201,6 +1305,17 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             # would reach only it, so address the group and escalate to
             # SIGKILL like the boot-failure path does.
             kill_replica(proc)
+    # Keep the LB's own view of the run (upstream errors, no-live-upstream
+    # windows, failover events) before the container is removed: F3 could not
+    # be root-caused for two rounds because the LB side of the story was
+    # deleted with the container at teardown.
+    lb_logs = sh(["docker", "logs", "maistro-soak-lb"])
+    lb_log_text = (
+        lb_logs.stdout + lb_logs.stderr
+        if lb_logs.returncode == 0
+        else f"__docker logs unavailable rc={lb_logs.returncode}: {lb_logs.stderr[:200]}"
+    )
+    (Path(args.out_dir) / "lb.log").write_text(lb_log_text)
     sh(["docker", "rm", "-f", "maistro-soak-lb"])
     with contextlib.suppress(Exception):
         await pg_pool.close()
@@ -1273,7 +1388,21 @@ def main() -> None:
     )
     parser.add_argument("--restart-delay-s", type=float, default=12.0)
     parser.add_argument("--eo-concurrency", type=int, default=12)
-    parser.add_argument("--rate-limit-probe-requests", type=int, default=400)
+    # 800: the profile's phase-5 spec. A probe smaller than the configured
+    # burst cannot observe the limiter at all (round-4 preflight used 20
+    # against burst=60 and recorded enforced=false); probe sizing is recorded
+    # alongside the verdict so an undersized probe is never mistaken for
+    # falsification.
+    parser.add_argument("--rate-limit-probe-requests", type=int, default=800)
+    parser.add_argument(
+        "--fresh-db",
+        dest="fresh_db",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="reset the dedicated soak database schema before migrations so "
+        "every count in the evidence measures exactly this run (default; "
+        "--no-fresh-db keeps prior runs' rows and inherits their H5 debt)",
+    )
     parser.add_argument("--settle-seconds", type=int, default=20)
     parser.add_argument("--sample-interval", type=float, default=2.0)
     parser.add_argument("--out-dir", default="docs/testing/soak/evidence")
