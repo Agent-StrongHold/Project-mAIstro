@@ -136,12 +136,15 @@ class EphemeralRegistrationRecordStore:
 
 
 class PersistedRegistrationRecordStore:
-    """Record store over `PersistedStore`, draining the writer queue on write."""
+    """Record store over `PersistedStore`'s acknowledged writes (#333, #1179).
 
-    def __init__(self, persisted: Any, flush: Any, timeout: float = 10.0) -> None:
+    ``put_raw`` does not return until the State writer thread has committed
+    and raises the writer's failure instead of queueing silently (#1238), so
+    a completed ``write`` is durable without a per-store flush to remember.
+    """
+
+    def __init__(self, persisted: Any) -> None:
         self._persisted = persisted
-        self._flush = flush
-        self._timeout = timeout
 
     @property
     def durable(self) -> bool:
@@ -152,8 +155,10 @@ class PersistedRegistrationRecordStore:
         return str(document) if document is not None else None
 
     def write(self, document: str) -> None:
+        # Acknowledged write (#1179): returns only after the commit; a failed
+        # commit raises here and an admin's mode change is never acknowledged
+        # on a write the database refused.
         self._persisted.put_raw(STORE_NAME, RECORD_KEY, document)
-        self._flush(timeout=self._timeout)
 
 
 _store: RegistrationRecordStore = EphemeralRegistrationRecordStore()

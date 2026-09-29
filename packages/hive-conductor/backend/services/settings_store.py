@@ -150,16 +150,18 @@ class EphemeralSettingsRecordStore:
 
 
 class PersistedSettingsRecordStore:
-    """Record store over `PersistedStore`, draining the writer queue on write.
+    """Record store over `PersistedStore`'s acknowledged writes (#333, #1179).
 
-    `flush` is the drain. Without it `read` races the writer thread and the
-    read-back check would pass or fail on timing.
+    ``put_raw`` is the acknowledgement primitive: it does not return until the
+    State writer thread has committed the row, and it raises the writer's
+    failure instead of accepting the write into a queue (#1238). There is no
+    per-store ``flush`` to remember: a completed ``write`` is durable, so the
+    read-back after it observes the committed document rather than racing the
+    writer thread.
     """
 
-    def __init__(self, persisted: Any, flush: Any, timeout: float = 10.0) -> None:
+    def __init__(self, persisted: Any) -> None:
         self._persisted = persisted
-        self._flush = flush
-        self._timeout = timeout
 
     @property
     def durable(self) -> bool:
@@ -170,8 +172,11 @@ class PersistedSettingsRecordStore:
         return str(document) if document is not None else None
 
     def write(self, document: str) -> None:
+        # Blocks until the writer commits; raises the writer's failure. A
+        # caller that sees ``write`` return holds a committed row, and one that
+        # sees it raise holds nothing (#1179 acceptance: a queued command is
+        # never an acknowledgement).
         self._persisted.put_raw(STORE_NAME, RECORD_KEY, document)
-        self._flush(timeout=self._timeout)
 
 
 #: `save` is read-modify-write across three steps — load, compare the revision,

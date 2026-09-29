@@ -127,16 +127,18 @@ class EphemeralProfileRecordStore:
 
 
 class PersistedProfileRecordStore:
-    """Record store over `PersistedStore`, draining the writer queue on write.
+    """Record store over `PersistedStore`'s acknowledged writes (#333, #1179).
 
-    `flush` is the drain. Without it `read` races the writer thread and the
-    read-back check would pass or fail on timing.
+    ``put_raw``/``delete`` are the acknowledgement primitive: they do not
+    return until the State writer thread has committed, and they raise the
+    writer's failure instead of accepting the write into a queue (#1238).
+    There is no per-store ``flush`` to remember: a completed ``write`` or
+    ``remove`` is durable, so the read-back after it observes the committed
+    document rather than racing the writer thread.
     """
 
-    def __init__(self, persisted: Any, flush: Any, timeout: float = 10.0) -> None:
+    def __init__(self, persisted: Any) -> None:
         self._persisted = persisted
-        self._flush = flush
-        self._timeout = timeout
 
     @property
     def durable(self) -> bool:
@@ -147,12 +149,12 @@ class PersistedProfileRecordStore:
         return str(document) if document is not None else None
 
     def write(self, user_id: str, document: str) -> None:
+        # Acknowledged writes (#1179): return only after the commit, raise the
+        # writer's failure — never a queue-accepted receipt.
         self._persisted.put_raw(STORE_NAME, user_id, document)
-        self._flush(timeout=self._timeout)
 
     def remove(self, user_id: str) -> None:
         self._persisted.delete(STORE_NAME, user_id)
-        self._flush(timeout=self._timeout)
 
     def user_ids(self) -> list[str]:
         return sorted(key for key, _ in self._persisted.list_all_raw(STORE_NAME))
