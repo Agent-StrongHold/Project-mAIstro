@@ -186,38 +186,20 @@ class GraphContext:
     health: WorkingMemoryHealth = WorkingMemoryHealth.HEALTHY
     degraded_reason: str = ""
 
-    def to_text(self, *, max_content_chars: int = 240) -> str:
-        """Render the context as a prompt-ready block.
-
-        Every line keeps its canonical references, so a model quoting this
-        block is still quoting durable truth rather than graph-local guesses.
-        """
-        lines: list[str] = [f"workspace-memory: workspace={self.workspace_id}"]
-        if self.health is not WorkingMemoryHealth.HEALTHY:
-            reason = self.degraded_reason or "working memory is not fully available"
-            lines.append(f"memory-health: {self.health.value} ({reason})")
-        for node in self.nodes:
-            provenance = ", ".join(
-                f"{key}={value}" for key, value in sorted(node.ref.to_dict().items())
-            )
-            content = node.content.strip().replace("\n", " ")
-            if len(content) > max_content_chars:
-                content = content[: max_content_chars - 1] + "…"
-            lines.append(f"- [{node.kind.value}] {node.label}: {content} ({provenance})")
-        return "\n".join(lines)
-
 
 @dataclass
 class WorkingMemoryStatus:
-    """Operational status of one Workspace's working graph."""
+    """Operational status of one Workspace's working graph.
+
+    ``health`` doubles as the hydration marker: COLD means not yet hydrated,
+    HEALTHY/DEGRADED mean a hydrated projection is (partially) serving.
+    """
 
     workspace_id: str
     health: WorkingMemoryHealth
     backend: str
     node_count: int = 0
     edge_count: int = 0
-    hydrated: bool = False
-    last_hydrated_at: datetime | None = None
     last_error: str = ""
 
 

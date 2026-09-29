@@ -40,7 +40,15 @@ def _embedded_factory(workspace_id: str) -> WorkingGraphBackend:
 
 
 class WorkspaceWorkingMemoryManager:
-    """Owns the active Workspace→graph map for one process."""
+    """Owns the active Workspace→graph map for one process.
+
+    M1 product-local projection: Workspace
+
+    This is not the canonical Workspace model (owned by ``maistro.workspaces``):
+    it is the working-memory domain's process-local map of which Workspace
+    projections are currently materialised, and it holds no Workspace truth —
+    every durable Workspace fact stays in the canonical stores.
+    """
 
     def __init__(
         self,
@@ -81,9 +89,23 @@ class WorkspaceWorkingMemoryManager:
         limit: int = 8,
         hops: int = 1,
     ) -> GraphContext:
-        """Convenience read: the Workspace Agent's one call into the seam."""
+        """Convenience read: the Workspace Agent's one call into the seam.
+
+        Degradation is surfaced, never smoothed over: an impaired answer keeps
+        its ``health``/``degraded_reason`` for the calling surface *and* is
+        logged here, so operators see that working memory — never durable
+        truth — is the impaired side.
+        """
         graph = await self.graph(workspace_id)
-        return await graph.context(query, limit=limit, hops=hops)
+        context = await graph.context(query, limit=limit, hops=hops)
+        if context.health is not WorkingMemoryHealth.HEALTHY:
+            logger.warning(
+                "Working memory is %s for workspace %s while serving context: %s",
+                context.health.value,
+                workspace_id,
+                context.degraded_reason or "no reason recorded",
+            )
+        return context
 
     async def status(self, workspace_id: str) -> WorkingMemoryStatus | None:
         """Status without creating a graph for a Workspace that has none."""
@@ -104,16 +126,6 @@ class WorkspaceWorkingMemoryManager:
         status = await graph.discard()
         await graph.close()
         return status
-
-    async def discard_all(self) -> int:
-        """Discard every active projection (e.g. shutdown). Returns the count."""
-        workspaces = list(self._graphs)
-        for workspace_id in workspaces:
-            await self.discard(workspace_id)
-        return len(workspaces)
-
-    def active_workspaces(self) -> list[str]:
-        return list(self._graphs)
 
     async def _evict_overflow(self) -> None:
         """Evict least-recently-used projections, oldest first.

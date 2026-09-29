@@ -73,7 +73,7 @@ async def test_lazy_hydration_happens_on_first_use(
 
     status = await manager.status(WORKSPACE_A)
     assert status is not None
-    assert status.hydrated is True
+    assert status.health is WorkingMemoryHealth.HEALTHY
     assert status.node_count == 1
 
 
@@ -104,11 +104,18 @@ async def test_retrieved_context_retains_canonical_references(
     assert node.ref.node_run_id == "nrun-3"
     assert node.ref.attempt_id == "att-2"
     assert node.ref.project_id == "proj-1"
-    # The rendered block keeps the references, so a consumer quoting the
-    # context is quoting durable identities, not graph-local guesses.
-    text = context.to_text()
-    assert "memory_id=mem-7" in text
-    assert "run_id=run-9" in text
+    # The canonical references travel with the node, so a consumer rendering
+    # or quoting this context is quoting durable identities, not graph-local
+    # guesses. (The ref also carries the org/team/user scope ids.)
+    expected_refs = {
+        "workspace_id": WORKSPACE_A,
+        "memory_id": "mem-7",
+        "run_id": "run-9",
+        "node_run_id": "nrun-3",
+        "attempt_id": "att-2",
+        "project_id": "proj-1",
+    }
+    assert expected_refs.items() <= node.ref.to_dict().items()
 
 
 async def test_correction_recorded_durably_becomes_available_after_refresh(
@@ -132,7 +139,9 @@ async def test_correction_recorded_durably_becomes_available_after_refresh(
     assert all(node.kind is not NodeKind.LEARNING for node in stale.nodes)
 
     graph = await manager.graph(WORKSPACE_A)
-    await graph.refresh()
+    # A non-forced hydrate is the incremental re-read of durable truth:
+    # idempotent upserts admit the correction without discarding the graph.
+    await graph.hydrate()
     updated = await manager.context(WORKSPACE_A, "columns")
     learning_nodes = [node for node in updated.nodes if node.kind is NodeKind.LEARNING]
     assert len(learning_nodes) == 1
@@ -230,7 +239,7 @@ async def test_terminology_anchors_hydrate() -> None:
     term_nodes = [node for node in context.nodes if node.kind is NodeKind.TERM]
     assert len(term_nodes) == 1
     assert term_nodes[0].content == "low-key lighting, deep shadows"
-    assert "workspace_id=ws-aaaa" in context.to_text()
+    assert term_nodes[0].ref.workspace_id == WORKSPACE_A
 
 
 async def test_hydration_is_bounded(episodic: InMemoryEpisodicStore) -> None:

@@ -17,7 +17,6 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime
 from functools import partial
 
 from maistro.memory.working_graph.backend import WorkingGraphBackend
@@ -86,7 +85,6 @@ class WorkspaceWorkingMemory:
         self._hydrated = False
         self._health = WorkingMemoryHealth.COLD
         self._last_error = ""
-        self._last_hydrated_at: datetime | None = None
         self._closed = False
 
     # -- hydration ---------------------------------------------------------
@@ -145,14 +143,9 @@ class WorkspaceWorkingMemory:
                     partial(self._backend.upsert_edge, edge), what=f"upsert {edge.edge_id}"
                 )
         self._hydrated = True
-        self._last_hydrated_at = datetime.now(UTC)
         self._last_error = "; ".join(failures)
         self._health = WorkingMemoryHealth.DEGRADED if failures else WorkingMemoryHealth.HEALTHY
         return await self.status()
-
-    async def refresh(self) -> WorkingMemoryStatus:
-        """Incremental re-read of durable truth (idempotent upserts)."""
-        return await self.hydrate()
 
     # -- reads -------------------------------------------------------------
 
@@ -232,8 +225,6 @@ class WorkspaceWorkingMemory:
             backend=getattr(self._backend, "name", type(self._backend).__name__),
             node_count=nodes,
             edge_count=edges,
-            hydrated=self._hydrated,
-            last_hydrated_at=self._last_hydrated_at,
             last_error=self._last_error,
         )
 
@@ -245,7 +236,6 @@ class WorkspaceWorkingMemory:
         await self._guarded(self._backend.clear, what="clear")
         self._hydrated = False
         self._health = WorkingMemoryHealth.COLD
-        self._last_hydrated_at = None
         return await self.status()
 
     async def close(self) -> None:

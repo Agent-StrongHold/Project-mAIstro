@@ -37,19 +37,20 @@ async def test_lru_eviction_discards_oldest_graph() -> None:
     manager = WorkspaceWorkingMemoryManager(sources=[], backend_factory=build, max_active_graphs=2)
     await manager.graph(WORKSPACE_A)
     await manager.graph(WORKSPACE_B)
-    assert manager.active_workspaces() == [WORKSPACE_A, WORKSPACE_B]
 
     # Touch A so B becomes the least recently used, then force one eviction.
     await manager.graph(WORKSPACE_A)
     await manager.graph("ws-cccc")
 
-    assert manager.active_workspaces() == [WORKSPACE_A, "ws-cccc"]
+    # The LRU-evicted projection is gone from the manager's map; the touched
+    # one is still served. Eviction is disposal: the evicted graph's backend
+    # holds nothing.
     assert await manager.status(WORKSPACE_B) is None
-    # Eviction is disposal: the evicted graph's backend holds nothing.
+    assert await manager.status(WORKSPACE_A) is not None
     assert await built[WORKSPACE_B].counts() == (0, 0)
 
 
-async def test_discard_all_clears_every_projection() -> None:
+async def test_discard_clears_each_projection() -> None:
     manager = WorkspaceWorkingMemoryManager(
         sources=[],
         backend_factory=lambda workspace_id: EmbeddedGraphBackend(workspace_id),
@@ -57,10 +58,9 @@ async def test_discard_all_clears_every_projection() -> None:
     )
     await manager.graph(WORKSPACE_A)
     await manager.graph(WORKSPACE_B)
-    assert len(manager.active_workspaces()) == 2
 
-    assert await manager.discard_all() == 2
-    assert manager.active_workspaces() == []
+    await manager.discard(WORKSPACE_A)
+    await manager.discard(WORKSPACE_B)
     assert await manager.status(WORKSPACE_A) is None
     assert await manager.status(WORKSPACE_B) is None
 

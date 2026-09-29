@@ -17,10 +17,11 @@ abstraction:
 - hydration happens lazily on first use, from the engine's **real** in-process
   episodic and learning stores, and is bounded;
 - retrieved context retains canonical references (memory/learning/artifact/
-  run/node_run/attempt/project/goal/workspace ids), including in the rendered
-  text a consumer would paste into a prompt;
+  run/node_run/attempt/project/goal/workspace ids); a consumer rendering or
+  quoting the context quotes the node's canonical ref data (its `to_dict()`
+  carries the durable identities plus the org/team/user scope ids);
 - a durably recorded user correction becomes visible only through
-  hydration/refresh — the projection never invents it early and never invents
+  hydration/re-read — the projection never invents it early and never invents
   facts on an empty graph;
 - accepted and rejected artifact versions hydrate with lineage and
   produced-during linkage;
@@ -33,13 +34,35 @@ abstraction:
   loudly instead of poisoning a graph;
 - discard/rebuild loses nothing durable (durable reads re-verified unchanged);
 - a broken backend reports UNAVAILABLE and a partially failing source reports
-  DEGRADED, with the reason surfaced in `GraphContext`/`WorkingMemoryStatus`,
-  while durable reads still succeed;
+  DEGRADED, with the reason surfaced in `GraphContext`/`WorkingMemoryStatus`
+  and logged at the manager seam boundary, while durable reads still succeed;
 - manager lifecycle: one graph per Workspace identity, LRU eviction disposes
-  (closes) the least recently used graph, `discard_all`, and explicit
-  refusal of blank Workspace ids.
+  (closes) the least recently used graph, per-Workspace `discard` removes the
+  projection from the manager's map, and blank Workspace ids are refused
+  explicitly.
 
-Nothing was removed: this change is purely additive, and no existing node IDs
-moved. The suite grew by exactly the 26 new tests; the durable memory suites
-they sit beside are untouched (438 collected in `tests/memory` after the
-change, all passing).
+## CI-repair round (exact-debt-ledger + formal-conformance, this branch)
+
+No node IDs were added or removed in the repair round; the suite is still the
+same 26 tests (438 collected in `tests/memory`), so the recorded inventory is
+unchanged. Assertion-shape edits only:
+
+- `test_retrieved_context_retains_canonical_references` now asserts the
+  canonical references on `node.ref.to_dict()` data instead of the removed
+  `GraphContext.to_text()` rendering;
+- `test_correction_recorded_durably_becomes_available_after_refresh` re-reads
+  via `graph.hydrate()` (the incremental, idempotent path) after
+  `WorkspaceWorkingMemory.refresh()` — a pure alias — was removed as dead
+  code for the vulture per-identity ledger;
+- `test_lazy_hydration_happens_on_first_use` asserts hydration via
+  `status.health is HEALTHY` (+ `node_count`) after the write-only
+  `WorkingMemoryStatus.hydrated`/`last_hydrated_at` fields were removed
+  (`health` already encodes hydration: COLD = not hydrated);
+- `test_lru_eviction_discards_oldest_graph` and
+  `test_discard_clears_each_projection` (renamed from
+  `test_discard_all_clears_every_projection`) assert manager map state through
+  `status()`/`discard()` behaviour after the uncalled introspection helpers
+  `active_workspaces()`/`discard_all()` were removed as dead code;
+- `test_unavailable_backend_reports_degraded_state_and_durable_intact` gained
+  a caplog assertion pinning the manager's new seam-boundary degradation log
+  (the genuine production read of `GraphContext.degraded_reason`).

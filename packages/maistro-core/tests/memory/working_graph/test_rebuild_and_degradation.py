@@ -7,6 +7,10 @@ durable system of record stays intact and readable.
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from maistro.memory.episodic.store import InMemoryEpisodicStore
 from maistro.memory.working_graph import (
     DurableMemorySource,
@@ -61,6 +65,7 @@ async def test_discard_and_rebuild_loses_no_durable_data(
 
 async def test_unavailable_backend_reports_degraded_state_and_durable_intact(
     episodic: InMemoryEpisodicStore,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     await episodic.store(make_memory("mem-1", "the durable fact"))
     manager = WorkspaceWorkingMemoryManager(
@@ -68,10 +73,16 @@ async def test_unavailable_backend_reports_degraded_state_and_durable_intact(
         backend_factory=lambda workspace_id: BrokenBackend(workspace_id),
     )
 
-    context = await manager.context(WORKSPACE_A, "durable fact")
+    with caplog.at_level(logging.WARNING, logger="maistro.memory.working_graph.manager"):
+        context = await manager.context(WORKSPACE_A, "durable fact")
     assert context.health is WorkingMemoryHealth.UNAVAILABLE
     assert context.nodes == []  # never pretend memory is available
     assert "locked" in context.degraded_reason
+    # The seam boundary makes the impairment visible to operators too: the
+    # degraded answer is logged with its reason, never silently served.
+    assert any(
+        "unavailable" in record.message and "locked" in record.message for record in caplog.records
+    )
 
     # The durable system of record is intact and still serves reads.
     durable = await episodic.list_by_scope(org_id="org-1", user_id="user-1", limit=10)
@@ -106,8 +117,8 @@ async def test_empty_sources_serve_no_invented_facts() -> None:
     manager = WorkspaceWorkingMemoryManager(sources=[])
     context = await manager.context(WORKSPACE_A, "anything at all")
     assert context.nodes == []
+    assert context.edges == []
     assert context.health is WorkingMemoryHealth.HEALTHY  # honest emptiness
-    assert "anything at all" not in context.to_text().split("workspace=")[-1]
 
 
 async def test_closed_graph_reports_unavailable() -> None:
