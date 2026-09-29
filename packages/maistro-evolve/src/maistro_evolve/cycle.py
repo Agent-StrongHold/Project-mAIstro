@@ -233,9 +233,16 @@ class EvolutionCycle:
             # default for a never-battled genome used to hand every genome a
             # 0.5-strength Elo bonus for existing. No battles → no Elo evidence
             # → fitness scores the term pessimistically (missing credit).
+            # The else-branch matters too: crossover/mutation deepcopy the
+            # parent's harness_params, so without it a newly bred genome
+            # inherits the parent's avg_elo/elo_battles and collects the
+            # parent's Elo bonus without ever battling.
             if battles > 0:
                 g.harness_params["avg_elo"] = self.tournament.get_avg_elo(g.id)
                 g.harness_params["elo_battles"] = battles
+            else:
+                g.harness_params.pop("avg_elo", None)
+                g.harness_params.pop("elo_battles", None)
 
     def _check_fitness_recomputability(self, genome_id: str, components: FitnessComponents) -> None:
         """Enforce cross-cycle recomputability from the recorded evidence (#853).
