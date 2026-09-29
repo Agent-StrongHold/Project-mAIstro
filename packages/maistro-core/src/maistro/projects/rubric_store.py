@@ -36,14 +36,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from maistro.ontology.protocols import Ontology
 from maistro.ontology.rubric import (
     RUBRIC_KIND,
+    RUBRIC_RUN_BINDING_KIND,
     PackRubricCatalog,
     RubricAggregation,
     RubricDimension,
     RubricGate,
     RubricProvenance,
+    RubricRunBindingSemantic,
     RubricSemantic,
     register_rubric_kind,
     rubric_entity_id,
+    rubric_run_binding_entity_id,
 )
 from maistro.ontology.types import OntologyEntity
 
@@ -77,22 +80,6 @@ class GoalRevisionCatalog(Protocol):
         ...
 
 
-class InMemoryGoalRevisionCatalog:
-    """Dict-backed :class:`GoalRevisionCatalog` for tests and engine boot."""
-
-    def __init__(self) -> None:
-        self._goals: dict[tuple[str, int], GoalRevisionSnapshot] = {}
-
-    def register_goal(self, snapshot: GoalRevisionSnapshot) -> GoalRevisionSnapshot:
-        """Publish one live Goal revision (test/boot helper)."""
-        self._goals[(snapshot.goal_id, snapshot.goal_revision)] = snapshot.model_copy(deep=True)
-        return snapshot
-
-    def resolve(self, goal_id: str, goal_revision: int) -> GoalRevisionSnapshot | None:
-        snap = self._goals.get((goal_id, goal_revision))
-        return snap.model_copy(deep=True) if snap is not None else None
-
-
 class RubricError(Exception):
     """Base class for Rubric store errors."""
 
@@ -111,6 +98,10 @@ class RubricScopeMismatchError(RubricError):
 
 class RubricRevisionConflictError(RubricError):
     """The revision already exists with different content (immutability guard)."""
+
+
+class RubricRunBindingConflictError(RubricError):
+    """The Run already has a binding naming different revisions (one binding per Run)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +127,6 @@ class RubricStore:
     def __init__(self, ontology: Ontology, goals: GoalRevisionCatalog) -> None:
         self._ontology = ontology
         self._goals = goals
-        self._bindings: dict[str, RubricRunBinding] = {}
         register_rubric_kind(ontology)
 
     # -- create / revise ---------------------------------------------------
@@ -293,12 +283,55 @@ class RubricStore:
             goal_id=semantic.goal_id,
             goal_revision=semantic.goal_revision,
         )
-        self._bindings[run_id] = binding
+        record = RubricRunBindingSemantic(
+            run_id=binding.run_id,
+            rubric_id=binding.rubric_id,
+            rubric_revision=binding.rubric_revision,
+            goal_id=binding.goal_id,
+            goal_revision=binding.goal_revision,
+        )
+        entity = OntologyEntity(
+            id=rubric_run_binding_entity_id(run_id), kind=RUBRIC_RUN_BINDING_KIND, revision=1
+        ).with_semantic(record.model_dump(mode="json"))
+        existing = self._ontology.get(entity.id)
+        if existing is not None:
+            prior = RubricRunBindingSemantic.model_validate(existing.get_semantic())
+            if (
+                prior.rubric_id,
+                prior.rubric_revision,
+                prior.goal_id,
+                prior.goal_revision,
+            ) != (
+                record.rubric_id,
+                record.rubric_revision,
+                record.goal_id,
+                record.goal_revision,
+            ):
+                raise RubricRunBindingConflictError(
+                    f"run {run_id!r} already bound to rubric {prior.rubric_id!r}"
+                    f"@{prior.rubric_revision}; one binding per Run"
+                )
+        self._ontology.upsert(entity)
         return binding
 
     async def binding_for_run(self, run_id: str) -> RubricRunBinding | None:
-        """The binding a Run recorded, or ``None``."""
-        return self._bindings.get(run_id)
+        """The binding a Run recorded, or ``None``.
+
+        Read from the durable ontology (deterministic per-Run entity id),
+        not from process memory, so a restarted or newly constructed store
+        over the same ontology still resolves historical bindings.
+        """
+        entity = self._ontology.get(rubric_run_binding_entity_id(run_id))
+        if entity is None:
+            return None
+        record = RubricRunBindingSemantic.model_validate(entity.get_semantic())
+        return RubricRunBinding(
+            run_id=record.run_id,
+            rubric_id=record.rubric_id,
+            rubric_revision=record.rubric_revision,
+            goal_id=record.goal_id,
+            goal_revision=record.goal_revision,
+        )
 
     # -- internals -----------------------------------------------------------
 

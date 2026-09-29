@@ -210,9 +210,47 @@ def rubric_entity_id(rubric_id: str, revision: int) -> UUID:
 def register_rubric_kind(ontology: Ontology) -> None:
     """Register the ``rubric`` kind + SEMANTIC model with an ``Ontology``.
 
+    Also registers the ``rubric_run_binding`` kind: the durable record of
+    which exact Rubric revision (and, via it, Goal revision) a historical
+    Run consumed. Bindings are ontology entities, so they survive store
+    restarts exactly like the revisions they name.
+
     Idempotent per the ontology's own registration contract.
     """
     ontology.register(RUBRIC_KIND, RubricSemantic)
+    ontology.register(RUBRIC_RUN_BINDING_KIND, RubricRunBindingSemantic)
+
+
+#: Ontology kind slug for a historical Run's (Goal, Rubric) revision binding.
+RUBRIC_RUN_BINDING_KIND = "rubric_run_binding"
+
+
+class RubricRunBindingSemantic(BaseModel):
+    """SEMANTIC-facet payload for the ``rubric_run_binding`` ontology kind.
+
+    One immutable record per ``run_id``: the exact Rubric revision a Run
+    scored against and the Goal revision that revision binds. Persisted as
+    an ontology entity so it is durable across restarts and reconstructable
+    from the same store the revisions live in.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(min_length=1)
+    rubric_id: str = Field(min_length=1)
+    rubric_revision: int = Field(ge=1)
+    goal_id: str = Field(min_length=1)
+    goal_revision: int = Field(ge=1)
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+def rubric_run_binding_entity_id(run_id: str) -> UUID:
+    """Deterministic entity id for one Run's binding.
+
+    One binding per Run, so ``run_id`` alone maps to a stable UUID: record
+    is idempotent, and the durable read is a direct ``get`` — no index.
+    """
+    return uuid5(NAMESPACE_URL, f"maistro:rubric-run-binding:{run_id}")
 
 
 class PackRubricCatalog(BaseModel):

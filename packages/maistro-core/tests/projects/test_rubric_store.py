@@ -21,16 +21,43 @@ from maistro.ontology import (
 )
 from maistro.projects.rubric_store import (
     GoalRevisionSnapshot,
-    InMemoryGoalRevisionCatalog,
     RubricGoalNotLiveError,
     RubricNotFoundError,
     RubricRevisionConflictError,
+    RubricRunBindingConflictError,
     RubricScopeMismatchError,
     RubricStore,
 )
 
 WS = "ws-1"
 PROJECT = "proj-1"
+
+
+class InMemoryGoalRevisionCatalog:
+    """Dict-backed test double of the store's ``GoalRevisionCatalog`` seam.
+
+    Lives with the tests that inject it: the store itself only knows the
+    Protocol, and canonical Goal persistence (#458) will implement it.
+    """
+
+    def __init__(self) -> None:
+        self._goals: dict[tuple[str, int], GoalRevisionSnapshot] = {}
+
+    def register_goal(self, snapshot: GoalRevisionSnapshot) -> GoalRevisionSnapshot:
+        """Publish one live Goal revision, retiring older revisions of the
+        same Goal so only the exact revision published last resolves as live."""
+        for revision in [
+            r
+            for (goal_id, r) in self._goals
+            if goal_id == snapshot.goal_id and r != snapshot.goal_revision
+        ]:
+            del self._goals[(snapshot.goal_id, revision)]
+        self._goals[(snapshot.goal_id, snapshot.goal_revision)] = snapshot.model_copy(deep=True)
+        return snapshot
+
+    def resolve(self, goal_id: str, goal_revision: int) -> GoalRevisionSnapshot | None:
+        snap = self._goals.get((goal_id, goal_revision))
+        return snap.model_copy(deep=True) if snap is not None else None
 
 
 def dim(dim_id: str, weight: float = 1.0) -> RubricDimension:
@@ -114,6 +141,34 @@ async def test_create_with_superseded_goal_revision_fails() -> None:
             gate=RubricGate(pass_threshold=80.0),
             provenance=authored(),
         )
+
+
+async def test_registering_new_revision_supersedes_older_revision() -> None:
+    """Registering goal@2 after goal@1 retires goal@1: it stops resolving and
+    can no longer back a new Rubric binding."""
+    store, _, catalog = harness(goal_revision=1)
+    assert catalog.resolve("goal-1", 1) is not None
+    live_goal(catalog, "goal-1", 2)
+    assert catalog.resolve("goal-1", 1) is None
+    assert catalog.resolve("goal-1", 2) is not None
+    with pytest.raises(RubricGoalNotLiveError):
+        await store.create(
+            workspace_id=WS,
+            project_id=PROJECT,
+            goal_id="goal-1",
+            goal_revision=1,  # superseded by the goal@2 registration
+            dimensions=[dim("accuracy")],
+            gate=RubricGate(pass_threshold=80.0),
+            provenance=authored(),
+        )
+
+
+async def test_reregistering_same_revision_is_idempotent() -> None:
+    """Re-publishing the same revision supersedes nothing and stays live."""
+    store, _, catalog = harness(goal_revision=1)
+    live_goal(catalog, "goal-1", 1)
+    assert catalog.resolve("goal-1", 1) is not None
+    await make_rubric(store)
 
 
 async def test_create_binds_goal_id_and_revision() -> None:
@@ -293,6 +348,26 @@ async def test_run_binding_persists_exact_goal_and_rubric_revisions() -> None:
     # Historical bindings keep naming the revision they recorded.
     old = await store.binding_for_run("run-1")
     assert old is not None and old.rubric_revision == 1
+
+
+async def test_run_binding_survives_store_restart_over_same_ontology() -> None:
+    """Acceptance: bindings are ontology entities, not process memory — a new
+    RubricStore over the same durable ontology resolves historical bindings."""
+    store, ontology, catalog = harness()
+    semantic = await make_rubric(store)
+    binding = await store.record_run_binding("run-1", semantic.rubric_id, rubric_revision=1)
+
+    restarted = RubricStore(ontology, catalog)
+    stored = await restarted.binding_for_run("run-1")
+    assert stored == binding
+    # Re-recording the same binding is idempotent; a conflicting one is rejected.
+    assert (
+        await restarted.record_run_binding("run-1", semantic.rubric_id, rubric_revision=1)
+        == binding
+    )
+    await store.update_dimensions("rubric-a", dimensions=[dim("accuracy")])
+    with pytest.raises(RubricRunBindingConflictError):
+        await store.record_run_binding("run-1", semantic.rubric_id, rubric_revision=2)
 
 
 async def test_run_binding_requires_known_revision() -> None:
