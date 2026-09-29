@@ -163,3 +163,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Preserve the G1-G18 guardrails as acceptance constraints for any future Turing self-model, but bind them to ADR-081426-fb9f's activation gate and canonical Warden/Sentinel/memory/Run provenance before self-model persistence becomes reachable. No self-authored persistent state, ontology mutation, or prompt-injected self narrative may bypass the same security/evidence boundaries as other durable effects.  
 **Current state:** This is a valuable pre-implementation threat model: it identifies persistent self-poisoning, unbounded drift/growth, and self-authored ontology changes before those paths are activated. It should remain Proposed and function as a hard prerequisite set, not be treated as evidence that the Turing self-model is currently active.  
 **ADR:** [ADR-070426-9f47: Autonoetic self-model guardrails](../../../adr/ADR-070426-9f47-autonoetic-self-model-guardrails.md)
+
+## ADR-072726-0d6b: Sentinel permission table fails closed
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat deny-on-miss at the shared Sentinel boundary as current security architecture and continue migrating authorization inputs to canonical decision-time permission sources. Remove remaining compatibility-mode constructions as their test/demo callers disappear; do not reintroduce caller-local allow-on-miss behavior.  
+**Current state:** This ADR has direct tests and a September implementation reconciliation showing the formal invariant was amended separately, the shared primitive now denies on misses, production cannot configure permissive fallback, and runtime permission changes are resolved at decision time. This materially supersedes older assumptions that an empty Sentinel table is harmless.  
+**ADR:** [ADR-072726-0d6b: Sentinel fail-closed permission table](../../../adr/ADR-072726-0d6b-sentinel-permission-table-fail-closed.md)
+
+## ADR-081226-6e34: Scoped grants and deny-wins authorization
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Use this as the canonical structural authorization model when rewriting ADR-028/068/084 and Hive identity. Complete enforcement/reachability evidence across WorkspaceMembership, Project ancestry, object grants, resource visibility, delegation authority, Binding/Credential selectors, and deny inheritance. Keep policy/Sentinel as an additional runtime restriction layer, never a mechanism for overriding structural denies.  
+**Current state:** This resolves the older globally ordered role/tier model into scope-contained grants plus deny-wins semantics. Narrower Projects may legitimately add authority without leaking it outward; Persona contributes no authority. It is the correct foundation for canonical principal authorization.  
+**ADR:** [ADR-081226-6e34: Scoped grants and deny-wins authorization](../../../adr/ADR-081226-6e34-hierarchical-permissions.md)
