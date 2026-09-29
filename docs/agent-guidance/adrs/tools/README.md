@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Decide whether arbitrary executable `name@version` code refs remain a first-class architecture concept now that Capability Provider/Binding/Invocation and sandbox/harness boundaries exist. If retained, create a successor that represents registered code as a governed capability/provider executed through canonical Invocation with real isolation, authorization, resource caps, and effect evidence; if the provider architecture already subsumes the need, supersede ADR-069 accordingly. Do not build a parallel `CodeRegistry.invoke` execution path.  
 **Current state:** SPEC-257 implemented only the pure registry/resolve/signature core. The ADR's security-critical execution contract, microVM isolation, Sentinel/Warden routing, and resource caps were never built or reachable. Its own convergence note records this. Several substrate dependencies are also stale, so completing the original design literally would risk creating another non-canonical execution boundary.  
 **ADR:** [ADR-069: Code Registry — versioned, signed, microVM-isolated execution of substrate code refs](../../../adr/ADR-069-code-registry.md)
+
+## ADR-082226-4478: One governed tool surface
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Finish the retirement: all wanted tool/integration effects must execute through Capability → Provider → Binding → Invocation, and unwanted demo endpoints/UI/tests should be deleted together. Remove hard-coded/prefix-string dispatch and ensure MCP/tool exposure is discovery/catalog only, not a second executor. Security/reversibility/approval policy belongs at the one Invocation seam.  
+**Current state:** This proposal already drove deletion of several unwanted demo surfaces and correctly identifies the remaining duplicate tool executors. It is strongly aligned with ADR-081226-6b46 and ADR-096 and should become the concrete endpoint-retirement plan rather than another tool framework.  
+**ADR:** [ADR-082226-4478: One governed tool surface](../../../adr/ADR-082226-4478-retire-single-purpose-endpoints-for-one-governed-tool-surface.md)
