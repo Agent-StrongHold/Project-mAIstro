@@ -29,7 +29,9 @@ fitness number means), not a tuning knob a cycle may adjust per-candidate.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from typing import Annotated
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 # Version of the default objective defined below. v1 is the implicit,
 # genome-owned weight vector this module retires: same numeric weights
@@ -80,17 +82,18 @@ class EvaluationObjective(BaseModel):
     # ``EvalResult.benchmark`` / ``genome.eval_scores`` keys; a scored
     # benchmark missing from this mapping gets ``default_benchmark_weight``
     # (e.g. ``code_rsi``) so a subset run still yields a real score.
-    benchmark_weights: dict[str, float]
+    benchmark_weights: Annotated[
+        dict[str, float],
+        # Defensive copy: a caller mutating the dict they passed in must not
+        # retroactively retune an already-constructed objective. Expressed as
+        # an anonymous ``BeforeValidator`` rather than a named
+        # ``@field_validator`` method so the framework-registered callable
+        # cannot masquerade as dead code to static scanners.
+        BeforeValidator(dict),
+    ]
     default_benchmark_weight: float
     fitness_term_weights: FitnessTermWeights
     missing_evidence_credit: float = MISSING_EVIDENCE_CREDIT
-
-    @field_validator("benchmark_weights")
-    @classmethod
-    def _snapshot_weights(cls, v: dict[str, float]) -> dict[str, float]:
-        # Defensive copy: a caller mutating the dict they passed in must not
-        # retroactively retune an already-constructed objective.
-        return dict(v)
 
     def weight_for(self, benchmark: str) -> float:
         return self.benchmark_weights.get(benchmark, self.default_benchmark_weight)

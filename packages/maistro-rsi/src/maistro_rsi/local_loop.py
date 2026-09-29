@@ -2063,9 +2063,11 @@ class LocalRsiLoop:
                         score_b=b.composite,
                     )
         for v in fought:
-            elo = self._elo.get_avg_elo(v.genome_id)
-            if elo > 0:
-                by_id[v.genome_id].harness_params["avg_elo"] = elo
+            # Battle-evidence gate (#853): fitness's Elo term needs elo_battles.
+            battles = self._elo.get_total_battles(v.genome_id)
+            if battles > 0:
+                by_id[v.genome_id].harness_params["avg_elo"] = self._elo.get_avg_elo(v.genome_id)
+                by_id[v.genome_id].harness_params["elo_battles"] = battles
 
     def _refit_cull_breed(self) -> list[Any]:
         """Fitness (reliability-multiplied) → cull the weakest → breed one child.

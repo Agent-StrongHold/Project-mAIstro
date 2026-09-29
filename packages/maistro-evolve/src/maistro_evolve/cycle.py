@@ -16,7 +16,7 @@ from .optimizer import extract_signal, optimize_topology
 from .population import IslandPopulation, PopulationStore, migrate_islands
 from .reflect import reflective_improve
 from .tournament import EloTournament
-from .types import PipelineGenome
+from .types import FitnessComponents, PipelineGenome
 
 logger = logging.getLogger("maistro_evolve.cycle")
 
@@ -85,6 +85,44 @@ class EvolutionConfig(BaseModel):
     eval_ema_alpha: float = Field(default=0.5, gt=0.0, le=1.0)
 
 
+class FitnessEvidenceDriftError(RuntimeError):
+    """A genome's fitness moved although its exact evidence did not (#853).
+
+    ``compute_fitness`` is a pure function of (genome evidence, population
+    evidence, objective). If the recorded evidence hash and objective version
+    are unchanged but the total moved, the scoring arithmetic itself changed
+    mid-campaign — exactly the "same evidence, different number" defect the
+    issue forbids. The cycle refuses to continue rather than rank candidates
+    against incomparable numbers.
+    """
+
+
+class FitnessEvidenceRecord(BaseModel):
+    """One genome's fitness evidence as computed in a specific cycle (#853).
+
+    ``EvolutionCycle.fitness_evidence`` keeps the latest record per genome so
+    the determinism contract is enforced in production, not only in tests:
+    recomputing from unchanged evidence (same ``evidence_hash`` under the same
+    ``objective_version``) must reproduce the same ``total`` bit-for-bit, so
+    repeated identical evidence across cycles can never manufacture a fitness
+    gain — any movement is traceable to a recorded evidence or objective
+    change (AC5/AC8).
+    """
+
+    genome_id: str
+    total: float
+    # Gated measured task quality — recorded beside ``total`` so an auditor
+    # can see context terms never entered the capability number.
+    capability_score: float
+    objective_version: str
+    evidence_hash: str
+    # Which components had no measurement, scored pessimistically.
+    missing_evidence: tuple[str, ...] = ()
+    # The objective's component -> role mapping, snapshotting the semantic
+    # split in force when the score was computed.
+    component_roles: dict[str, str] = Field(default_factory=dict)
+
+
 class EvolutionCycle:
     def __init__(
         self,
@@ -99,6 +137,9 @@ class EvolutionCycle:
         # weight vector. Pass a custom objective per campaign/cycle to change
         # policy deliberately; there is no per-genome override path.
         self.objective = objective or DEFAULT_OBJECTIVE
+        # Latest fitness evidence per genome id (#853): the cross-cycle
+        # determinism guard's memory — see _check_fitness_recomputability.
+        self.fitness_evidence: dict[str, FitnessEvidenceRecord] = {}
         self._island_pop: IslandPopulation | None = None
         self._cycle_count: int = 0
 
@@ -196,12 +237,46 @@ class EvolutionCycle:
                 g.harness_params["avg_elo"] = self.tournament.get_avg_elo(g.id)
                 g.harness_params["elo_battles"] = battles
 
+    def _check_fitness_recomputability(self, genome_id: str, components: FitnessComponents) -> None:
+        """Enforce cross-cycle recomputability from the recorded evidence (#853).
+
+        Records the components' provenance fields (capability, objective
+        version, evidence hash, missing-evidence names, component roles) and,
+        when a previous record exists, refuses a score that moved under an
+        unchanged hash + version — a material gain with no recorded reason is
+        a broken ruler, not a better candidate.
+        """
+        previous = self.fitness_evidence.get(genome_id)
+        self.fitness_evidence[genome_id] = FitnessEvidenceRecord(
+            genome_id=genome_id,
+            total=components.total,
+            capability_score=components.capability_score,
+            objective_version=components.objective_version,
+            evidence_hash=components.evidence_hash,
+            missing_evidence=tuple(components.missing_evidence),
+            component_roles=dict(components.component_roles),
+        )
+        if previous is None:
+            return
+        unchanged = (
+            previous.evidence_hash == components.evidence_hash
+            and previous.objective_version == components.objective_version
+        )
+        if unchanged and previous.total != components.total:
+            raise FitnessEvidenceDriftError(
+                f"genome {genome_id}: fitness moved {previous.total!r} -> "
+                f"{components.total!r} although evidence_hash and "
+                f"objective_version are unchanged ({components.objective_version}) — "
+                "identical evidence must recompute identically (#853)"
+            )
+
     def _compute_all_fitness(self, population: PopulationStore) -> list[PipelineGenome]:
         all_genomes = population.list_all()
         for g in all_genomes:
             # Score under the campaign objective — identical ruler for every
             # candidate and every cycle (#853).
             components = compute_fitness(g, all_genomes, self.objective)
+            self._check_fitness_recomputability(g.id, components)
             g.fitness_score = components.total
             g.updated_at = datetime.now(UTC).isoformat()
             population.add(g)
