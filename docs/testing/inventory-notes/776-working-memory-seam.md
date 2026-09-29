@@ -66,3 +66,34 @@ unchanged. Assertion-shape edits only:
 - `test_unavailable_backend_reports_degraded_state_and_durable_intact` gained
   a caplog assertion pinning the manager's new seam-boundary degradation log
   (the genuine production read of `GraphContext.degraded_reason`).
+
+## Independent verification round (head 3c4eabd6cd49, base b268f05359e7)
+
+Executed locally, all observed directly:
+
+- `pytest packages/maistro-core/tests/memory/working_graph -q` → 26 passed;
+  `pytest packages/maistro-core/tests/memory -q` → 438 passed; `ruff check` /
+  `ruff format --check` clean; `check-suite-inventory.py` ok.
+- formal-conformance steps, against a real pgvector/pg18 Postgres (fresh
+  container, `alembic upgrade head` applied): `check-m1-convergence-freeze.py
+  --base b268f05359e7` pass; `check-formal-oracle-independence.py --base
+  b268f05359e7` pass; `pytest formal/models/ --timeout=300
+  --hypothesis-seed=0` → 664 passed.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → 1402 reviewed → 1401 findings, exit 0.
+
+**Still red — exact-debt-ledger is NOT fixed at this head:**
+`scripts/check-ratchet-provenance.py` exits 1 (step "Require enforced ratchet
+provenance policy", `.github/workflows/vulture-ratchet.yml`, which runs before
+the vulture step the previous repair fixed). Root cause: the reachability
+ratchet reports the six new `maistro.memory.working_graph*` modules as NEW
+unreachable (unrooted — no production/CI entry point imports them) modules,
+absent from `quality/reachability-baseline.json` (189 entries, none
+working_graph), with no group in `quality/reachability-dispositions.json` and
+no `reachability` authorization in `quality/ratchet-authorizations.json`.
+`scripts/check-reachability.py` exits 1 for the same reason. Repo convention
+for an intentional published seam (see the `wiring-reads` precedent) is:
+baseline the modules, add a disposition group naming the root that will reach
+it (plus the matching CONVERGENCE-MATRIX row), and record the ratchet
+authorization with owner/issue/reason. The earlier repair note's "exact CI argv
+now exits 0" claim held only for the vulture sub-step, not the job.
