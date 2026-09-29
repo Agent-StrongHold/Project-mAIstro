@@ -123,3 +123,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Rewrite the proposal to describe the **canonical** Builders adapter that now exists, then finish the remaining M1 convergence debt: Builders domain stages/gates/revision feedback may project onto canonical Graph/Run, but they must not own a second traversal/lifecycle. Retire legacy executor/state authority and classify/remove `StageStatus` universal-lifecycle behavior per the convergence ledger. Preserve gated revise loops only as domain routing that creates canonical NodeRun/Attempt evidence.  
 **Current state:** #734-era code now includes `CanonicalGraphPipelineExecutor` and behavioral tests proving Builders work produces one canonical Run with NodeRuns/Attempts, including revisions. However, the reachability/convergence ledgers still classify the Builders executor/state lifecycle as RETIRE/CONVERGE debt. ADR-099's original "two execution models coexist" decision is therefore obsolete even though its DAG/gate semantics are being successfully adapted to the canonical spine.  
 **ADR:** [ADR-099: Builders pipeline as a DAG with gated verify-and-revise loops](../../../adr/ADR-099-builders-pipeline-graph.md)
+
+## ADR-062026-9b30: Date-based ADR/SPEC IDs for new records
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Enforce the date/hash ID rule in repository lint/CI so new sequential IDs cannot reappear and duplicate IDs are rejected before merge. Reconcile lifecycle metadata: the ADR carries an `implemented` date but no Implemented history/status transition.  
+**Current state:** The decision solved a real concurrent-PR collision and the registry accepts both legacy sequential IDs and current date/hash IDs. The foreign-harness duplication discovered during this audit shows that unique IDs alone do not prevent duplicate decision content, so decision-level duplication detection/review still matters.  
+**ADR:** [ADR-062026-9b30: Date-based ADR/SPEC IDs](../../../adr/ADR-062026-9b30-date-based-adr-spec-ids.md)
