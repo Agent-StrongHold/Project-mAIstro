@@ -59,3 +59,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Complete SPEC-062226-fb23: real ConfigStore persistence/cache, canonical-principal authorization, audited API/CLI edit paths, explicit export/restore, and tests. Then migrate hot-editable settings subsystem-by-subsystem instead of assuming all named tunables are already DB-backed. Reconcile ADR-078's "scheduled/on-change git export" wording with the SPEC's safer explicit export/restore contract unless automated repository mutation is intentionally required.  
 **Current state:** The static bootstrap config path exists, but the implementing SPEC states the online DB-backed ConfigStore did not yet exist when specified and its acceptance criteria remain unchecked. The DB-vs-static split remains a useful architecture rule, while the actual hot-config control plane is still incomplete.  
 **ADR:** [ADR-078: Configuration Management — DB source of truth, RBAC online edit, file export](../../../adr/ADR-078-configuration-management.md)
+
+## ADR-092: Capability-vs-control posture
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Correct the document's stale internal `Status: Proposed` line and broken/misleading related-ADR commentary, then refresh examples against current canonical architecture. Preserve the principle that security, interpretability, auditability, and governed authority justify structural cost, while unnecessary scaffolding does not. Any "trusted local lane" must still have explicit authority/effect boundaries rather than becoming a bypass around canonical principals, Sentinel, or Invocation evidence.  
+**Current state:** The front matter/history make this an Accepted architectural posture, while the body still says Proposed and one related reference mislabels ADR-091 as durable execution. The core decision remains highly relevant: MAIstro intentionally accepts some capability/smoothness cost for control, but must continuously prove that each structural constraint serves a real governance requirement.  
+**ADR:** [ADR-092: Capability-vs-control posture](../../../adr/ADR-092-capability-vs-control-posture.md)
