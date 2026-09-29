@@ -413,6 +413,54 @@
       "notes": "Deleted only on explicit request; no retention sweep."
     },
     {
+      "table": "design_artifact_versions",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Append-only version ledger (#780): history is the product, rows are never rewritten and have no DELETE; project deletion cascades via design_projects. Retention undecided on #325 like design_outputs."
+    },
+    {
+      "table": "design_artifact_locks",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Lock history including released locks (#780); released rows are retained for audit of who unlocked what. Project deletion cascades via design_projects. Retention undecided on #325."
+    },
+    {
+      "table": "design_project_guidance",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Durable user guidance (#780); superseded rows stay readable by design — invalidation is supersession, never deletion. Project deletion cascades via design_projects. Retention undecided on #325."
+    },
+    {
+      "table": "design_branch_controls",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/version_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "Per-branch control mode (#780), one mutable row per (project, lineage), updated in place. Project deletion cascades via design_projects. Retention undecided on #325."
+    },
+    {
       "table": "durable_graph_runs",
       "backends": [
         "sqlite"

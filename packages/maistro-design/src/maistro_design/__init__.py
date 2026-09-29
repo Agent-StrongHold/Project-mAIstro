@@ -76,13 +76,46 @@ from maistro_design.types import (
     TrustUpgradeRequiredError,
     TypographyToken,
 )
+from maistro_design.versions import (
+    AgentWorkInputs,
+    ArtifactLock,
+    ArtifactLockConflict,
+    ArtifactVersion,
+    ArtifactVersionError,
+    ArtifactVersionExistsError,
+    ArtifactVersionNotFoundError,
+    BranchControl,
+    BranchStateView,
+    ChangeKind,
+    ChangeOrigin,
+    ControlMode,
+    CreativeArtifactService,
+    GuidanceRecord,
+    LockScope,
+    LockStateError,
+    VersionState,
+    VersionStateError,
+)
 
 __all__ = [
     "NATIVE_SLOTS",
+    "AgentWorkInputs",
     "ArtifactKind",
+    "ArtifactLock",
+    "ArtifactLockConflict",
     "ArtifactNode",
+    "ArtifactVersion",
+    "ArtifactVersionError",
+    "ArtifactVersionExistsError",
+    "ArtifactVersionNotFoundError",
+    "BranchControl",
+    "BranchStateView",
     "CatalogImportPolicyError",
+    "ChangeKind",
+    "ChangeOrigin",
     "ColorToken",
+    "ControlMode",
+    "CreativeArtifactService",
     "DesignEngine",
     "DesignEngineProtocol",
     "DesignError",
@@ -99,12 +132,15 @@ __all__ = [
     "DiscoveryField",
     "DiscoveryIncompleteError",
     "DiscoveryResult",
+    "GuidanceRecord",
     "HTMLRenderer",
     "InMemoryDesignSkillRegistry",
     "InMemoryDesignSystemRegistry",
     "InMemoryTrustBanishList",
     "InMemoryTrustReviewQueue",
     "IncompatibleDesignSystemError",
+    "LockScope",
+    "LockStateError",
     "OpenDesignConfig",
     "OpenDesignProvider",
     "OutputFormat",
@@ -127,6 +163,8 @@ __all__ = [
     "TrustUpgradeRequiredError",
     "TypographyRenderer",
     "TypographyToken",
+    "VersionState",
+    "VersionStateError",
     "__version__",
     "available_skills",
     "import_from_catalog",
@@ -141,9 +179,13 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Lazy-load PgDesignProjectStore to avoid requiring sqlalchemy at import time."""
+    """Lazy-load the SQLAlchemy-backed stores to avoid importing sqlalchemy eagerly."""
     if name == "PgDesignProjectStore":
         from maistro_design.stores import PgDesignProjectStore
 
         return PgDesignProjectStore
+    if name == "PgArtifactVersionStore":
+        from maistro_design.version_store import PgArtifactVersionStore
+
+        return PgArtifactVersionStore
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
