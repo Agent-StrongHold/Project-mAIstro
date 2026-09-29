@@ -99,3 +99,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep live GitHub Rulesets and `.github/branch-protection.json` synchronized, and reference this ADR from agent development guidance. Normal work flows from topic branches through pull requests into `develop` only after the required checks, conversation resolution, autonomous-admissibility check, and gates-ran verification. Governance-sensitive changes follow the repository's separately controlled trusted-change process. `main` remains the explicit release-promotion branch.  
 **Current state:** This is current repository governance, not historical design. Its acceptance criteria are checked against the live two-branch topology: `develop` is the canonical active integration branch, `main` is the promotion ledger, and the retired `integration` branch must not be recreated implicitly. This directly complements the new issue/PR/merge agent standards.  
 **ADR:** [ADR-095: Protected develop-to-main promotion model](../../../adr/ADR-095-four-tier-branch-model.md)
+
+## ADR-097: Lifecycle Status State Machine for ADRs and Specs
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Make lifecycle enforcement real at the merge boundary: wire `tools/lint_lifecycle.py` into required CI (or explicitly replace it with an equivalent canonical gate), then close the remaining date-consistency and cross-reference checks. Keep the forward-only/correction-with-reason model. Use the progressive-disclosure ADR index's `Next steps` field for "accepted but successor required" rather than inventing a misleading implementation status.  
+**Current state:** ADR-097 is the canonical lifecycle vocabulary and transition machine, and its correction-with-reason rule is actively used throughout the corpus. The ADR and SPEC-232 still record that the lifecycle linter is not invoked by GitHub Actions, so the governance contract is not yet fully enforced pre-merge even though the schema/front-matter registry gate exists.  
+**ADR:** [ADR-097: Lifecycle Status State Machine for ADRs and Specs](../../../adr/ADR-097-lifecycle-status-machine.md)
