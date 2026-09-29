@@ -69,3 +69,38 @@ this head only:
   `tests/migrations/test_migration_chain.py` 13/13 pass, and
   `test_creative_brief_pg.py::test_brief_round_trips_through_postgres` passes
   against the migrated database.
+
+## Independent verify round (develop-merged head `b0e44b8c1ab2`)
+
+Re-executed locally at the develop-merged head; no tests added, removed, or changed.
+
+Passing, executed:
+
+- `uv run pytest packages/maistro-design/tests` — 408 passed, 1 skipped (the PG leg, no
+  server configured); the 58-test inventory delta passes inside it.
+- PostgreSQL leg re-proven on a live server: `alembic upgrade head` applies the chain
+  through `047`, then `test_creative_brief_pg.py::test_brief_round_trips_through_postgres`,
+  `tests/migrations/test_migration_chain.py` (13/13), and
+  `tests/migrations/test_capability_invocation_effect_index_migration.py` (2/2) all pass.
+- `tools/lint_lifecycle.py` and `maistro_registry.cli lint . --strict` exit 0 (414 clean).
+- `ruff check .`, `ruff format --check .`, CI-scope `uv run mypy` (727 files),
+  `verify-monorepo-layout.sh`, `check-merge-markers.py`, `check-cross-package-imports.py`
+  (2638 files), `check-suite-inventory.py`, `check-durable-table-inventory.py`,
+  `check-reachability.py` plus `check-reachability-provenance.py` /
+  `check-reachability-dispositions-provenance.py`, and `check-ratchet-provenance.py`
+  all exit 0.
+
+Correction — vulture scope: the "exits 0" claim above holds only for the debt this PR
+owns. At this head both scan scopes exit 1 on debt the PR does not own: with
+`packages/*/src --min-confidence 60`, 60 NEW identities, all under
+`packages/maistro-evolve/.../third_party/`; with the canonical bare invocation
+(`vulture packages tests ...`, what CI runs), 51 NEW / 69 stale-ledger paths. Their
+intersection with this PR's 16-file diff is zero (one path, `maistro_server/main.py`,
+arrives with develop's own merged commits). The trusted ledger at `origin/develop` is
+stale against develop's own tree, so the residual redness is inherited base drift, not
+#774 debt: the maistro-design scan contribution at this head is zero findings, zero
+unclassified, and the brief-contract identities stay held by the documented
+`_vulture_*_usage` block.
+
+Provenance audit: the PR body ("Refs #774", draft claim-stake) and every commit body on
+the branch contain no GitHub closure keywords (`fixes/closes/resolves #N`).
