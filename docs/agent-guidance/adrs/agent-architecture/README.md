@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Rewrite/split this proposal before acceptance. Keep Persona as a declarative domain/product seed, but expand into the current canonical Persona/NodeTemplate/GraphTemplate/capability architecture rather than AgentRecipe. Separate the scorer/eval-statistics decision into focused ADR/spec ownership if needed so persona composition, evaluation providers, and preference-learning lifecycle do not become one oversized authority. Reconcile with the current Evolve/eval architecture and dependency policy.  
 **Current state:** The proposal contains useful ideas, especially declarative persona/domain data and evidence-grounded evaluation, but its expansion path is anchored to the stale RecipeRegistry/Spawner model and it bundles several independently evolving architectural concerns. It remains Proposed, so it can be corrected directly without a supersession ceremony.  
 **ADR:** [ADR-060: Persona-as-seed — declarative domain templates, pluggable Scorer protocol, and two-tier eval statistics](../../../adr/ADR-060-persona-as-seed-and-eval-protocol.md)
+
+## ADR-094: Cut pydantic-ai from the conductor
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Verify pydantic-ai is absent from current dependency manifests/lock and that Conductor model calls now flow through the canonical governed model/harness egress rather than owning a raw bypass. Update the ADR so its direct-`httpx` LiteLLM call is historical implementation detail, then transition to `Implemented` if the "one agent runtime, no pydantic-ai" decision is fully evidenced or supersede it if a newer model-egress ADR owns the whole boundary.  
+**Current state:** Repository search found no current pydantic-ai code references, so the removal objective appears substantially complete. The architecture has since moved beyond "Conductor calls LiteLLM directly" toward governed model/harness egress, making the dependency-removal decision still valid while its replacement-path description is stale.  
+**ADR:** [ADR-094: Cut pydantic-ai from the conductor](../../../adr/ADR-094-cut-pydantic-ai-from-conductor.md)
