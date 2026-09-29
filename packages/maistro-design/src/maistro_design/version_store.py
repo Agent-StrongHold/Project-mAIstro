@@ -27,6 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from maistro_design.versions import (
     ArtifactLock,
     ArtifactVersion,
+    ArtifactVersionError,
     ArtifactVersionExistsError,
     ArtifactVersionNotFoundError,
     BranchControl,
@@ -63,6 +64,32 @@ def _as_json_dict(value: Any) -> dict[str, str]:
     if isinstance(value, str):
         value = json.loads(value)
     return {str(k): str(v) for k, v in dict(value).items()}
+
+
+# SQLSTATE class 23: constraint violation. 23505 is unique_violation (the
+# first-writer-wins race backstop below); 23503 is foreign_key_violation —
+# e.g. a version naming a `design_projects` row that does not exist — which
+# must NOT be reported as "version already exists".
+_PG_UNIQUE_VIOLATION = "23505"
+
+
+def _integrity_code(error: Exception) -> str | None:
+    """Best-effort SQLSTATE for a constraint violation, or None if unknown.
+
+    SQLAlchemy wraps the DBAPI error as ``IntegrityError.orig``; asyncpg
+    exposes ``pgcode``, sqlite3 (3.11+) exposes ``sqlite_errorname``. Mapping
+    both onto SQLSTATE keeps the unique-vs-other split driver-independent.
+    """
+    orig = getattr(error, "orig", None) or getattr(error, "__cause__", None)
+    pgcode = getattr(orig, "pgcode", None)
+    if isinstance(pgcode, str) and pgcode:
+        return pgcode
+    sqlite_errorname = getattr(orig, "sqlite_errorname", None)
+    if sqlite_errorname == "SQLITE_CONSTRAINT_UNIQUE":
+        return _PG_UNIQUE_VIOLATION
+    if sqlite_errorname == "SQLITE_CONSTRAINT_FOREIGNKEY":
+        return "23503"
+    return None
 
 
 def _coerce_version(row: Any) -> ArtifactVersion:
@@ -223,7 +250,11 @@ class PgArtifactVersionStore:
 
         The unique constraint is the race backstop: two concurrent writers
         produce one row and one `ArtifactVersionExistsError` — a supersession
-        conflict, surfaced rather than silently double-written.
+        conflict, surfaced rather than silently double-written. Only a real
+        unique violation (SQLSTATE 23505) reads as that conflict; any other
+        integrity failure (missing parent project row, not-null, check) is a
+        distinct `ArtifactVersionError` naming the constraint class, never a
+        false "already exists".
         """
         existing = await self.get_version(
             version.org_id, version.project_id, version.lineage_id, version.version
@@ -274,9 +305,17 @@ class PgArtifactVersionStore:
                 },
             )
         except IntegrityError as error:
-            raise ArtifactVersionExistsError(
-                f"version {version.version} of lineage {version.lineage_id!r} "
-                f"already exists in project {version.project_id!r}"
+            code = _integrity_code(error)
+            if code == _PG_UNIQUE_VIOLATION:
+                raise ArtifactVersionExistsError(
+                    f"version {version.version} of lineage {version.lineage_id!r} "
+                    f"already exists in project {version.project_id!r}"
+                ) from error
+            sqlstate = f" (SQLSTATE {code})" if code else ""
+            raise ArtifactVersionError(
+                f"cannot write version {version.version} of lineage "
+                f"{version.lineage_id!r} in project {version.project_id!r}: "
+                f"integrity constraint violated{sqlstate}"
             ) from error
         return version
 

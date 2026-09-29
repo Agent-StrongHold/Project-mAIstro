@@ -124,11 +124,22 @@ _DDL = (
 )
 
 
-def _open_store(db_path: Path) -> PgArtifactVersionStore:
-    """A store over one SQLite file, as a fresh process would open it."""
+def _open_store(
+    db_path: Path,
+    ddl: tuple[str, ...] = _DDL,
+    connect: tuple[str, ...] = (),
+    seed: tuple[str, ...] = (),
+) -> PgArtifactVersionStore:
+    """A store over one SQLite file, as a fresh process would open it.
+
+    `connect` statements run before the DDL (e.g. `PRAGMA foreign_keys=ON`,
+    which SQLite requires per connection); `ddl` replaces the default schema
+    so a test can add constraints the shared fixture omits; `seed` rows land
+    after the DDL (e.g. a parent project a foreign key points at).
+    """
     engine = create_engine(f"sqlite:///{db_path}")
     connection = engine.connect()
-    for statement in _DDL:
+    for statement in (*connect, *ddl, *seed):
         connection.execute(text(statement))
     connection.commit()
 
@@ -765,6 +776,88 @@ class TestTheStoreKeepsItsPromises:
             )
         history = await service.versions(org_id=ORG, project_id=PROJECT, lineage_id="poster")
         assert history[0].content == v1.content
+
+    @pytest.mark.contract("behavioral")
+    async def test_unique_hit_the_precheck_missed_still_reads_as_exists(
+        self, tmp_path: Path
+    ) -> None:
+        """The UNIQUE key is (project_id, lineage_id, version) — org is not in it.
+
+        An insert whose pre-check misses (different org, same slot) falls
+        through to the constraint itself and must still surface as the
+        supersession conflict, not a generic integrity error.
+        """
+        store = _open_store(tmp_path / "a.sqlite3")
+        for org in ("org-a", "org-b"):
+            version = ArtifactVersion(
+                org_id=org,
+                project_id=PROJECT,
+                lineage_id="poster",
+                version=1,
+                kind=ChangeKind.GENERATION,
+                origin=ChangeOrigin.AGENT,
+                content=f"racer-{org}",
+                format="html",
+            )
+            if org == "org-b":
+                with pytest.raises(ArtifactVersionExistsError):
+                    await store.append_version(version)
+            else:
+                await store.append_version(version)
+
+    @pytest.mark.contract("behavioral")
+    async def test_fk_violation_is_not_misread_as_version_exists(self, tmp_path: Path) -> None:
+        """A missing parent `design_projects` row is SQLSTATE 23503, not 23505.
+
+        The real schema (migration 047) foreign-keys project_id to
+        design_projects; writing an orphan version must surface the integrity
+        failure itself, never a false "version already exists" supersession
+        conflict — and a false conflict would mask a broken reference.
+        """
+        versions_ddl = _DDL[0].replace(
+            "UNIQUE (project_id, lineage_id, version)",
+            "UNIQUE (project_id, lineage_id, version),\n"
+            "        FOREIGN KEY (project_id) REFERENCES design_projects (id)",
+        )
+        store = _open_store(
+            tmp_path / "fk.sqlite3",
+            ddl=(
+                "CREATE TABLE design_projects (id TEXT PRIMARY KEY)",
+                versions_ddl,
+                *_DDL[1:],
+            ),
+            connect=("PRAGMA foreign_keys=ON",),
+            seed=(f"INSERT INTO design_projects (id) VALUES ('{PROJECT}')",),
+        )
+        orphan = ArtifactVersion(
+            org_id=ORG,
+            project_id="proj-missing",
+            lineage_id="poster",
+            version=1,
+            kind=ChangeKind.GENERATION,
+            origin=ChangeOrigin.AGENT,
+            content="racer",
+            format="html",
+        )
+        with pytest.raises(ArtifactVersionError) as excinfo:
+            await store.append_version(orphan)
+        assert not isinstance(excinfo.value, ArtifactVersionExistsError)
+        assert "already exists" not in str(excinfo.value)
+        assert "23503" in str(excinfo.value)
+        # With the parent row in place the same version lands normally.
+        grounded = ArtifactVersion(
+            org_id=ORG,
+            project_id=PROJECT,
+            lineage_id="poster",
+            version=1,
+            kind=ChangeKind.GENERATION,
+            origin=ChangeOrigin.AGENT,
+            content="racer",
+            format="html",
+        )
+        await store.append_version(grounded)
+        stored = await store.get_version(ORG, PROJECT, "poster", 1)
+        assert stored is not None and stored.content == "racer"
 
 
 class TestOneMixedControlProject:

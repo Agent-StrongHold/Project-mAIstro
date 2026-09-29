@@ -1,12 +1,13 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +20
+  packages/maistro-design/tests: +22
 ---
 # Versioned creative artifact state inventory
 
 Issue #780 adds `packages/maistro-design/tests/test_artifact_versions.py`
-(+20 collected node IDs, all marked `contract: behavioral` and traced to
-SPEC-092826-a780/AC-1..AC-9). The tests drive the real
+(+22 collected node IDs, all marked `contract: behavioral` and traced to
+SPEC-092826-a780/AC-1..AC-9; +20 in the initial round plus two store-promise
+tests added in the repair round below). The tests drive the real
 `PgArtifactVersionStore` against SQLite file databases, including
 close-and-reopen cycles, because the criteria are about what survives:
 prior AI/human versions with distinct provenance, locks, guidance, and
@@ -31,7 +32,10 @@ Executed by the verifier (not trusted from the implement phase):
 
 Scope notes (documented, not hidden): browser-refresh projection and a
 product-surface E2E are not reachable at this base (#775/#777 not landed);
-SPEC-092826 records the deferral. Backend durability and the mixed-control
+SPEC-092826-a780 records a Reconciliation paragraph — forward-compatible
+`brief_ref`/decision-digest inputs, not a deferral record — and AC-9's
+mixed-control scenario is proven at store/service level
+(`TestOneMixedControlProject`). Backend durability and the mixed-control
 scenario are proven at store/service level.
 
 ### Finding (confirmed, needs repair)
@@ -62,7 +66,7 @@ docstring "Every write checks the branch's active locks first".
 - exact-debt-ledger: the production-only Vulture scan (`packages/*/src`) saw
   12 new identities in `versions.py` (`ControlMode.COLLABORATIVE` + 11
   `CreativeArtifactService` methods). All 12 are live contract surface —
-  exercised by this file's 20 tests and waiting on #774/#777 consumers — so
+  exercised by this file's 22 tests and waiting on #774/#777 consumers — so
   per the repo's `_vulture_*_usage` TYPE_CHECKING precedent (e1f16ddae,
   632c24c78: banking alone cannot pass the trusted-base ratchet and would
   misrecord contract surface as dead debt), a documented non-executing
@@ -71,15 +75,45 @@ docstring "Every write checks the branch's active locks first".
   so that one reviewed ledger identity was pruned from
   `quality/vulture-baseline.json` (1402 → 1401). The gate exits 0:
   1402 reviewed identities -> 1401 findings, 0 unclassified.
-- Observation recorded, NOT changed this round (pre-existing at the merge
-  base, out of repair scope): `PgArtifactVersionStore.append_version`
-  translates *every* `IntegrityError` to `ArtifactVersionExistsError`
-  (version_store.py `except IntegrityError`); a live FK violation
-  (`design_artifact_versions_project_id_fkey`, no parent `design_projects`
-  row) surfaces as "version already exists". A unique-vs-FK split (pgcode
-  23505 vs 23503) would surface integrity conflicts more precisely.
+- Correction to an earlier draft of this bullet: it claimed the
+  `IntegrityError` translation below was "pre-existing at the merge base,
+  out of repair scope". That was wrong — `version_store.py` does not exist
+  at a3f6b3c (or at 9fb68e47); the file and the defect were both introduced
+  by this PR's own commit 4f4f8ccc0, so the defect was in repair scope. It
+  is fixed in the round recorded below.
 - Re-validated on this head: `uv run ruff check .`, `uv run ruff format
   --check .`, `uv run pytest packages/maistro-design/tests -q` (371 passed),
   `check-durable-table-inventory.py` (74 tables),
   `check-execution-lifecycles.py`, `check-ratchet-provenance.py`,
   `check-shipped-surface-truth.py` — all pass.
+
+## Repair record (job e138177b676a426ab86e3d08bb8dfc66, head bbb9b58999…)
+
+- `PgArtifactVersionStore.append_version` no longer translates *every*
+  `IntegrityError` to `ArtifactVersionExistsError`. The handler now reads the
+  driver's constraint code (`pgcode` on asyncpg, `sqlite_errorname` on
+  sqlite3, both normalized to SQLSTATE): a real unique violation (23505) still
+  raises `ArtifactVersionExistsError` (first-writer-wins race backstop), and
+  any other integrity failure — e.g. the `design_artifact_versions_project_id_fkey`
+  violation for a missing parent `design_projects` row (23503) — raises
+  `ArtifactVersionError` naming the constraint class, never a false "already
+  exists".
+- Two tests added to `TestTheStoreKeepsItsPromises` (the +2 above): the UNIQUE
+  hit a pre-check misses (org is not in the key) still reads as the
+  supersession conflict, and an orphan-project FK insert (SQLite FK enabled,
+  parent table + seeded row) raises `ArtifactVersionError` with SQLSTATE 23503
+  in the message, is not `ArtifactVersionExistsError`, and the same version
+  lands once the parent row exists.
+- Re-proven live against real Postgres (pgvector:pg17, `alembic upgrade head`
+  through 047), probe 3/3: orphan project → `ArtifactVersionError ... (SQLSTATE
+  23503)`; duplicate slot via pre-check → `ArtifactVersionExistsError`; UNIQUE
+  race backstop through the except branch → `ArtifactVersionExistsError`.
+- Prior-round note fixes: the "out of repair scope" claim is corrected (see
+  above), and the scope note no longer claims SPEC-092826 records a deferral —
+  the spec records a Reconciliation paragraph; the product-surface E2E remains
+  out of reach at this base, and AC-9 stands proven at store/service level.
+- Validated on this head: `uv run ruff check .`, `uv run ruff format --check
+  .`, `uv run pytest packages/maistro-design/tests -q` (373 passed),
+  `check-suite-inventory.py`, `check-vulture-baseline.py` (production-only
+  scan, gate green), `check-durable-table-inventory.py`,
+  `check-execution-lifecycles.py`.
