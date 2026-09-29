@@ -168,3 +168,45 @@ commits (L74/L1113/L446/L1134/L847/L155). No dependency issue (#458, #804,
 head; the issue stays blocked on its unlanded canonical dependencies and the
 stop condition still forbids any Design-Studio-private substitute. No closure
 keywords in branch commits or the PR body (`Refs #777` only).
+
+## Re-verification at lane head 9dba0e6d2 (final record)
+
+Independent verifier re-check at
+`9dba0e6d2b5432e1c3b015f9a80fc23e32c9c0f3` = `58dbcaf89` + this notes file
+only (`git diff --stat 58dbcaf89..9dba0e6d2` touches nothing but this
+document), so every audit statement above applies verbatim.
+
+**Independently re-confirmed at `9dba0e6d2` by direct inspection:**
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-6` — "owns
+  universal lifecycle bookkeeping only"; not #804 Goal reconciliation.
+- `packages/maistro-core/src/maistro/security/sentinel/permission_source.py:77-79`
+  — #804 governed tool-use "plugs in as another ``PermissionSource``" (future).
+- No `GoalRevision`/`goal_store`/`CreativeBrief` implementation under
+  `packages/*/src`; the only `CreativeBrief` match is the future-consumer
+  docstring in `agents/brief_interview.py`.
+- No "ladybug" match under `packages/*/src` (#776 absent).
+- `packages/hive-conductor/backend/routes/design.py` — zero
+  `workspace_agent` references (routes: projects/skills/systems/discovery/render).
+- No mixed-control state in production code; the only "collaborative" hits are
+  brief-interview question options (`brief_interview.py:613-623`) and a Turing
+  producer description string.
+- `tests/test_shared_interop_ontology.py:133-134` still declares
+  `workspace_agent`/`design_studio` as M3 consumers (declarations only).
+
+**Executed at `9dba0e6d2` (all by this verifier):**
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2616 files already formatted.
+- `uv run pytest packages/maistro-design/tests -x -q` — 351 passed.
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py -q` — 18 passed.
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_agent_materialization.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q` —
+  53 passed.
+
+**Conclusion:** all 13 #777 acceptance criteria remain UNMET; the lane stays
+blocked on its unlanded canonical dependencies (#458 Goal store, #804/#805/#806
+reconciliation, #774, #775, #776) and the issue stop condition still forbids a
+Design-Studio-private substitute. No closure keywords in branch commits or the
+PR body (`Refs #777` only). PR #1660 remains a draft claim-stake.
