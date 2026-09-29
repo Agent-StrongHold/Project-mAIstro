@@ -59,3 +59,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep the single-owner invariant, but reconcile the historical cross-repo/product migration table with current monorepo package/adaptor boundaries and the newer memory ADR/spec family beyond ADR-011–017. New memory architecture must continue to land in the canonical shared memory layer rather than being silently redefined by product packages.  
 **Current state:** ADR-034 remains active architectural governance: shared memory types, protocols, persistence, retrieval, and evolution semantics have one canonical owner, while product-specific surfaces/adapters parameterize that architecture. The original four-repo migration narrative is historical after consolidation, but the anti-drift ownership rule remains current.  
 **ADR:** [ADR-034: Memory Canonical Ownership](../../../adr/ADR-034-memory-canonical-ownership.md)
+
+## ADR-048: Session Search — Episodic memory inspector endpoint
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Build the missing route/storage integration on top of SPEC-250: canonical server endpoint, current principal/Workspace/session authorization, cross-scope leak tests, durable Postgres/SQLite search backend and stable cursor semantics, required performance evidence, and `sessions.search` observability. Replace the historical profile-middleware assumption with current scope authority. Promote only after the complete ADR contract is evidenced.  
+**Current state:** SPEC-250 implements and tests the pure search/snippet/cursor algorithm, but explicitly excludes the HTTP route, authorization/scoping boundary, real storage/search backend, OTel span, and several ADR-level acceptance criteria. ADR-048 was previously rolled back from Implemented to Accepted for exactly this evidence gap, and that status remains correct.  
+**ADR:** [ADR-048: Session Search — Episodic memory inspector endpoint](../../../adr/ADR-048-session-search.md)
