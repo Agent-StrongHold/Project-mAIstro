@@ -19,3 +19,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Bring completion-duration evidence into compliance with the ADR: ensure a completed `AgentOutput` reliably records `duration_ms > 0`, strengthen the test from `>= 0` to `> 0`, verify the full ADR-004 acceptance set, then transition the ADR to `Implemented`.  
 **Current state:** The typed agent request/response envelope is implemented and dedicated tests cover defaults, unique IDs, JSON round-trip, error recoverability, and completion timing. The implementation is not yet being promoted because the current timing test permits zero-duration completion while the accepted ADR requires a positive duration.  
 **ADR:** [ADR-004: AgentSpec + AgentOutput envelopes](../../../adr/ADR-004-agent-spec.md)
+
+## ADR-006: AgentRecipe + RecipeRegistry
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Reconcile this decision with ADR-081226-bb3a (Template, Object and Provenance Semantics). If that ADR is confirmed as the canonical successor for durable reusable definitions, add the explicit supersession relationship and transition ADR-006 to `Superseded`; retain RecipeRegistry only as the legacy compatibility/migration adapter required by the newer architecture.  
+**Current state:** AgentRecipe and recipe loading still exist, but the accepted writable YAML RecipeRegistry contract is no longer the canonical durability model. Current code intentionally makes RecipeRegistry read-only for durable state and projects legacy recipes into canonical NodeTemplates with provenance, matching the newer template/object architecture. The ADR's recorded test path is also stale; current recipe tests live elsewhere and exercise the migration adapter.  
+**ADR:** [ADR-006: AgentRecipe + RecipeRegistry](../../../adr/ADR-006-recipe-registry.md)
