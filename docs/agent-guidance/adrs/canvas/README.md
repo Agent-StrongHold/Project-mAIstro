@@ -107,3 +107,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Use this as the canonical fulfillment model and converge older tool/MCP/harness/renderer/model/sandbox/code-registry ADRs onto it. Complete end-to-end evidence that every specialized/external effect resolves an authorized Binding, selects only Providers within that ceiling, resolves credentials just in time, records an Invocation correlated to Run/NodeRun/Attempt, and never lets fallback widen authority.  
 **Current state:** This is the decisive successor architecture for a large part of the older corpus. Tools are model-facing exposures of Bindings, agents-as-capabilities create child Runs, harness session handles remain provider state, and Invocation is the one actual fulfillment call. ADR-069/083/101/079/f2a0 should be rewritten around this model rather than creating parallel registries/executors.  
 **ADR:** [ADR-081226-6b46: Capability, Provider, Binding and Invocation](../../../adr/ADR-081226-6b46-capability-provider-binding-invocation.md)
+
+## ADR-083026-cdcb: Design Project org/team are soft scope axes
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Reconcile Design Project scope with canonical Workspace/Project/principal authorization. Soft org/team metadata may remain domain filters, but must not create fake foreign-key authorities or bypass canonical Project resource visibility.  
+**Current state:** This repairs a schema that referenced org/team tables the product never populated and correctly moves enforcement to the store/domain boundary.  
+**ADR:** [ADR-083026-cdcb](../../../adr/ADR-083026-cdcb-design-project-scope-is-a-soft-axis.md)
