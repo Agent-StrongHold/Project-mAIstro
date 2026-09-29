@@ -51,3 +51,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Create a current spend-control ADR/spec that places accounting and enforcement on canonical Run/Attempt/Invocation and principal/Workspace scopes, then use it to supersede the stale Task-budget portions of ADR-054/085 as appropriate. Preserve nested limits, independent per-principal rate limiting, batch-vs-interactive cost classification, and attributable usage. Make ADR-068's rule explicit: over-budget is a hard veto cleared only by an explicit budget grant, never by generic elevation or RLPHD.  
 **Current state:** The layered spend-control intent remains current, but the inner "per-task executor budget" boundary is obsolete and Router quota enforcement has explicitly been removed in favor of canonical Invocation enforcement. The ADR needs to converge with current usage/effect accounting rather than adding another quota path.  
 **ADR:** [ADR-085: Cost, Quota, and Rate Limiting](../../../adr/ADR-085-cost-quota-rate-limiting.md)
+
+## ADR-070426-ac56: Cross-model LLM fallback
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Reconcile this proposal with the fallback/retry mechanism that has since landed. The old target, Conductor's private retry loop, should not be extended; model/provider fallback belongs at canonical governed model egress/Invocation with registry health, credential routing, quota/rate-limit outcomes, and per-attempt evidence. If current implementation already satisfies that architecture, supersede this proposal with the newer provider-routing decision rather than implementing its Conductor DI plan.  
+**Current state:** The failure mode identified here was real, but the repository has since added model fallback chains/retry and removed several private routing authorities. The ADR is now primarily historical rationale for cross-model fallback, not the implementation plan to follow.  
+**ADR:** [ADR-070426-ac56: Cross-model LLM fallback](../../../adr/ADR-070426-ac56-cross-model-llm-fallback.md)
