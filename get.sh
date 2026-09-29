@@ -414,7 +414,15 @@ run_installer() {
         exec bash ./install.sh "$@"
     fi
 
-    if [[ -r /dev/tty ]]; then
+    # Hand the wizard the user's terminal when stdin is the curl pipe. Test by
+    # *opening* /dev/tty, not with `-r`: the node exists and is world-readable
+    # on every macOS and Linux host, so `[[ -r /dev/tty ]]` is true even with
+    # no controlling terminal -- and then the redirect below fails with
+    # "Device not configured" and `exec` takes the whole install down with it.
+    # That is every non-interactive run of the one-liner: cloud-init/user-data,
+    # `ssh host 'curl ... | bash'` without -t, CI, launchd. Gate C never saw it
+    # because it runs install.sh directly and skips this hand-off entirely.
+    if { : < /dev/tty; } 2>/dev/null; then
         exec bash ./install.sh "$@" < /dev/tty
     fi
 
