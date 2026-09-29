@@ -643,6 +643,38 @@ jobs:
         env:
           REQUIRE_AUTH: "false"
           MAISTRO_DRY_RUN: "1"
+      # The proxy-SWE-bench evaluator executes untrusted candidate code in the
+      # real core Docker sandbox, whose default image is python:3.12-slim
+      # (maistro.config.settings.SandboxSettings.image). That evaluator
+      # deliberately fails closed when the sandbox cannot start -- the correct
+      # security posture (#80) -- but it means a missing image is red tests,
+      # not an untested suite: merge-queue runs 36508346054 and 36440932829
+      # both lost two swebench cases to exactly that. Every step after the
+      # conformance lane inherits DOCKER_HOST of the lane's rootless daemon
+      # (via GITHUB_ENV), and that daemon sits inside a rootlesskit netns
+      # where the host DNS stub (127.0.0.53) is unreachable, so its first-time
+      # registry pull dies with "lookup registry-1.docker.io ... connection
+      # refused". Systematic, not a flake -- so the image must be seeded into
+      # the active daemon rather than pulled by it: pull on the runner's
+      # rootful system daemon (already cached there by the Dockerfile.sandbox
+      # build; retries only cover a cold runner) and transfer it exactly the
+      # way the Builder image was loaded into this same daemon earlier. The
+      # second docker of the pipe inherits DOCKER_HOST, i.e. the lane daemon
+      # the pytest step below will use.
+      - name: Seed python:3.12-slim into the lane daemon (swebench sandbox image)
+        run: |
+          set -euo pipefail
+          pulled=0
+          for attempt in 1 2 3; do
+            if timeout 240 docker --host unix:///var/run/docker.sock pull python:3.12-slim; then
+              pulled=1
+              break
+            fi
+            echo "::warning::python:3.12-slim pull attempt $attempt failed"
+            sleep 10
+          done
+          [ "$pulled" -eq 1 ] || { echo "::error::could not pull python:3.12-slim for the swebench sandbox"; exit 1; }
+          docker --host unix:///var/run/docker.sock save python:3.12-slim | docker load
       - run: uv run pytest packages/maistro-rsi/tests packages/maistro-evolve/tests -v --tb=short
         env:
           REQUIRE_AUTH: "false"
