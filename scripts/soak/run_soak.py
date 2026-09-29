@@ -771,35 +771,56 @@ async def phase_rate_limit(
     """
 
     async def burst(target: str, auth: bool, n: int) -> dict[str, Any]:
+        """Concurrent burst; 429 must hold per replica.
+
+        Concurrent, not sequential: at the profile budget (3000/min, burst
+        100 with proportional refill) a sequential ~50 req/s loop can never
+        outpace the bucket, so the round-5 validation run observed 800x200
+        through the LB and H3 was unobservable. 16-way concurrency delivers
+        the profile's '> 100 req/s' concentrated-burst shape.
+        """
         counts: dict[int, int] = {}
         retry_after: str | None = None
+        ratelimit_headers: dict[str, str] = {}
+        lock = asyncio.Lock()
+        lanes = 16
+        per_lane, remainder = divmod(n, lanes)
+
         async with shared_client(timeout=5.0) as client:
-            for _ in range(n):
-                try:
-                    # /health is deliberately exempt from the limiter
-                    # (rate_limit.py), so the probe targets a rate-limited
-                    # path; authz runs after the limiter, so an
-                    # unauthenticated burst still exercises it.
-                    r = await client.get(
-                        f"{target}/tasks",
-                        headers=headers if auth else {},
-                    )
-                    counts[r.status_code] = counts.get(r.status_code, 0) + 1
-                    if r.status_code == 429 and retry_after is None:
-                        retry_after = r.headers.get("retry-after")
-                        ratelimit_headers = {
-                            k: v
-                            for k, v in r.headers.items()
-                            if k.lower().startswith("x-ratelimit")
-                        }
-                    else:
-                        ratelimit_headers = {}
-                except Exception:
-                    counts[-1] = counts.get(-1, 0) + 1
+
+            async def fire(lane: int) -> None:
+                nonlocal retry_after
+                for _ in range(per_lane + (1 if lane < remainder else 0)):
+                    try:
+                        # /health is deliberately exempt from the limiter
+                        # (rate_limit.py), so the probe targets a rate-limited
+                        # path; authz runs after the limiter, so an
+                        # unauthenticated burst still exercises it.
+                        r = await client.get(
+                            f"{target}/tasks",
+                            headers=headers if auth else {},
+                        )
+                        async with lock:
+                            counts[r.status_code] = counts.get(r.status_code, 0) + 1
+                            if r.status_code == 429 and retry_after is None:
+                                retry_after = r.headers.get("retry-after")
+                                ratelimit_headers.update(
+                                    {
+                                        k: v
+                                        for k, v in r.headers.items()
+                                        if k.lower().startswith("x-ratelimit")
+                                    }
+                                )
+                    except Exception:
+                        async with lock:
+                            counts[-1] = counts.get(-1, 0) + 1
+
+            await asyncio.gather(*(fire(lane) for lane in range(lanes)))
         return {
             "target": target,
             "authenticated": auth,
             "requests": n,
+            "concurrency": lanes,
             "status_counts": {str(k): v for k, v in sorted(counts.items())},
             "retry_after": retry_after,
             "ratelimit_headers": ratelimit_headers,
@@ -1094,6 +1115,34 @@ async def drain_replica(
         kill_replica(victim)
         kill_record["escalated"] = True
         await asyncio.sleep(2.0)
+
+
+def _teardown_lb(args: argparse.Namespace) -> None:
+    """Capture the LB's logs, then remove the container — bounded docker calls.
+
+    The LB's own view of the run (upstream errors, no-live-upstream windows,
+    failover events) is evidence: F3 could not be root-caused for two rounds
+    because the LB side of the story was deleted with the container at
+    teardown. Every docker call here is bounded: the round-5 final validation
+    run stalled 14 minutes between evidence write and exit on an unbounded
+    Docker Desktop CLI call.
+    """
+    for description, cmd in (
+        ("docker logs", ["docker", "logs", "maistro-soak-lb"]),
+        ("docker rm", ["docker", "rm", "-f", "maistro-soak-lb"]),
+    ):
+        try:
+            result = sh(cmd, timeout=60)
+        except subprocess.TimeoutExpired:
+            log(f"WARNING: teardown {description} timed out after 60s")
+            continue
+        if description == "docker logs":
+            lb_log_text = (
+                result.stdout + result.stderr
+                if result.returncode == 0
+                else f"__docker logs unavailable rc={result.returncode}: {result.stderr[:200]}"
+            )
+            (Path(args.out_dir) / "lb.log").write_text(lb_log_text)
 
 
 async def main_async(args: argparse.Namespace) -> dict[str, Any]:
@@ -1394,20 +1443,11 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             # would reach only it, so address the group and escalate to
             # SIGKILL like the boot-failure path does.
             kill_replica(proc)
-    # Keep the LB's own view of the run (upstream errors, no-live-upstream
-    # windows, failover events) before the container is removed: F3 could not
-    # be root-caused for two rounds because the LB side of the story was
-    # deleted with the container at teardown.
-    lb_logs = sh(["docker", "logs", "maistro-soak-lb"])
-    lb_log_text = (
-        lb_logs.stdout + lb_logs.stderr
-        if lb_logs.returncode == 0
-        else f"__docker logs unavailable rc={lb_logs.returncode}: {lb_logs.stderr[:200]}"
-    )
-    (Path(args.out_dir) / "lb.log").write_text(lb_log_text)
-    sh(["docker", "rm", "-f", "maistro-soak-lb"])
+    # Keep the LB's own view of the run before the container is removed
+    # (see _teardown_lb).
+    _teardown_lb(args)
     with contextlib.suppress(Exception):
-        await pg_pool.close()
+        await asyncio.wait_for(pg_pool.close(), timeout=30)
     return evidence
 
 
