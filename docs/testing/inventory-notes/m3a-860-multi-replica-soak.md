@@ -328,3 +328,53 @@ matches (+1 recorded); vulture 1402 == 1402 rc=0; six-package mypy clean.
 Round-5 validation soak numbers: see `docs/testing/soak/m3a-soak-evidence.md`
 (run 5) and `evidence/m3a-round5-*` — promotion status is decided there, not
 in this note.
+
+---
+
+## Repair round 6 (this lane) — salvage of the timed-out round-5 writer; concurrent H3 burst; bounded teardown; gate-enforcing green evidence
+
+State at entry: HEAD `6e8c866e5`, branch `auto-860`, with an uncommitted
+`scripts/soak/run_soak.py` diff left by the timed-out round-5 writer (job
+`6c4bf5d86f92`, `state: timed_out`, agent_exit 124). The diff was preserved
+verbatim (`git diff > incoming-860-salvage.patch` before anything else),
+validated, and completed — nothing was discarded.
+
+Salvaged and committed as `b31c5fdaa` ("repair 6a"):
+
+- **H3 burst probes made concurrent (16 lanes).** Round-5 final's
+  `rate_limit_enforced=false` was probe-shape, not limiter: the sequential
+  loop (~50 req/s locally) cannot outpace the 3000/min + 50/s-refill bucket,
+  so the authenticated-through-LB probe observed 800×200. 16-way lanes
+  deliver the profile's "> 100 req/s concentrated burst" shape; run 6 then
+  observed 429 + `Retry-After` + `x-ratelimit-*` on all three probe paths
+  (LB-auth 430×429), `enforced_everywhere=true`.
+- **Bounded teardown.** Round-5 final stalled ~14 min between evidence write
+  and exit on unbounded Docker Desktop CLI calls; `_teardown_lb` bounds every
+  docker call at 60 s and `pg_pool.close()` at 30 s. Run 6 hit the 60 s
+  `docker rm` guard, logged it, and exited immediately — failure mode closed.
+- The round-4 verify's `graceful_drain`-gate hardening (missing key ⇒ fail)
+  is in the tree with regression tests (`tests/test_soak_promotion_gates.py`,
+  4 passed at this head).
+
+Committed evidence (fixes the round-5 note's dangling references —
+`evidence/m3a-round5-*` and the "(run 5)" pack section existed only in
+`/tmp/soak-round5-final` and were never in git):
+
+- `evidence/m3a-round5-final.json` + logs/metrics/rendered conf — head
+  `6e8c866e5`, `git_clean=true`; first gate-enforcing run; every hard gate
+  green except H3 (probe shape, above) and `sustain_duration` (90.17 s).
+- `evidence/m3a-round6-shakedown.json` + logs/metrics/rendered conf — head
+  `b31c5fdaa`, `git_clean=true`; re-executed live by this round (not trusted
+  from any prior run): **H1–H6, graceful drain (SIGTERM, 2.0 s, no
+  escalation), and rejoin all pass; exit 1 on `sustain_duration` only**
+  (90.43 s ≪ 14400 s, the honest promotion blocker). Drain defect F8 does
+  not reproduce at this head; the pack's run-6 section records the
+  `health_ready` 503 provider-less-soak observation (degraded signaling
+  working; attribution probable-not-proven) and the three remaining promotion
+  separators (duration, exact Compose artifact, drain re-proof at duration).
+
+Validation at `b31c5fdaa` + evidence/docs: ruff check/format clean on the
+changed script and tree; `tests/test_soak_promotion_gates.py` 4 passed; the
+promotion verdict for #89 remains **NEEDS-REPAIR and re-soak** — this round
+upgrades the harness and proves all functional gates, it does not sign a
+promotion (no ≥4 h exact-Compose soak exists).

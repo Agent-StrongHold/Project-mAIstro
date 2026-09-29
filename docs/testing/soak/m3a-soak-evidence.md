@@ -127,3 +127,85 @@ Recorded in `evidence/m3a-soak-evidence.json` under `hashes` (git head,
 diff/status hashes, VERSION, soak env hash, nginx conf hash, PostgreSQL image
 digest, CPython version). Any code or runtime-config change — including the
 harness fixes above — requires a new soak per the profile.
+
+---
+
+# Run 5 (final validation, head `6e8c866e5`) and run 6 shakedown (head `b31c5fdaa`)
+
+Both runs are **gate-enforcing preflight evidence, not promotion evidence**:
+`--sustain-seconds 90` ≪ the profile's 4-hour minimum, so `sustain_duration`
+correctly fails and the driver exits 1. Every other hard gate (H1–H6,
+graceful drain, rejoin) is evaluated mechanically by
+`failed_promotion_checks()` and passes. Machine evidence (hash-tied,
+`git_clean=true` at each run's own head):
+`evidence/m3a-round5-final.json`, `evidence/m3a-round6-shakedown.json` with
+`-metrics.jsonl`, `-lb.log`, `-replica-1820{1,2}.log`,
+`-nginx-soak-rendered.conf` beside each.
+
+## Run 5 — first gate-enforcing run; found the H3 probe-shape defect
+
+At `6e8c866e5` (clean): H1 true (12 duplicate submissions → 12×202, exactly 1
+`run_id`), H2 true, H4 true (73 ≤ budget 1296 in a 3.52 s kill window),
+SIGTERM drain `drained=true` in 1.0 s without escalation, H5 = 0 nonterminal
+runs after settle, H6 ratio 1.0 (205/202 outside the kill window), RSS/FDs
+flat. **H3 `rate_limit_enforced=false`** — root-caused as a probe-shape
+defect, not a limiter defect: the burst probe was *sequential*, and at the
+profile budget (3000/min ⇒ 50/s refill + burst 100) a sequential local loop
+can never outpace the bucket — the authenticated-through-LB probe observed
+800×200. Fix (repair 6a, commit `b31c5fdaa`): 16-way concurrent burst lanes,
+matching the profile's "> 100 req/s concentrated burst" shape. Run 5 also
+stalled ~14 min between evidence write and exit on unbounded Docker Desktop
+CLI calls at teardown; repair 6a bounds every teardown docker call (60 s) and
+the pg pool close (30 s).
+
+## Run 6 — shakedown at `b31c5fdaa` (clean): all functional gates green
+
+`--sustain-seconds 90 --rps 4 --workers 4 --settle-seconds 60`; exit 1 with
+`FAILED checks: ['sustain_duration']` — the only failing gate, as designed
+for a sub-minimum run.
+
+| Check | Result | Evidence |
+|---|---|---|
+| H1 exactly-once task admission | **PASS** — 12 duplicate `Idempotency-Key` submissions → 12×202, 1 distinct `run_id` | `exactly_once_tasks` |
+| H2 exactly-once schedule occurrence | **PASS** — two OS processes race `admit_due`; per-occurrence durable claim, zero duplicate work | `exactly_once_schedule_claim` |
+| H3 rate limiting under concurrency | **PASS** — 16-way bursts: direct 600×429 (`Retry-After: 56`, `x-ratelimit-remaining: 0`), LB auth 430×429 / 370×200, LB unauth 446×429; `enforced_everywhere=true` — limiter cannot be bypassed by replica selection (both replicas share the canonical store) | `rate_limit` |
+| H4 LB failover bounded | **PASS** — 35 5xx+conn-errors ≤ budget 432 in the 4.52 s measured kill window | `lb_failover_bounded` |
+| Graceful drain (SIGTERM) | **PASS** — `drained=true` in 2.0 s, rc=143, **no SIGKILL escalation**, 17 drain-window 5xx within budget. The round-2 F8 hang does not reproduce at this head (post-#819 shutdown path) | `graceful_drain` |
+| Replica rejoin | **PASS** — replica_2 restarted and rejoined | `replica_2_rejoined` |
+| H5 nonterminal runs after settle | **PASS** — 0 (`--fresh-db` schema reset; the run measures only itself) | `nonterminal_runs_after_settle` |
+| H6 admission availability | **PASS** — ratio 1.0 (63/63 task submissions outside the kill window accepted 202; kill-window submissions accounted separately) | `task_admission_availability` |
+| S1/S2 RSS/FD growth | flat — RSS ±0.3%, fds constant at 11 per replica | `rss_growth`, `fd_growth` |
+| Sustain duration | **FAIL (by design)** — 90.43 s observed vs 14400 s minimum; recorded as requested + observed so a stalled driver can never sign a longer run | `sustain_duration` |
+
+Teardown was fully bounded: the slow Docker Desktop CLI hit the new 60 s
+`docker rm` guard, was logged, and the driver exited immediately instead of
+stalling (the run-5 failure mode is closed).
+
+### Observation (recorded, not gated): `health_ready` 503 during provider-less soak
+
+With F3 fixed, the clean signal is: **every** `health_ready` probe through the
+LB returns 503 during the sustained phase while all other classes serve
+(200/202/404/401). Boot-time readiness passed (5.1 s boot gate requires
+readiness). Probable mechanism (attribution probable, not proven): the
+readiness handler aggregates the LLM circuit state and dependency probes
+(`packages/maistro-server/src/maistro_server/api/health.py`); in the
+provider-less soak cell task execution fails, the circuit opens, and
+readiness answers the status-only `{"status": "not_ready"}` 503 — i.e.
+**degraded signaling works**, which is itself an acceptance surface
+("degraded behavior remains effective"). The instant ~40 ms 503 latency fits
+an in-process circuit check rather than a pool wait. Un-gated by the profile
+today; the promotion soak (with its real provider configuration) must confirm
+readiness returns 200 there.
+
+## What still separates this from a promotion signature
+
+1. **Duration**: a ≥ 4 h sustained soak (`sustain_duration` gate is honest —
+   it cannot be argued away by the CLI exit status).
+2. **Exact RC artifact**: the profile's artifact-identity contract requires
+   the production Compose image/config (Redis, replication, shared store);
+   the current harness is the documented preflight emulator. The identity
+   contract table in `m3a-load-profile.md` lists exactly what a promotion
+   run must record.
+3. **Re-proof of drain under promotion-duration load**: run 6 proves the
+   drain path at 90 s; the 4 h run must re-observe it under long-lived
+   connections and deeper queues.
