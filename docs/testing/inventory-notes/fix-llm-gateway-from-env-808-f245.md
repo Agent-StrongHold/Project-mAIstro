@@ -1,38 +1,45 @@
 ---
 inventory-delta:
-  tests/: +12
+  tests/: +19
 ---
-# fix-llm-gateway-from-env-808-f245
+# fix-llm-gateway-from-env-808
 
-All additions, none removed.
+Nineteen additions, none removed. Both groups come from running the stacks
+rather than reading them, and each test fails against `develop`.
 
-**`tests/test_llm_gateway_compose.py` +9 (new).** Both Compose files decided
-the model gateway wrongly, in opposite directions. The dev stack hardcoded four
-copies of `http://litellm:4000`, so `.env` changed nothing; the cloud stack
-passed one alias, defaulting to empty, and no key — so it booted, passed
-`/health/ready`, and could not call a model. These render each file the way
-Compose does and read the environment a container would actually receive:
+**`tests/test_llm_gateway_compose.py` +9.** The model gateway, chosen once in
+`.env` and derived for every alias, in both Compose files. The dev stack
+hardcoded four copies of `http://litellm:4000`; the cloud stack passed one
+alias, defaulting to empty, and no key. Renders each file the way Compose does
+and cross-checks itself against the real `docker compose config`. Six of nine
+fail against the pre-fix files.
 
-- defaults follow the bundled proxy, in every consumer;
-- an `.env` override repoints every consumer with no Compose override (#808
-  AC-2/AC-3);
-- no two services can disagree, checked *with* a gateway set, since matching
-  defaults prove only that hardcoded copies happened to agree (AC-4);
-- the legacy `LITELLM_URL` name is honoured, and a non-standard OpenAI path can
-  be given explicitly;
-- the cloud stack refuses to start without a gateway, and every replica gets
-  the same complete one;
-- two cross-checks against the real `docker compose config`, one per file, so
-  the test's own interpolation cannot drift from Compose's. They skip only
-  where the docker CLI is absent.
+**`tests/test_prod_stack_boot_contract.py` +7.** The cloud reference stack had
+never been started by anything in CI. Started for the first time, following
+its own documentation, it did not come up:
 
-Against the pre-fix Compose files six of the nine fail; the three that pass are
-the default case and the two cross-checks, as expected.
+- every replica crash-looped at import: `deploy/.env.example` shipped
+  `API_KEYS=conductor:change-me`, and the server parses `API_KEYS` as JSON;
+- with that fixed, every replica exited at startup on `ROUTER_API_KEY is
+  unset`, a requirement the dev stack had carried for a long time;
+- the hot standby had never replicated: the primary was never given
+  `REPLICATION_PASSWORD`, so `init-replication.sh` aborted on its first line --
+  and the entrypoint carried on, so the primary still reported healthy;
+- with a replica stopped, half of all requests hung: no `proxy_connect_timeout`
+  (default 60s) and no shared `zone`, so ejection needed three failures per
+  worker.
+
+The tests take the requirements from their own source rather than copying
+names: the server's real `Settings` and `_validate_startup`, fed by the shipped
+template; and the `${VAR:?}` guards in the init script. A requirement added to
+either later fails here instead of on someone's first deploy. Five of seven fail
+against `develop`; the two that pass are the ones `develop` already got right
+(the template renders, and `DB_*` composes into a PostgreSQL URL).
+
+`tests/_compose_render.py` is a helper, not a test module; it holds the renderer
+both files share.
 
 **`tests/test_check_compose_secrets.py` +3.** The gate flagged
-`${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?msg}}` as a committed default. It is
-not one — a caller who sets nothing gets a refusal to start — so the gate now
-exempts a fallback chain that ends in a required, plain or empty reference. Two
-tests pin that exemption; the third pins its limit, that
-`${A:-${B:-hunter2}}` is still reported, because a literal one level deeper is
-the hole such an exemption could open.
+`${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?msg}}`; a caller who sets nothing gets
+a refusal, not a value. Two tests pin the exemption and one its limit --
+`${A:-${B:-hunter2}}` is still reported.
