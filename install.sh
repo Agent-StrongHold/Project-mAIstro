@@ -609,6 +609,64 @@ version_ge() {
 # with a cryptic negotiation error. Refuse it here instead. Skips quietly when
 # there is no docker CLI (podman-only hosts) or no answering daemon — the
 # bootstrap paths already report those.
+# Docker Desktop keeps registry credentials behind a helper backed by the macOS
+# keychain (`credsStore: desktop`). When the keychain cannot put up its prompt
+# -- an ssh session, launchd, a locked login keychain -- that helper blocks
+# forever, and so does every pull and every build behind it: `compose up
+# --build` sits at "load metadata for docker.io/library/python" with no output
+# and no end. It ignores SIGTERM and SIGALRM, so nothing short of SIGKILL
+# stops it. Measured on a real Mac: a 14-minute wait with docker-buildx's only
+# child a `docker-credential-desktop get` that never returned.
+#
+# One bounded probe up front turns that into a clear error in seconds. `list`
+# reads the keychain the same way `get` does but needs no input, and on a
+# healthy helper it answers in milliseconds.
+check_docker_credential_helper() {
+    command -v docker >/dev/null 2>&1 || return 0
+    [[ ${#PYTHON_CMD[@]} -gt 0 ]] || return 0
+    local config store helper secs rc
+    config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+    [[ -f "$config" ]] || return 0
+    store="$("${PYTHON_CMD[@]}" - "$config" 2>/dev/null <<'PY'
+import json
+import sys
+
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("credsStore", ""))
+except Exception:
+    pass
+PY
+)"
+    [[ -n "$store" ]] || return 0
+    helper="docker-credential-$store"
+    command -v "$helper" >/dev/null 2>&1 || return 0
+
+    secs="${MAISTRO_CRED_HELPER_TIMEOUT:-15}"
+    rc=0
+    run_with_timeout "$secs" "$helper" list >/dev/null 2>&1 || rc=$?
+    if [[ $rc -eq 124 ]]; then
+        # Guidance in a heredoc so it reads as prose, not as shell words.
+        cat >&2 <<EOF
+
+Every image pull and build waits on $helper, so the install would hang here
+with no further output. On macOS this almost always means the keychain needs
+you:
+
+  - run the installer from Terminal on this Mac (not over ssh), and approve
+    the keychain prompt if one appears; or
+  - unlock the login keychain:
+      security unlock-keychain ~/Library/Keychains/login.keychain-db
+
+If you do not pull from private registries, removing "credsStore": "$store"
+from $config also works: the images this stack uses are public.
+Set MAISTRO_CRED_HELPER_TIMEOUT to wait longer than ${secs}s.
+
+EOF
+        fail "Docker's credential helper ($helper) did not answer within ${secs}s."
+    fi
+    return 0
+}
+
 ensure_docker_engine_supported() {
     command -v docker >/dev/null 2>&1 || return 0
 
@@ -990,9 +1048,9 @@ report_arch() {
         # write end, so a killed `docker` whose child -- the credential helper
         # on a real Mac -- is still alive would block the read forever, and
         # the timeout would bound nothing.
+        rc=0
         DOCKER_CONFIG="$anon_config" run_with_timeout "${MAISTRO_ARCH_CHECK_TIMEOUT:-20}" \
-            docker manifest inspect "$img" > "$anon_config/manifest" 2>/dev/null
-        rc=$?
+            docker manifest inspect "$img" > "$anon_config/manifest" 2>/dev/null || rc=$?
         out="$(cat "$anon_config/manifest" 2>/dev/null)"
         if [[ $rc -eq 0 ]] && grep -q "arm64" <<< "$out"; then
             ok "arm64 image available: $img"
@@ -1015,20 +1073,33 @@ report_arch() {
 
 # Run "$@" but give up after $1 seconds, returning 124 like coreutils'
 # timeout(1) -- which macOS does not ship, so it cannot be assumed here.
+#
+# Written for this script's `set -euo pipefail`, which every line here has to
+# survive: `wait` on the watcher returns 143 once it is killed, `kill` fails if
+# it already exited, and `pkill` returns 1 when there are no children -- and
+# under -e each of those aborts the install. An earlier draft did exactly that
+# on a *successful* lookup, so every `|| true` below is load-bearing. The
+# watcher gets its own `set +e` so a childless command is still killed.
 run_with_timeout() {
-    local secs="$1" pid watcher rc
+    local secs="$1" pid watcher rc=0
     shift
     "$@" &
     pid=$!
     # Its children first: `docker` blocked in a credential helper is waiting on
     # that child, and killing only the parent would leave the child running.
-    ( sleep "$secs" && { pkill -9 -P "$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null; } ) &
+    (
+        set +e
+        sleep "$secs"
+        pkill -9 -P "$pid" 2>/dev/null
+        kill -9 "$pid" 2>/dev/null
+    ) &
     watcher=$!
-    wait "$pid" 2>/dev/null
-    rc=$?
-    kill "$watcher" 2>/dev/null
-    wait "$watcher" 2>/dev/null
-    [[ $rc -eq 137 ]] && return 124
+    wait "$pid" 2>/dev/null || rc=$?
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    if [[ $rc -eq 137 ]]; then
+        return 124
+    fi
     return "$rc"
 }
 
@@ -1040,6 +1111,7 @@ start_engine() {
 
     ensure_compose_runtime
     ensure_docker_engine_supported
+    check_docker_credential_helper
     record_docker_sock
     # compose_files first: report_arch reads the image list from the same
     # file set `up` will use, so an addon's images are checked too.

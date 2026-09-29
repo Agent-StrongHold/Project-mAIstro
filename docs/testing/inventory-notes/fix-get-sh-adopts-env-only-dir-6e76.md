@@ -1,48 +1,55 @@
 ---
 inventory-delta:
-  tests/: +16
+  tests/: +23
 ---
 # fix-get-sh-adopts-env-only-dir
 
-Sixteen additions, none removed, all from running the Mac install on a real
-Mac rather than reading it. Each defect below was found that way and each test
-fails against `develop`'s version of the script it covers.
+Twenty-three additions, none removed, all from installing on a real Apple
+Silicon Mac rather than reading the scripts. Every defect below was found that
+way, and every new test fails against `develop`'s version of the script it
+covers. The end state: a full install on that Mac, from a recovered
+`.env`-only directory, with no terminal, came up with the engine and Conductor
+healthy and auth enforced.
 
-**`tests/test_get_sh_recovery.py` +10.** Two get.sh defects.
+**`tests/test_get_sh_recovery.py` +10.** An unfinished install was
+unrecoverable -- an earlier get.sh migrated the `.env` before cloning, so a
+failed clone left a directory that was not a checkout and every later run
+stopped at "exists but is not a git checkout". The Mac this was found on had
+exactly that directory from July. Seven tests cover adoption: what counts as
+installer leftovers, that user content is still refused, that a checkout is
+never mistaken for one, that the `.env` keeps mode 0600, that nothing is left
+staged, and that a failed clone touches nothing. The rest cover the hand-off to
+install.sh with no controlling terminal: `[[ -r /dev/tty ]]` is true on every
+host, so the redirect after it failed with "Device not configured" under
+`exec` -- every cloud-init and non-interactive ssh run. Gate C never saw it,
+because it runs install.sh directly.
 
-An unfinished install was unrecoverable: an earlier get.sh migrated the `.env`
-into `$INSTALL_DIR` before cloning, so a failed clone left a directory that was
-not a checkout, and every later run of the one-liner stopped at "exists but is
-not a git checkout". The machine this was found on had exactly that directory
-from July. Seven tests cover it: what counts as installer leftovers (a `.env`
-and Finder's `.DS_Store`, nothing else), that user content is still refused,
-that a real checkout is never mistaken for one, that recovery keeps the `.env`
-at mode 0600 and leaves no staging directory, and that a failed clone touches
-nothing.
+**`tests/test_install_arm64_check.py` +7.** The Apple Silicon image check froze
+the installer: `docker manifest inspect` ran under Docker Desktop's
+`credsStore: desktop` helper, which blocks when it cannot reach the keychain.
+It also read a drifted hardcoded list (`pg17` against the stack's `pg18`) and
+reported killed lookups as "may be emulated". The seventh test is the
+regression this branch nearly shipped: under install.sh's `set -euo pipefail`,
+the first draft of the timeout returned 143 from `wait` on its own watcher and
+ended the install on a *successful* check. The harness now runs with the same
+options as the script.
 
-The hand-off to install.sh died without a terminal: `[[ -r /dev/tty ]]` is
-true on every macOS and Linux host because the node is world-readable, so the
-redirect that followed failed with "Device not configured" under `exec`. That
-is every non-interactive run of the one-liner -- cloud-init, ssh without `-t`,
-CI. The test runs the hand-off in a new session, so there is genuinely no
-controlling terminal. Gate C never caught it because it runs install.sh
-directly and skips this hand-off.
+**`tests/test_install_credential_helper.py` +6.** The same helper hangs every
+pull and build, not just manifest lookups: a real install sat 14 minutes at
+"load metadata for docker.io/library/python" with docker-buildx's only child a
+`docker-credential-desktop get` that never returned. It ignores SIGTERM and
+SIGALRM. A bounded probe now fails the install in seconds with what to do; the
+tests cover a hang, a helper that traps TERM and ALRM, a healthy helper, a
+helper that errors fast (not a hang), no configured store, and a configured
+helper that is not installed.
 
-**`tests/test_install_arm64_check.py` +6.** On Apple Silicon the installer
-froze at "checking base images for native arm64 builds...". Docker Desktop's
-`credsStore: desktop` helper blocks `docker manifest inspect` whenever it cannot
-reach the keychain UI -- 8+ minutes with no output on the Mac this was found on,
-7 seconds with the helper bypassed. The check also read a hardcoded image list
-that had drifted (`pg17` against the stack's `pg18`), and when a lookup was
-killed it told the user a native image "may be emulated". The tests pin: the
-list comes from `compose config --images`; locally built images are skipped;
-no lookup runs under the user's credential helper; a lookup that hangs is
-abandoned and reported as unchecked, not as emulated; a genuinely amd64-only
-image is still reported; the temporary config is removed.
+**Two existing tests corrected, count unchanged.**
+`test_a_missing_docker_cli_is_a_no_op` inherited the real PATH, so on a Mac it
+found real docker and tested the non-default-socket case instead.
+`test_start_engine_enforces_the_floor_before_first_daemon_use` pinned three
+adjacent lines; it now pins the order it was about -- the floor check directly
+after the runtime check and before every step that uses the daemon.
 
-**`tests/test_install_docker_sock.py` +0, one test corrected.**
-`test_a_missing_docker_cli_is_a_no_op` inherited the real PATH, so on a Mac
-with Docker Desktop it found the real `docker`, which reports the non-default
-socket, and the "missing CLI" case became the "non-default socket" case. It
-passed in CI only because the runner's docker uses the default socket. It now
-removes every `docker` from PATH, which is what its docstring always claimed.
+All new tests also pass under `/bin/bash` 3.2, which is what `curl ... | bash`
+runs on a stock Mac without Homebrew. Two harnesses use `eval "$(...)"` rather
+than `source <(...)`, which bash 3.2 silently reads as empty.

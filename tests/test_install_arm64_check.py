@@ -59,11 +59,15 @@ exit 1
 def _report_arch(bin_dir: Path, *, timeout: str = "20") -> subprocess.CompletedProcess[str]:
     install = shlex.quote(str(INSTALL_SH))
     script = f"""
-set -uo pipefail
+# The same options install.sh runs under. Without -e here, a helper that
+# aborted the real installer on a *successful* lookup passed every test.
+set -euo pipefail
 ok()   {{ echo "OK: $*"; }}
 info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
-source <(sed -n '/^report_arch()/,/^}}/p;/^run_with_timeout()/,/^}}/p' {install})
+# eval, not `source <(...)`: macOS ships bash 3.2 as /bin/bash, where
+# sourcing a process substitution silently reads nothing.
+eval "$(sed -n '/^report_arch()/,/^}}/p;/^run_with_timeout()/,/^}}/p' {install})"
 ARCH=arm64
 COMPOSE_CMD=(docker compose)
 COMPOSE_FILES=(-f docker-compose.yml)
@@ -164,3 +168,31 @@ def test_the_temporary_anonymous_config_is_cleaned_up(tmp_path: Path) -> None:
 
     config_dir = log.read_text().splitlines()[0].rsplit("DOCKER_CONFIG=", 1)[1]
     assert not Path(config_dir).exists()
+
+
+def test_a_successful_check_does_not_abort_a_set_e_script(tmp_path: Path) -> None:
+    """The regression that would have shipped: under install.sh's `set -e`,
+    `wait` on the killed watcher returned 143 and ended the install, on the
+    happy path, right after printing that every image was native."""
+    _stub_docker(tmp_path, images="pgvector/pgvector:pg18", manifest=ARM64_INDEX)
+    script_tail = "\necho REACHED_THE_END\n"
+    install = shlex.quote(str(INSTALL_SH))
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            'ok() { echo "OK: $*"; }; info() { :; }; warn() { :; }\n'
+            f"eval \"$(sed -n '/^report_arch()/,/^}}/p;/^run_with_timeout()/,/^}}/p' {install})\"\n"
+            "ARCH=arm64; COMPOSE_CMD=(docker compose); COMPOSE_FILES=(-f docker-compose.yml)\n"
+            "report_arch" + script_tail,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "REACHED_THE_END" in result.stdout
