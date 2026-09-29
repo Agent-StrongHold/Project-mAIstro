@@ -19,7 +19,6 @@ Create Date: 2026-09-29
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "047"
@@ -29,10 +28,18 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "capability_binding_revocations",
-        sa.Column("binding_id", sa.Text(), primary_key=True),
-        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=False),
+    # IF NOT EXISTS, like 046: stamp-back and re-upgrade is a live repair path,
+    # and the chain's contract is that re-applying a revision over the schema
+    # it already built is adoption, not an error (tests/migrations,
+    # test_reapplying_the_chain_over_an_already_migrated_schema_is_adopted).
+    # A bare create_table failed that with DuplicateTable.
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS capability_binding_revocations (
+            binding_id TEXT PRIMARY KEY,
+            revoked_at TIMESTAMPTZ NOT NULL
+        )
+        """
     )
 
 
@@ -40,4 +47,4 @@ def downgrade() -> None:
     # Dropping this loses the record of which identities are forbidden, which
     # is a downgrade that re-grants capabilities. Kept for chain symmetry; an
     # operator running it is choosing that.
-    op.drop_table("capability_binding_revocations")
+    op.execute("DROP TABLE IF EXISTS capability_binding_revocations")
