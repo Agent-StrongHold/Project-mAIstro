@@ -34,6 +34,22 @@ Usage:
 
 from maistro.ontology.protocols import Ontology
 from maistro.ontology.registry import InMemoryOntology
+from maistro.ontology.rubric import (
+    RUBRIC_KIND,
+    NumericScale,
+    PackRubricCatalog,
+    PassFailScale,
+    ProvenanceOrigin,
+    RubricAggregation,
+    RubricDimension,
+    RubricGate,
+    RubricProvenance,
+    RubricScale,
+    RubricSemantic,
+    ScoringMethod,
+    register_rubric_kind,
+    rubric_entity_id,
+)
 from maistro.ontology.types import (
     Facet,
     KindAlreadyRegisteredError,
@@ -43,11 +59,25 @@ from maistro.ontology.types import (
 )
 
 __all__ = [
+    "RUBRIC_KIND",
     "Facet",
     "InMemoryOntology",
     "KindAlreadyRegisteredError",
     "KindNotRegisteredError",
+    "NumericScale",
     "Ontology",
     "OntologyEntity",
     "OntologyError",
+    "PackRubricCatalog",
+    "PassFailScale",
+    "ProvenanceOrigin",
+    "RubricAggregation",
+    "RubricDimension",
+    "RubricGate",
+    "RubricProvenance",
+    "RubricScale",
+    "RubricSemantic",
+    "ScoringMethod",
+    "register_rubric_kind",
+    "rubric_entity_id",
 ]
