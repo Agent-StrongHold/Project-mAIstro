@@ -132,6 +132,38 @@ class TestObjectiveOwnership:
         with pytest.raises(ValidationError):
             obj.default_benchmark_weight = 42.0
 
+    def test_objective_weight_mapping_is_read_only(self):
+        """Item mutation on the stored mapping is refused (review of #853).
+
+        ``ConfigDict(frozen=True)`` does not freeze a plain-dict field, so the
+        weights are stored behind a ``MappingProxyType``: neither a campaign
+        objective nor the shared ``DEFAULT_OBJECTIVE`` can be silently
+        retuned without changing ``version``.
+        """
+        for objective in (
+            DEFAULT_OBJECTIVE,
+            EvaluationObjective(
+                version="t",
+                benchmark_weights={"proxy_ifeval": 0.5},
+                default_benchmark_weight=0.15,
+                fitness_term_weights=FitnessTermWeights(),
+            ),
+        ):
+            with pytest.raises((TypeError, AttributeError)):
+                objective.benchmark_weights["proxy_ifeval"] = 999.0
+            with pytest.raises((TypeError, AttributeError)):
+                objective.benchmark_weights.pop("proxy_ifeval")
+            with pytest.raises((TypeError, AttributeError)):
+                objective.benchmark_weights.update({"proxy_ifeval": 999.0})
+        # Serialization still yields a plain dict (and round-trips), so the
+        # recorded evidence payload is unchanged by the read-only storage.
+        dumped = DEFAULT_OBJECTIVE.model_dump()
+        assert type(dumped["benchmark_weights"]) is dict
+        assert (
+            EvaluationObjective.model_validate(dumped).benchmark_weights
+            == DEFAULT_OBJECTIVE.benchmark_weights
+        )
+
     def test_mutation_operators_no_longer_carry_the_ruler(self):
         import maistro_evolve.mutate as mutate
 
