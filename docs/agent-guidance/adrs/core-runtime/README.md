@@ -19,3 +19,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Add or run fresh-Postgres migration verification that proves `alembic upgrade head`, the required downgrade semantics, pgvector extension setup, and model/migration drift detection (`alembic check` or equivalent). Once all four accepted criteria are directly evidenced, transition ADR-012 to `Implemented`. Reconcile SPEC-213's stale `Proposed` status during the spec audit.  
 **Current state:** The initial migration exists, creates the memory-era schema and pgvector prerequisite, and the repository has a substantial live Alembic chain. SPEC-213 confirms most of the intended implementation but explicitly records that downgrade behavior was not independently re-verified and that no drift-check CI step currently proves the ADR's `alembic check` criterion, so the ADR is not yet promoted.  
 **ADR:** [ADR-012: First Alembic migration (memory tables + pgvector)](../../../adr/ADR-012-alembic-migration.md)
+
+## ADR-018: Persist TaskRecord at queue/runner boundaries
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Reconcile the ADR's durability framing with the canonical Run spine: explicitly state that TaskRecord is a best-effort receipt, not execution/recovery authority, and add direct configured-database evidence that queue mutations persist the receipt row. If the narrowed receipt contract is the intended surviving decision, verify all three criteria and transition ADR-018 to `Implemented`; otherwise identify a successor ADR and supersede it.  
+**Current state:** TaskQueue still performs ordered best-effort TaskRecord upserts and remains functional without a database, so the narrow receipt-persistence mechanism survives. Recovery authority has moved to canonical Runs and durable Run provenance; current code explicitly says TaskRecord is a receipt. No direct integration-test evidence was located for the ADR's configured-database row-exists criterion, so the record remains Accepted pending reconciliation and proof.  
+**ADR:** [ADR-018: Persist TaskRecord at queue/runner boundaries](../../../adr/ADR-018-task-record-persistence.md)
