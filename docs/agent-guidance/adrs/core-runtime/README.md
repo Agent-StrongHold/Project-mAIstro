@@ -51,3 +51,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Create a successor ADR mapping runtime-artifact identity/versioning onto current canonical artifacts: Persona, NodeTemplate/GraphTemplate, Capability Provider/Binding, governed policy/config, and other actual runtime definitions. Preserve version pinning/history where it serves reproducibility, evaluation, safe promotion, and rollback of evolving artifacts, but explicitly separate that from pre-1.0 backward compatibility for deployments, which is not a goal. Remove Recipe/CodeRegistry-era assumptions and define the real registry/storage authority.  
 **Current state:** The learn-forward vs stable-promotion problem remains valid, especially for evolve-generated artifacts. The concrete artifact taxonomy and dependencies are stale, and "rollback any prior version" should not be interpreted as an obligation to preserve compatibility with old pre-1.0 deployments. This ADR needs a current successor rather than literal implementation against obsolete artifact kinds.  
 **ADR:** [ADR-075: Universal Artifact Versioning and Release Channels](../../../adr/ADR-075-universal-artifact-versioning.md)
+
+## ADR-078: Configuration Management — DB source of truth, RBAC online edit, file export
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Complete SPEC-062226-fb23: real ConfigStore persistence/cache, canonical-principal authorization, audited API/CLI edit paths, explicit export/restore, and tests. Then migrate hot-editable settings subsystem-by-subsystem instead of assuming all named tunables are already DB-backed. Reconcile ADR-078's "scheduled/on-change git export" wording with the SPEC's safer explicit export/restore contract unless automated repository mutation is intentionally required.  
+**Current state:** The static bootstrap config path exists, but the implementing SPEC states the online DB-backed ConfigStore did not yet exist when specified and its acceptance criteria remain unchecked. The DB-vs-static split remains a useful architecture rule, while the actual hot-config control plane is still incomplete.  
+**ADR:** [ADR-078: Configuration Management — DB source of truth, RBAC online edit, file export](../../../adr/ADR-078-configuration-management.md)
