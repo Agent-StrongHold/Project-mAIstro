@@ -5,9 +5,10 @@ anywhere. Four surfaces rebound or mutated it and returned `200`; every one of
 those writes was discarded at restart (#334).
 
 Attaching `PersistedStore` alone would not have closed that. `PersistedStore.put`
-enqueues a closure for `State`'s writer thread and returns, and
-`State._writer_loop` swallows every exception that closure raises — so an
-acknowledgement issued after `put` still precedes, and survives, the failure.
+only enqueues a closure for `State`'s writer thread, and `State._writer_loop`
+swallows every exception that closure raises — so an acknowledgement issued
+after a queued `put` still precedes, and survives, the failure (#1238,
+#1179).
 
 So a write here is acknowledged only after it has been **read back** from the
 authoritative store and compared to what was sent. Everything else in this
@@ -62,7 +63,7 @@ class SettingsPersistenceError(RuntimeError):
     """A write was not observed in the store afterwards.
 
     Raised for a write that did not land, a read-back that disagreed with what
-    was sent, and a drain that timed out. All three mean the same thing to a
+    was sent, and a commit that failed. All three mean the same thing to a
     caller: do not tell anyone this succeeded.
     """
 

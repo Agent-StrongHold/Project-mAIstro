@@ -95,9 +95,10 @@ def _now() -> datetime:
 #
 # The same arrangement as services/settings_store.py: a Protocol with an
 # in-process implementation and a persisted one, `configure()` called once at
-# startup, `reset()` for tests and re-initialisation. The persisted write
-# drains the writer queue before returning, because `PersistedStore.put_raw`
-# only enqueues — an acknowledgement that outruns the write is the exact
+# startup, `reset()` for tests and re-initialisation. The persisted write is
+# acknowledged (#1179): `PersistedStore.put_raw`/`delete` return only after
+# the State writer commits and raise its failure (#1238), so there is no
+# per-store flush — an acknowledgement that outruns the write is the exact
 # defect #334 documented.
 
 

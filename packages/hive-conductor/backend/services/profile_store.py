@@ -17,11 +17,13 @@ old arrangement invisible, and it is also what makes a second replica serve a
 profile its owner has already changed — the gap #703 had to correct a claim
 about one family later. A profile read is one row; there is nothing to save.
 
-**Read-back before acknowledgement.** `PersistedStore.put_raw` enqueues a
-closure for `State`'s writer thread and returns, and `State._writer_loop`
-swallows what that closure raises. Acknowledging after `put_raw` acknowledges a
-write that may never have landed — exactly the trap ADR-082926-0b72 documents
-for settings. Every write here flushes, re-reads and compares.
+**Read-back before acknowledgement.** `PersistedStore.put_raw` and `delete`
+are acknowledged writes (#1179): they do not return until `State`'s writer
+thread has committed, and they raise the writer's failure instead of
+queueing it (#1238). Acknowledging a queued write acknowledges one that may
+never have landed — the trap ADR-082926-0b72 documents for settings. There
+is no per-store flush to remember; every write here is re-read and compared
+after `put_raw` returns.
 """
 
 from __future__ import annotations
