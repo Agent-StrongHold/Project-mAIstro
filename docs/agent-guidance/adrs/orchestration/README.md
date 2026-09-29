@@ -67,3 +67,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Create/identify a successor ADR that formally separates Graph-domain traversal/NodeStrategy semantics from canonical execution authority, then supersede ADR-062. The successor must state that physical execution and recovery are owned exclusively by canonical Run/NodeRun/Attempt plus `maistro.graph.durable_runs`; `GraphRun`/legacy `NodeRun` may remain only as non-authoritative domain/test-harness structures where still useful.  
 **Current state:** ADR-062's own amendment records that its `run_graph` execution path was retired by #1154 because it emitted no canonical Run/NodeRun/Attempt evidence and was unrecoverable after restart. Canonical durable Graph execution now shares no code with this design. The remaining strategy/traversal concepts may still be useful, but leaving the ADR simply Accepted risks teaching agents that `GraphRun` is an execution owner, directly conflicting with M1 convergence.  
 **ADR:** [ADR-062: Graph Execution Protocol](../../../adr/ADR-062-graph-execution-protocol.md)
+
+## ADR-071: General Task Planner & Orchestration
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Rewrite this proposal around canonical GraphTemplate/NodeTemplate planning, Run/NodeRun/Attempt execution, child-Run delegation, durable continuations/recovery, current scheduler/priority semantics, Capability Invocation effects, Workspaces, and ADR-068 authorization. Preserve useful planner ideas such as reuse-first planning, explicit success conditions, interpretable search/scoring, replanning on drift, deadlines, and verification, but remove dependencies on deprecated shadow-git waves and retired GraphRun/TaskRecord execution. Reassess speculative execution under real effect/idempotency guarantees rather than "rollback is cheap."  
+**Current state:** The orchestration problem is real, but the Proposed design is a synthesis of several mechanisms that convergence has since retired or relocated. Accepting it unchanged would recreate competing execution, recovery, budget, and filesystem-wave authorities. Its planner/reconciler concepts should be retained only after remapping them onto the canonical execution spine.  
+**ADR:** [ADR-071: General Task Planner & Orchestration](../../../adr/ADR-071-task-planner-orchestration.md)
