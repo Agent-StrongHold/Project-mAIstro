@@ -27,3 +27,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Revalidate A2UI v0.10 against the current upstream/protocol shape before pinning, then design it as a declarative UI capability transported through the canonical API/session surface. Agent-generated UI actions must resolve through canonical principal authorization and Capability Invocation; A2UI must not become a side-channel for effects. Keep maistro-design code/artifact generation separate from live declarative UI.  
 **Current state:** The safe-like-data catalog model is a strong fit for MAIstro's control posture and solves a different problem from static/code design outputs. The proposal predates current execution and identity convergence, so transport/action ownership needs updating before acceptance.  
 **ADR:** [ADR-070426-3a1f: A2UI protocol adoption](../../../adr/ADR-070426-3a1f-a2ui-declarative-ui-protocol-adoption.md)
+
+## ADR-082426-2192: maistro-server builds one Container
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve one Container/one spine/one run-id namespace in maistro-server and finish eliminating any direct `run_task` or hand-wired execution door that bypasses Conduit/admission/security. As older Conductor-specific agent wrappers retire, route through current Graph/Run/Capability architecture rather than preserving their behavior for compatibility.  
+**Current state:** This is a key server-boundary convergence decision: the OpenAI-compatible door must enter the same DI/security/execution system as every other request.  
+**ADR:** [ADR-082426-2192](../../../adr/ADR-082426-2192-maistro-server-builds-a-container.md)
+
+## ADR-082426-6201: In-agent delegation is not a NodeRun
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve NodeRun's meaning as execution of a Graph Node. Runtime strategy delegation inside one Node stays attributable through delegation provenance; remote/independent delegated work that deserves lifecycle identity becomes a child Run. Continue deleting constructed-but-unread A2A surfaces.  
+**Current state:** This prevents runtime reasoning choices from mutating the Graph's logical NodeRun shape while still making delegation visible.  
+**ADR:** [ADR-082426-6201](../../../adr/ADR-082426-6201-in-agent-delegation-is-not-a-node-run.md)
