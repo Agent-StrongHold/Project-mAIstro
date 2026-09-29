@@ -6,7 +6,6 @@ import pytest
 
 from maistro_evolve.mutate import (
     mutate_all,
-    mutate_eval_weights,
     mutate_node,
     mutate_prompt,
     mutate_topology,
@@ -158,24 +157,28 @@ def test_mutate_prompt_skips_sentence_removal_when_two_or_fewer_sentences(
     assert "Only one sentence" in mutated.topology.nodes[0].system_prompt
 
 
-def test_mutate_eval_weights_returns_unchanged_copy_when_gate_does_not_fire(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("maistro_evolve.mutate.random.random", lambda: 1.0)
+def test_mutate_eval_weights_is_removed() -> None:
+    """#853: a genome must not be able to mutate the ruler it is scored with.
+
+    The objective is population-owned; the operator that jiggled the genome's
+    own eval_weights is gone. The tombstone raises rather than silently
+    mutating an (inert) field, so stale callers fail loudly instead of
+    believing they still shape scoring.
+    """
+    from maistro_evolve.mutate import mutate_eval_weights
+
     genome = _genome([_node("a")], [], entry_node="a")
-    mutated = mutate_eval_weights(genome, rate=0.0)
+    with pytest.raises(NotImplementedError, match="population-owned"):
+        mutate_eval_weights(genome, rate=1.0)
+
+
+def test_mutate_all_never_touches_eval_weights(force_random: None) -> None:
+    """#853: no mutation operator may alter the (inert) weight field —
+    mutating it would falsely advertise it as part of the evolvable genome."""
+    genome = _genome([_node("a"), _node("b")], [], entry_node="a")
+    genome.eval_weights = EvalWeights(proxy_ifeval=0.42)
+    mutated = mutate_all(genome, rate=1.0)
     assert mutated.eval_weights == genome.eval_weights
-    assert mutated.parent_a_id == "parent"
-    assert mutated.name == "base-weight-mut"
-
-
-def test_mutate_eval_weights_perturbs_and_renormalizes_to_one(force_random: None) -> None:
-    genome = _genome([_node("a")], [], entry_node="a")
-    mutated = mutate_eval_weights(genome, rate=1.0)
-
-    total = sum(getattr(mutated.eval_weights, f) for f in EvalWeights.model_fields)
-    assert abs(total - 1.0) < 1e-6
-    assert mutated.parent_a_id == "parent"
 
 
 def test_mutate_all_chains_all_mutations_and_renames(force_random: None) -> None:

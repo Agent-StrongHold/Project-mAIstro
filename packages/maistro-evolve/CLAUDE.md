@@ -18,7 +18,13 @@ PYTHONPATH=packages/maistro-core/src:packages/maistro-evolve/src pytest packages
 
 - `crossover()` — recombine two `PipelineGenome`s, preserving the entry node.
 - `mutate_all()` — mutate models, strategies, prompts, topology within a genome.
-- `fitness.compute_fitness()` — weighted score: eval 65% / cost 15% / latency 10% / diversity 5% / elo 5%.
+- `fitness.compute_fitness()` — scores against the campaign-owned `objective.EvaluationObjective`
+  (versioned, frozen; weights: eval 65% / cost 15% / latency 10% / diversity 5% / elo 5%). A genome cannot
+  mutate its own ruler: `genome.eval_weights` is inert legacy schema (#853). Missing cost/latency/Elo
+  evidence is scored pessimistically (0 credit), never as a perfect 1.0; correctness hard gates are
+  non-tradeable (gate failure ⇒ total 0 under any weighting); `capability_score` is the gated measured
+  task quality and Elo/diversity are role-tagged context terms that cannot move it; components record
+  `objective_version` + `evidence_hash`, so identical evidence recomputes identical fitness across cycles.
 - `EloTournament` — win/loss/elo per (genome, benchmark) pair.
 - `EvalHarness` — registers/runs benchmarks (proxy_ifeval, proxy_bfcl, proxy_swebench, proxy_tau_bench,
   proxy_gaia, proxy_ragas, proxy_terminalbench, proxy_osworld). See **Benchmark fidelity** below before
