@@ -299,6 +299,45 @@ def test_shared_factual_contradiction_identifies_all_descendants() -> None:
     }
 
 
+def test_sibling_contradiction_probes_each_side_it_actually_carries() -> None:
+    """Reversed orientation: the left sibling carries pattern_b while the
+    right carries pattern_a from a shared decision. The origin probe must
+    pair each artifact with the side it actually carries — otherwise the
+    shared decision is missed, the finding degrades to LOCAL, and the other
+    consumers of that decision are dropped from the refinement closure."""
+    left = FamilyArtifact(
+        artifact_id="flyer",
+        version=1,
+        kind="social",
+        title="Launch flyer",
+        content=(
+            "Launch week is here. Start your free trial. All plans include 48-hour turnaround."
+        ),
+    )
+    right = FamilyArtifact(
+        artifact_id="social_copy",
+        version=1,
+        kind="social",
+        title="Launch social copy",
+        content=("Launch week is here. Start your free trial. All plans include 24-hour delivery."),
+        consumes=("D1",),
+    )
+    evaluation = evaluate_project_snapshot(_snapshot(artifacts=(left, right), evidence=()))
+
+    sibling_errors = errors_by_dimension(evaluation, ConsistencyDimension.SIBLING_CONTRADICTION)
+    assert len(sibling_errors) == 1
+    finding = sibling_errors[0]
+    assert finding.rule_id == "rule-turnaround"
+    assert finding.origin is FindingOrigin.SHARED
+    assert finding.decision_id == "D1"
+    # The closure follows the shared decision, not just the two siblings.
+    assert "social_copy" in finding.affected_artifact_ids
+
+    assert evaluation.refinement is not None
+    assert evaluation.refinement.root_cause is FindingOrigin.SHARED
+    assert evaluation.refinement.shared_decision_ids == ("D1",)
+
+
 def test_impact_follows_relationships_not_artifact_kinds() -> None:
     """Two artifacts of the SAME kind; only one consumes the bad decision.
 
@@ -588,6 +627,73 @@ def test_terminology_message_channel_accessibility_dimensions_fire() -> None:
     assert dims[ConsistencyDimension.ACCESSIBILITY].passed is False
     access = errors_by_dimension(dirty, ConsistencyDimension.ACCESSIBILITY)
     assert access and "alt" in access[0].evidence
+
+
+def test_prohibitive_decision_mention_is_not_shared_origin() -> None:
+    # D2 says "never an app" — a prohibition. An artifact that uses "app" is
+    # a local defect of that artifact only; classifying it as shared with D2
+    # would wrongly route refinement to every consumer of a correct decision.
+    base = _snapshot()
+    violating = base.artifacts[4].model_copy(
+        update={
+            "content": (
+                '<html lang="en"><body><h1>Meet your new workspace</h1>'
+                "<p>Start your free trial with the Aurora app.</p></body></html>"
+            )
+        }
+    )
+    evaluation = evaluate_project_snapshot(
+        base.model_copy(
+            update={
+                "artifacts": tuple(
+                    violating if a.artifact_id == "website_copy" else a for a in base.artifacts
+                )
+            }
+        )
+    )
+    terms = errors_by_dimension(evaluation, ConsistencyDimension.TERMINOLOGY)
+    assert terms and "website_copy" in terms[0].evidence
+    assert all(f.origin is FindingOrigin.LOCAL for f in terms)
+    assert all(f.decision_id is None for f in terms)
+    # Impact is the artifact's own local closure — never D2's other consumers.
+    assert all("website_copy" in f.affected_artifact_ids for f in terms)
+    assert all(not f.affected_decision_ids for f in terms)
+    assert evaluation.refinement is not None
+    assert "D2" not in evaluation.refinement.shared_decision_ids
+
+
+def test_affirmative_decision_mention_is_still_shared_origin() -> None:
+    # Positive control: when a decision *asserts* the marker (no negation),
+    # origin detection must still classify the violation as shared.
+    base = _snapshot()
+    d3 = SharedDecision(
+        decision_id="D3",
+        version=1,
+        kind="naming",
+        statement="The product is the Aurora app.",
+    )
+    violating = base.artifacts[4].model_copy(
+        update={
+            "consumes": ("D3",),
+            "content": (
+                '<html lang="en"><body><h1>Meet the Aurora app</h1>'
+                "<p>Start your free trial.</p></body></html>"
+            ),
+        }
+    )
+    evaluation = evaluate_project_snapshot(
+        base.model_copy(
+            update={
+                "decisions": (*base.decisions, d3),
+                "artifacts": tuple(
+                    violating if a.artifact_id == "website_copy" else a for a in base.artifacts
+                ),
+            }
+        )
+    )
+    terms = errors_by_dimension(evaluation, ConsistencyDimension.TERMINOLOGY)
+    assert terms and terms[0].origin is FindingOrigin.SHARED
+    assert terms[0].decision_id == "D3"
 
 
 def test_design_system_compliance_flags_offpalette_colour() -> None:

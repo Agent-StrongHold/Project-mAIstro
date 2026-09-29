@@ -435,15 +435,60 @@ def _contains(pattern: str, text: str) -> bool:
         return pattern.lower() in text.lower()
 
 
+_NEGATION_CUES = re.compile(
+    r"\b(?:never|not|no|cannot|can't|won't|don't|doesn't|didn't|isn't|aren't"
+    r"|wasn't|weren't|shouldn't|mustn't|avoid\w*|prohibit\w*|forbid\w*"
+    r"|exclud\w*|instead of|rather than)\b",
+    re.IGNORECASE,
+)
+_NEGATION_WINDOW = 48  # chars of preceding context treated as negation scope
+
+
+def _mentions_affirmatively(pattern: str, text: str) -> bool:
+    """Whether *pattern* occurs in *text* outside any negation scope.
+
+    Origin attribution needs polarity: a decision that says "never an app"
+    mentions "app" only to forbid it, so that mention must not brand the
+    decision as the origin of an "app" violation (which would wrongly widen
+    refinement to every consumer of a correct decision). Defect detection in
+    artifact content still uses plain :func:`_contains` — using a banned
+    marker is the defect regardless of phrasing.
+    """
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        compiled = None
+    starts: list[int] = []
+    if compiled is not None:
+        starts = [match.start() for match in compiled.finditer(text)]
+    else:
+        needle = pattern.lower()
+        lowered = text.lower()
+        index = lowered.find(needle)
+        while index != -1:
+            starts.append(index)
+            step = len(needle) or 1
+            index = lowered.find(needle, index + step)
+    for start in starts:
+        prefix = text[max(0, start - _NEGATION_WINDOW) : start]
+        if not _NEGATION_CUES.search(prefix):
+            return True
+    return False
+
+
 def _origin_for(
     artifact: FamilyArtifact,
     marker: str,
     decisions_by_id: dict[str, SharedDecision],
 ) -> tuple[FindingOrigin, str | None]:
-    """A violation is *shared* when an upstream decision itself carries it."""
+    """A violation is *shared* when an upstream decision itself asserts it.
+
+    Mentions inside a negation scope ("never an app") are prohibitions, not
+    assertions, so they do not make the decision the defect's origin.
+    """
     for decision_id in _decision_upstream_of(artifact, decisions_by_id):
         statement = decisions_by_id[decision_id].statement
-        if _contains(marker, statement):
+        if _mentions_affirmatively(marker, statement):
             return FindingOrigin.SHARED, decision_id
     return FindingOrigin.LOCAL, None
 
@@ -628,7 +673,28 @@ def _check_factual_claims(
                         f"'{claim.evidence_id}' which the project snapshot does not contain",
                         artifact_id=artifact.artifact_id,
                         origin=FindingOrigin.LOCAL,
-                        affected_artifacts=(artifact.artifact_id,),
+                        affected_artifacts=tuple(
+                            sorted(_local_impact_closure(artifact.artifact_id, dependents))
+                        ),
+                        claim_id=claim.claim_id,
+                    )
+                elif not _contains(claim.pattern, evidence.statement):
+                    # The cited evidence merely existing is not backing: the
+                    # claim is truth only if the provided statement actually
+                    # states it (e.g. a "24-hour delivery" claim citing a
+                    # "48-hour turnaround" item must not pass as backed).
+                    origin, decision_id, affected = _impact(artifact, claim.pattern)
+                    collector.error(
+                        ConsistencyDimension.FACTUAL_CLAIMS,
+                        f"claim '{claim.claim_id}' in '{artifact.artifact_id}' cites "
+                        f"evidence '{claim.evidence_id}' whose statement does not "
+                        f'contain it: "{_quote(claim.pattern)}" not found in '
+                        f'"{_quote(evidence.statement)}"',
+                        artifact_id=artifact.artifact_id,
+                        decision_id=decision_id,
+                        origin=origin,
+                        affected_artifacts=affected,
+                        affected_decisions=(decision_id,) if decision_id else (),
                         claim_id=claim.claim_id,
                     )
         for rule in brief.contradiction_rules:
@@ -704,9 +770,16 @@ def _check_sibling_contradictions(
                 if not ((left_a and right_b) or (left_b and right_a)):
                     continue
                 # Shared origin when a consumed decision carries either side.
+                # Pair each artifact with the side it actually carries: the
+                # predicate above can match in either orientation, and the
+                # origin check must probe the pattern present on that side.
+                if left_a and right_b:
+                    sides = ((left, rule.pattern_a), (right, rule.pattern_b))
+                else:
+                    sides = ((left, rule.pattern_b), (right, rule.pattern_a))
                 origin = FindingOrigin.LOCAL
                 decision_id = None
-                for artifact, pattern in ((left, rule.pattern_a), (right, rule.pattern_b)):
+                for artifact, pattern in sides:
                     o, d = _origin_for(artifact, pattern, decisions_by_id)
                     if o is FindingOrigin.SHARED and d is not None:
                         origin, decision_id = o, d
@@ -952,8 +1025,9 @@ def evaluate_project_snapshot(snapshot: CreativeProjectSnapshot) -> ConsistencyE
             passed=not any(f.severity is Severity.ERROR for f in by_dimension.get(dimension, ())),
             finding_ids=tuple(f.finding_id for f in by_dimension.get(dimension, ())),
         )
+        # Emit a verdict for every dimension so consumers can tell an
+        # explicitly passing check from one that was never evaluated.
         for dimension in ConsistencyDimension
-        if dimension in by_dimension
     )
     passed = all(result.passed for result in dimension_results)
 
