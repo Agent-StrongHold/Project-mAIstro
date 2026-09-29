@@ -668,3 +668,25 @@ def artifact_annotation_to_provenance(annotation: dict[str, Any]) -> dict[str, A
         )
         if key in annotation
     }
+
+
+if TYPE_CHECKING:
+    #: Vulture references: the public planning/invalidation surface is
+    #: re-exported from ``maistro_design`` and exercised by the tests, and
+    #: ``ArtifactProvenanceRecord`` is serialized with ``asdict()`` by the
+    #: Conductor inspection path (#775: which Goal revision, CreativeBrief
+    #: version, shared decision and Agent delegation produced each artifact),
+    #: so no direct read exists in this scan set. The tuple is scanner input
+    #: only (never evaluated at runtime): class-level access to required
+    #: dataclass fields raises AttributeError, so the references must stay
+    #: type-check-time.
+    _VULTURE_REFERENCES = (
+        CreativeGraphPlan.branch_request_ids,
+        CreativeGraphPlan.branch_node_ids,
+        CreativeGraphPlan.shared_stage_node_ids,
+        InvalidationReport.goal_revision_changed,
+        InvalidationReport.unchanged_request_ids,
+        InvalidationReport.invalidated_node_ids,
+        ArtifactProvenanceRecord.consumed_message_decision_id,
+        ArtifactProvenanceRecord.consumed_visual_decision_id,
+    )

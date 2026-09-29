@@ -35,7 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -738,3 +738,29 @@ for _node_cls in (
     CreativePublishExport,
 ):
     register_node(_node_cls)
+
+
+if TYPE_CHECKING:
+    #: Vulture references: the stage output schemas are the durable referenced
+    #: outputs of the creative Graph (#775). Each field is computed by its
+    #: node and reaches its consumers through ``model_dump`` serialization
+    #: into canonical node outputs and through readers outside this scan set
+    #: (the Conductor inspection path, the test suites), so no direct read
+    #: exists for the dead-code scanner to see. The tuple is scanner input
+    #: only (never evaluated at runtime): class-level access to pydantic
+    #: fields raises AttributeError, so the references must stay
+    #: type-check-time.
+    _VULTURE_REFERENCES = (
+        ResearchEvidenceOutput.evidence_count,
+        ArtifactGenerateOutput.consumed_message_decision_id,
+        ArtifactGenerateOutput.consumed_visual_decision_id,
+        CrossCritiqueOutput.critique_id,
+        CrossCritiqueOutput.artifact_count,
+        CrossCritiqueOutput.shared_decision_consistent,
+        TargetedRefinementOutput.refinement_id,
+        TargetedRefinementOutput.refined_request_ids,
+        TargetedRefinementOutput.unchanged_request_ids,
+        AcceptanceOutput.acceptance_id,
+        AcceptanceOutput.accepted_request_ids,
+        PublishExportOutput.export_id,
+    )

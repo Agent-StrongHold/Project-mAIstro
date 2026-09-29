@@ -35,7 +35,7 @@ Contracts this module owns:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -602,3 +602,27 @@ def _validate_reference_kind(
     if reference.kind not in allowed:
         msg = f"CreativeBrief.{field} requires kind in {sorted(allowed)}, got {reference.kind!r}"
         raise BriefContractError(msg)
+
+
+if TYPE_CHECKING:
+    #: Vulture references: the ``@model_validator(mode="after")`` hooks are
+    #: dispatched by pydantic through the decorator, which the static call
+    #: graph cannot see, and the ``ArtifactProjection`` provenance fields are
+    #: consumed through serialization rather than direct reads in this scan
+    #: set -- the same framework-dispatch blindness ``maistro-core``'s
+    #: ``_vulture_whitelist`` documents for pydantic hooks. The tuple is
+    #: scanner input only (never evaluated at runtime): class-level access to
+    #: pydantic fields raises AttributeError, so the references must stay
+    #: type-check-time.
+    _VULTURE_REFERENCES = (
+        EvidenceReference._validate,
+        RequiredFact._validate,
+        BriefReference._validate,
+        ArtifactRequest._validate,
+        ProjectionOverride._validate,
+        ArtifactProjection._validate,
+        CreativeBrief._validate_contract,
+        ArtifactProjection.projection_id,
+        ArtifactProjection.artifact_request,
+        ArtifactProjection.derived_at,
+    )
