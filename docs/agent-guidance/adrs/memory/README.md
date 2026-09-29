@@ -51,3 +51,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** No ADR-017 implementation work remains. Later outcome/economics/telemetry work should preserve bounded recording, time-window semantics, and tenant-scoped aggregation while extending the record.  
 **Current state:** Outcome recording, bounded FIFO eviction, completion-rate calculation, model breakdown, time-window filtering, and org isolation are implemented and directly tested. The Outcome record/store has since expanded with richer execution, billing, feedback, and provenance telemetry without invalidating ADR-017's original guarantees.  
 **ADR:** [ADR-017: Outcome + InMemoryOutcomeStore](../../../adr/ADR-017-outcome-store.md)
+
+## ADR-034: Memory Canonical Ownership
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Keep the single-owner invariant, but reconcile the historical cross-repo/product migration table with current monorepo package/adaptor boundaries and the newer memory ADR/spec family beyond ADR-011–017. New memory architecture must continue to land in the canonical shared memory layer rather than being silently redefined by product packages.  
+**Current state:** ADR-034 remains active architectural governance: shared memory types, protocols, persistence, retrieval, and evolution semantics have one canonical owner, while product-specific surfaces/adapters parameterize that architecture. The original four-repo migration narrative is historical after consolidation, but the anti-drift ownership rule remains current.  
+**ADR:** [ADR-034: Memory Canonical Ownership](../../../adr/ADR-034-memory-canonical-ownership.md)
