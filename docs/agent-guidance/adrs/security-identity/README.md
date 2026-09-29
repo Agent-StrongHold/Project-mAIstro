@@ -139,3 +139,27 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Resolve the ADR's normative-floor ambiguity before implementation: Decision 1 says untrusted code **MUST** use hardware-VM isolation, while Decisions 5-6 explicitly permit autonomous execution on Tier-2 gVisor. Choose one enforceable minimum and make the text consistent. Then revise SPEC-190 for direct pre-1.0 cutover: remove the "preserve Docker behavior/no regression during migration" goal, eliminate host-Docker-socket paths, wire all untrusted execution through SandboxProtocol/canonical capability execution, and prove deny-by-default egress/escape/resource tests on the required tier.  
 **Current state:** The threat analysis and fail-closed tier model are strong, and a Hyperlight executor provides a reference for selection/mode floors. The implementing SPEC remains Proposed and still contains migration-compatibility goals. The hardware-VM-vs-gVisor minimum is internally inconsistent enough that agents should not infer the security floor until the ADR is clarified.  
 **ADR:** [ADR-093: Sandbox isolation model — hardware-VM isolation for untrusted agent code](../../../adr/ADR-093-sandbox-isolation-model.md)
+
+## ADR-070426-e8a3: Session Trust Floor
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Rework STF against canonical Session/Run provenance and threat-model it for denial-of-service before acceptance. Preserve the anti-laundering invariant that trust provenance survives summarization/compaction and child work inherits contamination. Do not let one unknown/low-confidence source permanently reduce an entire long-lived session to SKULL without a bounded, auditable recovery/review model; distinguish provenance/risk history from authorization so trust does not become a second permission system.  
+**Current state:** The anti-laundering insight is valuable, but the current monotonic-min design is intentionally irreversible and defaults unknown contributors to the lowest tier, making a single false positive or novel source capable of permanently disabling privileged actions in that session. That is a security availability trade-off requiring explicit adversarial analysis, not an automatic fail-closed win.  
+**ADR:** [ADR-070426-e8a3: Session Trust Floor](../../../adr/ADR-070426-e8a3-session-trust-floor.md)
+
+## ADR-070426-e9da: Header-based CSRF defense for Hive cookie mutations
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Reconcile this with ADR-077 and the canonical web/session boundary instead of implementing a Hive-only security rule. If cookie-authenticated mutations remain, require one centrally enforced CSRF contract for every cookie-authenticated surface. Decide whether header-presence plus SameSite is the intended contract or whether session-bound CSRF tokens from ADR-077 remain required; do not maintain two conflicting mechanisms. If Hive cookie auth disappears during ADR-096 cutover, retire this proposal with it.  
+**Current state:** The identified CSRF risk is real, especially around elevation, but this proposal is product-specific and weaker/different from ADR-077's session-bound-token requirement. The right fix belongs at the canonical session middleware, not in a legacy BFF path that M1 is actively thinning.  
+**ADR:** [ADR-070426-e9da: Hive CSRF header defense](../../../adr/ADR-070426-e9da-hive-csrf-header-defense.md)
+
+## ADR-070426-9f47: Autonoetic self-model threat model and guardrails
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve the G1-G18 guardrails as acceptance constraints for any future Turing self-model, but bind them to ADR-081426-fb9f's activation gate and canonical Warden/Sentinel/memory/Run provenance before self-model persistence becomes reachable. No self-authored persistent state, ontology mutation, or prompt-injected self narrative may bypass the same security/evidence boundaries as other durable effects.  
+**Current state:** This is a valuable pre-implementation threat model: it identifies persistent self-poisoning, unbounded drift/growth, and self-authored ontology changes before those paths are activated. It should remain Proposed and function as a hard prerequisite set, not be treated as evidence that the Turing self-model is currently active.  
+**ADR:** [ADR-070426-9f47: Autonoetic self-model guardrails](../../../adr/ADR-070426-9f47-autonoetic-self-model-guardrails.md)
