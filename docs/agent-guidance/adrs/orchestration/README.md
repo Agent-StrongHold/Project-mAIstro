@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** None. Follow ADR-082126-f69c: recurrence produces canonical Runs rather than owning a second scheduler execution lifecycle.  
 **Current state:** ADR-046 is explicitly superseded and records that its APScheduler/TaskRecord-centered mechanism was never the canonical implementation. Its durable/timezone/max-runs requirements informed the successor, but its execution mechanism must not be revived. Note that ADR-044's historical reference to a future "ADR-046" for Canvas legacy deletion is stale because this ID belongs to Scheduler.  
 **ADR:** [ADR-046: Scheduler — Recurring agent tasks](../../../adr/ADR-046-scheduler.md)
+
+## ADR-052: Parallel agent waves — per-wave branch isolation and fan-in merge
+
+**Status:** Deprecated  
+**Last updated:** 2026-09-28  
+**Next steps:** No implementation work against ADR-052. Remove its unreachable fan-in/shadow-git island during convergence cleanup. Any current parallel-agent execution must be designed on the canonical Graph/Run/workspace architecture rather than reconnecting this deprecated lifecycle.  
+**Current state:** Reachability analysis proved the implementation was never connected, and the design depends on deprecated ADR-049 shadow-git machinery. It was correctly moved from an implementation claim to Deprecated with no successor; ADR-062 addresses a different traversal concern and does not revive this filesystem-wave model.  
+**ADR:** [ADR-052: Parallel agent waves — per-wave branch isolation and fan-in merge](../../../adr/ADR-052-parallel-agent-waves.md)
