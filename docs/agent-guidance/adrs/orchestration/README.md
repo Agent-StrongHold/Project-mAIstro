@@ -147,3 +147,51 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile the now-substantial amendments/tests and promote only when the full chat seam is proven: every answered turn has one Run/NodeRun/Attempt, admission failure refuses before model dispatch, post-dispatch evidence failure never redispatches, live-turn lease protection prevents eviction, retention cannot evict durable task Runs, and SessionTurn correlation is exactly-once. Keep one Run per turn, not one long-running Run per conversation.  
 **Current state:** Although still Proposed, this record has evolved into a detailed canonical-chat contract and directly follows the execution spine. Its later amendments correctly chose governance over degraded untracked answers and distinguish ephemeral chat retention from durable task execution.  
 **ADR:** [ADR-082326-c126: Chat turn Run granularity and retention](../../../adr/ADR-082326-c126-chat-turn-run-granularity-and-retention.md)
+
+## ADR-082426-a47f: Terminalizing a Run settles open NodeRuns
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep this as a canonical lifecycle invariant and ensure every store/backend applies the cascade atomically with Run terminalization. Open NodeRuns must settle and become immovable when their Run terminalizes; no domain-specific terminal path may bypass the store rule.  
+**Current state:** This closes an impossible-state class in the canonical spine and composes with cancellation and terminal derivation rather than introducing a new lifecycle.  
+**ADR:** [ADR-082426-a47f](../../../adr/ADR-082426-a47f-terminalizing-a-run-settles-its-node-runs.md)
+
+## ADR-082426-f170: Requested cancellation is not parked failure
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve cancellation cause outside the physical Attempt outcome where needed and keep reconciliation cause-aware. Recovery, user cancellation, deadline, and execution failure must remain distinguishable so parked/retryable work is not mislabeled as requested cancellation or vice versa.  
+**Current state:** This is a narrow but load-bearing semantic correction on the Run spine.  
+**ADR:** [ADR-082426-f170](../../../adr/ADR-082426-f170-a-requested-cancellation-is-not-a-parked-failure.md)
+
+## ADR-082426-82c7: Occurrence is the claim, not the cursor
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Apply occurrence identity consistently to schedules/triggers: durable uniqueness belongs to the admitted occurrence/Run or Invocation claim, while cursors remain replay optimizations. Finish replacing legacy scheduler loops without weakening create-before-cursor crash safety.  
+**Current state:** This is the correct exactly-once-admission shape over at-least-once enumeration and directly informs ADR-086's event-trigger occurrence claims.  
+**ADR:** [ADR-082426-82c7](../../../adr/ADR-082426-82c7-the-occurrence-is-the-claim-not-the-cursor.md)
+
+## ADR-082526-237d: Run terminal state derives from complete NodeRun frontier
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat the complete logical NodeRun frontier as the canonical derivation input and remove domain-owned terminal-result mappings where they can disagree. Keep external cancellation/deadline causes explicit while preventing success/failure projections from contradicting the frontier.  
+**Current state:** This advances ADR-082426-19ed from a contradiction guard toward canonical terminal derivation and has direct Run/task projection tests.  
+**ADR:** [ADR-082526-237d](../../../adr/ADR-082526-237d-run-terminal-state-derived-from-node-frontier.md)
+
+## ADR-082526-3ca6: Container owns delegation dependencies
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep delegation dependencies in the canonical Container and resolve them at call time so Hive/product layers do not construct parallel brokers/clients. Continue converging delegation itself onto child Runs/Capability Invocation where applicable.  
+**Current state:** This is a useful DI ownership correction following retirement of the unread local A2A broker.  
+**ADR:** [ADR-082526-3ca6](../../../adr/ADR-082526-3ca6-container-owns-delegation-dependencies.md)
+
+## ADR-082526-7f02: Dispatch identity belongs to Attempt
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep admission provenance descriptive and record the actually selected/dispatching agent/provider on the Attempt/Invocation that physically performed work. Do not guess dispatch identity before routing has occurred.  
+**Current state:** This aligns attribution with the canonical physical execution boundary and fixes chat/delegation provenance ambiguity.  
+**ADR:** [ADR-082526-7f02](../../../adr/ADR-082526-7f02-dispatch-identity-belongs-to-the-attempt.md)
