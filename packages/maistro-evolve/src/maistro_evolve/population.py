@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from .promotion import (
     selection_eligibility,
 )
 from .types import PipelineGenome
+
+logger = logging.getLogger("maistro_evolve.population")
 
 
 def _fitness_key(genome: PipelineGenome) -> float:
@@ -305,6 +308,7 @@ class PopulationStore:
                 genome.is_active = False
                 self.add(genome)
             raise
+        logger.info("governed promotion committed: %s", record.summary())
         return genome
 
     async def rollback_audited(self, audit: GenomeAuditTrail) -> PipelineGenome | None:
@@ -331,6 +335,15 @@ class PopulationStore:
                 before.is_active = True
                 self.add(before)
             raise
+        if target is not None and self.last_promotion_record is not None:
+            # Operator context for the revert: name the governed promotion on
+            # record, so an incident response can see what was last activated
+            # and under which objective/decision rule.
+            logger.info(
+                "rollback to %s; last governed promotion on record: %s",
+                target.id,
+                self.last_promotion_record.summary(),
+            )
         return target
 
     def get_lineage(self, genome_id: str) -> list[PipelineGenome]:

@@ -218,7 +218,9 @@ def _best_of_n_violation(genome: PipelineGenome, policy: PromotionPolicy) -> lis
     if not pending or not policy.require_confirmation_after_best_of_n:
         return []
     samples: dict[str, int] = genome.harness_params.get(SAMPLES_KEY, {})
-    bench = pending.get("benchmark")
+    # A marker without a benchmark name cannot identify what to confirm, so it
+    # fails closed: the empty name matches no samples and the guard stays on.
+    bench = str(pending.get("benchmark") or "")
     at_acceptance = int((pending.get("samples_at_acceptance") or {}).get(bench, 0))
     n = samples.get(bench, 0)
     if n <= at_acceptance:
@@ -387,6 +389,30 @@ class PromotionRecord(BaseModel):
 
     def to_json(self) -> str:
         return self.model_dump_json()
+
+    def summary(self) -> str:
+        """One-line human-readable rendering of the committed decision (#854
+        acceptance 8): who was activated, over whom, under which objective,
+        on what evidence, under which rule and approval.
+
+        The audit trail stores the record itself as JSON (``to_json``); the
+        summary is the form operators see in logs when a promotion commits
+        and when a rollback needs to name the governed promotion on record.
+        """
+        incumbent = self.incumbent_id
+        candidate_fitness = self.candidate_evidence.get("fitness_score")
+        incumbent_fitness = (
+            self.incumbent_evidence.get("fitness_score")
+            if self.incumbent_evidence is not None
+            else None
+        )
+        margin = self.decision_rule.get("min_promotion_margin")
+        return (
+            f"candidate {self.candidate_id} (fitness={candidate_fitness}) over "
+            f"incumbent {incumbent} (fitness={incumbent_fitness}) under "
+            f"{self.objective_version}; active now: {self.resulting_active_id}; "
+            f"approved={self.approved}; min_promotion_margin={margin}"
+        )
 
 
 def build_promotion_record(

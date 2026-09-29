@@ -278,6 +278,36 @@ def test_genuinely_better_confirmed_candidate_promotes() -> None:
     assert record.decision_rule["min_promotion_margin"] == (PromotionPolicy().min_promotion_margin)
 
 
+def test_promotion_record_summary_names_the_decision() -> None:
+    """The committed record renders as one operator-readable line naming the
+    exact ids, objective, evidence, decision rule and approval (#854
+    acceptance 8) — the same record the committed audit entry stores as JSON."""
+    store = PopulationStore()
+    incumbent = _evidence(_genome("incumbent"), score=0.5)
+    candidate = _evidence(_genome("better"), score=0.9)
+    store.add(incumbent)
+    store.add(candidate)
+    asyncio.run(store.promote_audited("g-incumbent", GenomeAuditTrail(_RecordingSink())))
+    asyncio.run(store.promote_audited("g-better", GenomeAuditTrail(_RecordingSink())))
+
+    record = store.last_promotion_record
+    assert record is not None
+    line = record.summary()
+    assert "candidate g-better (fitness=0.9)" in line
+    assert "incumbent g-incumbent (fitness=0.5)" in line
+    assert "objective-test" in line
+    assert "active now: g-better" in line
+    assert "approved=True" in line
+    assert f"min_promotion_margin={PromotionPolicy().min_promotion_margin}" in line
+
+    # The rollback path reads the same record for operator context and keeps
+    # the audit/compensation semantics intact (#342).
+    rolled_back = asyncio.run(store.rollback_audited(GenomeAuditTrail(_RecordingSink())))
+    assert rolled_back is not None and rolled_back.id == "g-incumbent"
+    assert store.last_promotion_record is not None
+    assert store.last_promotion_record.candidate_id == "g-better"
+
+
 def test_objective_version_is_deterministic_and_sensitive() -> None:
     weights = EvalWeights()
     assert objective_version(["proxy_ifeval", "proxy_bfcl"], weights) == objective_version(

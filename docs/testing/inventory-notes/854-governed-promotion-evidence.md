@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-evolve/tests: +16
+  packages/maistro-evolve/tests: +17
 ---
 
 # Governed champion selection and promotion evidence (#854)
