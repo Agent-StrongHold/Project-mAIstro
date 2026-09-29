@@ -99,3 +99,51 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Use this as canonical Project semantics and migrate/delete Project-as-Workspace or execution-hierarchy remnants. Enforce one immutable Root Project per Workspace, acyclic same-Workspace trees, creation-time defaults rather than live inheritance, downward-only resource visibility, atomic move validation, deny-wins scoped authorization, and fail-closed nonrecursive deletion.  
 **Current state:** This restores Project as a legitimate nested scope rather than an obsolete Workspace synonym. It composes directly with canonical ownership and scoped grants, and explicitly rejects compatibility-only Project machinery that does not match the tree/resource contract.  
 **ADR:** [ADR-081426-b1d3: Project Scope Tree](../../../adr/ADR-081426-b1d3-project-scope-tree.md)
+
+## ADR-082926-0b72: Conductor settings are durable or write fails
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Apply honest durable acknowledgement to every settings surface and migrate ownership out of module globals as Hive thins.  
+**Current state:** A successful settings write now means the durable owner accepted it; optimistic in-memory success is not allowed.  
+**ADR:** [ADR-082926-0b72](../../../adr/ADR-082926-0b72-conductor-settings-are-durable-or-the-write-fails.md)
+
+## ADR-082926-3b80: Dashboard layouts are durable or save fails
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep one durable data-boundary owner and remove duplicate local-file/PostgREST authorities.  
+**Current state:** This applies the same honest-write contract to user layout state.  
+**ADR:** [ADR-082926-3b80](../../../adr/ADR-082926-3b80-conductor-dashboard-layouts-are-durable.md)
+
+## ADR-082926-65bf: Template candidate state before activation
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Implement candidate → validated → explicit promotion semantics in immutable Template versions with audit/provenance. Use this instead of broad compatibility-heavy release channels for learned/evolved templates.  
+**Current state:** This fills a real gap between Evolve's gated candidates and NodeTemplate/GraphTemplate versioning.  
+**ADR:** [ADR-082926-65bf](../../../adr/ADR-082926-65bf-template-versions-hold-a-candidate-before-they-become-active.md)
+
+## ADR-082926-730d: One asyncpg pool per database
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep pool identity database-specific, registry-owned, and explicitly closed at shutdown; prevent callers from silently opening parallel pools.  
+**Current state:** This fixes split store ownership and a singleton that previously ignored later database URLs.  
+**ADR:** [ADR-082926-730d](../../../adr/ADR-082926-730d-one-pool-per-database-one-owner.md)
+
+## ADR-082926-d0dc: Save-as-template records source object
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Add source-object provenance outside content hashes for Node/Graph save-as-template operations.  
+**Current state:** This completes the reverse provenance direction missing from ADR-081226-bb3a.  
+**ADR:** [ADR-082926-d0dc](../../../adr/ADR-082926-d0dc-save-as-template-records-its-source-object.md)
+
+## ADR-083026-427c: Prompt versions and labels are separate facts
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep immutable prompt versions separate from mutable labels and update them transactionally.  
+**Current state:** This fixes a relational model that could not represent multiple labels pointing at one version.  
+**ADR:** [ADR-083026-427c](../../../adr/ADR-083026-427c-prompt-versions-and-labels-are-separate-facts.md)
