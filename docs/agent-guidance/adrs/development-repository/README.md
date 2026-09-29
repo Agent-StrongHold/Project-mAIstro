@@ -147,3 +147,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Rewrite the release-candidate branch rules to match ADR-095's current topology: `integration` is retired, so RCs cannot depend on it. Preserve lockstep monorepo versioning, immutable annotated tags, one workflow-controlled publish path, artifact verification, and independent release approval. Before 1.0, do not let package-version compatibility bounds drive architecture or preserve obsolete interfaces.  
 **Current state:** The release ADR contains useful publication controls but still describes RC/hotfix flows around a branch model that ADR-095 explicitly retired. Its own implementation inventory also records that some publish controls were never exercised/configured. It needs operational reconciliation before the first real release.  
 **ADR:** [ADR-073126-c4e1: Release and versioning process](../../../adr/ADR-073126-c4e1-release-and-versioning-process.md)
+
+## ADR-082226-ff3c: Design coverage metric
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep decision-weighted reachable-AC coverage as the primary "distance to designed state" metric and harden its inputs against gaming: missing criteria score zero, generated evidence cannot self-judge, branch-note folding must be deterministic, and reachability must remain stronger than passing tests. Use it alongside debt ratchets, not as a replacement for them.  
+**Current state:** This solves a real measurement problem: criterion-weighted coverage hid the 76/99 accepted decisions with no criteria. Decision-weighting makes undocumented/unmeasured design visible instead of disappearing from the denominator. Later August/September ADRs refine the metric's evidence and branch aggregation.  
+**ADR:** [ADR-082226-ff3c: Design coverage metric](../../../adr/ADR-082226-ff3c-design-coverage-metric.md)
