@@ -19,3 +19,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** No implementation work against ADR-047. Remove its unreachable implementation during island/convergence cleanup unless a new accepted ADR reintroduces outbound delivery with a current canonical execution path.  
 **Current state:** ADR-047 was explicitly corrected from an implementation claim to Deprecated after reachability analysis proved the shipped delivery gateway had no process-entry-point path. Nothing supersedes the withdrawn contract. This is a canonical example of why code/test existence is insufficient evidence without production reachability.  
 **ADR:** [ADR-047: Outbound Delivery Gateway — Multi-channel notifier](../../../adr/ADR-047-delivery-gateway.md)
+
+## ADR-081: Deployment Topology, Backup, and Disaster Recovery
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Rewrite before acceptance to separate **ephemeral deployment rebuildability** from **persistent user-data durability**. Pre-1.0 application deployments may be destroyed/rebuilt with no backward-compatibility guarantee; backups/restores should protect current persistent data/config/secrets without promising old-version schema compatibility. Replace ADR-071 backpressure and Task-era drain assumptions with canonical Run admission/drain/recovery semantics. Reassess whether cross-platform import/export is a current product requirement or a later stable-schema feature.  
+**Current state:** The local-backup floor and portable-data goals remain useful, but the proposal mixes them with deployment rolling-update/compatibility assumptions and stale orchestration dependencies. Scratch deployment before 1.0 does not eliminate the need to protect beta user data; it does eliminate the need to preserve old application/API/schema behavior merely so an old deployment keeps running.  
+**ADR:** [ADR-081: Deployment Topology, Backup, and Disaster Recovery](../../../adr/ADR-081-deployment-backup-dr.md)
