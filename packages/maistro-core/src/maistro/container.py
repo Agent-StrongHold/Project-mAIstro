@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from maistro.a2a.delegate import A2ADelegator
@@ -159,6 +159,10 @@ logger = logging.getLogger("maistro.container")
 #: WAITING list forever, so a scan bounded by the work limit inspects the same
 #: ineligible rows every tick and never reaches a resumable one (#666 review).
 RESUME_SCAN_LIMIT = 1000
+
+#: What one parked Run's resume came to — the vocabulary of `TickAccounting`
+#: (#849). "skipped" is the only outcome that is not counted as attempted.
+ParkedResumeOutcome = Literal["succeeded", "failed", "parked", "skipped"]
 
 #: How long a chat Run may sit RUNNING with no NodeRun before
 #: `recover_stranded_chat_admissions` treats it as stranded rather than merely
@@ -1424,47 +1428,21 @@ class Container:
         for run in parked:
             if attempted >= limit:
                 break
-            if not resumable_by_consumer(run):
+            outcome = await self._resume_one_parked(
+                run, executor=executor, moment=moment, resumable=resumable_by_consumer(run)
+            )
+            if outcome == "skipped":
                 skipped += 1
                 continue
-            pause = await self._resumable_pause_for(run, moment)
-            if pause is None:
-                skipped += 1
-                continue
-            try:
-                claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
-            except Exception:
-                # Another tick won the claim, or the Run moved on. Not ours.
-                skipped += 1
-                continue
-            # Re-read the pause now the claim is ours (#666 review). The read
-            # above happened before it: between the two, another replica can
-            # have resumed this Run, yielded again with a later `resume_at`,
-            # and parked it back to the status this transition then found. The
-            # claim succeeds, and resuming on the pause read beforehand polls
-            # immediately instead of honouring the delay just recorded -- every
-            # replica collapsing the interval into a burst, which is the one
-            # thing a poll deadline exists to prevent.
-            fresh = await self._resumable_pause_for(claimed, moment)
-            if fresh is None:
-                await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
-                skipped += 1
-                continue
-            try:
-                settled = await executor.resume(claimed, fresh)
-            except Exception:
-                failed += 1
-                logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
-                await self._repark_after_failed_resume(run.run_id, fresh.node_run_id, run.status)
-            else:
-                if settled is not None and settled.status is RunStatus.COMPLETED:
-                    succeeded += 1
-                else:
-                    # Re-entered and parked again: a fresh elapsed poll recorded
-                    # by the node, or a failed Attempt's park. Durable, visible,
-                    # recovery-owned -- and deliberately not called a success.
-                    parked_count += 1
+            # Re-entered and driven to a disposition -- a caught resume failure
+            # included (#849). Only "skipped" means the Run was left alone.
             attempted += 1
+            if outcome == "succeeded":
+                succeeded += 1
+            elif outcome == "failed":
+                failed += 1
+            else:
+                parked_count += 1
         return TickAccounting(
             attempted=attempted,
             succeeded=succeeded,
@@ -1472,6 +1450,57 @@ class Container:
             parked=parked_count,
             skipped=skipped,
         )
+
+    async def _resume_one_parked(
+        self,
+        run: Run,
+        *,
+        executor: Any,
+        moment: datetime,
+        resumable: bool,
+    ) -> ParkedResumeOutcome:
+        """Claim one parked Run and drive it to a disposition (#849).
+
+        Returns the outcome the accounting loop counts. "skipped" means the Run
+        was never re-entered: ineligible, its pause unreadable or no longer
+        elapsed, or a claim another tick won. The other three are all
+        *attempted* — driven past the claim to a durable disposition, a caught
+        resume failure included.
+        """
+        if not resumable:
+            return "skipped"
+        pause = await self._resumable_pause_for(run, moment)
+        if pause is None:
+            return "skipped"
+        try:
+            claimed = await self.run_store.transition_run(run.run_id, RunStatus.RUNNING)
+        except Exception:
+            # Another tick won the claim, or the Run moved on. Not ours.
+            return "skipped"
+        # Re-read the pause now the claim is ours (#666 review). The read
+        # above happened before it: between the two, another replica can
+        # have resumed this Run, yielded again with a later `resume_at`,
+        # and parked it back to the status this transition then found. The
+        # claim succeeds, and resuming on the pause read beforehand polls
+        # immediately instead of honouring the delay just recorded -- every
+        # replica collapsing the interval into a burst, which is the one
+        # thing a poll deadline exists to prevent.
+        fresh = await self._resumable_pause_for(claimed, moment)
+        if fresh is None:
+            await self._repark_after_failed_resume(run.run_id, pause.node_run_id, run.status)
+            return "skipped"
+        try:
+            settled = await executor.resume(claimed, fresh)
+        except Exception:
+            logger.warning("parked Run %s failed during resume", run.run_id, exc_info=True)
+            await self._repark_after_failed_resume(run.run_id, fresh.node_run_id, run.status)
+            return "failed"
+        if settled is not None and settled.status is RunStatus.COMPLETED:
+            return "succeeded"
+        # Re-entered and parked again: a fresh elapsed poll recorded by the
+        # node, or a failed Attempt's park. Durable, visible, recovery-owned --
+        # and deliberately not called a success.
+        return "parked"
 
     async def _parked_candidates(self) -> list[Run]:
         """Every parked Run this tick will consider, oldest first.
