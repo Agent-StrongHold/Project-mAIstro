@@ -628,3 +628,48 @@ is implementable from this lane alone. The driver supplied no `check-*.log`
 files in this job directory (only `events.jsonl`, `manifest.json`,
 `prompt.txt`, `state.json`), so all validation above was executed directly.
 No closure keywords used (`Refs #777` only).
+
+## Re-verification at lane head 20e32f1ed (repair round 11, after provider 502)
+
+**Why this round ran:** prior attempt
+`36735d9eb5a1463e9075e41f83e8f893` died with a provider error before any
+check executed (`"error": "provider error ... 502 ... Connection refused"`,
+`"checks": []`), so round 10's conclusions were left without a fresh run at
+this lane assignment. This round re-executes the full battery at
+`20e32f1ed46917c65e9d82ba7576b7047363bd38` (the assigned starting head;
+working tree clean, no new commits upstream).
+
+**Dependency re-audit (unchanged):**
+- develop tip is still `0fb3dc69e` — identical to the lane's develop base;
+  no new dependency work landed between rounds 10 and 11.
+- `grep -rn 'goal_reconcil|GoalReconciler|reconcile_goal'` over
+  `packages/*/src` → zero hits; #804/#805/#806 Goal reconciliation still
+  absent. `runs/reconciliation.py:1-3` remains physical Attempt bookkeeping
+  ("owns universal lifecycle bookkeeping only. It never decides").
+- `goal_revision` appears only in `interop/contract.py:316`
+  (`revision="goal_revision"`) — the #458 Goal store is still a declaration.
+- `brief_interview.py:1,447` still only produces "the brief draft a Goal and
+  CreativeBrief are written from" — #774 CreativeBrief records remain
+  unimplemented. #775/#776 still absent (`ladybug` only in
+  `dags/author_examples.py:29`).
+
+**Executed at `20e32f1ed` (all by this verifier):**
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **PASS** (exit 0, 1402
+  reviewed identities, 0 unbanked; ledger not amended — no fixes this round,
+  so no identity elimination applies).
+- `uv run ruff check .` — All checks passed!
+- `uv run ruff format --check .` — 2621 files already formatted.
+- `uv run pytest packages/maistro-design/tests -x -q` — 351 passed.
+- `uv run pytest tests/test_shared_interop_ontology.py -q` — 6 passed.
+- `uv run pytest packages/hive-conductor/backend/tests/
+  test_workspace_agent_identity.py test_agent_materialization.py
+  test_chat_brief_interview.py -q` — 53 passed.
+
+**Conclusion (unchanged across eleven heads):** all 13 #777 acceptance
+criteria remain UNMET at `20e32f1ed`. The lane stays BLOCKED on unlanded
+canonical dependencies (#458 Goal store, #804/#805/#806 Goal reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Workspace Ladybug graph); the
+stop condition forbids Design-Studio-private substitutes. The job directory
+contained no `check-*.log` files (prior driver died pre-check), so all
+validation above was executed directly. No closure keywords used.
