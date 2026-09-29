@@ -755,9 +755,15 @@ async def phase_exactly_once_tasks(base: str, headers: dict[str, str], n: int) -
 
 
 async def phase_rate_limit(
-    lb: str, replica_direct: str, headers: dict[str, str], total: int, burst: int
+    lb: str, replica_direct: str, headers: dict[str, str], total: int, burst_budget: int
 ) -> dict[str, Any]:
-    """Burst unauthenticated + authenticated traffic; 429 must hold per replica."""
+    """Burst unauthenticated + authenticated traffic; 429 must hold per replica.
+
+    The budget parameter is `burst_budget`, not `burst`: the inner burst
+    coroutine is named `burst` and silently shadowed the parameter, which
+    crashed the phase at evidence-assembly time (`int <= function`) on the
+    first round-5 validation run.
+    """
 
     async def burst(target: str, auth: bool, n: int) -> dict[str, Any]:
         counts: dict[int, int] = {}
@@ -813,8 +819,8 @@ async def phase_rate_limit(
         # itself stays strict — an undersized probe fails H3, it does not
         # silently count as a pass.
         "probe_requests": total,
-        "rate_limit_burst": burst,
-        "probe_below_burst": total <= burst,
+        "rate_limit_burst": burst_budget,
+        "probe_below_burst": total <= burst_budget,
     }
 
 
