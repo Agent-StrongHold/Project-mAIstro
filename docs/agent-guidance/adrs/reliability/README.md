@@ -75,3 +75,27 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep durable fencing as the authority for physical Attempt writers and compose it with the later lease-renewal/reclaim ADRs. Ensure every production Attempt mutation from a leased worker presents the current token and stale writers cannot terminalize or overwrite newer work. Remove unfenced production paths; retain unfenced construction only for explicitly low-level fixtures.  
 **Current state:** This establishes the correct stale-worker primitive: monotonic lease epochs and opaque fencing tokens owned by the canonical Run store, consumed but not minted by ExecutionRuntime. Later August ADRs extend reclaim/renewal semantics rather than replacing this foundation.  
 **ADR:** [ADR-081626-f383: Attempt execution lease and fencing](../../../adr/ADR-081626-f383-execution-lease-fencing.md)
+
+## ADR-082426-19ed: Run success must be earned by NodeRuns
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep the store-level contradiction guard across every backend while ADR-082526-237d owns fuller terminal derivation. Re-executed nodes must be judged by their latest logical NodeRun, not permanently poisoned by an earlier failed occurrence.  
+**Current state:** Direct spine-conformance tests protect against a Run claiming COMPLETED over a terminal failed/cancelled/timed-out latest NodeRun.  
+**ADR:** [ADR-082426-19ed](../../../adr/ADR-082426-19ed-a-run-cannot-claim-success-over-a-failed-node.md)
+
+## ADR-082426-e3ff: Fence every worker-authored write
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Enforce fencing not only on terminal writes but on acceptance/heartbeat/renewal and every other worker-authored mutation that could race with reclaim. Keep store-side rejection authoritative.  
+**Current state:** This closes the loophole where a stale worker could still mutate authoritative Attempt state before final completion.  
+**ADR:** [ADR-082426-e3ff](../../../adr/ADR-082426-e3ff-the-fence-guards-the-worker-authored-write.md)
+
+## ADR-082526-b36a: Expired execution leases are reclaimed
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep liveness proof explicit through fenced renewal and compose reclaim with recovery disposition. Production executors must renew; reclaim only after lease expiry, cancel the abandoned Attempt with attributable cause, and let logical policy decide retry/resume.  
+**Current state:** This completes the major liveness half left open by ADR-081626-f383: restart does not imply death, and a TTL without renewal is not sufficient.  
+**ADR:** [ADR-082526-b36a](../../../adr/ADR-082526-b36a-a-lease-that-stops-being-renewed-is-reclaimed.md)
