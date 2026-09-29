@@ -123,3 +123,27 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Continue M1 until every admitted execution uses this one lifecycle and all competing universal state machines are retired or reduced to domain projections. Keep recovery/retry as new Attempts under the same logical NodeRun where appropriate; ensure terminalization, cancellation, timeout classification, parent/child correlation, and scope invariants are mechanically enforced by stores/runtime.  
 **Current state:** This is MAIstro's canonical execution spine and the principal convergence target for the repository. Run owns logical execution, NodeRun owns one logical node occurrence, Attempt owns one physical try, and ExecutionRuntime owns mechanics only. Queue, schedule, delegation, harness, Builders, and persistence projections explicitly do not own competing post-admission lifecycles.  
 **ADR:** [ADR-081226-a66b: Run, NodeRun and Attempt Lifecycle](../../../adr/ADR-081226-a66b-run-noderun-attempt-lifecycle.md)
+
+## ADR-081426-1f7c: ExecutionRuntime Contract
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat this as the canonical physical-execution mechanics boundary and keep domain meaning out of Runtime implementations. Complete parity/conformance tests for cancellation, capacity waits, deadlines, slot accounting, recursive event emission, and Attempt identity; use it as the only route for future native/runtime acceleration.  
+**Current state:** This sharply separates mechanics from semantics: Runtime uses Attempt ID as execution identity and owns concurrency/deadline/process mechanics only, while domain services terminalize Attempts and reconcile NodeRuns/Runs. It is a core successor to older executors that mixed traversal, lifecycle, and mechanics.  
+**ADR:** [ADR-081426-1f7c: ExecutionRuntime Contract](../../../adr/ADR-081426-1f7c-execution-runtime-contract.md)
+
+## ADR-082126-f69c: Recurrence produces Runs
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep recurrence as definition/admission only and finish deleting any remaining scheduler-owned execution lifecycle or Task-era projection. Every fire must admit a canonical Run with occurrence provenance/idempotency, then ordinary Run/NodeRun/Attempt execution owns the work. Reconcile event-trigger recurrence with ADR-086's newer occurrence-claim semantics.  
+**Current state:** This explicitly supersedes ADR-046 and is the correct convergence pattern: schedules describe when/what to admit; they do not execute work or own a second runtime. It has direct scheduling and Hive integration tests.  
+**ADR:** [ADR-082126-f69c: Recurrence produces Runs](../../../adr/ADR-082126-f69c-recurrence-produces-runs.md)
+
+## ADR-082326-c126: Chat turn Run granularity and retention
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Reconcile the now-substantial amendments/tests and promote only when the full chat seam is proven: every answered turn has one Run/NodeRun/Attempt, admission failure refuses before model dispatch, post-dispatch evidence failure never redispatches, live-turn lease protection prevents eviction, retention cannot evict durable task Runs, and SessionTurn correlation is exactly-once. Keep one Run per turn, not one long-running Run per conversation.  
+**Current state:** Although still Proposed, this record has evolved into a detailed canonical-chat contract and directly follows the execution spine. Its later amendments correctly chose governance over degraded untracked answers and distinguish ephemeral chat retention from durable task execution.  
+**ADR:** [ADR-082326-c126: Chat turn Run granularity and retention](../../../adr/ADR-082326-c126-chat-turn-run-granularity-and-retention.md)
