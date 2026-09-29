@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Determine the intended current authority of Spawner against the canonical Run/harness execution architecture. If Spawner remains canonical, prove production composition-root reachability and the full ADR-009 acceptance set; if it has become a compatibility/legacy execution path, identify the successor ADR, add the explicit supersession relationship, and retire or narrow Spawner accordingly.  
 **Current state:** The Spawner implementation and dedicated tests still exist and implement the original single-agent execution funnel, including recipes, variants, typed parsing, error categorization, and upstream-output screening. Current repository search does not show Spawner construction in the production composition root, so implementation existence alone is insufficient to call ADR-009 Implemented or canonical; its reachability and authority must be reconciled with the newer durable Run/harness architecture.  
 **ADR:** [ADR-009: Spawner pattern](../../../adr/ADR-009-spawner.md)
+
+## ADR-060: Persona-as-seed — declarative domain templates, pluggable Scorer protocol, and two-tier eval statistics
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Rewrite/split this proposal before acceptance. Keep Persona as a declarative domain/product seed, but expand into the current canonical Persona/NodeTemplate/GraphTemplate/capability architecture rather than AgentRecipe. Separate the scorer/eval-statistics decision into focused ADR/spec ownership if needed so persona composition, evaluation providers, and preference-learning lifecycle do not become one oversized authority. Reconcile with the current Evolve/eval architecture and dependency policy.  
+**Current state:** The proposal contains useful ideas, especially declarative persona/domain data and evidence-grounded evaluation, but its expansion path is anchored to the stale RecipeRegistry/Spawner model and it bundles several independently evolving architectural concerns. It remains Proposed, so it can be corrected directly without a supersession ceremony.  
+**ADR:** [ADR-060: Persona-as-seed — declarative domain templates, pluggable Scorer protocol, and two-tier eval statistics](../../../adr/ADR-060-persona-as-seed-and-eval-protocol.md)
