@@ -107,3 +107,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Make lifecycle enforcement real at the merge boundary: wire `tools/lint_lifecycle.py` into required CI (or explicitly replace it with an equivalent canonical gate), then close the remaining date-consistency and cross-reference checks. Keep the forward-only/correction-with-reason model. Use the progressive-disclosure ADR index's `Next steps` field for "accepted but successor required" rather than inventing a misleading implementation status.  
 **Current state:** ADR-097 is the canonical lifecycle vocabulary and transition machine, and its correction-with-reason rule is actively used throughout the corpus. The ADR and SPEC-232 still record that the lifecycle linter is not invoked by GitHub Actions, so the governance contract is not yet fully enforced pre-merge even though the schema/front-matter registry gate exists.  
 **ADR:** [ADR-097: Lifecycle Status State Machine for ADRs and Specs](../../../adr/ADR-097-lifecycle-status-machine.md)
+
+## ADR-098: Layer taxonomy extension — Evolve, Crypto, Connectivity, Ability, Identity
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Maintain the closed layer taxonomy as repository classification governance and keep `maistro_registry.schema.Layer` plus touched ADR/spec front matter synchronized. Use layer as a discovery/classification aid, not as proof of architectural ownership; canonical ownership still comes from the relevant ADRs and current package boundaries.  
+**Current state:** The five added layer values are implemented in the registry schema and referenced by ADR-031. This is ongoing taxonomy governance rather than a finite runtime feature, so Accepted is the appropriate standing status.  
+**ADR:** [ADR-098: Layer taxonomy extension — Evolve, Crypto, Connectivity, Ability, Identity](../../../adr/ADR-098-layer-taxonomy-extension.md)
