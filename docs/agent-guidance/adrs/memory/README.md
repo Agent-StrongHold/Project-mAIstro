@@ -99,3 +99,35 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep this as validation/research context rather than a competing memory authority. Update its status table to reflect the now-implemented portions of ADR-091/SPEC-244 and the hard-context-window correction identified in this audit. Evaluate algorithmic prompt compression only from measured token/quality data; do not add compression machinery merely because an external article lists it.  
 **Current state:** The central thesis is sound and reinforces MAIstro's external-state/query-assemble-commit architecture. The one identified compression gap is an optimization candidate, not an architectural deficiency by itself. This record should cite current memory decisions without freezing their older Proposed-state descriptions.  
 **ADR:** [ADR-063026-a91f: Context windows are not memory](../../../adr/ADR-063026-a91f-context-window-memory-architecture-external-validation.md)
+
+## ADR-082226-5104: PostgreSQL durable record + Ladybug working memory
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat PostgreSQL/pgvector as the durable system-of-record decision and verify each claimed store is actually wired/reachable. Keep Ladybug strictly as derived/per-Workspace working memory that can be rebuilt and never becomes authoritative for Run, identity, authorization, or durable memory. Reconcile pre-1.0 schema policy with the ADR-087 successor rather than preserving old database shapes.  
+**Current state:** This ADR resolves a major storage contradiction: Postgres is infrastructure already paid for and should own durable relational/vector state, while a local graph/working store earns its place only as a distinct derived working-memory tier. Reachability, not schema existence, remains the key completion test.  
+**ADR:** [ADR-082226-5104: Storage architecture](../../../adr/ADR-082226-5104-storage-architecture-postgres-durable-ladybug-working-memory.md)
+
+## ADR-082226-d3dd: S3-compatible cold archive tier
+
+**Status:** Superseded  
+**Last updated:** 2026-09-29  
+**Next steps:** None beyond preserving the supersession link. Do not restore `maistro.memory.archive`; ADR-082226-f436 is the canonical archive decision and the one wired by Container.  
+**Current state:** This duplicate same-day archive design was implemented but unreachable and has been deleted. Its useful `list_keys` behavior was ported as scoped listing before removal.  
+**ADR:** [ADR-082226-d3dd: Superseded archive tier](../../../adr/ADR-082226-d3dd-s3-compatible-cold-storage-archive-tier.md)
+
+## ADR-082226-f436: Object storage archive tier for cold durable records
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Reconcile status with the implementation the ADR itself says is wired, then prove authoritative rehydration, content-addressed integrity, scope isolation, stub/tombstone behavior, and retention/GC semantics before promotion. Keep archive distinct from backup: archived payload is authoritative cold storage, not a disaster-recovery copy.  
+**Current state:** This supersedes d3dd and matches the implementation Container actually wires. The core shape is strong: durable relational identity/scope remains in PostgreSQL while cold payload moves to content-addressed object storage. Lifecycle status appears behind reality and needs evidence reconciliation.  
+**ADR:** [ADR-082226-f436: Object storage archive tier](../../../adr/ADR-082226-f436-object-storage-archive-tier-for-cold-memory.md)
+
+## ADR-082326-8194: Memory embedding column and dimensionality
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve same-row scoped vector retrieval and wiring-time dimension validation, but revisit the fixed 1536 dimension only through an explicit destructive pre-1.0 schema decision if a better canonical embedding model warrants it. Continue the producer+consumer-together rule per table so no unused vector columns land. Ensure current embedding Provider/Binding architecture supplies the client without creating a second model-routing path.  
+**Current state:** This is a disciplined storage decision: embeddings stay with scoped memory rows in pgvector, HNSW is chosen for interactive recall, and runtime client dimension must match schema before writes. The pre-1.0 posture means the existing 1536 choice is not sacred merely for compatibility if evidence favors changing it.  
+**ADR:** [ADR-082326-8194: Memory embedding dimensionality](../../../adr/ADR-082326-8194-memory-embedding-column-and-dimensionality.md)
