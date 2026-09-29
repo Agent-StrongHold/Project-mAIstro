@@ -179,3 +179,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Populate run/node_run/attempt provenance from ambient ExecutionContext for durable derived records wherever a real execution producer exists.  
 **Current state:** Learnings, outcomes, and generated artifacts become traceable to canonical execution rather than product-specific IDs.  
 **ADR:** [ADR-083026-e602](../../../adr/ADR-083026-e602-a-record-names-its-producing-execution.md)
+
+## ADR-090226-9c3f: Episodic memory names producing execution
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep episodic run/node_run/attempt provenance aligned with ADR-083026-e602 and enforce scoped `produced_by` reads across all store backends. Rewrites/upserts must move producer attribution with the surviving record.  
+**Current state:** This completes execution provenance for the durable episodic-memory path after the store became real.  
+**ADR:** [ADR-090226-9c3f](../../../adr/ADR-090226-9c3f-episodic-memory-names-its-producing-run.md)
+
+## ADR-092526-4391: Durable UserModelFact and same-user self-consent
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Resolve the remaining proposed details before acceptance, especially canonical principal/user keying, sensitivity policy, conflict/revision semantics, recall boundaries, deletion/tombstones, and interaction with the existing durable profile. Preserve the core distinction: durable user facts do not decay like episodic memory, and same-user promotion can be audited self-consent while cross-user sharing still requires explicit consent.  
+**Current state:** This is a strong answer to cross-Workspace personalization without reading another Workspace's working memory. It must not create a second competing "user profile" authority beside ADR-083026-3d92.  
+**ADR:** [ADR-092526-4391](../../../adr/ADR-092526-4391-same-user-user-model-promotion-is-self-consented.md)
