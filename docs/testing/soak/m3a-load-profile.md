@@ -125,3 +125,34 @@ must say so. The harness is parameterized; nothing about it caps duration.
   across processes.
 - Model/provider latency is not part of the profile (no LiteLLM in the soak
   cell); admission/queue/spine behavior is.
+
+## Round-2 amendments (repair lane, 2520eeb7369c → )
+
+Instrumentation and probes added by the repair round; every promotion soak
+(runs ≥ 4 h) must capture these alongside the original series:
+
+- `pg_probe_ms` per sample — a real asyncpg `SELECT 1` round-trip on a
+  dedicated driver pool (wire latency under load, not psql spawn wall time).
+  Judged under S3/S4: sustained p95 > 50 ms with sessions under the pool
+  budget indicates lock or pool contention worth filing.
+- `driver_loop_lag_ms` per sample — the load driver's event-loop sleep
+  overshoot, proving the offered load itself was delivered on a healthy loop
+  (a driver-side stall invalidates the sample window it occurs in).
+- `--kill-signal SIGTERM` drain probe — the graceful-shutdown counterpart of
+  the SIGKILL failover phase: the victim must exit cleanly within
+  `SHUTDOWN_DRAIN_TIMEOUT` (30 s) + slack, without escalation, and the drain
+  window's 5xx/connection-error delta is recorded against the H4 budget.
+  Run 2's scratch validation exposed this as **failed** (lifespan shutdown
+  never completes; 6579 5xx in the window) — filed as the drain defect above;
+  a promotion soak cannot pass H4-drain until it is fixed and re-proven.
+
+Goal reconciliation scoping (closes the "nowhere exercised or scoped out"
+gap): goal→Run admission reconciliation is `ScheduleRunAdmitter`'s
+`_reconcile_claims` / `_reconcile_pending_fires` in
+`packages/maistro-core/src/maistro/scheduling/admission.py`. There is no
+separate reconciliation worker to soak; the reconciliation executes inside
+every schedule admission, and the cross-process fence it stands on is raced
+live by phase 4 (`--claim-probe`) with the per-occurrence SQL gate (H2).
+Admission reconciliation under sustained multi-replica load is therefore
+covered by H2 + the sustained task/schedule mix, and run 2 must state the
+duplicate-admission counter evidence (`duplicate_evidence`) alongside it.

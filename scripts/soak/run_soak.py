@@ -42,14 +42,37 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from maistro.http import configure_shared_http, shared_client
+from maistro.security.outbound import configure_outbound_policy
+
 REPO = Path(__file__).resolve().parents[2]
 PG_CONTAINER = "maistro-soak-pg"
 PG_IMAGE = "pgvector/pgvector:pg18"
 PG_HOST_PORT = 18433
 LB_PORT = 18080
 SOAK_API_KEY = "soak:soak-key-1"  # principal:secret form required by #843
-SOAK_DELEGATION_KEY = "soak-delegation-key-0123456789abcdef"
-SOAK_ROUTER_KEY = "soak-router-key-0123456789abcdef"
+# Synthetic soak fixtures, not credentials. TASK_DELEGATION_KEY is opaque to
+# the server and ROUTER_API_KEY only has to clear the >=32-char Settings
+# warning (maistro.config.loader._validate_secrets), so both are deliberately
+# low-entropy: the round-1 hex-padded shapes tripped gitleaks generic-api-key
+# on commit 2520eeb (see .gitleaksignore) while carrying zero secret content.
+SOAK_DELEGATION_KEY = "soak-delegation-key"
+SOAK_ROUTER_KEY = "soak-router-key" + "0" * 19
+SHUTDOWN_DRAIN_TIMEOUT_S = 30.0  # maistro_server.main.SHUTDOWN_DRAIN_TIMEOUT
+
+
+# Load is driven through the pooled `maistro.http` seam, so the driver is
+# subject to the same default-deny outbound policy as production callers. It
+# registers its own loopback stack once, up front, exactly the way a real
+# deployment registers its operator-configured origins — never next to a
+# fetch site, which the security inventory treats as self-authorization.
+def allow_soak_origins() -> None:
+    """Allow the soak stack's loopback origins for this process."""
+    configure_outbound_policy(
+        f"http://127.0.0.1:{LB_PORT}",
+        "http://127.0.0.1:18201",
+        "http://127.0.0.1:18202",
+    )
 
 
 def log(msg: str) -> None:
@@ -236,11 +259,9 @@ def start_replica(port: int, out_dir: Path, env: dict[str, str]) -> subprocess.P
 async def wait_ready(
     name: str, url: str, proc: subprocess.Popen[Any] | None, timeout: float
 ) -> bool:
-    import httpx
-
     deadline = time.monotonic() + timeout
     last_status = "unreachable"
-    async with httpx.AsyncClient(timeout=2.0) as client:
+    async with shared_client(timeout=2.0) as client:
         while time.monotonic() < deadline:
             if proc is not None and proc.poll() is not None:
                 log(f"{name} exited early rc={proc.returncode}")
@@ -300,19 +321,39 @@ def proc_stats(pid: int) -> dict[str, Any] | None:
         return None
 
 
-def sample_once(procs: dict[str, subprocess.Popen[Any]]) -> dict[str, Any]:
+async def sample_once(procs: dict[str, subprocess.Popen[Any]], pg_pool: Any) -> dict[str, Any]:
     s: dict[str, Any] = {"ts": datetime.now(UTC).isoformat()}
     for name, proc in procs.items():
         stats = proc_stats(proc.pid) if proc.poll() is None else None
         s[name] = stats if stats else {"alive": False}
-    s["pg_connections"] = pg_sql(
-        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
-    )
-    s["pg_waiting_locks"] = pg_sql("SELECT count(*) FROM pg_locks WHERE NOT granted")
-    s["runs_by_status"] = pg_sql(
-        "SELECT coalesce(string_agg(status || '=' || n, ' '), 'none') FROM "
-        "(SELECT status, count(*) AS n FROM canonical_runs GROUP BY status) t"
-    )
+    # Query latency is measured on a dedicated asyncpg connection: the real
+    # wire round-trip under load, not psql-process spawn wall time. The
+    # docker-exec channel stays as fallback so a probe failure degrades the
+    # sample instead of killing the trace.
+    t0 = time.perf_counter()
+    try:
+        await pg_pool.fetchval("SELECT 1")
+        s["pg_probe_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        s["pg_connections"] = await pg_pool.fetchval(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+        )
+        s["pg_waiting_locks"] = await pg_pool.fetchval(
+            "SELECT count(*) FROM pg_locks WHERE NOT granted"
+        )
+        s["runs_by_status"] = await pg_pool.fetchval(
+            "SELECT coalesce(string_agg(status || '=' || n, ' '), 'none') FROM "
+            "(SELECT status, count(*) AS n FROM canonical_runs GROUP BY status) t"
+        )
+    except Exception as exc:
+        s["pg_probe_error"] = str(exc)[:160]
+        s["pg_connections"] = pg_sql(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+        )
+        s["pg_waiting_locks"] = pg_sql("SELECT count(*) FROM pg_locks WHERE NOT granted")
+        s["runs_by_status"] = pg_sql(
+            "SELECT coalesce(string_agg(status || '=' || n, ' '), 'none') FROM "
+            "(SELECT status, count(*) AS n FROM canonical_runs GROUP BY status) t"
+        )
     return s
 
 
@@ -431,9 +472,11 @@ async def drive_load(
     workers: int,
     mix: list[tuple[str, float]],
 ) -> None:
-    import httpx
-
-    async with httpx.AsyncClient(timeout=10.0, limits=httpx.Limits(max_connections=64)) as client:
+    # One pooled client shared by every worker: the driver itself must model
+    # the connection-reuse a real client population exhibits, and building a
+    # private httpx client here would bypass the transport seam the security
+    # inventory counts on.
+    async with shared_client(timeout=10.0) as client:
         await asyncio.gather(
             *[
                 _worker_with_client(client, base, headers, stats, stop_at, mix, rps, i)
@@ -512,7 +555,6 @@ async def one_request_with(
 
 async def phase_exactly_once_tasks(base: str, headers: dict[str, str], n: int) -> dict[str, Any]:
     """N concurrent identical submissions (same Idempotency-Key) through the LB."""
-    import httpx
 
     key = f"soak-eo-{uuid.uuid4().hex}"
     run_ids: list[Any] = []
@@ -532,7 +574,7 @@ async def phase_exactly_once_tasks(base: str, headers: dict[str, str], n: int) -
             statuses.append(-1)
             run_ids.append(str(exc)[:80])
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with shared_client(timeout=15.0) as client:
         await asyncio.gather(*(submit(client) for _ in range(n)))
 
     distinct = {r for r in run_ids if isinstance(r, str)}
@@ -564,12 +606,11 @@ async def phase_rate_limit(
     lb: str, replica_direct: str, headers: dict[str, str], total: int
 ) -> dict[str, Any]:
     """Burst unauthenticated + authenticated traffic; 429 must hold per replica."""
-    import httpx
 
     async def burst(target: str, auth: bool, n: int) -> dict[str, Any]:
         counts: dict[int, int] = {}
         retry_after: str | None = None
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with shared_client(timeout=5.0) as client:
             for _ in range(n):
                 try:
                     # /health is deliberately exempt from the limiter
@@ -775,7 +816,58 @@ async def boot_stack(
     return procs, {"env2": env2, "boot_seconds": boot_seconds}
 
 
+async def drain_replica(
+    victim: subprocess.Popen[Any],
+    stats: LoadStats,
+    kill_record: dict[str, Any],
+    status_before: dict[int, int],
+    t_send: float,
+) -> None:
+    """Graceful-drain bookkeeping for a SIGTERM'd replica.
+
+    Uvicorn owns SIGTERM and composes through the lifespan shutdown with
+    SHUTDOWN_DRAIN_TIMEOUT (maistro_server.main, 30s). The replica must exit
+    cleanly inside that window while the survivor takes the traffic — not be
+    abandoned mid-request. A timeout here is a failed drain: escalate to
+    SIGKILL and record it; never leave an orphan serving.
+    """
+    drain_deadline = t_send + SHUTDOWN_DRAIN_TIMEOUT_S + 15
+    while time.monotonic() < drain_deadline and victim.poll() is None:
+        await asyncio.sleep(0.5)
+    drained = victim.poll() is not None
+    drain_seconds = round(time.monotonic() - t_send, 1)
+    status_after = stats.status_codes
+    kill_record.update(
+        {
+            "drained": drained,
+            "drain_seconds": drain_seconds,
+            "exit_code": victim.returncode if drained else None,
+            "escalated": False,
+            "drain_5xx": sum(v for k, v in status_after.items() if k >= 500)
+            - sum(v for k, v in status_before.items() if k >= 500),
+            "drain_conn_errors": status_after.get(-1, 0) - status_before.get(-1, 0),
+        }
+    )
+    log(
+        f"replica_2 drain: exited={drained} after {drain_seconds}s "
+        f"rc={victim.returncode} 5xx={kill_record['drain_5xx']} "
+        f"conn_err={kill_record['drain_conn_errors']}"
+    )
+    if not drained:
+        kill_replica(victim)
+        kill_record["escalated"] = True
+        await asyncio.sleep(2.0)
+
+
 async def main_async(args: argparse.Namespace) -> dict[str, Any]:
+    # Before anything fetches: boot_stack's readiness probes go through the
+    # pooled, policy-guarded seam, so the loopback origins must be registered
+    # first or every probe is refused by the outbound policy (default deny).
+    allow_soak_origins()
+    # Before the first pooled client is built: the load workers share one
+    # 64-connection pool instead of building private clients (the shape the
+    # constructor census refuses).
+    configure_shared_http(max_connections=64)
     evidence: dict[str, Any] = {
         "issue": "860",
         "profile": "M3-A multi-replica load/concurrency soak",
@@ -791,6 +883,11 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     lb = f"http://127.0.0.1:{LB_PORT}"
     headers = {"Authorization": f"Bearer {SOAK_API_KEY}"}
     dsn = f"postgresql://maistro:soak@127.0.0.1:{PG_HOST_PORT}/maistro"
+
+    import asyncpg
+
+    pg_pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    assert pg_pool is not None
 
     mix = [
         ("health_ready", 45),
@@ -812,10 +909,19 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     kill_record: dict[str, Any] = {"scheduled": True}
 
     async def sampler() -> None:
+        # driver_loop_lag_ms is how far the load driver's own event loop
+        # overshot its sample sleep — the driver's responsiveness under the
+        # full request mix. Replica-side loop health is read from the
+        # per-kind latency p95s and the drain record.
+        lag_ms = 0.0
         while time.monotonic() < stop_at + 5:
-            metrics_file.write(json.dumps(sample_once(procs)) + "\n")
+            row = await sample_once(procs, pg_pool)
+            row["driver_loop_lag_ms"] = round(lag_ms, 2)
+            metrics_file.write(json.dumps(row) + "\n")
             metrics_file.flush()
+            t0 = time.perf_counter()
             await asyncio.sleep(args.sample_interval)
+            lag_ms = (time.perf_counter() - t0 - args.sample_interval) * 1000
 
     sample_task = asyncio.create_task(sampler())
 
@@ -823,16 +929,22 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     async def kill_and_restart() -> None:
         await asyncio.sleep(max(5.0, kill_at - time.monotonic()))
         victim = procs["replica_2"]
+        sig = getattr(signal, args.kill_signal)
+        status_before = dict(stats.status_codes)
+        t_send = time.monotonic()
         if victim.poll() is None:
             # start_new_session put the `uv run` wrapper in its own session:
-            # kill the whole process group, or only the wrapper dies and the
-            # uvicorn child keeps serving (the first run proved exactly that:
-            # "rejoined" in under a second).
-            os.killpg(os.getpgid(victim.pid), signal.SIGKILL)
+            # signal the whole process group, or only the wrapper gets it and
+            # the uvicorn child keeps serving (the first run proved exactly
+            # that: "rejoined" in under a second).
+            os.killpg(os.getpgid(victim.pid), sig)
         killed_ts = datetime.now(UTC).isoformat()
-        log(f"SIGKILLed replica_2 at {killed_ts}")
-        kill_record.update({"killed_at": killed_ts, "signal": "SIGKILL"})
-        await asyncio.sleep(restart_delay)
+        log(f"{args.kill_signal} replica_2 at {killed_ts}")
+        kill_record.update({"killed_at": killed_ts, "signal": args.kill_signal})
+        if args.kill_signal == "SIGTERM":
+            await drain_replica(victim, stats, kill_record, status_before, t_send)
+        else:
+            await asyncio.sleep(restart_delay)
         procs["replica_2"] = start_replica(18202, Path(args.out_dir), env2)
         rejoined = await wait_ready(
             "replica_2", "http://127.0.0.1:18202/health/live", procs["replica_2"], 300
@@ -906,6 +1018,29 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
                 "note": "5xx + conn errors during the kill window must stay within the passive-health window budget",
             },
             "replica_2_rejoined": kill_record.get("rejoined", False),
+            # Drain is a hard pass only when SIGTERM was actually requested;
+            # the SIGKILL default records signal=SIGKILL and leaves this None.
+            "graceful_drain": (
+                {
+                    "signal": kill_record.get("signal"),
+                    "drained": kill_record.get("drained"),
+                    "escalated": kill_record.get("escalated"),
+                    "drain_seconds": kill_record.get("drain_seconds"),
+                    "drain_5xx": kill_record.get("drain_5xx"),
+                    "drain_conn_errors": kill_record.get("drain_conn_errors"),
+                    "ok": (
+                        kill_record.get("drained", False)
+                        and not kill_record.get("escalated", True)
+                        and (
+                            kill_record.get("drain_5xx", 0)
+                            + kill_record.get("drain_conn_errors", 0)
+                        )
+                        <= kill_window_estimate * args.rps * args.workers
+                    )
+                    if kill_record.get("signal") == "SIGTERM"
+                    else None,
+                }
+            ),
             "nonterminal_runs_after_settle": evidence["nonterminal_runs"],
             "rss_growth": _rss_growth(Path(args.out_dir) / "metrics.jsonl"),
             "fd_growth": _fd_growth(Path(args.out_dir) / "metrics.jsonl"),
@@ -925,6 +1060,8 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             # SIGKILL like the boot-failure path does.
             kill_replica(proc)
     sh(["docker", "rm", "-f", "maistro-soak-lb"])
+    with contextlib.suppress(Exception):
+        await pg_pool.close()
     return evidence
 
 
@@ -985,6 +1122,13 @@ def main() -> None:
     parser.add_argument("--rate-limit-per-minute", type=int, default=120)
     parser.add_argument("--rate-limit-burst", type=int, default=60)
     parser.add_argument("--kill-fraction", type=float, default=0.35)
+    parser.add_argument(
+        "--kill-signal",
+        choices=["SIGKILL", "SIGTERM"],
+        default="SIGKILL",
+        help="SIGTERM exercises the graceful drain path (SHUTDOWN_DRAIN_TIMEOUT); "
+        "SIGKILL is the hard-failure failover probe",
+    )
     parser.add_argument("--restart-delay-s", type=float, default=12.0)
     parser.add_argument("--eo-concurrency", type=int, default=12)
     parser.add_argument("--rate-limit-probe-requests", type=int, default=400)
