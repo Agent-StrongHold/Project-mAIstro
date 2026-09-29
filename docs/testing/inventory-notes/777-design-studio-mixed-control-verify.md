@@ -498,3 +498,60 @@ dependencies (#458 Goal store, #804/#805/#806 reconciliation, #774, #775,
 Agent runtime / Goal owner / reconciliation loop substitute. The job driver
 again produced no `check-*.log` files for this job, so all validation above
 was executed directly. No closure keywords used (`Refs #777` only).
+
+## Re-verification at lane head 3b1e4c35d (repair round 9)
+
+Round context: repair job `0d8da300` re-ran the lane after round 8 (job
+`511d243f`, verdict BLOCKED at end head `3b1e4c35d`). Lane head `3b1e4c35d`
+is unchanged and the working tree was clean at start, so this is a pure
+re-verification with fresh evidence.
+
+**Develop sync check:** `git fetch origin` then
+`git rev-parse origin/develop` == `b268f0535` == the lane's declared develop
+base — develop has **not moved** since round 8; **no merge/conflict
+resolution needed**.
+
+**Dependency audit re-confirmed at `3b1e4c35d` by direct inspection:**
+- `grep -rniE 'CreativeBrief|GoalRevision' packages/ --include='*.py'` — 6
+  files, all interview/draft **scaffolding** that explicitly defers to the
+  future writers (`brief_chat.py:9` "the Goal and CreativeBrief writers
+  (#458, #774) will..."; `brief_store.py:5` "nothing here is a Goal or
+  CreativeBrief record"; `test_program_brief_routes.py:91` asserts the
+  written store is empty). No CreativeBrief record/revision/binding exists.
+- `grep -c workspace_agent packages/hive-conductor/backend/routes/design.py`
+  → 0; no #804/#53 consumption seam in the Design Studio routes.
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1` —
+  "Policy-neutral reconciliation between physical Attempts and logical
+  execution" (Run-level bookkeeping), not #804 Goal reconciliation.
+- `grep -rli ladybug packages/ --include='*.py'` — only
+  `dags/author_examples.py:29` (a book title in an example DAG); no #776
+  Workspace Ladybug working graph.
+- `grep control_mode|delegat` in `design.py` — 0 matches; no control-continuum
+  state. `grep -rl reclaim|reassign` matches only `canonical_recovery.py` /
+  `engine.py` (run-lease recovery) and the chat gate — not Goal/Subgoal
+  ownership reassignment.
+- E2E surface remains `app.spec.ts`, `fixtures.ts`, `platform.spec.ts`,
+  `setup.spec.ts` — smoke-level only (e.g. `platform.spec.ts:45` "Deck
+  Builder Page loads deck editor"); no Canvas/Builders/media E2E under one
+  Project/Goal lineage and no mixed-control browser E2E.
+
+**Executed at `3b1e4c35d` (all by this verifier):**
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **PASS** (exit 0,
+  1402 reviewed identities, no unbanked; ledger not amended — no fix round).
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2620 files already formatted.
+- `uv run pytest packages/maistro-core/tests/graph/test_cross_domain_substrate.py
+  packages/hive-conductor/backend/tests/test_program_brief_routes.py -x -q`
+  — 12 passed (the CreativeBrief-adjacent pre-work scaffolding is green but
+  only asserts the absence of Goal/CreativeBrief stores).
+
+**Conclusion (unchanged across nine heads):** all 13 #777 acceptance criteria
+remain UNMET at `3b1e4c35d`; the lane stays BLOCKED on its unlanded canonical
+dependencies (#458 Goal store, #804/#805/#806 reconciliation, #774, #775,
+#776). The stop condition still forbids substituting a Design-Studio-private
+Agent runtime / Goal owner / reconciliation loop, and no such repair is
+possible from this lane alone. The driver again supplied no `check-*.log`
+files in this job directory (only `events.jsonl`, `manifest.json`,
+`prompt.txt`, `state.json`), so all validation above was executed directly.
+No closure keywords used (`Refs #777` only).
