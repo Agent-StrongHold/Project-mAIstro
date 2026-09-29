@@ -322,7 +322,11 @@ def _single_recovery_record(
     attempt_result: object | None = None,
     node_id: str = "start",
 ) -> DurableRunRecord:
-    kinds = {"start": _Start.kind, "never": _NeverRetry.kind}
+    kinds = {
+        "start": _Start.kind,
+        "never": _NeverRetry.kind,
+        "hard": _HardNonRetryable.kind,
+    }
     graph = Graph(
         workspace_id="ws-1",
         project_id="project-1",
@@ -616,18 +620,18 @@ async def test_resume_never_reexecutes_a_non_retryable_nodes_ambiguous_effect() 
     the ambiguity lands in front of a person instead of on the remote system.
     """
     # One call before the crash: the physical effect's outcome is unknown.
-    _NeverRetry.calls = 1
+    _HardNonRetryable.calls = 1
     store = InMemoryDurableRunStore()
     await store.create(
-        _single_recovery_record(attempt_status=AttemptStatus.RUNNING, node_id="never")
+        _single_recovery_record(attempt_status=AttemptStatus.RUNNING, node_id="hard")
     )
 
     record = await resume_durable_graph(
-        "recover-run", store=store, node_resolver=_never_retry_resolver
+        "recover-run", store=store, node_resolver=_hard_non_retryable_resolver
     )
 
     # The body never ran again: one ambiguous effect, not two.
-    assert _NeverRetry.calls == 1
+    assert _HardNonRetryable.calls == 1
     # The canonical recovery rotation still happened (ADR-082826-08f0): the
     # orphaned Attempt is CANCELLED and a fresh chronological Attempt settles
     # the refusal as its own durable evidence.

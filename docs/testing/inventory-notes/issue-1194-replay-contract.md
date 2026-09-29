@@ -5,7 +5,6 @@ inventory-delta:
 ---
 # issue-1194-replay-contract
 
-<<<<<<< HEAD
 Six core tests add evidence for the executable Graph replay contract:
 
 - the non-retryable contract overrides a larger graph retry budget;
@@ -23,7 +22,7 @@ ba2f1f077 collects equivalent node IDs), so the merge retained those
 develop-side copies and dropped the branch variants. The surviving measured
 additions over the merge base are the four core tests above plus the server
 A2A replay test.
-=======
+
 The branch's net contribution to the suite ledger is +14 core and +1 server
 node IDs. They add evidence for the executable Graph replay contract:
 
@@ -110,4 +109,3 @@ Conflict resolution, recorded for review:
   `idempotent: ClassVar[bool]` second policy; catalog `idempotent` derives
   from `replay_semantics` alone, which the unchanged catalog assertions still
   prove.
->>>>>>> origin/develop

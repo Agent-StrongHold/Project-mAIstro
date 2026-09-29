@@ -1338,12 +1338,7 @@
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_added_at'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_normalize_timestamps'",
         "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank'",
-        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'",
-        "packages/maistro-core/src/maistro/capabilities/invocation_store.py:95: unused method 'ensure_schema' (60% confidence)",
-        "packages/maistro-core/src/maistro/capabilities/invocation_store.py:113: unused method 'create' (60% confidence)",
-        "packages/maistro-core/src/maistro/capabilities/invocation_store.py:173: unused method 'save' (60% confidence)",
-        "packages/maistro-core/src/maistro/capabilities/invocation_store.py:208: unused method 'list_effect' (60% confidence)",
-        "packages/maistro-core/src/maistro/capabilities/invocation_store.py:231: unused method 'list_ambiguous' (60% confidence)"
+        "packages/maistro-core/src/maistro/workspaces/model.py::unused method '_require_non_blank_identity'"
       ]
     },
     {

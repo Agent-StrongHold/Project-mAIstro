@@ -311,8 +311,7 @@ class TestTheChainApplies:
             "and indexname = 'uq_capability_invocation_active_effect'"
         ) == [(1,)]
         assert _query(
-            "select count(*) from information_schema.tables "
-            "where table_name = 'elevation_grants'"
+            "select count(*) from information_schema.tables where table_name = 'elevation_grants'"
         ) == [(1,)]
         assert _query(
             "select effect_scope from capability_invocations where invocation_id = 'inv-adopted'"

@@ -1761,7 +1761,7 @@
       "disposition": "canonical",
       "production_enabled": true,
       "reason": "durably admits one idempotent remote A2A delegation as a canonical Run (ADR-058, SPEC-182)",
-      "effect_owner": "maistro.runs.store.RunStore.claim_run_by_effect (idempotent canonical Run admission)",
+      "effect_owner": "maistro.runs.store.RunStore.claim_run_by_effect (idempotent canonical Run admission)"
     },
     {
       "source": "packages/maistro-server/src/maistro_server/api/canvas.py",
