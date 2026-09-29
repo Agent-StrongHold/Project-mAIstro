@@ -243,3 +243,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Distinguish protected-base verdict authority from candidate-generated evidence in autonomous-merge classification.  
 **Current state:** This permits bookkeeping/evidence updates without letting a candidate rewrite the rule that judges itself.  
 **ADR:** [ADR-083126-5e62](../../../adr/ADR-083126-5e62-generated-quality-evidence-is-not-the-judge.md)
+
+## ADR-091226-1341: Gates Ran path-scope evaluator
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep path-scoped skips evidence-based and fail closed on missing/ambiguous changed-file scope. A skipped in-scope required check remains non-execution; an out-of-scope skip is excused only when the reviewed classifier proves it.  
+**Current state:** This makes `gates-ran` usable without turning path scoping into a vacuous-green loophole.  
+**ADR:** [ADR-091226-1341](../../../adr/ADR-091226-1341-gates-ran-path-scope-evaluator.md)
