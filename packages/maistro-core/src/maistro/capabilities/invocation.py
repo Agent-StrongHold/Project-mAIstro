@@ -513,7 +513,7 @@ class InvocationExecutionService:
             replay = await self._completed_replay_after_admission_race(
                 run_id=candidate.run_id,
                 node_run_id=candidate.node_run_id,
-                binding=candidate.binding,
+                binding_id=candidate.binding.binding_id,
                 effect_key=candidate.effect_key,
                 logical_effect=candidate.logical_effect,
             )
@@ -526,7 +526,12 @@ class InvocationExecutionService:
         *,
         run_id: str,
         node_run_id: str,
-        binding: Binding,
+        # The id, not the binding. The only caller holds a candidate
+        # Invocation, whose `binding` is the persisted `ResolvedBinding`
+        # snapshot rather than the live `Binding`; annotating this `Binding`
+        # made the one real call site a type error while the body reads
+        # nothing but `binding_id`, which both models carry.
+        binding_id: str,
         effect_key: str,
         logical_effect: bool = False,
     ) -> Invocation | None:
@@ -542,7 +547,7 @@ class InvocationExecutionService:
         latest_history = await self._store.list_effect(
             run_id=run_id,
             node_run_id=None if logical_effect else node_run_id,
-            binding_id=binding.binding_id,
+            binding_id=binding_id,
             effect_key=effect_key,
         )
         if latest_history and latest_history[-1].status is InvocationStatus.COMPLETED:
