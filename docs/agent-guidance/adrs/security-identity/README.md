@@ -179,3 +179,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Use this as the canonical structural authorization model when rewriting ADR-028/068/084 and Hive identity. Complete enforcement/reachability evidence across WorkspaceMembership, Project ancestry, object grants, resource visibility, delegation authority, Binding/Credential selectors, and deny inheritance. Keep policy/Sentinel as an additional runtime restriction layer, never a mechanism for overriding structural denies.  
 **Current state:** This resolves the older globally ordered role/tier model into scope-contained grants plus deny-wins semantics. Narrower Projects may legitimately add authority without leaking it outward; Persona contributes no authority. It is the correct foundation for canonical principal authorization.  
 **ADR:** [ADR-081226-6e34: Scoped grants and deny-wins authorization](../../../adr/ADR-081226-6e34-hierarchical-permissions.md)
+
+## ADR-081426-fb9f: Turing future cognitive runtime capability and activation gate
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep Turing dark until the activation criteria and ADR-070426-9f47 guardrails are demonstrably satisfied. Any future persistent cognitive actor must remain inside canonical Workspace/Project, principal grants/denies, Capability Binding/Invocation, Run evidence, Event/audit, credential, and sandbox boundaries; it cannot become a peer platform or self-expand its authority.  
+**Current state:** This is the correct preservation posture: retain architectural room for persistent/proactive cognition without claiming the runtime exists or is safe. It explicitly prevents convergence from accidentally deleting the future capability while also preventing unfinished Turing code from becoming production authority.  
+**ADR:** [ADR-081426-fb9f: Turing future cognitive runtime activation gate](../../../adr/ADR-081426-fb9f-turing-future-cognitive-runtime-capability-and-activation-gate.md)
+
+## ADR-082226-4cd4: StrikeTracker protocol contract
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Implement/verify the narrow protocol and conformance suite, then wire durable and in-memory trackers through the same Gate/Container seam. Reconcile the remaining `user_id` keying with canonical principal identity rather than perpetuating a HiveUser-shaped security key. Keep admin-only tracker operations outside the minimal security-path protocol unless a separate protocol is justified.  
+**Current state:** This proposal fixes a real security-boundary type mismatch: the durable tracker returned mappings while Gate expected StrikeRecord behavior. The minimal two-method protocol is a good DI boundary, but identity scope should converge with current principals before acceptance.  
+**ADR:** [ADR-082226-4cd4: StrikeTracker protocol contract](../../../adr/ADR-082226-4cd4-strike-tracker-protocol-contract.md)
