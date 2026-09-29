@@ -1085,11 +1085,16 @@ run_with_timeout() {
     shift
     "$@" &
     pid=$!
-    # Its children first: `docker` blocked in a credential helper is waiting on
-    # that child, and killing only the parent would leave the child running.
+    # Stop, then reap, then kill. `docker` blocked in a credential helper is
+    # waiting on that child, so the child has to go too -- but killing it
+    # first lets the parent resume and finish in the gap before its own kill
+    # lands: CI caught a "hung" lookup printing a clean result that way. A
+    # stopped parent cannot run, and SIGSTOP cannot be caught, so nothing
+    # moves between the three signals.
     (
         set +e
         sleep "$secs"
+        kill -STOP "$pid" 2>/dev/null
         pkill -9 -P "$pid" 2>/dev/null
         kill -9 "$pid" 2>/dev/null
     ) &

@@ -25,6 +25,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from tests._path_hiding import is_docker_binary, path_hiding
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 
@@ -164,27 +166,13 @@ def test_a_non_socket_endpoint_warns_and_writes_nothing(tmp_path: Path) -> None:
     assert not (tmp_path / ".env").exists()
 
 
-def _path_without_docker() -> str:
-    """The caller's PATH with every directory holding a `docker` removed.
-
-    The harness inherits the real environment so bash, python3 and the POSIX
-    tools resolve. That also inherited the real `docker` -- and on a Mac with
-    Docker Desktop it reports the non-default `~/.docker/run/docker.sock`, so
-    the "missing CLI" case silently became the "non-default socket" case and
-    wrote an .env. It passed in CI only because the runner's docker happens to
-    use the default socket, which records nothing: right answer, wrong reason,
-    and wrong on the exact platform #807 is about.
-    """
-    return os.pathsep.join(
-        d
-        for d in os.environ.get("PATH", "").split(os.pathsep)
-        if d and not os.access(os.path.join(d, "docker"), os.X_OK)
-    )
-
-
 def test_a_missing_docker_cli_is_a_no_op(tmp_path: Path) -> None:
     """Podman hosts have no `docker` binary; the socket record is advisory and
     must not create an .env or fail the install."""
-    result = _run(tmp_path, "record_docker_sock\n", env_extra={"PATH": _path_without_docker()})
+    result = _run(
+        tmp_path,
+        "record_docker_sock\n",
+        env_extra={"PATH": path_hiding(tmp_path, is_docker_binary)},
+    )
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / ".env").exists()

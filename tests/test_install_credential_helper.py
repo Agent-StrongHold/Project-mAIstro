@@ -22,6 +22,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from tests._path_hiding import is_docker_binary, path_hiding
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 
@@ -69,31 +71,12 @@ echo "PREFLIGHT PASSED"
         check=False,
         env={
             **os.environ,
-            "PATH": f"{bin_dir}{os.pathsep}{_host_path_without_docker()}",
+            "PATH": f"{bin_dir}{os.pathsep}{path_hiding(tmp_path, is_docker_binary)}",
             "DOCKER_CONFIG": str(tmp_path / "docker-config"),
             "MAISTRO_CRED_HELPER_TIMEOUT": timeout,
         },
         timeout=60,
     )
-
-
-def _host_path_without_docker() -> str:
-    """PATH with every directory holding a real docker or credential helper dropped.
-
-    On a Mac with Docker Desktop both live in /usr/local/bin, and leaving them
-    visible lets the host's own hung helper answer for a stub -- which is how
-    the "not installed" case first failed here while it would have passed in
-    CI, where there is no Docker Desktop at all.
-    """
-    keep = []
-    for d in os.environ.get("PATH", "").split(os.pathsep):
-        if not d or not os.path.isdir(d):
-            continue
-        names = set(os.listdir(d))
-        if "docker" in names or any(n.startswith("docker-credential-") for n in names):
-            continue
-        keep.append(d)
-    return os.pathsep.join(keep)
 
 
 def test_a_hung_helper_fails_fast_with_what_to_do(tmp_path: Path) -> None:
