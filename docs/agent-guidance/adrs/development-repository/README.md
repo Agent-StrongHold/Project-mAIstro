@@ -59,3 +59,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile the body so Copier's current role is unambiguous: it is a template/bootstrap mechanism for generated/downstream product surfaces, not the integration or synchronization model among packages absorbed into this monorepo. Preserve and maintain the live template render/origin tests and bootstrap resolver integration.  
 **Current state:** Copier/template tooling remains present and tested, and maistro-bootstrap still emits Copier commands. The original three-templated-peer rebase workflow is historical after monorepo consolidation, as the ADR itself now notes. Agents must not use that obsolete workflow to reason about package ownership or cross-package changes inside this repository.  
 **ADR:** [ADR-033: Templates and Copier Workflow](../../../adr/ADR-033-templates-and-copier-workflow.md)
+
+## ADR-039: External Library Adoption Policy
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Reconcile the historical per-repo policy table with the consolidation monorepo/package boundaries, then audit which layered supply-chain controls are actually enforced in current CI (lock/hash discipline, dependency review, SBOM, signed artifacts, Scorecard). Agent development guidance should reference this ADR whenever adding a runtime dependency or external service rather than inventing a separate dependency policy.  
+**Current state:** The core decision remains active: minimize process-internal dependency trust, prefer explicit service boundaries where appropriate, apply maintainer/license/transitive-dependency review, and record external pattern influences separately from legal dependency attribution. The four-repo framing and several "gap-impl" control statuses are historical and require current reconciliation.  
+**ADR:** [ADR-039: External Library Adoption Policy](../../../adr/ADR-039-external-library-adoption-policy.md)
