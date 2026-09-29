@@ -115,3 +115,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Maintain the closed layer taxonomy as repository classification governance and keep `maistro_registry.schema.Layer` plus touched ADR/spec front matter synchronized. Use layer as a discovery/classification aid, not as proof of architectural ownership; canonical ownership still comes from the relevant ADRs and current package boundaries.  
 **Current state:** The five added layer values are implemented in the registry schema and referenced by ADR-031. This is ongoing taxonomy governance rather than a finite runtime feature, so Accepted is the appropriate standing status.  
 **ADR:** [ADR-098: Layer taxonomy extension — Evolve, Crypto, Connectivity, Ability, Identity](../../../adr/ADR-098-layer-taxonomy-extension.md)
+
+## ADR-099: Builders pipeline as a DAG with gated verify-and-revise loops
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Rewrite the proposal to describe the **canonical** Builders adapter that now exists, then finish the remaining M1 convergence debt: Builders domain stages/gates/revision feedback may project onto canonical Graph/Run, but they must not own a second traversal/lifecycle. Retire legacy executor/state authority and classify/remove `StageStatus` universal-lifecycle behavior per the convergence ledger. Preserve gated revise loops only as domain routing that creates canonical NodeRun/Attempt evidence.  
+**Current state:** #734-era code now includes `CanonicalGraphPipelineExecutor` and behavioral tests proving Builders work produces one canonical Run with NodeRuns/Attempts, including revisions. However, the reachability/convergence ledgers still classify the Builders executor/state lifecycle as RETIRE/CONVERGE debt. ADR-099's original "two execution models coexist" decision is therefore obsolete even though its DAG/gate semantics are being successfully adapted to the canonical spine.  
+**ADR:** [ADR-099: Builders pipeline as a DAG with gated verify-and-revise loops](../../../adr/ADR-099-builders-pipeline-graph.md)
