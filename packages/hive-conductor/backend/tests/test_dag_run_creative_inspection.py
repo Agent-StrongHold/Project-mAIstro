@@ -188,7 +188,9 @@ async def test_detail_explains_each_artifacts_goal_brief_decision_and_agent_line
     assert creative["brief_version"] == 1
     assert creative["goal_owner_agent_id"] == "agent-orchestrator"
     assert creative["goal_delegation_ref"]["ref_id"] == "delegation-launch-family"
-    assert "graph_template" not in creative  # no plan passed: the key is relayed only when carried
+    # No explicit plan is passed, but run_creative_graph auto-selects and
+    # instantiates a template; its ref must surface in the provenance (#775).
+    assert creative.get("graph_template")
 
     artifacts = {row["request_id"]: row for row in detail["artifacts"]}
     assert set(artifacts) == {"landing-page", "launch-deck", "poster-launch"}

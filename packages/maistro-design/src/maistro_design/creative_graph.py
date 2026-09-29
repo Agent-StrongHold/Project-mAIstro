@@ -254,7 +254,6 @@ def plan_creative_graph(
         # brief version keeps re-registering an updated brief out of
         # ``GraphTemplateConflict``.
         version=version if version is not None else brief.version,
-
         name=CREATIVE_GRAPH_TEMPLATE_NAME,
         description=(
             "Reference creative-production graph: shared decisions once, "
@@ -364,6 +363,10 @@ async def run_creative_graph(
     from . import creative_nodes  # noqa: F401  # ensure kinds registered
 
     if graph is None:
+        if plan is None:
+            # Retain the auto-selected plan so both the Graph metadata and the
+            # Run provenance below report the instantiated template (#775).
+            plan = plan_creative_graph(brief)
         graph = instantiate_creative_graph(brief, plan=plan)
     resolver = node_resolver
 
