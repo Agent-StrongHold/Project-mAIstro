@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** None. Follow ADR-019 and current monorepo guidance; retain ADR-030 only as historical provenance.  
 **Current state:** The four-repository templated-peer model is explicitly superseded by ADR-019/monorepo consolidation. Agent Conductor, Canvas, Turing, and shared runtime concerns now live in the consolidation monorepo/package structure described by current repository guidance; this ADR must not be used as a live ownership or repository-topology rule.  
 **ADR:** [ADR-030: Four-Repo Governance — Substrate + Three Templated Products](../../../adr/ADR-030-four-repo-governance.md)
+
+## ADR-031: Front-Matter and Registry Conventions
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Reconcile historical four-repo and numbering prose with the consolidation monorepo/current ID policy while preserving the active machine-readable front-matter contract. Treat ADR-097 as authoritative for lifecycle states/transitions and ADR-098 as authoritative for layer taxonomy; ensure registry/lifecycle CI actually enforces the resulting current contract.  
+**Current state:** ADR-031 remains active repository governance: structured front matter and relationship fields are the machine-readable source of truth. Later ADR-097 replaced its lifecycle machine and ADR-098 extended its layer taxonomy. Portions describing cross-four-repo registry generation and migration-era numbering are historical and should be updated so new agents do not infer obsolete repository topology.  
+**ADR:** [ADR-031: Front-Matter and Registry Conventions](../../../adr/ADR-031-front-matter-and-registry.md)
