@@ -59,3 +59,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile this proposal with the fallback/retry mechanism that has since landed. The old target, Conductor's private retry loop, should not be extended; model/provider fallback belongs at canonical governed model egress/Invocation with registry health, credential routing, quota/rate-limit outcomes, and per-attempt evidence. If current implementation already satisfies that architecture, supersede this proposal with the newer provider-routing decision rather than implementing its Conductor DI plan.  
 **Current state:** The failure mode identified here was real, but the repository has since added model fallback chains/retry and removed several private routing authorities. The ADR is now primarily historical rationale for cross-model fallback, not the implementation plan to follow.  
 **ADR:** [ADR-070426-ac56: Cross-model LLM fallback](../../../adr/ADR-070426-ac56-cross-model-llm-fallback.md)
+
+## ADR-081226-7248: Event and Checkpoint Model
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Continue converging GraphEvent, Builders events, collaboration streams, trigger/event buses, and recovery records onto the canonical durable Event envelope and immutable Checkpoint semantics. Close #1159-class follow-ups by routing oversized payloads to artifact references and applying secret/redaction policy before durable event persistence. Ensure state transition + event durability uses transaction/outbox/reconciliation rather than best effort.  
+**Current state:** This is the canonical durable history/recovery model. Events are durable facts with Workspace-scoped sequencing and execution correlation; live buses are delivery projections. Checkpoints are resumability facts, not lifecycles, and resume creates a new Attempt. The September amendment also centrally bounds event payload/provenance size/depth.  
+**ADR:** [ADR-081226-7248: Event and Checkpoint Model](../../../adr/ADR-081226-7248-event-checkpoint-model.md)
