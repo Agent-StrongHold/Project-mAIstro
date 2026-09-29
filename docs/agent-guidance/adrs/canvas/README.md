@@ -59,3 +59,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Connect `maistro_design.nodes` to the canonical node/plugin discovery/composition path and prove `design.orchestrate` is reachable through a real Graph/Run without test-only imports. Then re-evaluate lifecycle promotion against SPEC-160. Reconcile this ADR's informal Warden-feedback "RLPHD" wording with ADR-068's precise authorization-policy RLPHD definition so two different learning mechanisms do not share one architectural term accidentally.  
 **Current state:** maistro-design has extensive implementation and tests, but SPEC-160 explicitly records AC-35/36 as passing rather than reachable: `DesignOrchestrateNode` registers only when its module is directly imported, and no live process imports/names it. This green-but-unreachable gap is why the earlier Implemented claim was correctly rolled back to Accepted.  
 **ADR:** [ADR-061: maistro-design — composable design skills + design systems package](../../../adr/ADR-061-maistro-design-package.md)
+
+## ADR-067: Canvas Asset Compositor — Scene Graph, Occlusion, Prompt Composition
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Bind/remeasure the compositor's stated contracts against `test_asset_compositor.py` and transition ADR-067 to `Implemented` if the suite and lifecycle evidence are complete. Feed that evidence back into ADR-041/SPEC-219: occlusion self-loops/cycles and unknown references are directly tested here, so SPEC-219's "unverified" occlusion-DAG criterion should be reconciled. Legacy Canvas retirement is separate from this pure compositor's correctness.  
+**Current state:** `asset_compositor` has a substantial dedicated behavioral suite covering scene-graph parent errors/cycles, transform composition, occlusion ordering and cycle rejection, personalization/skin validation, prompt/style composition, and render planning. It is used by the newer AssetExecutor path. The remaining work is evidence/lifecycle reconciliation rather than an obvious missing compositor mechanism.  
+**ADR:** [ADR-067: Canvas Asset Compositor — Scene Graph, Occlusion, Prompt Composition](../../../adr/ADR-067-canvas-asset-compositor.md)
