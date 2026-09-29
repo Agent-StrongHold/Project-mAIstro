@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile historical four-repo and numbering prose with the consolidation monorepo/current ID policy while preserving the active machine-readable front-matter contract. Treat ADR-097 as authoritative for lifecycle states/transitions and ADR-098 as authoritative for layer taxonomy; ensure registry/lifecycle CI actually enforces the resulting current contract.  
 **Current state:** ADR-031 remains active repository governance: structured front matter and relationship fields are the machine-readable source of truth. Later ADR-097 replaced its lifecycle machine and ADR-098 extended its layer taxonomy. Portions describing cross-four-repo registry generation and migration-era numbering are historical and should be updated so new agents do not infer obsolete repository topology.  
 **ADR:** [ADR-031: Front-Matter and Registry Conventions](../../../adr/ADR-031-front-matter-and-registry.md)
+
+## ADR-032: Contracts as Acceptance Criteria
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Keep this as the canonical contract/evidence quality policy and reconcile historical Copier/four-product language with the monorepo. Ensure agent development guidance references, rather than duplicates, the live contract-marker ledger, AC-state execution checks, lifecycle-discovery gate, and mutation-testing baseline/ramp. Continue shrinking existing evidence debt instead of permitting new unevidenced contract claims.  
+**Current state:** ADR-032 remains active and has been extended with enforceable contract-marker evidence rules, AC-state execution semantics, lifecycle-owner discovery, and mutation-testing quality targets. Its quality model is directly relevant to autonomous issue-to-merge work: an implementation claim requires executable evidence, not merely code presence or line coverage. Some original repository-template framing is historical after consolidation.  
+**ADR:** [ADR-032: Contracts as Acceptance Criteria](../../../adr/ADR-032-contracts-as-acceptance-criteria.md)
