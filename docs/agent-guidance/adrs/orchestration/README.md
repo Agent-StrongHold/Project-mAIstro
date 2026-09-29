@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Create a successor ADR that carries the useful composition rules into the current Persona/Template/Capability-Binding architecture: deterministic schema-driven overrides, explicit versioned code references where still applicable, and non-overridable security-sensitive fields. Do not preserve RecipeRegistry compatibility as a goal. Once the successor is accepted, transition ADR-053 to `Superseded`.  
 **Current state:** ADR-053 is built on the stale ADR-006 RecipeRegistry and ADR-035 catalog model, and one acceptance criterion explicitly requires backward compatibility with ADR-006. That conflicts with both current architecture and the pre-1.0 rule that compatibility has no positive design weight. The composition/governance idea remains useful, but the owning abstraction must change.  
 **ADR:** [ADR-053: Recipe overlay composition — engine simple + product overlay](../../../adr/ADR-053-recipe-overlay-composition.md)
+
+## ADR-058: Agent-to-agent (A2A) delegation protocol — in-process and federated
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Rewrite this proposal against the canonical execution architecture before acceptance. Delegation should create/relate canonical child Runs with durable principal/delegation provenance, authorization/Capability Binding, Run/NodeRun/Attempt ownership, continuation/recovery semantics, and governed remote effects; local vs federated should be transport differences, not separate execution lifecycles. Reconcile the rewrite with the current remote-delegation/continuation M1 work and remove stale DID-required, WorkerPool, in-memory-task, and legacy AgentCard assumptions.  
+**Current state:** The original proposal accurately identified dead A2A scaffolding, loop/budget guards, SSRF risk, and the need for one delegation concept, but its proposed A2ABroker/transport lifecycle predates canonical child Runs and the durable delegation work now in the repo. Current remote delegation already participates in canonical Run/continuation machinery, making this Proposed ADR directly relevant to M1 but unsafe to accept as written.  
+**ADR:** [ADR-058: Agent-to-agent (A2A) delegation protocol — in-process and federated](../../../adr/ADR-058-a2a-delegation-protocol.md)
