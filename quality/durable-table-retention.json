@@ -389,6 +389,18 @@
       "notes": "Book-maker POC schema. No DELETE anywhere in the tree; rows accumulate for the life of the deployment."
     },
     {
+      "table": "design_creative_briefs",
+      "backends": [
+        "postgres"
+      ],
+      "owner_module": "packages/maistro-design/src/maistro_design/brief_store.py",
+      "data_class": "user_content",
+      "retention": "undecided",
+      "deletion_path": null,
+      "issue": "#325",
+      "notes": "CreativeBrief versions are the immutable creative provenance Runs/artifacts cite (#774); the contract is append-only and has no deletion path by design, like design_outputs."
+    },
+    {
       "table": "design_outputs",
       "backends": [
         "postgres"

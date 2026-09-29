@@ -61,12 +61,15 @@ def test_effect_index_migration_follows_the_chain_tip() -> None:
     # revisions it superseded on its ancestor path, not any fixed parent.
     # `046_durable_elevation_grants` (#72) now continues the chain after this
     # branch's `045`, so the single linear head is `046`.
-    walked = {item.revision for item in directory.walk_revisions("base", "046")}
+    # `047_design_creative_briefs` (#774) continues it after that: the head is
+    # `047`.
+    walked = {item.revision for item in directory.walk_revisions("base", "047")}
     assert "039_quota_usage_event_identity" in walked
     assert "044" in walked
     assert "043" in walked
     assert "045" in walked
-    assert directory.get_heads() == ["046"]
+    assert "046" in walked
+    assert directory.get_heads() == ["047"]
 
 
 def test_upgrade_and_downgrade_swap_the_index_shape(
