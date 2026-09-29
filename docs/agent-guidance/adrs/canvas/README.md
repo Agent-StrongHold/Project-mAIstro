@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** **Create a successor ADR for direct pre-1.0 Canvas cutover, then supersede ADR-044.** The successor should make AssetInstance/canvas_asset canonical, remove legacy LayerRecord/tool/compositor/schema paths wherever the current architecture does not require them, and explicitly reject bridge/backfill/deprecation-delay work whose only purpose is backward compatibility. Pre-1.0 deployments are rebuilt from scratch, so preserving old production rows/callers has no architectural value.  
 **Current state:** ADR-044's four-phase six-week migration strategy conflicts with the current pre-1.0 development standard. It deliberately preserves dual models, builds compatibility bridges/backfills, waits through deprecation periods, and delays deletion for legacy consumers. That work is now counterproductive because backward compatibility is not a design objective before 1.0 and may conceal failure to converge on the new architecture.  
 **ADR:** [ADR-044: LayerRecord → AssetInstance Migration Plan](../../../adr/ADR-044-layerrecord-to-assetinstance-migration.md)
+
+## ADR-045: Canvas capability ↔ maistro-server /v2/canvas boundary
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Revise this proposal before acceptance to conform to the current pre-1.0 development standard: preserve canonical authority, durable-state, authorization, execution identity, cancellation, provenance, and truthful dependency wiring, but remove backward-compatibility/parity/legacy-consumer preservation as independent design goals for pre-1.0 deployments. Then verify the canonical maistro-server Canvas composition and Design Studio consumption path and define acceptance evidence.  
+**Current state:** The proposal correctly reframes Canvas as a capability under Design Studio and maistro-server as the governed HTTP composition boundary, with missing dependencies failing visibly. Its remaining compatibility-window language predates the explicit pre-1.0 decision that deployments are rebuilt from scratch and backward compatibility carries no positive architectural weight, so that portion should be revised before this ADR is accepted.  
+**ADR:** [ADR-045: Canvas capability ↔ maistro-server /v2/canvas boundary](../../../adr/ADR-045-canvas-studio-engine-cutover.md)
