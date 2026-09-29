@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile the proposed OntologyEntity/Ontology object system with the newer canonical Workspace object, Node/Graph, Template, and provenance architecture before implementation. If a distinct semantic layer is still required, specify it as a projection/schema layer over canonical objects rather than a competing identity/lifecycle/persistence authority; otherwise create/identify the successor decision and supersede ADR-036.  
 **Current state:** No `maistro.ontology` implementation or OntologyEntity registry was located. The original semantic-object problem may still be valid, but the repository has since established substantially richer canonical object/template semantics. ADR-036 therefore remains an accepted but unimplemented design that must be reconciled before code is added.  
 **ADR:** [ADR-036: Ontology / Semantic Object Layer](../../../adr/ADR-036-ontology-semantic-object-layer.md)
+
+## ADR-070: The Repertoire Pattern — reuse-first cascade
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Decide whether this ADR is primarily normative architectural vocabulary/invariants or mandates a shared runtime `Repertoire/repertoire_run` abstraction. If vocabulary, revise/supersede the generic-runtime requirements and let subsystems conform conceptually without forced indirection. If a shared runtime is intended, wire at least one canonical reachable subsystem through it and reconcile signed/executable entries with the post-ADR-069 Capability Provider/Invocation architecture before promotion.  
+**Current state:** SPEC-258 built the generic protocol/cascade but explicitly deferred migrating any existing subsystem, leaving the machinery unreachable. The reuse-first / verify-before-store / outcome-demotion pattern remains useful, but production value does not require every subsystem to call one generic helper. The ADR's signing dependency also inherits ADR-069's unresolved execution boundary.  
+**ADR:** [ADR-070: The Repertoire Pattern — reuse-first cascade](../../../adr/ADR-070-repertoire-pattern.md)
