@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Create a successor ADR for canonical recovery semantics across Run/NodeRun/Attempt, persisted Graph continuation, Invocation/effect claims for uncertain external side effects, durable approval/elevation state, and current usage/budget accounting. Reuse newer recovery ADRs such as ADR-082826-d9f5 where they already own a slice, but do not claim supersession until one decision covers ADR-056's full surviving recovery contract. Then supersede ADR-056.  
 **Current state:** The requirement for crash-safe durable recovery remains critical, but ADR-056's mechanism is obsolete: TaskRecord checkpoint authority, shadow-git waves, Recipe/code-registry version replay, and the old ApprovalGate model have been replaced by canonical Run/NodeRun/Attempt and newer durable execution/effect machinery. Implementing this ADR literally would reintroduce competing execution state.  
 **ADR:** [ADR-056: Task crash recovery — durable resume with wave verification](../../../adr/ADR-056-task-crash-recovery.md)
+
+## ADR-063: Credential Pool and Automatic Key Rotation
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Remeasure all ADR-063 acceptance criteria against the post-#58 canonical Invocation integration, add direct request/outcome evidence for any criteria still only declared/passing, and update the historical body sections that describe the removed detached `execute_with_pool` retry loop. If selection/rotation/cooldown/blocking are all proven reachable through Provider resolution and Invocation outcomes, transition ADR-063 to `Implemented`.  
+**Current state:** #58 materially converged this design: credential selection now flows through `maistro.container → effect_context → credential_routing → credentials.pool`, and rotation reacts to real Invocation outcomes rather than an invisible library retry loop. The credential modules left the unreachable baseline. The ADR remains Accepted pending a clean post-convergence AC/evidence reconciliation rather than relying on the old mechanism description.  
+**ADR:** [ADR-063: Credential Pool and Automatic Key Rotation](../../../adr/ADR-063-credential-pool-and-rotation.md)
