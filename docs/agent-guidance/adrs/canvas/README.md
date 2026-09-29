@@ -99,3 +99,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile the renderer slots with ADR-081226-6b46's canonical Provider → Binding → Invocation model and remeasure the three implementing SPECs. Preserve "absence is not failure" at discovery/surfacing time, but once a user/run selects a renderer capability, execution must produce an explicit Invocation result rather than silently disappearing. Route third-party renderer network/process effects through outbound policy, sandbox where applicable, and Warden/Sentinel.  
 **Current state:** This is directionally aligned with the newer capability architecture: renderers are replaceable providers and DesignEngine does not own rendering. The older slot/discovery vocabulary needs convergence onto canonical Bindings/Invocations, but the architectural separation itself is sound.  
 **ADR:** [ADR-070426-f2a0: Optional renderer capability providers](../../../adr/ADR-070426-f2a0-optional-renderer-plugins-capability-providers.md)
+
+## ADR-081226-6b46: Capability, Provider, Binding and Invocation
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Use this as the canonical fulfillment model and converge older tool/MCP/harness/renderer/model/sandbox/code-registry ADRs onto it. Complete end-to-end evidence that every specialized/external effect resolves an authorized Binding, selects only Providers within that ceiling, resolves credentials just in time, records an Invocation correlated to Run/NodeRun/Attempt, and never lets fallback widen authority.  
+**Current state:** This is the decisive successor architecture for a large part of the older corpus. Tools are model-facing exposures of Bindings, agents-as-capabilities create child Runs, harness session handles remain provider state, and Invocation is the one actual fulfillment call. ADR-069/083/101/079/f2a0 should be rewritten around this model rather than creating parallel registries/executors.  
+**ADR:** [ADR-081226-6b46: Capability, Provider, Binding and Invocation](../../../adr/ADR-081226-6b46-capability-provider-binding-invocation.md)
