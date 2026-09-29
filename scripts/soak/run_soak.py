@@ -16,6 +16,9 @@ the human-readable pack in docs/testing/soak/m3a-soak-evidence.md.
 
 This is a falsification harness, not a benchmark: pass/fail is decided by the
 correctness and stability thresholds in docs/testing/soak/m3a-load-profile.md.
+This host-process preflight cannot sign promotion: exact_rc_artifact always
+fails, even after four hours with all functional checks passing. A production
+Compose runner and immutable RC configuration are required for that evidence.
 
 Usage (from the repo root):
     uv run python scripts/soak/run_soak.py --sustain-seconds 420 --out-dir docs/testing/soak/evidence
@@ -582,6 +585,20 @@ def _integer_or_invalid(value: Any) -> int:
         return -1
 
 
+def preflight_artifact_check() -> dict[str, Any]:
+    """This driver boots host processes, never the promoted Compose artifact.
+
+    Duration and functional checks cannot establish artifact equivalence. There
+    is deliberately no CLI override: an exact-RC runner needs its own observed
+    image/configuration evidence before this gate can be satisfied.
+    """
+    return {
+        "ok": False,
+        "topology": "host-uvicorn-preflight",
+        "reason": "not the exact production Compose image and configuration",
+    }
+
+
 def failed_promotion_checks(evidence: dict[str, Any]) -> list[str]:
     """Return every failed promotion gate represented by an evidence document.
 
@@ -598,6 +615,7 @@ def failed_promotion_checks(evidence: dict[str, Any]) -> list[str]:
         "nonterminal_runs_after_settle",
         "task_admission_availability",
         "sustain_duration",
+        "exact_rc_artifact",
     )
     failed = [name for name in required if not _check_ok(checks.get(name))]
     drain = checks.get("graceful_drain")
@@ -1388,6 +1406,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         "p95_latency_ms": p95s,
         "task_admission_ratio": task_admission_ratio,
         "checks": {
+            "exact_rc_artifact": preflight_artifact_check(),
             "exactly_once_task_admission": evidence["exactly_once_tasks"]["ok"],
             "exactly_once_schedule_occurrence": evidence["exactly_once_schedule_claim"]["ok"],
             "rate_limit_enforced": evidence["rate_limit"]["enforced_everywhere"],

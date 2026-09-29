@@ -3,7 +3,8 @@
 **Status: PROVISIONAL — soak duration below the profile minimum, and run 1
 discovered three defects (two in the harness, one in the LB path) that the
 profile's falsification purpose exists to find.** Verdict for promotion:
-NEEDS-REPAIR and re-soak of the repaired harness at profile duration. No
+BLOCKED pending an exact-RC production-topology soak at profile duration. A
+longer run of the host-process preflight harness cannot satisfy that requirement. No
 correctness claim in this pack is promotion evidence yet.
 
 - Profile: [m3a-load-profile.md](m3a-load-profile.md) (thresholds H1–H6, S1–S5)
@@ -18,7 +19,7 @@ correctness claim in this pack is promotion evidence yet.
 | Check | Result | Evidence |
 |---|---|---|
 | H1 exactly-once task admission | **PASS** — 12 concurrent duplicate `Idempotency-Key` submissions through the LB → 12× `202`, exactly **1** distinct `run_id` | `exactly_once_tasks` |
-| H2 exactly-once schedule occurrence | **PASS** — two OS processes raced `ScheduleRunAdmitter.admit_due` on the canonical PostgreSQL store: one created Run `3adbdca2…`, the loser reported the occurrence `2026-09-29 05:00:00+00:00` as `already_fired`. **Zero duplicate physical work across claimants** (#220/#850 claim tier) | `exactly_once_schedule_claim` |
+| H2 exactly-once schedule occurrence | **PASS** — two OS processes raced `ScheduleRunAdmitter.admit_due` on the canonical PostgreSQL store: one created Run `3adbdca2…`, the loser reported the occurrence `2026-09-29 05:00:00+00:00` as `already_fired`. **One admitted Run across claimants** (#220/#850 claim tier); physical execution was not probed | `exactly_once_schedule_claim` |
 | Boot under the RC entrypoint | both replicas + full alembic chain migrate and serve; first-boot took **87 s** (root compose `start_period: 300s` exists for exactly this) | `replica_boot_seconds`, replica logs |
 | S4 latency | p95 6.5–8.0 ms across all classes through the LB (of what got through — see F3) | `p95_latency_ms` |
 | S1/S2 memory & descriptors | replica_1 RSS −16.9%, replica_2 +3.0% over the window; fds flat at 11 — no growth signal | `rss_growth`, `fd_growth` |
@@ -134,9 +135,11 @@ harness fixes above — requires a new soak per the profile.
 
 Both runs are **gate-enforcing preflight evidence, not promotion evidence**:
 `--sustain-seconds 90` ≪ the profile's 4-hour minimum, so `sustain_duration`
-correctly fails and the driver exits 1. Every other hard gate (H1–H6,
-graceful drain, rejoin) is evaluated mechanically by
-`failed_promotion_checks()` and passes. Machine evidence (hash-tied,
+correctly fails and the driver exits 1. These are historical results under
+the gates at those heads: run 5 also failed H3, and run 6 passed its then-current
+functional gates. Neither run satisfies today's six-path H3 probe or the explicit
+`exact_rc_artifact` gate. The current host-process driver always fails the latter,
+regardless of duration. Machine evidence (hash-tied,
 `git_clean=true` at each run's own head):
 `evidence/m3a-round5-final.json`, `evidence/m3a-round6-shakedown.json` with
 `-metrics.jsonl`, `-lb.log`, `-replica-1820{1,2}.log`,
@@ -167,8 +170,8 @@ for a sub-minimum run.
 | Check | Result | Evidence |
 |---|---|---|
 | H1 exactly-once task admission | **PASS** — 12 duplicate `Idempotency-Key` submissions → 12×202, 1 distinct `run_id` | `exactly_once_tasks` |
-| H2 exactly-once schedule occurrence | **PASS** — two OS processes race `admit_due`; per-occurrence durable claim, zero duplicate work | `exactly_once_schedule_claim` |
-| H3 rate limiting under concurrency | **PASS** — 16-way bursts: direct 600×429 (`Retry-After: 56`, `x-ratelimit-remaining: 0`), LB auth 430×429 / 370×200, LB unauth 446×429; `enforced_everywhere=true` — limiter cannot be bypassed by replica selection (both replicas share the canonical store) | `rate_limit` |
+| H2 exactly-once schedule occurrence | **PASS at admission only** — two OS processes race `admit_due`; one durable Run per occurrence. The probe cancels its queued Run without executing it, so physical-work deduplication is unverified | `exactly_once_schedule_claim` |
+| H3 rate limiting under concurrency | **PARTIAL, historical three-path probe only** — direct replica 1 unauthenticated: 600×429; LB auth: 430×429 / 370×200; LB unauth: 446×429. Historical `enforced_everywhere=true` covers only those paths, not both replicas/identity classes. Limiter state is process-local; switching replicas increases aggregate allowance. No cluster-wide budget or replica-selection non-bypass proof | `rate_limit` (`direct_replica_unauthenticated`, not today's `direct_replicas`) |
 | H4 LB failover bounded | **PASS** — 35 5xx+conn-errors ≤ budget 432 in the 4.52 s measured kill window | `lb_failover_bounded` |
 | Graceful drain (SIGTERM) | **PASS** — `drained=true` in 2.0 s, rc=143, **no SIGKILL escalation**, 17 drain-window 5xx within budget. The round-2 F8 hang does not reproduce at this head (post-#819 shutdown path) | `graceful_drain` |
 | Replica rejoin | **PASS** — replica_2 restarted and rejoined | `replica_2_rejoined` |
@@ -206,6 +209,18 @@ readiness returns 200 there.
    the current harness is the documented preflight emulator. The identity
    contract table in `m3a-load-profile.md` lists exactly what a promotion
    run must record.
-3. **Re-proof of drain under promotion-duration load**: run 6 proves the
-   drain path at 90 s; the 4 h run must re-observe it under long-lived
-   connections and deeper queues.
+3. **Re-proof of drain under promotion-duration load**: run 6 records process
+   exit/rejoin at 90 s; the 4 h run must correlate in-flight physical Attempts,
+   lease fencing and recovery under long-lived connections and deeper queues.
+4. **Rate-limit acceptance remains unmet**: #842 documents independent
+   per-process limits (`rate_limit.py:25-30`), not shared rate-limit state.
+   Current six-path probes can show every replica rejects overload, but cannot
+   prove a cluster-wide allowance. The production-middleware regression in
+   `tests/test_soak_promotion_gates.py` demonstrates the same identity receiving
+   another allowance on replica 2 after exhausting replica 1. Resolve this
+   deployment/acceptance mismatch before promotion; do not silently reinterpret
+   #860's non-bypass requirement as passed.
+
+See [m3a-repair-handoff.md](m3a-repair-handoff.md) for fresh validation and the
+remaining acceptance gaps. Historical JSON/logs are preserved unchanged; no new
+production soak is claimed by this repair.

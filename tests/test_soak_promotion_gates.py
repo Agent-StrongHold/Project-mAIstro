@@ -35,6 +35,8 @@ def _passing_evidence() -> dict[str, object]:
                 "nonterminal_runs_after_settle": {"ok": True},
                 "task_admission_availability": {"ok": True},
                 "sustain_duration": {"ok": True},
+                # Synthetic evaluator fixture, not evidence from this driver.
+                "exact_rc_artifact": {"ok": True},
                 "graceful_drain": {"required": True, "ok": True},
             }
         }
@@ -89,6 +91,33 @@ def test_null_drain_record_cannot_pass(soak: ModuleType) -> None:
     checks["graceful_drain"] = None  # type: ignore[assignment]
 
     assert soak.failed_promotion_checks(evidence) == ["graceful_drain"]
+
+
+@pytest.mark.parametrize("artifact_record", ["missing", "null", "preflight"])
+def test_four_hour_preflight_cannot_pass_cli(
+    soak: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, artifact_record: str
+) -> None:
+    """Even otherwise-passing four-hour evidence must fail without an RC artifact."""
+    evidence = _passing_evidence()
+    evidence["sustain_seconds"] = soak.PROMOTION_MIN_SUSTAIN_SECONDS
+    checks = evidence["thresholds"]["checks"]
+    if artifact_record == "missing":
+        del checks["exact_rc_artifact"]
+    elif artifact_record == "null":
+        checks["exact_rc_artifact"] = None
+    else:
+        checks["exact_rc_artifact"] = soak.preflight_artifact_check()
+        assert checks["exact_rc_artifact"]["topology"] == "host-uvicorn-preflight"
+
+    async def completed_run(args: object) -> dict[str, object]:
+        return evidence
+
+    monkeypatch.setattr(soak, "main_async", completed_run)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--out-dir", str(tmp_path)])
+    assert soak.failed_promotion_checks(evidence) == ["exact_rc_artifact"]
+    with pytest.raises(SystemExit) as exc:
+        soak.main()
+    assert exc.value.code == 1
 
 
 LB = "http://127.0.0.1:18080"
@@ -234,3 +263,57 @@ async def test_rate_probe_with_production_middleware(
         get_settings.cache_clear()
         for transport in transports:
             await transport.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authenticated", [False, True])
+async def test_replica_selection_has_an_independent_production_allowance(
+    monkeypatch: pytest.MonkeyPatch, authenticated: bool
+) -> None:
+    """H3 is local enforcement, not proof of a cluster-wide principal budget."""
+    import httpx
+    from fastapi import FastAPI
+
+    from maistro.config.settings import get_settings
+    from maistro_server.api.rate_limit import RateLimitMiddleware
+
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "0")
+    monkeypatch.setenv("API_KEYS", '["soak:probe-secret"]')
+    get_settings.cache_clear()
+
+    def replica() -> FastAPI:
+        app = FastAPI()
+
+        @app.get("/tasks")
+        async def tasks() -> dict[str, str]:
+            return {"status": "ok"}
+
+        app.add_middleware(RateLimitMiddleware)
+        return app
+
+    # Same connecting IP and same credential on both instances. Only the
+    # middleware instance changes; no identity rotation or forged proxy header.
+    headers = {"Authorization": "Bearer probe-secret"} if authenticated else {}
+    try:
+        async with (
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=replica()), base_url=REPLICAS[0]
+            ) as first,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=replica()), base_url=REPLICAS[1]
+            ) as second,
+        ):
+
+            async def statuses(client: httpx.AsyncClient) -> list[int]:
+                responses = [await client.get("/tasks", headers=headers) for _ in range(3)]
+                assert responses[-1].headers.get("Retry-After") is not None
+                return [response.status_code for response in responses]
+
+            assert await statuses(first) == [200, 200, 429]
+            # Replica 1 exhausted the identity's local allowance. Replica 2
+            # still accepts two requests, falsifying the old shared-store claim.
+            assert await statuses(second) == [200, 200, 429]
+            assert (await first.get("/tasks", headers=headers)).status_code == 429
+    finally:
+        get_settings.cache_clear()

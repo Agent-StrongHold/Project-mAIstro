@@ -59,7 +59,7 @@ through the LB):
 | Class | Share | Endpoint | Purpose |
 |---|---|---|---|
 | Readiness reads | 45% | `GET /health/ready` (auth) | steady-state latency/pool baseline |
-| Liveness reads | 20% | `GET /health/live` (no auth) | unauthenticated-path rate limiting |
+| Liveness reads | 20% | `GET /health/live` (no auth) | liveness under load (health paths are rate-limit exempt) |
 | Task admission | 20% | `POST /tasks` (auth, unique `Idempotency-Key`) | Run/Attempt admission, queue growth, durable spine writes |
 | Receipt reads | 10% | `GET /tasks/{id}` (auth) | store reads under load |
 | Metrics gate | 5% | `GET /metrics` (no auth) | security surface must stay gated under load |
@@ -102,6 +102,7 @@ Hard (any miss fails the soak):
 
 | # | Check | Threshold |
 |---|---|---|
+| Artifact | Exact RC topology | Host-process preflight always fails `exact_rc_artifact`; a longer emulator run is not promotion evidence |
 | H1 | Exactly-once task admission | distinct run_ids ≤ 1; statuses ⊆ {200,202,409} |
 | H2 | Exactly-once schedule occurrence | runs created for the raced occurrence == 1 |
 | H3 | Rate limiting | 429 + `Retry-After` observed on all six burst paths (LB + both direct replicas, authenticated + unauthenticated) |
@@ -127,8 +128,12 @@ profile above (`--sustain-seconds 14400`). Each executed run records its actual
 duration in the evidence JSON (`sustain_seconds`) and evidence pack; a run
 shorter than the profile minimum can only ever be **provisional** evidence and
 must say so. The driver mechanically fails `sustain_duration` below this
-minimum, so it cannot print a promotion-pass result for a short run. The
-harness is parameterized; nothing about it caps duration.
+minimum, so it cannot print a promotion-pass result for a short run. It also
+always emits `exact_rc_artifact.ok=false`: its host-process boot path does not
+run the promoted Compose artifact. Missing/null artifact checks fail closed for
+older evidence. There is no flag to override this limitation. The harness is
+parameterized; nothing caps duration, but even ≥ 4 hours cannot make it a
+promotion-signing runner.
 
 ## Out of scope here (documented limits)
 
@@ -140,6 +145,18 @@ harness is parameterized; nothing about it caps duration.
   across processes.
 - Model/provider latency is not part of the profile (no LiteLLM in the soak
   cell); admission/queue/spine behavior is.
+
+## Remaining representative-profile gaps
+
+The current preflight uses one API key, not a concurrent population of users and
+Workspaces. It does not exercise Graph/node fan-out, successful tool/model calls,
+Design/Canvas operations or Goal/background-worker reconciliation. Inclusion or
+exclusion of those surfaces must be justified against the selected RC deployment
+configuration before a representative promotion profile is considered complete.
+Driver loop lag is not application event-loop lag. Process-exit/rejoin and terminal
+Run counts alone do not prove physical-work fencing/recovery. Required worker
+counts, pool saturation, lease reclaim and long-window leak/error observations
+remain unverified. These are blockers, not acceptance waivers.
 
 ## Round-2 amendments (repair lane, 2520eeb7369c → )
 
@@ -170,9 +187,11 @@ gap): goal→Run admission reconciliation is `ScheduleRunAdmitter`'s
 separate reconciliation worker to soak; the reconciliation executes inside
 every schedule admission, and the cross-process fence it stands on is raced
 live by phase 4 (`--claim-probe`) with the per-occurrence SQL gate (H2).
-Admission reconciliation under sustained multi-replica load is therefore
-covered by H2 + the sustained task/schedule mix, and run 2 must state the
-duplicate-admission counter evidence (`duplicate_evidence`) alongside it.
+This admission probe is not evidence of sustained Goal desired-state
+reconciliation or physical Attempt fencing: phase 4 races one occurrence, then
+cancels the queued probe Run without executing it. The sustained mix has no
+schedule traffic. Those acceptance surfaces remain unverified and require
+production-path workloads; a duplicate-admission counter alone cannot prove them.
 
 ## Round-5 amendments (repair lane, b5f9abbcc → )
 
