@@ -430,28 +430,6 @@
       "owner": "#56",
       "rationale": "The approved Provider implementation itself: the one module #56 authorizes to hold an HTTP client for a model endpoint. The call executes beneath a resolved canonical Binding and a governed Invocation, so this site IS the governed egress, not a bypass."
     },
-    "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py::execute_airtable::CANONICAL_INVOCATION:airtable-polling-http-provider#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
-      "qualname": "execute_airtable",
-      "line": 218,
-      "category": "CANONICAL_INVOCATION",
-      "entry_point": "airtable-polling-http-provider",
-      "callee": "client.get",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#1195",
-      "rationale": "Approved Airtable Provider HTTP is executed only after the canonical Binding and governed Invocation path resolves and claims this effect."
-    },
-    "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py::execute_jira::CANONICAL_INVOCATION:jira-polling-http-provider#1": {
-      "path": "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
-      "qualname": "execute_jira",
-      "line": 188,
-      "category": "CANONICAL_INVOCATION",
-      "entry_point": "jira-polling-http-provider",
-      "callee": "client.get",
-      "disposition": "INTENTIONAL_LIBRARY/INFRASTRUCTURE",
-      "owner": "#1195",
-      "rationale": "Approved Jira Provider HTTP is executed only after the canonical Binding and governed Invocation path resolves and claims this effect."
-    },
     "packages/maistro-core/src/maistro/events/handlers.py::conductor_chat_action::MODEL_EFFECT:openai-compatible-http#1": {
       "path": "packages/maistro-core/src/maistro/events/handlers.py",
       "qualname": "conductor_chat_action",
@@ -627,6 +605,39 @@
       "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
       "owner": "#1195",
       "rationale": "Operator-triggered PAT connectivity verification calls Jira /rest/api/3/myself directly with the raw token. It is not a polling effect, but it is the same Jira REST class now owned by canonical capabilities; recorded as migration debt so the Workspace cutover routes verification through the governed door too."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/airtable_poll.py::AirtablePollNode._execute::PM_POLLING_EFFECT:pm-polling-http#1": {
+      "path": "packages/maistro-core/src/maistro/graph/nodes/airtable_poll.py",
+      "qualname": "AirtablePollNode._execute",
+      "line": 73,
+      "category": "PM_POLLING_EFFECT",
+      "entry_point": "pm-polling-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Direct PAT-authenticated polling from a graph node, bypassing Capability/Provider/Binding/Invocation. #1195 would have migrated it; Jira and Airtable are not on M1's critical path and that migration is deferred, so this is recorded as it stands rather than as migrated. The gate seeing it is the point: an undispositioned version of this call is how the seam was lost the first time."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py::JiraPollNode._execute::DIRECT_HTTP_EFFECT:graph-node-http#1": {
+      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_poll.py",
+      "qualname": "JiraPollNode._execute",
+      "line": 97,
+      "category": "DIRECT_HTTP_EFFECT",
+      "entry_point": "graph-node-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Direct PAT-authenticated polling from a graph node, bypassing Capability/Provider/Binding/Invocation. #1195 would have migrated it; Jira and Airtable are not on M1's critical path and that migration is deferred, so this is recorded as it stands rather than as migrated. The gate seeing it is the point: an undispositioned version of this call is how the seam was lost the first time."
+    },
+    "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py::_fetch_subtask_statuses::DIRECT_HTTP_EFFECT:graph-node-http#1": {
+      "path": "packages/maistro-core/src/maistro/graph/nodes/jira_wait_for_subtasks.py",
+      "qualname": "_fetch_subtask_statuses",
+      "line": 177,
+      "category": "DIRECT_HTTP_EFFECT",
+      "entry_point": "graph-node-http",
+      "callee": "client.get",
+      "disposition": "MIGRATE_TO_GOVERNED_INVOCATION",
+      "owner": "#1195",
+      "rationale": "Direct PAT-authenticated polling from a graph node, bypassing Capability/Provider/Binding/Invocation. #1195 would have migrated it; Jira and Airtable are not on M1's critical path and that migration is deferred, so this is recorded as it stands rather than as migrated. The gate seeing it is the point: an undispositioned version of this call is how the seam was lost the first time."
     }
   }
 }

@@ -19,13 +19,6 @@ from typing import Any
 import httpx
 import pytest
 
-from maistro.capabilities.binding import Binding
-from maistro.capabilities.effect_context import (
-    CapabilityEffectContext,
-    binding_scope_policy,
-    new_in_memory_effect_context,
-)
-from maistro.credentials.types import CredentialRecord
 from maistro.graph.nodes import get_node, list_kinds
 from maistro.graph.nodes.base import NodeContext, ReplaySemantics
 from maistro.graph.types import GraphBlackboard
@@ -37,12 +30,6 @@ def _ctx(*, node_run_id: str) -> NodeContext:
         dag_id="dag-1",
         node_id="node-1",
         node_run_id=node_run_id,
-        attempt_id=f"attempt-{node_run_id}",
-        # Governed poll nodes resolve their Binding by scope (#1195), so the
-        # conformance context carries the Workspace/Project it was registered
-        # under.
-        workspace_id="ws-1",
-        project_id="project-1",
         blackboard=GraphBlackboard(task_objective="conformance", workspace=""),
     )
 
@@ -139,67 +126,24 @@ def _subtask_payload(all_done: bool = True) -> dict[str, Any]:
     }
 
 
-# Governed shape (#1195): node input names the Binding and the business
-# parameters; endpoint config and credentials live on the Binding itself.
 _JQL_INPUTS: dict[str, Any] = {
-    "binding_id": "jira-binding",
+    "base_url": "https://jira.example.com",
     "jql": "assignee=currentUser() AND resolution=Unresolved",
+    "pat": "pat-token",
 }
 
 _SUBTASK_INPUTS: dict[str, Any] = {
-    "binding_id": "jira-binding",
+    "base_url": "https://jira.example.com",
     "parent_key": "P-100",
-    "poll_interval_seconds": 1,
+    "pat": "pat-token",
 }
 
 _AIRTABLE_INPUTS: dict[str, Any] = {
-    "binding_id": "airtable-binding",
+    "pat": "pat-token",
     "base_id": "appXYZ",
     "table": "Initiatives",
+    "since_iso": "2026-05-21T00:00:00Z",
 }
-
-
-_POLL_BINDINGS: dict[str, tuple[str, str, dict[str, Any]]] = {
-    # kind -> (capability, provider, binding config)
-    "jira.poll": (
-        "jira.search",
-        "jira",
-        {"base_url": "https://jira.example.com", "flavor": "server"},
-    ),
-    "jira.wait_for_subtasks": (
-        "jira.subtasks",
-        "jira",
-        {"base_url": "https://jira.example.com", "flavor": "server"},
-    ),
-    "airtable.poll": ("airtable.records", "airtable", {}),
-}
-
-
-async def _governed_effects(kind: str) -> CapabilityEffectContext:
-    """A composition root holding the Binding these governed poll nodes need."""
-
-    capability, provider, config = _POLL_BINDINGS[kind]
-    effects = new_in_memory_effect_context(policy_evaluator=binding_scope_policy)
-    await effects.bindings.put(
-        Binding(
-            binding_id=f"{provider}-binding",
-            workspace_id="ws-1",
-            project_id="project-1",
-            node_id="node-1",
-            capability=capability,
-            provider_name=provider,
-            config=config,
-            credential_refs=(f"{provider}-key",),
-        )
-    )
-    effects.credentials.add(
-        workspace_id="ws-1",
-        project_id="project-1",
-        record=CredentialRecord(
-            key_id=f"{provider}-key", provider=provider, api_key=f"secret-{provider}"
-        ),
-    )
-    return effects
 
 
 async def _run_poll_kind(
@@ -210,7 +154,7 @@ async def _run_poll_kind(
 ) -> dict[str, Any]:
     seen: dict[str, Any] = {}
     _patch_read_only_transport(monkeypatch, payload, seen)
-    node = get_node(kind)(effect_context=await _governed_effects(kind))
+    node = get_node(kind)()
     first = await node.run(inputs, _ctx(node_run_id="node-run-1"))
     second = await node.run(inputs, _ctx(node_run_id="node-run-retry-2"))
     return {"first": first, "second": second, "http": seen}

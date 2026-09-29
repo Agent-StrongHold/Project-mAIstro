@@ -1,20 +1,23 @@
-"""`jira.wait_for_subtasks` - governed Jira polling wait node."""
+"""`jira.wait_for_subtasks` — wait until all subtasks of a parent Jira issue
+match a target status (or timeout).
+
+This is a `wait.*` node. On first reach it pauses; the runtime polls the
+node periodically; when all subtasks match the target status (Done by
+default) it returns successfully. If the parent has no subtasks, it
+short-circuits as completed.
+
+The polling cadence + timeout are configurable. When timed out, the result
+carries `timed_out=True` so downstream conditional edges can branch.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from maistro.capabilities.binding_store import BindingNotFound
-from maistro.capabilities.effect_context import CapabilityEffectContext, default_effect_context
-from maistro.capabilities.pm_polling import (
-    JIRA_SUBTASKS_CAPABILITY,
-    JiraSubtasksRequest,
-    invoke_jira_poll,
-)
+from maistro.http import shared_client
 
 from . import register_node
 from .base import (
@@ -29,11 +32,14 @@ from .base import (
 
 
 class WaitForSubtasksIn(BaseModel):
-    binding_id: str = Field(description="Pre-authorized Jira Binding for this workspace/project")
+    base_url: str
     parent_key: str = Field(description="e.g. PROJ-100")
+    pat: str
+    flavor: str = Field(default="server")  # "server" | "cloud"
+    email: str | None = None
     target_statuses: list[str] = Field(default_factory=lambda: ["Done", "Closed"])
     timeout_seconds: int = Field(default=86_400 * 7)
-    poll_interval_seconds: int = Field(default=900)
+    poll_interval_seconds: int = Field(default=900)  # 15 min
     timeout_s: float = Field(default=8.0, description="HTTP timeout per poll")
 
 
@@ -55,39 +61,17 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
     replay_semantics: ClassVar[ReplaySemantics] = ReplaySemantics.IDEMPOTENT
     external_io: ClassVar[bool] = True
     display_name: ClassVar[str] = "Jira: wait for subtasks"
-    # The resolver must hand over the container's Binding/Invocation authority;
-    # the constructor default is a process-wide context that authorizes nothing.
-    optional_authorities: ClassVar[Mapping[str, str]] = {"effect_context": "effect_context"}
     description: ClassVar[str] = (
-        "Pause until Jira subtasks reach a target status through a governed "
-        "Jira capability Binding."
+        "Pause the DAG until all subtasks of a parent issue reach a target "
+        "status. Resumes when the condition is met or the timeout fires."
     )
 
-    def __init__(self, *, effect_context: CapabilityEffectContext | None = None) -> None:
-        self._effects = effect_context or default_effect_context()
-
     async def _execute(self, inputs: WaitForSubtasksIn, ctx: NodeContext) -> WaitForSubtasksOut:
-        if not inputs.binding_id.strip():
-            raise BindingNotFound(
-                "jira.wait_for_subtasks requires a pre-authorized Binding before any request"
-            )
-        binding = await self._effects.bindings.resolve(
-            inputs.binding_id,
-            workspace_id=str(ctx.workspace_id or ""),
-            project_id=str(ctx.project_id or ""),
-            node_id=ctx.node_id,
-            capability=JIRA_SUBTASKS_CAPABILITY,
-        )
-        pause = resumed_pause(ctx)
-        poll_number = int(pause.get("poll_number", 0) or 0)
-        statuses = await _fetch_subtask_statuses(
-            inputs,
-            ctx=ctx,
-            effects=self._effects,
-            binding=binding,
-            poll_number=poll_number,
-        )
+        # Check the parent's subtasks right now. If they already match, we
+        # complete on first reach; otherwise we pause until the next poll.
+        statuses = await _fetch_subtask_statuses(inputs)
         if not statuses:
+            # No subtasks — completed.
             return WaitForSubtasksOut(
                 parent_key=inputs.parent_key,
                 subtask_keys=[],
@@ -98,6 +82,7 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
 
         target_lower = {s.lower() for s in inputs.target_statuses}
         all_match = all(s.lower() in target_lower for s in statuses.values())
+
         if all_match:
             return WaitForSubtasksOut(
                 parent_key=inputs.parent_key,
@@ -106,97 +91,106 @@ class JiraWaitForSubtasksNode(BaseNode[WaitForSubtasksIn, WaitForSubtasksOut]):
                 all_match=True,
                 timed_out=False,
             )
-        return _await_remaining_subtasks(
-            inputs, ctx=ctx, statuses=statuses, poll_number=poll_number
-        )
 
+        # Have we exceeded the overall timeout?
+        first_seen = _first_seen(ctx)
+        now = now_utc()
+        if first_seen is None:
+            # First reach — store start timestamp, pause for the poll interval.
+            pause_until(
+                PAUSE_WAITING_ON_JIRA_SUBTASKS,
+                resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
+                metadata={
+                    "parent_key": inputs.parent_key,
+                    "current_statuses": statuses,
+                    "first_seen": now.isoformat(),
+                    "deadline": (now + timedelta(seconds=inputs.timeout_seconds)).isoformat(),
+                },
+            )
+            return WaitForSubtasksOut(parent_key=inputs.parent_key)
 
-def _await_remaining_subtasks(
-    inputs: WaitForSubtasksIn,
-    *,
-    ctx: NodeContext,
-    statuses: dict[str, str],
-    poll_number: int,
-) -> WaitForSubtasksOut:
-    """Pause until the next poll, or time out once the deadline has passed."""
+        # Resume path — was the deadline reached?
+        try:
+            from datetime import datetime as _dt
 
-    first_seen = _first_seen(ctx)
-    now = now_utc()
-    if first_seen is None:
+            first = _dt.fromisoformat(first_seen)
+        except Exception:
+            first = now
+        if (now - first).total_seconds() >= inputs.timeout_seconds:
+            return WaitForSubtasksOut(
+                parent_key=inputs.parent_key,
+                subtask_keys=list(statuses.keys()),
+                statuses=statuses,
+                all_match=False,
+                timed_out=True,
+            )
+
+        # Still waiting — pause for another poll interval.
         pause_until(
             PAUSE_WAITING_ON_JIRA_SUBTASKS,
             resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
             metadata={
                 "parent_key": inputs.parent_key,
                 "current_statuses": statuses,
-                "first_seen": now.isoformat(),
-                "deadline": (now + timedelta(seconds=inputs.timeout_seconds)).isoformat(),
-                "poll_number": poll_number + 1,
+                "first_seen": first_seen,
             },
         )
         return WaitForSubtasksOut(parent_key=inputs.parent_key)
 
-    try:
-        from datetime import datetime as _dt
-
-        first = _dt.fromisoformat(first_seen)
-    except Exception:
-        first = now
-    if (now - first).total_seconds() >= inputs.timeout_seconds:
-        return WaitForSubtasksOut(
-            parent_key=inputs.parent_key,
-            subtask_keys=list(statuses.keys()),
-            statuses=statuses,
-            all_match=False,
-            timed_out=True,
-        )
-
-    pause_until(
-        PAUSE_WAITING_ON_JIRA_SUBTASKS,
-        resume_at=now + timedelta(seconds=inputs.poll_interval_seconds),
-        metadata={
-            "parent_key": inputs.parent_key,
-            "current_statuses": statuses,
-            "first_seen": first_seen,
-            "poll_number": poll_number + 1,
-        },
-    )
-    return WaitForSubtasksOut(parent_key=inputs.parent_key)
-
 
 def _first_seen(ctx: NodeContext) -> Any:
-    """Read the first-reach timestamp carried by this node's previous pause."""
+    """When this node first reached its wait, or None on a first reach.
 
+    Read from the pause this node itself wrote, with the older
+    `wait_first_seen:` key kept as a fallback. Nothing in the system ever
+    *wrote* that key -- only tests did -- so on every real path `first_seen`
+    was None, the node took its first-reach branch again, and the deadline it
+    recorded could never be reached. A poll whose timeout cannot expire is an
+    unbounded loop, and a resume tick is what turns that from a latent defect
+    into a running one (#641).
+    """
     carried = resumed_pause(ctx).get("first_seen")
     if carried:
         return carried
     return (ctx.metadata or {}).get(f"wait_first_seen:{ctx.node_id}")
 
 
-async def _fetch_subtask_statuses(
-    inputs: WaitForSubtasksIn,
-    *,
-    ctx: NodeContext,
-    effects: CapabilityEffectContext,
-    binding: Any,
-    poll_number: int,
-) -> dict[str, str]:
-    invocation = await invoke_jira_poll(
-        effects,
-        binding=binding,
-        run_id=ctx.run_id,
-        node_run_id=ctx.node_run_id,
-        attempt_id=ctx.attempt_id,
-        effect_key=f"jira.wait_for_subtasks.status:{inputs.parent_key}:{poll_number}",
-        request=JiraSubtasksRequest(parent_key=inputs.parent_key),
-        timeout_s=inputs.timeout_s,
+async def _fetch_subtask_statuses(inputs: WaitForSubtasksIn) -> dict[str, str]:
+    """Return {subtask_key: status_name} for the parent issue."""
+    base = inputs.base_url.rstrip("/")
+    api_path = (
+        f"/rest/api/2/issue/{inputs.parent_key}"
+        if inputs.flavor == "server"
+        else f"/rest/api/3/issue/{inputs.parent_key}"
     )
-    data = invocation.result if isinstance(invocation.result, dict) else {}
+    headers: dict[str, str] = {"Accept": "application/json"}
+    auth: tuple[str, str] | None = None
+    if inputs.flavor == "server":
+        headers["Authorization"] = f"Bearer {inputs.pat}"
+    else:
+        if inputs.email:
+            auth = (inputs.email, inputs.pat)
+        else:
+            headers["Authorization"] = f"Bearer {inputs.pat}"
+
+    async with shared_client(timeout=inputs.timeout_s) as client:
+        resp = await client.get(
+            f"{base}{api_path}",
+            params={"fields": "subtasks"},
+            headers=headers,
+            auth=auth,
+        )
+    if resp.status_code == 401:
+        raise PermissionError(f"jira_auth_failed status=401 base={base}")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"jira_http_error status={resp.status_code}")
+
+    data = resp.json()
     subtasks = (data.get("fields") or {}).get("subtasks") or []
     result: dict[str, str] = {}
-    for subtask in subtasks:
-        key = subtask.get("key", "")
-        status_name = ((subtask.get("fields") or {}).get("status") or {}).get("name", "")
+    for st in subtasks:
+        key = st.get("key", "")
+        status_name = ((st.get("fields") or {}).get("status") or {}).get("name", "")
         if key:
             result[key] = status_name
     return result

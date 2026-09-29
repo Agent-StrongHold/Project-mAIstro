@@ -45,13 +45,12 @@ def _make_fake_async_client(fake_issues: dict[str, Any]) -> type:
     return _Client
 
 
-def _inject_jira_credentials(
-    dag: dict[str, Any], binding_id: str = "test-seed-jira-binding"
-) -> None:
+def _inject_jira_credentials(dag: dict[str, Any]) -> None:
     """Populate the jira_poll node's runtime credentials in-place."""
     for n in dag["nodes"]:
         if n["id"] == "jira_poll":
-            n["inputs"]["binding_id"] = binding_id
+            n["inputs"]["base_url"] = "https://jira.example.com"
+            n["inputs"]["pat"] = "test-pat"
 
 
 def _seed_node_resolver(node_id: str, dag_snap: dict[str, Any]) -> Any:
@@ -265,7 +264,7 @@ async def test_daily_status_seed_short_circuits_when_no_epics_match(
     monkeypatch.setattr(httpx, "AsyncClient", _make_fake_async_client(fake_issues))
 
     dag = daily_status_seed()
-    _inject_jira_credentials(dag, "test-seed-jira-binding-2")
+    _inject_jira_credentials(dag)
 
     store = InMemoryDurableRunStore()
 

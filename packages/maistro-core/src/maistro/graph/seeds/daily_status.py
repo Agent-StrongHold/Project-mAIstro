@@ -10,11 +10,14 @@ alternative shapes.
 Shape (sequential except where noted):
 
     [entry] pm_jira_filter_input
-                 │  static inputs: binding_id + jql + max_results
+                 │  static inputs: jql + base_url + flavor + max_results
                  ▼
-            jira.poll  (requires a Workspace-scoped Jira Binding; the node
-                        fails closed before HTTP when it is absent or out
-                        of scope)
+            jira.poll  (skipped if no PAT — handled by the Hive route
+                        wrapper that checks credentials before invoking
+                        this DAG; the node itself fails closed with a
+                        PermissionError → the executor records it as
+                        node_record.failed and downstream nodes still run
+                        in parallel branches that don't depend on Jira)
                  │
                  ▼
             jira_epic_filter (transform.filter_by_type)
@@ -46,9 +49,9 @@ def daily_status_seed() -> dict[str, Any]:
     + run_durable_dag() + register().
 
     Returns a NEW dict every call so callers can mutate without shared
-    state. The Jira Binding reference is intentionally empty: the Workspace
-    route must inject an authorized Binding id, while the Binding supplies the
-    endpoint configuration and credential references.
+    state. All credential-bearing inputs (PAT, base_id) are intentionally
+    omitted — the Hive route wrapper injects them per-request from the
+    encrypted credentials store + project settings.
     """
     return {
         "id": "daily-status",
@@ -65,11 +68,14 @@ def daily_status_seed() -> dict[str, Any]:
             {
                 "id": "jira_poll",
                 "kind": "jira.poll",
-                # The Workspace route injects only the authorized Binding id;
-                # no endpoint or reusable credential material enters Graph state.
+                # Static defaults; PAT + base_url + flavor injected at
+                # runtime by the Hive wrapper using the active project's
+                # credentials.
                 "inputs": {
-                    "binding_id": "",
+                    "base_url": "",
                     "jql": "updated >= -24h AND assignee = currentUser() ORDER BY updated DESC",
+                    "pat": "",
+                    "flavor": "server",
                     "max_results": 20,
                 },
             },

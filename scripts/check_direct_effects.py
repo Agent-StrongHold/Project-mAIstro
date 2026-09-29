@@ -35,12 +35,12 @@ DISPOSITIONS = frozenset(
 
 # Match model URLs at the HTTP call itself, never endpoint text elsewhere.
 _MODEL_ENDPOINTS = ("chat/completions", "/completions", "/v1/responses")
-# PM-polling URL boundaries (#1195): the Jira/Airtable effect classes are owned
-# by canonical capabilities, and the sanctioned physical calls in
-# capabilities/providers/pm_polling.py carry reviewed CANONICAL_INVOCATION
-# dispositions via ``_PATH_CALLS``. Any *other* direct HTTP call to these
-# endpoints (e.g. a graph node re-learning raw PAT polling) surfaces here as
-# an undispositioned PM_POLLING_EFFECT and fails the gate.
+# PM-polling URL boundaries (#1195): every direct HTTP call to a Jira or
+# Airtable endpoint surfaces here as a PM_POLLING_EFFECT and must carry a
+# reviewed disposition. The canonical capability that would have owned these
+# effect classes is deferred, so today's dispositions record the polling
+# nodes as they stand rather than as migrated -- which is the state the gate
+# should make visible, not hide.
 _PM_ENDPOINTS = (
     "airtable.com",
     "atlassian.net",
@@ -96,16 +96,6 @@ _FUNCTION_EFFECTS: dict[str, tuple[str, str]] = {
 # entries are deliberately exact path/scope/callee triples rather than fuzzy
 # ``send``/``execute``/``invoke`` matching.
 _PATH_CALLS: dict[tuple[str, str, str], tuple[str, str]] = {
-    (
-        "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
-        "execute_jira",
-        "client.get",
-    ): ("CANONICAL_INVOCATION", "jira-polling-http-provider"),
-    (
-        "packages/maistro-core/src/maistro/capabilities/providers/pm_polling.py",
-        "execute_airtable",
-        "client.get",
-    ): ("CANONICAL_INVOCATION", "airtable-polling-http-provider"),
     (
         "packages/maistro-core/src/maistro/capabilities/governed_invocation.py",
         "GovernedInvocationExecutionService.invoke",

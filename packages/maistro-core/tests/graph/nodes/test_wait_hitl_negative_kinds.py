@@ -14,21 +14,14 @@ import pytest
 
 from maistro.graph.nodes import NodeContext, get_node, list_kinds
 
-_CTX_CALLS = 0
-
 
 def _ctx(**overrides: Any) -> NodeContext:
-    global _CTX_CALLS
-    _CTX_CALLS += 1
     base = {
-        "run_id": f"r1-{_CTX_CALLS}",
+        "run_id": "r1",
         "dag_id": "d1",
         "node_id": "n1",
         "user_id": "u1",
-        "workspace_id": "w1",
         "project_id": "p1",
-        "node_run_id": "nr1",
-        "attempt_id": "a1",
     }
     base.update(overrides)
     return NodeContext(**base)
@@ -143,8 +136,10 @@ async def test_wait_for_subtasks_short_circuits_when_no_subtasks(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "binding_id": "test-jira-subtasks-binding",
+            "base_url": "https://jira.example.com",
             "parent_key": "PROJ-100",
+            "pat": "pat",
+            "flavor": "server",
             "target_statuses": ["Done"],
         },
         _ctx(),
@@ -172,8 +167,10 @@ async def test_wait_for_subtasks_all_done_returns_completed(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "binding_id": "test-jira-subtasks-binding",
+            "base_url": "https://jira.example.com",
             "parent_key": "PROJ-100",
+            "pat": "pat",
+            "flavor": "server",
             "target_statuses": ["Done", "Closed"],
         },
         _ctx(),
@@ -200,8 +197,9 @@ async def test_wait_for_subtasks_some_open_pauses_for_poll_interval(
     Node = get_node("jira.wait_for_subtasks")
     result = await Node().run(
         {
-            "binding_id": "test-jira-subtasks-binding",
+            "base_url": "https://jira.example.com",
             "parent_key": "PROJ-100",
+            "pat": "pat",
             "target_statuses": ["Done"],
             "poll_interval_seconds": 60,
         },
@@ -229,8 +227,9 @@ async def test_wait_for_subtasks_timeout_returns_timed_out(
     ctx.metadata[f"wait_first_seen:{ctx.node_id}"] = one_hour_ago
     result = await Node().run(
         {
-            "binding_id": "test-jira-subtasks-binding",
+            "base_url": "https://jira.example.com",
             "parent_key": "PROJ-100",
+            "pat": "pat",
             "target_statuses": ["Done"],
             "timeout_seconds": 60,
         },
