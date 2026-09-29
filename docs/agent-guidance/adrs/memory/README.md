@@ -19,3 +19,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** No ADR-013 implementation work remains. Later memory ADRs/specs should continue to treat `maistro.types.memory` and the shared scope rule as canonical rather than re-declaring these primitives.  
 **Current state:** The seven-tier memory types, weight bounds, Learning/Outcome/EpisodicMemory domain types, and tenant-aware scope filtering are implemented and directly tested. Subsequent work has extended these types and added shared Python/SQL scope-conformance enforcement without invalidating ADR-013's original invariants.  
 **ADR:** [ADR-013: Memory types — Learning, EpisodicMemory, Outcome, scopes, tiers](../../../adr/ADR-013-memory-types.md)
+
+## ADR-014: Memory protocols
+
+**Status:** Implemented  
+**Last updated:** 2026-09-28  
+**Next steps:** No ADR-014 implementation work remains. New memory stores should continue to satisfy the canonical protocols rather than introducing store-specific caller contracts.  
+**Current state:** Runtime-checkable LearningStore, EpisodicStore, and OutcomeStore contracts are implemented and their in-memory implementations pass direct protocol-conformance tests. The protocol module has subsequently expanded to cover additional memory capabilities while preserving these original dependency-injection boundaries.  
+**ADR:** [ADR-014: Memory protocols](../../../adr/ADR-014-memory-protocols.md)
