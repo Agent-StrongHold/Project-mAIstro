@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile the ADR's durability framing with the canonical Run spine: explicitly state that TaskRecord is a best-effort receipt, not execution/recovery authority, and add direct configured-database evidence that queue mutations persist the receipt row. If the narrowed receipt contract is the intended surviving decision, verify all three criteria and transition ADR-018 to `Implemented`; otherwise identify a successor ADR and supersede it.  
 **Current state:** TaskQueue still performs ordered best-effort TaskRecord upserts and remains functional without a database, so the narrow receipt-persistence mechanism survives. Recovery authority has moved to canonical Runs and durable Run provenance; current code explicitly says TaskRecord is a receipt. No direct integration-test evidence was located for the ADR's configured-database row-exists criterion, so the record remains Accepted pending reconciliation and proof.  
 **ADR:** [ADR-018: Persist TaskRecord at queue/runner boundaries](../../../adr/ADR-018-task-record-persistence.md)
+
+## ADR-036: Ontology / Semantic Object Layer
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Reconcile the proposed OntologyEntity/Ontology object system with the newer canonical Workspace object, Node/Graph, Template, and provenance architecture before implementation. If a distinct semantic layer is still required, specify it as a projection/schema layer over canonical objects rather than a competing identity/lifecycle/persistence authority; otherwise create/identify the successor decision and supersede ADR-036.  
+**Current state:** No `maistro.ontology` implementation or OntologyEntity registry was located. The original semantic-object problem may still be valid, but the repository has since established substantially richer canonical object/template semantics. ADR-036 therefore remains an accepted but unimplemented design that must be reconciled before code is added.  
+**ADR:** [ADR-036: Ontology / Semantic Object Layer](../../../adr/ADR-036-ontology-semantic-object-layer.md)
