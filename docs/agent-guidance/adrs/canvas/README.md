@@ -91,3 +91,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Remeasure the seven ACs against the listed tests/source and promote if still complete. Reconcile binary persistence with the current object/archive storage decisions and keep renderer execution behind capability providers rather than DesignEngine. Treat the existing `implemented` date plus rollback-to-Accepted history as requiring fresh strict evidence before promotion.  
 **Current state:** This ADR has unusually concrete source anchors, tests, AC modules, and a coherent ArtifactNode tree that separates prompt assembly from rendering. It appears close to completion; remaining work is lifecycle/evidence reconciliation and alignment with newer storage/provider ownership, not redesign of the artifact model.  
 **ADR:** [ADR-062326-702b: Multi-modality design outputs](../../../adr/ADR-062326-702b-multi-modality-design-outputs-hierarchical-artifact-containers.md)
+
+## ADR-070426-f2a0: Optional external renderers as capability providers
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Reconcile the renderer slots with ADR-081226-6b46's canonical Provider → Binding → Invocation model and remeasure the three implementing SPECs. Preserve "absence is not failure" at discovery/surfacing time, but once a user/run selects a renderer capability, execution must produce an explicit Invocation result rather than silently disappearing. Route third-party renderer network/process effects through outbound policy, sandbox where applicable, and Warden/Sentinel.  
+**Current state:** This is directionally aligned with the newer capability architecture: renderers are replaceable providers and DesignEngine does not own rendering. The older slot/discovery vocabulary needs convergence onto canonical Bindings/Invocations, but the architectural separation itself is sound.  
+**ADR:** [ADR-070426-f2a0: Optional renderer capability providers](../../../adr/ADR-070426-f2a0-optional-renderer-plugins-capability-providers.md)
