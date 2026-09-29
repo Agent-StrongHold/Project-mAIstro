@@ -107,3 +107,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Decide whether one six-tier label still usefully spans scheduling, routing, spend, and observability after TaskQueue/TaskRunner retirement. If retained, attach it to canonical Run admission/scheduling and treat model/token/cost behavior as policy mappings rather than immutable tier semantics. Remove Builders-specific P4/P5 meanings and all legacy compatibility defaults.  
 **Current state:** A shared priority label can prevent cross-subsystem disagreement, but this proposal hard-codes workload meanings and resource multipliers around obsolete Task/Builders architecture. Priority should describe urgency/service class, not permanently encode which historical subsystem created the work.  
 **ADR:** [ADR-070426-b5e9: Six-tier priority system](../../../adr/ADR-070426-b5e9-six-tier-priority-system.md)
+
+## ADR-081226-69ee: Graph and Node Execution Model
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat this as canonical and finish deleting/migrating every competing GraphRun/GraphConfig/Builders/Task execution owner identified by the convergence ledgers. Preserve domain traversal behavior through parity tests while all physical execution flows through Run/NodeRun/Attempt + ExecutionRuntime. Child graph work creates child Runs and remains inside one Workspace unless a separately authorized destination Project is selected.  
+**Current state:** This is the current Graph architecture: Graph is the editable composition, Node is the executable position, Run captures an immutable scoped Graph snapshot, GraphExecutionState owns traversal only, and duplicate graph lifecycle records are explicit migration/deletion targets. Older ADR-062/065/071/090/099 must be read through this decision.  
+**ADR:** [ADR-081226-69ee: Graph and Node Execution Model](../../../adr/ADR-081226-69ee-graph-node-execution-model.md)
+
+## ADR-081226-a66b: Run, NodeRun and Attempt Lifecycle
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Continue M1 until every admitted execution uses this one lifecycle and all competing universal state machines are retired or reduced to domain projections. Keep recovery/retry as new Attempts under the same logical NodeRun where appropriate; ensure terminalization, cancellation, timeout classification, parent/child correlation, and scope invariants are mechanically enforced by stores/runtime.  
+**Current state:** This is MAIstro's canonical execution spine and the principal convergence target for the repository. Run owns logical execution, NodeRun owns one logical node occurrence, Attempt owns one physical try, and ExecutionRuntime owns mechanics only. Queue, schedule, delegation, harness, Builders, and persistence projections explicitly do not own competing post-admission lifecycles.  
+**ADR:** [ADR-081226-a66b: Run, NodeRun and Attempt Lifecycle](../../../adr/ADR-081226-a66b-run-noderun-attempt-lifecycle.md)
