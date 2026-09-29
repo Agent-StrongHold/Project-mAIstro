@@ -19,3 +19,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Complete the M1 cutover by physically retiring Hive-owned production execution, TaskRunner/Graph executor, sandbox, and security-effect paths. Clarify the authority statement: canonical execution state/lifecycle is Run/NodeRun/Attempt in maistro-core; maistro-server is the governed API/control-plane composition that admits and exposes it; Hive is a UI/BFF client. Under the pre-1.0 standard, remove any demo/stub execution path that can become a second behavioral authority rather than preserving it for compatibility.  
 **Current state:** This ADR states the correct convergence direction and directly addresses a major source of duplicate execution authority. The remaining work is not conceptual: Hive legacy execution paths have been active retirement targets throughout M1, and the boundary is only complete when production reachability and security effects flow exclusively through the canonical core/server path.  
 **ADR:** [ADR-096: Hive Conductor / maistro-server boundary](../../../adr/ADR-096-hive-server-boundary.md)
+
+## ADR-070426-3a1f: A2UI declarative agent-driven UI protocol adoption
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Revalidate A2UI v0.10 against the current upstream/protocol shape before pinning, then design it as a declarative UI capability transported through the canonical API/session surface. Agent-generated UI actions must resolve through canonical principal authorization and Capability Invocation; A2UI must not become a side-channel for effects. Keep maistro-design code/artifact generation separate from live declarative UI.  
+**Current state:** The safe-like-data catalog model is a strong fit for MAIstro's control posture and solves a different problem from static/code design outputs. The proposal predates current execution and identity convergence, so transport/action ownership needs updating before acceptance.  
+**ADR:** [ADR-070426-3a1f: A2UI protocol adoption](../../../adr/ADR-070426-3a1f-a2ui-declarative-ui-protocol-adoption.md)
