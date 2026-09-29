@@ -51,3 +51,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Revise this proposal before acceptance to conform to the current pre-1.0 development standard: preserve canonical authority, durable-state, authorization, execution identity, cancellation, provenance, and truthful dependency wiring, but remove backward-compatibility/parity/legacy-consumer preservation as independent design goals for pre-1.0 deployments. Then verify the canonical maistro-server Canvas composition and Design Studio consumption path and define acceptance evidence.  
 **Current state:** The proposal correctly reframes Canvas as a capability under Design Studio and maistro-server as the governed HTTP composition boundary, with missing dependencies failing visibly. Its remaining compatibility-window language predates the explicit pre-1.0 decision that deployments are rebuilt from scratch and backward compatibility carries no positive architectural weight, so that portion should be revised before this ADR is accepted.  
 **ADR:** [ADR-045: Canvas capability ↔ maistro-server /v2/canvas boundary](../../../adr/ADR-045-canvas-studio-engine-cutover.md)
+
+## ADR-061: maistro-design — composable design skills + design systems package
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Connect `maistro_design.nodes` to the canonical node/plugin discovery/composition path and prove `design.orchestrate` is reachable through a real Graph/Run without test-only imports. Then re-evaluate lifecycle promotion against SPEC-160. Reconcile this ADR's informal Warden-feedback "RLPHD" wording with ADR-068's precise authorization-policy RLPHD definition so two different learning mechanisms do not share one architectural term accidentally.  
+**Current state:** maistro-design has extensive implementation and tests, but SPEC-160 explicitly records AC-35/36 as passing rather than reachable: `DesignOrchestrateNode` registers only when its module is directly imported, and no live process imports/names it. This green-but-unreachable gap is why the earlier Implemented claim was correctly rolled back to Accepted.  
+**ADR:** [ADR-061: maistro-design — composable design skills + design systems package](../../../adr/ADR-061-maistro-design-package.md)
