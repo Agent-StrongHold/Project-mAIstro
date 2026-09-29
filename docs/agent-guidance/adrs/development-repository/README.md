@@ -51,3 +51,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep this as the canonical contract/evidence quality policy and reconcile historical Copier/four-product language with the monorepo. Ensure agent development guidance references, rather than duplicates, the live contract-marker ledger, AC-state execution checks, lifecycle-discovery gate, and mutation-testing baseline/ramp. Continue shrinking existing evidence debt instead of permitting new unevidenced contract claims.  
 **Current state:** ADR-032 remains active and has been extended with enforceable contract-marker evidence rules, AC-state execution semantics, lifecycle-owner discovery, and mutation-testing quality targets. Its quality model is directly relevant to autonomous issue-to-merge work: an implementation claim requires executable evidence, not merely code presence or line coverage. Some original repository-template framing is historical after consolidation.  
 **ADR:** [ADR-032: Contracts as Acceptance Criteria](../../../adr/ADR-032-contracts-as-acceptance-criteria.md)
+
+## ADR-033: Templates and Copier Workflow
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Reconcile the body so Copier's current role is unambiguous: it is a template/bootstrap mechanism for generated/downstream product surfaces, not the integration or synchronization model among packages absorbed into this monorepo. Preserve and maintain the live template render/origin tests and bootstrap resolver integration.  
+**Current state:** Copier/template tooling remains present and tested, and maistro-bootstrap still emits Copier commands. The original three-templated-peer rebase workflow is historical after monorepo consolidation, as the ADR itself now notes. Agents must not use that obsolete workflow to reason about package ownership or cross-package changes inside this repository.  
+**ADR:** [ADR-033: Templates and Copier Workflow](../../../adr/ADR-033-templates-and-copier-workflow.md)
