@@ -871,3 +871,85 @@ working graph); the issue stop condition still forbids a Design-Studio-private
 Agent runtime / Goal owner / reconciliation loop / artifact authority, so no
 repair code was written. Next: land the dependencies first, then implement
 #777 as the consumer projection.
+
+## Re-verification at lane head 158aee283 (repair round, after provider timeout)
+
+Round context: repair job `0f251ffb` re-running the lane after the prior
+round (job `4b4198f0`) died on a provider request timeout before executing
+any check (`"checks": []`, `"failure_kind": "provider_error"` in its result
+artifact). Lane head `158aee2839317279f240154ea0b3a53a65c59fda` unchanged;
+working tree clean at start; this addendum is the only delta.
+
+**Develop sync check:** `git fetch origin` then `git rev-parse origin/develop`
+= `0fb3dc69ed95` = the lane's declared develop base = the merge-base of this
+branch (`git rev-list --count origin/develop ^HEAD` = 0). The previous
+block was **not** a develop sync conflict — nothing to merge; no dependency
+landed upstream. (A new unrelated branch `chore/radon-grants-1682` appeared
+on the remote; it touches nothing in this lane.)
+
+**Dependency audit re-confirmed at `158aee283` by fresh direct inspection**
+(all greps re-run this round, exit codes captured):
+- `grep -rnE 'class GoalRevision|goal_store|class CreativeBrief'
+  packages/*/src --include='*.py'` — zero matches, exit 1 (#458 Goal store
+  and #774 CreativeBrief records absent).
+- `grep -ril 'ladybug' packages/*/src` — zero matches, exit 1 (#776
+  Workspace Ladybug working graph absent).
+- `grep -rniE 'goal.reconcil|reconcile_goal|GoalReconciler'
+  packages/*/src --include='*.py'` — zero matches, exit 1 (#804/#805/#806
+  Goal reconciliation absent).
+- `grep -cE 'workspace_agent|control_mode|delegat'
+  packages/hive-conductor/backend/routes/design.py` — **0**, exit 1 (no
+  #804/#53 consumption seam, no control-continuum state).
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-4` — "owns
+  universal lifecycle bookkeeping only" (physical Attempt bookkeeping, not
+  Goal reconciliation).
+- `packages/maistro-core/src/maistro/security/sentinel/permission_source.py:77-79`
+  — #804 governed tool-use "plugs in as another ``PermissionSource``"
+  (declared future work).
+- `packages/hive-conductor/backend/services/brief_store.py:4-6` — interview
+  "is chat state, not a Goal: nothing here is a Goal or CreativeBrief record".
+- `packages/maistro-core/src/maistro/interop/contract.py:316` —
+  `revision="goal_revision"` ontology declaration only; `contract.py:407-408`
+  — `workspace_agent`/`design_studio` pinned as M3 *consumers*.
+- Design Studio browser E2E remains only `design-studio-keyboard.spec.ts` +
+  `design-studio-truthfulness.spec.ts` — no Goal-lineage, delegated-work, or
+  mixed-control spec exists.
+
+**Vulture per-identity ledger gate (lane-brief CI-repair instruction,
+re-executed):** `uv run python scripts/check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'` — **EXIT=0,
+gate PASS**: 1402 total findings across ledger identities, `unclassified: 0`,
+`never_allowlist: 0`, ratchet base `0fb3dc69ed95` -> candidate
+`158aee283931`, `1402 reviewed identities -> 1402 findings` with no drift.
+Zero unbanked identities exist, so no dead-code fix and **no ledger amendment
+to `quality/vulture-baseline.json` was required**.
+
+**Executed at `158aee283` (all by this verifier, fresh runs):**
+- `uv run ruff check .` — All checks passed! (exit 0)
+- `uv run ruff format --check .` — 2621 files already formatted (exit 0).
+- `uv run pytest packages/maistro-design/tests -x -q` — **351 passed**
+  (6.78s).
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py -q` — **18
+  passed** (8.94s).
+- `uv run pytest packages/maistro-core/tests/graph/test_cross_domain_substrate.py
+  packages/hive-conductor/backend/tests/test_program_brief_routes.py -q` —
+  **12 passed** (12.59s).
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_agent_materialization.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q` —
+  **53 passed** (23.40s).
+
+This job directory again contains no `check-*.log` files (`events.jsonl`,
+`manifest.json`, `prompt.txt`, `state.json` only) — all validation above was
+executed directly.
+
+**Conclusion (unchanged across fifteen heads):** all 13 #777 acceptance
+criteria remain UNMET at `158aee283`. The lane stays BLOCKED on unlanded
+canonical dependencies (#458 Goal store, #804/#805/#806 Goal reconciliation,
+#774 CreativeBrief records, #775 creative Graph, #776 Workspace Ladybug
+working graph); the issue stop condition still forbids a Design-Studio-private
+Agent runtime / Goal owner / reconciliation loop / artifact authority, so no
+repair code was written. Next: land the dependencies first, then implement
+#777 as the consumer projection.
