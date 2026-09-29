@@ -191,3 +191,47 @@ clean, `test_pg_learnings.py` 27 passed/5 skipped, vulture ratchet 1402 ==
 1402 (rc=0, ledger unamended), gitleaks clean over `b268f053..HEAD`,
 canonical six-package mypy: no issues in 727 files. No soak semantics
 touched; run-2 status (F3 and F8 open, promotion soak pending) stands.
+
+---
+
+## Independent verify round (this lane) — re-verification at merge head 52e0ec456
+
+State at entry: HEAD `52e0ec456baa` (`Merge commit '0fb3dc69…' into auto-860`),
+branch `auto-860`, tree clean. The merge touches none of this lane's files
+(`git diff bcb7c14ec..52e0ec456` is empty over `scripts/soak/`,
+`docs/testing/soak/`, `pg_learnings.py`, `test_pg_learnings.py`, and both
+inventory notes), so every round-3 statement carries over unchanged.
+
+Re-executed by the verifier (not trusted from any prior run):
+
+- `uv run pytest packages/maistro-core/tests/persistence/test_pg_learnings.py
+  -q` → 27 passed, 5 skipped; `-k schema` fence test passes; the
+  `pg_advisory_xact_lock` fence is present at
+  `packages/maistro-core/src/maistro/persistence/pg_learnings.py:141`.
+- `uv run ruff check .` → pass.
+- `uv run python scripts/check-suite-inventory.py --suite
+  packages/maistro-core/tests` → 11531 == 11531, `ok: 1 suite(s) match`.
+
+Verdict on this head stands: **NEEDS-REPAIR and re-soak** — promotion status
+unchanged. Open items, re-derived from the tree and committed evidence:
+
+- Promotion soak (≥ 4 h, exact RC artifact at the promotion head) has not run.
+  Committed evidence is `m3a-soak-evidence.json` (head `b268f053`) and
+  `m3a-repair-validation.json` (head `b5cf09b`, 120 s ≪ 4 h); neither signs
+  `52e0ec456` or any RC artifact.
+- F3 stands: committed `m3a-repair-validation.json` shows 1671 × 502 in the
+  sustained phase and `task_admission_ratio` 0.0587 against the H6 ≥ 99 %
+  budget.
+- F8 stands and its machine evidence is uncommitted (scratch dir
+  `/tmp/soak-round2b/` per round 2); only the narration is in-repo.
+- Harness gate gap: `scripts/soak/run_soak.py:1156-1163` exit-gates only
+  `exactly_once_task_admission`, `exactly_once_schedule_occurrence`,
+  `rate_limit_enforced`, `replica_2_rejoined`; `lb_failover_bounded` (H4),
+  `task_admission_ratio` (H6), `graceful_drain.ok`, `nonterminal_runs_after_settle`
+  (H5), `rss_growth`/`fd_growth` (S1/S2) are recorded but never evaluated, so
+  `all hard checks passed` (`run_soak.py:1167`) is reachable with failing
+  bounds.
+- `sustain_seconds` is consumed (`run_soak.py:901,907`) but never written to
+  the evidence JSON, which the profile requires (`m3a-load-profile.md:114`).
+- PR body for this head uses "Refs #860" only — no closure keywords; no issue
+  closure performed from this lane.
