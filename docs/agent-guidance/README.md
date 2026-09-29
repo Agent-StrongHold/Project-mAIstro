@@ -12,7 +12,7 @@ Do not preload all linked guidance. Load only the domain index whose applicabili
 - [Authority and agency](authority-and-agency/README.md): human authority, delegated/OBO authority, agent trust, development-repository threat model.
 - [Repository standards](repository-standards/README.md): code/repository style, structure, naming, documentation, commits/PRs, migrations. This index initially routes to existing canonical material and will be normalized in this PR.
 - [Specifications](../specs/): normative system requirements. Use when the task implements, changes, or validates specified behavior.
-- [Architecture decisions](../adr/): accepted/proposed architectural decisions. Use the ADR category indexes being built in this PR rather than loading the full ADR corpus.
+- [Architecture decisions](adrs/README.md): progressive-disclosure ADR map covering every decision file, with canonical-architecture shortcuts, current status interpretation, next steps, and exact links to the full records. Start here rather than loading `docs/adr/`.
 
 ## Precedence
 
