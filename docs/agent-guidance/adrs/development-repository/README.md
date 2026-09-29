@@ -75,3 +75,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Create a successor ADR for the canonical integration-test harness and then supersede ADR-065. The replacement should construct the real composition root with canonical principal/Workspace context, Run/NodeRun/Attempt storage, durable Graph execution/recovery, Capability Binding/Invocation, current quota/credential routing, and Faux external providers. Keep legacy `GraphRun` helpers only for domain/unit tests, not as evidence of production execution wiring.  
 **Current state:** The harness is implemented and useful, but its defining "full pipeline" path still includes `GraphRun` as an executor and exposes `run_graph()` as an integration helper. ADR-062 now explicitly states that GraphRun is not canonical execution authority. A harness built around a retired execution path can make tests green while production authority remains untested, so the architectural contract needs replacement rather than simple completion.  
 **ADR:** [ADR-065: Test harness with full wiring factory](../../../adr/ADR-065-test-harness.md)
+
+## ADR-087: Database Schema Evolution — expand/contract, zero-downtime
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** **Create a successor ADR for pre-1.0 schema evolution, then supersede ADR-087.** Optimize for one clean canonical schema and fresh deployment, not old/new application coexistence or rollback compatibility. Destructive schema replacement is allowed before 1.0. Preserve/migrate beta user data only when that data itself is intentionally durable; compatibility columns, dual reads/writes, two-deploy expand/contract, and rollback-safe old-code support should not be requirements. CI should prove fresh-schema creation plus any explicitly required current-data restore/migration path.  
+**Current state:** ADR-087's entire zero-downtime expand/contract discipline assumes rolling deploys where old and new application versions coexist against one database. That directly conflicts with the explicit pre-1.0 scratch-deployment standard and would add compatibility code/schema debt that hides architectural convergence.  
+**ADR:** [ADR-087: Database Schema Evolution — expand/contract, zero-downtime](../../../adr/ADR-087-db-schema-evolution.md)
