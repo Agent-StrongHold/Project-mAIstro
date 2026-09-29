@@ -91,3 +91,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** **Create an amending/successor decision for hard context-window safety.** Preserve the storage-vs-assembly distinction and ranked whole-memory packing, but change "always include regardless of token budget" so protected memories have highest eviction priority rather than permission to exceed the model/provider's absolute context window. When protected context cannot fit, compact/summarize/escalate explicitly; never overspend a physical context limit. Also reconcile Layer-3 cross-user/project wisdom with explicit sharing and Workspace authorization from ADR-080/current principals.  
 **Current state:** ContextAssemblyPolicy is implemented and recent #622 work intentionally made ≥0.6 memories overspend the supplied budget. That faithfully implements ADR-091 but exposes a flaw in the decision: model context is a hard resource ceiling, not a soft preference. The ADR's two-level storage-vs-assembly reconciliation remains valuable, while its budget and cross-user visibility rules need correction before being treated as final.  
 **ADR:** [ADR-091: Memory model reconciliation — storage types vs context assembly layers](../../../adr/ADR-091-memory-model-layers.md)
+
+## ADR-063026-a91f: Context windows are not memory
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep this as validation/research context rather than a competing memory authority. Update its status table to reflect the now-implemented portions of ADR-091/SPEC-244 and the hard-context-window correction identified in this audit. Evaluate algorithmic prompt compression only from measured token/quality data; do not add compression machinery merely because an external article lists it.  
+**Current state:** The central thesis is sound and reinforces MAIstro's external-state/query-assemble-commit architecture. The one identified compression gap is an optimization candidate, not an architectural deficiency by itself. This record should cite current memory decisions without freezing their older Proposed-state descriptions.  
+**ADR:** [ADR-063026-a91f: Context windows are not memory](../../../adr/ADR-063026-a91f-context-window-memory-architecture-external-validation.md)
