@@ -75,3 +75,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile lifecycle/evidence metadata. The front matter contains `implemented: 2026-06-14` while current status/history remain Accepted with no Implemented transition. Bind the actual tests for the six ACs, verify vendored license/scan/import behavior, then either add a valid Implemented lifecycle transition or remove the unsupported `implemented` field. Keep ADR-061's production reachability gap separate from this ADR's narrower content/import contract.  
 **Current state:** The bundled/catalog content, importer, trust tiers, rescanning, notices, and default design-system registration are present in source, and the ADR is much closer to completion than most of this tranche. Its main visible defect is lifecycle/evidence inconsistency rather than an obvious missing architecture mechanism.  
 **ADR:** [ADR-100: Bundled and cataloged Open Design design systems for maistro-design](../../../adr/ADR-100-bundled-open-design-systems.md)
+
+## ADR-062326-616c: Design skills React/TSX code export
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Re-evidence the narrow output-format contract and move code preview/execution safety onto the canonical sandbox/capability boundary. Generated TSX is untrusted code: Warden scanning alone is not sufficient for execution, and preview must obey ADR-093 isolation plus outbound/effect policy. Remove pre-1.0 compatibility language and avoid making Hive/Canvas own a second code-execution path.  
+**Current state:** The output-format direction is useful, but the earlier Implemented claim was rolled back and the ADR intentionally leaves the security-critical preview/execution mechanism downstream. Completion therefore requires proving both the format behavior and a canonical safe consumer path, not merely an enum value and prompt instructions.  
+**ADR:** [ADR-062326-616c: Design skills code export](../../../adr/ADR-062326-616c-design-skills-code-export-capability.md)
+
+## ADR-062326-702b: Multi-modality design outputs and hierarchical artifact containers
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Remeasure the seven ACs against the listed tests/source and promote if still complete. Reconcile binary persistence with the current object/archive storage decisions and keep renderer execution behind capability providers rather than DesignEngine. Treat the existing `implemented` date plus rollback-to-Accepted history as requiring fresh strict evidence before promotion.  
+**Current state:** This ADR has unusually concrete source anchors, tests, AC modules, and a coherent ArtifactNode tree that separates prompt assembly from rendering. It appears close to completion; remaining work is lifecycle/evidence reconciliation and alignment with newer storage/provider ownership, not redesign of the artifact model.  
+**ADR:** [ADR-062326-702b: Multi-modality design outputs](../../../adr/ADR-062326-702b-multi-modality-design-outputs-hierarchical-artifact-containers.md)
