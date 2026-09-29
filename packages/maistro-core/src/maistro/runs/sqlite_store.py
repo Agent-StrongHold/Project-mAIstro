@@ -36,6 +36,7 @@ from maistro.runs.model import (
     GraphSnapshot,
     NodeRun,
     Run,
+    RunEvalScore,
     RunStatus,
 )
 from maistro.runs.retention_scope import (
@@ -62,6 +63,7 @@ from maistro.runs.store import (
     require_repairable_attempt,
     validate_accepted_outcome_against_attempt,
     validate_child_scope,
+    validate_eval_score_spine,
 )
 from maistro.sqlite_schema import execute_schema_script, serialized_schema_upgrade
 
@@ -165,6 +167,10 @@ _DELETE_NODE_RUNS_SQL = (
 )
 
 _DELETE_RUNS_SQL = "DELETE FROM canonical_runs WHERE run_id IN (SELECT value FROM json_each(?))"
+
+_DELETE_EVAL_SCORES_SQL = (
+    "DELETE FROM canonical_run_eval_scores WHERE run_id IN (SELECT value FROM json_each(?))"
+)
 
 #: The purge's dependent-evidence statements, and the spine deletes reworked
 #: the same way (#1175). A variable-length `IN` list is the one thing `?`
@@ -311,6 +317,27 @@ CREATE INDEX IF NOT EXISTS idx_canonical_attempts_node_run
 CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_attempts_one_active
     ON canonical_attempts(node_run_id)
     WHERE status IN ('created', 'running');
+
+-- One scored rubric dimension per row, append-only, on the Run that produced
+-- the scored artifact (M7-A3). Eval is Run evidence, not a sidecar: every row
+-- names the Run, the NodeRun whose work it scores, and the Attempt whose
+-- evidence it scored, and the foreign keys keep those three on one spine --
+-- an eval record cannot outlive, or hang off, a spine row that is gone.
+-- `scored_at` is a column because listing a Run's eval evidence orders by it.
+CREATE TABLE IF NOT EXISTS canonical_run_eval_scores (
+    eval_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    node_run_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    scored_at TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES canonical_runs(run_id) ON DELETE RESTRICT,
+    FOREIGN KEY (node_run_id) REFERENCES canonical_node_runs(node_run_id) ON DELETE RESTRICT,
+    FOREIGN KEY (attempt_id) REFERENCES canonical_attempts(attempt_id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_canonical_run_eval_scores_run
+    ON canonical_run_eval_scores(run_id, scored_at);
 """
 
 #: The active root Runs the admission ceilings count (#1182), as literals
@@ -833,6 +860,11 @@ class SqliteRunStore:
                 "it; delete the descendants first"
             )
         await self._conn.execute(
+            """DELETE FROM canonical_run_eval_scores WHERE run_id IN
+               (SELECT value FROM json_each(?))""",
+            (json.dumps([run_id]),),
+        )
+        await self._conn.execute(
             """DELETE FROM canonical_attempts WHERE node_run_id IN
                (SELECT node_run_id FROM canonical_node_runs WHERE run_id = ?)""",
             (run_id,),
@@ -841,6 +873,58 @@ class SqliteRunStore:
         await self._conn.execute("DELETE FROM canonical_runs WHERE run_id = ?", (run_id,))
         await self._conn.commit()
         return True
+
+    async def record_eval_score(self, eval_score: RunEvalScore) -> RunEvalScore:
+        """Append one scored rubric dimension to the Run's durable evidence (M7-A3).
+
+        Refuses anything that is not one connected spine triple — Run, NodeRun,
+        Attempt — so an eval record can never dangle beside the execution that
+        produced it. Append-only: a duplicate eval_id is an integrity error and
+        a prior record is never rewritten, which is what keeps a failed eval
+        queryable after the retry that supersedes it.
+        """
+        async with self._write_lock:
+            existing = await self._fetchone(
+                "SELECT 1 FROM canonical_run_eval_scores WHERE eval_id = ?",
+                (eval_score.eval_id,),
+            )
+            if existing is not None:
+                raise RunIntegrityError(f"eval score {eval_score.eval_id!r} is already recorded")
+            run = await self._require_run(eval_score.run_id)
+            node_run = await self._require_node_run(eval_score.node_run_id)
+            attempt = await self._require_attempt(eval_score.attempt_id)
+            validate_eval_score_spine(run=run, node_run=node_run, attempt=attempt)
+            await self._conn.execute(
+                """INSERT INTO canonical_run_eval_scores
+                   (eval_id, run_id, node_run_id, attempt_id, scored_at, payload)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    eval_score.eval_id,
+                    eval_score.run_id,
+                    eval_score.node_run_id,
+                    eval_score.attempt_id,
+                    eval_score.scored_at.isoformat(),
+                    json_of(eval_score),
+                ),
+            )
+            await self._conn.commit()
+        return eval_score.model_copy(deep=True)
+
+    async def list_eval_scores(self, run_id: str) -> list[RunEvalScore]:
+        await self._require_run(run_id)
+        cursor = await self._conn.execute(
+            "SELECT payload FROM canonical_run_eval_scores WHERE run_id = ? "
+            "ORDER BY scored_at, eval_id",
+            (run_id,),
+        )
+        return [model_of_json(RunEvalScore, row[0]) for row in await cursor.fetchall()]
+
+    async def get_eval_score(self, eval_id: str) -> RunEvalScore | None:
+        row = await self._fetchone(
+            "SELECT payload FROM canonical_run_eval_scores WHERE eval_id = ?",
+            (eval_id,),
+        )
+        return model_of_json(RunEvalScore, row[0]) if row is not None else None
 
     async def has_runs_in_project(self, project_id: str) -> bool:
         """Whether any Run is filed in this Project.
@@ -981,6 +1065,10 @@ class SqliteRunStore:
             # Dependent evidence beyond the spine, in the same transaction:
             # owned resumable state deleted, retained provenance counted.
             continuations = await self._purge_dependent_tables(run_id_param)
+            # Eval evidence is spine-attached (FK on run_id), so it dies with
+            # the Run tree, in the same transaction and before the rows it
+            # names (M7-A3).
+            await self._conn.execute(_DELETE_EVAL_SCORES_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_ATTEMPTS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_NODE_RUNS_SQL, (run_id_param,))
             await self._conn.execute(_DELETE_RUNS_SQL, (run_id_param,))

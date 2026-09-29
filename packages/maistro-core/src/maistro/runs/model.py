@@ -488,6 +488,96 @@ class Attempt(BaseModel):
         return self
 
 
+class EvalMethod(StrEnum):
+    """How one rubric dimension was scored (M7-A3).
+
+    Not a lifecycle: this names the *method* that produced one score record,
+    never a state any piece of work moves through, so it deliberately stays
+    out of the execution-lifecycles vocabulary (`scripts/check-execution-lifecycles.py`).
+
+    ``DETERMINISTIC`` methods run in-process with no judge (same spirit as
+    persona ``RubricEval.score``). ``MODEL_JUDGE`` methods name the model that
+    scored. ``HUMAN`` methods wait on the HITL fence and name the person who
+    eventually scored.
+    """
+
+    DETERMINISTIC = "deterministic"
+    MODEL_JUDGE = "model_judge"
+    HUMAN = "human"
+
+
+class EvalJudge(BaseModel):
+    """Identity of whatever scored one dimension, when that is a model or a person.
+
+    A deterministic method has no judge; a model-judge or human record without
+    one could not be audited, so `RunEvalScore` refuses that shape.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, ser_json_inf_nan="constants")
+
+    kind: EvalMethod
+    identity: str
+
+    @model_validator(mode="after")
+    def _validate_judge(self) -> EvalJudge:
+        if self.kind is EvalMethod.DETERMINISTIC:
+            raise ValueError("a deterministic eval has no judge")
+        _require_non_empty(self.identity, "EvalJudge.identity")
+        return self
+
+
+class RunEvalScore(BaseModel):
+    """One scored rubric dimension, recorded onto the Run that produced the artifact.
+
+    Eval is Run evidence (M7-A3), not a sidecar and not a second execution
+    identity: the record names the producing `Run`, the `NodeRun` whose work it
+    scores, and the physical `Attempt` whose evidence it scored, plus the exact
+    Goal and Rubric revisions that were applied. Records are append-only —
+    re-evaluating a dimension appends another record and never rewrites or
+    deletes a prior one, so a failed eval stays queryable after the retry that
+    supersedes it.
+    """
+
+    model_config = ConfigDict(extra="forbid", ser_json_inf_nan="constants")
+
+    eval_id: str = Field(default_factory=_id)
+    run_id: str
+    node_run_id: str
+    attempt_id: str
+    goal_id: str
+    goal_revision: int = Field(ge=1)
+    rubric_id: str
+    rubric_revision: int = Field(ge=1)
+    dimension_id: str
+    raw_score: float = Field(allow_inf_nan=False)
+    passed: bool
+    method: EvalMethod
+    evidence_pointers: list[str] = Field(default_factory=list)
+    judge: EvalJudge | None = None
+    #: Method-specific detail — criterion-level results, judge transcript
+    #: references, whatever the method recorded. Evidence, not state.
+    detail: dict[str, Any] = Field(default_factory=dict)
+    scored_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _validate_eval_score(self) -> RunEvalScore:
+        _require_non_empty(self.run_id, "run_id")
+        _require_non_empty(self.node_run_id, "node_run_id")
+        _require_non_empty(self.attempt_id, "attempt_id")
+        _require_non_empty(self.goal_id, "goal_id")
+        _require_non_empty(self.rubric_id, "rubric_id")
+        _require_non_empty(self.dimension_id, "dimension_id")
+        if self.method is EvalMethod.DETERMINISTIC:
+            if self.judge is not None:
+                raise ValueError("a deterministic eval score cannot name a judge")
+        else:
+            if self.judge is None:
+                raise ValueError(f"a {self.method.value} eval score must name its judge")
+            if self.judge.kind is not self.method:
+                raise ValueError("EvalJudge.kind must match the scoring method")
+        return self
+
+
 __all__ = [
     "ACCEPTED_NODE_OUTCOME_STATUSES",
     "PAUSE_AWAITS_HUMAN",
@@ -498,10 +588,13 @@ __all__ = [
     "AttemptResult",
     "AttemptStatus",
     "CancellationCause",
+    "EvalJudge",
+    "EvalMethod",
     "ExecutionLease",
     "GraphSnapshot",
     "NodeRun",
     "Run",
+    "RunEvalScore",
     "RunStatus",
     "evidence_values_equal",
 ]
