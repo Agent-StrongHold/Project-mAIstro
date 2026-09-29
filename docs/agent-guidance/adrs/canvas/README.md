@@ -115,3 +115,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile Design Project scope with canonical Workspace/Project/principal authorization. Soft org/team metadata may remain domain filters, but must not create fake foreign-key authorities or bypass canonical Project resource visibility.  
 **Current state:** This repairs a schema that referenced org/team tables the product never populated and correctly moves enforcement to the store/domain boundary.  
 **ADR:** [ADR-083026-cdcb](../../../adr/ADR-083026-cdcb-design-project-scope-is-a-soft-axis.md)
+
+## ADR-091626-ba4f: Workspace design system first-party bundle
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep the Workspace design grammar in the same scanned Open Design bundle format as other systems and use Persona only for taste/theme variation, never semantic/security meaning. Verify the six ACs remain green as the Workspace UI replaces Conductor.  
+**Current state:** This gives the new Workspace surface a first-party token/component grammar instead of carrying forward Conductor's ad hoc CSS/theme accumulation.  
+**ADR:** [ADR-091626-ba4f](../../../adr/ADR-091626-ba4f-workspace-design-system-first-party-bundle.md)
