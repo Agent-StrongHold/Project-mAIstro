@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Split/rewrite this proposal before acceptance so each concern lands at its current canonical boundary: delegation/subgraph depth on child Runs and delegation provenance; context compaction in the canonical context/harness path; steering as durable Run guidance/input; rate-limit coordination in provider/credential/quota routing; retry policy on Attempts/Invocations; model-context probing in provider/model capability resolution. Remove GraphRun-as-execution-owner and file-local coordination assumptions where they conflict with current architecture.  
 **Current state:** The six operational concerns remain legitimate, but the proposal was built as an extension of ADR-062's now-retired GraphRun execution authority and bundles independently evolving subsystems into one decision. Keeping it Proposed is correct; accepting it unchanged would recreate non-canonical control and retry paths.  
 **ADR:** [ADR-066: P1 Resilience and Control](../../../adr/ADR-066-p1-resilience-and-control.md)
+
+## ADR-085: Cost, Quota, and Rate Limiting
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Create a current spend-control ADR/spec that places accounting and enforcement on canonical Run/Attempt/Invocation and principal/Workspace scopes, then use it to supersede the stale Task-budget portions of ADR-054/085 as appropriate. Preserve nested limits, independent per-principal rate limiting, batch-vs-interactive cost classification, and attributable usage. Make ADR-068's rule explicit: over-budget is a hard veto cleared only by an explicit budget grant, never by generic elevation or RLPHD.  
+**Current state:** The layered spend-control intent remains current, but the inner "per-task executor budget" boundary is obsolete and Router quota enforcement has explicitly been removed in favor of canonical Invocation enforcement. The ADR needs to converge with current usage/effect accounting rather than adding another quota path.  
+**ADR:** [ADR-085: Cost, Quota, and Rate Limiting](../../../adr/ADR-085-cost-quota-rate-limiting.md)
