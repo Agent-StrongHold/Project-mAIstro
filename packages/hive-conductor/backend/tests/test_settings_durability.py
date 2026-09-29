@@ -321,7 +321,7 @@ def test_settings_survive_a_restart(tmp_path: Path) -> None:
     first = State(db_path=db)
     persisted = PersistedStore(first)
     persisted.initialize()
-    settings_store.reset(store=settings_store.PersistedSettingsRecordStore(persisted))
+    settings_store.reset(store=settings_store.PersistedSettingsRecordStore(persisted, first.flush))
     try:
         settings_store.save(SettingsModel(default_model="chosen-before-restart", max_tokens=4096))
     finally:
@@ -330,7 +330,7 @@ def test_settings_survive_a_restart(tmp_path: Path) -> None:
     second = State(db_path=db)
     reopened = PersistedStore(second)
     reopened.initialize()
-    settings_store.reset(store=settings_store.PersistedSettingsRecordStore(reopened))
+    settings_store.reset(store=settings_store.PersistedSettingsRecordStore(reopened, second.flush))
     try:
         record = settings_store.load()
         assert record.values.default_model == "chosen-before-restart"

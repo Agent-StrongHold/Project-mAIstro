@@ -1548,7 +1548,7 @@ class TestRestartDurability:
         first = State(db_path=db)
         persisted_first = PersistedStore(first)
         persisted_first.initialize()
-        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_first))
+        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_first, first.flush))
         invitations_first = JsonStore("registration_invitations", persisted=persisted_first)
         invitations_first.initialize()
         stores.registration_invitations = invitations_first
@@ -1561,7 +1561,7 @@ class TestRestartDurability:
         second = State(db_path=db)
         persisted_second = PersistedStore(second)
         persisted_second.initialize()
-        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_second))
+        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_second, second.flush))
         rehydrated = JsonStore("registration_invitations", persisted=persisted_second)
         rehydrated.initialize()
         stores.registration_invitations = rehydrated
@@ -1579,7 +1579,7 @@ class TestRestartDurability:
         third = State(db_path=db)
         persisted_third = PersistedStore(third)
         persisted_third.initialize()
-        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_third))
+        rp.configure(store=rp.PersistedRegistrationRecordStore(persisted_third, third.flush))
         closed_invitations = JsonStore("registration_invitations", persisted=persisted_third)
         closed_invitations.initialize()
         stores.registration_invitations = closed_invitations

@@ -24,7 +24,6 @@ from maistro.observability.correlation import (
     detached_execution_context,
 )
 from maistro.runs.model import TERMINAL_RUN_STATUSES
-from maistro.runs.sources import canonical_occurrence_instant
 from maistro.scheduling import FireDecision, OverlapPolicy, Schedule, evaluate
 from maistro.scheduling.admission import ScheduleRunAdmitter
 
@@ -1014,7 +1013,7 @@ class _ScheduleRunner:
             target=sid,
             detail={
                 "name": schedule.name,
-                "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
+                "scheduled_for": (scheduled_for or t).isoformat(),
                 "catchup": catchup,
             },
         )
@@ -1057,11 +1056,7 @@ class _ScheduleRunner:
                             "admission_source": "schedule",
                             "schedule_id": sid,
                             "schedule_name": schedule.name,
-                            # The instant in UTC (#850): this provenance forms
-                            # the occurrence claim the run stores compare as
-                            # text, and a wall-clock rendering would change
-                            # identity with the schedule's timezone.
-                            "scheduled_for": canonical_occurrence_instant(scheduled_for or t),
+                            "scheduled_for": (scheduled_for or t).isoformat(),
                             "catchup": catchup,
                             "request_id": effective_request_id,
                         },

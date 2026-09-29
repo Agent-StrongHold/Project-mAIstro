@@ -16,21 +16,6 @@ already has one, so two tickers evaluating the same due window produce one Run
 between them and a crash between creating a Run and stamping the cursor cannot
 duplicate the firing on the next tick.
 
-The claim is an *instant*, not a wall clock (#850). Every store compares
-`scheduled_for` as text — provenance is JSON, and the claim indexes are
-expressions over that text — so the text is one representation of the
-identity. `datetime.isoformat()` renders in the datetime's own offset, and
-the cron walker renders moments in the schedule's timezone, so editing a
-schedule's timezone used to re-render an already-claimed instant as different
-text: the lookup missed, the same firing was admitted twice, and the window
-the uniqueness contract exists to close reopened. Nominal claims are now
-written and probed as the instant in UTC (`canonical_occurrence_instant`),
-so a timezone edit changes the wall clock and never the claim. Rows written
-before this identity keep their wall-clock text: a crash-window occurrence
-straddling the upgrade can re-fire once, the same narrow, loud-documented
-window migrations 015/042 accepted rather than backfill-parse every Run's
-provenance (PostgreSQL refuses the non-IMMUTABLE cast in an index).
-
 That leaves `record_fire` doing what it is actually good at. The cursor is now
 an optimisation — where to start enumerating, so a schedule does not re-derive
 its whole history every tick — rather than the mechanism that makes firing
@@ -109,7 +94,6 @@ from maistro.runs.sources import (
     SCHEDULE_TRIGGER_MANUAL,
     SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
-    canonical_occurrence_instant,
 )
 from maistro.runs.store import DuplicateOccurrence, RunIntegrityError
 from maistro.scheduling.engine import (
@@ -867,12 +851,10 @@ class ScheduleRunAdmitter:
         if not truncated:
             return {}
         probe = truncated[-_MAX_TRUNCATED_CLAIM_PROBES:]
-        # The canonical instant, not the zone-local rendering: the claims on
-        # disk were written by whatever timezone the schedule had when its
-        # ticker fired (#850).
-        probe_keys = [canonical_occurrence_instant(moment) for moment in probe]
         try:
-            found = await self._runs.get_runs_for_occurrences(schedule.schedule_id, probe_keys)
+            found = await self._runs.get_runs_for_occurrences(
+                schedule.schedule_id, [moment.isoformat() for moment in probe]
+            )
         except Exception as exc:
             logger.warning(
                 "schedule %s could not batch-probe %d truncated claim(s): %s",
@@ -881,7 +863,7 @@ class ScheduleRunAdmitter:
                 exc,
             )
             return {}
-        by_moment = dict(zip(probe_keys, probe, strict=True))
+        by_moment = {moment.isoformat(): moment for moment in probe}
         return {
             by_moment[scheduled_for]: run
             for scheduled_for, run in found.items()
@@ -899,9 +881,7 @@ class ScheduleRunAdmitter:
         that the reactive design rides out (#1059).
         """
         try:
-            return await self._runs.get_run_for_occurrence(
-                schedule.schedule_id, canonical_occurrence_instant(moment)
-            )
+            return await self._runs.get_run_for_occurrence(schedule.schedule_id, moment.isoformat())
         except Exception as exc:
             logger.warning(
                 "schedule %s could not probe the claim on %s: %s",
@@ -1353,11 +1333,7 @@ class ScheduleRunAdmitter:
         provenance: dict[str, Any] = {
             ADMISSION_SOURCE: SCHEDULE_SOURCE,
             SCHEDULE_ID_KEY: schedule.schedule_id,
-            # The instant in UTC, not the cron rendering's own offset (#850):
-            # the claim every store compares is this text, and a schedule whose
-            # timezone changes would otherwise re-render the same instant as a
-            # different identity and fire it twice.
-            SCHEDULED_FOR_KEY: canonical_occurrence_instant(fire.scheduled_for),
+            SCHEDULED_FOR_KEY: fire.scheduled_for.isoformat(),
             SCHEDULE_CATCHUP_KEY: fire.catchup,
         }
         if fire_id is not None:

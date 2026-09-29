@@ -945,7 +945,7 @@ record_docker_sock() {
 
     if [[ "$path" != "/var/run/docker.sock" ]]; then
         info "Detected non-default Docker socket at $path; recording MAISTRO_DOCKER_SOCK."
-        set_env_value MAISTRO_DOCKER_SOCK "$path"
+        upsert_env MAISTRO_DOCKER_SOCK "$path"
     fi
 }
 

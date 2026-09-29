@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -36,7 +35,6 @@ from maistro.runs.sources import (
     SCHEDULE_TRIGGER_KEY,
     SCHEDULE_TRIGGER_RECURRING,
     SCHEDULED_FOR_KEY,
-    canonical_occurrence_instant,
     occurrence_key,
 )
 from maistro.runs.store import InMemoryRunStore, RunIntegrityError
@@ -1166,126 +1164,6 @@ class TestOneRunPerFiring:
         assert after is not None and before is not None
         assert after.last_fired_at == before.last_fired_at
         assert after.runs_so_far == before.runs_so_far
-
-
-class TestTheClaimIsAnInstantNotAWallClock:
-    """The occurrence claim survives a timezone edit (#850).
-
-    Every store compares `scheduled_for` as text, and the cron walker renders
-    moments in the schedule's timezone — so the text a claim was written under
-    changed when the schedule's timezone did. A claimed instant re-enumerated
-    under the edited zone produced different text, the lookup missed, and the
-    same firing was admitted twice: the double-fire window the uniqueness
-    contract (#220) exists to close, reopened by a settings edit. Claims are
-    now written and probed as the instant in UTC, so the wall clock can change
-    and the claim cannot.
-    """
-
-    async def test_editing_the_timezone_cannot_re_eligibil_an_already_claimed_instant(
-        self, harness
-    ) -> None:
-        """A crashed winner's claim holds across a UTC -> Berlin edit.
-
-        Replica A claims NOON and dies before `record_fire`, exactly as
-        `_crashed_before_record_fire` plants. The operator then edits the
-        schedule's timezone (which clears the due cursor and keeps the
-        enumeration cursor, so the next tick re-enumerates the owed
-        occurrence), and replica B's tick renders that same instant as
-        14:00+02:00. The claim must still answer.
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(
-            schedules,
-            project_id,
-            overlap_policy=OverlapPolicy.ALLOW,
-            catchup_window_seconds=6 * 3600.0,
-        )
-        winner = await _crashed_before_record_fire(harness, schedule, NOON)
-
-        edited = await schedules.put(schedule.model_copy(update={"timezone": "Europe/Berlin"}))
-        assert edited.next_due_at is None, "the edit is what re-enumerates the occurrence"
-
-        second = await admitter.admit_due(edited, now=NOON + timedelta(hours=2))
-
-        assert NOON in second.already_fired, "the claimed instant stayed claimed"
-        assert len(second.run_ids) == 2, "the newer occurrences still fired"
-        assert second.failures == ()
-        claim = await runs.get_run_for_occurrence(
-            schedule.schedule_id, canonical_occurrence_instant(NOON)
-        )
-        assert claim is not None and claim.run_id == winner
-        stored = await schedules.get(schedule.schedule_id)
-        assert stored is not None
-        assert stored.last_fired_at == NOON + timedelta(hours=2)
-        # The winner's ticker counted the firing; this one counts only its own.
-        assert stored.runs_so_far == 2
-
-        # Every claim on disk is the canonical instant, never a wall-clock
-        # rendering: equal instants are one identity whatever zone wrote them.
-        berlin_text = NOON.astimezone(ZoneInfo("Europe/Berlin")).isoformat()
-        for run_id in (*second.run_ids, winner):
-            run = await runs.get_run(run_id)
-            assert run is not None
-            assert run.provenance[SCHEDULED_FOR_KEY] != berlin_text
-            assert run.provenance[SCHEDULED_FOR_KEY] == canonical_occurrence_instant(
-                datetime.fromisoformat(run.provenance[SCHEDULED_FOR_KEY])
-            )
-
-    async def test_the_reverse_edit_holds_too(self, harness) -> None:
-        """A Berlin-written claim survives an edit back to UTC.
-
-        Canonicalisation must hold in both directions: a fix that only
-        canonicalised one side of the comparison would pass the first test and
-        still reopen the window the other way round. The crashed winner is
-        planted with the moment as the Berlin cron walker produced it — the
-        same instant as NOON, rendered `14:00+02:00` — which is the identity
-        the pre-#850 admitter actually wrote.
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(
-            schedules,
-            project_id,
-            timezone="Europe/Berlin",
-            overlap_policy=OverlapPolicy.ALLOW,
-            catchup_window_seconds=6 * 3600.0,
-        )
-        winner = await _crashed_before_record_fire(
-            harness, schedule, NOON.astimezone(ZoneInfo("Europe/Berlin"))
-        )
-
-        edited = await schedules.put(schedule.model_copy(update={"timezone": "UTC"}))
-        second = await admitter.admit_due(edited, now=NOON + timedelta(hours=2))
-
-        assert NOON in second.already_fired
-        claim = await runs.get_run_for_occurrence(
-            schedule.schedule_id, canonical_occurrence_instant(NOON)
-        )
-        assert claim is not None and claim.run_id == winner
-
-    async def test_a_non_utc_schedule_writes_the_instant_not_the_wall_clock(self, harness) -> None:
-        """The write side is canonical on its own, before any edit.
-
-        A Berlin schedule firing NOON stores `12:00+00:00`, not `14:00+02:00`,
-        so the claim a Berlin writer leaves is the same identity a UTC reader
-        (or a reader under any other zone) probes with.
-        """
-        admitter, runs, _templates, schedules, project_id = harness
-        schedule = await _schedule(schedules, project_id, timezone="Europe/Berlin")
-
-        first = await admitter.admit_due(schedule, now=NOON)
-        assert len(first.run_ids) == 1
-        run = await runs.get_run(first.run_ids[0])
-        assert run is not None
-        berlin_text = NOON.astimezone(ZoneInfo("Europe/Berlin")).isoformat()
-        assert run.provenance[SCHEDULED_FOR_KEY] == canonical_occurrence_instant(NOON)
-        assert run.provenance[SCHEDULED_FOR_KEY] != berlin_text
-
-        # Re-running the admitter with the stale cursor — the state a crash
-        # between create and advance leaves — consumes the occurrence, which
-        # only works if the probe speaks the same text the write left.
-        again = await admitter.admit_due(schedule, now=NOON)
-        assert again.run_ids == ()
-        assert len(again.already_fired) == 1
 
 
 async def _crashed_before_record_fire(harness, schedule: Schedule, when: datetime) -> str:

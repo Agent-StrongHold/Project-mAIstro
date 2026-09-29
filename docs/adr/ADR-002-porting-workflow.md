@@ -27,6 +27,8 @@ history:
 
 # ADR-002: Per-port spec-first workflow
 
+> **Reconciliation note (2026-09-28):** This ADR remains lifecycle-valid `Accepted` until a successor ADR is created and accepted. Several fixed workflow details below conflict with the active pre-1.0 development standards in [`docs/development-standards/pre-v1-development.md`](../development-standards/pre-v1-development.md), including mandatory manual ceremony, the retired `integration` target, and historical sequential numbering. Those conflicting details are not current operating guidance.
+
 **Status:** Accepted  
 **Date:** 2026-04-26  
 **Tranche:** T0  
@@ -36,11 +38,11 @@ history:
 
 ## Context
 
-maistro-engine is receiving improvements ported from two adjacent repos: `stronghold` (production multi-agent platform) and `Project_mAIstro` (Python conductor + TypeScript app layer). Each port must be specced, tested, and implemented in a repeatable, auditable way per the `~/.claude/CLAUDE.md` 12-step engineering workflow.
+maistro-engine was receiving improvements ported from two adjacent repos: `stronghold` and `Project_mAIstro`. At the time, each port was required to follow a repeatable, auditable 12-step engineering workflow.
 
-## Decision
+## Decision as accepted
 
-Every port follows this sequence without collapsing steps:
+Every port followed this sequence without collapsing steps:
 
 1. **ADR drafted** — sections: Context, Decision, Interface (spec), Acceptance criteria, Test plan, Dependencies, Out of scope, Source references.
 2. **ADR-only PR opened** to `integration` for review.
@@ -49,24 +51,31 @@ Every port follows this sequence without collapsing steps:
 5. **Failing edge-case tests** written.
 6. **Implementation** written to make all tests pass.
 7. **`pytest tests/`** — full suite green.
-8. **Coverage check** — new code must have test coverage (judgment call per port; threshold gate formalized in T14).
+8. **Coverage check** — new code must have test coverage.
 9. **Assertion-strength audit** — tests must pin meaningful behavior, not just "doesn't crash."
 10. **Code-smell audit** — duplication, dead code, half-finished abstractions.
-11. **`ruff check src/ tests/ && ruff format --check src/ tests/ && mypy --strict src/ && pip-audit --strict`** — all must pass.
+11. **Lint, formatting, typing, and dependency audit** — all required checks pass.
 12. **Implementation PR** opened to `integration`; links back to ADR; ADR Status updated to Implemented.
 
-Trivial typo/rename fixes exempt from the full workflow.
+Trivial typo/rename fixes were exempt from the full workflow.
 
-## Spec format
+## Current reconciliation
 
-ADR-style at `docs/adr/ADR-XXX-name.md`. Template at `docs/adr/ADR-000-template.md`. Numbering begins at ADR-001 (this file). ADRs combine the architecture decision and the per-port specification.
+The durable principles remain useful: define intended behavior, test meaningful behavior, verify quality, and keep architecture decisions traceable. The fixed ceremony conflicts with the active pre-1.0 agent-native development model and current repository topology.
+
+A successor ADR must define the canonical agent-native development workflow. Once that ADR is accepted, this record can transition `Accepted -> Superseded` with a valid `superseded-by` relationship.
+
+## Historical spec format
+
+The original decision used ADR-style records at `docs/adr/ADR-XXX-name.md` and sequential numbering. Sequential allocation is no longer the active numbering policy; current repository guidance governs new record IDs.
 
 ## Acceptance criteria
 
 - [x] ADR template exists at `docs/adr/ADR-000-template.md`
-- [x] This ADR documents the workflow
-- [ ] Future ADRs reference this document in their "workflow" section (living check)
+- [x] Historical workflow is retained for provenance
+- [x] Conflicting historical details are explicitly identified as non-current guidance
+- [ ] Successor ADR defines the canonical pre-1.0 agent-native development workflow
 
 ## Out of scope
 
-Automated ADR status tracking, ADR linting CI gate. Manual process only.
+Defining the successor workflow in this historical ADR. That belongs in the successor decision record.

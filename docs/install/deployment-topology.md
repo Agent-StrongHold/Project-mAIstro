@@ -40,20 +40,6 @@ Persistent layer (outside instances):
   (nginx passive checks + compose healthchecks). `/health/live` is the unconditional
   liveness probe (ADR-038). `stop_grace_period: 30s` gives replicas a connection-drain
   window on rolling updates.
-- **SIGTERM semantics (#819).** Uvicorn owns SIGTERM/SIGINT for the server
-  process: on receipt it stops accepting connections and runs the lifespan
-  shutdown, which drains in-flight tasks for up to `SHUTDOWN_DRAIN_TIMEOUT`
-  (30s, `maistro_server/main.py`) — tasks still running when that window
-  closes are cancelled and marked FAILED — then tears down MAIstro-owned
-  sandbox containers, closes shared outbound clients, flushes the usage log
-  and disposes the DB engine before the process exits. A signal-driven stop
-  exits with the conventional "died of SIGTERM" status (Uvicorn re-raises the
-  captured signal after shutdown completes), which is what orchestrators
-  expect. Size `stop_grace_period` to cover the drain window **plus** that
-  teardown — a deployment whose tasks legitimately run longer than 30s must
-  raise the grace period (or the tasks keep getting cancelled at the drain
-  deadline), and SIGKILL must remain only the runaway backstop, never the
-  normal path.
 - **Reference stack:** `deploy/docker-compose.prod.yml` (LB + 2 replicas +
   primary/replica PostgreSQL + Redis). Stronghold-scale deployments map the same
   shape onto Kubernetes + Helm (ADR-081).
