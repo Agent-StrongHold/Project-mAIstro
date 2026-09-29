@@ -139,3 +139,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Enforce inward dependency direction mechanically and continue moving canonical semantics into maistro-core while specialized packages remain extensions. Remove the phrase/assumption that physical moves require compatibility planning before 1.0 unless preserving user data or an external stable contract is explicitly justified; parity/reachability tests should protect useful behavior, not obsolete interfaces.  
 **Current state:** This is the current package-ownership map: core owns reusable semantics/platform mechanisms, server is transport/control-plane composition, Hive is product/UI, specialized packages extend core, and bootstrap owns installation/environment setup. It directly supports the convergence work in M1.  
 **ADR:** [ADR-081226-034b: Package Ownership and Dependency Direction](../../../adr/ADR-081226-034b-package-ownership-dependency-direction.md)
+
+## ADR-073126-c4e1: Release and versioning process
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Rewrite the release-candidate branch rules to match ADR-095's current topology: `integration` is retired, so RCs cannot depend on it. Preserve lockstep monorepo versioning, immutable annotated tags, one workflow-controlled publish path, artifact verification, and independent release approval. Before 1.0, do not let package-version compatibility bounds drive architecture or preserve obsolete interfaces.  
+**Current state:** The release ADR contains useful publication controls but still describes RC/hotfix flows around a branch model that ADR-095 explicitly retired. Its own implementation inventory also records that some publish controls were never exercised/configured. It needs operational reconciliation before the first real release.  
+**ADR:** [ADR-073126-c4e1: Release and versioning process](../../../adr/ADR-073126-c4e1-release-and-versioning-process.md)
