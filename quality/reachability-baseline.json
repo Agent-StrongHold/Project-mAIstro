@@ -18,6 +18,7 @@
     "@flat/hive-conductor/services.ui_auto_climb",
     "@flat/hive-conductor/services.ui_climb_vm",
     "@flat/hive-conductor/services.ui_hill_climber",
+    "@flat/maistro-turing-backend/provision",
     "@tool/ac_state_notes",
     "@tool/build-evidence",
     "@tool/check-autonomous-merge",

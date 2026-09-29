@@ -9,6 +9,24 @@ def test_health_is_public(client):
     assert r.json()["status"] == "ok"
 
 
+def test_readiness_reports_the_configured_service_identity(client):
+    r = client.get("/health/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["service_identity"] == "turing-internal"
+
+
+def test_retired_default_credential_cannot_authenticate(client):
+    # The key this deployment used to ship as a built-in fallback must be
+    # rejected on the wire when it is not the explicitly configured key.
+    retired = "sk-svc-turing-dev-" + "internal"
+    r = client.get("/v1/state/snapshot", headers={"X-Service-Key": retired})
+    assert r.status_code == 401
+    r = client.get("/v1/state/snapshot", headers={"Authorization": f"Bearer {retired}"})
+    assert r.status_code == 401
+
+
 def test_unauthenticated_v1_rejected(client):
     r = client.get("/v1/state/snapshot")
     assert r.status_code == 401
