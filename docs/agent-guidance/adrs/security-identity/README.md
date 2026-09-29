@@ -51,3 +51,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Audit ADR-028 together with ADR-068 and the current Sentinel/PrivilegeGuard/HITL implementation. Preserve the structural invariants that agents cannot exceed their owning human's authority and privileged actions require explicit authorization/elevation, but evaluate completion against ADR-068's configurable roles, approver graph, self-elevation, scoped agent 2FA, budget ordering, and canonical principals rather than resurrecting obsolete seed/wallet/VC mechanics. Update/supersede stale ADR-028 acceptance criteria as needed after that reconciliation.  
 **Current state:** ADR-068 explicitly amends rather than supersedes ADR-028: admin/user remain base roles, but the two-tier-only model, fixed admin approval path, and "full RBAC out of scope" decision are no longer current. Current production uses newer principal/authorization machinery, while ADR-068 itself remains Accepted after evidence reconciliation. ADR-028 is therefore an active foundational security principle whose detailed mechanics are partially stale.  
 **ADR:** [ADR-028: Admin / User Privilege Separation — Mandatory two-tier model](../../../adr/ADR-028-privilege-separation.md)
+
+## ADR-051: Tool approval gates — plan preview, impact-weighted escalation, learned trust
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Create or identify a complete successor ADR for approval/elevation on the canonical Capability Binding → Invocation path, including the durable approval store/mechanism that actually shipped and ADR-068's RLPHD limits. Once that decision fully owns the replacement boundary, transition ADR-051 to `Superseded`. Do not reconnect the old unreachable ApprovalGate island.  
+**Current state:** Human approval remains required architecture, but ADR-051's original implementation was unreachable and its counter-based learned-trust layer has been replaced by ADR-068's RLPHD model. Durable approval now exists at the Invocation boundary, while the current Binding/Invocation ADR/spec explicitly does not yet own all approval semantics. ADR-051 therefore remains Accepted pending a truthful successor.  
+**ADR:** [ADR-051: Tool approval gates — plan preview, impact-weighted escalation, learned trust](../../../adr/ADR-051-tool-approval-gates.md)
