@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile lifecycle metadata and promote to `Implemented` if the bound tests remain green. The ADR already carries `implemented: 2026-09-14`, all four ACs are checked, concrete tests are listed, and the security-inventory census asserts no sibling package bypasses the central outbound seam; the missing piece is a valid ADR-097 Implemented history/status transition.  
 **Current state:** This is a strong example of current architecture: outbound HTTP/SSRF policy is centralized in maistro-core, sibling packages depend on that seam rather than vendoring controls, configured origins are exact allow-lists, and the decision explicitly introduces no execution authority. Evidence is direct and repository-wide.  
 **ADR:** [ADR-102: Sibling packages use maistro-core's central outbound HTTP guard](../../../adr/ADR-102-central-ssrf-guard-for-sibling-packages.md)
+
+## ADR-082326-5386: Outbound HTTP policy at the shared client seam
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat this as canonical outbound-network policy and keep constructor/reachability census gates preventing new unguarded clients. Exact configured origins may be allowlisted, but arbitrary private/link-local/metadata targets and redirect hops remain blocked. Continue migrating any direct clients to the shared seam; ADR-102 extends this to sibling packages.  
+**Current state:** This is implemented behavior with checked ACs and direct tests: the guard sits at the transport, covers redirect hops, derives exact internal allowances from configuration, and has no production off switch. It is the foundation ADR-102 correctly centralizes across packages.  
+**ADR:** [ADR-082326-5386: Shared outbound HTTP policy](../../../adr/ADR-082326-5386-outbound-http-policy-at-the-shared-client-seam.md)
