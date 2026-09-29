@@ -419,11 +419,19 @@ class InvalidationReport:
 
     @property
     def invalidated_node_ids(self) -> tuple[str, ...]:
-        """Planned template node ids the change invalidates, ancestors first."""
+        """Planned template node ids the change invalidates, ancestors first.
+
+        The shared decision stages rerun only when the shared context actually
+        changed: a branch-local change (e.g. one poster dimension) must not
+        re-decide ``brief.resolve``…``artifact.plan``, whose outputs branches
+        left unchanged still consume. The post-branch shared stages always
+        rerun — they fan-in over every branch's outputs.
+        """
         if not self.invalidated_request_ids:
             return ()
+        shared_stage_ids = SHARED_STAGE_NODE_IDS if self.shared_context_changed else ()
         return (
-            SHARED_STAGE_NODE_IDS
+            shared_stage_ids
             + tuple(branch_node_id(request_id) for request_id in self.invalidated_request_ids)
             + _DOWNSTREAM_SHARED_NODE_IDS
         )

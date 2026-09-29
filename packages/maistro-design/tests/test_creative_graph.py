@@ -37,6 +37,7 @@ from maistro_design.brief import (
 from maistro_design.creative_graph import (
     ArtifactProvenanceRecord,
     InvalidationReport,
+    SHARED_STAGE_NODE_IDS,
     artifact_provenance,
     channel_family,
     instantiate_creative_graph,
@@ -595,6 +596,11 @@ def test_changing_one_poster_dimension_does_not_regenerate_website_copy() -> Non
     assert report.invalidated_request_ids == ("poster-launch",)
     assert report.unchanged_request_ids == ("landing-page", "launch-deck")
     assert "dimensions" in report.reasons["poster-launch"]
+    # Branch-local change: shared decision stages must not rerun, only the
+    # changed branch plus the fan-in stages that consume its output.
+    assert not any(node_id in report.invalidated_node_ids for node_id in SHARED_STAGE_NODE_IDS)
+    assert "artifact.generate.poster-launch" in report.invalidated_node_ids
+    assert "cross.critique" in report.invalidated_node_ids
 
 
 @pytest.mark.parametrize(
