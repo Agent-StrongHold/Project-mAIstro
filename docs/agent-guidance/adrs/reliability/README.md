@@ -99,3 +99,27 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep liveness proof explicit through fenced renewal and compose reclaim with recovery disposition. Production executors must renew; reclaim only after lease expiry, cancel the abandoned Attempt with attributable cause, and let logical policy decide retry/resume.  
 **Current state:** This completes the major liveness half left open by ADR-081626-f383: restart does not imply death, and a TTL without renewal is not sufficient.  
 **ADR:** [ADR-082526-b36a](../../../adr/ADR-082526-b36a-a-lease-that-stops-being-renewed-is-reclaimed.md)
+
+## ADR-082826-08f0: Interrupted-Run recovery disposition
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep one recovery table keyed to proven lease/liveness evidence and remove domain-specific restart/orphan rules. Recovery preserves Run/NodeRun identity and settles or creates Attempts through the canonical spine.  
+**Current state:** This consolidates multiple contradictory recovery answers and is directly tested.  
+**ADR:** [ADR-082826-08f0](../../../adr/ADR-082826-08f0-interrupted-run-recovery-disposition.md)
+
+## ADR-082926-a6ab: Candidate validation stays inside candidate isolation
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Apply the isolation boundary to the entire RSI/evolve fitness path. Candidate tests, coverage, mutation/static tools, and candidate imports must run in the same or stronger isolated environment as the edits, aligned with ADR-093.  
+**Current state:** This fixes a real boundary mismatch in isolated RSI validation.  
+**ADR:** [ADR-082926-a6ab](../../../adr/ADR-082926-a6ab-candidate-validation-runs-where-the-edits-do.md)
+
+## ADR-083026-14c3: Repair emptied Attempt output only with proof
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Repair only canonical RunStore rows where a second authoritative copy proves output was lost. Never infer missing content or inspect a legacy store as if it were authoritative.  
+**Current state:** This records withdrawal of an unsafe repair that inspected the wrong persistence owner.  
+**ADR:** [ADR-083026-14c3](../../../adr/ADR-083026-14c3-repairing-an-emptied-attempt-output.md)
