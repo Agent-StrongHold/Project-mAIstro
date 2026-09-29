@@ -146,6 +146,7 @@ def _brief(version: int = 1, lineage_id: str = "lineage-1") -> CreativeBrief:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
 async def test_get_reads_a_seeded_row_back_as_its_brief() -> None:
     store, resources = _store(project_rows=[("proj-1", "ws-1")])
     connection, engine = resources
@@ -176,6 +177,7 @@ async def test_get_reads_a_seeded_row_back_as_its_brief() -> None:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
 async def test_latest_and_list_versions_order_by_version() -> None:
     store, resources = _store(project_rows=[("proj-1", "ws-1")])
     connection, engine = resources
@@ -215,6 +217,7 @@ async def test_latest_and_list_versions_order_by_version() -> None:
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
 async def test_reads_in_another_workspace_answer_absent() -> None:
     store, resources = _store(project_rows=[("proj-1", "ws-1")])
     connection, engine = resources
@@ -229,6 +232,7 @@ async def test_reads_in_another_workspace_answer_absent() -> None:
 
 
 @pytest.mark.parametrize("operation", ["get", "latest", "list_versions"])
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
 async def test_blank_workspace_scope_is_refused(operation: str) -> None:
     store, resources = _store()
     connection, engine = resources
@@ -245,6 +249,7 @@ async def test_blank_workspace_scope_is_refused(operation: str) -> None:
         engine.dispose()
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
 async def test_blank_scope_is_refused_on_create() -> None:
     store, resources = _store()
     connection, engine = resources
@@ -257,6 +262,7 @@ async def test_blank_scope_is_refused_on_create() -> None:
         engine.dispose()
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-11")
 async def test_create_refuses_a_project_registered_to_another_workspace() -> None:
     store, resources = _store(project_rows=[("proj-1", "ws-2")])
     connection, engine = resources
@@ -268,6 +274,7 @@ async def test_create_refuses_a_project_registered_to_another_workspace() -> Non
         engine.dispose()
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-11")
 async def test_create_refuses_an_unregistered_project() -> None:
     store, resources = _store(project_rows=[])
     connection, engine = resources
@@ -279,6 +286,7 @@ async def test_create_refuses_an_unregistered_project() -> None:
         engine.dispose()
 
 
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
 async def test_duplicate_lineage_version_is_a_conflict_not_an_overwrite() -> None:
     """First writer wins: the second writer of (lineage, version) loses loudly."""
     store, resources = _store(project_rows=[("proj-1", "ws-1")])
@@ -293,6 +301,7 @@ async def test_duplicate_lineage_version_is_a_conflict_not_an_overwrite() -> Non
 
 
 @pytest.mark.contract("behavioral")
+@pytest.mark.ac("SPEC-092826-a774/AC-1")
 async def test_create_commits_a_new_version_within_scope() -> None:
     """A version the lineage has not minted yet commits (row visible after)."""
     store, resources = _store(project_rows=[("proj-1", "ws-1")])

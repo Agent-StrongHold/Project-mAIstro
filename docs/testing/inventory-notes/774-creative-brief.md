@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +58
+  packages/maistro-design/tests: +59
 ---
 # 774-creative-brief — issue #774: the versioned CreativeBrief contract
 

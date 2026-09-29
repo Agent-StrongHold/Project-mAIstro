@@ -47,6 +47,22 @@ _SELECT_COLUMNS = """
     goal_id, goal_revision, payload, created_by, created_at
 """
 
+# Read statements are module-level constants: the table and column list are
+# literals, the caller-supplied values are bound parameters (:name), and no
+# user input ever reaches the SQL text. Keeping the statements here (instead of
+# formatting them per call) is also what keeps them plain strings for the
+# security scanner's no-dynamic-SQL rule, matching ``stores.py``.
+_SELECT_FROM = "SELECT " + _SELECT_COLUMNS + " FROM design_creative_briefs "
+_GET_SQL = text(_SELECT_FROM + "WHERE brief_id = :brief_id AND workspace_id = :workspace_id")
+_LATEST_SQL = text(
+    _SELECT_FROM + "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
+    "ORDER BY version DESC LIMIT 1"
+)
+_VERSIONS_SQL = text(
+    _SELECT_FROM + "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
+    "ORDER BY version ASC"
+)
+
 
 def _coerce_brief(row: Any) -> CreativeBrief:
     """Materialize one database row back into its immutable CreativeBrief."""
@@ -146,10 +162,7 @@ class PgCreativeBriefStore:
         async with self.session_factory() as session:
             row = (
                 await session.execute(
-                    text(
-                        f"SELECT {_SELECT_COLUMNS} FROM design_creative_briefs "
-                        "WHERE brief_id = :brief_id AND workspace_id = :workspace_id"
-                    ),
+                    _GET_SQL,
                     {"brief_id": brief_id, "workspace_id": workspace_id},
                 )
             ).fetchone()
@@ -166,11 +179,7 @@ class PgCreativeBriefStore:
         async with self.session_factory() as session:
             row = (
                 await session.execute(
-                    text(
-                        f"SELECT {_SELECT_COLUMNS} FROM design_creative_briefs "
-                        "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
-                        "ORDER BY version DESC LIMIT 1"
-                    ),
+                    _LATEST_SQL,
                     {"lineage_id": lineage_id, "workspace_id": workspace_id},
                 )
             ).fetchone()
@@ -188,11 +197,7 @@ class PgCreativeBriefStore:
         async with self.session_factory() as session:
             rows = (
                 await session.execute(
-                    text(
-                        f"SELECT {_SELECT_COLUMNS} FROM design_creative_briefs "
-                        "WHERE lineage_id = :lineage_id AND workspace_id = :workspace_id "
-                        "ORDER BY version ASC"
-                    ),
+                    _VERSIONS_SQL,
                     {"lineage_id": lineage_id, "workspace_id": workspace_id},
                 )
             ).fetchall()
