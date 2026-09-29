@@ -67,3 +67,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Consolidate this record with the duplicate numeric ADR-101 so there is one canonical foreign-harness decision, then rewrite that decision around canonical Run/NodeRun/Attempt + Capability Binding/Invocation. Foreign harness sessions are provider effects, outbound harness work executes as canonical nodes, inbound adapters admit canonical Runs, and missing requested harness capability must not silently become a no-op without an explicit fallback policy.  
 **Current state:** This is the date-based record created to resolve the original ADR-100 collision and is the stronger provenance anchor for the foreign-harness concept. Its core idea remains current, but its GraphRun/MasterOrchestrator/direct-session assumptions predate execution convergence. A second numeric ADR-101 now duplicates the same architectural decision and should not remain an independent source of truth.  
 **ADR:** [ADR-061526-f383: Foreign harness adapters and portability](../../../adr/ADR-061526-f383-foreign-harness-adapters-and-portability.md)
+
+## ADR-070426-77d1: Substrate/tool/agent taxonomy
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Reframe the light/heavy distinction around current Persona/NodeTemplate/Capability Binding semantics before acceptance. Preserve the valuable invariant that a reasoning-only node has no direct side-effect capabilities, but do not create a second authorization model or require one container per "heavy agent." Side effects must remain explicit Capability Invocations under canonical principal authority and sandbox policy.  
+**Current state:** Structurally separating pure reasoning/delegation from side-effect execution is useful and highly auditable. The proposal's AgentIdentity/tool/container assumptions predate current canonical object and capability ownership, and its "legacy defaults to heavy" compatibility rule has no pre-1.0 value.  
+**ADR:** [ADR-070426-77d1: Substrate/tool/agent taxonomy](../../../adr/ADR-070426-77d1-substrate-tool-agent-taxonomy.md)
+
+## ADR-070426-c4b2: CapabilityProfile — permission, skill, and cost model
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve measured competence and cost as routing evidence, but remove `Permission` as an independently stored authorization truth if it can drift from canonical principal/Binding policy. A profile may expose only currently authorized capabilities, while authority itself remains derived at decision time. Map competence/cost to Persona/NodeTemplate/provider observations and canonical Invocation telemetry before designing the reasoning router.  
+**Current state:** Separating "allowed," "good at," and "costly" is conceptually correct, especially for delegation/routing. The permission dimension is dangerous if persisted as a parallel authorization bit, and the agent-centric schema predates current Persona/Capability Binding architecture. Keep Proposed until ownership is clarified.  
+**ADR:** [ADR-070426-c4b2: CapabilityProfile](../../../adr/ADR-070426-c4b2-capability-profile.md)
