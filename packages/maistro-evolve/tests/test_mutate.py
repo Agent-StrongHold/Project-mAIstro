@@ -157,19 +157,18 @@ def test_mutate_prompt_skips_sentence_removal_when_two_or_fewer_sentences(
     assert "Only one sentence" in mutated.topology.nodes[0].system_prompt
 
 
-def test_mutate_eval_weights_is_removed() -> None:
+def test_mutate_eval_weights_stays_removed() -> None:
     """#853: a genome must not be able to mutate the ruler it is scored with.
 
     The objective is population-owned; the operator that jiggled the genome's
-    own eval_weights is gone. The tombstone raises rather than silently
-    mutating an (inert) field, so stale callers fail loudly instead of
-    believing they still shape scoring.
+    own eval_weights is removed outright — an uncalled raising tombstone is
+    dead code. This pin holds the absence: reintroducing any weight-mutating
+    operator must fail here and clear the per-identity vulture ledger before
+    it can land.
     """
-    from maistro_evolve.mutate import mutate_eval_weights
+    import maistro_evolve.mutate as mutate_module
 
-    genome = _genome([_node("a")], [], entry_node="a")
-    with pytest.raises(NotImplementedError, match="population-owned"):
-        mutate_eval_weights(genome, rate=1.0)
+    assert not hasattr(mutate_module, "mutate_eval_weights")
 
 
 def test_mutate_all_never_touches_eval_weights(force_random: None) -> None:

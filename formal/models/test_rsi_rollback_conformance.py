@@ -56,6 +56,12 @@ def _genome(genome_id: str, approved: bool = True) -> PipelineGenome:
             use_scout=False,
         ),
         eval_weights=EvalWeights(),
+        # #853: promotion additionally fails closed on measured capability
+        # evidence — a genome with no benchmark scores cannot be promoted at
+        # all. These models audit the promote/rollback *trail*, so their
+        # fixtures must be legitimately promotable: one passing benchmark
+        # score above the hard-gate floor supplies exactly that.
+        eval_scores={"proxy_ifeval": 0.9},
         created_at=datetime.now(UTC).isoformat(),
         updated_at=datetime.now(UTC).isoformat(),
         approved_for_promotion=approved,

@@ -184,22 +184,12 @@ def mutate_prompt(genome: PipelineGenome, rate: float) -> PipelineGenome:
     )
 
 
-def mutate_eval_weights(genome: PipelineGenome, rate: float) -> PipelineGenome:
-    """Removed (#853).
-
-    This operator used to mutate the genome's own ``eval_weights`` — the very
-    weights its fitness score was computed from — so a genome could raise its
-    own score without improving on any benchmark. Scoring now reads the
-    population-owned ``objective.EvaluationObjective``, the genome's weights
-    field is inert, and there is nothing left to mutate: the ruler a candidate
-    is measured with is no longer part of its genome. Mutating it would waste
-    mutation budget on a field with no observable effect, so the operator is
-    gone from ``mutate_all`` and from the module.
-    """
-    raise NotImplementedError(
-        "mutate_eval_weights was removed by #853: the evaluation objective is "
-        "population-owned and a genome cannot mutate its own ruler"
-    )
+# The eval_weights mutation operator is gone (#853): the evaluation objective
+# is population-owned (see objective.py) and a genome cannot mutate its own
+# ruler. A tombstone that only raises would be dead code with no callers, so
+# the operator is removed outright — tests/test_mutate.py pins its absence,
+# and reintroducing any weight-mutating operator must clear the per-identity
+# vulture ledger before it can land.
 
 
 def _mutate_one_fixer(fixer: FixerGenome, rate: float) -> FixerGenome:
