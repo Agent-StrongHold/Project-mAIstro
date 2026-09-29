@@ -8,8 +8,9 @@ tools read a PostgREST table no migration creates, so neither could see the
 other's writes and the panel's saves were silently overwritten.
 
 The handlers are plain `def`, not `async def`, and that is deliberate. A
-profile write reads SQLite synchronously and then waits in `State.flush()` for
-the writer thread — up to ten seconds when the queue is backed up. Inside an
+profile write reads SQLite synchronously and then waits inside the
+acknowledged `put_raw` (a `State.submit_sync`) for the writer thread to
+commit — up to thirty seconds when the queue is backed up. Inside an
 `async` handler that blocks the event loop and stalls every other request;
 Starlette runs a sync handler in its threadpool instead. `routes/settings.py`
 is sync for the same reason.
