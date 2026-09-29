@@ -960,20 +960,76 @@ report_arch() {
     command -v docker >/dev/null 2>&1 || return 0
 
     info "ARM64 host detected; checking base images for native arm64 builds..."
-    local img missing=0
-    for img in \
-        "pgvector/pgvector:pg17" \
-        "ghcr.io/berriai/litellm:main-latest" \
-        "langfuse/langfuse:2"
-    do
-        if docker manifest inspect "$img" 2>/dev/null | grep -q "arm64"; then
+
+    # The images come from the compose file itself. This list was hardcoded
+    # and had drifted: it checked pgvector:pg17 while the stack runs pg18, so
+    # the one image it was meant to vouch for was never looked at.
+    #
+    # Skip names with no "/": in this stack those are the locally built
+    # engine and conductor images, which are native by construction and not
+    # in any registry to inspect.
+    local images
+    images="$("${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" config --images 2>/dev/null | sort -u)" || images=""
+    [[ -n "$images" ]] || { warn "Could not list the stack's images; skipping the arm64 check."; return 0; }
+
+    # A config with no credential helper. On Docker Desktop for Mac,
+    # `credsStore: desktop` makes `docker manifest inspect` block forever
+    # whenever the helper cannot reach the keychain UI -- measured at 8+
+    # minutes with no output while the registries answered in under half a
+    # second, and 7 seconds without the helper. These are public images, so
+    # the lookup needs no credentials at all; that it asked for them froze the
+    # installer at this line on every Apple Silicon Mac it happened to.
+    local anon_config
+    anon_config="$(mktemp -d "${TMPDIR:-/tmp}/maistro-anon-docker.XXXXXX")"
+    printf '{}\n' > "$anon_config/config.json"
+
+    local img missing=0 unknown=0 out rc
+    while IFS= read -r img; do
+        [[ -n "$img" && "$img" == */* ]] || continue
+        # To a file, not `$(...)`: a pipe stays open while anything holds its
+        # write end, so a killed `docker` whose child -- the credential helper
+        # on a real Mac -- is still alive would block the read forever, and
+        # the timeout would bound nothing.
+        DOCKER_CONFIG="$anon_config" run_with_timeout "${MAISTRO_ARCH_CHECK_TIMEOUT:-20}" \
+            docker manifest inspect "$img" > "$anon_config/manifest" 2>/dev/null
+        rc=$?
+        out="$(cat "$anon_config/manifest" 2>/dev/null)"
+        if [[ $rc -eq 0 ]] && grep -q "arm64" <<< "$out"; then
             ok "arm64 image available: $img"
-        else
-            warn "No confirmed arm64 manifest for $img — Docker may emulate it (slower)."
+        elif [[ $rc -eq 0 ]]; then
+            warn "No arm64 manifest for $img — Docker will emulate it (slower)."
             missing=$((missing + 1))
+        else
+            # Not the same claim. Saying "will be emulated" here -- what this
+            # used to print -- told users a native image was not native.
+            warn "Could not check $img (registry slow or unreachable); continuing."
+            unknown=$((unknown + 1))
         fi
-    done
+    done <<< "$images"
+    rm -rf "$anon_config"
+
     [[ $missing -eq 0 ]] || warn "Emulated images run via QEMU; functional but slower on Apple Silicon."
+    [[ $unknown -eq 0 ]] || info "Unchecked images are pulled normally; this check is advisory only."
+    return 0
+}
+
+# Run "$@" but give up after $1 seconds, returning 124 like coreutils'
+# timeout(1) -- which macOS does not ship, so it cannot be assumed here.
+run_with_timeout() {
+    local secs="$1" pid watcher rc
+    shift
+    "$@" &
+    pid=$!
+    # Its children first: `docker` blocked in a credential helper is waiting on
+    # that child, and killing only the parent would leave the child running.
+    ( sleep "$secs" && { pkill -9 -P "$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null; } ) &
+    watcher=$!
+    wait "$pid" 2>/dev/null
+    rc=$?
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    [[ $rc -eq 137 ]] && return 124
+    return "$rc"
 }
 
 start_engine() {
@@ -985,8 +1041,10 @@ start_engine() {
     ensure_compose_runtime
     ensure_docker_engine_supported
     record_docker_sock
-    report_arch
+    # compose_files first: report_arch reads the image list from the same
+    # file set `up` will use, so an addon's images are checked too.
     compose_files
+    report_arch
     info "Starting maistro-engine..."
     "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_UP_ARGS[@]}"
 
