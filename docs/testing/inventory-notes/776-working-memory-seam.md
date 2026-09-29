@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +26
+  packages/maistro-core/tests: +35
 ---
 
 # 776 — per-Workspace working-memory seam (M3 product floor)
@@ -66,6 +66,96 @@ unchanged. Assertion-shape edits only:
 - `test_unavailable_backend_reports_degraded_state_and_durable_intact` gained
   a caplog assertion pinning the manager's new seam-boundary degradation log
   (the genuine production read of `GraphContext.degraded_reason`).
+
+## Merge-queue repair round: production wiring for the seam (this branch)
+
+The merge-queue evaluation failed `formal-conformance` against develop base
+`0fb3dc69e`, and re-running the named gate faithfully (CI's pip-install steps
+mirrored, fresh pgvector/pg18, `alembic upgrade head`, `pytest formal/models/
+--timeout=300 --hypothesis-seed=0`) passes with 664 tests at the develop merge
+— but the exact-debt-ledger gates were still red for the reason the previous
+round recorded: the six `maistro.memory.working_graph*` modules had **zero
+production importers**, so `check-reachability.py` (and the trusted-base gate
+`check-reachability-provenance.py` behind `check-ratchet-provenance.py`)
+reported them as NEWLY UNREACHABLE. A published seam nothing can reach also
+left acceptance criterion 4 ("the persistent Workspace Agent can retrieve
+graph-backed context") true only at the seam level.
+
+This round wires the seam instead of baselining it away:
+
+- `maistro/memory/working_graph/wiring.py` (new): the deployment half of the
+  seam — `WorkspaceProjectMemorySource` (episodic memories scoped to the
+  Workspace's own Project tree, the one workspace-honest durable scope that
+  exists today), `WorkspaceRunStoreProvenanceSource` (Run provenance via the
+  Run store's `workspace_id` axis), `build_workspace_working_memory` (the
+  Container's manager factory), and `working_memory_context_message` /
+  `render_working_memory_block` (the chat-turn consumer glue). Learnings,
+  artifact versions and terminology are deliberately not wired yet — the
+  module docstring records why (no workspace-honest durable axis / no durable
+  store exists; the ports are ready for #773/#777).
+- `maistro/container.py`: `working_memory` field wired in `create_container`
+  from the same episodic/project/run stores everything else reads, and the
+  chat turn dispatches with the graph-backed context block rendered from the
+  turn's Run's own Workspace. The block rides as a system message (never a
+  user turn: not Warden-scanned as input, not session-transcribed, message
+  shape unchanged), carries canonical durable references, and renders an
+  explicit degraded/unavailable state instead of a confident blank.
+- 9 new tests in `packages/maistro-core/tests/memory/working_graph/
+test_wiring.py` (+9 node IDs, delta above updated 26 -> 35): workspace-
+  scoped context with canonical refs, cross-Workspace absence (colliding
+  query, records simply not there), honest-empty unknown Workspace,
+  Goal/parent-Run provenance linkage, degradation named in the block with
+  durable truth intact, durably recorded correction visible on the next
+  turn, discard/rebuild leaving durable reads unchanged, no-manager/blank-
+  workspace/no-user-text refusals, and the renderer's health/cap contract.
+
+Gate evidence at this head (all executed locally, pgvector/pg18 via
+`DOCKER_HOST=unix:///var/run/docker.sock`): `check-reachability.py` exit 0
+(1149 modules, 189 unreachable = baseline, no NEW unreachable);
+`check-ratchet-provenance.py` exit 0 with `RATCHET_BASE_REV=0fb3dc69e`
+(including the `reachability` and `reachability-dispositions` ratchets);
+`check-formal-oracle-independence.py --base 0fb3dc69e` exit 0;
+`pytest formal/models/ --timeout=300 --hypothesis-seed=0` 664 passed;
+`pytest packages/maistro-core/tests/memory -q` 447 passed.
+
+### Repair-round validation on the salvaged wiring (final head of this branch)
+
+The wiring round above timed out uncommitted before its own full validation;
+this round finished it and ran the whole battery at the final tree. One real
+regression surfaced and was fixed:
+
+- `runs/test_chat_execution.py::TestInAgentDelegationCreatesNoNodeRun` (2
+  tests) failed with the seam wired: the delegation turn's messages now always
+  carry a prior trusted system message (the working-memory block), so
+  `Agent._prepare_user_input` passes Warden's real keyword-only `context=`
+  parameter (`security/warden/detector.py:435`, the documented optional
+  analysis-context contract) — and the test's `_Warden` stand-in predated
+  that contract (`scan(self, _text, _surface)`), crashing the coordinator
+  with `TypeError` before it could delegate. Assertion-shape edit only: the
+  stub now takes `**_kw` like the real contract; the tests' delegation-spine
+  claims (exactly one NodeRun; Attempt names the delegate) are unchanged and
+  pass again.
+- Full-suite evidence with the seam wired: `pytest packages/maistro-core/tests
+-q --timeout=300` → 10824 passed, 735 skipped, 1 xfailed, plus
+  `tests/integration` → 5 passed with `MAISTRO_TEST_PG_DSN` set — the
+  recorded 11565 node IDs all green; `ruff check` / `ruff format --check`
+  clean; `check-suite-inventory.py` ok at +35; mypy over
+  `packages/maistro-core/src` reports only the pre-existing environmental
+  `maistro_bootstrap` import-not-found notes in `cli/_install.py` /
+  `cli/_builders_tui.py` (bootstrap not installed in this env; files untouched
+  by this branch).
+- The named failing merge-queue gate, `formal-conformance`, re-proven end to
+  end at this exact tree: fresh `maistro_test` database in a pgvector/pg18
+  container, `alembic upgrade head` exit 0, `pytest formal/models/ -q
+--timeout=300 --hypothesis-seed=0` → 664 passed, plus
+  `check-m1-convergence-freeze.py --base 0fb3dc69e` and
+  `check-formal-oracle-independence.py --base 0fb3dc69e` both exit 0.
+  (`formal/` needs `maistro-evolve` importable; mirrored CI's explicit
+  `pip install -e packages/maistro-evolve` with `uv pip install -e`.)
+- Exact-debt-ledger gates re-run at this tree: `check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'` exit 0
+  (1402 reviewed → 1401 findings), `check-ratchet-provenance.py` exit 0 with
+  `RATCHET_BASE_REV=0fb3dc69e`, `check-reachability.py` exit 0.
 
 ## Independent verification round (head 3c4eabd6cd49, base b268f05359e7)
 
