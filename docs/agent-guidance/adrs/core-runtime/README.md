@@ -147,3 +147,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep immutable prompt versions separate from mutable labels and update them transactionally.  
 **Current state:** This fixes a relational model that could not represent multiple labels pointing at one version.  
 **ADR:** [ADR-083026-427c](../../../adr/ADR-083026-427c-prompt-versions-and-labels-are-separate-facts.md)
+
+## ADR-092326-97c4: Shared PostgreSQL owns canonical Workspace identity
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat the shared canonical Workspace tables as the single production authority for both Hive and maistro-server; remove legacy mirror/replay authority after one-time import and fail closed when the configured canonical store is unavailable. Keep migration ownership with the engine, not Hive.  
+**Current state:** This closes one of the most important remaining product-identity splits: both processes now share one durable Workspace/membership owner instead of reconciling separate stores.  
+**ADR:** [ADR-092326-97c4](../../../adr/ADR-092326-97c4-shared-postgres-workspace-owner.md)
