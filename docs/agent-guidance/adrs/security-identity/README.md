@@ -211,3 +211,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Treat WebAuthn presence + attenuated Biscuit delegation + hash-chained evidence as the chosen M2 approval design, but do not overstate implementation from the three currently bound tests. Map it onto canonical principals/scoped grants/Bindings and durable HITL settlement, and reconcile older DID/VC language in ADR-021/024/068/084 with this newer concrete choice.  
 **Current state:** This is the freshest explicit decision on cryptographic approval evidence and materially narrows earlier "optional crypto" ambiguity for M2 approvals. Human presence, runtime delegated authority, and tamper-evident history are deliberately separate primitives.  
 **ADR:** [ADR-090726-9a4e: Crypto-bound approvals Hybrid](../../../adr/ADR-090726-9a4e-crypto-bound-approvals-hybrid-webauthn-biscuit-hash-chain.md)
+
+## ADR-092626-c1e7: Workspace work campaigns are narrowing policy
+
+**Status:** Proposed  
+**Last updated:** 2026-09-29  
+**Next steps:** Resolve SPEC-092626-1831's open questions before acceptance. Preserve the central boundary: campaigns may narrow eligible already-authorized Goals/BacklogItems and record operator steering, but never grant authority, own Goal lifecycle, schedule/lease work, or create a parallel execution model. RSI and Workspace Agent must share this one contract.  
+**Current state:** This is well aligned with convergence because it explicitly prevents campaign state from becoming another work owner.  
+**ADR:** [ADR-092626-c1e7](../../../adr/ADR-092626-c1e7-workspace-work-campaigns-are-narrowing-policy.md)
