@@ -194,6 +194,52 @@ async def test_one_template_plans_and_executes_three_branches() -> None:
     assert set(_artifact_records(record)) == {"landing-page", "launch-deck", "poster-launch"}
 
 
+async def test_updated_brief_version_registers_as_new_template_version() -> None:
+    """A second brief version in one lineage registers cleanly (Codex review).
+
+    The default template version follows the brief version: re-planning an
+    updated brief with documented defaults mints the next template version
+    under the lineage's template id instead of colliding with the already
+    registered v1 definition in a canonical ``GraphTemplateStore``.
+    """
+    from maistro.graph.templates import GraphTemplateConflict, InMemoryGraphTemplateStore
+
+    v1 = _brief()
+    v2 = v1.new_version(change_note="audience narrowed", audience="professional pastry chefs")
+    assert v1.lineage_id == v2.lineage_id
+    assert v2.version == 2
+
+    store = InMemoryGraphTemplateStore()
+    plan_v1 = plan_creative_graph(v1)
+    plan_v2 = plan_creative_graph(v2)
+
+    assert plan_v1.template.template_id == plan_v2.template.template_id
+    assert (plan_v1.template.version, plan_v2.template.version) == (1, 2)
+    assert plan_v1.template.content_hash != plan_v2.template.content_hash
+
+    await store.put(plan_v1.template)
+    # The documented-default re-plan of the updated brief must not raise.
+    await store.put(plan_v2.template)
+    assert await store.versions(plan_v2.template.template_id) == [1, 2]
+
+    # An explicit version still wins, for same-brief re-plans.
+    assert plan_creative_graph(v1, version=3).template.version == 3
+
+
+async def test_updated_brief_version_registers_as_new_template_version_conflict_guard() -> None:
+    """Without the brief-derived default, the same call would conflict."""
+    from maistro.graph.templates import GraphTemplateConflict, InMemoryGraphTemplateStore
+
+    v1 = _brief()
+    v2 = v1.new_version(change_note="audience narrowed", audience="professional pastry chefs")
+    store = InMemoryGraphTemplateStore()
+    await store.put(plan_creative_graph(v1).template)
+    stale = plan_creative_graph(v2, version=1)
+    assert stale.template.content_hash != plan_creative_graph(v1).template.content_hash
+    with pytest.raises(GraphTemplateConflict):
+        await store.put(stale.template)
+
+
 async def test_selected_graph_and_run_retain_goal_revision_and_agent_provenance() -> None:
     brief = _brief()
     plan = plan_creative_graph(brief)

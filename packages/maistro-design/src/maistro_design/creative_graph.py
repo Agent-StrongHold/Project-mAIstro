@@ -171,7 +171,7 @@ def plan_creative_graph(
     brief: CreativeBrief,
     *,
     template_id: str | None = None,
-    version: int = 1,
+    version: int | None = None,
 ) -> CreativeGraphPlan:
     """Plan the reference creative-production GraphTemplate for one brief version.
 
@@ -180,6 +180,12 @@ def plan_creative_graph(
     fanning into ``cross.critique``. The template records the brief/goal/agent
     references as selection metadata (references, never a second identity
     store).
+
+    ``version`` defaults to the brief's own version: each CreativeBrief version
+    in a lineage plans distinct content under the lineage's template id, so it
+    registers as the matching next template version instead of colliding with
+    the already-registered v1 definition. Pass ``version`` explicitly only to
+    re-plan the same brief version (e.g. after a rejected registration).
     """
     requests = list(brief.artifact_requests)
     if not requests:
@@ -243,7 +249,12 @@ def plan_creative_graph(
     template = GraphTemplate(
         template_id=template_id or f"creative-production-{brief.lineage_id}",
         workspace_id=brief.workspace_id,
-        version=version,
+        # Distinct brief versions plan distinct content under one lineage
+        # template id (Codex review): defaulting the template version to the
+        # brief version keeps re-registering an updated brief out of
+        # ``GraphTemplateConflict``.
+        version=version if version is not None else brief.version,
+
         name=CREATIVE_GRAPH_TEMPLATE_NAME,
         description=(
             "Reference creative-production graph: shared decisions once, "
