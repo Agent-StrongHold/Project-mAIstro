@@ -11,3 +11,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Close SPEC-228's explicit ADR-037 gaps, either directly or by splitting AC-5 through AC-10 into focused child specs: canonical `maistro_*` metrics, required named spans, governed event topics, trace/agent log context, durable event retention, and explicit sampling/retention configuration. Transition ADR-037 only when the implementing specs/evidence satisfy the lifecycle requirements.  
 **Current state:** Logging, metrics, tracing, and event-bus scaffolding exist, but SPEC-228 explicitly documents that ADR-037's canonical metric names, required spans, domain-event taxonomy, trace/agent log propagation, indefinite event persistence, and sampling/retention contract are not implemented. This is a genuine outstanding architecture gap, not stale status bookkeeping.  
 **ADR:** [ADR-037: Observability Taxonomy](../../../adr/ADR-037-observability-taxonomy.md)
+
+## ADR-055: Observability extensions — recorded-response replay and PII sensitivity tiers
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Rewrite this proposal against current architecture before acceptance: governed model/harness egress for LLM evidence, Capability Invocation for tool-call evidence, canonical Run provenance, current audit/event persistence, and current security/sensitivity policy. Remove dependencies on deprecated waves/shadow-git and stale ToolRegistration/RecipeOverlay abstractions. Then define how replay evidence and normal/sensitive/secret handling compose with ADR-037's still-open observability gaps.  
+**Current state:** The underlying goals, replayable external-call evidence and sensitivity-aware retention/redaction, remain potentially valuable. The proposed interception points and several dependencies predate the canonical Run/harness/Capability Invocation architecture, while ADR-037 itself is not yet fully implemented. Keeping this ADR Proposed prevents stale mechanisms from becoming an accidental mandate.  
+**ADR:** [ADR-055: Observability extensions — recorded-response replay and PII sensitivity tiers](../../../adr/ADR-055-observability-replay-and-pii-tiers.md)
