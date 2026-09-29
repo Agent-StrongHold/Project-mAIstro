@@ -91,3 +91,19 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep Persona strictly as Workspace preference/product configuration and continue removing any permission, identity, lifecycle, or hidden-surface behavior that leaks into it. Surface configuration remains deferred until a real Persona use case exists; do not recreate inert Simple/Power modes. Map preferred providers/capabilities only after authorization/resource visibility produces the legal candidate set.  
 **Current state:** This is the canonical Persona distinction: one live Persona per Workspace, never an actor or principal. The September amendment correctly removed a UI mode that had no observable effect rather than preserving an inert compatibility surface.  
 **ADR:** [ADR-081226-e626: Persona and Product Surface Model](../../../adr/ADR-081226-e626-persona-surface-model.md)
+
+## ADR-091726-7c2a: Conversation before Goal/CreativeBrief commit
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve the one-question-at-a-time interview and explicit confirmation gate before durable Goal/CreativeBrief creation. Integrate it with canonical Workspace Agent identity and ensure interview state itself does not prematurely create Runs/Goals that then require undo.  
+**Current state:** This is a strong product/agent contract: record-first, free-text, defensible defaults only, editable answers, and no durable commitment until confirmation.  
+**ADR:** [ADR-091726-7c2a](../../../adr/ADR-091726-7c2a-conversation-before-goal-commit.md)
+
+## ADR-092326-7ed7: Stable Workspace Agent identity
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep exactly one stable Workspace Agent identity per Workspace and route Workspace-less product turns through the caller's canonical default Workspace. As Hive execution moves behind maistro-server/core, migrate the roster/materialization implementation without changing the identity invariant or creating a second agent owner.  
+**Current state:** This gives conversation-only work a stable execution actor while retaining one Run per turn. Agent identity is a pure function of Workspace identity and Persona is only a template/config reference.  
+**ADR:** [ADR-092326-7ed7](../../../adr/ADR-092326-7ed7-workspace-agent-identity.md)
