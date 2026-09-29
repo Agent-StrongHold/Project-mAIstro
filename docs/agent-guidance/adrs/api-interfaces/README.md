@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Preserve NodeRun's meaning as execution of a Graph Node. Runtime strategy delegation inside one Node stays attributable through delegation provenance; remote/independent delegated work that deserves lifecycle identity becomes a child Run. Continue deleting constructed-but-unread A2A surfaces.  
 **Current state:** This prevents runtime reasoning choices from mutating the Graph's logical NodeRun shape while still making delegation visible.  
 **ADR:** [ADR-082426-6201](../../../adr/ADR-082426-6201-in-agent-delegation-is-not-a-node-run.md)
+
+## ADR-082826-51b9: Voice intent reports only contained capability
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep voice response contracts limited to behavior the route actually provides and route model access through the same canonical model-provider seam as other surfaces. Future voice actions should use the ordinary governed fulfillment path rather than claiming actions that did not occur.  
+**Current state:** This removes inaccurate intent/action reporting from a route that only produced model content and closes a private model-client divergence.  
+**ADR:** [ADR-082826-51b9](../../../adr/ADR-082826-51b9-voice-intent-reports-only-contained-capability.md)
