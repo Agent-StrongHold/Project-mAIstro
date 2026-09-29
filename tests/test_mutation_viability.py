@@ -225,6 +225,51 @@ class TestSkippedBucket:
         assert rate == pytest.approx(1.0)
 
 
+class TestSkippedInTheHumanReport:
+    """The printed summary is the only place most readers see the split.
+
+    `adjusted()` can be right while the report says nothing about *why* the
+    denominator moved, and a reader comparing a raw 40% against an adjusted
+    92% with no line naming the skipped bucket has no way to tell a correct
+    exclusion from a bug in this script.
+    """
+
+    def test_the_summary_names_the_skipped_count(self, mv, capsys) -> None:
+        report = mv.Report(total=10, killed=7, future_annotations=True)
+        report.verdicts = [mv.Verdict(f"j{i}", 1, 0, "op", "skipped", "x") for i in range(3)]
+
+        assert _emit_status(mv, report) == 0
+        out = capsys.readouterr().out
+
+        assert "skipped    (filtered before exec; annotation-only) : 3" in out
+        assert "adjusted  : 7/7 = 100.0%" in out
+
+    def test_without_the_future_import_the_report_says_they_were_kept(self, mv, capsys) -> None:
+        """The one case where the count and the denominator disagree, so the
+        report has to say so rather than let the reader assume subtraction."""
+        report = mv.Report(total=10, killed=7, future_annotations=False)
+        report.verdicts = [mv.Verdict("j", 1, 0, "op", "skipped", "x")]
+
+        assert _emit_status(mv, report) == 0
+        out = capsys.readouterr().out
+
+        assert "skipped mutants are NOT subtracted here: no future import." in out
+        assert "adjusted  : 7/10" in out
+
+    def test_the_subtraction_rule_is_stated_every_time(self, mv, capsys) -> None:
+        """Including when nothing was skipped -- the rule is what makes the
+        number auditable, and printing it only sometimes is how a reader comes
+        to believe `invalid` and `undetermined` are excluded too."""
+        report = mv.Report(total=4, killed=4, future_annotations=True)
+
+        assert _emit_status(mv, report) == 0
+
+        assert (
+            "(non-viable and skipped are subtracted; invalid and undetermined are not)"
+            in capsys.readouterr().out
+        )
+
+
 class TestSessionScoping:
     """A session may hold many modules; a report describes exactly one."""
 
