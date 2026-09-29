@@ -131,3 +131,51 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Preserve same-row scoped vector retrieval and wiring-time dimension validation, but revisit the fixed 1536 dimension only through an explicit destructive pre-1.0 schema decision if a better canonical embedding model warrants it. Continue the producer+consumer-together rule per table so no unused vector columns land. Ensure current embedding Provider/Binding architecture supplies the client without creating a second model-routing path.  
 **Current state:** This is a disciplined storage decision: embeddings stay with scoped memory rows in pgvector, HNSW is chosen for interactive recall, and runtime client dimension must match schema before writes. The pre-1.0 posture means the existing 1536 choice is not sacred merely for compatibility if evidence favors changing it.  
 **ADR:** [ADR-082326-8194: Memory embedding dimensionality](../../../adr/ADR-082326-8194-memory-embedding-column-and-dimensionality.md)
+
+## ADR-083026-0596: Store signals cross via protocol queries
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Replace private in-memory store inspection with protocol queries and conformance tests across every backend. Empty must mean no data, not unsupported backend internals.  
+**Current state:** This fixes a silent loss of thumbs/feedback on durable stores.  
+**ADR:** [ADR-083026-0596](../../../adr/ADR-083026-0596-the-thumbs-signal-is-a-protocol-query.md)
+
+## ADR-083026-4b70: memory_entries.embedding is vector(1536)
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep migration tests asserting actual DB types. If the embedding dimension changes before 1.0, replace the schema deliberately rather than preserving compatibility columns.  
+**Current state:** This repairs a migration that silently created text while documentation claimed pgvector.  
+**ADR:** [ADR-083026-4b70](../../../adr/ADR-083026-4b70-memory-entries-embedding-is-a-vector-not-text.md)
+
+## ADR-083026-56ee: Session turn names its producing Run
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep turn_id, run_id, and correlation_id as separate facts with separate semantics.  
+**Current state:** This removes accidental identity overloading in chat persistence.  
+**ADR:** [ADR-083026-56ee](../../../adr/ADR-083026-56ee-a-session-turn-names-its-producing-run.md)
+
+## ADR-083026-5fab: Session turn append is idempotent
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Enforce stable turn identity and append-at-most-once across every SessionStore backend so retries cannot duplicate a logical turn.  
+**Current state:** This complements transactional sequence serialization with logical-write idempotence.  
+**ADR:** [ADR-083026-5fab](../../../adr/ADR-083026-5fab-a-session-turn-is-appended-at-most-once.md)
+
+## ADR-083026-a322: Episodic memory is durable
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Ensure PostgreSQL selects the durable EpisodicStore and one scope predicate governs both Python and SQL retrieval. Memory dynamics must not run against an unconditional in-memory shadow.  
+**Current state:** This closes a schema-exists-but-no-caller gap in the memory system.  
+**ADR:** [ADR-083026-a322](../../../adr/ADR-083026-a322-episodic-memory-is-durable.md)
+
+## ADR-083026-e602: Records name producing execution
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Populate run/node_run/attempt provenance from ambient ExecutionContext for durable derived records wherever a real execution producer exists.  
+**Current state:** Learnings, outcomes, and generated artifacts become traceable to canonical execution rather than product-specific IDs.  
+**ADR:** [ADR-083026-e602](../../../adr/ADR-083026-e602-a-record-names-its-producing-execution.md)
