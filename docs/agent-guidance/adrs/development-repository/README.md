@@ -219,3 +219,27 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep legacy absence populations ratcheted while enforcing zero newly introduced orphan decisions/specs/criteria per change. Continue deriving base and head with the same text-only logic so comparison artifacts cannot create false violations.  
 **Current state:** This prevents new design debt from being paid for by unrelated legacy cleanup and makes traceability a per-change mandate rather than only an aggregate ceiling.  
 **ADR:** [ADR-082526-ef55](../../../adr/ADR-082526-ef55-absent-link-chain-per-change-mandate.md)
+
+## ADR-082926-061d: Convergence matrix unreachable share is derived
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep volatile counts derived rather than hand-transcribed into shared narrative rows.  
+**Current state:** This removes a recurring cross-PR merge-conflict source from convergence reporting.  
+**ADR:** [ADR-082926-061d](../../../adr/ADR-082926-061d-convergence-matrix-unreachable-share-is-derived.md)
+
+## ADR-082926-25a2: AC-state bounds fold from per-branch notes
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Preserve branch-local notes plus deterministic base-trusted aggregation for design-coverage/debt bounds.  
+**Current state:** This eliminates repeated rebanking of one shared safety-floor file across concurrent PRs.  
+**ADR:** [ADR-082926-25a2](../../../adr/ADR-082926-25a2-ac-state-bounds-are-folded-from-per-branch-notes.md)
+
+## ADR-083126-5e62: Generated quality evidence is not the judge
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Distinguish protected-base verdict authority from candidate-generated evidence in autonomous-merge classification.  
+**Current state:** This permits bookkeeping/evidence updates without letting a candidate rewrite the rule that judges itself.  
+**ADR:** [ADR-083126-5e62](../../../adr/ADR-083126-5e62-generated-quality-evidence-is-not-the-judge.md)
