@@ -115,3 +115,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Audit the canonical web edge end-to-end against all six acceptance areas: opaque server-side session with no authority claims, live canonical-principal authorization on every request, secure cookie rotation/idle+absolute expiry, CSRF on mutations, login/sensitive-endpoint brute-force controls, and explicit WebSocket authentication/rechecks. Reconcile `hive_session`/HiveUser naming and single-process storage assumptions with the canonical principal/session architecture and the ADR-059 OAuth rewrite without weakening the opaque-session model.  
 **Current state:** The core security decisions remain strong and current: server-side opaque sessions are appropriate for revocable/dynamic authority, and WebSockets must not bypass authentication. The ADR predates current principal convergence and no complete acceptance-evidence record surfaced in this audit, so `Accepted` remains appropriate pending a boundary-by-boundary verification.  
 **ADR:** [ADR-077: Web and Session Security](../../../adr/ADR-077-web-session-security.md)
+
+## ADR-083: Skills and MCP Gateway Trust
+
+**Status:** Proposed  
+**Last updated:** 2026-09-28  
+**Next steps:** Rewrite before acceptance around the canonical Capability Provider → Binding → Invocation model. Preserve explicit install/allow-listing, graduated trust, no automatic privilege promotion, SSRF/egress controls, Sentinel on every effect, and bidirectional Warden scanning at MCP boundaries. Represent skills/MCP as provider types with explicit provenance and sandbox/effect policy rather than parallel trust/execution systems. Treat artifact signing/publisher identity as a pluggable provenance mechanism unless/until DID/VC becomes baseline, and reconcile microVM requirements with the actual sandbox/harness architecture.  
+**Current state:** The proposal directly addresses the correct primary threat, malicious third-party code, but its concrete mechanism depends on unresolved ADR-024/050/069/058 assumptions and predates Capability Binding/Invocation. Because it remains Proposed, it can be remapped cleanly without preserving those stale mechanisms.  
+**ADR:** [ADR-083: Skills and MCP Gateway Trust](../../../adr/ADR-083-skills-mcp-trust.md)
