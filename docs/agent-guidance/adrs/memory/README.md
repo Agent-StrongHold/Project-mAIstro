@@ -43,3 +43,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** No ADR-016 implementation work remains. Later episodic-memory work should preserve tier floors, scope isolation, soft-delete exclusion, and weight-sensitive ranking while extending the retrieval model.  
 **Current state:** Seven-tier episodic memory, bounded reinforcement/decay, scoped retrieval, stored reinforcement, and deletion filtering are implemented and directly tested. Retrieval ranking has evolved to a shared hybrid lexical/vector scorer, but relevance remains weight-sensitive and the original ADR invariants are preserved.  
 **ADR:** [ADR-016: EpisodicMemory + 7-tier weights + InMemoryEpisodicStore](../../../adr/ADR-016-episodic-store.md)
+
+## ADR-017: Outcome + InMemoryOutcomeStore
+
+**Status:** Implemented  
+**Last updated:** 2026-09-28  
+**Next steps:** No ADR-017 implementation work remains. Later outcome/economics/telemetry work should preserve bounded recording, time-window semantics, and tenant-scoped aggregation while extending the record.  
+**Current state:** Outcome recording, bounded FIFO eviction, completion-rate calculation, model breakdown, time-window filtering, and org isolation are implemented and directly tested. The Outcome record/store has since expanded with richer execution, billing, feedback, and provenance telemetry without invalidating ADR-017's original guarantees.  
+**ADR:** [ADR-017: Outcome + InMemoryOutcomeStore](../../../adr/ADR-017-outcome-store.md)
