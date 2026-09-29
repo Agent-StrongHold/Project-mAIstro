@@ -1,26 +1,138 @@
-# Mutation testing is temporarily disabled until self-hosted runner capacity is
-# restored. Do not run mutation automatically on pull requests or schedules,
-# and do not consume GitHub-hosted Actions minutes while it is parked.
+# Incrementally populate the reviewed per-source mutation baseline.
 #
-# The mutation implementation, scheduler, checkpointing, history, baselines,
-# and repository-health tooling remain in the repository and Git history.
-# Restore PR safety and repository-health execution here when self-hosted
-# capacity is available again.
-
+# One run selects one reproducible unbaselined source, executes its scoped
+# mutation suite, and opens a tiny baseline-candidate PR. This keeps each
+# baseline reviewable and bounds a pathological source to one Actions job.
 name: mutation
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+concurrency:
+  group: mutation-baseline-sampler
+  cancel-in-progress: false
 
 jobs:
-  mutation-deferred:
-    name: Mutation testing deferred to self-hosted runners
-    runs-on: self-hosted
+  baseline-one-source:
+    name: Baseline one mutation target
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - name: Mutation temporarily disabled
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install workspace and mutation tooling
+        run: uv sync --all-extras
+
+      - name: Resolve mutation inventory
         run: |
-          echo "Mutation testing is temporarily disabled until self-hosted runners are restored."
-          echo "No mutation workload is configured on GitHub-hosted runners."
+          uv run python scripts/mutation_targets.py --all > mutation-inventory.tsv
+          test -s mutation-inventory.tsv
+
+      - name: Select one unbaselined source
+        id: select
+        run: |
+          uv run python scripts/mutation_select_baseline.py \
+            mutation-inventory.tsv \
+            --baseline quality/mutation-baseline.json \
+            --seed "${GITHUB_SHA}:${GITHUB_RUN_ID}" \
+            --output mutation-target.tsv
+          if test -s mutation-target.tsv; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+            cat mutation-target.tsv
+          else
+            echo "selected=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Record mutation environment
+        if: steps.select.outputs.selected == 'true'
+        run: |
+          python - <<'PY'
+          import hashlib, json, platform, subprocess
+          def version(cmd):
+              return subprocess.check_output(cmd, text=True).strip()
+          versions = {
+              "runner": platform.platform(),
+              "python_version": platform.python_version(),
+              "cosmic_ray_version": version(["uv", "run", "cosmic-ray", "--version"]),
+              "pytest_version": version(["uv", "run", "pytest", "--version"]),
+          }
+          versions["tool_fingerprint"] = hashlib.sha256(
+              json.dumps(versions, sort_keys=True).encode()
+          ).hexdigest()
+          open("mutation-environment.json", "w").write(json.dumps(versions, indent=2) + "\n")
+          PY
+
+      - name: Execute selected mutation target
+        if: steps.select.outputs.selected == 'true'
+        run: |
+          mkdir -p mutation-checkpoints
+          uv run python scripts/mutation_packet.py \
+            mutation-target.tsv \
+            --checkpoints mutation-checkpoints \
+            --environment mutation-environment.json \
+            --commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --uploader scripts/upload_mutation_checkpoint.cjs
+
+      - name: Build reviewed baseline candidate
+        if: steps.select.outputs.selected == 'true'
+        run: |
+          uv run python scripts/mutation_ratchet.py \
+            mutation-telemetry.jsonl \
+            --baseline quality/mutation-baseline.json \
+            --history quality/mutation-history.json \
+            --json-output mutation-ratchet.json \
+            --markdown-output mutation-ratchet.md \
+            --candidate-output quality/mutation-baseline.json \
+            --floor 0
+
+      - name: Open baseline candidate PR
+        if: steps.select.outputs.selected == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- quality/mutation-baseline.json; then
+            echo "No baseline candidate change produced."
+            exit 0
+          fi
+          source_path="$(cut -f1 mutation-target.tsv)"
+          safe="$(printf '%s' "$source_path" | sha256sum | cut -c1-12)"
+          branch="automation/mutation-baseline-$safe-$GITHUB_RUN_ID"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add quality/mutation-baseline.json
+          git commit -m "test(mutation): baseline $source_path"
+          git push origin "$branch"
+          gh pr create \
+            --base develop \
+            --head "$branch" \
+            --title "test(mutation): baseline ${source_path##*/}" \
+            --body-file mutation-ratchet.md
+
+      - name: Publish mutation evidence
+        if: always() && steps.select.outputs.selected == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-baseline-${{ github.run_id }}
+          path: |
+            mutation-target.tsv
+            mutation-environment.json
+            mutation-telemetry.jsonl
+            mutation-ratchet.json
+            mutation-ratchet.md
+            mutation-checkpoints-new/
+          if-no-files-found: warn
