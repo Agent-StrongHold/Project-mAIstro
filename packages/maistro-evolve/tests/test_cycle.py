@@ -101,11 +101,32 @@ class TestPopulationStore:
         g2 = _genome("b")
         g2.fitness_score = 80.0
         g2.eval_scores = {"proxy_ifeval": 0.9, "proxy_bfcl": 0.8}
+        for g in (g1, g2):
+            # Governed-selection evidence (#854): repeated samples, stable
+            # spread, objective-stamped, current.
+            g.harness_params["eval_samples"] = dict.fromkeys(g.eval_scores, 2)
+            g.harness_params["eval_history"] = {
+                b: [s - 0.01, s + 0.01] for b, s in g.eval_scores.items()
+            }
+            g.harness_params["objective_version"] = "objective-test"
+            g.harness_params["evidence_cycle"] = 1
         store.add(g1)
         store.add(g2)
         champ = store.get_champion()
         assert champ is not None
         assert champ.id == "g-b"
+
+    def test_get_champion_none_when_nothing_eligible(self):
+        """Scores alone no longer make a champion: a single lucky sample per
+        benchmark is insufficient independent evidence under the #854 policy,
+        so there is NO champion rather than an unevaluable one."""
+        store = PopulationStore()
+        g = _genome("a")
+        g.fitness_score = 90.0
+        g.eval_scores = {"proxy_ifeval": 0.99}
+        g.harness_params["eval_samples"] = {"proxy_ifeval": 1}
+        store.add(g)
+        assert store.get_champion() is None
 
     def test_cull_bottom_removes_lowest(self):
         store = PopulationStore()
