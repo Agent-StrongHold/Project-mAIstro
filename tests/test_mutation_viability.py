@@ -57,7 +57,12 @@ def _session(
         )
         conn.execute(
             "INSERT INTO work_results VALUES (?,?,?,?)",
-            ("NORMAL", r.get("outcome", "SURVIVED"), r.get("diff", ""), f"job{i}"),
+            (
+                r.get("worker", "NORMAL"),
+                r.get("outcome", "SURVIVED"),
+                r.get("diff", ""),
+                f"job{i}",
+            ),
         )
     # Specs with no matching result == an interrupted sweep. These must carry
     # the same module as the rows above, or they attach to nothing and the
@@ -162,6 +167,62 @@ class TestDenominatorIsConservative:
         _killed, denominator, _rate = report.adjusted()
 
         assert denominator == 9
+
+
+class TestSkippedBucket:
+    """A mutant the pre-exec filter removed is a proven exclusion (#419).
+
+    `mutation_filter_annotations.py` marks annotation-position mutants SKIPPED
+    before `exec`, having proved by AST span what this module otherwise proves
+    by AST comparison. Such a mutant never ran, so it has no diff, and it used
+    to land in `undetermined` -- penalising a file precisely for having had its
+    unkillable mutants correctly filtered.
+    """
+
+    def test_a_filtered_mutant_is_not_undetermined(self, mv, tmp_path: Path) -> None:
+        source = tmp_path / "m.py"
+        source.write_text(_DEFERRED)
+        session = _session(tmp_path, [{"worker": "SKIPPED", "outcome": None}])
+
+        report = mv.classify(session, "m.py", source)
+
+        assert [v.category for v in report.verdicts] == ["skipped"]
+        assert report.undetermined == []
+
+    def test_skipped_is_subtracted_under_the_future_import(self, mv) -> None:
+        report = mv.Report(total=10, killed=7, future_annotations=True)
+        report.verdicts = [mv.Verdict("j", 1, 0, "op", "skipped", "x")]
+
+        _killed, denominator, rate = report.adjusted()
+
+        assert denominator == 9
+        assert rate == pytest.approx(7 / 9)
+
+    def test_skipped_is_not_subtracted_without_the_future_import(self, mv) -> None:
+        """Without the import an annotation is a live expression, so a mutation
+        there is killable and its exclusion would be unearned -- the same rule
+        `non_viable` already follows."""
+        report = mv.Report(total=10, killed=7, future_annotations=False)
+        report.verdicts = [mv.Verdict("j", 1, 0, "op", "skipped", "x")]
+
+        _killed, denominator, _rate = report.adjusted()
+
+        assert denominator == 10
+
+    def test_the_task_policy_shape_scores_what_actually_ran(self, mv, tmp_path: Path) -> None:
+        """The measured regression: 110 executed mutants all killed, beside 99
+        filtered annotation mutants, read as 52.6% instead of 100%."""
+        source = tmp_path / "m.py"
+        source.write_text(_DEFERRED)
+        rows = [{"outcome": "KILLED"} for _ in range(110)]
+        rows += [{"worker": "SKIPPED", "outcome": None} for _ in range(99)]
+        session = _session(tmp_path, rows)
+
+        report = mv.classify(session, "m.py", source)
+        killed, denominator, rate = report.adjusted()
+
+        assert (killed, denominator) == (110, 110)
+        assert rate == pytest.approx(1.0)
 
 
 class TestSessionScoping:
