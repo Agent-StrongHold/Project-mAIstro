@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import ModuleType
 
@@ -88,3 +89,148 @@ def test_null_drain_record_cannot_pass(soak: ModuleType) -> None:
     checks["graceful_drain"] = None  # type: ignore[assignment]
 
     assert soak.failed_promotion_checks(evidence) == ["graceful_drain"]
+
+
+LB = "http://127.0.0.1:18080"
+REPLICAS = ("http://127.0.0.1:18201", "http://127.0.0.1:18202")
+PROBE_PATHS = [(origin, auth) for origin in (LB, *REPLICAS) for auth in (False, True)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("broken_path", "failure"),
+    [(None, None)]
+    + [(path, failure) for path in PROBE_PATHS for failure in ("disabled", "no-header", "offline")],
+)
+async def test_rate_probe_requires_every_replica_and_identity_class(
+    soak: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    broken_path: tuple[str, bool] | None,
+    failure: str | None,
+) -> None:
+    """A healthy LB/peer must not hide a failed direct probe (or vice versa)."""
+    import httpx
+
+    observed: dict[tuple[str, bool], int] = {}
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        path = (str(request.url).removesuffix("/tasks"), "authorization" in request.headers)
+        assert request.method == "GET" and request.url.path == "/tasks"
+        observed[path] = observed.get(path, 0) + 1
+        if path == broken_path:
+            if failure == "disabled":
+                return httpx.Response(200)
+            if failure == "offline":
+                raise httpx.ConnectError("replica unavailable", request=request)
+            return httpx.Response(429)  # rejection without the required Retry-After
+        return httpx.Response(429, headers={"Retry-After": "60"})
+
+    @asynccontextmanager
+    async def client_for_probe(**kwargs: object):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            yield client
+
+    monkeypatch.setattr(soak, "shared_client", client_for_probe)
+    assert soak.REPLICA_ORIGINS == REPLICAS
+    result = await soak.phase_rate_limit(
+        LB, soak.REPLICA_ORIGINS, {"Authorization": "Bearer fixture"}, 17, 2
+    )
+
+    # 17 is intentionally not divisible by the driver's 16 concurrent lanes.
+    assert observed == dict.fromkeys(PROBE_PATHS, 17)
+    assert result["enforced_everywhere"] is (broken_path is None)
+    assert set(result["direct_replicas"]) == set(REPLICAS)
+    for origin, pair in result["direct_replicas"].items():
+        for identity, probe in pair.items():
+            assert probe["target"] == origin
+            assert probe["authenticated"] is (identity == "authenticated")
+            assert probe["requests"] == sum(probe["status_counts"].values()) == 17
+
+    evidence = _passing_evidence()
+    evidence["thresholds"]["checks"]["rate_limit_enforced"] = result["enforced_everywhere"]
+    assert soak.failed_promotion_checks(evidence) == (
+        [] if broken_path is None else ["rate_limit_enforced"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origins", [(), REPLICAS[:1], (REPLICAS[0], REPLICAS[0]), (LB, REPLICAS[0])]
+)
+async def test_rate_probe_rejects_incomplete_replica_topology(
+    soak: ModuleType, origins: tuple[str, ...]
+) -> None:
+    with pytest.raises(ValueError, match="two distinct direct replica origins"):
+        await soak.phase_rate_limit(LB, origins, {}, 17, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_replica_limited", [True, False])
+async def test_rate_probe_with_production_middleware(
+    soak: ModuleType, monkeypatch: pytest.MonkeyPatch, second_replica_limited: bool
+) -> None:
+    """Exercise real limiter instances; ASGI routing is not a production soak."""
+    import httpx
+    from fastapi import FastAPI
+
+    from maistro.config.settings import get_settings
+    from maistro_server.api.rate_limit import RateLimitMiddleware
+
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "0")
+    monkeypatch.setenv("API_KEYS", '["soak:probe-secret"]')
+    get_settings.cache_clear()
+
+    def app(limited: bool) -> FastAPI:
+        instance = FastAPI()
+
+        @instance.get("/tasks")
+        async def tasks() -> dict[str, str]:
+            return {"status": "ok"}
+
+        if limited:
+            instance.add_middleware(RateLimitMiddleware)
+        return instance
+
+    transports = [
+        httpx.ASGITransport(app=app(True)),
+        httpx.ASGITransport(app=app(second_replica_limited)),
+    ]
+    lb_requests = 0
+
+    async def route(request: httpx.Request) -> httpx.Response:
+        nonlocal lb_requests
+        if request.url.port == 18080:
+            index = lb_requests % 2
+            lb_requests += 1
+        else:
+            index = REPLICAS.index(str(request.url).removesuffix("/tasks"))
+        return await transports[index].handle_async_request(request)
+
+    @asynccontextmanager
+    async def client_for_probe(**kwargs: object):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as client:
+            yield client
+
+    monkeypatch.setattr(soak, "shared_client", client_for_probe)
+    try:
+        result = await soak.phase_rate_limit(
+            LB, REPLICAS, {"Authorization": "Bearer probe-secret"}, 17, 2
+        )
+        # LB sees 429 even with replica 2 disabled: only the direct probes
+        # distinguish that broken deployment from two healthy limiters.
+        assert result["through_lb_authenticated"]["status_counts"]["429"] > 0
+        assert result["through_lb_unauthenticated"]["status_counts"]["429"] > 0
+        assert result["enforced_everywhere"] is second_replica_limited
+        first = result["direct_replicas"][REPLICAS[0]]
+        second = result["direct_replicas"][REPLICAS[1]]
+        for identity in ("authenticated", "unauthenticated"):
+            assert first[identity]["status_counts"] == {"429": 17}
+            assert first[identity]["retry_after"] is not None
+            expected_status = "429" if second_replica_limited else "200"
+            assert second[identity]["status_counts"] == {expected_status: 17}
+            assert (second[identity]["retry_after"] is not None) is second_replica_limited
+    finally:
+        get_settings.cache_clear()
+        for transport in transports:
+            await transport.aclose()

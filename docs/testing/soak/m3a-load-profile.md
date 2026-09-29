@@ -87,10 +87,14 @@ attempt terminalization) — recorded as such, not hidden.
    reporting it `already_fired` (the cross-process form of
    `test_two_admitters_concurrently_claim_each_due_occurrence_once`, #220/#850).
 5. **Rate limiting under concurrency / replica selection**: 800-request
-   bursts unauthenticated (through LB and direct to a replica) and
-   authenticated (through LB) ⇒ HTTP 429 with `Retry-After` on each path;
-   per-replica enforcement (`N × limit` aggregate is the documented #842
-   semantics, not a bypass).
+   bursts for both unauthenticated and authenticated identities through the
+   LB **and directly to each of the two replicas** (six probes total) ⇒
+   HTTP 429 with `Retry-After` on every path. Direct evidence is keyed by
+   replica origin in `rate_limit.direct_replicas`; a healthy LB result cannot
+   hide a replica with enforcement disabled. This tests process-local
+   enforcement (`N × limit` aggregate per the documented #842 semantics),
+   **not** a cluster-wide budget or proof that replica selection cannot
+   increase a principal's aggregate allowance.
 
 ## Pass/fail thresholds
 
@@ -100,7 +104,7 @@ Hard (any miss fails the soak):
 |---|---|---|
 | H1 | Exactly-once task admission | distinct run_ids ≤ 1; statuses ⊆ {200,202,409} |
 | H2 | Exactly-once schedule occurrence | runs created for the raced occurrence == 1 |
-| H3 | Rate limiting | 429 + `Retry-After` observed on all three burst paths |
+| H3 | Rate limiting | 429 + `Retry-After` observed on all six burst paths (LB + both direct replicas, authenticated + unauthenticated) |
 | H4 | Replica kill/restart | replica 2 rejoins healthy; LB failover keeps client-visible 5xx + connection errors ≤ kill-window budget (`(restart_delay + 15s) × offered load`) |
 | H5 | No silent stall | non-terminal `canonical_runs` after the settle window are enumerated; the automated gate requires **0**. Any non-zero result is a promotion failure pending a separately filed/reclassified finding. |
 | H6 | Task admission availability | `POST /tasks` 202 ratio ≥ 99% outside the kill window |

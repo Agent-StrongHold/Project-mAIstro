@@ -50,6 +50,7 @@ PG_CONTAINER = "maistro-soak-pg"
 PG_IMAGE = "pgvector/pgvector:pg18"
 PG_HOST_PORT = 18433
 LB_PORT = 18080
+REPLICA_ORIGINS = ("http://127.0.0.1:18201", "http://127.0.0.1:18202")
 NGINX_IMAGE = "nginx:1.27-alpine"
 SOAK_API_KEY = "soak:soak-key-1"  # principal:secret form required by #843
 # Synthetic soak fixtures, not credentials. TASK_DELEGATION_KEY is opaque to
@@ -72,8 +73,7 @@ def allow_soak_origins() -> None:
     """Allow the soak stack's loopback origins for this process."""
     configure_outbound_policy(
         f"http://127.0.0.1:{LB_PORT}",
-        "http://127.0.0.1:18201",
-        "http://127.0.0.1:18202",
+        *REPLICA_ORIGINS,
     )
 
 
@@ -760,7 +760,11 @@ async def phase_exactly_once_tasks(base: str, headers: dict[str, str], n: int) -
 
 
 async def phase_rate_limit(
-    lb: str, replica_direct: str, headers: dict[str, str], total: int, burst_budget: int
+    lb: str,
+    replica_origins: tuple[str, ...],
+    headers: dict[str, str],
+    total: int,
+    burst_budget: int,
 ) -> dict[str, Any]:
     """Burst unauthenticated + authenticated traffic; 429 must hold per replica.
 
@@ -769,6 +773,13 @@ async def phase_rate_limit(
     crashed the phase at evidence-assembly time (`int <= function`) on the
     first round-5 validation run.
     """
+
+    if (
+        len(set(replica_origins)) < 2
+        or len(set(replica_origins)) != len(replica_origins)
+        or lb in replica_origins
+    ):
+        raise ValueError("rate-limit phase requires at least two distinct direct replica origins")
 
     async def burst(target: str, auth: bool, n: int) -> dict[str, Any]:
         """Concurrent burst; 429 must hold per replica.
@@ -828,15 +839,24 @@ async def phase_rate_limit(
 
     lb_unauth = await burst(lb, auth=False, n=total)
     lb_auth = await burst(lb, auth=True, n=total)
-    direct_unauth = await burst(replica_direct, auth=False, n=total)
-    probes = (lb_unauth, lb_auth, direct_unauth)
+    # LB rejection alone can mask a replica with enforcement disabled. Probe
+    # both identity classes directly on every replica, including the restarted
+    # replica; do not infer either result from the other or from the LB.
+    direct = {}
+    for origin in replica_origins:
+        direct[origin] = {
+            "unauthenticated": await burst(origin, auth=False, n=total),
+            "authenticated": await burst(origin, auth=True, n=total),
+        }
+    probes = [lb_unauth, lb_auth, *(probe for pair in direct.values() for probe in pair.values())]
     limited = all(
         b["status_counts"].get("429", 0) > 0 and b["retry_after"] is not None for b in probes
     )
     return {
         "through_lb_unauthenticated": lb_unauth,
         "through_lb_authenticated": lb_auth,
-        "direct_replica_unauthenticated": direct_unauth,
+        "direct_replicas": direct,
+        "enforcement_scope": "process-local; aggregate budget is replica count times limit",
         "enforced_everywhere": limited,
         # The round-4 preflight recorded enforced_everywhere=false with a
         # 20-request probe against a burst budget of 60: no burst smaller
@@ -1292,7 +1312,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     )
     evidence["exactly_once_schedule_claim"] = await phase_claim_probe(sys.executable, dsn)
     evidence["rate_limit"] = await phase_rate_limit(
-        lb, "http://127.0.0.1:18201", headers, args.rate_limit_probe_requests, args.rate_limit_burst
+        lb, REPLICA_ORIGINS, headers, args.rate_limit_probe_requests, args.rate_limit_burst
     )
     evidence["kill_restart"] = kill_record
     evidence["replica_boot_seconds"] = boot_seconds
