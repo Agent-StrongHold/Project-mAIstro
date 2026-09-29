@@ -78,11 +78,14 @@ _SHARED_CONTEXT_FIELDS: tuple[str, ...] = (
     "design_system_version",
     "audience",
     "beneficiaries",
+    "success_interpretation",
     "required_messages",
     "cta",
     "required_facts",
     "prohibited_claims",
     "tone_constraints",
+    "source_references",
+    "supervision_constraints",
     "artifact_requests",
 )
 
@@ -115,11 +118,16 @@ def shared_context_from_brief(brief: Any) -> dict[str, Any]:
         "design_system_version": brief.design_system_version,
         "audience": brief.audience,
         "beneficiaries": list(brief.beneficiaries),
+        "success_interpretation": brief.success_interpretation,
         "required_messages": list(brief.required_messages),
         "cta": brief.cta,
         "required_facts": [fact.model_dump(mode="json") for fact in brief.required_facts],
         "prohibited_claims": list(brief.prohibited_claims),
         "tone_constraints": list(brief.tone_constraints),
+        "source_references": [
+            reference.model_dump(mode="json") for reference in brief.source_references
+        ],
+        "supervision_constraints": list(brief.supervision_constraints),
         "artifact_requests": [
             request.model_dump(mode="json") for request in brief.artifact_requests
         ],
@@ -134,9 +142,10 @@ def shared_decision_digest(context: dict[str, Any]) -> str:
     """Stable identity of the shared creative decisions one run consumes.
 
     Covers exactly the fields whose change must invalidate descendants
-    (audience, required messages, CTA, facts, prohibitions, tone, Persona and
-    Design System versions); request-specific detail is excluded because it
-    belongs to a branch, not to the shared decision.
+    (success interpretation, audience, required messages, CTA, facts,
+    prohibitions, tone, source references, supervision constraints, Persona
+    and Design System versions); request-specific detail is excluded because
+    it belongs to a branch, not to the shared decision.
     """
     selection = {field: context.get(field) for field in _SHARED_CONTEXT_FIELDS}
     selection.pop("artifact_requests")

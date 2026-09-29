@@ -445,7 +445,9 @@ def _shared_signature(brief: CreativeBrief) -> dict[str, Any]:
 
     Mirrors the slice :func:`maistro_design.creative_nodes.shared_decision_digest`
     digests — the shared decisions every branch consumes through the relayed
-    shared context, including who owns/delegates the Goal and who benefits.
+    shared context, including who owns/delegates the Goal and who benefits,
+    the success interpretation, the source references the work builds on and
+    any supervision constraints.
     The invalidation answer and the decision identities the message/visual
     stages cite must never disagree about what counts as a shared decision:
     a field whose change moves the digest without invalidating descendants
@@ -463,11 +465,16 @@ def _shared_signature(brief: CreativeBrief) -> dict[str, Any]:
         "design_system": (brief.design_system.ref_id, brief.design_system.version),
         "audience": brief.audience,
         "beneficiaries": list(brief.beneficiaries),
+        "success_interpretation": brief.success_interpretation,
         "required_messages": list(brief.required_messages),
         "cta": brief.cta,
         "required_facts": [fact.model_dump(mode="json") for fact in brief.required_facts],
         "prohibited_claims": list(brief.prohibited_claims),
         "tone_constraints": list(brief.tone_constraints),
+        "source_references": [
+            reference.model_dump(mode="json") for reference in brief.source_references
+        ],
+        "supervision_constraints": list(brief.supervision_constraints),
     }
 
 

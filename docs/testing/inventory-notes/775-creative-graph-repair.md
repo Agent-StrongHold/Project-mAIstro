@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-design/tests: +6
+  packages/maistro-design/tests: +11
   packages/hive-conductor/backend/tests: +4
 ---
 
@@ -61,3 +61,53 @@ cannot authorize its own debt).
    creative block; an out-of-scope caller still gets the 404-shaped refusal;
    a missing durable spine degrades to the run-level block (`artifacts: []`)
    instead of failing the read.
+
+## Round 2 addendum — salvaged signature extension + CI-gate evidence repairs
+
+**Salvaged src work committed.** The prior run left uncommitted edits
+(backed up as `incoming-775-salvage.patch` before continuation) extending the
+shared-decision agreement to three more relayed fields: `success_interpretation`,
+`source_references` and `supervision_constraints` — added to `_shared_signature`
+(creative_graph.py) and to `_SHARED_CONTEXT_FIELDS`/`shared_context_from_brief`
+(creative_nodes.py) so both authorities move together. Without them, changing
+the brief's success interpretation, source artifacts or supervision notes left
+siblings planned against a stale digest.
+
+`test_creative_graph.py` (+3 params, +3 digest-loop entries, same two
+agreement tests): the invalidation parametrization and the digest-identity
+loop now cover the three salvaged fields, pinning that neither authority
+covers a field the other ignores for them either.
+
+**CI `test` gate evidence repairs** (all reproduced locally before fixing):
+
+1. `quality/reachability-baseline.json`: `maistro.interop` and
+   `maistro.interop.contract` became reachable after the develop merge
+   (c1f1fa0e); `scripts/check-reachability.py` itself prescribes the ratchet
+   shrink, so both entries were dropped (189 -> 187), and the 1:1 ledger
+   `quality/reachability-dispositions.json` moved with it (empty
+   `interop-contract` group pruned). Provenance gate accepts the shrink:
+   `check-reachability-dispositions-provenance.py` exit 0
+   ("189 dispositioned modules -> 187").
+2. `docs/specs/SPEC-092826-a774-creative-brief-contract.md`: status
+   `AC Defined` requires `owners` (lifecycle machine, ADR-097) and the
+   registry linter requires `layer`. Added `owners: ['@BlakeMatthews-dev']`
+   (the spec's author) and `layer: Foundation` (matches sibling
+   SPEC-091726-7c2a brief-contract spec). `python -m maistro_registry.cli
+   lint . --strict`: 414 files, 0 errors; `tools/lint_lifecycle.py`: all
+   documents pass, baseline 0 accepted.
+
+Two full-suite runs also showed `tests/test_check_merge_markers.py::
+test_this_repository_is_clean` and hive-conductor's
+`test_independent_process_writers_publish_one_username` failing only under
+full-suite load and passing in isolation (subprocess/timing flakes near the
+60s per-test timeout); both pass standalone and `scripts/check-merge-markers.py`
+reports the tree clean. Not addressed further: no diff-reachable cause.
+
+**Suite-inventory alignment (+2 design).** The develop merge (c1f1fa0e)
+moved `docs/testing/inventory/baseline.json` under this branch's recorded
+deltas: at the pre-round head the design suite already collected 430 against
+an expected 428 (no test was added by the salvage commit c72b10cb — verified
+by diff), and this round's +3 parametrized cases bring collected to 433. The
+note's delta is therefore 6 + 3 + 2 = 11 so `check-suite-inventory.py`
+reconciles to the tree exactly; no test was deleted or weakened to make the
+count line up.

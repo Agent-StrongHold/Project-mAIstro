@@ -35,9 +35,9 @@ from maistro_design.brief import (
     RequiredFact,
 )
 from maistro_design.creative_graph import (
+    SHARED_STAGE_NODE_IDS,
     ArtifactProvenanceRecord,
     InvalidationReport,
-    SHARED_STAGE_NODE_IDS,
     artifact_provenance,
     channel_family,
     instantiate_creative_graph,
@@ -203,7 +203,7 @@ async def test_updated_brief_version_registers_as_new_template_version() -> None
     under the lineage's template id instead of colliding with the already
     registered v1 definition in a canonical ``GraphTemplateStore``.
     """
-    from maistro.graph.templates import GraphTemplateConflict, InMemoryGraphTemplateStore
+    from maistro.graph.templates import InMemoryGraphTemplateStore
 
     v1 = _brief()
     v2 = v1.new_version(change_note="audience narrowed", audience="professional pastry chefs")
@@ -614,6 +614,21 @@ def test_changing_one_poster_dimension_does_not_regenerate_website_copy() -> Non
             BriefReference(kind="delegation", ref_id="delegation-other", workspace_id=WS),
             id="delegation-moved",
         ),
+        pytest.param(
+            "success_interpretation",
+            "success = 500 preorders in week one",
+            id="success-interpretation",
+        ),
+        pytest.param(
+            "source_references",
+            (BriefReference(kind="artifact", ref_id="research-pack-9", workspace_id=WS),),
+            id="source-references",
+        ),
+        pytest.param(
+            "supervision_constraints",
+            ("legal review before publish",),
+            id="supervision-constraints",
+        ),
     ],
 )
 def test_relayed_shared_field_changes_invalidate_every_descendant(
@@ -653,6 +668,12 @@ def test_shared_decision_identity_covers_the_relayed_agent_and_beneficiary_field
         ("beneficiaries", ["creative small teams"]),
         ("goal_owner_agent_id", "agent-delegate-design"),
         ("goal_delegation_ref", {"kind": "delegation", "ref_id": "delegation-other"}),
+        ("success_interpretation", "success = 500 preorders in week one"),
+        (
+            "source_references",
+            [{"kind": "artifact", "ref_id": "research-pack-9", "workspace_id": WS}],
+        ),
+        ("supervision_constraints", ["legal review before publish"]),
     ):
         mutated = {**base_context, field: value}
         assert shared_decision_digest(mutated) != base_digest, field

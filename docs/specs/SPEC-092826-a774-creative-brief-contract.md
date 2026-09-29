@@ -6,6 +6,9 @@ kind: spec
 status: AC Defined
 created: 2026-09-28
 accepted: 2026-09-28
+owners:
+  - '@BlakeMatthews-dev'
+layer: Foundation
 history:
   - status: Proposed
     date: 2026-09-28
