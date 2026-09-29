@@ -3,8 +3,9 @@ id: ADR-014
 title: Memory protocols
 repo: maistro-engine
 kind: adr
-status: Accepted
+status: Implemented
 created: 2026-04-26
+implemented: 2026-09-28
 substrate:
   - maistro-engine#ADR-013
 implements: []
@@ -23,11 +24,14 @@ history:
     date: 2026-04-26
   - status: Accepted
     date: 2026-04-26
+  - status: Implemented
+    date: 2026-09-28
+    reason: Audited against runtime-checkable memory protocols and focused in-memory store conformance tests.
 ---
 
 # ADR-014: Memory protocols
 
-**Status:** Accepted  
+**Status:** Implemented  
 **Date:** 2026-04-26  
 **Tranche:** T2  
 **Depends on:** ADR-013
@@ -65,11 +69,16 @@ Create `src/maistro/protocols/memory.py` with `LearningStore`, `EpisodicStore`, 
 
 ## Acceptance criteria
 
-- [ ] `isinstance(InMemoryLearningStore(), LearningStore)` is `True`
-- [ ] `isinstance(InMemoryEpisodicStore(), EpisodicStore)` is `True`
-- [ ] `isinstance(InMemoryOutcomeStore(), OutcomeStore)` is `True`
-- [ ] A stub class that only has some methods returns `False` for `isinstance`
+- [x] `isinstance(InMemoryLearningStore(), LearningStore)` is `True`
+- [x] `isinstance(InMemoryEpisodicStore(), EpisodicStore)` is `True`
+- [x] `isinstance(InMemoryOutcomeStore(), OutcomeStore)` is `True`
+- [x] A stub class that only has some methods returns `False` for `isinstance`
 
 ## Source references
 
 - `stronghold/src/stronghold/protocols/memory.py`
+
+
+## 2026-09-28 implementation audit
+
+Verified against `packages/maistro-core/src/maistro/protocols/memory.py` and `packages/maistro-core/tests/memory/test_protocols.py`. The original LearningStore, EpisodicStore, and OutcomeStore runtime-checkable contracts are implemented and exercised by their in-memory stores; the protocol module has since expanded with additional memory capabilities without invalidating these original contracts.
