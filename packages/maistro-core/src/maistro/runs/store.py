@@ -489,6 +489,8 @@ class RunStore(Protocol):
 
     async def get_run(self, run_id: str) -> Run | None: ...
 
+    async def find_run_by_effect(self, effect_key: str) -> Run | None: ...
+
     async def claim_run_by_effect(
         self,
         graph: Graph,
@@ -1152,6 +1154,12 @@ class InMemoryRunStore:
     async def get_run(self, run_id: str) -> Run | None:
         run = self._runs.get(run_id)
         return run.model_copy(deep=True) if run is not None else None
+
+    async def find_run_by_effect(self, effect_key: str) -> Run | None:
+        for run in self._runs.values():
+            if run.provenance.get("effect_key") == effect_key:
+                return run.model_copy(deep=True)
+        return None
 
     async def claim_run_by_effect(
         self,

@@ -42,7 +42,6 @@ class _EchoNode(BaseNode):
     input_schema: ClassVar[type[BaseModel]] = _EchoIn
     output_schema: ClassVar[type[BaseModel]] = _EchoOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Echo"
     description: ClassVar[str] = "Returns input as-is"
@@ -57,7 +56,6 @@ class _BoomNode(BaseNode):
     input_schema: ClassVar[type[BaseModel]] = _EchoIn
     output_schema: ClassVar[type[BaseModel]] = _EchoOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
 
     async def _execute(self, inputs: _EchoIn, ctx: NodeContext) -> _EchoOut:
         raise RuntimeError("kaboom")
@@ -69,7 +67,6 @@ class _WaitNode(BaseNode):
     input_schema: ClassVar[type[BaseModel]] = _EchoIn
     output_schema: ClassVar[type[BaseModel]] = _EchoOut
     cost_hint: ClassVar[float] = 0.0
-    idempotent: ClassVar[bool] = True
     external_io: ClassVar[bool] = True
 
     async def _execute(self, inputs: _EchoIn, ctx: NodeContext) -> _EchoOut:

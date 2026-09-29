@@ -5,6 +5,7 @@ inventory-delta:
 ---
 # issue-1194-replay-contract
 
+<<<<<<< HEAD
 Six core tests add evidence for the executable Graph replay contract:
 
 - the non-retryable contract overrides a larger graph retry budget;
@@ -22,3 +23,91 @@ ba2f1f077 collects equivalent node IDs), so the merge retained those
 develop-side copies and dropped the branch variants. The surviving measured
 additions over the merge base are the four core tests above plus the server
 A2A replay test.
+=======
+The branch's net contribution to the suite ledger is +14 core and +1 server
+node IDs. They add evidence for the executable Graph replay contract:
+
+- the non-retryable contract overrides a larger graph retry budget;
+- an EFFECT_KEY node without a recorded key is not retried by the graph executor;
+- `compliance.block` repeated execution upserts one penalty by its logical effect key;
+- `dashboard.append_section` repeated execution leaves one section;
+- repeated, independent-worker, and concurrent `agent.delegate_remote` execution reuses one child Run and one in-process A2A task;
+- the SQLite canonical store retains one effect claim across a store reload, and one transport-claim winner across replicas;
+- a harness effect is deduplicated across a new NodeRun, not only a new Attempt;
+- a registry-wide idempotency conformance suite (`test_idempotent_replay_conformance.py`) executes every IDEMPOTENT-declared kind twice against the same logical input/state — durable state upserts to one effect, poll replays stay read-only — and the sweep test fails when an IDEMPOTENT declaration has no conformance case;
+- the server test proves repeated inbound A2A admission returns one canonical Run.
+
+The catalog assertion also verifies replay semantics (`idempotent` included) are
+emitted from the executable node contract, never a second hand-written table.
+
+## suite-ledger reconciliation (recorded for review)
+
+The note first shipped with a malformed front matter — the opening `---`
+delimiter was missing — so the gate read no delta from it at all, and the
+branch's two develop merges moved collection underneath it. The numbers above
+are the gate's own `--update` result for this branch's net contribution after
+that repair: they are whatever makes baseline + Σ(notes) match collection, per
+the ledger's convention for a change whose base moved.
+
+## develop-merge reconciliation (recorded for review)
+
+The branch merged develop `ba2f1f077` (which had independently fixed delegation
+double-dispatch in #1270 "admit child run before transport"). Reconciliation
+decisions, all in favour of one canonical contract:
+
+- `agent.delegate_remote` keeps #1270's reserve-before-transport architecture
+  (child reservation, atomic transport-claim, receipt attach, reconciliation
+  pauses), but its delegation key is bound to the canonical
+  `replay_effect_key` (Run + node + input digest) instead of a NodeRun-scoped
+  hash — a NodeRun-scoped key was this issue's finding: a retry that gets a
+  new NodeRun defeats dedup. The child Run's provenance records the same value
+  under both `delegation_key` (transport lookup) and `effect_key` (executor
+  reconciliation lookup).
+- The guest-peer POST body carries `idempotency_key` (the canonical
+  `A2ATaskCreate` receiver contract) and the server gained
+  `GET /a2a/tasks/by-idempotency-key/{key}` so `GuestPeerManager.reconcile`
+  has an in-tree receiver; it resolves the claim through
+  `RunStore.find_run_by_effect`.
+- One review test pinned "adopt the reservation even when the payload changed
+  after a crash". That contradicts the canonical contract (`replay_effect_key`:
+  the input digest distinguishes explicit new work at the same node) and is
+  unreachable in production, where a retry re-reads the NodeRun's durable
+  inputs. The test now pins both halves of the canonical semantics: same
+  durable inputs adopt the reservation (same child, same task, transport
+  accepted once); a genuinely different request is explicit new work.
+- The effect-claim migration was renumbered `034` → `041` (develop's chain
+  claimed 034/039/040 while this branch was open); per the convention in
+  `036_audit_log_org_scope`, the audit-scope migration follows the new tip so
+  `upgrade head` stays single-headed and applies it.
+
+## develop-merge reconciliation, second round (this repair)
+
+The branch merged develop `b906cc577` (#1120's manual-fire occurrence work).
+Conflict resolution, recorded for review:
+
+- All three Run stores (`store.py`, `pg_store.py`, `sqlite_store.py`): kept
+  both sides. #1194's effect-claim methods (`find_run_by_effect`,
+  `claim_run_by_effect`, `_require_locked_parent_scope`) and #1120's
+  `find_occurrence_run` are independent features over one protocol.
+- Alembic collision: develop took revision id `042` for the manual-fire
+  occurrence identity migration while this branch's Invocation-effect-index
+  migration also claimed `042`, both parented on `036_audit_log_org_scope`.
+  Renumbered this branch's migration `042` → `043` and re-parented it onto
+  `042` (develop's id stays stable, exactly the convention the prior rounds
+  recorded above). Heads collapse to a single `043`;
+  `test_audit_scope_migration.py` asserts the merged truth
+  (`down_revision == "041"`, exactly one head, audit migration on its chain)
+  and `test_capability_invocation_effect_index_migration.py` follows `043`.
+- Vulture per-identity ledger: the two new `fastapi-route-handler` identities
+  from this branch's own A2A transport endpoints
+  (`create_a2a_task`, `get_a2a_task_by_idempotency_key`) are banked in
+  `quality/vulture-baseline.json` (committed with the earlier repair) and the
+  reviewed grants are recorded in `quality/ratchet-authorizations.json`. Per
+  the ratchet's two-merge rule the grants are read from the trusted base, so
+  the gate turns green once this merge is itself the base — the same
+  post-merge reconciliation the #1310 grant entries record. No test delta.
+- `test_base_contract.py` test doubles no longer declare the abolished
+  `idempotent: ClassVar[bool]` second policy; catalog `idempotent` derives
+  from `replay_semantics` alone, which the unchanged catalog assertions still
+  prove.
+>>>>>>> origin/develop

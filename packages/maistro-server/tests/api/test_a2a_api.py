@@ -42,16 +42,25 @@ async def test_replayed_a2a_create_returns_one_canonical_run(client: TestClient)
         assert first.status_code == second.status_code == 202
         assert first.json() == second.json()
         assert len(await run_store.list_by_status(RunStatus.CREATED)) == 1
+
+        # The reconciliation half of transport idempotency: a worker that lost
+        # its lease after an ambiguous POST polls the key and gets the original
+        # receipt back, never a second admission.
+        receipt = client.get(f"/a2a/tasks/by-idempotency-key/{payload['idempotency_key']}")
+        assert receipt.status_code == 200
+        assert receipt.json()["task_id"] == first.json()["task_id"]
+
+        unknown = client.get("/a2a/tasks/by-idempotency-key/never-claimed")
+        assert unknown.status_code == 404
     finally:
         a2a.configure_a2a_admission(None, None)
 
 
-def test_a2a_create_returns_503_when_admission_is_not_configured(client: TestClient) -> None:
-    """Without configured canonical stores there is no Run boundary to admit
-    through — the endpoint refuses loudly instead of improvising a store."""
+def test_unconfigured_admission_is_a_503_never_a_false_admission(client: TestClient) -> None:
+    """Without wired canonical stores the endpoint refuses, it does not guess."""
     a2a.configure_a2a_admission(None, None)
     try:
-        response = client.post(
+        refused = client.post(
             "/a2a/tasks/create",
             json={
                 "agent_id": "researcher",
@@ -59,7 +68,9 @@ def test_a2a_create_returns_503_when_admission_is_not_configured(client: TestCli
                 "idempotency_key": "agent.delegate_remote:unconfigured",
             },
         )
-        assert response.status_code == 503
-        assert "not configured" in response.json()["detail"]
+        assert refused.status_code == 503
+
+        receipt = client.get("/a2a/tasks/by-idempotency-key/agent.delegate_remote:unconfigured")
+        assert receipt.status_code == 503
     finally:
         a2a.configure_a2a_admission(None, None)

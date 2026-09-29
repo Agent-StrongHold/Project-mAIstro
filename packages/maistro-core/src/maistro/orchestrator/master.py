@@ -317,7 +317,11 @@ class _WorkItemNode:
         return status, message, metadata
 
     async def run(self, inputs: Any, ctx: NodeContext) -> NodeResult:
-        del ctx
+        effect_key = replay_effect_key(
+            ctx,
+            self.kind,
+            {"task_id": self._item.task_id},
+        )
         resolved_inputs = inputs if isinstance(inputs, Mapping) else {}
         blocked = self._blocked_dependencies(resolved_inputs)
         if blocked:
@@ -326,11 +330,14 @@ class _WorkItemNode:
                 success=True,
                 status="completed",
                 output=self._output(WorkItemStatus.BLOCKED, message, {}),
+                metadata={"replay_effect_key": effect_key},
             )
 
         handled = await self._run_handler()
         if isinstance(handled, NodeResult):
-            return handled
+            return handled.model_copy(
+                update={"metadata": {**handled.metadata, "replay_effect_key": effect_key}}
+            )
         status, message, metadata = await self._apply_security_gate(handled)
         succeeded = status == WorkItemStatus.PASSED
         security_outcome = metadata.get(OUTPUT_SECURITY_OUTCOME_KEY)
@@ -350,6 +357,7 @@ class _WorkItemNode:
                 None if physical_success else (message or WORK_ITEM_EXECUTION_FAILED_RESULT)
             ),
             output=self._output(status, message, metadata),
+            metadata={"replay_effect_key": effect_key},
         )
 
 

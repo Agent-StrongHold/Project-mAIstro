@@ -91,6 +91,10 @@ EXPECTED_TABLES = frozenset(
         "child_profiles",
         "design_outputs",
         "design_projects",
+        # Short-lived elevation grants (#72): durable so a grant issued before
+        # a restart still answers `find_valid` instead of silently failing
+        # closed and re-prompting. Lives at the end of the chain (039).
+        "elevation_grants",
         "episodic_memories",
         "event_log",
         "graph_continuations",
@@ -179,12 +183,35 @@ def _tables() -> set[str]:
     }
 
 
+def _drop_all_tables() -> None:
+    """Empty `public` entirely, not only the chain's own tables.
+
+    `downgrade base` unwinds only what the chain created, but standalone-path
+    stores bootstrap their tables with `CREATE TABLE IF NOT EXISTS` outside the
+    chain — `pg_strikes._SCHEMA` among them — and the strike conformance suite
+    exercises exactly that path. One suite then poisoned the next: the raw
+    `security_strikes` survived the downgrade, `alembic_version` sat at base,
+    and `upgrade head` died in 005 with `relation security_strikes already
+    exists` (reproduced by running the strike suite against this shared DB
+    before this suite). Dropping everything is what this fixture's name
+    promises, and it cannot strand a later suite: runtime stores recreate
+    their own tables on connect, and a chain table is one `upgrade head` away.
+    """
+    for (name,) in _query("select tablename from pg_tables where schemaname = 'public'"):
+        # Identifiers come from the catalog, not users; still quote them so a
+        # mixed-case or reserved name cannot turn the drop into something else.
+        quoted = str(name).replace('"', '""')
+        _execute(f'drop table if exists "{quoted}" cascade')
+
+
 @pytest.fixture
 def empty_database():
     """Start each test from `base`, so one failure cannot cascade into the next."""
     _alembic("downgrade", "base")
+    _drop_all_tables()
     yield
     _alembic("downgrade", "base")
+    _drop_all_tables()
 
 
 class TestTheChainApplies:
@@ -239,6 +266,57 @@ class TestTheChainApplies:
         assert _tables() - {"alembic_version"} == set()
         assert _alembic("upgrade", "head").returncode == 0
         assert _tables() == first
+
+    def test_reapplying_the_chain_over_an_already_migrated_schema_is_adopted(
+        self, empty_database
+    ) -> None:
+        """Stamp-back + re-upgrade is the repair path a live database takes.
+
+        The Canvas store conformance suite drives exactly this scenario over
+        the shared chain (#286): upgrade head, stamp to 044's parent, upgrade
+        head again. A revision whose DDL assumes a fresh database — a bare
+        ``ADD COLUMN``, say — fails that re-application with ``DuplicateColumn``
+        even though the schema it would build is the schema that already
+        exists (#1194's 045 broke CI's coverage (PostgreSQL) leg exactly this
+        way). Adoption-unchanged is the contract 044 states for the chain;
+        this pins the same contract at the chain level, against the live
+        catalog, with a pre-existing row that must survive untouched.
+        """
+        assert _alembic("upgrade", "head").returncode == 0
+        _execute(
+            """
+            insert into capability_invocations
+                (invocation_id, run_id, node_run_id, attempt_id, binding_id,
+                 effect_key, effect_scope, status, created_at, payload)
+            values ('inv-adopted', 'run-adopted', 'node-1', 'att-1', 'bind-1',
+                    'effect-1', 'run-adopted:charge:order-42', 'completed', 0.0, '{}')
+            """
+        )
+        # 044's parent: the re-application walks 044 and 046 over the existing
+        # schema — the exact walk the Canvas conformance suite drives.
+        assert _alembic("stamp", "039_quota_usage_event_identity").returncode == 0
+        result = _alembic("upgrade", "head")
+        assert result.returncode == 0, result.stderr
+        # The effect-claim shape the durable stores and migration 035 agree on
+        # still exists exactly once, the guarded elevation-grants table (046)
+        # was adopted rather than duplicated, and the pre-existing row kept
+        # its claimed scope rather than being rewritten by a re-run default.
+        assert _query(
+            "select count(*) from information_schema.columns "
+            "where table_name = 'capability_invocations' "
+            "and column_name = 'effect_scope'"
+        ) == [(1,)]
+        assert _query(
+            "select count(*) from pg_indexes where tablename = 'capability_invocations' "
+            "and indexname = 'uq_capability_invocation_active_effect'"
+        ) == [(1,)]
+        assert _query(
+            "select count(*) from information_schema.tables "
+            "where table_name = 'elevation_grants'"
+        ) == [(1,)]
+        assert _query(
+            "select effect_scope from capability_invocations where invocation_id = 'inv-adopted'"
+        ) == [("run-adopted:charge:order-42",)]
 
 
 class TestTaskIdentityMigration:

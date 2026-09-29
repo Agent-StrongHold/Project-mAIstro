@@ -100,9 +100,42 @@ async def create_a2a_task(
     return A2ATaskCreated(task_id=claim.run.run_id, run_id=claim.run.run_id)
 
 
+@router.get("/tasks/by-idempotency-key/{idempotency_key}")
+async def get_a2a_task_by_idempotency_key(
+    idempotency_key: str,
+    auth: RequireAuth,
+) -> dict[str, str]:
+    """Reconcile one admitted delegation without re-submitting it (#1194).
+
+    The other half of transport idempotency: a dispatching worker that lost its
+    lease after an ambiguous POST polls this endpoint with the same key and
+    receives the original receipt. A key nobody claimed is a 404, so the
+    caller can distinguish "never accepted" from "accepted, receipt lost".
+    """
+    store, _projects, _workspace_id = _stores()
+    run = await store.find_run_by_effect(idempotency_key)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown idempotency key")
+    # The receipt is the canonical Run id -- the same value the admitting POST
+    # returned as `task_id`, so a reconciling caller resumes the original work.
+    return {"task_id": run.run_id}
+
+
 #: Vulture reference: FastAPI dispatches the handler through the
-#: ``@router.post`` decorator, which the static call graph cannot see (the
-#: same framework-dispatch blindness ``maistro-core``'s ``_vulture_whitelist``
-#: documents for pydantic hooks). The tuple keeps the live route visible to
-#: the dead-code scanner without any runtime effect.
-_A2A_ROUTE_HANDLERS = (create_a2a_task,)
+#: ``@router.post``/``@router.get`` decorators, which the static call graph
+#: cannot see (the same framework-dispatch blindness ``maistro-core``'s
+#: ``_vulture_whitelist`` documents for pydantic hooks). The tuple keeps the
+#: live routes visible to the dead-code scanner without any runtime effect.
+_A2A_ROUTE_HANDLERS = (create_a2a_task, get_a2a_task_by_idempotency_key)
+
+# The handlers are this module's public surface: FastAPI registers them from
+# the decorators, which static import scanning cannot see (the same statement
+# every api module's __all__ makes -- see projects.py / workspace_access.py).
+__all__ = [
+    "A2ATaskCreate",
+    "A2ATaskCreated",
+    "configure_a2a_admission",
+    "create_a2a_task",
+    "get_a2a_task_by_idempotency_key",
+    "router",
+]

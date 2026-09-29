@@ -56,7 +56,6 @@ class DesignOrchestrateNode(BaseNode[DesignOrchestrateIn, DesignOrchestrateOut])
     input_schema: ClassVar[type[BaseModel]] = DesignOrchestrateIn
     output_schema: ClassVar[type[BaseModel]] = DesignOrchestrateOut
     cost_hint: ClassVar[float] = 1.0
-    idempotent: ClassVar[bool] = False
     external_io: ClassVar[bool] = False
     display_name: ClassVar[str] = "Design: orchestrate skill"
     description: ClassVar[str] = (
