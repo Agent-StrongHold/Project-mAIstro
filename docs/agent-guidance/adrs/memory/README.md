@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** No ADR-014 implementation work remains. New memory stores should continue to satisfy the canonical protocols rather than introducing store-specific caller contracts.  
 **Current state:** Runtime-checkable LearningStore, EpisodicStore, and OutcomeStore contracts are implemented and their in-memory implementations pass direct protocol-conformance tests. The protocol module has subsequently expanded to cover additional memory capabilities while preserving these original dependency-injection boundaries.  
 **ADR:** [ADR-014: Memory protocols](../../../adr/ADR-014-memory-protocols.md)
+
+## ADR-015: Learning type + InMemoryLearningStore
+
+**Status:** Implemented  
+**Last updated:** 2026-09-28  
+**Next steps:** No ADR-015 implementation work remains. Reconcile SPEC-216's stale lifecycle status during the specification audit and preserve the store's org-isolation/dedup invariants in durable implementations.  
+**Current state:** InMemoryLearningStore implements and directly tests same-org Jaccard deduplication, cross-org isolation, FIFO capacity eviction, relevance filtering, usage tracking, threshold promotion, and promoted-only retrieval. The implementation has since gained additional outcome/effectiveness behavior without invalidating ADR-015's original contract.  
+**ADR:** [ADR-015: Learning type + InMemoryLearningStore](../../../adr/ADR-015-learning-store.md)
