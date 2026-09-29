@@ -825,12 +825,21 @@ jobs:
           # scope, so a divergence between this count and the ledger's length is
           # itself a signal that one of them stopped looking.
           XENON_BASELINE: 140
-          # Module rank was never gated. The old count matched only
+          # Module rank was never gated at all. The old count matched only
           # '^ERROR:xenon:block', so a whole module drifting to C passed in
-          # silence; widening the scope surfaced one (maistro-evolve
-          # benchmarks/tau_bench.py). Gated here at its measured value so it
-          # cannot become two.
-          XENON_MODULE_BASELINE: 1
+          # silence; widening the scope surfaced one.
+          #
+          # By identity, not by count -- the same argument that replaced
+          # vulture's total-count ceiling with quality/vulture-baseline.json.
+          # A count of 1 is satisfied by *any* one module, so a module
+          # improving from C to B would silently pay for a different module
+          # degrading from B to C in the same change, and the tolerated debt
+          # would rotate while the number held still. It matters more here
+          # than for blocks: a module average crosses into C through added
+          # B-ranked blocks, which the per-block radon ledger does not track,
+          # so this is the only instrument watching that axis.
+          XENON_MODULE_LEDGER: |
+            packages/maistro-evolve/src/maistro_evolve/benchmarks/tau_bench.py C
         run: |
           # -i third_party for the same reason check-radon-baseline.py excludes
           # it: vendored BFCL/IFEval source is kept byte-faithful to upstream on
@@ -845,21 +854,40 @@ jobs:
             packages/maistro-rsi/src packages/maistro-server/src \
             packages/maistro-turing/src > xenon.log 2>&1 || true
           count=$(grep -c '^ERROR:xenon:block' xenon.log || true)
-          modules=$(grep -c '^ERROR:xenon:module' xenon.log || true)
           average=$(grep -c '^ERROR:xenon:average' xenon.log || true)
           cat xenon.log
-          echo "xenon block violations:  $count (baseline: $XENON_BASELINE)"
-          echo "xenon module violations: $modules (baseline: $XENON_MODULE_BASELINE)"
-          echo "xenon average violations: $average (baseline: 0)"
           fail=0
+
+          echo "xenon block violations:  $count (baseline: $XENON_BASELINE)"
           if [ "$count" -gt "$XENON_BASELINE" ]; then
             echo "::error::xenon regression — $count block violations exceeds baseline of $XENON_BASELINE; refactor the new complex blocks (Boy Scout Rule)"
             fail=1
           fi
-          if [ "$modules" -gt "$XENON_MODULE_BASELINE" ]; then
-            echo "::error::xenon regression — $modules module-rank violations exceeds baseline of $XENON_MODULE_BASELINE; a whole module drifting to C is a design signal, not a line-level one"
+
+          # Module rank, compared as a set of <path> <rank> identities. Both
+          # directions fail, exactly like check-radon-baseline.py: a new one is
+          # a regression, and a fixed one must be removed from the ledger in
+          # the PR that fixed it, so the floor can only move down.
+          grep '^ERROR:xenon:module' xenon.log \
+            | sed -E "s/^ERROR:xenon:module '(.*)' has a rank of ([A-F])\$/\1 \2/" \
+            | sort > xenon-modules.now || true
+          printf '%s\n' "$XENON_MODULE_LEDGER" | sed -e 's/^[[:space:]]*//' -e '/^$/d' \
+            | sort > xenon-modules.ledger
+          echo "xenon module violations: $(wc -l < xenon-modules.now) (ledger: $(wc -l < xenon-modules.ledger))"
+          added=$(comm -23 xenon-modules.now xenon-modules.ledger)
+          fixed=$(comm -13 xenon-modules.now xenon-modules.ledger)
+          if [ -n "$added" ]; then
+            echo "::error::xenon regression — module-rank violations not in the ledger; a whole module drifting to C is a design signal, not a line-level one:"
+            echo "$added" | sed 's/^/  /'
             fail=1
           fi
+          if [ -n "$fixed" ]; then
+            echo "::error::xenon improvement not banked — remove these from XENON_MODULE_LEDGER in this PR so the floor cannot rotate:"
+            echo "$fixed" | sed 's/^/  /'
+            fail=1
+          fi
+
+          echo "xenon average violations: $average (baseline: 0)"
           if [ "$average" -gt 0 ]; then
             echo "::error::xenon regression — project average complexity fell below rank A"
             fail=1
@@ -1138,7 +1166,14 @@ jobs:
           uv run interrogate -f 64 packages/maistro-rsi/src
           uv run interrogate -f 59 packages/maistro-server/src
           uv run interrogate -f 51 packages/maistro-design/src
-          uv run interrogate -f 50 packages/maistro-evolve/src
+          # evolve is the one package carrying vendored source. Measured with
+          # BFCL/IFEval included the aggregate reads 50.7%; the 14 upstream
+          # files are well documented and were lending 12.5 points to a
+          # floor meant to hold first-party code. Excluded, evolve's own
+          # coverage is 38.2% -- so a floor of 50 would have let first-party
+          # docstrings rot the whole way down while the step stayed green.
+          uv run interrogate -f 38 -e packages/maistro-evolve/src/maistro_evolve/benchmarks/third_party \
+            packages/maistro-evolve/src
           uv run interrogate -f 50 packages/maistro-registry/src
           uv run interrogate -f 45 packages/maistro-bootstrap/src
           uv run interrogate -f 36 packages/maistro-canvas/src
