@@ -400,9 +400,20 @@ class _ScheduleRunner:
         container = self._canonical_container()
         if container is not None:
             try:
-                executed = await container.execute_admitted_runs()
-                if executed:
-                    logger.info("Consumed %d admitted canonical Run(s)", executed)
+                accounting = await container.execute_admitted_runs_accounting()
+                if accounting.attempted or accounting.skipped:
+                    # The attempted count alone could present an all-failing
+                    # batch as a fully executed one (#849), so the tick's own
+                    # breakdown is what gets logged.
+                    logger.info(
+                        "Consumed %d admitted canonical Run(s) (succeeded=%d failed=%d "
+                        "parked=%d skipped=%d)",
+                        accounting.attempted,
+                        accounting.succeeded,
+                        accounting.failed,
+                        accounting.parked,
+                        accounting.skipped,
+                    )
             except Exception as exc:
                 logger.warning("Failed to consume admitted canonical Runs: %s", exc)
 
