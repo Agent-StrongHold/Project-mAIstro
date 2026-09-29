@@ -67,3 +67,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile the historical per-repo policy table with the consolidation monorepo/package boundaries, then audit which layered supply-chain controls are actually enforced in current CI (lock/hash discipline, dependency review, SBOM, signed artifacts, Scorecard). Agent development guidance should reference this ADR whenever adding a runtime dependency or external service rather than inventing a separate dependency policy.  
 **Current state:** The core decision remains active: minimize process-internal dependency trust, prefer explicit service boundaries where appropriate, apply maintainer/license/transitive-dependency review, and record external pattern influences separately from legal dependency attribution. The four-repo framing and several "gap-impl" control statuses are historical and require current reconciliation.  
 **ADR:** [ADR-039: External Library Adoption Policy](../../../adr/ADR-039-external-library-adoption-policy.md)
+
+## ADR-065: Test harness with full wiring factory
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Create a successor ADR for the canonical integration-test harness and then supersede ADR-065. The replacement should construct the real composition root with canonical principal/Workspace context, Run/NodeRun/Attempt storage, durable Graph execution/recovery, Capability Binding/Invocation, current quota/credential routing, and Faux external providers. Keep legacy `GraphRun` helpers only for domain/unit tests, not as evidence of production execution wiring.  
+**Current state:** The harness is implemented and useful, but its defining "full pipeline" path still includes `GraphRun` as an executor and exposes `run_graph()` as an integration helper. ADR-062 now explicitly states that GraphRun is not canonical execution authority. A harness built around a retired execution path can make tests green while production authority remains untested, so the architectural contract needs replacement rather than simple completion.  
+**ADR:** [ADR-065: Test harness with full wiring factory](../../../adr/ADR-065-test-harness.md)
