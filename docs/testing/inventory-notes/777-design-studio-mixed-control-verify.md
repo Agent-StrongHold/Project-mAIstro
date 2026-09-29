@@ -323,3 +323,59 @@ are UNMET at `18be1843c`; the lane remains BLOCKED on its unlanded canonical
 dependencies (#458 Goal store, #804/#805/#806 reconciliation, #774, #775,
 #776). The job driver again produced no `check-*.log` files, so all validation
 above was executed directly. No closure keywords used (`Refs #777` only).
+
+## Re-verification at lane head 07957c65c (repair round after prior BLOCKED)
+
+Round context: repair job `fdb5ba9c` following the prior round's BLOCKED
+verdict (job `420d4f81`, whose report is the immediately preceding addendum).
+The prior block reason was unlanded dependencies, not a develop sync conflict.
+
+**Develop sync check:** origin/develop is unchanged at `b268f0535` —
+`git merge-base HEAD origin/develop` == `b268f0535` == origin/develop HEAD, so
+the branch is fully synced; **no merge and no conflict resolution was needed**.
+The lane head `07957c65c` differs from merge `18be1843c` only by the previous
+notes addendum (`git diff --stat 18be1843c..07957c65c`: this file, +55 lines).
+
+**Dependency audit re-confirmed at `07957c65c` by direct inspection** (not
+trusted from prior rounds — re-run this round):
+- `grep -rn -E 'class GoalRevision|class CreativeBrief|goal_store' packages/*/src`
+  — zero matches, exit 1 (#458/#774 absent).
+- `grep -rni ladybug packages/*/src` — zero matches, exit 1 (#776 absent).
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-6` — "owns
+  universal lifecycle bookkeeping only"; not #804 Goal reconciliation.
+- `packages/maistro-core/src/maistro/security/sentinel/permission_source.py:77-79`
+  — #804 governed tool-use "plugs in as another ``PermissionSource``" (future).
+- `grep -c workspace_agent packages/hive-conductor/backend/routes/design.py`
+  — 0 matches (no #804/#53 consumption possible).
+- `packages/hive-conductor/backend/services/brief_store.py:4-6` — interview is
+  "chat state, not a Goal: nothing here is a Goal or CreativeBrief record".
+- Design Studio browser E2E remains only `design-studio-keyboard.spec.ts` +
+  `design-studio-truthfulness.spec.ts` — no Goal-lineage or mixed-control spec.
+
+**Vulture per-identity ledger gate (lane-brief CI-repair instruction):**
+`uv run python scripts/check-vulture-baseline.py packages/*/src
+--min-confidence 60 --exclude '*/third_party/*'` — **EXIT=0, gate PASS**:
+1402/1402 findings banked across ledger identities, `unclassified: 0`,
+`never_allowlist: 0`, ratchet base `b268f0535` → candidate `07957c65c` with no
+drift. Zero unbanked identities exist, so no dead-code fix and **no ledger
+amendment to `quality/vulture-baseline.json` was required**.
+
+**Executed at `07957c65c` (all by this verifier):**
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2620 files already formatted.
+- `uv run pytest packages/maistro-design/tests -x -q` — 351 passed.
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py -q` — 18 passed.
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_agent_materialization.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q` —
+  53 passed.
+
+**Conclusion (unchanged across six heads):** all 13 #777 acceptance criteria
+remain UNMET at `07957c65c`; the lane stays BLOCKED on its unlanded canonical
+dependencies (#458 Goal store, #804/#805/#806 reconciliation, #774, #775,
+#776), and the issue stop condition still forbids a Design-Studio-private
+Agent runtime / Goal owner / reconciliation loop substitute. The job driver
+again produced no `check-*.log` files for this job, so all validation above
+was executed directly. No closure keywords used (`Refs #777` only).
