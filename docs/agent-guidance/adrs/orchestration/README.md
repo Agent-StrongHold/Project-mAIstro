@@ -19,3 +19,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Decide whether reserved-capacity LIVE/BACKGROUND scheduling remains a requirement under the canonical durable Run/worker architecture. If it remains required, replace the obsolete TaskRunner-slot design with a current spec and implementation that preserves the latency-isolation invariant; if it is no longer desired, create or identify the withdrawing/successor ADR and transition ADR-010 accordingly.  
 **Current state:** The accepted ADR describes a TaskRunner split into reserved live/background worker slots, but repository search finds no implementation of those slots and SPEC-211 still has the corresponding criteria unchecked. Newer campaign/priority architecture does not supersede this decision because it explicitly does not add a scheduler, so ADR-010 is currently an accepted but apparently unimplemented scheduling requirement tied to an obsolete execution shape.  
 **ADR:** [ADR-010: Lane-based scheduling (LIVE vs BACKGROUND)](../../../adr/ADR-010-lane-scheduling.md)
+
+## ADR-046: Scheduler — Recurring agent tasks
+
+**Status:** Superseded  
+**Last updated:** 2026-09-28  
+**Next steps:** None. Follow ADR-082126-f69c: recurrence produces canonical Runs rather than owning a second scheduler execution lifecycle.  
+**Current state:** ADR-046 is explicitly superseded and records that its APScheduler/TaskRecord-centered mechanism was never the canonical implementation. Its durable/timezone/max-runs requirements informed the successor, but its execution mechanism must not be revived. Note that ADR-044's historical reference to a future "ADR-046" for Canvas legacy deletion is stale because this ID belongs to Scheduler.  
+**ADR:** [ADR-046: Scheduler — Recurring agent tasks](../../../adr/ADR-046-scheduler.md)
