@@ -203,3 +203,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Converge profile/user-model state onto one canonical durable owner and canonical principal identity; no route/tool may acknowledge a write to an unavailable mirror or maintain an independent cache as authority.  
 **Current state:** This removes a split cache/PostgREST design where the durable half did not exist in shipped deployments.  
 **ADR:** [ADR-083026-3d92](../../../adr/ADR-083026-3d92-profile-state-has-one-durable-owner.md)
+
+## ADR-090726-9a4e: Crypto-bound approval Hybrid
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Treat WebAuthn presence + attenuated Biscuit delegation + hash-chained evidence as the chosen M2 approval design, but do not overstate implementation from the three currently bound tests. Map it onto canonical principals/scoped grants/Bindings and durable HITL settlement, and reconcile older DID/VC language in ADR-021/024/068/084 with this newer concrete choice.  
+**Current state:** This is the freshest explicit decision on cryptographic approval evidence and materially narrows earlier "optional crypto" ambiguity for M2 approvals. Human presence, runtime delegated authority, and tamper-evident history are deliberately separate primitives.  
+**ADR:** [ADR-090726-9a4e: Crypto-bound approvals Hybrid](../../../adr/ADR-090726-9a4e-crypto-bound-approvals-hybrid-webauthn-biscuit-hash-chain.md)
