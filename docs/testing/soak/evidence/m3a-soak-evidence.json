@@ -1,0 +1,177 @@
+{
+  "duplicate_evidence": {
+    "runs_sharing_one_task_run_identity": "0"
+  },
+  "exactly_once_schedule_claim": {
+    "duplicate_claims_reported": 1,
+    "ok": true,
+    "processes": [
+      {
+        "already_fired": [
+          "2026-09-29 05:00:00+00:00"
+        ],
+        "failures": [],
+        "run_ids": [],
+        "skipped": []
+      },
+      {
+        "already_fired": [],
+        "failures": [],
+        "run_ids": [
+          "3adbdca2ac014254b25e4a5b66e392b0"
+        ],
+        "skipped": []
+      }
+    ],
+    "runs_created_for_occurrence": 1,
+    "workspace": "soak-claim-dac8325a4845"
+  },
+  "exactly_once_tasks": {
+    "concurrent_submissions": 12,
+    "distinct_run_ids": [
+      "a7eff1b2beae4783bd78992c9813e3ff"
+    ],
+    "duplicate_run_ids": 11,
+    "ok": true,
+    "statuses": [
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202,
+      202
+    ]
+  },
+  "final_runs_by_status": "queued=4 completed=52",
+  "finished_at": "2026-09-29T05:36:36.219044+00:00",
+  "hashes": {
+    "generated_at": "2026-09-29T05:28:50.853764+00:00",
+    "git_clean": false,
+    "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "git_head": "b268f05359e748387daf01a1077a98c30a336d3d",
+    "git_status_sha256": "137b26dd019f114c2892661f1c4058e7c19f5a8e1263ce1cbcc4b2c2e65580d2",
+    "nginx_conf_sha256": "5e0c1a8663e471016f1c94df1321ea669dc3fa7f3cf67103d4625b3f836556f4",
+    "postgres_image": "pgvector/pgvector@sha256:2ba9ca5f2e7daa0f0e7723cba1ee9167bab54efd3640516a44ac1a928dd67e7a",
+    "python": "3.12.14",
+    "soak_env_sha256": "f3cb49d2b54e9a2e2d597b0a16324254e8ced1d3b8a47c5bb2d3902a40b23227",
+    "version": "0.9.0"
+  },
+  "issue": "860",
+  "kill_restart": {
+    "killed_at": "2026-09-29T05:33:06.435071+00:00",
+    "rejoined": true,
+    "restarted_at": "2026-09-29T05:33:19.389961+00:00",
+    "scheduled": true,
+    "signal": "SIGKILL"
+  },
+  "nonterminal_runs": "4",
+  "profile": "M3-A multi-replica load/concurrency soak",
+  "rate_limit": {
+    "direct_replica_unauthenticated": {
+      "authenticated": false,
+      "ratelimit_headers": {},
+      "requests": 800,
+      "retry_after": null,
+      "status_counts": {
+        "200": 800
+      },
+      "target": "http://127.0.0.1:18201"
+    },
+    "enforced_everywhere": false,
+    "through_lb_authenticated": {
+      "authenticated": true,
+      "ratelimit_headers": {},
+      "requests": 800,
+      "retry_after": null,
+      "status_counts": {
+        "200": 800
+      },
+      "target": "http://127.0.0.1:18080"
+    },
+    "through_lb_unauthenticated": {
+      "authenticated": false,
+      "ratelimit_headers": {},
+      "requests": 800,
+      "retry_after": null,
+      "status_counts": {
+        "200": 799,
+        "502": 1
+      },
+      "target": "http://127.0.0.1:18080"
+    }
+  },
+  "replica_boot_seconds": 87.0,
+  "started_at": "2026-09-29T05:28:44.208190+00:00",
+  "thresholds": {
+    "checks": {
+      "exactly_once_schedule_occurrence": true,
+      "exactly_once_task_admission": true,
+      "fd_growth": {
+        "replica_1": {
+          "first": 11,
+          "last": 11,
+          "max": 11
+        },
+        "replica_2": {
+          "first": 11,
+          "last": 11,
+          "max": 11
+        }
+      },
+      "lb_failover_bounded": {
+        "note": "5xx + conn errors during the kill window must stay within the passive-health window budget",
+        "observed_5xx": 7469,
+        "observed_conn_errors": 0,
+        "per_second_budget": 1296.0,
+        "upper_bound_kill_window": 27.0
+      },
+      "nonterminal_runs_after_settle": "4",
+      "rate_limit_enforced": false,
+      "replica_2_rejoined": true,
+      "rss_growth": {
+        "replica_1": {
+          "first_kb": 34964,
+          "growth_pct": -16.9,
+          "last_kb": 29060,
+          "max_kb": 34964
+        },
+        "replica_2": {
+          "first_kb": 34172,
+          "growth_pct": 3.0,
+          "last_kb": 35204,
+          "max_kb": 36032
+        }
+      }
+    },
+    "kind_counts": {
+      "health_live": 1510,
+      "health_ready": 3380,
+      "metrics_unauth": 391,
+      "run_get": 770,
+      "task_submit": 1539
+    },
+    "p95_latency_ms": {
+      "health_live": 6.65,
+      "health_ready": 7.27,
+      "metrics_unauth": 6.52,
+      "run_get": 6.48,
+      "task_submit": 8.04
+    },
+    "requests_total": 7590,
+    "status_counts": {
+      "200": 41,
+      "202": 51,
+      "401": 9,
+      "404": 20,
+      "502": 7445,
+      "503": 24
+    },
+    "task_admission_ratio": 0.0331
+  }
+}
