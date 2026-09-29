@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** No implementation work against ADR-052. Remove its unreachable fan-in/shadow-git island during convergence cleanup. Any current parallel-agent execution must be designed on the canonical Graph/Run/workspace architecture rather than reconnecting this deprecated lifecycle.  
 **Current state:** Reachability analysis proved the implementation was never connected, and the design depends on deprecated ADR-049 shadow-git machinery. It was correctly moved from an implementation claim to Deprecated with no successor; ADR-062 addresses a different traversal concern and does not revive this filesystem-wave model.  
 **ADR:** [ADR-052: Parallel agent waves — per-wave branch isolation and fan-in merge](../../../adr/ADR-052-parallel-agent-waves.md)
+
+## ADR-053: Recipe overlay composition — engine simple + product overlay
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Create a successor ADR that carries the useful composition rules into the current Persona/Template/Capability-Binding architecture: deterministic schema-driven overrides, explicit versioned code references where still applicable, and non-overridable security-sensitive fields. Do not preserve RecipeRegistry compatibility as a goal. Once the successor is accepted, transition ADR-053 to `Superseded`.  
+**Current state:** ADR-053 is built on the stale ADR-006 RecipeRegistry and ADR-035 catalog model, and one acceptance criterion explicitly requires backward compatibility with ADR-006. That conflicts with both current architecture and the pre-1.0 rule that compatibility has no positive design weight. The composition/governance idea remains useful, but the owning abstraction must change.  
+**ADR:** [ADR-053: Recipe overlay composition — engine simple + product overlay](../../../adr/ADR-053-recipe-overlay-composition.md)
