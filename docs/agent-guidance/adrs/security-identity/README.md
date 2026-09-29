@@ -107,3 +107,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** If adaptive runtime policy/RLPHD remains active scope, finish the production integrations SPEC-206 explicitly excludes: machine-checkable invariants on safety-critical ADRs/specs, real registry-backed artifact blast-radius resolution, real prior-policy/audit store, held-change/admin-security review workflow, and audit emission. Reconcile invariant checker execution with the post-ADR-069 capability architecture. If adaptive policy is intentionally deferred, create a new lifecycle decision rather than leaving agents to assume this immune-system loop is already enforced.  
 **Current state:** SPEC-206 implements and tests the pure precedence/conflict algorithm, including fail-closed prose-only invariants and safety-critical flags. It explicitly does not wire the real authority graph, prior-policy store, invariant backfill, event emission, or admin review. ADR-074's earlier Implemented claim was therefore correctly rolled back to Accepted.  
 **ADR:** [ADR-074: Policy ⇄ ADR Deconfliction — governance dialectic](../../../adr/ADR-074-policy-adr-deconfliction.md)
+
+## ADR-077: Web and Session Security
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Audit the canonical web edge end-to-end against all six acceptance areas: opaque server-side session with no authority claims, live canonical-principal authorization on every request, secure cookie rotation/idle+absolute expiry, CSRF on mutations, login/sensitive-endpoint brute-force controls, and explicit WebSocket authentication/rechecks. Reconcile `hive_session`/HiveUser naming and single-process storage assumptions with the canonical principal/session architecture and the ADR-059 OAuth rewrite without weakening the opaque-session model.  
+**Current state:** The core security decisions remain strong and current: server-side opaque sessions are appropriate for revocable/dynamic authority, and WebSockets must not bypass authentication. The ADR predates current principal convergence and no complete acceptance-evidence record surfaced in this audit, so `Accepted` remains appropriate pending a boundary-by-boundary verification.  
+**ADR:** [ADR-077: Web and Session Security](../../../adr/ADR-077-web-session-security.md)
