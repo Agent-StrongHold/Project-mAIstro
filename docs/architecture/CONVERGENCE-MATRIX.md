@@ -189,3 +189,4 @@ A share rather than the `19/62` this column used to carry, because the denominat
 - `quality/ac-state.json` — measured acceptance evidence and design coverage (#31/#166).
 - `quality/execution-lifecycles.json` — classified work-state Enum and status-shaped Literal vocabularies (#36/#1136).
 - `docs/quality-gates.md` — enforcement boundaries and known limitations.
+- `docs/adr/ADR-092926-7a01-closed-loop-design-process.md` + `docs/specs/SPEC-092926-7a01-closed-loop-design-process.md` — the M7 design-loop contract (#790): the closed loop is Graphs and Runs over the one execution identity above, with the M7 kind table (Goal, Rubric, CreativeBrief, Pack, FenceDecision, EvalRecord, Canvas-as-tool, Design Studio-as-host) fenced to the #458 ontology; gates M7 A2–A7.
