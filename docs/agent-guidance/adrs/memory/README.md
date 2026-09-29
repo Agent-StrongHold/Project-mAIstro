@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** No ADR-015 implementation work remains. Reconcile SPEC-216's stale lifecycle status during the specification audit and preserve the store's org-isolation/dedup invariants in durable implementations.  
 **Current state:** InMemoryLearningStore implements and directly tests same-org Jaccard deduplication, cross-org isolation, FIFO capacity eviction, relevance filtering, usage tracking, threshold promotion, and promoted-only retrieval. The implementation has since gained additional outcome/effectiveness behavior without invalidating ADR-015's original contract.  
 **ADR:** [ADR-015: Learning type + InMemoryLearningStore](../../../adr/ADR-015-learning-store.md)
+
+## ADR-016: EpisodicMemory + 7-tier weights + InMemoryEpisodicStore
+
+**Status:** Implemented  
+**Last updated:** 2026-09-28  
+**Next steps:** No ADR-016 implementation work remains. Later episodic-memory work should preserve tier floors, scope isolation, soft-delete exclusion, and weight-sensitive ranking while extending the retrieval model.  
+**Current state:** Seven-tier episodic memory, bounded reinforcement/decay, scoped retrieval, stored reinforcement, and deletion filtering are implemented and directly tested. Retrieval ranking has evolved to a shared hybrid lexical/vector scorer, but relevance remains weight-sensitive and the original ADR invariants are preserved.  
+**ADR:** [ADR-016: EpisodicMemory + 7-tier weights + InMemoryEpisodicStore](../../../adr/ADR-016-episodic-store.md)
