@@ -47,29 +47,52 @@ pytestmark = [pytest.mark.contract("behavioral")]
 
 
 class _CommitFailingConnection:
-    """Delegates to a real connection; ``commit()`` always fails.
+    """Delegates to a real connection; ``commit()`` fails for one store.
 
     Isolates the reported failure mode: ``fn`` succeeds and the COMMIT is what
     breaks — exactly the outcome a queue-only write API would report as
-    accepted.
+    accepted. The failure is scoped to transactions that wrote the given
+    store, so an unrelated acknowledged write on the way to the handler
+    (the auth middleware's session-activity refresh) still commits and the
+    request under test really reaches its route.
     """
 
-    def __init__(self, real: sqlite3.Connection) -> None:
+    def __init__(self, real: sqlite3.Connection, store_name: str) -> None:
         self._real = real
+        self._store_name = store_name
+        self._touches_store = False
 
     def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        for parameters in (*args, *kwargs.values()):
+            values = parameters.values() if isinstance(parameters, dict) else parameters
+            if any(value == self._store_name for value in values if isinstance(value, str)):
+                self._touches_store = True
         return self._real.execute(sql, *args, **kwargs)
 
     def rollback(self) -> None:
+        self._touches_store = False
         self._real.rollback()
 
     def commit(self) -> None:
-        raise sqlite3.OperationalError("simulated commit failure")
+        if self._touches_store:
+            self._touches_store = False
+            raise sqlite3.OperationalError("simulated commit failure")
+        self._real.commit()
+
+
+# The tests below write into the process-global store caches (the `ack-*`
+# users and their auth sessions, plus the `m-kept` mission). `configure_
+# persistence(None)` unbinds the backend but never clears `_data`, so the
+# fixture snapshots those caches up front and restores them on teardown —
+# otherwise any test running later in the same pytest process would see
+# records that were persisted against this fixture's now-closed database.
+_AFFECTED_GLOBAL_STORES = (stores.users, stores.sessions, stores.missions)
 
 
 @pytest.fixture()
 def sqlite_persistence(tmp_path: Path):
     """Real State + PersistedStore wired into every Conductor store family."""
+    snapshot = {store: dict(store._data) for store in _AFFECTED_GLOBAL_STORES}
     db = tmp_path / "state.db"
     state = State(db_path=str(db))
     persisted = PersistedStore(state)
@@ -84,6 +107,8 @@ def sqlite_persistence(tmp_path: Path):
     registration_policy.reset()
     stores.configure_persistence(None)
     state.close()
+    for store, data in snapshot.items():
+        store._data = data
 
 
 def _reopen(db: Path) -> State:
@@ -236,28 +261,21 @@ class TestTwoTwentyMeansCommitted:
 
         real = state._writer
         assert real is not None
-        state._writer = _CommitFailingConnection(real)  # type: ignore[assignment]
-        status: int
-        body: str
+        # Fail only the settings store so the middleware's session-activity
+        # refresh (its own acknowledged write) commits and the request really
+        # reaches PUT /v1/settings, where the 503 contract is asserted.
+        state._writer = _CommitFailingConnection(real, SETTINGS_STORE)  # type: ignore[assignment]
         try:
             refused = client.put(
                 "/v1/settings",
                 json=SettingsModel(default_model="lost-write").model_dump(mode="json"),
             )
-        except sqlite3.OperationalError:
-            # The auth middleware's session-activity refresh is itself an
-            # acknowledged write, so with a failing commit it fails first and
-            # the server answers 500 (TestClient re-raises server errors).
-            # Fail-closed: still no 2xx durable-success claim.
-            status, body = 500, ""
-        else:
-            status, body = refused.status_code, refused.text
         finally:
             state._writer = real
 
-        assert status >= 500
+        assert refused.status_code == 503
         # Neither response may present the refused value as stored.
-        assert "lost-write" not in body
+        assert "lost-write" not in refused.text
 
         # Crash probe: the failed write is absent, the acknowledged one intact.
         state.close()
@@ -285,7 +303,7 @@ class TestTwoTwentyMeansCommitted:
 
         real = state._writer
         assert real is not None
-        state._writer = _CommitFailingConnection(real)  # type: ignore[assignment]
+        state._writer = _CommitFailingConnection(real, "missions")  # type: ignore[assignment]
         try:
             with pytest.raises(sqlite3.OperationalError, match="simulated commit failure"):
                 stores.missions[refused.id] = refused
@@ -320,6 +338,29 @@ class TestHealthNamesTheDurabilityMode:
         assert families["settings"] == "durable-ack"
         assert families["profiles"] == "durable-ack"
         assert families["registration_policy"] == "durable-ack"
+
+    def test_an_unreadable_persistence_map_reports_unknown_not_durable(
+        self,
+        sqlite_persistence: tuple[State, PersistedStore, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A persistence probe that raises must degrade the /health map to
+        `unknown` — an unreadable state never wears a durable label (same
+        defensive contract as the identity and workspace probes above it).
+        Runs against a *configured* backend: without the failing probe this
+        deployment answers `state-commit`, so `unknown` here proves the
+        fallback engaged rather than the memory path."""
+        _state, _, _ = sqlite_persistence
+
+        def unreadable() -> Any:
+            raise RuntimeError("persistence probe failure")
+
+        monkeypatch.setattr(stores, "persistence_backend", unreadable)
+        client = TestClient(app)
+
+        persistence = client.get("/health").json()["persistence"]
+
+        assert persistence == {"ack": "unknown", "families": {}}
 
     def test_the_memory_mode_is_labelled_not_durable(self) -> None:
         """Without a configured backend every family says so — an in-memory

@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/hive-conductor/backend/tests: +5
+  packages/hive-conductor/backend/tests: +6
 ---
 # 1179-conductor-store-write-acknowledgement
 
@@ -41,7 +41,8 @@ was the one inside `put_raw`, not the drain.
   without echoing the refused value, which is absent after restart while the
   prior record is intact; `ModelStore.__setitem__` against a failing commit
   raises with memory still coherent with disk; `/health` names the mode for a
-  configured and for an all-memory deployment.
+  configured and for an all-memory deployment, and an unreadable persistence
+  probe degrades the map to `unknown` rather than any durable label.
 - `test_profile_durability.py`: the flush-pinning test is replaced by
   `test_a_write_is_committed_when_put_raw_returns` (fresh-reader proof, no
   flush); doubles updated to the acknowledged-write shape.
