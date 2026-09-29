@@ -19,6 +19,19 @@ no-sidecar-eval-kind invariant. Contract for ADR-092926-7a01 / SPEC-092926-7a01 
 
 No production module changed; the delta is tests only.
 
+## Contract-marker kinds carried by the evidence (repair round)
+
+The ADR/SPEC front matter declares `contracts: [boundary, behavioral]` (ADR-032 axis).
+The first commit marked every test `contract("boundary")` only, so the contract-markers
+ratchet saw the declared `behavioral` kind as unevidenced
+(`declared-kind-unproven`) and the trusted-base provenance gate failed it. Repair:
+the five stimulus/response tests (competing registration raises, canonical-owner
+idempotency, projection revision validation, persona-class fence, unknown-kind upsert
+rejection) now also carry `@pytest.mark.contract("behavioral")` — they assert what the
+system *does* (ADR-032 §2), while the static ownership/shape assertions stay
+boundary-only. No test added or removed; node-ID inventory unchanged (`inventory-delta`
+above records the original +12 and remains the total delta vs `develop`).
+
 ## Fenced kinds are the acceptance surface
 
 The issue's acceptance criterion — "a contract test fails if a product module registers a
