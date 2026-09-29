@@ -67,3 +67,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Continue converging GraphEvent, Builders events, collaboration streams, trigger/event buses, and recovery records onto the canonical durable Event envelope and immutable Checkpoint semantics. Close #1159-class follow-ups by routing oversized payloads to artifact references and applying secret/redaction policy before durable event persistence. Ensure state transition + event durability uses transaction/outbox/reconciliation rather than best effort.  
 **Current state:** This is the canonical durable history/recovery model. Events are durable facts with Workspace-scoped sequencing and execution correlation; live buses are delivery projections. Checkpoints are resumability facts, not lifecycles, and resume creates a new Attempt. The September amendment also centrally bounds event payload/provenance size/depth.  
 **ADR:** [ADR-081226-7248: Event and Checkpoint Model](../../../adr/ADR-081226-7248-event-checkpoint-model.md)
+
+## ADR-081626-f383: Canonical Attempt execution lease and fencing
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Keep durable fencing as the authority for physical Attempt writers and compose it with the later lease-renewal/reclaim ADRs. Ensure every production Attempt mutation from a leased worker presents the current token and stale writers cannot terminalize or overwrite newer work. Remove unfenced production paths; retain unfenced construction only for explicitly low-level fixtures.  
+**Current state:** This establishes the correct stale-worker primitive: monotonic lease epochs and opaque fencing tokens owned by the canonical Run store, consumed but not minted by ExecutionRuntime. Later August ADRs extend reclaim/renewal semantics rather than replacing this foundation.  
+**ADR:** [ADR-081626-f383: Attempt execution lease and fencing](../../../adr/ADR-081626-f383-execution-lease-fencing.md)
