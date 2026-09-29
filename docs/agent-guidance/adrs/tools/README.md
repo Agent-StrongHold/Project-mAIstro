@@ -19,3 +19,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Create a successor ADR that defines canonical ownership for today's reusable capability/catalog architecture: Capability/Binding authority, NodeTemplate/GraphTemplate, Persona exposure, agent/provider registries, skills/tools, and legacy recipe projections. Once accepted, transition ADR-035 to `Superseded` with the explicit successor relationship rather than preserving the obsolete RecipeRegistry/Spawner-centered catalog model.  
 **Current state:** The anti-duplication intent remains useful, but the concrete "simple catalog = RecipeRegistry + Spawner" architecture is stale. RecipeRegistry is now explicitly a legacy compatibility adapter into canonical templates, and Spawner's production authority is unresolved against the newer Run/harness architecture. Monorepo consolidation also invalidates much of the historical cross-repo migration narrative.  
 **ADR:** [ADR-035: Catalog Ownership Split — Engine Simple, Stronghold Multi-Tenant](../../../adr/ADR-035-catalog-ownership-split.md)
+
+## ADR-049: Agent file-edit rollback via shadow git
+
+**Status:** Deprecated  
+**Last updated:** 2026-09-28  
+**Next steps:** No implementation work against ADR-049. Delete the unreachable shadow-git/fan-in island during convergence cleanup unless a new accepted architecture explicitly requires the capability. Pre-1.0 compatibility provides no reason to retain dead paths.  
+**Current state:** Reachability analysis proved the shipped shadow-git implementation was never connected to a process entry point; its only importer is another unreachable subsystem. The ADR was correctly rolled back from an implementation claim to Deprecated and has no successor.  
+**ADR:** [ADR-049: Agent file-edit rollback via shadow git](../../../adr/ADR-049-shadow-git-rollback.md)
