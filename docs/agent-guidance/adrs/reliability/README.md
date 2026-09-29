@@ -19,3 +19,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Create a successor ADR that restates sandbox isolation and hard resource-budget invariants on the current architecture: canonical Run/NodeRun/Attempt execution, Capability Binding/Invocation effects, current sandbox MCP/runtime, durable usage/quota accounting, and current approval/elevation semantics. Remove dependencies on AgentRecipe, shadow-git waves, and TaskRecord-as-budget-authority. Once accepted, supersede ADR-054.  
 **Current state:** The safety goals remain relevant, but the concrete design is anchored to several stale/deprecated mechanisms: ADR-049 shadow git, ADR-052 waves, ADR-053 recipe overlays, ADR-051's old approval surface, and TaskRecord as durable execution/budget state. Implementing ADR-054 literally would recreate architecture the convergence effort is removing.  
 **ADR:** [ADR-054: Agent sandbox lifecycle and task budget enforcement](../../../adr/ADR-054-sandbox-lifecycle-and-budgets.md)
+
+## ADR-056: Task crash recovery — durable resume with wave verification
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Create a successor ADR for canonical recovery semantics across Run/NodeRun/Attempt, persisted Graph continuation, Invocation/effect claims for uncertain external side effects, durable approval/elevation state, and current usage/budget accounting. Reuse newer recovery ADRs such as ADR-082826-d9f5 where they already own a slice, but do not claim supersession until one decision covers ADR-056's full surviving recovery contract. Then supersede ADR-056.  
+**Current state:** The requirement for crash-safe durable recovery remains critical, but ADR-056's mechanism is obsolete: TaskRecord checkpoint authority, shadow-git waves, Recipe/code-registry version replay, and the old ApprovalGate model have been replaced by canonical Run/NodeRun/Attempt and newer durable execution/effect machinery. Implementing this ADR literally would reintroduce competing execution state.  
+**ADR:** [ADR-056: Task crash recovery — durable resume with wave verification](../../../adr/ADR-056-task-crash-recovery.md)
