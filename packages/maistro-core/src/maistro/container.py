@@ -1813,7 +1813,6 @@ async def create_container(
         session_store = InMemorySessionStore()
     pg_pool = _resolve_pg_pool(supplied=supplied_pg_pool, from_url=pg_pool)
 
-<<<<<<< HEAD
     # The Container is the process's one composition root, so its ledger is
     # the process default (#718): the conductor's raw-gateway fallback — the
     # single call class that crosses no canonical Invocation authority —
@@ -1823,9 +1822,8 @@ async def create_container(
     # effect path above; this default only receives the fallback's
     # non-Invocation evidence.
     set_default_quota_tracker(quota_tracker)
-=======
+
     usage_log, usage_log_persistence = await _wire_usage_log(db_pool)
->>>>>>> 55be1459b882ac444eaad630d0b476ca8a97c011
 
     # Prompt persistence is selected by the same backend decision as the
     # rest of the Container, but kept out of this composition function so adding a

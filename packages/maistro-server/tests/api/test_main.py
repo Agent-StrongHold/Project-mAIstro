@@ -326,16 +326,7 @@ class TestLifespan:
             # the branch emits, not about wiring a real one.
             patch(
                 "maistro_server.main._build_container",
-<<<<<<< HEAD
-                AsyncMock(
-                    return_value=(
-                        MagicMock(run_store=MagicMock(list_by_status=AsyncMock(return_value=[]))),
-                        MagicMock(),
-                    )
-                ),
-=======
-                AsyncMock(return_value=mock_container),
->>>>>>> 55be1459b882ac444eaad630d0b476ca8a97c011
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -380,7 +371,7 @@ class TestLifespan:
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=mock_container),
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
@@ -421,7 +412,7 @@ class TestLifespan:
             patch("maistro_server.main._run_store_pool", AsyncMock(return_value=object())),
             patch(
                 "maistro_server.main._build_container",
-                AsyncMock(return_value=mock_container),
+                AsyncMock(return_value=(mock_container, MagicMock())),
             ),
             patch("maistro_server.main.TaskRunner", return_value=_stopped_runner()),
             patch("asyncio.get_running_loop") as mock_loop,
