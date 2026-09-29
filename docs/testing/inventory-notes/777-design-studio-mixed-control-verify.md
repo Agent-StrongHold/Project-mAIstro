@@ -268,3 +268,58 @@ dependencies (#458 Goal store, #804/#805/#806 reconciliation, #774, #775,
 runtime/Goal owner/reconciliation loop substitute. The driver again produced
 no `check-*.log` files for this job, so all validation above was executed
 directly. No closure keywords used (`Refs #777` only).
+
+## Re-verification at lane head 18be1843c (final record after provider timeout)
+
+The immediately preceding repair round (`420d4f81`) died on a provider timeout
+before executing any check (`checks: []` in its result artifact); the
+re-verification below was performed in its place at the newly merged head.
+
+**Develop sync (per lane brief):** origin/develop advanced by exactly one
+commit, `b268f0535` (#819 — Uvicorn owns SIGTERM / lifespan drain: touches
+`packages/maistro-server/src/maistro_server/main.py`, its tests, and a
+deployment-topology doc). Merged into `auto-777` with zero conflicts
+(merge commit `18be1843c`; `git diff e210ec2a0..18be1843c` shows only the #819
+files). **None of the #777 dependencies landed.**
+
+**Dependency audit re-confirmed at `18be1843c` by direct inspection:**
+- `grep 'class GoalRevision|class CreativeBrief|goal_store'` over
+  `packages/*/src/**/*.py` — zero matches (#458/#774 absent).
+- `grep -i ladybug` over `packages/*/src/**/*.py` — zero matches (#776 absent).
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-6` — "owns
+  universal lifecycle bookkeeping only"; not #804 Goal reconciliation.
+- `packages/maistro-core/src/maistro/security/sentinel/permission_source.py:77-79`
+  — #804 governed tool-use "plugs in as another ``PermissionSource``" (future).
+- `packages/hive-conductor/backend/routes/design.py` — zero
+  `workspace_agent` references.
+- `packages/hive-conductor/backend/services/brief_store.py:4-6` — interview is
+  "not a Goal or CreativeBrief record".
+- No `control_mode`/mixed-control Goal-branch state in production code; the
+  only "delegated" hits are Sentinel delegated-approval authz semantics
+  (`security/sentinel/authz_types.py`, `policy.py`, `approver_graph.py`), an
+  authorization concept, not #804 Goal delegation.
+- `tests/test_shared_interop_ontology.py:133-134` — `workspace_agent` and
+  `design_studio` still declared as M3 consumers (declarations only).
+- Design Studio browser E2E is still only `design-studio-keyboard.spec.ts` +
+  `design-studio-truthfulness.spec.ts` — no Goal lineage or mixed-control spec.
+
+**Executed at `18be1843c` (all by this verifier):**
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2620 files already formatted.
+- `uv run pytest packages/maistro-design/tests -x -q` — 351 passed.
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py -q` — 18 passed.
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_agent_materialization.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q` —
+  53 passed.
+- `uv run pytest packages/maistro-server/tests/test_sigterm_shutdown.py
+  packages/maistro-server/tests/api/test_main.py -q` — 22 passed
+  (merge-touched #819 code stays green).
+
+**Conclusion (unchanged across five heads):** all 13 #777 acceptance criteria
+are UNMET at `18be1843c`; the lane remains BLOCKED on its unlanded canonical
+dependencies (#458 Goal store, #804/#805/#806 reconciliation, #774, #775,
+#776). The job driver again produced no `check-*.log` files, so all validation
+above was executed directly. No closure keywords used (`Refs #777` only).
