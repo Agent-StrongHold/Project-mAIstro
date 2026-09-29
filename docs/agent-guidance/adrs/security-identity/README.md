@@ -35,3 +35,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile this ADR with the canonical principal/workspace/delegation/Run identity model and ADR-021's opt-in seed amendment. If DID/VC remains desired, redefine and implement it explicitly as an optional federation/cryptographic-attestation layer over canonical runtime identities, with mappings and authority boundaries that prevent a DID from becoming an alternate authorization principal. Otherwise identify/create the successor decision and supersede ADR-024.  
 **Current state:** No IdentityService, DID-document publication, or VC signing/verification implementation was located. Current runtime identity and authorization use canonical principals, Workspace scope, delegation identity, and Run provenance. ADR-024's claim that every conductor automatically has a seed-derived `did:key` is stale against ADR-021's later opt-in decision; DID/VC is therefore not current authentication or execution identity.  
 **ADR:** [ADR-024: Agent Identity & Verifiable Credentials (DID + VC)](../../../adr/ADR-024-agent-identity-did-vc.md)
+
+## ADR-026: Internal Trust Root — Local CA from Conductor Seed
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Decide whether a local/private PKI remains a current product requirement. If retained, redesign its root-key source and trust ceremony against the current baseline identity architecture so local TLS does not require optional ConductorSeed or DID/VC features; seed-derived CA may remain an explicit opt-in mode. Then create a current implementation/security test spec for name constraints, leaf rotation, device revocation, and zero-public-PKI operation. Otherwise supersede ADR-026.  
+**Current state:** No LocalCA/TrustInstaller implementation was located. The accepted design depends on ADR-021 and ADR-024 as mandatory substrate, but those capabilities are currently unimplemented and ADR-021 was later amended to make seed/DID features optional. Therefore this ADR does not describe current TLS/authentication behavior and must not be treated as an active trust root by agents.  
+**ADR:** [ADR-026: Internal Trust Root — Local CA from Conductor Seed](../../../adr/ADR-026-internal-trust-root.md)
