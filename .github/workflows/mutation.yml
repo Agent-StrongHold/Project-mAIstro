@@ -28,9 +28,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
+      - uses: ./.github/actions/setup-uv
 
       - name: Install workspace and mutation tooling
         run: uv sync --all-extras
