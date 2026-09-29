@@ -91,3 +91,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** **Create a successor ADR for the current autonomous engineering pipeline, then supersede ADR-090.** The replacement should use canonical Runs rather than a Builders-owned RunState/StageEvent lifecycle; GitHub issue/branch/worktree/PR as the collaboration artifact; explicit acceptance criteria and ADR-032 contract evidence; CI/review/comment resolution loops; mutation-quality baselines; merge authority; and the new agent development standards. Remove shadow-git, pre-1.0 hot-swap compatibility, and any parallel execution state machine.  
 **Current state:** ADR-090 formalizes an older Frank/Mason/Auditor Builders 2.0 pipeline with its own durable stage lifecycle, deprecated ADR-049 shadow workspace, and ADR-075 runtime-version draining. The repository's actual autonomous development system and M1 convergence now demand one canonical execution spine and direct GitHub/CI evidence. Leaving ADR-090 as the canonical engineering pipeline would conflict with both.  
 **ADR:** [ADR-090: Builders Pipeline — spec → tests → code → audit stage machine](../../../adr/ADR-090-builders-pipeline.md)
+
+## ADR-095: Protected develop-to-main promotion model
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Keep live GitHub Rulesets and `.github/branch-protection.json` synchronized, and reference this ADR from agent development guidance. Normal work flows from topic branches through pull requests into `develop` only after the required checks, conversation resolution, autonomous-admissibility check, and gates-ran verification. Governance-sensitive changes follow the repository's separately controlled trusted-change process. `main` remains the explicit release-promotion branch.  
+**Current state:** This is current repository governance, not historical design. Its acceptance criteria are checked against the live two-branch topology: `develop` is the canonical active integration branch, `main` is the promotion ledger, and the retired `integration` branch must not be recreated implicitly. This directly complements the new issue/PR/merge agent standards.  
+**ADR:** [ADR-095: Protected develop-to-main promotion model](../../../adr/ADR-095-four-tier-branch-model.md)
