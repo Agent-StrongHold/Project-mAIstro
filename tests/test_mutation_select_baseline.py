@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
+import sys
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "mutation_select_baseline.py"
