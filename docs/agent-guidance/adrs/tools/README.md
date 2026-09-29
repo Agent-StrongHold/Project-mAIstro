@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** No implementation work against ADR-049. Delete the unreachable shadow-git/fan-in island during convergence cleanup unless a new accepted architecture explicitly requires the capability. Pre-1.0 compatibility provides no reason to retain dead paths.  
 **Current state:** Reachability analysis proved the shipped shadow-git implementation was never connected to a process entry point; its only importer is another unreachable subsystem. The ADR was correctly rolled back from an implementation claim to Deprecated and has no successor.  
 **ADR:** [ADR-049: Agent file-edit rollback via shadow git](../../../adr/ADR-049-shadow-git-rollback.md)
+
+## ADR-050: Tool reversibility taxonomy and compensator contract
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Complete the successor architecture on the canonical Capability Binding → Invocation path, including the durable approval/elevation mechanism that ADR-081226-6b46/SPEC-081226-6e34 do not currently cover. Once one successor ADR genuinely owns reversibility classification, compensators, impact/approval semantics, and invocation evidence, transition ADR-050 to `Superseded`. Do not revive the unreachable legacy tool-registration island merely to satisfy this ADR.  
+**Current state:** The reversibility/compensator concept remains required by ADR-068 authorization semantics, but the original implementation was unreachable and its old registration boundary is no longer canonical. ADR-050 was correctly rolled back to Accepted; its own convergence note identifies Capability Binding/Invocation as the target architecture while explaining why no existing ADR yet fully qualifies as the successor.  
+**ADR:** [ADR-050: Tool reversibility taxonomy and compensator contract](../../../adr/ADR-050-tool-reversibility-taxonomy.md)
