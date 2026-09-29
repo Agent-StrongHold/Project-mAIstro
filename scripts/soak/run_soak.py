@@ -733,6 +733,11 @@ async def phase_exactly_once_tasks(base: str, headers: dict[str, str], n: int) -
     delivered = sum(1 for s in statuses if s in (200, 202, 409))
     if len(distinct) <= 1 and delivered == len(statuses):
         cause = "ok"
+    elif len(distinct) <= 1 and any(s == 429 for s in statuses):
+        # A probe starved by the request limiter (or backpressured by the
+        # run ceiling) never exercised N-way concurrency on the idempotency
+        # seam — a probe-design fact, not a duplication signal.
+        cause = "rate-limited during the probe window: exactly-once unproven, not falsified"
     elif len(distinct) <= 1:
         # Reproduced in the repair-round mini soak: 4 of 6 duplicate
         # submissions died as LB 502s (the F3 storm) while the 2 delivered
@@ -1460,8 +1465,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--pool-size", type=int, default=2)
     parser.add_argument("--max-overflow", type=int, default=3)
-    parser.add_argument("--rate-limit-per-minute", type=int, default=120)
-    parser.add_argument("--rate-limit-burst", type=int, default=60)
+    parser.add_argument("--rate-limit-per-minute", type=int, default=3000)
+    parser.add_argument("--rate-limit-burst", type=int, default=100)
     parser.add_argument("--kill-fraction", type=float, default=0.35)
     parser.add_argument(
         "--kill-signal",
