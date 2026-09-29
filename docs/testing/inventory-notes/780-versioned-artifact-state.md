@@ -117,3 +117,38 @@ docstring "Every write checks the branch's active locks first".
   `check-suite-inventory.py`, `check-vulture-baseline.py` (production-only
   scan, gate green), `check-durable-table-inventory.py`,
   `check-execution-lifecycles.py`.
+
+## Verification record (job f8c74827e9b74e429ce73c1e2de52b7c, head 1ccf5b689bfe)
+
+Independent re-verification of the e138 repair claims — nothing trusted from
+the prior round, all re-executed:
+
+- `uv run pytest packages/maistro-design/tests -q` → 373 passed; the nine
+  AC test classes (`TestOneArtifactThreeVersionsWithProvenance`,
+  `TestLockingAnAcceptedArtifact`, `TestLockingASharedDecision`,
+  `TestGuidanceIsDurableProjectInput`, `TestForkWithoutErasing`,
+  `TestControlAndLocksSurviveRestart`, `TestConflictsAreSurfacedNeverSilent`,
+  `TestManualAndAgentShareOneRepresentation`, `TestOneMixedControlProject`)
+  re-run explicitly → 15 passed.
+- `uv run ruff check .` and `uv run ruff format --check .` → clean.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0, 1402 reviewed →
+  1401 findings, 0 unbanked (no ledger amendment required). Plus
+  `check-durable-table-inventory.py` (74 tables),
+  `check-execution-lifecycles.py` (19), `check-doc-links.py`,
+  `check-suite-inventory.py` (14 suites) → all pass.
+- Fresh live-PG probe (new pgvector:pg17 container, `alembic upgrade head`
+  through 047) against `PgArtifactVersionStore.append_version` at this head,
+  3/3: orphan `design_projects` id → `ArtifactVersionError … (SQLSTATE
+  23503)`, not `ArtifactVersionExistsError`; UNIQUE hit the pre-check misses
+  (different org, same `(project, lineage, version)` slot) →
+  `ArtifactVersionExistsError` through the except branch; duplicate slot via
+  pre-check → `ArtifactVersionExistsError`.
+- Git evidence re-checked: `git cat-file -e` → `version_store.py` absent at
+  a3f6b3c and 9fb68e47, introduced by 4f4f8ccc0 (so the repair-scope
+  correction above is right); SPEC-092826-a780 line 64 is a Reconciliation
+  paragraph (forward-compatible `brief_ref`/decision-digest), not a deferral
+  record — matching the corrected scope note.
+- Still out of reach at this base, unchanged: product-surface E2E and
+  browser-refresh projection (#774/#775/#777 not landed); AC-9 remains
+  proven at store/service level only.
