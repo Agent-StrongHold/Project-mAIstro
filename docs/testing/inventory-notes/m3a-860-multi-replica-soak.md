@@ -1,9 +1,3 @@
----
-inventory-delta:
-  scripts/: +2
-  docs/testing/soak/evidence/: +4 (repair-round validation artifacts, not collected tests)
----
-
 # M3-A #860 multi-replica load & concurrency soak harness
 
 Adds `scripts/soak/run_soak.py` and `scripts/soak/nginx-soak.conf` — the
@@ -169,3 +163,31 @@ evidence `/tmp/soak-round2b/` outside the repo):
   include maistro-core), so the documented bare-`uv run` sub-mode entry no
   longer depends on an undocumented venv state; the `run_migrations`
   `--package maistro-server` fix from round 1 remains for the server surface.
+
+---
+
+## Repair round 3 (this lane) — suite-inventory ledger format repair
+
+State at entry: HEAD `74bfc53df3ca`, branch `auto-860`, tree clean. The
+verifier's `check-suite-inventory.py --suite packages/maistro-core/tests`
+failed with `cannot read ... as <suite>: <±count>` — this note's and
+`pg-learnings-schema-fence.md`'s `inventory-delta:` blocks were written in a
+shape the ledger cannot parse:
+
+- entries for non-gated paths (`scripts/`, `docs/testing/soak/evidence/`) —
+  the ledger only records gated suite recipes, and prose after the count is
+  rejected rather than silently read as zero.
+- the fence note keyed its delta to the per-file test path instead of the
+  gated suite that contains it.
+
+Repaired content, no count semantics changed: this note records **no**
+`inventory-delta:` key at all (it moved no collected test — its own first
+paragraph already says so, and that is the ledger's documented shape for a
+count-free change); the fence note now records `packages/maistro-core/tests:
++1` with the test-name/FakeConnection prose kept in its body. Verified:
+`--show` parses all 634 unfolded notes; `--suite packages/maistro-core/tests`
+collects 11531 == expected 11531 (`ok: 1 suite(s) match`). Ruff check/format
+clean, `test_pg_learnings.py` 27 passed/5 skipped, vulture ratchet 1402 ==
+1402 (rc=0, ledger unamended), gitleaks clean over `b268f053..HEAD`,
+canonical six-package mypy: no issues in 727 files. No soak semantics
+touched; run-2 status (F3 and F8 open, promotion soak pending) stands.

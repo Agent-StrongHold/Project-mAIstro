@@ -1,12 +1,14 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests/persistence/test_pg_learnings.py: +1 collected test
-  (test_ensure_schema_fences_ddl_behind_advisory_lock); FakeConnection gains a
-  transaction() recording double so the fence shape is assertable without a
-  live database.
+  packages/maistro-core/tests: +1
 ---
 
 # #860 F7 — fence PgLearningStore.ensure_schema behind a transaction advisory lock
+
+(+1 node in gated suite `packages/maistro-core/tests`:
+`test_ensure_schema_fences_ddl_behind_advisory_lock`; FakeConnection gains a
+`transaction()` recording double so the fence shape is assertable without a
+live database.)
 
 ## What broke
 
