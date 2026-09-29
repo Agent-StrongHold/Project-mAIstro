@@ -555,3 +555,76 @@ possible from this lane alone. The driver again supplied no `check-*.log`
 files in this job directory (only `events.jsonl`, `manifest.json`,
 `prompt.txt`, `state.json`), so all validation above was executed directly.
 No closure keywords used (`Refs #777` only).
+
+## Re-verification at merged head 8571b9290 (repair round 10)
+
+Round context: repair job `56032a74` re-ran the lane after round 9 (job
+`55c20a31`, verdict BLOCKED — the worker died on a provider timeout before
+issuing any verdict; no checks were lost because round 9 had already
+committed its record at `3b1e4c35d`). Working tree was clean at start.
+
+**Develop sync (the "previous block" resolution):** `git fetch origin` shows
+origin/develop moved from `b268f0535` to `0fb3dc69e` (one commit: `WIP:
+[M3-B][#333] Acknowledge Conductor model/store writes only after durable
+State commit (#1671)`). Merged with `git merge origin/develop --no-edit` —
+ort strategy, **zero conflicts**, 14 files changed (settings/profile/
+registration stores, health route, persistence map doc, new
+`test_state_commit_acknowledgement.py`). Merged head: `8571b9290`.
+
+**The incoming commit is not a #777 dependency.** It is Conductor
+record-store write-acknowledgement durability (#333/#1179): settings/profile/
+registration stores, `/health` persistence modes. It touches none of the
+canonical owners #777 must consume, and it does not weaken any acceptance
+path.
+
+**Dependency audit re-confirmed at `8571b9290` by direct inspection:**
+- `grep -rniE 'CreativeBrief|GoalRevision' packages/ --include='*.py'` —
+  same 6 scaffolding files; `brief_store.py:5` still "nothing here is a Goal
+  or CreativeBrief record"; no CreativeBrief/GoalRevision record type exists.
+- `grep -rniE 'goal.reconcil|goal_reconcil' packages/ --include='*.py'` — 0
+  matches: no #804/#805/#806 Goal reconciliation anywhere.
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1` — still
+  "Policy-neutral reconciliation between physical Attempts and logical
+  execution" (universal lifecycle bookkeeping only), not Goal reconciliation.
+- `grep -c workspace_agent packages/hive-conductor/backend/routes/design.py`
+  → 0; `grep -nE 'control_mode|delegat' .../routes/design.py` → 0 matches:
+  no #804/#53 consumption and no control-continuum state in Design Studio.
+- `grep -rli ladybug packages/ --include='*.py'` → only
+  `dags/author_examples.py:29` (book title); no #776 Workspace Ladybug
+  working graph. No #775 creative Graph beyond generic DAG machinery.
+- E2E surface unchanged: `design-studio-keyboard.spec.ts` /
+  `design-studio-truthfulness.spec.ts` remain the only Design Studio specs;
+  no Canvas/Builders/media E2E under one Goal lineage and no mixed-control
+  browser E2E.
+
+**Executed at `8571b9290` (all by this verifier):**
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — **PASS** (exit 0,
+  1402 reviewed identities, 0 unbanked, `never_allowlist: 0`; ledger not
+  amended — no identities were eliminated this round, so no repair fix
+  applies).
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2621 files already formatted (one more
+  than round 9: the merged-in `test_state_commit_acknowledgement.py`).
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py
+  packages/maistro-core/tests/graph/test_cross_domain_substrate.py
+  packages/hive-conductor/backend/tests/test_program_brief_routes.py -q`
+  — 30 passed.
+- `uv run pytest packages/hive-conductor/backend/tests/
+  test_workspace_agent_identity.py test_agent_materialization.py
+  test_chat_brief_interview.py test_state_commit_acknowledgement.py -q`
+  — 59 passed (includes the newly merged durability suite: the develop sync
+  merge is proven green).
+- `uv run pytest packages/maistro-design/tests -x -q` — 351 passed.
+
+**Conclusion (unchanged across ten heads):** all 13 #777 acceptance criteria
+remain UNMET at `8571b9290`. The lane stays BLOCKED on its unlanded
+canonical dependencies (#458 Goal store, #804/#805/#806 Goal reconciliation,
+#774 CreativeBrief, #775 creative Graph, #776 Workspace Ladybug). The stop
+condition forbids substituting a Design-Studio-private Agent runtime / Goal
+owner / reconciliation loop / artifact authority, and no truthful #777 slice
+is implementable from this lane alone. The driver supplied no `check-*.log`
+files in this job directory (only `events.jsonl`, `manifest.json`,
+`prompt.txt`, `state.json`), so all validation above was executed directly.
+No closure keywords used (`Refs #777` only).
