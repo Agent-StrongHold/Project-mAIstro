@@ -75,3 +75,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Complete SPEC-062126-6a31 on the current agent/configuration architecture: mandatory explicit exposure-mode declaration with no compatibility fallback, concrete store read/write/promote enforcement, fail-fast agent construction where applicable, HYBRID block enforcement, observability/denial events, and no product-identity branching. Replace its ADR-053 RecipeOverlay dependency if that abstraction is superseded.  
 **Current state:** The pure exposure-mode enforcement primitive exists, and the follow-up spec explicitly rejected ADR-057's old backwards-compatible implicit default in favor of immediate mandatory declaration, which matches current pre-1.0 policy. The implementing SPEC remains Accepted with its integration ACs unchecked, so the ADR's earlier Implemented claim was correctly rolled back.  
 **ADR:** [ADR-057: Memory exposure mode — configurable system-managed vs agent-managed](../../../adr/ADR-057-memory-exposure-mode.md)
+
+## ADR-080: Memory Dynamics — decay, reinforcement, tiers, consolidation, and cross-scope sharing
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Remeasure the ADR-level contract across SPEC-240/241/242/243 and SPEC-062126-5d56, focusing on **reachability**, not just pure functions: time-based decay execution, overnight/batch consolidation and contradiction-triggered consolidation, current-principal consent for scope widening, cross-agent read enforcement, and hybrid retrieval ranking in the real recall path. Reconcile old scope examples with canonical Workspace/principal semantics. Promote only when the full dynamics are actually exercised.  
+**Current state:** The child-spec family implements substantial mechanics: decay/feedback, consolidation, sharing/consent, ranking, and follow-up strategy/resolution primitives. The remaining uncertainty is whether all ADR behaviors are connected to production scheduling/events/read paths, especially overnight consolidation and scope-consent workflow. The earlier Implemented claim was therefore correctly rolled back pending strict evidence.  
+**ADR:** [ADR-080: Memory Dynamics — decay, reinforcement, tiers, consolidation, and cross-scope sharing](../../../adr/ADR-080-memory-dynamics.md)
