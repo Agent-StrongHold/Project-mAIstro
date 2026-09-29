@@ -269,6 +269,17 @@ async def commit_candidate(
         _audit_apply(actor, record, severity="warning")
         return record
     version = max(existing, default=0) + 1
+    prior_active = await active_template_version(dag_id)
+
+    # Compare-and-swap #1: the source binding was checked synchronously by the
+    # caller (_bound_source), but awaits since then may have let a user edit
+    # or another promotion land. Refuse before touching the store rather than
+    # promoting onto a moved base.
+    if dag_id not in stores.dags or snapshot_hash(stores.dags[dag_id]) != source_hash:
+        record["outcome"] = STALE
+        record["detail"] = "DAG changed while the proposal was being applied; refusing to re-target"
+        _audit_apply(actor, record, severity="warning")
+        return record
 
     try:
         _, _, template = _register_candidate(candidate_snapshot, dag_id=dag_id, version=version)
@@ -301,9 +312,35 @@ async def commit_candidate(
         _audit_apply(actor, record, severity="warning")
         return record
 
-    # Promotion committed. The descriptor the UI reads is a projection of the
-    # now-active canonical version — synced after, never before, so the
-    # editable surface never runs ahead of the authority.
+    # Compare-and-swap #2: the descriptor is only synced when it still holds
+    # the content the candidate was computed against. If it moved during the
+    # promotion awaits, the promotion is compensated — the just-activated
+    # version is demoted and the prior active version restored — and the
+    # conflict is reported; the concurrent edit is never overwritten.
+    if dag_id not in stores.dags or snapshot_hash(stores.dags[dag_id]) != source_hash:
+        try:
+            await store.set_lifecycle(dag_id, version, "candidate")
+            if prior_active is not None:
+                await store.set_lifecycle(dag_id, prior_active, "active")
+        except Exception as exc:
+            record["detail"] = (
+                f"DAG changed during apply and rollback of version {version} failed: "
+                f"{type(exc).__name__}: {exc}; descriptor left untouched"
+            )
+            _audit_apply(actor, record, severity="warning")
+            return record
+        record["outcome"] = STALE
+        record["detail"] = (
+            f"DAG changed during apply; candidate version {version} rolled back, "
+            "descriptor left untouched"
+        )
+        _audit_apply(actor, record, severity="warning")
+        return record
+
+    # Promotion committed and the source still matches. The descriptor the UI
+    # reads is a projection of the now-active canonical version — synced
+    # after, never before, so the editable surface never runs ahead of the
+    # authority.
     try:
         stores.dags[dag_id] = copy.deepcopy(candidate_snapshot)
     except Exception as exc:
