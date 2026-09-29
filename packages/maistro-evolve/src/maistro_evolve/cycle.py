@@ -11,6 +11,7 @@ from .crossover import crossover_and_mutate
 from .fitness import compute_fitness
 from .harness import EvalHarness
 from .hyper_mutator import entry_node, hyper_mutate, slot_lineage
+from .objective import DEFAULT_OBJECTIVE, EvaluationObjective
 from .optimizer import extract_signal, optimize_topology
 from .population import IslandPopulation, PopulationStore, migrate_islands
 from .reflect import reflective_improve
@@ -89,9 +90,15 @@ class EvolutionCycle:
         self,
         harness: EvalHarness | None = None,
         tournament: EloTournament | None = None,
+        objective: EvaluationObjective | None = None,
     ) -> None:
         self.harness = harness or EvalHarness()
         self.tournament = tournament or EloTournament()
+        # Campaign-owned scoring objective (#853): every genome in the
+        # population is measured with THIS ruler, never with a genome-carried
+        # weight vector. Pass a custom objective per campaign/cycle to change
+        # policy deliberately; there is no per-genome override path.
+        self.objective = objective or DEFAULT_OBJECTIVE
         self._island_pop: IslandPopulation | None = None
         self._cycle_count: int = 0
 
@@ -180,14 +187,21 @@ class EvolutionCycle:
                 )
 
         for g in scored:
-            avg_elo = self.tournament.get_avg_elo(g.id)
-            if avg_elo > 0:
-                g.harness_params["avg_elo"] = avg_elo
+            battles = self.tournament.get_total_battles(g.id)
+            # Record Elo only WITH battle evidence (#853): writing the 1200
+            # default for a never-battled genome used to hand every genome a
+            # 0.5-strength Elo bonus for existing. No battles → no Elo evidence
+            # → fitness scores the term pessimistically (missing credit).
+            if battles > 0:
+                g.harness_params["avg_elo"] = self.tournament.get_avg_elo(g.id)
+                g.harness_params["elo_battles"] = battles
 
     def _compute_all_fitness(self, population: PopulationStore) -> list[PipelineGenome]:
         all_genomes = population.list_all()
         for g in all_genomes:
-            components = compute_fitness(g, all_genomes)
+            # Score under the campaign objective — identical ruler for every
+            # candidate and every cycle (#853).
+            components = compute_fitness(g, all_genomes, self.objective)
             g.fitness_score = components.total
             g.updated_at = datetime.now(UTC).isoformat()
             population.add(g)

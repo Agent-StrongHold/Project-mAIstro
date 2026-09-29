@@ -45,7 +45,13 @@ def _genome(
     genome_id: str,
     fitness_score: float | None = None,
     approved_for_promotion: bool = False,
+    eval_scores: dict[str, float] | None = None,
 ) -> PipelineGenome:
+    # Promotion now also requires measured capability evidence (#853), so the
+    # fixture defaults to a real, gate-passing score; the capability gate's
+    # refusal paths are exercised explicitly in TestCapabilityPromotionGate.
+    if eval_scores is None:
+        eval_scores = {"code_rsi": 0.6}
     return PipelineGenome(
         id=genome_id,
         name=genome_id,
@@ -69,6 +75,7 @@ def _genome(
             use_scout=False,
         ),
         eval_weights=EvalWeights(),
+        eval_scores=eval_scores,
         fitness_score=fitness_score,
         created_at=datetime.now(UTC).isoformat(),
         updated_at=datetime.now(UTC).isoformat(),
@@ -239,6 +246,77 @@ class TestPromotionGate:
         store.add(winner)
         with pytest.raises(PermissionError):
             asyncio.run(store.promote_audited("winner", _trail()))
+
+
+# --------------------------------------------------------------------------
+# 3b. Measured-capability gate before promotion (#853)
+# --------------------------------------------------------------------------
+
+
+class TestCapabilityPromotionGate:
+    """A deliberately do-nothing candidate cannot buy promotion with missing
+    metrics or an objective reweighting: the gate reads recorded eval scores
+    against fixed thresholds and consults no weight vector (#853)."""
+
+    def test_promote_never_evaluated_genome_raises(self, tmp_path):
+        # The NotImplementedError flavour: a benchmark that cannot run
+        # (run_osworld raises) records no score at all.
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome("donothing", fitness_score=85.262, approved_for_promotion=True, eval_scores={})
+        store.add(g)
+        with pytest.raises(PermissionError, match="capability"):
+            asyncio.run(store.promote_audited("donothing", _trail()))
+        assert store.get("donothing").is_active is False
+
+    def test_promote_gate_failing_genome_raises_even_with_padded_context(self, tmp_path):
+        # Missing metrics padded to their old ideal values (cost/latency full
+        # marks, default Elo) do not rescue a below-gate score.
+        store = PopulationStore(tmp_path / "pop.db")
+        g = _genome(
+            "weak",
+            fitness_score=85.262,
+            approved_for_promotion=True,
+            eval_scores={"proxy_ifeval": 0.1},
+        )
+        g.harness_params = {
+            "total_cost_usd": 0.0,
+            "avg_latency_seconds": 0.0,
+            "avg_elo": 1200.0,
+        }
+        store.add(g)
+        with pytest.raises(PermissionError, match="capability"):
+            asyncio.run(store.promote_audited("weak", _trail()))
+
+    def test_reweighted_objective_cannot_rescue_a_gated_candidate(self, tmp_path):
+        # The gate is a constraint, not a tradeable weight: recomputing the
+        # candidate's fitness under ANY objective still zeroes out, and the
+        # promotion gate (threshold-based, weight-blind) still refuses.
+        from maistro_evolve.fitness import compute_fitness
+        from maistro_evolve.objective import EvaluationObjective, FitnessTermWeights
+
+        alt = EvaluationObjective(
+            version="alt-test-v1",
+            benchmark_weights={"proxy_ifeval": 1.0},
+            default_benchmark_weight=1.0,
+            fitness_term_weights=FitnessTermWeights(
+                eval_score=0.01,
+                cost_efficiency=0.33,
+                latency_efficiency=0.33,
+                diversity_bonus=0.33,
+                elo_bonus=0.0,
+            ),
+        )
+        g = _genome("weak2", approved_for_promotion=True, eval_scores={"proxy_ifeval": 0.1})
+        g.harness_params = {"avg_elo": 1400.0, "elo_battles": 30}
+        other = _genome("peer", eval_scores={"proxy_ifeval": 0.9})
+        other.id = "peer"
+        components = compute_fitness(g, [g, other], alt)
+        assert components.total == 0.0
+        assert not components.passed_hard_gate
+        store = PopulationStore(tmp_path / "pop.db")
+        store.add(g)
+        with pytest.raises(PermissionError, match="capability"):
+            asyncio.run(store.promote_audited("weak2", _trail()))
 
 
 # --------------------------------------------------------------------------
