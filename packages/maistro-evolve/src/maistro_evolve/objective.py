@@ -14,9 +14,11 @@ genome. It is
 - **versioned** — ``EvaluationObjective.version`` is recorded on every
   ``FitnessComponents`` (``objective_version``) and folded into the evidence
   hash, so a score states exactly which ruler produced it;
-- **immutable** — the model is pydantic-frozen and the weight dict is
-  defensively copied at construction, so neither genomes nor scoring code can
-  retune it in place;
+- **immutable** — the model is pydantic-frozen and the weights are stored
+  behind a read-only mapping (``types.MappingProxyType``): field reassignment,
+  later mutation of the caller's input dict, and item mutation
+  (``objective.benchmark_weights[bench] = value``) all fail, so neither
+  genomes nor scoring code can retune it in place;
 - **the only source of scoring weights** — ``fitness._weighted_eval_score``
   reads ``objective.benchmark_weights`` and never ``genome.eval_weights``.
   ``PipelineGenome.eval_weights`` survives as an inert, legacy, persisted
@@ -29,9 +31,10 @@ fitness number means), not a tuning knob a cycle may adjust per-candidate.
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, PlainSerializer
 
 # Version of the default objective defined below. v1 is the implicit,
 # genome-owned weight vector this module retires: same numeric weights
@@ -67,6 +70,16 @@ class FitnessTermWeights(BaseModel):
     elo_bonus: float = 0.05
 
 
+def _freeze_weights(weights: dict[str, float]) -> MappingProxyType[str, float]:
+    """Store the snapshot weights behind a genuinely read-only mapping."""
+    return MappingProxyType(weights)
+
+
+def _thaw_weights(weights: MappingProxyType[str, float]) -> dict[str, float]:
+    """Plain-dict view of the read-only weights for serialization."""
+    return dict(weights)
+
+
 class EvaluationObjective(BaseModel):
     """The immutable, versioned ruler a population is measured with.
 
@@ -84,12 +97,20 @@ class EvaluationObjective(BaseModel):
     # (e.g. ``code_rsi``) so a subset run still yields a real score.
     benchmark_weights: Annotated[
         dict[str, float],
-        # Defensive copy: a caller mutating the dict they passed in must not
-        # retroactively retune an already-constructed objective. Expressed as
-        # an anonymous ``BeforeValidator`` rather than a named
-        # ``@field_validator`` method so the framework-registered callable
-        # cannot masquerade as dead code to static scanners.
+        # A frozen pydantic model does not freeze a plain-dict field, so two
+        # anonymous validators (not named ``@field_validator`` methods, which
+        # static scanners can mistake for dead code) close both mutation
+        # routes: ``BeforeValidator(dict)`` snapshots the caller's mapping so
+        # later mutation of that input cannot retune the objective, and
+        # ``AfterValidator(_freeze_weights)`` stores the snapshot behind a
+        # ``MappingProxyType`` so ``objective.benchmark_weights[bench] = v``
+        # and friends raise instead of retuning an already-constructed
+        # objective (including the shared ``DEFAULT_OBJECTIVE``).
+        # ``PlainSerializer(_thaw_weights)`` keeps ``model_dump``/JSON output a
+        # plain dict, so persisted evidence hashes are unchanged.
         BeforeValidator(dict),
+        AfterValidator(_freeze_weights),
+        PlainSerializer(_thaw_weights, return_type=dict[str, float]),
     ]
     default_benchmark_weight: float
     fitness_term_weights: FitnessTermWeights
