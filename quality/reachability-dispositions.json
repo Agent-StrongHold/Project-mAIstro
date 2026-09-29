@@ -219,12 +219,13 @@
       "id": "ontology",
       "subsystem": "Ontology",
       "disposition": "CONNECT",
-      "rationale": "ADR-036's semantic object layer, Accepted with no consumer. OUT-OF-SCOPE.md already excludes its graph-query language, so the registry is the whole of what must be reached.",
+      "rationale": "ADR-036's semantic object layer, Accepted with no consumer. OUT-OF-SCOPE.md already excludes its graph-query language, so the registry is the whole of what must be reached. #791 adds the Rubric scored-acceptance kind; its consumers (evals scoring Runs, fences consulting the gate) are later M7 work.",
       "root": "a subsystem resolving semantic objects through the registry (#34)",
       "modules": [
         "maistro.ontology",
         "maistro.ontology.protocols",
         "maistro.ontology.registry",
+        "maistro.ontology.rubric",
         "maistro.ontology.types"
       ]
     },
@@ -261,6 +262,15 @@
         "maistro.portability.agents",
         "maistro.portability.export",
         "maistro.portability.skills"
+      ]
+    },
+    {
+      "id": "projects-rubric-store",
+      "subsystem": "Workspace / Project scope",
+      "disposition": "LIBRARY",
+      "rationale": "#791 M7-A2 ships Rubric persistence + ontology only (its stop condition forbids scoring, fences, or UI): a Project-scoped, ontology-backed store for downstream consumers (Runs naming scored revisions, eval scoring, the acceptance fence). Library surface by construction until an M7 follow-up wires the first consumer.",
+      "modules": [
+        "maistro.projects.rubric_store"
       ]
     },
     {
