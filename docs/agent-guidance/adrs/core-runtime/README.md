@@ -91,3 +91,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep immutable template-version provenance and explicit instantiate/save-as-template semantics as canonical. Finish replacing older Recipe/Agent/GraphConfig reusable definitions with NodeTemplate/GraphTemplate or clearly domain-specific templates, and enforce exact version pinning inside GraphTemplate snapshots. Do not interpret immutable provenance as a pre-1.0 compatibility promise.  
 **Current state:** This ADR cleanly separates reusable immutable definitions from mutable Project objects. Instantiation is copy-plus-provenance, existing objects never silently follow template updates, and execution state cannot leak into templates. This is the right successor for much of ADR-053/075-era artifact versioning.  
 **ADR:** [ADR-081226-bb3a: Template, Object and Provenance Semantics](../../../adr/ADR-081226-bb3a-template-object-provenance-semantics.md)
+
+## ADR-081426-b1d3: Project Scope Tree
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Use this as canonical Project semantics and migrate/delete Project-as-Workspace or execution-hierarchy remnants. Enforce one immutable Root Project per Workspace, acyclic same-Workspace trees, creation-time defaults rather than live inheritance, downward-only resource visibility, atomic move validation, deny-wins scoped authorization, and fail-closed nonrecursive deletion.  
+**Current state:** This restores Project as a legitimate nested scope rather than an obsolete Workspace synonym. It composes directly with canonical ownership and scoped grants, and explicitly rejects compatibility-only Project machinery that does not match the tree/resource contract.  
+**ADR:** [ADR-081426-b1d3: Project Scope Tree](../../../adr/ADR-081426-b1d3-project-scope-tree.md)
