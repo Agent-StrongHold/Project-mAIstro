@@ -838,13 +838,14 @@ async def _terminalize_probe_run(dsn: str, run_id: str) -> str:
     """
     import asyncpg
 
+    from maistro.projects.pg_scope_store import PgProjectScopeStore
     from maistro.runs.model import RunStatus
     from maistro.runs.pg_store import PgRunStore
 
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
     assert pool is not None
     try:
-        run = await PgRunStore(pool).transition_run(
+        run = await PgRunStore(pool, project_store=PgProjectScopeStore(pool)).transition_run(
             run_id,
             RunStatus.CANCELLED,
             error="soak claim probe: admission race verified, execution out of probe scope",
