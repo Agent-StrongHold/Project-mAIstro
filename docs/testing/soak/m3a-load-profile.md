@@ -169,3 +169,53 @@ live by phase 4 (`--claim-probe`) with the per-occurrence SQL gate (H2).
 Admission reconciliation under sustained multi-replica load is therefore
 covered by H2 + the sustained task/schedule mix, and run 2 must state the
 duplicate-admission counter evidence (`duplicate_evidence`) alongside it.
+
+## Round-5 amendments (repair lane, b5f9abbcc → )
+
+Root-caused and re-probed by the round-5 repair; every promotion soak must
+run on these terms:
+
+- **F3 root cause (soak cell, not product): the LB conf named its upstreams
+  `host.docker.internal`, which Docker Desktop answers with an unreachable
+  IPv6 address AND the IPv4 gateway.** nginx round-robins NEW upstream
+  connections across all addresses of a named peer and counts each
+  `connect() failed (101: Network unreachable)` toward `max_fails` for the
+  *peer*, so under any sustained connection churn both replicas flap into
+  the passive-health down state and the LB answers mass instant
+  "no live upstreams" 502s (run 1: 7445/7590; only ~51 requests reached the
+  application). The driver now renders the conf with the resolved IPv4
+  literal (`nginx-soak-rendered.conf`, hash + IP recorded in evidence) and
+  captures the LB container's `docker logs` to `lb.log` before teardown.
+  Production is immune: `deploy/nginx.conf` targets compose service names,
+  which resolve to a single container address.
+- **F9 (product, fixed): a full active-root-Run ceiling escaped POST /tasks
+  as an unhandled 500.** `RunConcurrencyExceeded` (#1182, designed retryable
+  backpressure) now maps to `429` + `Retry-After` (see
+  `m3a-860-f9-concurrency-backpressure-429.md`). H6 consequently counts a
+  429 with `Retry-After` as *available admission machinery* alongside 202;
+  5xx and connection failures still fail it, and the 202 count is recorded
+  beside the ratio so an all-backpressure window cannot masquerade as an
+  accepted-load result.
+- **task_submit share 20% → ~4.8%.** The soak cell runs no LiteLLM; admitted
+  runs take ~10–60 s through the retry path and the 4-worker runner drains
+  < 1 run/s/replica, so the 20% share tripped the ceiling for the whole
+  window. At the profile share the ceiling (production default 8, untouched)
+  backpressures briefly and bounds the queue — which is also what makes the
+  H5 settle-to-zero contract satisfiable: at load end at most one ceiling's
+  worth of Runs remains, and `--settle-seconds` (default now 120) covers the
+  drain. Measuring the degraded executor's latency itself is filed as a
+  finding, not tuned away.
+- **Fresh database per run (`--fresh-db`, default on).** H5's "0
+  non-terminal" and every status count are claims about *this run*; the
+  persistent soak DB accumulated every prior run's claim-probe Runs (never
+  executed by design), making H5 structurally unsatisfiable. The flag is
+  part of `soak_env_sha256`.
+- **Claim-probe cleanup.** After H2's SQL verdict, the probe terminalizes
+  its own Run QUEUED→CANCELLED through `PgRunStore` (recorded as
+  `probe_run_cleanup`); a failed race preserves the duplicate rows for
+  forensics.
+- **Drain gate hardening.** `failed_promotion_checks` fails evidence whose
+  `graceful_drain` record is missing/null, not merely `required`-and-failed.
+- **Rate-limit probe.** Default probe size is 800 (the phase-5 spec);
+  `probe_requests` / `rate_limit_burst` / `probe_below_burst` travel with
+  the verdict so an undersized probe is never mistaken for falsification.

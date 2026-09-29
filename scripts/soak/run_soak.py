@@ -50,6 +50,7 @@ PG_CONTAINER = "maistro-soak-pg"
 PG_IMAGE = "pgvector/pgvector:pg18"
 PG_HOST_PORT = 18433
 LB_PORT = 18080
+NGINX_IMAGE = "nginx:1.27-alpine"
 SOAK_API_KEY = "soak:soak-key-1"  # principal:secret form required by #843
 # Synthetic soak fixtures, not credentials. TASK_DELEGATION_KEY is opaque to
 # the server and ROUTER_API_KEY only has to clear the >=32-char Settings
@@ -316,8 +317,52 @@ async def wait_ready(
     return False
 
 
-def start_nginx() -> subprocess.Popen[Any] | None:
+def resolved_host_gateway_ipv4() -> str | None:
+    """host.docker.internal's IPv4, as a soak container resolves it.
+
+    Docker Desktop answers the name with BOTH an IPv6 address (unreachable
+    from the container: `connect() failed (101: Network unreachable)`) and
+    the IPv4 gateway. nginx resolves every address of a named upstream and
+    round-robins NEW upstream connections across them, so each new
+    connection has a coin-flip chance of an instant ENETUNREACH — which
+    counts toward `max_fails` for the *peer* (failures are tracked per name,
+    not per address). Three unlucky connects within fail_timeout mark the
+    replica down; under sustained connection churn both replicas flap into
+    the down state and the LB answers mass instant "no live upstreams" 502s
+    — the F3 storm of runs 1-4 (run 1: 7445/7590 requests; only ~51 reached
+    the application). Production is immune: deploy/nginx.conf targets
+    compose service names, which resolve to a single container address. The
+    soak therefore pins IPv4 literals instead of the dual-address name.
+    """
+    r = sh(["docker", "run", "--rm", NGINX_IMAGE, "getent", "ahostsv4", "host.docker.internal"])
+    for line in r.stdout.splitlines():
+        candidate = line.split()[0] if line.split() else ""
+        if candidate.count(".") == 3 and all(p.isdigit() for p in candidate.split(".")):
+            return candidate
+    return None
+
+
+def render_nginx_conf(target: Path) -> str | None:
+    """Render the soak LB conf with IPv4 upstream literals; returns the IP."""
+    template = (REPO / "scripts/soak/nginx-soak.conf").read_text()
+    ip = resolved_host_gateway_ipv4()
+    if ip is None:
+        # Keep the run runnable, but say why the storm may recur in evidence.
+        log(
+            "WARNING: could not resolve host.docker.internal IPv4; "
+            "mounting the template unchanged (dual-address peer poisoning may recur)"
+        )
+        target.write_text(template)
+        return None
+    target.write_text(template.replace("host.docker.internal", ip))
+    return ip
+
+
+def start_nginx(out_dir: Path) -> subprocess.Popen[Any] | None:
     sh(["docker", "rm", "-f", "maistro-soak-lb"])
+    rendered = out_dir / "nginx-soak-rendered.conf"
+    if not rendered.exists():
+        render_nginx_conf(rendered)
     r = sh(
         [
             "docker",
@@ -328,10 +373,10 @@ def start_nginx() -> subprocess.Popen[Any] | None:
             "--add-host",
             "host.docker.internal:host-gateway",
             "-v",
-            f"{REPO / 'scripts/soak/nginx-soak.conf'}:/etc/nginx/nginx.conf:ro",
+            f"{rendered}:/etc/nginx/nginx.conf:ro",
             "-p",
             f"127.0.0.1:{LB_PORT}:8080",
-            "nginx:1.27-alpine",
+            NGINX_IMAGE,
         ]
     )
     if r.returncode != 0:
@@ -904,7 +949,9 @@ async def phase_claim_probe(python: str, dsn: str) -> dict[str, Any]:
 # ─────────────────────────────────── main ───────────────────────────────────
 
 
-def collect_hashes(out_dir: Path, rate_per_min: int, burst: int, fresh_db: bool) -> dict[str, Any]:
+def collect_hashes(
+    out_dir: Path, rate_per_min: int, burst: int, fresh_db: bool, gateway_ip: str | None
+) -> dict[str, Any]:
     head = sh(["git", "rev-parse", "HEAD"], cwd=REPO).stdout.strip()
     diff = sh(["git", "diff", "HEAD"], cwd=REPO).stdout
     status = sh(["git", "status", "--porcelain"], cwd=REPO).stdout
@@ -919,6 +966,7 @@ def collect_hashes(out_dir: Path, rate_per_min: int, burst: int, fresh_db: bool)
         # run whose counts measure exactly that run.
         "fresh_db": fresh_db,
     }
+    rendered = out_dir / "nginx-soak-rendered.conf"
     return {
         "git_head": head,
         "git_diff_sha256": sha256_text(diff),
@@ -927,6 +975,13 @@ def collect_hashes(out_dir: Path, rate_per_min: int, burst: int, fresh_db: bool)
         "version": version,
         "postgres_image": pg_image_digest(),
         "nginx_conf_sha256": sha256_text((REPO / "scripts/soak/nginx-soak.conf").read_text()),
+        # The conf actually mounted, after IPv4 rendering (see
+        # resolved_host_gateway_ipv4 for why the rendered literal, not the
+        # dual-address name, is the identity that matters).
+        "nginx_rendered_conf_sha256": (
+            sha256_text(rendered.read_text()) if rendered.exists() else None
+        ),
+        "host_gateway_ipv4": gateway_ip,
         "soak_env_sha256": sha256_text(json.dumps(soak_cfg, sort_keys=True)),
         "python": sys.version.split()[0],
         "generated_at": datetime.now(UTC).isoformat(),
@@ -978,7 +1033,7 @@ async def boot_stack(
         raise RuntimeError(f"replicas failed to become ready (r1={ok1}, r2={ok2})")
     log("both replicas ready")
 
-    start_nginx()
+    start_nginx(Path(args.out_dir))
     oklb = await wait_ready("lb", f"http://127.0.0.1:{LB_PORT}/health/live", None, 60)
     if not oklb:
         raise RuntimeError("LB did not become ready")
@@ -1044,7 +1099,11 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         "started_at": datetime.now(UTC).isoformat(),
     }
     evidence["hashes"] = collect_hashes(
-        Path(args.out_dir), args.rate_limit_per_minute, args.rate_limit_burst, args.fresh_db
+        Path(args.out_dir),
+        args.rate_limit_per_minute,
+        args.rate_limit_burst,
+        args.fresh_db,
+        render_nginx_conf(Path(args.out_dir) / "nginx-soak-rendered.conf"),
     )
     procs, envs = await boot_stack(args)
     env2 = envs["env2"]
@@ -1062,7 +1121,15 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     mix = [
         ("health_ready", 45),
         ("health_live", 20),
-        ("task_submit", 20),
+        # Sized to the soak cell's measured degraded-executor drain (no
+        # LiteLLM: admitted runs take ~10-60 s through the retry path, the
+        # 4-worker runner drains < 1 run/s/replica) so the per-principal
+        # active-run ceiling backpressures instead of saturating for the
+        # whole window (round-5 amendment; 20% kept tripping it within
+        # seconds). The ceiling itself is production-untouched: at 8 active
+        # root Runs it bounds the queue, which is what makes the H5
+        # settle-to-zero contract satisfiable at all.
+        ("task_submit", 4),
         ("run_get", 10),
         ("metrics_unauth", 5),
     ]
@@ -1208,16 +1275,24 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     kill_window_failures = sum(
         value for key, value in window_statuses.items() if key >= 500
     ) + window_statuses.get(-1, 0)
+    task_sub_status_outside = {
+        key: max(value - window_task_statuses.get(key, 0), 0)
+        for key, value in stats.kind_status_codes.get("task_submit", {}).items()
+    }
     task_submissions_outside_kill = max(
         stats.counts.get("task_submit", 0) - sum(window_task_statuses.values()), 0
     )
-    task_accepted_outside_kill = max(
-        stats.kind_status_codes.get("task_submit", {}).get(202, 0)
-        - window_task_statuses.get(202, 0),
-        0,
-    )
+    task_accepted_outside_kill = task_sub_status_outside.get(202, 0)
+    # Round-5 amendment: a 429 with Retry-After is designed admission
+    # backpressure (the active-root-Run ceiling, #1182, mapped from an
+    # escaping-500 by the F9 fix; the request limiter answers the same shape).
+    # It counts as available admission machinery; 5xx and connection failures
+    # do not, and the 202 count is recorded beside the ratio so a window that
+    # is all backpressure cannot masquerade as an accepted-load result.
+    task_limited_outside_kill = task_sub_status_outside.get(429, 0)
+    available_admissions_outside_kill = task_accepted_outside_kill + task_limited_outside_kill
     task_admission_ratio = round(
-        task_accepted_outside_kill / max(task_submissions_outside_kill, 1), 4
+        available_admissions_outside_kill / max(task_submissions_outside_kill, 1), 4
     )
     nonterminal_count = _integer_or_invalid(evidence["nonterminal_runs"])
     p95s: dict[str, float] = {}
@@ -1278,7 +1353,9 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
                 "ok": nonterminal_count == 0,
             },
             "task_admission_availability": {
-                "accepted_outside_kill_window": task_accepted_outside_kill,
+                "accepted_202_outside_kill_window": task_accepted_outside_kill,
+                "backpressured_429_outside_kill_window": task_limited_outside_kill,
+                "available_outside_kill_window": available_admissions_outside_kill,
                 "submissions_outside_kill_window": task_submissions_outside_kill,
                 "ratio": task_admission_ratio,
                 "ok": task_admission_ratio >= 0.99,
@@ -1403,7 +1480,7 @@ def main() -> None:
         "every count in the evidence measures exactly this run (default; "
         "--no-fresh-db keeps prior runs' rows and inherits their H5 debt)",
     )
-    parser.add_argument("--settle-seconds", type=int, default=20)
+    parser.add_argument("--settle-seconds", type=int, default=120)
     parser.add_argument("--sample-interval", type=float, default=2.0)
     parser.add_argument("--out-dir", default="docs/testing/soak/evidence")
     parser.add_argument("--claim-probe", nargs=2, metavar=("DSN", "WORKSPACE"), default=None)

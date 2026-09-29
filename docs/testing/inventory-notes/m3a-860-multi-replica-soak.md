@@ -267,3 +267,64 @@ The remaining promotion blockers are intentional and explicit: no ≥4-hour
 clean exact-Compose-image/configuration soak exists; the current driver is a
 host-process preflight rather than `deploy/docker-compose.prod.yml`; and the
 fresh preflight preserves nonterminal queue debt and sub-threshold admission.
+
+---
+
+## Repair round 5 (this lane) — F3 root-caused (LB dual-address poisoning), F9 fixed (ceiling→429), soak scope made per-run
+
+State at entry: HEAD `c9d9b6250`, branch `auto-860`, tree clean. All five
+verify findings from the round-4 verify were taken up; none were cosmetic.
+
+- **F3 root cause found and fixed (soak-cell defect, production immune).**
+  With the still-running round-5 scratch stack used as a live lab: the LB log
+  showed nginx connecting to `host.docker.internal` as BOTH
+  `[fdc4:f303:9324::254]` (IPv6 — `connect() failed (101: Network
+  unreachable)`) and `192.168.65.254` (IPv4). nginx round-robins new upstream
+  connections across a named peer's addresses and counts each v6 miss toward
+  `max_fails` **for the peer**, so both replicas flapped into the passive
+  down state under churn and the LB answered mass instant
+  "no live upstreams" 502s. Bisect evidence: driver-mix load → 2661/2713 502;
+  `/health/ready`-only → 1428/1428; live+submit (no ready) → clean; plain
+  12-way concurrency at 636 rps → 99.97% 200 (warm pooled conns never roll
+  the address dice). Production is immune (`deploy/nginx.conf` resolves
+  compose service names to single addresses). Fix: the driver renders
+  `nginx-soak-rendered.conf` with the resolved IPv4 literal (hash + IP in
+  evidence) and captures `docker logs` of the LB to `lb.log` before teardown
+  (F3 had been undiagnosable for four rounds because the LB side was deleted
+  at cleanup). Adding `keepalive 32` (deploy parity, kept) alone did NOT fix
+  the storm — the diagnosis above supersedes that hypothesis.
+- **F9 (product) fixed**: full per-principal active-root-Run ceiling escaped
+  `POST /tasks` as unhandled 500s (observed live: 100/131 concurrent
+  submissions → 500 `RunConcurrencyExceeded`). Now 429 + `Retry-After`; see
+  `m3a-860-f9-concurrency-backpressure-429.md` (inventory-delta:
+  `packages/maistro-server/tests: +1`, 407 passed in the suite).
+- **H5 made meaningful without weakening it**: every one of the round-4
+  preflight's 10 nonterminal Runs was queried and is a prior claim-probe Run
+  (`payload ? 'task_id'` = false on all 10) — zero stalled task work; the
+  persistent DB just accumulated probe artifacts across runs. The driver now
+  resets the dedicated soak schema before migrations (`--fresh-db` default,
+  flag inside `soak_env_sha256`) and the claim probe terminalizes its own
+  verified Run QUEUED→CANCELLED through `PgRunStore` after H2's SQL verdict
+  (`probe_run_cleanup` in evidence; failed races preserve duplicates). The
+  H5 == 0 gate itself is unchanged.
+- **Drain-gate hardening** (round-4 verify finding): a missing/null
+  `graceful_drain` record now fails `failed_promotion_checks` instead of only
+  inspecting `required`-flagged dicts; two regression tests added to
+  `tests/test_soak_promotion_gates.py` (4 passed).
+- **H3 probe interpretable**: round-4's `rate_limit_enforced=false` came from
+  a 20-request probe against burst 60 — no burst smaller than the budget can
+  observe the limiter. Probe default is 800 (profile phase-5 spec) and
+  `probe_requests`/`rate_limit_burst`/`probe_below_burst` travel with the
+  strict verdict.
+- **task_submit share 20% → ~4.8%** (profile round-5 amendment): measured
+  degraded-executor drain (< 1 run/s/replica, no LiteLLM) cannot absorb the
+  20% share; the ceiling now backpressures briefly and bounds the queue,
+  which is what makes H5's settle-to-zero satisfiable. H6 counts 202 +
+  designed-backpressure 429 as available; 5xx/conn failures still fail it.
+
+Validated: ruff check/format clean; `packages/maistro-server/tests/api/` 407
+passed; `tests/test_soak_promotion_gates.py` 4 passed; suite inventory
+matches (+1 recorded); vulture 1402 == 1402 rc=0; six-package mypy clean.
+Round-5 validation soak numbers: see `docs/testing/soak/m3a-soak-evidence.md`
+(run 5) and `evidence/m3a-round5-*` — promotion status is decided there, not
+in this note.
