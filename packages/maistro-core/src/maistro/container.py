@@ -202,8 +202,6 @@ class Container:
     prompt_manager: PromptManager = None  # type: ignore[assignment]
     capabilities: CapabilityRegistry = None  # type: ignore[assignment]  # wired in create_container
     episodic_store: EpisodicStore = None  # type: ignore[assignment]  # wired in create_container
-    # Compatibility name retained for callers; it is the canonical scope store.
-    project_store: ProjectScopeStore = None  # type: ignore[assignment]  # wired in create_container
     # Canonical execution spine (#41): the Project scope tree work is filed in,
     # the Run store that holds its execution identity, and the seam that turns a
     # directly-submitted task into a Run over a one-node Graph.
@@ -574,20 +572,24 @@ class Container:
         # projection and from nowhere else. It rides in as a system message
         # ahead of the turn — never a user turn, so it is not Warden-scanned
         # as input, not session-transcribed, and never replaces the client's
-        # message shape. Degradation is rendered into the block, so the agent
+        # message shape. It is context for the answering agent only: the
+        # Conduit passes it around the gate scan and the classifier, so
+        # projected memory neither becomes scanned input nor reclassifies the
+        # turn (#142). Degradation is rendered into the block, so the agent
         # sees the state of its working memory instead of a confident blank;
         # durable truth is untouched either way.
         working_block = await working_memory_context_message(
             self.working_memory, run.workspace_id, messages
         )
-        dispatch_messages = [working_block, *messages] if working_block is not None else messages
+        context_messages = (working_block,) if working_block is not None else ()
 
         async def _dispatch() -> dict[str, Any]:
             dispatched: dict[str, Any] = await self.conduit.route_request(
-                dispatch_messages,
+                messages,
                 auth=auth,
                 session_id=session_id,
                 intent_hint=intent_hint,
+                context_messages=context_messages,
                 # The Run names this turn for the session store, so a second
                 # Attempt under the same Run appends nothing rather than
                 # writing the user's message again (#327, ADR-083026-5fab).
@@ -2122,8 +2124,6 @@ async def create_container(
         intent_registry=intent_registry,
         capabilities=capabilities,
         episodic_store=episodic_store,
-        project_store=project_scope_store,
-        project_scope_store=project_scope_store,
         workspace_store=workspace_store,
         run_store=run_store,
         run_reader=ScopedRunReader(run_store, workspace_store, project_scope_store),
