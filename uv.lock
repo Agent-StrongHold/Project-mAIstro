@@ -2625,6 +2625,7 @@ dependencies = [
     { name = "maistro-canvas" },
     { name = "maistro-core" },
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -2646,6 +2647,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.4.0,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25,<2" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
 ]
 provides-extras = ["dev"]
