@@ -1008,6 +1008,45 @@ class CreativeArtifactService:
             )
 
 
+if TYPE_CHECKING:
+
+    def _vulture_artifact_version_contract_usage(service: CreativeArtifactService) -> None:
+        """Keep reflection-owned #780 contract surface visible to Vulture.
+
+        ``CreativeArtifactService`` is the one product write path for material
+        artifact changes (SPEC-092826-a780): its record/fork/lock/read methods
+        are the public contract the mixed-control surface (#777) and the
+        CreativeBrief store (#774) consume, and ``ControlMode.COLLABORATIVE``
+        is one point of the control continuum that continuum is defined by.
+        They are exercised by ``packages/maistro-design/tests/``
+        ``test_artifact_versions.py`` today; none of this is dead code. The
+        narrow ``packages/*/src`` production-only Vulture scan just cannot see
+        the test- and downstream-product consumers. Follows the repo's
+        ``_vulture_*_usage`` TYPE_CHECKING precedent (e1f16ddae, 632c24c78:
+        "banking alone cannot pass this round" — banking would misrecord live
+        contract surface as dead debt).
+
+        Vulture matches by bare name, not per-symbol: referencing ``reject``
+        here also marks identically-named in-scope methods as used (e.g.
+        ``maistro.core`` ``memory/learnings/approval.py::reject``), which is
+        why that reviewed ledger identity is pruned alongside this block.
+        """
+        _ = ControlMode.COLLABORATIVE
+        _ = service.record_generation
+        _ = service.record_manual_edit
+        _ = service.record_refinement
+        _ = service.fork
+        _ = service.reject
+        _ = service.lock_version
+        _ = service.lock_region
+        _ = service.lock_decision
+        _ = service.lock_branch
+        _ = service.agent_inputs
+        _ = service.branch_state
+
+    _ = _vulture_artifact_version_contract_usage
+
+
 __all__ = [
     "AgentWorkInputs",
     "ArtifactLock",

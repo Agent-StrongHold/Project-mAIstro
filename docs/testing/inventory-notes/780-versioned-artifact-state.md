@@ -46,3 +46,40 @@ unreachable for a fresh lineage (they require an existing version/tip), so the
 window is decision locks only, but it contradicts the spec Goals bullet "Locks
 (version/region/decision/branch) are checked before every write" and the module
 docstring "Every write checks the branch's active locks first".
+
+## Repair record (job 4d7e250f72524359a0de4ce9f8c4727f, head 615bb73da7d0)
+
+- The confirmed `record_generation` gap above is **fixed** (commit 615bb73da:
+  the write path now checks branch/decision locks and refuses with
+  `ArtifactLockConflict`). Re-proven live against real Postgres
+  (pgvector:pg17, `alembic upgrade head` through 047): a decision lock on a
+  not-yet-started lineage refuses the first `record_generation` citing that
+  decision with a contradicting digest. A fresh 14-check live-PG smoke of
+  AC-1..AC-9 (three-version provenance chain, version-lock refusal + release,
+  decision-digest both directions, guidance durability + `agent_inputs`,
+  fork, reopen projection, branch-lock conflict, shared export, mixed-control)
+  passed 14/14 on this head.
+- exact-debt-ledger: the production-only Vulture scan (`packages/*/src`) saw
+  12 new identities in `versions.py` (`ControlMode.COLLABORATIVE` + 11
+  `CreativeArtifactService` methods). All 12 are live contract surface —
+  exercised by this file's 20 tests and waiting on #774/#777 consumers — so
+  per the repo's `_vulture_*_usage` TYPE_CHECKING precedent (e1f16ddae,
+  632c24c78: banking alone cannot pass the trusted-base ratchet and would
+  misrecord contract surface as dead debt), a documented non-executing
+  reference block keeps them visible to the scan. Bare-name matching marks
+  `maistro-core` `memory/learnings/approval.py::reject` used as collateral,
+  so that one reviewed ledger identity was pruned from
+  `quality/vulture-baseline.json` (1402 → 1401). The gate exits 0:
+  1402 reviewed identities -> 1401 findings, 0 unclassified.
+- Observation recorded, NOT changed this round (pre-existing at the merge
+  base, out of repair scope): `PgArtifactVersionStore.append_version`
+  translates *every* `IntegrityError` to `ArtifactVersionExistsError`
+  (version_store.py `except IntegrityError`); a live FK violation
+  (`design_artifact_versions_project_id_fkey`, no parent `design_projects`
+  row) surfaces as "version already exists". A unique-vs-FK split (pgcode
+  23505 vs 23503) would surface integrity conflicts more precisely.
+- Re-validated on this head: `uv run ruff check .`, `uv run ruff format
+  --check .`, `uv run pytest packages/maistro-design/tests -q` (371 passed),
+  `check-durable-table-inventory.py` (74 tables),
+  `check-execution-lifecycles.py`, `check-ratchet-provenance.py`,
+  `check-shipped-surface-truth.py` — all pass.
