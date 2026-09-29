@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Verify or complete canonical production mounting of the v2 Canvas asset router, including current authentication/Workspace/org-scope integration, then run the route contract through the production composition rather than only an isolated FastAPI test app. If the canonical server surface satisfies the ADR's boundary/behavioral contracts, transition ADR-042 to `Implemented`.  
 **Current state:** `asset_routes.py` and its dedicated FastAPI route suite exist and exercise the v2 HTTP contract in isolation. Repository search did not establish that this router is mounted as a canonical production surface; the ADR itself describes maistro-server mounting as a future cutover step. Implementation existence therefore does not yet prove production reachability/authority.  
 **ADR:** [ADR-042: Canvas Asset HTTP Routes](../../../adr/ADR-042-canvas-asset-routes.md)
+
+## ADR-043: Canvas Asset Executor and Tool — Agent Integration
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Audit ADR-044 Phase 4 and complete the legacy `canvas` → `canvas_asset` convergence. Under the current pre-1.0 development standard, preserving the old LayerType tool for backward compatibility has no architectural value; if the new path satisfies current requirements, remove the legacy path rather than maintaining dual behavior. Then verify canonical tool/capability registration and the executor/tool acceptance suite before promoting ADR-043.  
+**Current state:** AssetExecutor, AssetTool, and dedicated tests exist, and Davinci currently registers both `canvas` and `canvas_asset`. The ADR intentionally preserved dual legacy/new flows during migration, but that compatibility strategy conflicts with the current pre-1.0 rule to prefer architectural convergence over backward compatibility. ADR-044 is named as the retirement owner, so lifecycle completion depends on that convergence audit.  
+**ADR:** [ADR-043: Canvas Asset Executor and Tool — Agent Integration](../../../adr/ADR-043-canvas-asset-executor-and-tool.md)
