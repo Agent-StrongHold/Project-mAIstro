@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Rewrite before acceptance to separate **ephemeral deployment rebuildability** from **persistent user-data durability**. Pre-1.0 application deployments may be destroyed/rebuilt with no backward-compatibility guarantee; backups/restores should protect current persistent data/config/secrets without promising old-version schema compatibility. Replace ADR-071 backpressure and Task-era drain assumptions with canonical Run admission/drain/recovery semantics. Reassess whether cross-platform import/export is a current product requirement or a later stable-schema feature.  
 **Current state:** The local-backup floor and portable-data goals remain useful, but the proposal mixes them with deployment rolling-update/compatibility assumptions and stale orchestration dependencies. Scratch deployment before 1.0 does not eliminate the need to protect beta user data; it does eliminate the need to preserve old application/API/schema behavior merely so an old deployment keeps running.  
 **ADR:** [ADR-081: Deployment Topology, Backup, and Disaster Recovery](../../../adr/ADR-081-deployment-backup-dr.md)
+
+## ADR-102: Sibling packages use maistro-core's central outbound HTTP guard
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Reconcile lifecycle metadata and promote to `Implemented` if the bound tests remain green. The ADR already carries `implemented: 2026-09-14`, all four ACs are checked, concrete tests are listed, and the security-inventory census asserts no sibling package bypasses the central outbound seam; the missing piece is a valid ADR-097 Implemented history/status transition.  
+**Current state:** This is a strong example of current architecture: outbound HTTP/SSRF policy is centralized in maistro-core, sibling packages depend on that seam rather than vendoring controls, configured origins are exact allow-lists, and the decision explicitly introduces no execution authority. Evidence is direct and repository-wide.  
+**ADR:** [ADR-102: Sibling packages use maistro-core's central outbound HTTP guard](../../../adr/ADR-102-central-ssrf-guard-for-sibling-packages.md)
