@@ -67,3 +67,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Build the missing route/storage integration on top of SPEC-250: canonical server endpoint, current principal/Workspace/session authorization, cross-scope leak tests, durable Postgres/SQLite search backend and stable cursor semantics, required performance evidence, and `sessions.search` observability. Replace the historical profile-middleware assumption with current scope authority. Promote only after the complete ADR contract is evidenced.  
 **Current state:** SPEC-250 implements and tests the pure search/snippet/cursor algorithm, but explicitly excludes the HTTP route, authorization/scoping boundary, real storage/search backend, OTel span, and several ADR-level acceptance criteria. ADR-048 was previously rolled back from Implemented to Accepted for exactly this evidence gap, and that status remains correct.  
 **ADR:** [ADR-048: Session Search — Episodic memory inspector endpoint](../../../adr/ADR-048-session-search.md)
+
+## ADR-057: Memory exposure mode — configurable system-managed vs agent-managed
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Complete SPEC-062126-6a31 on the current agent/configuration architecture: mandatory explicit exposure-mode declaration with no compatibility fallback, concrete store read/write/promote enforcement, fail-fast agent construction where applicable, HYBRID block enforcement, observability/denial events, and no product-identity branching. Replace its ADR-053 RecipeOverlay dependency if that abstraction is superseded.  
+**Current state:** The pure exposure-mode enforcement primitive exists, and the follow-up spec explicitly rejected ADR-057's old backwards-compatible implicit default in favor of immediate mandatory declaration, which matches current pre-1.0 policy. The implementing SPEC remains Accepted with its integration ACs unchecked, so the ADR's earlier Implemented claim was correctly rolled back.  
+**ADR:** [ADR-057: Memory exposure mode — configurable system-managed vs agent-managed](../../../adr/ADR-057-memory-exposure-mode.md)
