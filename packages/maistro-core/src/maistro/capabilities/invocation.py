@@ -252,6 +252,39 @@ class Invocation(BaseModel):
         return self
 
 
+def _settled_by_another_admission(
+    candidate: Invocation, admitted: Invocation, effect_key: str
+) -> Invocation | None:
+    """What it means when admission returns a row we did not write.
+
+    `_admit_effect` can hand back a pre-existing canonical row: another
+    worker won the same logical effect. COMPLETED is a replay, returned
+    without touching the provider again. A non-terminal row under a
+    different invocation_id is the unsafe case -- the remote outcome cannot
+    be proven absent, so dispatching again could apply the effect twice.
+    `None` means our own candidate was admitted and dispatch proceeds.
+
+    Extracted from `invoke` rather than left inline: it is one question about
+    the admission result, and folding its two branches into the caller pushed
+    `invoke` from C(13) to C(14) against the complexity ratchet without
+    making either half easier to read.
+    """
+
+    if admitted.status is InvocationStatus.COMPLETED:
+        return admitted
+    non_terminal = {
+        InvocationStatus.CREATED,
+        InvocationStatus.RUNNING,
+        InvocationStatus.UNKNOWN,
+    }
+    if admitted.status in non_terminal and admitted.invocation_id != candidate.invocation_id:
+        raise UnsafeEffectRetry(
+            f"effect {effect_key!r} has outcome {admitted.status.value!r}; "
+            "manual/reconciliation evidence is required before retry"
+        )
+    return None
+
+
 @runtime_checkable
 class InvocationStore(Protocol):
     """Durable persistence contract for capability Invocations."""
@@ -624,23 +657,9 @@ class InvocationExecutionService:
                 logical_effect=logical_effect,
             )
             invocation = await self._admit_effect(candidate)
-            if invocation.status is InvocationStatus.COMPLETED:
-                # A prior Attempt already applied this logical effect; return
-                # the canonical record without touching the provider again.
-                return invocation
-            if (
-                invocation.status
-                in {
-                    InvocationStatus.CREATED,
-                    InvocationStatus.RUNNING,
-                    InvocationStatus.UNKNOWN,
-                }
-                and invocation.invocation_id != candidate.invocation_id
-            ):
-                raise UnsafeEffectRetry(
-                    f"effect {effect_key!r} has outcome {invocation.status.value!r}; "
-                    "manual/reconciliation evidence is required before retry"
-                )
+            settled = _settled_by_another_admission(candidate, invocation, effect_key)
+            if settled is not None:
+                return settled
             running = invocation.model_copy(
                 update={
                     "status": InvocationStatus.RUNNING,

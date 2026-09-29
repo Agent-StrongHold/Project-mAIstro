@@ -32,7 +32,6 @@ from maistro.capabilities.effect_context import (
     new_postgres_effect_context,
     new_sqlite_effect_context,
 )
-from maistro.capabilities.invocation import InvocationStore as CapabilityInvocationStore
 from maistro.classifier.engine import ClassifierEngine
 from maistro.credentials.router import CredentialRouter
 from maistro.events.consumer_cursor import (
@@ -1676,33 +1675,6 @@ def _wire_schedule_admission(
 # is the invocation-store half on its own and has its own conformance test
 # (tests/capabilities/test_pg_invocation_store.py). Collapsing the two is a
 # follow-up, not a merge decision.
-async def _wire_capability_invocations(
-    *,
-    pg_pool: Any,
-    db_pool: Any,
-) -> CapabilityInvocationStore:
-    """Select the canonical effect ledger from the container's durable backend."""
-    # Each branch binds its concrete store first: ``ensure_schema`` is a
-    # wiring concern the ``InvocationStore`` protocol deliberately does not
-    # carry, so it must be called on the concrete class before returning the
-    # store as the protocol type.
-    if pg_pool is not None:
-        from maistro.capabilities.pg_invocation_store import PgInvocationStore
-
-        pg_store = PgInvocationStore(pg_pool)
-        await pg_store.ensure_schema()
-        return pg_store
-    if db_pool is not None:
-        from maistro.capabilities.invocation_store import SqliteInvocationStore
-
-        sqlite_store = SqliteInvocationStore(db_pool)
-        await sqlite_store.ensure_schema()
-        return sqlite_store
-    from maistro.capabilities.invocation import InMemoryInvocationStore
-
-    return InMemoryInvocationStore()
-
-
 async def _wire_capability_effects(
     *,
     effect_context: CapabilityEffectContext | None,
