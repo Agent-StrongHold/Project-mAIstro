@@ -195,3 +195,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Implement/verify the narrow protocol and conformance suite, then wire durable and in-memory trackers through the same Gate/Container seam. Reconcile the remaining `user_id` keying with canonical principal identity rather than perpetuating a HiveUser-shaped security key. Keep admin-only tracker operations outside the minimal security-path protocol unless a separate protocol is justified.  
 **Current state:** This proposal fixes a real security-boundary type mismatch: the durable tracker returned mappings while Gate expected StrikeRecord behavior. The minimal two-method protocol is a good DI boundary, but identity scope should converge with current principals before acceptance.  
 **ADR:** [ADR-082226-4cd4: StrikeTracker protocol contract](../../../adr/ADR-082226-4cd4-strike-tracker-protocol-contract.md)
+
+## ADR-083026-3d92: Profile state has one durable owner
+
+**Status:** Accepted  
+**Last updated:** 2026-09-29  
+**Next steps:** Converge profile/user-model state onto one canonical durable owner and canonical principal identity; no route/tool may acknowledge a write to an unavailable mirror or maintain an independent cache as authority.  
+**Current state:** This removes a split cache/PostgREST design where the durable half did not exist in shipped deployments.  
+**ADR:** [ADR-083026-3d92](../../../adr/ADR-083026-3d92-profile-state-has-one-durable-owner.md)
