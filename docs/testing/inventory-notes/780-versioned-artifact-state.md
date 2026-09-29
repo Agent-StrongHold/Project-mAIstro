@@ -152,3 +152,35 @@ the prior round, all re-executed:
 - Still out of reach at this base, unchanged: product-surface E2E and
   browser-refresh projection (#774/#775/#777 not landed); AC-9 remains
   proven at store/service level only.
+
+## Develop-sync + re-verification record (job eee7b58cdaaa4b7d8bd78209ab54bdab, merge head 3451d65e0)
+
+Prior round timed out before running checks; nothing was trusted from it.
+`origin/develop` (0fb3dc69e: #1671 state-commit acknowledgement, #1662 SIGTERM
+drain, #1665 installer-function gate) was merged into `auto-780` — clean merge,
+and `git diff 0abc50460..3451d65e0 -- <lane surfaces>` is empty, so none of this
+lane's files changed in the sync. Everything below re-executed at the merged
+head:
+
+- `uv run pytest packages/maistro-design/tests -q` → 373 passed; the nine AC
+  classes re-run explicitly → 15 passed.
+- `uv run ruff check .` and `uv run ruff format --check .` → clean.
+- `check-vulture-baseline.py packages/*/src --min-confidence 60 --exclude
+  '*/third_party/*'` → exit 0 against base 0fb3dc69ed95, 1402 reviewed → 1401
+  findings, 0 unbanked (no ledger amendment needed this round).
+  `check-durable-table-inventory.py`, `check-execution-lifecycles.py`,
+  `check-doc-links.py`, `check-suite-inventory.py`,
+  `check-ratchet-provenance.py`, `check-shipped-surface-truth.py` → all pass.
+- Develop-side suites sanity-checked in the merged tree:
+  `tests/test_check_install_functions.py` → 22 passed;
+  `packages/maistro-server/tests/test_sigterm_shutdown.py` → 3 passed.
+- Fresh live-PG probe (pgvector:pg17 on 127.0.0.1:15780, `alembic upgrade
+  head` through 047, asyncpg session factory) against
+  `PgArtifactVersionStore.append_version`, 3/3 at the merged head: orphan
+  `design_projects` id → `ArtifactVersionError … (SQLSTATE 23503)`, not
+  `ArtifactVersionExistsError`; duplicate slot via pre-check →
+  `ArtifactVersionExistsError`; cross-org UNIQUE hit the pre-check misses →
+  `ArtifactVersionExistsError` through the except branch.
+- Scope, unchanged and stated plainly: product-surface E2E and browser-refresh
+  projection remain out of reach at this base (#774/#775/#777 not landed);
+  AC-9 stands proven at store/service level (`TestOneMixedControlProject`).
