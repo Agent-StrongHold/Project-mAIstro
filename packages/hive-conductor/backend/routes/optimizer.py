@@ -70,6 +70,10 @@ async def trigger_optimizer(
             apply_auto=apply_auto,
             org_id=org_id,
             project_id=project_id,
+            # The Workspace this request was authorized against: proposals
+            # carry it so candidate registration lands in the authorizing
+            # tenant, not the configured default (#861 review).
+            workspace_id=str(getattr(scope, "workspace_id", "") or ""),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
