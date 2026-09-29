@@ -15,21 +15,30 @@ throughput. M6 may optimize numbers after correctness is demonstrated.
 
 `deploy/docker-compose.prod.yml` (SPEC-070226-fbe3 / ADR-081): nginx load
 balancer → **2× stateless `maistro-server` replicas** → PostgreSQL (+ streaming
-replica) / Redis / shared file store. The soak exercises the application
-surface of that profile: two `maistro_server` replicas behind an nginx LB whose
-passive-health policy (`max_fails=3`, `fail_timeout=10s`, `proxy_next_upstream`)
-mirrors `deploy/nginx.conf`.
+replica) / Redis / shared file store. The current `run_soak.py` harness is a
+**preflight emulator**, not that exact artifact: it runs host `uvicorn`
+processes and a standalone PostgreSQL/LB container, so it cannot sign a
+promotion soak for the Compose image, Redis, replication, or shared-store
+configuration. It is retained to falsify the canonical HTTP/admission seams;
+a promotion-signing run must execute the exact production Compose image and
+configuration, with its image/config hashes in evidence.
 
-## RC artifact identity (what would be promoted)
+## Artifact identity contract
 
-| Component | Identity recorded in evidence |
+A promotion-signing Compose soak must record the following identity. The
+current host-process preflight records only the entries it can observe and is
+therefore deliberately insufficient for promotion.
+
+| Component | Required identity |
 |---|---|
 | Code | `git_head` + `git_diff_sha256` + `git_status_sha256` (dirty flag) |
 | Release version | `VERSION` file content |
-| Config | `soak_env_sha256` (normalized rate-limit/auth config) |
-| LB config | `nginx_conf_sha256` |
-| Database | PostgreSQL container image digest (`pg_image_digest`) |
-| Runtime | CPython version |
+| Application image | immutable image digest for both `maistro-server` replicas |
+| Config | normalized production Compose environment/config hash |
+| LB config | `deploy/nginx.conf` hash |
+| Database | primary and replica PostgreSQL image digests |
+| Shared services | Redis and shared-store configuration/identity |
+| Runtime | CPython version inside the promoted image |
 
 Any code or runtime-config change invalidates a recorded soak and requires a
 new one (acceptance: "any code/runtime-config change requires a new soak").
@@ -93,7 +102,7 @@ Hard (any miss fails the soak):
 | H2 | Exactly-once schedule occurrence | runs created for the raced occurrence == 1 |
 | H3 | Rate limiting | 429 + `Retry-After` observed on all three burst paths |
 | H4 | Replica kill/restart | replica 2 rejoins healthy; LB failover keeps client-visible 5xx + connection errors ≤ kill-window budget (`(restart_delay + 15s) × offered load`) |
-| H5 | No silent stall | non-terminal `canonical_runs` after the settle window is **recorded and explained** (expected reclaim authority absent → must be 0 or itemized as a filed finding) |
+| H5 | No silent stall | non-terminal `canonical_runs` after the settle window are enumerated; the automated gate requires **0**. Any non-zero result is a promotion failure pending a separately filed/reclassified finding. |
 | H6 | Task admission availability | `POST /tasks` 202 ratio ≥ 99% outside the kill window |
 
 Soft (observed, reported, judged in the evidence pack):
@@ -113,7 +122,9 @@ profile minimum for a promotion-signing soak is **≥ 4 hours** of the sustained
 profile above (`--sustain-seconds 14400`). Each executed run records its actual
 duration in the evidence JSON (`sustain_seconds`) and evidence pack; a run
 shorter than the profile minimum can only ever be **provisional** evidence and
-must say so. The harness is parameterized; nothing about it caps duration.
+must say so. The driver mechanically fails `sustain_duration` below this
+minimum, so it cannot print a promotion-pass result for a short run. The
+harness is parameterized; nothing about it caps duration.
 
 ## Out of scope here (documented limits)
 
@@ -138,11 +149,13 @@ Instrumentation and probes added by the repair round; every promotion soak
 - `driver_loop_lag_ms` per sample — the load driver's event-loop sleep
   overshoot, proving the offered load itself was delivered on a healthy loop
   (a driver-side stall invalidates the sample window it occurs in).
-- `--kill-signal SIGTERM` drain probe — the graceful-shutdown counterpart of
-  the SIGKILL failover phase: the victim must exit cleanly within
+- `--kill-signal SIGTERM` drain probe (the driver default) — the
+  graceful-shutdown counterpart of the separately runnable SIGKILL failover
+  phase: the victim must exit cleanly within
   `SHUTDOWN_DRAIN_TIMEOUT` (30 s) + slack, without escalation, and the drain
   window's 5xx/connection-error delta is recorded against the H4 budget.
-  Run 2's scratch validation exposed this as **failed** (lifespan shutdown
+  It is exit-gated whenever SIGTERM is selected. Run 2's scratch validation
+  exposed this as **failed** (lifespan shutdown
   never completes; 6579 5xx in the window) — filed as the drain defect above;
   a promotion soak cannot pass H4-drain until it is fixed and re-proven.
 

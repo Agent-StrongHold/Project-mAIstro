@@ -59,6 +59,7 @@ SOAK_API_KEY = "soak:soak-key-1"  # principal:secret form required by #843
 SOAK_DELEGATION_KEY = "soak-delegation-key"
 SOAK_ROUTER_KEY = "soak-router-key" + "0" * 19
 SHUTDOWN_DRAIN_TIMEOUT_S = 30.0  # maistro_server.main.SHUTDOWN_DRAIN_TIMEOUT
+PROMOTION_MIN_SUSTAIN_SECONDS = 14_400
 
 
 # Load is driven through the pooled `maistro.http` seam, so the driver is
@@ -451,6 +452,7 @@ class LoadStats:
         self.counts: dict[str, int] = {}
         self.latencies: dict[str, list[float]] = {}
         self.status_codes: dict[int, int] = {}
+        self.kind_status_codes: dict[str, dict[int, int]] = {}
         self.run_ids: set[str] = set()
         self.errors: list[str] = []
 
@@ -459,8 +461,69 @@ class LoadStats:
             self.counts[kind] = self.counts.get(kind, 0) + 1
             self.latencies.setdefault(kind, []).append(latency)
             self.status_codes[status] = self.status_codes.get(status, 0) + 1
+            by_kind = self.kind_status_codes.setdefault(kind, {})
+            by_kind[status] = by_kind.get(status, 0) + 1
             if run_id:
                 self.run_ids.add(run_id)
+
+    async def snapshot(self) -> dict[str, dict[Any, int]]:
+        """Return one lock-consistent request counter snapshot.
+
+        Kill-window checks must not infer a window from totals collected before
+        and after concurrent workers mutate them.  This snapshot is deliberately
+        counters only, keeping the four-hour run's latency samples out of the
+        recovery bookkeeping.
+        """
+        async with self.lock:
+            return {
+                "counts": dict(self.counts),
+                "status_codes": dict(self.status_codes),
+                "kind_status_codes": {
+                    kind: dict(counts) for kind, counts in self.kind_status_codes.items()
+                },
+            }
+
+
+def _counter_delta(after: dict[Any, int], before: dict[Any, int]) -> dict[Any, int]:
+    """Return non-negative counter increments between two snapshots."""
+    return {key: max(after.get(key, 0) - before.get(key, 0), 0) for key in after | before}
+
+
+def _check_ok(check: Any) -> bool:
+    """Read a boolean check, accepting detail dictionaries without truthiness bugs."""
+    return check.get("ok", False) if isinstance(check, dict) else check is True
+
+
+def _integer_or_invalid(value: Any) -> int:
+    """Parse a database count, returning an invalid sentinel on probe failure."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return -1
+
+
+def failed_promotion_checks(evidence: dict[str, Any]) -> list[str]:
+    """Return every failed promotion gate represented by an evidence document.
+
+    Keep this pure so the CLI cannot accidentally report success because a new
+    threshold was recorded but omitted from its process exit status.
+    """
+    checks = evidence.get("thresholds", {}).get("checks", {})
+    required = (
+        "exactly_once_task_admission",
+        "exactly_once_schedule_occurrence",
+        "rate_limit_enforced",
+        "lb_failover_bounded",
+        "replica_2_rejoined",
+        "nonterminal_runs_after_settle",
+        "task_admission_availability",
+        "sustain_duration",
+    )
+    failed = [name for name in required if not _check_ok(checks.get(name))]
+    drain = checks.get("graceful_drain")
+    if isinstance(drain, dict) and drain.get("required") and not _check_ok(drain):
+        failed.append("graceful_drain")
+    return failed
 
 
 async def drive_load(
@@ -645,7 +708,10 @@ async def phase_rate_limit(
     lb_unauth = await burst(lb, auth=False, n=total)
     lb_auth = await burst(lb, auth=True, n=total)
     direct_unauth = await burst(replica_direct, auth=False, n=total)
-    limited = all(b["status_counts"].get("429", 0) > 0 for b in (lb_unauth, lb_auth, direct_unauth))
+    probes = (lb_unauth, lb_auth, direct_unauth)
+    limited = all(
+        b["status_counts"].get("429", 0) > 0 and b["retry_after"] is not None for b in probes
+    )
     return {
         "through_lb_unauthenticated": lb_unauth,
         "through_lb_authenticated": lb_auth,
@@ -836,7 +902,7 @@ async def drain_replica(
         await asyncio.sleep(0.5)
     drained = victim.poll() is not None
     drain_seconds = round(time.monotonic() - t_send, 1)
-    status_after = stats.status_codes
+    status_after = (await stats.snapshot())["status_codes"]
     kill_record.update(
         {
             "drained": drained,
@@ -898,7 +964,8 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     ]
 
     metrics_file = open(Path(args.out_dir) / "metrics.jsonl", "w")  # noqa: SIM115
-    stop_at = time.monotonic() + args.sustain_seconds
+    sustain_started = time.monotonic()
+    stop_at = sustain_started + args.sustain_seconds
     stats = LoadStats()
     load_task = asyncio.create_task(
         drive_load(lb, headers, stats, stop_at, args.rps, args.workers, mix)
@@ -930,7 +997,8 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         await asyncio.sleep(max(5.0, kill_at - time.monotonic()))
         victim = procs["replica_2"]
         sig = getattr(signal, args.kill_signal)
-        status_before = dict(stats.status_codes)
+        counters_before = await stats.snapshot()
+        status_before = counters_before["status_codes"]
         t_send = time.monotonic()
         if victim.poll() is None:
             # start_new_session put the `uv run` wrapper in its own session:
@@ -949,11 +1017,39 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         rejoined = await wait_ready(
             "replica_2", "http://127.0.0.1:18202/health/live", procs["replica_2"], 300
         )
-        kill_record.update({"restarted_at": datetime.now(UTC).isoformat(), "rejoined": rejoined})
+        counters_after = await stats.snapshot()
+        kill_window_seconds = round(time.monotonic() - t_send, 2)
+        kill_record.update(
+            {
+                "restarted_at": datetime.now(UTC).isoformat(),
+                "rejoined": rejoined,
+                "window_seconds": kill_window_seconds,
+                "window_status_counts": {
+                    str(key): value
+                    for key, value in sorted(
+                        _counter_delta(counters_after["status_codes"], status_before).items()
+                    )
+                },
+                "window_task_status_counts": {
+                    str(key): value
+                    for key, value in sorted(
+                        _counter_delta(
+                            counters_after["kind_status_codes"].get("task_submit", {}),
+                            counters_before["kind_status_codes"].get("task_submit", {}),
+                        ).items()
+                    )
+                },
+            }
+        )
         log(f"replica_2 restarted, rejoined={rejoined}")
 
     kill_task = asyncio.create_task(kill_and_restart())
-    await asyncio.gather(load_task, kill_task)
+    await load_task
+    # Measure the mixed-load phase itself, not a later restart/drain that can
+    # outlast it.  Otherwise a 20-second run whose SIGTERM drain hangs for 45
+    # seconds could falsely present as a minute of sustained traffic.
+    sustain_seconds = round(time.monotonic() - sustain_started, 2)
+    await kill_task
     await sample_task
     metrics_file.close()
 
@@ -968,6 +1064,11 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     )
     evidence["kill_restart"] = kill_record
     evidence["replica_boot_seconds"] = boot_seconds
+    # Requested time is audit context; observed elapsed time is the promotion
+    # contract.  A crashed or stalled driver must never sign a requested
+    # four-hour run that did not actually remain under load for four hours.
+    evidence["requested_sustain_seconds"] = args.sustain_seconds
+    evidence["sustain_seconds"] = sustain_seconds
 
     # Post-kill recovery state: every task-submitted run must be terminal or
     # explicitly accounted for; nothing may sit non-terminal silently.
@@ -980,6 +1081,10 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         "SELECT count(*) FROM canonical_runs WHERE status NOT IN "
         "('completed','failed','cancelled','timed_out')"
     )
+    evidence["nonterminal_run_items"] = pg_sql(
+        "SELECT coalesce(string_agg(status || ':' || run_id::text, ','), '') FROM canonical_runs "
+        "WHERE status NOT IN ('completed','failed','cancelled','timed_out')"
+    )
     evidence["duplicate_evidence"] = {
         "runs_sharing_one_task_run_identity": pg_sql(
             "SELECT count(*) FROM (SELECT payload->>'task_id' AS t, count(*) AS n "
@@ -988,13 +1093,29 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     # Threshold evaluation (docs/testing/soak/m3a-load-profile.md).
-    five_oox = sum(v for k, v in stats.status_codes.items() if k >= 500)
-    conn_errors = stats.status_codes.get(-1, 0)
     total_reqs = sum(stats.counts.values())
     kill_window_estimate = restart_delay + 15  # passive-health fail_timeout is 10s
-    task_admission_ratio = round(
-        stats.status_codes.get(202, 0) / max(stats.counts.get("task_submit", 1), 1), 4
+    window_statuses = {
+        int(key): value for key, value in kill_record.get("window_status_counts", {}).items()
+    }
+    window_task_statuses = {
+        int(key): value for key, value in kill_record.get("window_task_status_counts", {}).items()
+    }
+    kill_window_failures = sum(
+        value for key, value in window_statuses.items() if key >= 500
+    ) + window_statuses.get(-1, 0)
+    task_submissions_outside_kill = max(
+        stats.counts.get("task_submit", 0) - sum(window_task_statuses.values()), 0
     )
+    task_accepted_outside_kill = max(
+        stats.kind_status_codes.get("task_submit", {}).get(202, 0)
+        - window_task_statuses.get(202, 0),
+        0,
+    )
+    task_admission_ratio = round(
+        task_accepted_outside_kill / max(task_submissions_outside_kill, 1), 4
+    )
+    nonterminal_count = _integer_or_invalid(evidence["nonterminal_runs"])
     p95s: dict[str, float] = {}
     for kind, lat in stats.latencies.items():
         if lat:
@@ -1011,15 +1132,20 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             "exactly_once_schedule_occurrence": evidence["exactly_once_schedule_claim"]["ok"],
             "rate_limit_enforced": evidence["rate_limit"]["enforced_everywhere"],
             "lb_failover_bounded": {
-                "observed_5xx": five_oox,
-                "observed_conn_errors": conn_errors,
+                "observed_5xx_and_conn_errors": kill_window_failures,
+                "observed_window_seconds": kill_record.get("window_seconds"),
                 "upper_bound_kill_window": kill_window_estimate,
-                "per_second_budget": kill_window_estimate * args.rps * args.workers,
-                "note": "5xx + conn errors during the kill window must stay within the passive-health window budget",
+                "budget": kill_window_estimate * args.rps * args.workers,
+                "ok": kill_window_failures <= kill_window_estimate * args.rps * args.workers,
+                "note": (
+                    "5xx + conn errors only during the measured kill/rejoin window "
+                    "must stay within the passive-health budget"
+                ),
             },
             "replica_2_rejoined": kill_record.get("rejoined", False),
-            # Drain is a hard pass only when SIGTERM was actually requested;
-            # the SIGKILL default records signal=SIGKILL and leaves this None.
+            # SIGTERM is the default promotion probe.  SIGKILL remains useful
+            # for a separate abrupt-failure run, where a graceful drain is not
+            # applicable and therefore is not silently counted as a pass.
             "graceful_drain": (
                 {
                     "signal": kill_record.get("signal"),
@@ -1038,10 +1164,26 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
                         <= kill_window_estimate * args.rps * args.workers
                     )
                     if kill_record.get("signal") == "SIGTERM"
-                    else None,
+                    else False,
+                    "required": args.kill_signal == "SIGTERM",
                 }
             ),
-            "nonterminal_runs_after_settle": evidence["nonterminal_runs"],
+            "nonterminal_runs_after_settle": {
+                "count": nonterminal_count,
+                "items": evidence["nonterminal_run_items"],
+                "ok": nonterminal_count == 0,
+            },
+            "task_admission_availability": {
+                "accepted_outside_kill_window": task_accepted_outside_kill,
+                "submissions_outside_kill_window": task_submissions_outside_kill,
+                "ratio": task_admission_ratio,
+                "ok": task_admission_ratio >= 0.99,
+            },
+            "sustain_duration": {
+                "observed_seconds": sustain_seconds,
+                "minimum_seconds": PROMOTION_MIN_SUSTAIN_SECONDS,
+                "ok": sustain_seconds >= PROMOTION_MIN_SUSTAIN_SECONDS,
+            },
             "rss_growth": _rss_growth(Path(args.out_dir) / "metrics.jsonl"),
             "fd_growth": _fd_growth(Path(args.out_dir) / "metrics.jsonl"),
         },
@@ -1125,7 +1267,7 @@ def main() -> None:
     parser.add_argument(
         "--kill-signal",
         choices=["SIGKILL", "SIGTERM"],
-        default="SIGKILL",
+        default="SIGTERM",
         help="SIGTERM exercises the graceful drain path (SHUTDOWN_DRAIN_TIMEOUT); "
         "SIGKILL is the hard-failure failover probe",
     )
@@ -1151,16 +1293,7 @@ def main() -> None:
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     evidence = asyncio.run(main_async(args))
-    failed = []
-    checks = evidence.get("thresholds", {}).get("checks", {})
-    if not checks.get("exactly_once_task_admission"):
-        failed.append("exactly_once_task_admission")
-    if not checks.get("exactly_once_schedule_occurrence"):
-        failed.append("exactly_once_schedule_occurrence")
-    if not checks.get("rate_limit_enforced"):
-        failed.append("rate_limit_enforced")
-    if not checks.get("replica_2_rejoined"):
-        failed.append("replica_2_rejoined")
+    failed = failed_promotion_checks(evidence)
     if failed:
         log(f"FAILED checks: {failed}")
         sys.exit(1)

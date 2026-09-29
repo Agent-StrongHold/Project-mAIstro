@@ -235,3 +235,35 @@ unchanged. Open items, re-derived from the tree and committed evidence:
   the evidence JSON, which the profile requires (`m3a-load-profile.md:114`).
 - PR body for this head uses "Refs #860" only — no closure keywords; no issue
   closure performed from this lane.
+
+---
+
+## Repair round 4 (this lane) — promotion-gate enforcement and current drain probe
+
+The verifier's gate finding was repaired in `scripts/soak/run_soak.py` rather
+than narrated away: `failed_promotion_checks()` now makes H1–H6, the observed
+four-hour duration, and a selected SIGTERM drain determine the CLI exit status.
+The driver records both requested and observed `sustain_seconds`; captures
+lock-consistent request-counter snapshots around the measured kill/rejoin
+window; evaluates H6 only outside that window; requires `Retry-After` with
+all three H3 429 probes; and enumerates every non-terminal Run before failing
+H5. `tests/test_soak_promotion_gates.py` (2 passed) regression-tests that H4,
+H5, H6, duration, and a required drain cannot be omitted from the exit result.
+
+A fresh, deliberately short host-process preflight was executed after the
+merge-head #819 shutdown change, outside the repository at
+`/tmp/auto-860-soak-verify/`: `--sustain-seconds 20 --rps 1 --workers 1
+--eo-concurrency 2 --rate-limit-probe-requests 20 --settle-seconds 1
+--sample-interval 1 --out-dir /tmp/auto-860-soak-verify`. It exited 1 as
+required, recording observed `sustain_seconds=20.64`, H1/H2 true, SIGTERM
+`drained=true` in 22.3s without escalation, and correctly failed H3 (the tiny
+20-request burst cannot exceed the configured burst), H5 (10 queued Runs,
+enumerated), H6 (0.5), and duration. The earlier F8 **reproduction is no
+longer current**: this host preflight observes a successful drain, but it is
+not a promotion proof because it is short, dirty, host-process topology, and
+still has H3/H5/H6 failures.
+
+The remaining promotion blockers are intentional and explicit: no ≥4-hour
+clean exact-Compose-image/configuration soak exists; the current driver is a
+host-process preflight rather than `deploy/docker-compose.prod.yml`; and the
+fresh preflight preserves nonterminal queue debt and sub-threshold admission.
