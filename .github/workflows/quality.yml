@@ -878,12 +878,12 @@ jobs:
           fixed=$(comm -13 xenon-modules.now xenon-modules.ledger)
           if [ -n "$added" ]; then
             echo "::error::xenon regression — module-rank violations not in the ledger; a whole module drifting to C is a design signal, not a line-level one:"
-            echo "$added" | sed 's/^/  /'
+            while IFS= read -r module; do echo "  $module"; done <<< "$added"
             fail=1
           fi
           if [ -n "$fixed" ]; then
             echo "::error::xenon improvement not banked — remove these from XENON_MODULE_LEDGER in this PR so the floor cannot rotate:"
-            echo "$fixed" | sed 's/^/  /'
+            while IFS= read -r module; do echo "  $module"; done <<< "$fixed"
             fail=1
           fi
 
