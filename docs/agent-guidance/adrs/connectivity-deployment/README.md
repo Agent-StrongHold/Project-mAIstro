@@ -11,3 +11,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Reconcile the substrate abstraction with current canonical authentication before implementation. Separate transport/reachability/TLS concerns from authentication authority: substrate-supplied identity claims may become principals only through an explicitly authenticated trusted-ingress binding that strips/sets claims; arbitrary request headers must never confer identity or privilege. Then decide which substrate implementations remain required and create a current spec/tests.  
 **Current state:** No current Substrate implementation or Tailscale/NetBird/etc. identity-header adapter was located. The transport abstraction remains potentially useful, but the ADR's direct header-to-admin/user mapping predates the current canonical-principal/authentication work and must not be treated as current authentication behavior. Localhost/network exposure and identity verification are separate security concerns in the current architecture.  
 **ADR:** [ADR-029: Networking & Identity Substrate — Pluggable transport layer](../../../adr/ADR-029-networking-substrate.md)
+
+## ADR-047: Outbound Delivery Gateway — Multi-channel notifier
+
+**Status:** Deprecated  
+**Last updated:** 2026-09-28  
+**Next steps:** No implementation work against ADR-047. Remove its unreachable implementation during island/convergence cleanup unless a new accepted ADR reintroduces outbound delivery with a current canonical execution path.  
+**Current state:** ADR-047 was explicitly corrected from an implementation claim to Deprecated after reachability analysis proved the shipped delivery gateway had no process-entry-point path. Nothing supersedes the withdrawn contract. This is a canonical example of why code/test existence is insufficient evidence without production reachability.  
+**ADR:** [ADR-047: Outbound Delivery Gateway — Multi-channel notifier](../../../adr/ADR-047-delivery-gateway.md)
