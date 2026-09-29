@@ -23,10 +23,16 @@ services:
       # because the engine's own error message told people to set it.
       # LITELLM_API_BASE may be set explicitly for a gateway whose
       # OpenAI-compatible path is not <root>/v1.
-      - LITELLM_BASE_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}
-      - LITELLM_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}
-      - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}
-      - LITELLM_API_BASE=${LITELLM_API_BASE:-${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}/v1}
+      #
+      # The http:// defaults are the bundled proxy's service name on this
+      # stack's private bridge network -- container to container, never off
+      # the host, with no CA that could sign `litellm` -- the same footing as
+      # the langfuse and maistro-engine URLs below. A hosted gateway set in
+      # .env is whatever scheme its operator gives it, https included.
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
+      - LITELLM_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
+      - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
+      - LITELLM_API_BASE=${LITELLM_API_BASE:-${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}/v1}  # DevSkim: ignore DS137138 until 2027-12-31
       # LITELLM_API_KEY is the external gateway's key. Unset, it is the
       # bundled proxy's master key, which is what this stack starts.
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
@@ -206,9 +212,9 @@ services:
       # The same gateway the engine uses, derived the same way (#808) -- two
       # services that disagree about which gateway they talk to would bill,
       # rate-limit and log against different backends.
-      - LITELLM_API_BASE=${LITELLM_API_BASE:-${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}/v1}
+      - LITELLM_API_BASE=${LITELLM_API_BASE:-${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}/v1}  # DevSkim: ignore DS137138 until 2027-12-31
       - LITELLM_API_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
-      - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}
+      - LITELLM_PROXY_URL=${LITELLM_BASE_URL:-${LITELLM_URL:-http://litellm:4000}}  # DevSkim: ignore DS137138 until 2027-12-31
       - LITELLM_PROXY_KEY=${LITELLM_API_KEY:-${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}}
       - CHAT_DEFAULT_MODEL=${CHAT_DEFAULT_MODEL:-${DEFAULT_MODEL:-gemini/gemini-2.5-flash}}
       # Engine router for DAG execution (REQUIRE_AUTH=true expects the access token).
