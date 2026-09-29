@@ -59,3 +59,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** **M1-critical:** establish the explicit successor for canonical Graph execution and supersede ADR-062. Its own current text says the `run_graph` execution entry point was retired by #1154 and canonical durable execution is `maistro.graph.durable_runs`, sharing no code with GraphRun. If the newer Run/NodeRun/Attempt + durable Graph projection ADR family does not provide one complete successor, create a convergence ADR that does, then transition ADR-062 to `Superseded`. Retain GraphRun only as non-authoritative domain/test traversal if still useful.  
 **Current state:** The central architectural decision ADR-062 originally made, GraphRun/NodeRun as execution authority behind `run_graph`, is no longer live. The old entry point was deliberately removed because it produced physical work without canonical Run/NodeRun/Attempt evidence or restart recovery. Leaving this record Accepted without an explicit successor is misleading for agents and directly conflicts with M1's single-execution-authority goal.  
 **ADR:** [ADR-062: Graph Execution Protocol](../../../adr/ADR-062-graph-execution-protocol.md)
+
+## ADR-062: Graph Execution Protocol
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Create/identify a successor ADR that formally separates Graph-domain traversal/NodeStrategy semantics from canonical execution authority, then supersede ADR-062. The successor must state that physical execution and recovery are owned exclusively by canonical Run/NodeRun/Attempt plus `maistro.graph.durable_runs`; `GraphRun`/legacy `NodeRun` may remain only as non-authoritative domain/test-harness structures where still useful.  
+**Current state:** ADR-062's own amendment records that its `run_graph` execution path was retired by #1154 because it emitted no canonical Run/NodeRun/Attempt evidence and was unrecoverable after restart. Canonical durable Graph execution now shares no code with this design. The remaining strategy/traversal concepts may still be useful, but leaving the ADR simply Accepted risks teaching agents that `GraphRun` is an execution owner, directly conflicting with M1 convergence.  
+**ADR:** [ADR-062: Graph Execution Protocol](../../../adr/ADR-062-graph-execution-protocol.md)
