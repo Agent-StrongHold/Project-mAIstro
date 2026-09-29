@@ -53,9 +53,9 @@ def store_key_env_line(path: Path, value: str, *, force: bool) -> None:
             replaced = True
             break
     if not replaced:
+        while entries and not entries[-1]:
+            entries.pop()
         entries.append(f"{KEY_ENV_NAME}={value}")
-    while entries and not entries[-1]:
-        entries.pop()
     payload = "\n".join(entries) + "\n"
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

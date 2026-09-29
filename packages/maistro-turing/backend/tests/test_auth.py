@@ -17,6 +17,21 @@ def test_readiness_reports_the_configured_service_identity(client):
     assert body["service_identity"] == "turing-internal"
 
 
+def test_readiness_reports_unavailable_without_a_governed_identity(client, monkeypatch):
+    from maistro.auth import ServiceKeyRegistry
+
+    from ..main import app
+
+    monkeypatch.setattr(app.state, "turing_service_registry", ServiceKeyRegistry())
+    r = client.get("/health/ready")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "unavailable"
+    assert "not configured" in body["reason"]
+    # The reason names configuration state, never key material.
+    assert "test-turing-service-key" not in body["reason"]
+
+
 def test_retired_default_credential_cannot_authenticate(client):
     # The key this deployment used to ship as a built-in fallback must be
     # rejected on the wire when it is not the explicitly configured key.

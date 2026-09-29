@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -55,3 +56,36 @@ def test_store_preserves_unrelated_env_lines(tmp_path: Path) -> None:
     assert "TURING_SELF_ID=astro" in content
     assert "OTHER=keep" in content
     assert f"{KEY_ENV_NAME}=sk-svc-turing-new" in content
+
+
+def test_store_drops_trailing_blank_lines(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.turing"
+    env_file.write_text("OTHER=keep\n\n\n", encoding="utf-8")
+    store_key_env_line(env_file, "sk-svc-turing-new", force=False)
+    lines = env_file.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "OTHER=keep"
+    assert lines[-1].startswith(f"{KEY_ENV_NAME}=")
+    assert "" not in lines[1:]
+
+
+def test_unwritable_env_file_location_exits_2(tmp_path: Path) -> None:
+    missing_dir = tmp_path / "nope"
+    with pytest.raises(SystemExit) as excinfo:
+        store_key_env_line(missing_dir / ".env.turing", "sk-svc-turing-new", force=False)
+    assert excinfo.value.code == 2
+
+
+def test_plain_invocation_prints_the_key_and_guidance(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main([]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip().startswith("sk-svc-turing-")
+    assert KEY_ENV_NAME in captured.err
+
+
+def test_module_main_guard_invokes_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    import runpy
+
+    monkeypatch.setattr(sys, "argv", ["backend.provision"])
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_module("backend.provision", run_name="__main__")
+    assert excinfo.value.code == 0

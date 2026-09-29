@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-turing/backend/tests: +16
+  packages/maistro-turing/backend/tests: +21
 ---
 
 # Issue #858 — Remove Turing's default service credential; require explicit governed service identity
@@ -24,7 +24,7 @@ change closes them on the production activation path
   optionally stores it in a 0600 dotenv file; existing entries rotate only
   with `--force`.
 
-Tests (`+16` node IDs):
+Tests (`+21` node IDs):
 
 - `test_service_identity.py` (9): source ratchet proving the retired
   `sk-svc-turing-dev-internal` literal exists nowhere in the activation
@@ -33,8 +33,11 @@ Tests (`+16` node IDs):
   absent key refusal; secret-file rotation + revocation; env-over-file
   precedence; missing/empty secret-file refusal; `service_identity_status`
   unconfigured/drifted cases.
-- `test_provision.py` (5): key uniqueness/prefix; never a known shared value;
+- `test_provision.py` (10): key uniqueness/prefix; never a known shared value;
   opt-in 0600 env-file storage with printed key == stored key; explicit
-  `--force` rotation; unrelated env lines preserved.
-- `test_auth.py` (+2): `/health/ready` reports the configured identity; the
-  retired default credential is rejected over the wire (header and Bearer).
+  `--force` rotation; unrelated env lines and trailing-blank handling; an
+  unwritable env-file location exits 2; the plain print path; the `__main__`
+  guard.
+- `test_auth.py` (+3): `/health/ready` reports the configured identity and
+  503 `unavailable` for a degenerate registry; the retired default credential
+  is rejected over the wire (header and Bearer).
