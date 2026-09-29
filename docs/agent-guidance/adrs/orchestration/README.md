@@ -91,3 +91,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Rewrite before acceptance around the current durable event/trigger architecture: durable event log, declarative trigger matching, occurrence claim via canonical InvocationStore, and resulting canonical Run/Invocation admission rather than Recipe/Task execution. Preserve the September 2026 leased/fenced ConsumerCursor semantics, monotonic advance, settle-before-persist, and gap handling. Reconcile this trigger/event stream with ADR-037's separate domain-event taxonomy so agents do not conflate the two buses.  
 **Current state:** The proposal contains newer, concrete durability work that has landed, especially fenced consumer cursors and idempotent occurrence claims, but its original execution target still says triggers fire recipes and scheduled tasks inherit ADR-046, which is superseded. Because ADR-086 remains Proposed, its body should be updated to the architecture that now exists before acceptance.  
 **ADR:** [ADR-086: Events, Triggers, and the Reactor](../../../adr/ADR-086-events-triggers-reactor.md)
+
+## ADR-089: Intent Classifier — thresholded escalation and multi-intent routing
+
+**Status:** Accepted  
+**Last updated:** 2026-09-28  
+**Next steps:** Audit whether IntentClassifier remains a canonical reachable pre-admission/routing component. If retained, remap its outputs to current GraphTemplate/NodeTemplate selection, Provider/model routing, and canonical child-Run decomposition for multi-intent requests; remove ADR-010 lane/Task-era assumptions and only source thresholds from ADR-078 once ConfigStore is implemented. If the current harness/planner architecture makes a separate intent classifier redundant, create a successor/supersession decision rather than maintaining another routing authority.  
+**Current state:** The cheap deterministic → model-on-ambiguity pattern is sensible, but the ADR's downstream consumers and multi-intent execution model predate current canonical execution. This audit did not establish production reachability, so the decision remains Accepted pending an authority/reachability check.  
+**ADR:** [ADR-089: Intent Classifier — thresholded escalation and multi-intent routing](../../../adr/ADR-089-intent-classifier.md)
