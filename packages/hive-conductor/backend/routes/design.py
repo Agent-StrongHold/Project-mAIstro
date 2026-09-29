@@ -6,6 +6,7 @@ GET /design/projects — list org projects
 GET /design/skills — list available skills
 GET /design/skills/{slug}/discovery — get skill discovery form
 GET /design/systems — list registered design systems + catalog state
+GET /design/packs — list domain packs (one uniform selector listing; #793)
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from services.design_service import (
     get_renderer_registry,
 )
 
+from maistro_design.packs import PackRegistry
 from maistro_design.systems.importer import ORIGIN_EXTERNAL
 from maistro_design.types import (
     DesignError,
@@ -258,6 +260,24 @@ async def list_design_skills() -> list[dict[str, Any]]:
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from None
+
+
+@router.get("/packs")
+async def list_design_packs() -> list[dict[str, Any]]:
+    """List domain packs (M7-A4 #793) — the Design Studio selector payload.
+
+    One listing route over the one pack registry, one uniform entry shape per
+    pack: a pack is a registry entry, never a product identity, so there is
+    deliberately no per-pack route and no pack-specific fields here.
+    Product/game/book are three bundles of the same loop; `execute_backends`
+    is where canvas shows up (a binding), never in `pack_id`.
+
+    Unlike the engine-backed routes above, this does not call
+    `_require_ready()`: packs are in-repo manifests read through
+    `maistro_design.packs.PackRegistry`, not engine state, so the selector
+    renders before (or without) a started DesignEngine.
+    """
+    return [summary.model_dump(mode="json") for summary in PackRegistry.builtin().summaries()]
 
 
 @router.get("/systems")
