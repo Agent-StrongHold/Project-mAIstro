@@ -833,6 +833,34 @@ async def test_evaluation_runs_as_canonical_graph_node_with_provenance() -> None
     assert graph.nodes[0].inputs["artifacts"][2]["locked"] is True
 
 
+async def test_foreign_project_snapshot_is_rejected_not_misfiled() -> None:
+    """A snapshot naming a different project must not be evaluated under this
+    Run's project: the NodeRun/Attempt provenance would file project X's
+    evaluation under project Y. The mismatch fails the node instead."""
+    import maistro_design.nodes  # noqa: F401 — registers design.* node kinds
+    from maistro.graph.durable_runs import (
+        InMemoryDurableRunStore,
+        RunStatus,
+        run_durable_graph,
+    )
+
+    foreign = _snapshot().model_copy(update={"project_id": "proj-other"})
+    store = InMemoryDurableRunStore()
+
+    record = await run_durable_graph(
+        _eval_graph(foreign), store=store, node_resolver=_resolver
+    )
+
+    assert record.run.status is RunStatus.FAILED
+    assert record.node_runs[0].status is RunStatus.FAILED
+    attempt = record.attempts[0]
+    error_text = str(attempt.error or "") + str(attempt.result or "")
+    assert "proj-other" in error_text
+    assert "proj-aurora" in error_text
+    # No evaluation output was produced, so nothing misfiled under proj-aurora.
+    assert attempt.result is None or not (attempt.result.get("output") or {})
+
+
 async def test_retry_after_refinement_preserves_failed_evaluation_record() -> None:
     import maistro_design.nodes  # noqa: F401 — registers design.* node kinds
     from maistro.graph.durable_runs import (

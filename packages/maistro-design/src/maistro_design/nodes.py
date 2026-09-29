@@ -145,6 +145,16 @@ class ConsistencyEvalNode(BaseNode[CreativeProjectSnapshot, ConsistencyEvalOut])
         inputs: CreativeProjectSnapshot,
         ctx: NodeContext,
     ) -> ConsistencyEvalOut:
+        # Canonical provenance guard: the NodeRun/Attempt records live under
+        # the Run's project, so a snapshot naming a different project would
+        # make the persisted evaluation contradictory (evaluated project X,
+        # filed under project Y). Reject instead of silently mis-filing.
+        if ctx.project_id is not None and inputs.project_id != ctx.project_id:
+            msg = (
+                f"snapshot project_id {inputs.project_id!r} does not match "
+                f"the Run's canonical project_id {ctx.project_id!r}"
+            )
+            raise ValueError(msg)
         evaluation = evaluate_project_snapshot(inputs)
         return ConsistencyEvalOut(
             passed=evaluation.passed,
