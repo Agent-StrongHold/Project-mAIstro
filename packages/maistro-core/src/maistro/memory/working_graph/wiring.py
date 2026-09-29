@@ -156,6 +156,15 @@ class WorkspaceRunStoreProvenanceSource:
     ``RunStore.list_by_status``'s own ``workspace_id`` axis — the same axis
     admission and the scoped product reads route on, so the projection can
     never widen what the durable store would answer.
+
+    M1 product-local projection: Run
+    M1 product-local projection: Workspace
+
+    This is not the canonical Run or Workspace model: it projects one Run's
+    admission provenance into the working-memory domain's ``RunProvenanceRecord``
+    for the Workspace the Run already belongs to, and holds no durable truth of
+    either — every canonical Run and Workspace fact stays in the Run store and
+    the workspace scope stores.
     """
 
     def __init__(

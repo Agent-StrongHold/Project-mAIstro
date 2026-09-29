@@ -174,16 +174,7 @@ class WorkspaceWorkingMemory:
             await self.ensure_hydrated()
             matched = await self._backend.search(query, limit=max(limit, 0))
             selected: dict[str, WorkingGraphNode] = {node.node_id: node for node in matched}
-            frontier = list(matched)
-            for _ in range(max(hops, 0)):
-                nxt: list[WorkingGraphNode] = []
-                for node in frontier:
-                    for edge in await self._backend.edges_from(node.node_id):
-                        neighbour = await self._backend.node(edge.dst_node_id)
-                        if neighbour is not None and neighbour.node_id not in selected:
-                            selected[neighbour.node_id] = neighbour
-                            nxt.append(neighbour)
-                frontier = nxt
+            await self._expand_neighbours(selected, matched, hops)
             edges: list[WorkingGraphEdge] = []
             if selected:
                 edges = await self._backend.edges_among(set(selected))
@@ -204,6 +195,26 @@ class WorkspaceWorkingMemory:
             self._last_error = f"{type(exc).__name__}: {exc}"
             logger.warning("Working graph read failed for workspace %s: %s", self.workspace_id, exc)
             return self._degraded_context(query, self._last_error)
+
+    async def _expand_neighbours(
+        self,
+        selected: dict[str, WorkingGraphNode],
+        frontier: Sequence[WorkingGraphNode],
+        hops: int,
+    ) -> None:
+        """Pull each neighbour of the matched set into ``selected``, ``hops``
+        rounds deep. One backend read per edge, bounded by the hop cap the
+        caller chose; the traversal cannot leave this Workspace's graph because
+        the backend itself is per-Workspace (#776)."""
+        for _ in range(max(hops, 0)):
+            nxt: list[WorkingGraphNode] = []
+            for node in frontier:
+                for edge in await self._backend.edges_from(node.node_id):
+                    neighbour = await self._backend.node(edge.dst_node_id)
+                    if neighbour is not None and neighbour.node_id not in selected:
+                        selected[neighbour.node_id] = neighbour
+                        nxt.append(neighbour)
+            frontier = nxt
 
     def _degraded_context(self, query: str, reason: str) -> GraphContext:
         return GraphContext(
