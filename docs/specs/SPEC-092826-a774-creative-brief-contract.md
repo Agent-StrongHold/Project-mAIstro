@@ -33,6 +33,9 @@ tests:
   - packages/maistro-design/tests/test_creative_brief.py
   - packages/maistro-design/tests/test_creative_brief_store.py
   - packages/maistro-design/tests/test_creative_brief_pg.py
+layer: Ability
+owners:
+  - '@BlakeMatthews-dev'
 ---
 
 # SPEC-092826-a774: CreativeBrief is a versioned Design Studio projection of one canonical Goal revision

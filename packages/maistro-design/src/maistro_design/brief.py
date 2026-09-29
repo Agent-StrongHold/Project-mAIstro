@@ -35,7 +35,7 @@ Contracts this module owns:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -593,6 +593,53 @@ class CreativeBrief(BaseModel):
             overrides=overrides,
             derived_by=derived_by,
         )
+
+
+if TYPE_CHECKING:
+
+    def _vulture_creative_brief_contract_usage(
+        evidence: EvidenceReference,
+        fact: RequiredFact,
+        reference: BriefReference,
+        request: ArtifactRequest,
+        override: ProjectionOverride,
+        projection: ArtifactProjection,
+        brief: CreativeBrief,
+    ) -> None:
+        """Keep reflection-owned CreativeBrief contract surface visible to Vulture.
+
+        Pydantic invokes the ``_validate*`` model validators at runtime, and the
+        declarative fields below are serialization/persistence surface read
+        reflectively (``model_dump`` in :meth:`CreativeBrief.new_version`, the
+        brief store round-trip, and the #774 tests).
+        ``ArtifactProjection.shared_context`` is the two-branch equivalence
+        seam those tests assert on. None of this is dead code; the narrow
+        ``packages/*/src`` production-only Vulture scan just cannot see the
+        reflective consumers. Follows the repo's ``_vulture_*_usage``
+        TYPE_CHECKING precedent (e1f16ddae).
+
+        Vulture matches by bare name, not per-symbol: referencing ``_validate``
+        here also marks identically-named in-scope methods (e.g.
+        ``maistro.core`` ``scheduling/model.py::_validate``) as used, which is
+        why that reviewed ledger identity was pruned alongside this block.
+        """
+        _ = evidence._validate
+        _ = fact._validate
+        _ = reference._validate
+        _ = request._validate
+        _ = override._validate
+        _ = projection._validate
+        _ = projection.projection_id
+        _ = projection.artifact_request
+        _ = projection.derived_at
+        _ = projection.shared_context
+        _ = brief._validate_contract
+        _ = brief.beneficiaries
+        _ = brief.success_interpretation
+        _ = brief.tone_constraints
+        _ = brief.supervision_constraints
+
+    _ = _vulture_creative_brief_contract_usage
 
 
 def _validate_reference_kind(

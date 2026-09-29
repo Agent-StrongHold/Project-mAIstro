@@ -35,3 +35,37 @@ the CreativeBrief contract (#774) actually lives in. No other suite moved.
   `new_version` → `latest`/`list_versions`, the unique-version race, and the
   cross-Workspace refusal against real PostgreSQL under the migration chain.
   Skips without `MAISTRO_TEST_DATABASE_URL`, like the rest of the PG legs.
+
+## CI-repair round (this head)
+
+No tests added, removed, or changed in this round — the `inventory-delta`
+above is unchanged. The repair addressed the deterministic gate failures on
+this head only:
+
+- `SPEC-092826` front-matter gained the required `layer: Ability` and
+  `owners:` fields (matching the sibling Design Studio specs). `uv run python
+  tools/lint_lifecycle.py` and `uv run python -m maistro_registry.cli lint .
+  --strict` both exit 0 (414 files clean).
+- The 15 vulture identities in `brief.py` are live contract surface (pydantic
+  model validators, declarative fields read reflectively, and the
+  `shared_context()` two-branch seam the tests assert on), so per the repo's
+  `_vulture_*_usage` TYPE_CHECKING precedent (e1f16ddae) they are referenced
+  by a documented non-executing block instead of being banked as reviewed
+  debt. Two `core-public-api-surface` ledger entries were pruned because their
+  findings no longer exist: `workspaces/model.py::_require_non_blank` (already
+  referenced elsewhere in-scope before this round) and
+  `scheduling/model.py::_validate` (vulture matches by bare name, so the
+  block's `_validate` references mark it used; the rationale is recorded in
+  the block's docstring). `check-vulture-baseline.py` exits 0: 1402 reviewed
+  identities → 1400 findings, 0 unclassified.
+- `brief.py`'s `maistro.interop` import makes `maistro.interop` and
+  `maistro.interop.contract` runtime-reachable, so both were pruned from the
+  reachability baseline and the obsolete `interop-contract` LIBRARY
+  disposition was removed. `check-reachability-provenance.py`,
+  `check-reachability-dispositions-provenance.py`, and the full
+  `check-ratchet-provenance.py` inventory all exit 0.
+- The PostgreSQL leg was re-proven on a live server: `alembic upgrade head`
+  applies the chain through 047 ("Durable CreativeBrief versions"),
+  `tests/migrations/test_migration_chain.py` 13/13 pass, and
+  `test_creative_brief_pg.py::test_brief_round_trips_through_postgres` passes
+  against the migrated database.
