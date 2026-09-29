@@ -210,3 +210,61 @@ blocked on its unlanded canonical dependencies (#458 Goal store, #804/#805/#806
 reconciliation, #774, #775, #776) and the issue stop condition still forbids a
 Design-Studio-private substitute. No closure keywords in branch commits or the
 PR body (`Refs #777` only). PR #1660 remains a draft claim-stake.
+
+## Re-verification at lane head b7dc3b6ac (final record after evidence rejection)
+
+The prior round's evidence was rejected because the verification head moved
+`9dba0e6d2b` → `e2a827b5fa` (a docs-only commit adding the previous addendum,
+author BlakeMatthews-dev). This round re-validates at the merged lane head.
+
+**Develop sync (per lane brief):** origin/develop advanced to `6f59c6d1b`
+(the lane's declared develop base) with 5 commits, none touching any #777
+dependency: `6f59c6d1b` (#807 installer function repair), `9fb68e47c` (#850
+scheduling claim instants), `a3f6b3c80`/`5a527fdcf` (L736/L1085 lane rebuilds),
+`69194afb1` (#935 research doc). Merged into `auto-777` with zero conflicts
+(only file overlap with our side was none; merge commit `b7dc3b6ac` adds no
+code on our side — `git diff HEAD^1 HEAD` touches only this notes file).
+
+**Dependency audit re-confirmed at `b7dc3b6ac` by direct inspection:**
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-6` — "owns
+  universal lifecycle bookkeeping only"; not #804 Goal reconciliation.
+- `packages/maistro-core/src/maistro/security/sentinel/permission_source.py:77-79`
+  — #804 governed tool-use "plugs in as another ``PermissionSource``" (future).
+- No `class GoalRevision` / `class CreativeBrief` / `goal_store` anywhere under
+  `packages/*/src` (grep over `*.py` returns nothing) — #458/#774 absent.
+- No "ladybug" match under `packages/*/src` (#776 absent).
+- `packages/hive-conductor/backend/routes/design.py` — zero `workspace_agent`
+  references; routes remain projects/skills/systems/discovery/render only.
+- `packages/hive-conductor/backend/services/brief_store.py:4-6` — interview is
+  "not a Goal or CreativeBrief record".
+- No mixed-control/`control_mode` state in production code; only "collaborative"
+  hits are brief-interview question option strings
+  (`packages/maistro-core/src/maistro/agents/brief_interview.py:613-623`) and a
+  Turing producer description (`producers/__init__.py:49`).
+- `tests/test_shared_interop_ontology.py:133-134` — `workspace_agent` and
+  `design_studio` still declared as M3 consumers (declarations only).
+- Browser E2E for Design Studio is still only
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts` —
+  no Goal lineage, delegated-work, or mixed-control spec exists.
+
+**Executed at `b7dc3b6ac` (all by this verifier):**
+- `uv run ruff check .` — All checks passed.
+- `uv run ruff format --check .` — 2619 files already formatted.
+- `uv run pytest packages/maistro-design/tests -x -q` — 351 passed.
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py -q` — 18 passed.
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_agent_materialization.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q` —
+  53 passed.
+- `uv run pytest packages/maistro-core/tests/scheduling -q` — 252 passed,
+  36 skipped (merge-touched code from #850 stays green).
+
+**Conclusion (unchanged across four heads):** all 13 #777 acceptance criteria
+are UNMET at `b7dc3b6ac`; the lane is BLOCKED on its unlanded canonical
+dependencies (#458 Goal store, #804/#805/#806 reconciliation, #774, #775,
+#776), and the issue stop condition forbids a Design-Studio-private Agent
+runtime/Goal owner/reconciliation loop substitute. The driver again produced
+no `check-*.log` files for this job, so all validation above was executed
+directly. No closure keywords used (`Refs #777` only).
