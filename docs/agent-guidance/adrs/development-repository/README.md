@@ -27,3 +27,11 @@ Each audited entry records current status, next steps, a concise current-state s
 **Next steps:** Keep the ownership/source-of-truth map synchronized with the consolidation monorepo and later architectural amendments, especially ADR-068's scope-vs-tenancy distinction. When package/product boundaries change, update this ADR and repository guidance together rather than creating competing ownership rules.  
 **Current state:** ADR-019 remains an active governance decision. The repository is now a consolidation monorepo containing maistro-core and sibling packages, while downstream/product-specific concerns remain outside the shared runtime boundary; current WAYS-OF-WORKING guidance explicitly cites ADR-019 as the canonical source split. The obsolete four-peer extension in ADR-030 has already been reversed in this record.  
 **ADR:** [ADR-019: Canonical Source Split — maistro-engine vs Stronghold](../../../adr/ADR-019-canonical-source-split.md)
+
+## ADR-030: Four-Repo Governance — Substrate + Three Templated Products
+
+**Status:** Superseded  
+**Last updated:** 2026-09-28  
+**Next steps:** None. Follow ADR-019 and current monorepo guidance; retain ADR-030 only as historical provenance.  
+**Current state:** The four-repository templated-peer model is explicitly superseded by ADR-019/monorepo consolidation. Agent Conductor, Canvas, Turing, and shared runtime concerns now live in the consolidation monorepo/package structure described by current repository guidance; this ADR must not be used as a live ownership or repository-topology rule.  
+**ADR:** [ADR-030: Four-Repo Governance — Substrate + Three Templated Products](../../../adr/ADR-030-four-repo-governance.md)
