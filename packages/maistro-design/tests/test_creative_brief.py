@@ -122,8 +122,17 @@ def test_package_surface_lazy_loads_the_brief_contract() -> None:
     """
     import maistro_design
 
+    # The lazy package surface stays the single owner of the brief contract:
+    # every declared public symbol resolves to the canonical object (so no
+    # second persistence contract can grow unnoticed), and unknown names fall
+    # through every declared branch to AttributeError at the bottom of
+    # ``__getattr__`` rather than silently resolving. All four arcs of the two
+    # new ``if`` branches — including the fall-through to the raise — are
+    # exercised here.
+    assert maistro_design.PgDesignProjectStore is PgDesignProjectStore
     assert maistro_design.PgCreativeBriefStore is PgCreativeBriefStore
     assert maistro_design.CreativeBriefStore is CreativeBriefStore
+    assert not hasattr(maistro_design, "this_is_not_a_design_surface_symbol")
 
 
 def test_brief_errors_are_domain_errors() -> None:

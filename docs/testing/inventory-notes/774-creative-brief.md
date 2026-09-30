@@ -38,9 +38,28 @@ the CreativeBrief contract (#774) actually lives in. No other suite moved.
 
 ## CI-repair round (this head)
 
-No tests added, removed, or changed in this round — the `inventory-delta`
-above is unchanged. The repair addressed the deterministic gate failures on
-this head only:
+The package-surface case in `test_creative_brief.py`
+(`test_package_surface_lazy_loads_the_brief_contract`) was extended — not
+added — to also cover the `__getattr__` fall-through to `AttributeError` and
+the `PgDesignProjectStore` lazy branch. Still +59 node IDs (suite-inventory
+holds at 410), so the `inventory-delta` above is unchanged. This completed the
+diff-coverage repair: the prior surface test covered the two new `if`-True
+arcs but left the fall-through branch arc uncovered (75% < 80%); the extension
+takes `__init__.py` changed-branch coverage to 100%. No new test functions
+were added. The remaining deterministic gate failures on this head were
+addressed as follows:
+
+- `brief_store.py` composes all SQL from module-level literal constants (`_INSERT_SQL`,
+  `_GET_SQL`, `_LATEST_SQL`, `_VERSIONS_SQL`) with bound parameters only — no
+  f-string/concatenated SQL reaches `text()`, clearing the three
+  `python.sqlalchemy.security.audit.avoid-sqlalchemy-text` SAST findings.
+  `uvx semgrep --config p/security-audit` on the store is 0 findings; `bandit`
+  Medium+ is 0.
+- `test_creative_brief.py` `test_package_surface_lazy_loads_the_brief_contract`
+  was extended to cover the `__getattr__` fall-through (`AttributeError`) and
+  the `PgDesignProjectStore` branch, completing the diff-coverage repair of
+  `maistro_design/__init__.py`: changed branch arcs go 75% → 100%
+  (`check-diff-coverage.py` reports OK on every touched maistro-design file).
 
 - `SPEC-092826` front-matter gained the required `layer: Ability` and
   `owners:` fields (matching the sibling Design Studio specs). `uv run python
