@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 #: Autonomy modes, verbatim from SPEC-092626-1831. The spec leaves the default
 #: open (Q2); this service picks ``human-review-required`` as the fail-safe
@@ -36,10 +36,18 @@ AUTONOMY_MODES: tuple[str, ...] = (
 )
 DEFAULT_AUTONOMY_MODE: AutonomyMode = "human-review-required"
 
-#: Board columns. ``archived`` is a flag, not a fifth column, so archive is
-#: reversible without a status round-trip.
-BacklogStatus = Literal["todo", "in_progress", "blocked", "done"]
+#: Board columns, as runtime-validated data. Deliberately NOT a typed
+#: Literal/Enum work-state ladder (#101 convention): the documented legend
+#: stays the item's status vocabulary and code carries it as opaque,
+#: boundary-validated strings, so a planning surface cannot fork a second
+#: execution lifecycle (SPEC-092626-1831 — an item references Goal/Run
+#: state, never copies it; the execution-lifecycles ledger counts this as
+#: zero new vocabularies). Membership is fail-closed at the boundary: the
+#: validator below and the same check in services.backlog refuse unknown
+#: values, which is the enforcement the Literal provided without the
+#: second vocabulary.
 BACKLOG_STATUSES: tuple[str, ...] = ("todo", "in_progress", "blocked", "done")
+DEFAULT_BACKLOG_STATUS = "todo"
 
 RiskLevel = Literal["low", "medium", "high"]
 RISK_LEVELS: tuple[str, ...] = ("low", "medium", "high")
@@ -65,7 +73,7 @@ class BacklogItem(BaseModel):
     id: str
     title: str = Field(min_length=1, max_length=300)
     description: str = ""
-    status: BacklogStatus = "todo"
+    status: str = DEFAULT_BACKLOG_STATUS
 
     #: Explicit human priority: stored as given, never rewritten by the system
     #: (SPEC-092626-1831). 1 is highest, 5 is lowest.
@@ -110,3 +118,13 @@ class BacklogItem(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("status")
+    @classmethod
+    def _status_is_a_legend_value(cls, value: str) -> str:
+        """Fail closed on a status the documented legend does not define."""
+        if value not in BACKLOG_STATUSES:
+            raise ValueError(
+                f"unknown backlog status {value!r}; expected one of: " + ", ".join(BACKLOG_STATUSES)
+            )
+        return value

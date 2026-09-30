@@ -235,17 +235,25 @@ async def get_detail(actor: str, item_id: str) -> dict[str, Any]:
             "archived": other.archived,
         }
 
-    dependencies = [
-        summary(dep) for dep in (_get(dep_id) for dep_id in item.dependencies) if dep is not None
-    ]
-    dependents = [
-        summary(other) for other in stores.backlog_items.values() if item.id in other.dependencies
-    ]
-    children = [
-        summary(other)
+    async def visible_summaries(candidates):
+        # Related items leak through the same visibility rule as the main
+        # item: a private personal item or another workspace's item must
+        # not expose even its id/title/status to this caller.
+        return [
+            summary(other)
+            for other in candidates
+            if other is not None and await _resolve_role(actor, other) is not None
+        ]
+
+    dependencies = await visible_summaries(_get(dep_id) for dep_id in item.dependencies)
+    dependents = await visible_summaries(
+        other for other in stores.backlog_items.values() if item.id in other.dependencies
+    )
+    children = await visible_summaries(
+        other
         for other in stores.backlog_items.values()
         if other.parent_id == item.id and not other.archived
-    ]
+    )
     return {
         "item": item.model_dump(mode="json"),
         "dependencies": dependencies,
@@ -314,12 +322,19 @@ async def update_item(
     await _require_editor(actor, item)
     if expected_version != item.version:
         raise VersionConflictError(item)
+    was_blocked = item.status == "blocked"
     applied = _apply_field_changes(item, changes)
     if item.archived and "archived" not in applied:
         raise BacklogValidationError("restore the item before editing it")
-    if "status" in applied and item.status == "blocked" and "blocked_reason" not in applied:
+    if item.status == "blocked" and not was_blocked:
+        # Entering blocked through a plain edit must carry evidence, the same
+        # rule the explicit block endpoint enforces; the UI echoes ``status``
+        # on every save, so a no-evidence park would otherwise slip through.
+        raise BacklogValidationError("a blocked_reason is required when marking an item blocked")
+    if was_blocked and "status" in applied and item.status != "blocked":
         # Leaving the blocked column through a plain edit clears the stale
         # park evidence; an explicit unblock sets its own record either way.
+        # Staying blocked keeps the reason unless the save supplies a new one.
         item.blocked_reason = None
     item.version += 1
     item.updated_at = _now()
@@ -346,6 +361,12 @@ async def reorder_item(
     if status is not None:
         if status not in BACKLOG_STATUSES:
             raise BacklogValidationError(f"unknown status: {status}")
+        if status == "blocked" and item.status != "blocked":
+            # A drag cannot carry evidence; blocking must go through the
+            # explicit block endpoint, which requires a reason.
+            raise BacklogValidationError(
+                "a blocked_reason is required when marking an item blocked"
+            )
         item.status = status
         if status != "blocked":
             item.blocked_reason = None

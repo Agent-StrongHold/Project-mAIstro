@@ -316,6 +316,65 @@ def test_block_requires_evidence_and_unblock_clears_it(admin_client) -> None:
     assert r.json()["blocked_reason"] is None
 
 
+def test_parking_rules_hold_on_the_plain_edit_and_drag_paths(admin_client) -> None:
+    """No side door into blocked without evidence, and no stale evidence left."""
+    item = _create_item(admin_client)
+    # A drag carries no evidence channel: reordering into blocked is refused
+    # outright while the item is not parked, blocking stays with the explicit
+    # endpoint.
+    r = admin_client.post(
+        f"/v1/backlog/{item['id']}/reorder",
+        json={"expected_version": 1, "rank": 5.0, "status": "blocked"},
+    )
+    assert r.status_code == 422
+    # A plain edit that flips status to blocked must carry evidence — the UI
+    # echoes ``status`` on every save, so a no-reason park would slip through
+    # the PATCH path the explicit block endpoint already refuses.
+    r = admin_client.patch(
+        f"/v1/backlog/{item['id']}", json={"expected_version": 1, "changes": {"status": "blocked"}}
+    )
+    assert r.status_code == 422
+    r = admin_client.patch(
+        f"/v1/backlog/{item['id']}",
+        json={"expected_version": 1, "changes": {"status": "blocked", "blocked_reason": "ci red"}},
+    )
+    assert r.status_code == 200
+    assert r.json()["blocked_reason"] == "ci red"
+    # Leaving blocked through a plain edit clears the stale park evidence.
+    r = admin_client.patch(
+        f"/v1/backlog/{item['id']}", json={"expected_version": 2, "changes": {"status": "todo"}}
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "todo"
+    assert r.json()["blocked_reason"] is None
+
+
+def test_detail_hides_related_items_the_caller_cannot_see(admin_client, authed_client) -> None:
+    """Dependencies/children obey the same visibility rule as the item itself."""
+    ws = _create_workspace(admin_client)
+    _add_member(admin_client, ws, "user", "viewer")
+    parent = _create_item(admin_client, workspace_id=ws, title="parent")
+    visible_child = _create_item(admin_client, workspace_id=ws, title="visible child")
+    secret = _create_item(admin_client, title="admin private dependency")
+    r = admin_client.patch(
+        f"/v1/backlog/{parent['id']}",
+        json={
+            "expected_version": 1,
+            "changes": {"dependencies": [secret["id"], visible_child["id"]]},
+        },
+    )
+    assert r.status_code == 200
+    admin_detail = admin_client.get(f"/v1/backlog/{parent['id']}").json()
+    assert [dep["id"] for dep in admin_detail["dependencies"]] == [
+        secret["id"],
+        visible_child["id"],
+    ]
+    # The viewer sees the workspace child but the admin's private dependency
+    # must not leak even its id/title/status through the detail payload.
+    viewer_detail = authed_client.get(f"/v1/backlog/{parent['id']}").json()
+    assert [dep["id"] for dep in viewer_detail["dependencies"]] == [visible_child["id"]]
+
+
 def test_board_order_is_priority_then_rank(admin_client) -> None:
     _create_item(admin_client, title="low")
     top = _create_item(admin_client, title="top")
