@@ -281,7 +281,7 @@ class DesignExportProvider:
             return ExportResult(
                 format=fmt, media_type=IMAGE_MEDIA_TYPES[fmt], content=content, **base
             )
-        page = _page_from(canvas, layers)
+        page = _page_from(canvas, layers, composite.image_bytes)
         if fmt == HTML_FORMAT:
             return ExportResult(
                 format=HTML_FORMAT,
@@ -313,7 +313,7 @@ class DesignExportProvider:
         return encoded
 
 
-def _page_from(canvas: CanvasRecord, layers: list[LayerRecord]) -> ExportPage:
+def _page_from(canvas: CanvasRecord, layers: list[LayerRecord], composite_png: bytes) -> ExportPage:
     """Map canvas records onto the fixed-page export model.
 
     Image layers carry the composite PNG (the exact composited pixels of the
@@ -327,8 +327,7 @@ def _page_from(canvas: CanvasRecord, layers: list[LayerRecord]) -> ExportPage:
             y=lyr.y,
             rotation=lyr.rotation,
             opacity=lyr.opacity,
-            image_png=None,  # substituted below with the pinned composite bytes
-            image_src=None,
+            image_png=composite_png,  # pinned composite pixels, HTML data-uri + PPTX picture
         )
         for lyr in layers
         if lyr.visible and lyr.image_path

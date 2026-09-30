@@ -19,6 +19,7 @@ Boundary -> Invocation contract, not a shadow of it:
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import UTC, datetime
 
 import pytest
@@ -246,6 +247,27 @@ class TestDesignExportProvider:
         assert result.media_type.startswith("text/html")
         assert b"Hello" in result.content
         assert result.content.startswith(b"<!doctype html>")
+
+    async def test_html_export_embeds_image_layers_from_composite(self) -> None:
+        """Visible image layers must render as <img> carrying the pinned
+        composite PNG, not be silently dropped."""
+        image_layer = LayerRecord(
+            id="layer-img",
+            canvas_id="canvas-1",
+            name="hero",
+            layer_type="character",
+            image_path="images/hero.png",
+            z_index=2,
+        )
+        provider = DesignExportProvider(StubCompositor())
+        result = await provider.export(
+            _request("html"),
+            _canvas(),
+            [image_layer, _layers()[0]],
+            _composite(_PNG),
+        )
+        assert b"<img" in result.content
+        assert base64.b64encode(_PNG) in result.content
 
     async def test_pptx_is_honest_about_missing_dependency(self) -> None:
         provider = DesignExportProvider(StubCompositor())

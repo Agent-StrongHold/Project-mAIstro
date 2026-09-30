@@ -569,3 +569,25 @@ async def list_assets(request: Request, auth: RequireAuth, kind: str | None = No
             else:
                 assets.append(dict(definition))
     return _json(request, assets)
+
+
+# The handlers are this module's public surface: FastAPI registers them from
+# the decorators, which static import scanning cannot see. Declaring them here
+# is the same statement a2a.py's __all__ makes (see the comment there), and is
+# what keeps this module's route handlers out of the fastapi-route-handler
+# Vulture ledger: a new handler must join this list (the drift is caught by
+# test_canvas_all_covers_every_route_handler), not silently re-enter the
+# dead-code ratchet as unbanked debt.
+__all__ = [
+    "create_design",
+    "delete_design",
+    "export_design",
+    "get_design",
+    "get_design_export",
+    "list_assets",
+    "list_design_exports",
+    "list_designs",
+    "publish_design",
+    "router",
+    "update_design",
+]

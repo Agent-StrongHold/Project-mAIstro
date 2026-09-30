@@ -526,3 +526,48 @@ class TestEvents:
         client.get("/v2/canvas/designs")
         client.get(f"/v2/canvas/designs/{created['id']}")
         assert events == []
+
+
+# ── Public surface declaration ────────────────────────────────────────
+
+
+class TestPublicSurfaceDeclaration:
+    """Every @router handler in canvas.py must be declared in ``__all__``.
+
+    FastAPI registers handlers from the decorators, which static import
+    scanning cannot see. The module's ``__all__`` (the a2a.py convention) is
+    what declares the handlers as the module's public surface and keeps them
+    out of the fastapi-route-handler Vulture ledger; a new handler that skips
+    the declaration would resurface as unbanked dead-code debt and fail the
+    exact-debt-ledger CI gate. This catches that drift here first, with an
+    actionable message.
+    """
+
+    def test_all_covers_every_route_handler(self) -> None:
+        import ast
+        from pathlib import Path
+
+        import maistro_server.api.canvas as canvas_module
+
+        source = Path(str(canvas_module.__file__)).read_text(encoding="utf-8")
+        handlers = {
+            node.name
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(
+                isinstance(dec, ast.Call)
+                and isinstance(dec.func, ast.Attribute)
+                and isinstance(dec.func.value, ast.Name)
+                and dec.func.value.id == "router"
+                for dec in node.decorator_list
+            )
+        }
+        declared = set(canvas_module.__all__)
+        missing = sorted(handlers - declared)
+        assert not missing, (
+            f"route handlers missing from canvas.py __all__: {missing}. "
+            "FastAPI registers handlers dynamically, so every @router handler "
+            "must be declared in the module's __all__ (see a2a.py and the "
+            "comment above canvas.py's __all__) rather than re-entering the "
+            "fastapi-route-handler Vulture ledger as unbanked debt."
+        )
