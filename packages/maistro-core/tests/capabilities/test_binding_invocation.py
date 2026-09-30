@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -14,6 +16,7 @@ from maistro.capabilities.binding_store import (
     BindingScopeDenied,
     InMemoryBindingStore,
     PgBindingStore,
+    RevocableBindingStore,
     SqliteBindingStore,
     _scope_checked,
 )
@@ -528,23 +531,71 @@ async def test_sqlite_binding_store_put_is_idempotent_but_immutable() -> None:
 
 class _FakePgBindingPool:
     """Records exactly the `INSERT ... ON CONFLICT DO NOTHING` / `SELECT`
-    shape `PgBindingStore` issues, without needing a live PostgreSQL server."""
+    shape `PgBindingStore` issues, without needing a live PostgreSQL server.
+
+    Routes on the table name because the store now reads two of them: a fake
+    that answered every `fetchval` from the bindings map reported each
+    binding as revoked, since its payload is truthy.
+    """
 
     def __init__(self) -> None:
         self._rows: dict[str, str] = {}
+        self._revoked: set[str] = set()
 
-    async def execute(self, _query: str, *args: Any) -> str:
+    async def execute(self, query: str, *args: Any) -> str:
         binding_id = str(args[0])
+        if "capability_binding_revocations" in query:
+            self._revoked.add(binding_id)
+            return "INSERT 0 1"
+        if query.lstrip().upper().startswith("DELETE"):
+            self._rows.pop(binding_id, None)
+            return "DELETE 1"
         payload_json = str(args[-1])
         if binding_id not in self._rows:
             self._rows[binding_id] = payload_json
         return "INSERT 0 1"
 
-    async def fetchval(self, _query: str, *args: Any) -> str | None:
-        return self._rows.get(str(args[0]))
+    async def fetchval(self, query: str, *args: Any) -> str | int | None:
+        binding_id = str(args[0])
+        if "capability_binding_revocations" in query:
+            return 1 if binding_id in self._revoked else None
+        return self._rows.get(binding_id)
+
+    def acquire(self) -> _FakePgAcquire:
+        return _FakePgAcquire(self)
+
+    def transaction(self) -> _FakePgTransaction:
+        # The fake collapses pool and connection into one object, so the
+        # acquired "connection" has to answer `transaction()` as asyncpg's
+        # real Connection does.
+        return _FakePgTransaction()
 
     def seed(self, binding: Binding) -> None:
         self._rows[binding.binding_id] = binding.model_dump_json()
+
+
+class _FakePgTransaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+
+class _FakePgAcquire:
+    """`revoke` writes both statements inside one acquired transaction."""
+
+    def __init__(self, pool: _FakePgBindingPool) -> None:
+        self._pool = pool
+
+    async def __aenter__(self) -> _FakePgBindingPool:
+        return self._pool
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+    def transaction(self) -> _FakePgTransaction:
+        return _FakePgTransaction()
 
 
 @pytest.mark.asyncio
@@ -614,3 +665,160 @@ async def test_pg_binding_store_resolve_delegates_to_shared_scope_check() -> Non
     )
 
     assert resolved.binding_id == "binding-1"
+
+
+# --- Durable revocation: the tombstone outlives the process (#1133, #846) ---
+
+
+@pytest.mark.asyncio
+async def test_sqlite_revocation_survives_reopening_the_database() -> None:
+    """The whole point of doing it durably.
+
+    `InMemoryBindingStore` could already revoke, but only "for this store's
+    lifetime": a restart re-granted every withdrawn capability. An operator
+    who cuts off a compromised Binding and then bounces the process has not
+    cut off anything.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "bindings.db"
+
+        async with aiosqlite.connect(db_path) as conn:
+            store = SqliteBindingStore(conn)
+            await store.ensure_schema()
+            await store.put(_binding())
+            await store.revoke("binding-1")
+
+        async with aiosqlite.connect(db_path) as conn:
+            reopened = SqliteBindingStore(conn)
+            await reopened.ensure_schema()
+
+            assert await reopened.get("binding-1") is None
+            with pytest.raises(BindingNotFound, match="has been revoked"):
+                await reopened.resolve(
+                    "binding-1",
+                    workspace_id="ws-1",
+                    project_id="project-1",
+                    node_id="node-1",
+                    capability="external_write",
+                )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_revoked_identity_cannot_be_registered_again() -> None:
+    """A tombstone, not a deletion.
+
+    Deleting the row alone would let an actor that still remembers the id
+    re-create it, which is the failure #846 exists to prevent -- so the
+    denial has to outlive the record it forbids.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        store = SqliteBindingStore(conn)
+        await store.ensure_schema()
+        await store.put(_binding())
+        await store.revoke("binding-1")
+
+        with pytest.raises(BindingNotFound, match="has been revoked"):
+            await store.put(_binding())
+
+
+@pytest.mark.asyncio
+async def test_sqlite_revoking_an_unknown_or_revoked_id_is_not_an_error() -> None:
+    """Revocation is a desired end state, not a transition.
+
+    An operator revoking twice, or revoking an id that was never registered,
+    wants that id forbidden. Raising would make the safe action look failed
+    and invite a retry loop around it.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        store = SqliteBindingStore(conn)
+        await store.ensure_schema()
+
+        await store.revoke("never-registered")
+        await store.revoke("never-registered")
+
+        with pytest.raises(BindingNotFound, match="has been revoked"):
+            await store.resolve(
+                "never-registered",
+                workspace_id="ws-1",
+                project_id="project-1",
+                node_id="node-1",
+                capability="external_write",
+            )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_revocation_denies_distinctly_from_an_unknown_identity() -> None:
+    """ "Forbidden" and "never existed" must not read alike.
+
+    Both raise BindingNotFound, but only one says why. An operator reading
+    "no registered definition" for a Binding they deliberately withdrew
+    cannot tell their revocation took effect.
+    """
+    async with aiosqlite.connect(":memory:") as conn:
+        store = SqliteBindingStore(conn)
+        await store.ensure_schema()
+        await store.put(_binding())
+        await store.revoke("binding-1")
+
+        with pytest.raises(BindingNotFound) as revoked:
+            await store.resolve(
+                "binding-1",
+                workspace_id="ws-1",
+                project_id="project-1",
+                node_id="node-1",
+                capability="external_write",
+            )
+        with pytest.raises(BindingNotFound) as unknown:
+            await store.resolve(
+                "binding-404",
+                workspace_id="ws-1",
+                project_id="project-1",
+                node_id="node-1",
+                capability="external_write",
+            )
+
+        assert "has been revoked" in str(revoked.value)
+        assert "has been revoked" not in str(unknown.value)
+
+
+def test_every_binding_store_satisfies_the_revocable_contract() -> None:
+    """The gap that blocked #1321.
+
+    `CapabilityEffectContext` requires a `RevocableBindingStore`, and until
+    now only the in-memory store could be one -- so wiring a durable effect
+    context was a type error, which is the protocol correctly refusing to
+    let a durable backend present a revoke surface it could not honour.
+    """
+    for store in (InMemoryBindingStore, SqliteBindingStore, PgBindingStore):
+        assert hasattr(store, "revoke"), store.__name__
+    assert "register" not in RevocableBindingStore.__protocol_attrs__, (
+        "register is a synchronous in-memory boot seam; requiring it here is "
+        "what made the contract unsatisfiable by any durable store"
+    )
+
+
+@pytest.mark.asyncio
+async def test_pg_revocation_forbids_the_identity_for_every_replica() -> None:
+    """One database, so a revocation issued anywhere is honoured everywhere.
+
+    The in-memory store's revocation is process-local, which on a replicated
+    deployment means a capability cut off on one worker stays live on the
+    others.
+    """
+    pool = _FakePgBindingPool()
+    store = PgBindingStore(pool)
+    await store.put(_binding())
+
+    await store.revoke("binding-1")
+
+    assert await store.get("binding-1") is None
+    with pytest.raises(BindingNotFound, match="has been revoked"):
+        await store.resolve(
+            "binding-1",
+            workspace_id="ws-1",
+            project_id="project-1",
+            node_id="node-1",
+            capability="external_write",
+        )
+    with pytest.raises(BindingNotFound, match="has been revoked"):
+        await store.put(_binding())
