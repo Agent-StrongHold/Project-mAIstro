@@ -33,11 +33,28 @@ self-progressing work.
 
 ### Canvas publish and export
 
-The Canvas publish endpoint returns `501` because print-on-demand integration
-lives outside this repository. PDF and SVG export also return `501`; PNG
-export requires a configured compositor and otherwise returns `501`.
+Updated by #94 (M3-B4): the `/v2/canvas` product boundary now implements
+publish/export as a governed capability (`design.export`) instead of a 501
+stub. With `app.state.canvas_exporter` wired, `POST /designs/{id}/publish` and
+`GET /designs/{id}/export/{format}` cross the Capability -> Provider ->
+Binding -> Invocation seam, record a governed Invocation, and append an
+immutable export version per accepted state (re-export after an edit yields a
+new version with its own provenance). Supported formats: `png`, `webp`, `jpg`
+(compositor), `html` (plugin-free fixed page), and `pptx` when python-pptx is
+installed (absent dependency is a truthful failure, not fake bytes). `pdf` and
+`svg` are deliberately unsupported and refused with a machine-readable 422 —
+they are out of scope, not "temporarily unavailable". Without a configured
+exporter the endpoints still return a truthful 501; the engine never falls
+back to an ungoverned direct compositor call. Outbound delivery to external
+destinations (print-on-demand, stores, media platforms) remains out of this
+repository; #773 coordinates those connectors, which must consume accepted
+versions through governed capabilities. The legacy `maistro_canvas` package
+routes (mounted at `/api/canvas`) keep their direct encode path as a
+declared-transitional compatibility surface per ADR-045 until the #95 cutover
+retires them.
 
-Tracking: implement publish and export integrations as a v1.1 capability.
+Tracking: close this entry fully when the supported paths pass product E2E
+under #773 (Design Studio cutover #95 wires the exporter in deployed stacks).
 
 ### Conductor degraded modes
 
@@ -155,10 +172,12 @@ Tracking: each needs a wiring design, not just a call site — see #346.
 The following text is intended to be copied verbatim into the release notes.
 
 > v1.0.0 ships with an in-memory task queue, so a restart loses queued and
-> active tasks. Canvas jobs require an external runner; Canvas publish and
-> some export formats are not implemented. The mounted Canvas data routes are
-> unconfigured in the default shipped service and return `503`. Design Studio
-> can discover resources and select artifact modes, but visual generation,
-> editing/preview, and publish/export are not available. Conductor can run in
-> degraded mode when optional services are unavailable, and API-wide HTTP
-> content negotiation from ADR-076 is deferred to v1.1.
+> active tasks. Canvas jobs require an external runner; Canvas publish/export
+> is governed at `/v2/canvas` (png/webp/jpg/html/pptx where configured; pdf/svg
+> are explicitly unsupported), while print-on-demand and external destinations
+> are not implemented. The mounted Canvas data routes are unconfigured in the
+> default shipped service and return `503`. Design Studio can discover
+> resources and select artifact modes, but visual generation and
+> editing/preview still need wired providers. Conductor can run in degraded
+> mode when optional services are unavailable, and API-wide HTTP content
+> negotiation from ADR-076 is deferred to v1.1.
