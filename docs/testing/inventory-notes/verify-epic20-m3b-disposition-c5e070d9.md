@@ -72,11 +72,13 @@ was executed first-party at the exact head. This note moves no test counts.
   - `maistro/scheduling/engine.py:124-213`: catchup horizon partitions
     occurrences; enumeration lower-bounded — bounded under real load.
   - Executed: `pytest packages/maistro-core/tests/scheduling/test_store.py
-    test_engine.py -k "due or cursor or concurrent or writer"` →
-    **28 passed, 14 skipped** (skips are the Postgres parametrizations; no PG
-    service was started); `pytest packages/hive-conductor/backend/tests/
-    test_schedule_canonical_definitions.py` → **36 passed** (canonical
-    definition bridge, drift reconciliation, cursor-keeping `put`).
+    packages/maistro-core/tests/scheduling/test_engine.py -k "due or cursor
+    or concurrent or writer"` → **32 passed, 14 skipped** (28 in `test_store.py`
+    plus 4 in `test_engine.py`; skips are the Postgres parametrizations; no PG
+    service was started); `pytest
+    packages/hive-conductor/backend/tests/test_schedule_canonical_definitions.py`
+    → **36 passed** (canonical definition bridge, drift reconciliation,
+    cursor-keeping `put`).
 
 - **#1180 (websocket task streaming off blocking I/O)** — behaviorally
   proven: `backend/tests/test_task_stream_event_loop.py` stands in a real
@@ -125,3 +127,54 @@ through #1203 is unimplemented, #1183's dropped-event explicitness is unmet,
 #91/#93/#94/#96/#97. Findings are concrete and file:line-addressable; repair
 should start with provider-scoped breakers (#1203) and the silent
 `QueueFull` suppression in `dag_run_store.py`.
+
+## CI-repair addendum (head `9d6eb434064c`, supply-chain round)
+
+The merge-queue evaluation at this head (docs-only delta over `c5e070d9`)
+failed three jobs, all supply-chain — no product code changed:
+
+- `security` + `Supply chain (pip-audit)`: `urllib3==2.7.0` CVE-2026-97687,
+  CVE-2026-97688, CVE-2026-97689 (fixed in 2.8.0).
+- `test`: the `npm audit --audit-level=high` step on
+  `packages/maistro-canvas/frontend` failed on `brace-expansion 5.0.9`
+  (GHSA-q2hr-2g5m-vwhr / GHSA-qhr7-859c-m2p7 / GHSA-6j4f-fj2g-mc7p, fixed in
+  5.0.12) and `ip-address 10.7.0` (GHSA-j6r3-76f7-8jcv /
+  GHSA-h3mg-xc3c-68pw, fixed in 10.7.2). Every pytest step in that job had
+  already passed (10870+ passed across sessions; the `Event loop is closed`
+  lines are aiosqlite worker-thread warnings, not failures).
+
+Fixes applied (lockfiles only; no `package.json`, no source change):
+
+- `uv.lock`: `urllib3 2.7.0 -> 2.8.0` via `uv lock --upgrade-package urllib3`.
+- `packages/maistro-canvas/frontend/package-lock.json`: `npm audit fix` →
+  `brace-expansion 5.0.12`, `ip-address 10.7.2`.
+- `packages/hive-conductor/frontend/package-lock.json`: same `npm audit fix`
+  → `brace-expansion 5.0.12` / `1.1.21` (that frontend's audit is not
+  currently a CI step; the same high-severity advisory was present, so it was
+  fixed while in scope rather than left latent).
+
+Gates re-executed first-party at `9d6eb434064c` after the bump:
+
+- `uv sync --locked --extra dev` → urllib3 2.8.0 installed; `uv pip freeze`
+  + `pip-audit --strict` + `uv run python scripts/pip_audit_gate.py` →
+  **exit 0** (`pip-audit OK (1 known, all triaged in ALLOWED)`; the two
+  remaining ecdsa advisories are the pre-triaged ALLOWED entries).
+- `npm ci && npm audit --audit-level=high` in both frontends → **found 0
+  vulnerabilities**, exit 0.
+- Canvas frontend `npm run test:ci` → **5 files / 79 tests passed**;
+  `npm run lint` → 0 errors (13 pre-existing warnings); `npm run build` →
+  success (pre-existing >500 kB chunk warning only).
+- `uv run ruff check .` → All checks passed; `ruff format --check .` →
+  2638 files already formatted.
+- `uv run pytest packages/maistro-core/tests -q` → **10835 passed,
+  735 skipped, 1 xfailed** (with urllib3 2.8.0).
+- Vulture per-identity ledger (CI-repair round check):
+  `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → **exit 0**, 1402
+  reviewed identities matched, `unclassified: 0`, `never_allowlist: 0` —
+  no ledger amendment required and none made.
+
+The scheduling command record above was corrected in this round: the
+`test_engine.py` path in the executed selection is now written in full, and
+the recorded count reflects the two-file run (**32 passed, 14 skipped**;
+store-only is 28).
