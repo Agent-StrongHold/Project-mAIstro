@@ -661,13 +661,14 @@ class CampaignSelector:
             parks.extend(await self._store.list_parks(campaign.campaign_id))
         return parks
 
-    async def _usage_for(self, campaigns: Sequence[CampaignDefinition]) -> BudgetUsage:
-        total = BudgetUsage()
-        for campaign in campaigns:
-            usage = await self._store.get_usage(campaign.campaign_id)
-            total = BudgetUsage(
-                cost_usd=total.cost_usd + usage.cost_usd,
-                minutes=total.minutes + usage.minutes,
-                completions=total.completions + usage.completions,
-            )
-        return total
+    async def _usage_for(self, campaigns: Sequence[CampaignDefinition]) -> dict[str, BudgetUsage]:
+        """Per-campaign usage counters, keyed by ``campaign_id``.
+
+        Counters stay isolated per campaign so each budget is checked against
+        only the consumption recorded on that campaign (see
+        ``_budget_reached_reasons``).
+        """
+        return {
+            campaign.campaign_id: await self._store.get_usage(campaign.campaign_id)
+            for campaign in campaigns
+        }

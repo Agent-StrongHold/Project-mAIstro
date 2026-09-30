@@ -163,15 +163,41 @@ async def test_constraints_narrow_tags_milestones_packages_and_scope() -> None:
 @pytest.mark.ac("SPEC-092626-1831/AC-1")
 async def test_protected_area_removes_item_from_automated_selection() -> None:
     store = InMemoryCampaignStore()
-    await _campaign(store, protected_areas=[AreaRef(kind="path", value="deploy/")])
+    campaign = await _campaign(store, protected_areas=[AreaRef(kind="path", value="deploy/")])
     items = [
         _item("safe", declared_areas=[AreaRef(kind="package", value="maistro-core")]),
         _item("touching", declared_areas=[AreaRef(kind="path", value="deploy/prod.yml")]),
     ]
+    # Assert the eligibility decision itself: exact select_next top-1 can mask
+    # a missed protected-area match behind the score tie-break.
+    decisions = {
+        d.item_id: d
+        for _, d in await _selector(store).eligible_items(
+            actor=AGENT, items=items, can_actor_access=_everyone
+        )
+    }
+    assert decisions["touching"].reasons == [f"campaign:{campaign.campaign_id}:protected-area"]
+    assert decisions["safe"].eligible
     ranked = await _selector(store).select_next(
-        actor=AGENT, items=items, can_actor_access=_everyone
+        actor=AGENT, items=items, can_actor_access=_everyone, limit=10
     )
     assert [c.item_id for c in ranked] == ["safe"]
+
+
+@pytest.mark.ac("SPEC-092626-1831/AC-1")
+async def test_protected_path_does_not_cover_sibling_prefix() -> None:
+    store = InMemoryCampaignStore()
+    await _campaign(store, protected_areas=[AreaRef(kind="path", value="deploy/")])
+    items = [
+        _item("sibling", declared_areas=[AreaRef(kind="path", value="deployment/x.yml")]),
+    ]
+    decisions = {
+        d.item_id: d
+        for _, d in await _selector(store).eligible_items(
+            actor=AGENT, items=items, can_actor_access=_everyone
+        )
+    }
+    assert decisions["sibling"].eligible
 
 
 @pytest.mark.ac("SPEC-092626-1831/AC-1")
@@ -372,6 +398,31 @@ async def test_eligibility_reads_linked_goal_state_without_copying_it() -> None:
     assert await store.list_item_records(campaign.campaign_id) == []
 
 
+@pytest.mark.ac("SPEC-092626-1831/AC-4")
+async def test_missing_goal_reader_fails_closed_for_required_goal_state() -> None:
+    store = InMemoryCampaignStore()
+    campaign = await _campaign(store, required_goal_state="active")
+    items = [
+        _item("linked", goal_id="goal-1", goal_revision="rev-1"),
+        _item("unlinked"),
+        _item("elsewhere", workspace_id="w2"),
+    ]
+    decisions = {
+        d.item_id: d
+        for _, d in await _selector(store).eligible_items(  # no goal_reader
+            actor=AGENT, items=items, can_actor_access=_everyone
+        )
+    }
+    assert not decisions["linked"].eligible
+    assert decisions["linked"].reasons == [f"campaign:{campaign.campaign_id}:goal-state-unreadable"]
+    # Items the narrowing campaign cannot reach are untouched.
+    assert decisions["unlinked"].reasons == [
+        f"campaign:{campaign.campaign_id}:goal-state-unreadable"
+    ]
+    assert decisions["elsewhere"].eligible
+
+
+@pytest.mark.ac("SPEC-092626-1831/AC-4")
 @pytest.mark.ac("SPEC-092626-1831/AC-6")
 async def test_parked_item_leaves_the_pool_and_another_is_selected() -> None:
     store = InMemoryCampaignStore()
@@ -598,6 +649,32 @@ async def test_campaign_pause_stops_selection_until_cleared() -> None:
     assert decisions["a"].reasons == ["campaign:paused"]
 
 
+async def test_pause_in_one_campaign_does_not_pause_other_campaigns() -> None:
+    """The default selector loads every campaign, so evaluate_item must scope
+    controls to the campaigns that reach the item: a campaign-wide pause in
+    one campaign is not a global pause."""
+    store = InMemoryCampaignStore()
+    await _campaign(store, "main")
+    await store.create_campaign(
+        workspace_id="w2",
+        name="other",
+        actor=OPERATOR,
+        campaign_id="other",
+        policy=CampaignPolicy.model_validate({"constraints": CampaignConstraints()}),
+    )
+    await store.set_control("other", ControlKind.PAUSE, actor=OPERATOR)
+    await store.set_control("other", ControlKind.PAUSE, actor=OPERATOR, item_id="main-item")
+    items = [_item("main-item"), _item("w2-item", workspace_id="w2")]
+    decisions = {
+        d.item_id: d
+        for _, d in await _selector(store).eligible_items(
+            actor=AGENT, items=items, can_actor_access=_everyone
+        )
+    }
+    assert decisions["main-item"].eligible and decisions["main-item"].reasons == []
+    assert decisions["w2-item"].reasons == ["campaign:paused"]
+
+
 async def test_item_scoped_pause_and_exclude_narrow_one_item() -> None:
     store = InMemoryCampaignStore()
     campaign = await _campaign(store)
@@ -612,6 +689,27 @@ async def test_item_scoped_pause_and_exclude_narrow_one_item() -> None:
         actor=AGENT, items=items, can_actor_access=_everyone, limit=10
     )
     assert [c.item_id for c in ranked] == ["fine"]
+
+
+async def test_active_human_only_control_binds_automated_actors() -> None:
+    store = InMemoryCampaignStore()
+    campaign = await _campaign(store)
+    await store.set_control(
+        campaign.campaign_id, ControlKind.HUMAN_ONLY, actor=OPERATOR, item_id="guarded"
+    )
+    decisions = {
+        d.item_id: d
+        for _, d in await _selector(store).eligible_items(
+            actor=AGENT, items=[_item("guarded"), _item("fine")], can_actor_access=_everyone
+        )
+    }
+    assert decisions["guarded"].reasons == ["mode:human-only"]
+    assert decisions["guarded"].effective_mode is AutonomyMode.HUMAN_ONLY
+    assert decisions["fine"].eligible
+    ranked = await _selector(store).select_next(
+        actor=AGENT, items=[_item("guarded")], can_actor_access=_everyone, limit=10
+    )
+    assert ranked == []
 
 
 async def test_pin_next_outranks_score_and_priority() -> None:
@@ -659,6 +757,37 @@ async def test_applicable_campaigns_intersect_and_any_budget_stops() -> None:
         actor=AGENT, items=items, can_actor_access=_everyone
     )
     assert ranked == []
+
+
+@pytest.mark.ac("SPEC-092626-1831/AC-1")
+async def test_each_budget_compares_only_its_own_campaign_usage() -> None:
+    store = InMemoryCampaignStore()
+    noisy = await _campaign(store, campaign_id="noisy", budgets={"max_completions": 1})
+    capped = await _campaign(store, campaign_id="capped", budgets={"max_completions": 1})
+    # Usage recorded on ``noisy`` exhausts only ``noisy``: an unrelated
+    # campaign's counter must not exhaust ``capped``'s budget.
+    await store.record_usage(noisy.campaign_id, actor=AGENT, completions=1)
+    item = _item("shared")
+    decisions = {
+        d.item_id: d
+        for _, d in await _selector(store).eligible_items(
+            actor=AGENT, items=[item], can_actor_access=_everyone
+        )
+    }
+    assert decisions["shared"].reasons == [f"budget:{noisy.campaign_id}:completions-reached"]
+
+    # Campaigns reaching the same item do not double-count each other's
+    # counters: with ``noisy``'s counter back to zero, the sole stop reason
+    # is ``capped`` reaching its own limit.
+    await store.record_usage(noisy.campaign_id, actor=AGENT, completions=-1)
+    await store.record_usage(capped.campaign_id, actor=AGENT, completions=1)
+    decisions = {
+        d.item_id: d
+        for _, d in await _selector(store).eligible_items(
+            actor=AGENT, items=[item], can_actor_access=_everyone
+        )
+    }
+    assert decisions["shared"].reasons == [f"budget:{capped.campaign_id}:completions-reached"]
 
 
 async def test_items_outside_every_campaign_are_untouched_by_campaign_policy() -> None:

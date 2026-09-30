@@ -383,11 +383,21 @@ class SqliteCampaignStore:
         self, campaign_id: str, *, active_only: bool = False
     ) -> list[ControlRecord]:
         async with self._operation_lock:
-            query = (
-                "SELECT payload FROM campaign_controls WHERE campaign_id = ?"
-                + (" AND cleared_at IS NULL" if active_only else "")
-                + " ORDER BY set_at, control_id"
-            )
+            # Each branch is a complete constant query: campaign_id is the
+            # only bound parameter (via ?), and the optional filter is a
+            # constant fragment rather than concatenated user data. Written as
+            # two literals (not ``+`` concatenation) to stay clear of bandit
+            # B608's string-construction heuristic while being behavior-identical.
+            if active_only:
+                query = (
+                    "SELECT payload FROM campaign_controls WHERE campaign_id = ? AND cleared_at IS NULL "
+                    "ORDER BY set_at, control_id"
+                )
+            else:
+                query = (
+                    "SELECT payload FROM campaign_controls WHERE campaign_id = ? "
+                    "ORDER BY set_at, control_id"
+                )
             cursor = await self._conn.execute(query, (campaign_id,))
             rows = await cursor.fetchall()
         return [ControlRecord.model_validate_json(row[0]) for row in rows]
@@ -562,11 +572,19 @@ class SqliteCampaignStore:
 
     async def list_parks(self, campaign_id: str, *, active_only: bool = False) -> list[ParkRecord]:
         async with self._operation_lock:
-            query = (
-                "SELECT payload FROM campaign_parks WHERE campaign_id = ?"
-                + (" AND unparked_at IS NULL" if active_only else "")
-                + " ORDER BY parked_at, park_id"
-            )
+            # Constant queries per branch (see list_controls): campaign_id is
+            # the only bound parameter; the optional filter is a constant
+            # fragment, not concatenated user data - clears bandit B608.
+            if active_only:
+                query = (
+                    "SELECT payload FROM campaign_parks WHERE campaign_id = ? AND unparked_at IS NULL "
+                    "ORDER BY parked_at, park_id"
+                )
+            else:
+                query = (
+                    "SELECT payload FROM campaign_parks WHERE campaign_id = ? "
+                    "ORDER BY parked_at, park_id"
+                )
             cursor = await self._conn.execute(query, (campaign_id,))
             rows = await cursor.fetchall()
         return [ParkRecord.model_validate_json(row[0]) for row in rows]

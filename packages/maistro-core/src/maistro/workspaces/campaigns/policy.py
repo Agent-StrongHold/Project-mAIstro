@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Protocol
 
 from maistro.workspaces.campaigns.model import (
@@ -165,8 +166,27 @@ def applicable_campaigns(
     ]
 
 
+def _path_under(descendant: str, ancestor: str) -> bool:
+    """True when ``descendant`` is ``ancestor`` or lies beneath it (POSIX).
+
+    Segment-aware, so protected ``deploy/`` covers ``deploy/prod.yml`` but not
+    sibling ``deployment/x``.
+    """
+    base = PurePosixPath(ancestor.strip("/"))
+    path = PurePosixPath(descendant.strip("/"))
+    return path == base or base in path.parents
+
+
 def _area_in(area: AreaRef, declared: Sequence[AreaRef]) -> bool:
-    return any(declared.kind == area.kind and declared.value == area.value for declared in declared)
+    """Protected areas reach path descendants; packages/resources match exactly."""
+    if area.kind == "path":
+        return any(
+            candidate.kind == "path" and _path_under(candidate.value, area.value)
+            for candidate in declared
+        )
+    return any(
+        candidate.kind == area.kind and candidate.value == area.value for candidate in declared
+    )
 
 
 def score_item(signals: SelectionSignals | None) -> tuple[float, dict[str, float]]:
@@ -195,18 +215,25 @@ def score_item(signals: SelectionSignals | None) -> tuple[float, dict[str, float
 
 
 def _budget_reached_reasons(
-    usage: BudgetUsage, campaigns: Sequence[CampaignDefinition]
+    usage: Mapping[str, BudgetUsage], campaigns: Sequence[CampaignDefinition]
 ) -> list[str]:
-    """Budget stop conditions over the union of applicable campaigns (Q3)."""
+    """Budget stop conditions over the union of applicable campaigns (Q3).
+
+    Each budget is compared only with its own campaign's counter: usage is
+    keyed by ``campaign_id`` as recorded through the store, so consumption
+    attributed to one campaign can never exhaust another's budget, and
+    campaigns that reach the same item do not double-count each other.
+    """
     reasons: list[str] = []
     for campaign in campaigns:
+        counters = usage.get(campaign.campaign_id, BudgetUsage())
         budgets = campaign.policy.budgets
         prefix = f"budget:{campaign.campaign_id}"
-        if budgets.max_cost_usd is not None and usage.cost_usd >= budgets.max_cost_usd:
+        if budgets.max_cost_usd is not None and counters.cost_usd >= budgets.max_cost_usd:
             reasons.append(f"{prefix}:cost-reached")
-        if budgets.max_minutes is not None and usage.minutes >= budgets.max_minutes:
+        if budgets.max_minutes is not None and counters.minutes >= budgets.max_minutes:
             reasons.append(f"{prefix}:time-reached")
-        if budgets.max_completions is not None and usage.completions >= budgets.max_completions:
+        if budgets.max_completions is not None and counters.completions >= budgets.max_completions:
             reasons.append(f"{prefix}:completions-reached")
     return reasons
 
@@ -248,7 +275,7 @@ def evaluate_item(
     item_records: Mapping[str, ItemPolicyRecord],
     controls: Sequence[ControlRecord],
     parks: Sequence[ParkRecord],
-    usage: BudgetUsage,
+    usage: Mapping[str, BudgetUsage],
     can_actor_access: Callable[[BacklogItemView], bool],
 ) -> EligibilityDecision:
     """Decide one item's eligibility under the applicable campaigns.
@@ -262,9 +289,26 @@ def evaluate_item(
     """
     reached = applicable_campaigns(item, campaigns)
     versions = [(c.campaign_id, c.policy_version) for c in reached]
+    # Controls and parks are campaign-scoped records; only those written on a
+    # campaign that reaches this item may narrow it. The default selector
+    # loads every campaign, so without this filter a campaign-wide pause in
+    # one campaign would read as a global pause.
+    reached_ids = {campaign.campaign_id for campaign in reached}
+    scoped_controls = [control for control in controls if control.campaign_id in reached_ids]
+    scoped_parks = [park for park in parks if park.campaign_id in reached_ids]
     reasons: list[str] = []
     primary = reached[0] if reached else None
     mode = effective_mode(item_records.get(item.item_id), primary) if primary else None
+    if any(
+        control.kind is ControlKind.HUMAN_ONLY
+        and control.active
+        and control.item_id == item.item_id
+        for control in scoped_controls
+    ):
+        # An active human-only control *is* the durable mode: fold it in so
+        # the absolute gate below (and the selection-time re-check) applies
+        # even without a separate item-policy override.
+        mode = AutonomyMode.HUMAN_ONLY
 
     if not can_actor_access(item):
         # Invariant 1: never widen. A campaign cannot make an inaccessible
@@ -298,7 +342,7 @@ def evaluate_item(
             campaign_versions=versions,
         )
 
-    active_controls = [control for control in controls if control.active]
+    active_controls = [control for control in scoped_controls if control.active]
     if any(
         control.kind is ControlKind.PAUSE and control.item_id is None for control in active_controls
     ):
@@ -313,7 +357,7 @@ def evaluate_item(
         for control in active_controls
     ):
         reasons.append("item:excluded")
-    if any(park.active and park.item_id == item.item_id for park in parks):
+    if any(park.active and park.item_id == item.item_id for park in scoped_parks):
         reasons.append("item:parked")
 
     for campaign in reached:
@@ -344,7 +388,7 @@ async def evaluate_items(
     item_records: Mapping[str, ItemPolicyRecord],
     controls: Sequence[ControlRecord],
     parks: Sequence[ParkRecord],
-    usage: BudgetUsage,
+    usage: Mapping[str, BudgetUsage],
     can_actor_access: Callable[[BacklogItemView], bool],
     goal_reader: GoalReader | None = None,
 ) -> list[EligibilityDecision]:
@@ -369,7 +413,27 @@ async def evaluate_items(
     ]
 
     if goal_reader is None:
-        return base_decisions
+        # Fail closed: without a reader the required Goal state cannot be
+        # observed, so items under a narrowing campaign stay ineligible
+        # instead of silently bypassing the check.
+        return [
+            EligibilityDecision(
+                item_id=base.item_id,
+                eligible=False
+                if (
+                    unreadable := sorted(
+                        f"campaign:{campaign.campaign_id}:goal-state-unreadable"
+                        for campaign in applicable_campaigns(item, campaigns)
+                        if campaign.policy.required_goal_state is not None
+                    )
+                )
+                else base.eligible,
+                reasons=base.reasons + unreadable,
+                effective_mode=base.effective_mode,
+                campaign_versions=base.campaign_versions,
+            )
+            for item, base in zip(items, base_decisions, strict=True)
+        ]
 
     decisions: list[EligibilityDecision] = []
     for item, base in zip(items, base_decisions, strict=True):

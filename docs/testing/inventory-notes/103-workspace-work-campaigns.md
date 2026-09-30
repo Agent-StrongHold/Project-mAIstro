@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  packages/maistro-core/tests: +43
+  packages/maistro-core/tests: +49
   packages/maistro-server/tests: +9
 ---
 
