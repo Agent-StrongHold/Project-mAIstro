@@ -27,9 +27,16 @@ Persistent layer (outside instances):
 └── File store (shared volume; S3 or NFS in real deployments)
 ```
 
-- **Instances are stateless.** All persistent state (agents, sessions, memory, audit)
-  lives in PostgreSQL/Redis; the only local files are config (in git) and the shared
-  file store. Any replica can serve any request.
+- **Instances are stateless — except the task queue.** Agents, sessions, memory,
+  audit and every canonical Run live in PostgreSQL/Redis; the only local files are
+  config (in git) and the shared file store. **The `/v1/tasks` queue does not:**
+  `TaskQueue` is an in-process singleton, so a task is visible only on the replica
+  that accepted it. Behind round-robin, a client that creates a task and polls
+  `GET /v1/tasks/{id}` gets 404 from every other replica — measured on this stack:
+  200 from the replica that took the `POST`, 404 from the other. The task's Run
+  *is* durable and shared; its queue entry is not. Until the queue is shared,
+  route task traffic to one replica (or pin clients with `ip_hash`), and expect
+  tasks in flight on a replica that dies to be lost with it.
 - **Rate limits are per-process, not cluster-wide (#842).** The request limiter
   (`maistro_server.api.rate_limit`) keeps its sliding window in process memory,
   keyed to the authenticated principal (ADR-085). Each of the N replicas
@@ -64,11 +71,17 @@ Persistent layer (outside instances):
 Bring it up:
 
 ```bash
-cp deploy/.env.example .env   # or export vars: POSTGRES_PASSWORD, REPLICATION_PASSWORD, REDIS_PASSWORD, API_KEYS
+cp deploy/.env.example deploy/.env   # then set every change-me, LITELLM_BASE_URL and LITELLM_API_KEY
 docker compose -f deploy/docker-compose.prod.yml up -d
 curl -fsS http://localhost:8080/lb-health
 curl -fsS http://localhost:8080/health/ready
 ```
+
+The `.env` goes in `deploy/`, beside the compose file, because that is where
+Compose looks: with `-f deploy/docker-compose.prod.yml` the project directory is
+`deploy/`, not the directory you run the command from. These steps used to say
+`cp deploy/.env.example .env`, which leaves every variable unread and fails the
+second command with `required variable POSTGRES_PASSWORD is missing a value`.
 
 ---
 
