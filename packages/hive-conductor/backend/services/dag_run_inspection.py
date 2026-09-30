@@ -24,10 +24,11 @@ stop condition).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any
 
-from services.dag_run_store import MAX_RUNS, get_dag_run_store
+from services.dag_run_store import MAX_EVENTS_PER_RUN, MAX_RUNS, get_dag_run_store
 from services.workspace_authority import list_views_for_user
 
 
@@ -147,6 +148,54 @@ async def visible_run_detail(user_id: str, run_id: str) -> dict[str, Any] | None
     if not _in_scope(record, allowed):
         return None
     return await _canonical_projection(record, user_id)
+
+
+async def canonical_runs_for(user_id: str, run_ids: Iterable[str]) -> dict[str, Any]:
+    """The canonical Runs among `run_ids` that `user_id` may read, keyed by id.
+
+    The public shape of the batched read the status overlay performs: a
+    consumer that needs more of the canonical Run than the overlay projects
+    (the #65 Goal projection reads provenance through it) asks here rather
+    than opening a second path into the canonical store, so every canonical
+    Run read stays behind this module's one authorization decision (#1174).
+    """
+    return await _readable_canonical_runs([str(run_id) for run_id in run_ids if run_id], user_id)
+
+
+def retention_bounds() -> dict[str, Any]:
+    """What this deployment keeps, and whether it keeps it across a restart.
+
+    Read through the inspection seam rather than off the store directly so the
+    routes hold no second import of the projection storage (#65): the bounds
+    are deployment-level constants, not run data — no principal is read and no
+    per-run scoping applies, exactly as the `/retention` route documented when
+    it existed (#697).
+    """
+    store = get_dag_run_store()
+    return {
+        "durable": store.is_durable,
+        "max_runs": MAX_RUNS,
+        "max_events_per_run": MAX_EVENTS_PER_RUN,
+    }
+
+
+async def event_subscription(user_id: str, run_id: str) -> asyncio.Queue[Any] | None:
+    """A live-event queue for one run, or None when it may not be inspected.
+
+    Authorization happens HERE, before the subscription queue exists and
+    before anything can be streamed or replayed into it (#1174): an
+    out-of-scope id gets None — indistinguishable from a missing one — and the
+    SSE route turns that into the same 404-shaped refusal `visible_run_detail`
+    answers with.
+    """
+    if not await can_inspect_run(user_id, run_id):
+        return None
+    return get_dag_run_store().subscribe(run_id)
+
+
+def close_event_subscription(run_id: str, queue: asyncio.Queue[Any]) -> None:
+    """Release a queue taken from :func:`event_subscription`."""
+    get_dag_run_store().unsubscribe(run_id, queue)
 
 
 async def visible_run_ids(user_id: str, run_ids: Iterable[str]) -> set[str]:

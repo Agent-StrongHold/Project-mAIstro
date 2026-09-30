@@ -11,6 +11,7 @@ import {
   MessageCircle,
   LayoutDashboard,
   Target,
+  Flag,
   Brain,
   Plug,
   KeyRound,
@@ -26,6 +27,7 @@ import {
 const fullNav = [
   { to: "/chat", icon: MessageCircle, label: "Chat" },
   { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
+  { to: "/goals", icon: Flag, label: "Goals" },
   { to: "/dags", icon: Workflow, label: "DAG Builder" },
   { to: "/dag-runs", icon: PlayCircle, label: "DAG Runs" },
   // Missions was reachable only from `pocNav`, so retiring POC mode left a
