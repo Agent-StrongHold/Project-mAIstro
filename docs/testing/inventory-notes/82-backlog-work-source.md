@@ -106,3 +106,41 @@ or changed (node counts and the `inventory-delta` block above are unchanged).
   (ruff/format, backlog suite 38 passed/16 skipped, mypy 732 files clean,
   suite inventory, durable-table inventory, enumerations,
   shipped-surface-truth, worktree reachability + dispositions).
+
+## Develop sync re-verification (round at 54830db28)
+
+The merge-queue target advanced: `origin/develop` moved from `c5e070d97` to
+`742e4e8fd` (five WIP epic merges: bounded schedule catch-up #92, release-path
+epic, product-gap dispositions, truthfulness sweep). `origin/develop` was
+merged into `auto-82` with **zero conflicts** — the two sides had independently
+made the identical urllib3 2.7.0→2.8.0 lock bump, and develop touched no
+`quality/` file. No test was added, removed, or changed by this branch in this
+round; node counts and the `inventory-delta` block above are unchanged.
+
+- **Merged tree healthy:** ruff check + format green; backlog suite 38
+  passed/16 skipped (unchanged); develop's new scheduling suite
+  272 passed/36 skipped; suite inventory ok (11647 node IDs, develop's own
+  +22 recorded by develop); durable-table inventory ok (74 tables, including
+  alembic `048`'s backlog tables); mypy 732 files clean.
+- **Supply chain (pip-audit), fresh advisory DB:** the exact CI `security`
+  job sequence re-executed (`uv pip freeze --exclude-editable` →
+  `pip-audit --strict --format=json -r` → `pip_audit_gate.py`): exit 0.
+  urllib3 pins 2.8.0 with zero advisories; ecdsa PYSEC-2026-1325 remains the
+  only finding, pre-triaged in ALLOWED; direct-dependency usage ledger ok.
+- **exact-debt-ledger at the merged head:** fresh vulture scan gives
+  1402 (trusted base 742e4e8fd) → 1454 findings — develop's ~2500 new
+  scheduling/release lines contribute **zero** new unbanked debt; the 52-find
+  delta is exactly the known 41 backlog identities. Grant exactness re-proven:
+  41 scan identities vs 41 staged vulture grants, 0 missing, 0 extra; the 5
+  `maistro.backlog` reachability grants are staged. `--update` idempotent
+  (ledger diffs empty); candidate bookkeeping silent.
+- **Remaining red is unchanged and driver-side:** `check-ratchet-provenance.py`,
+  `check-reachability-provenance.py`, `check-reachability-dispositions-provenance.py`,
+  and `check-vulture-baseline.py` each exit 1 solely on the
+  "NEW … not previously authorized" half for the five `maistro.backlog`
+  modules / 41 vulture identities. `git ls-remote` confirms `origin/develop`
+  is still `742e4e8fd` without the grants; per the deliberate two-merge design
+  (#534, `load_authorizations` reads the trusted base revision) no
+  candidate-side change can clear this half. Driver step unchanged: land the
+  staged grants from this branch's `quality/ratchet-authorizations.json` onto
+  develop in a grants-only merge, then re-queue.
