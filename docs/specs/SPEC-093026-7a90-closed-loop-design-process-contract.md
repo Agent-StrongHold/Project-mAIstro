@@ -99,7 +99,7 @@ Workspace → Project → Goal
 
 A Rubric is a `maistro.ontology` registered kind whose semantic payload is
 versioned; criteria live in the payload, and a bump creates a new version
-rather than mutating history. A Goal binds at most one Rubric version at a
+rather than mutating history. A Goal binds exactly one Rubric version at a
 time; the binding records `rubric_id` + `rubric_version` so any historical
 eval stays resolvable to the version that scored it. `maistro.personas.rubric`
 and ADR-060 scorer providers keep their existing roles and are not promoted
@@ -162,7 +162,7 @@ Each id is stable for `@pytest.mark.ac` marking by the child PR that proves it.
 - **AC-1 (boundary):** `rubric` is a registered `maistro.ontology` kind whose
   semantic payload validates at `upsert`; version bumps create new versions;
   no second Rubric store exists.
-- **AC-2 (behavioral):** a Goal binds at most one Rubric version at a time;
+- **AC-2 (behavioral):** a Goal binds exactly one Rubric version at a time;
   the binding records `rubric_id` + `rubric_version`; historical eval remains
   resolvable to the version that scored it after a rebind.
 - **AC-3 (boundary + behavioral):** an eval record names the
