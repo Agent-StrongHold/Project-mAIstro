@@ -62,12 +62,15 @@ from maistro_canvas.export import ExportLayer, ExportPage, ExportText, export_ht
 from maistro_canvas.types import CanvasError, CanvasRecord, CompositeResult, LayerRecord
 
 #: Formats the export provider can genuinely produce in this repository.
-IMAGE_FORMATS = ("png", "webp", "jpg")
+#: ``jpeg`` is a legacy alias of ``jpg`` kept for compatibility with the
+#: pre-governance route (same JPEG encoder, same ``image/jpeg`` media type).
+IMAGE_FORMATS = ("png", "webp", "jpg", "jpeg")
 #: Media types for the image formats, shared with the HTTP boundary.
 IMAGE_MEDIA_TYPES: dict[str, str] = {
     "png": "image/png",
     "webp": "image/webp",
     "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
 }
 #: Fixed-page HTML serialization is stdlib-only and always available.
 HTML_FORMAT = "html"

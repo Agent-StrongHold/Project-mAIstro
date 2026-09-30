@@ -454,7 +454,7 @@ async def publish_design(
 async def export_design(
     request: Request, design_id: str, format: str, auth: RequireAuth
 ) -> Response:
-    """Export via the governed design.export capability (png/webp/jpg/html/pptx).
+    """Export via the governed design.export capability (png/webp/jpg/jpeg/html/pptx).
 
     pdf/svg are refused with a machine-readable 422: they are deliberately out
     of scope, not temporarily unavailable. Response headers carry the export

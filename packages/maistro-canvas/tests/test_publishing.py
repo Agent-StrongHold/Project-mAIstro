@@ -555,6 +555,7 @@ class TestExportIsolation:
 def test_export_media_type_table() -> None:
     assert export_media_type("png") == "image/png"
     assert export_media_type("jpg") == "image/jpeg"
+    assert export_media_type("jpeg") == "image/jpeg"  # legacy alias of jpg
     assert export_media_type("webp") == "image/webp"
     assert export_media_type("html").startswith("text/html")
     assert "presentationml" in export_media_type("pptx")
