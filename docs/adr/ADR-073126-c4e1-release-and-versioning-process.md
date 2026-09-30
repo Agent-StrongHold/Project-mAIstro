@@ -25,16 +25,19 @@ history:
     date: 2026-07-31
   - status: Accepted
     date: 2026-07-31
-  - status: Amended
-    date: 2026-09-30
-    note: rc soak tier retargeted from the retired `integration` branch to
-      `develop`, per ADR-095
 ---
 
 # ADR-073126-c4e1: Release and versioning process
 
 **Status:** Accepted
 **Date:** 2026-07-31
+
+> **Amended 2026-09-30 (#19): the rc release tier is cut from `develop`, not
+> `integration`.** [ADR-095](ADR-095-four-tier-branch-model.md) and
+> [docs/ci/BRANCH-PROTECTION.md](../../docs/ci/BRANCH-PROTECTION.md) retire
+> `integration`; `develop` is the canonical integration branch. §2 (tag
+> placement), §3 (the publish guard), §6 (rc conventions), the references, and
+> `scripts/release_guard.py` now name `develop`.
 
 Extends [ADR-095](ADR-095-four-tier-branch-model.md) past `main`. ADR-095 defines
 how code *reaches* `main`; it says nothing about how a release is cut from it,

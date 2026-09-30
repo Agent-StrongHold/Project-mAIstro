@@ -1,6 +1,6 @@
 ---
 inventory-delta:
-  tests/: +0
+  tests/: +3
   packages/maistro-core/tests: +0
 ---
 # Issue #19 [EPIC M3-A] Reconcile and prove the release path
@@ -77,3 +77,48 @@ and re-proven:
 
 inventory-delta: still +0 (dependency lockfile repair only; no tests added or
 removed).
+
+## Salvage round at `e70e1f917` — parallel release lines in the gate, plus the registry front-matter repair
+
+Two changes, both driven by executed evidence:
+
+1. **`scripts/check-release-consistency.py` reworked for parallel release
+   lines** (the older-line-hotfix posture the epic's rc/promotion work needs):
+   a dated heading on a *newer* line than VERSION (v1.0.0 published while the
+   tree carries the 0.9.1 hotfix) is the supported state `release.yml`'s
+   moving-tag logic exists for, not drift — per-line, not global, is what is
+   checked now. Conversely the gate got stricter where it was vacuous: every
+   dated heading must carry the `vX.Y.Z` tag that published it (a dated
+   heading without a tag claims a publication the repository cannot show), and
+   the tag whose own `--releasing` run is asking is exempt from the
+   dated-heading demand because its commit necessarily precedes the tag.
+   Evidence: `uv run pytest tests/test_check_release_consistency.py -x -q` →
+   53 passed; `uv run python scripts/check-release-consistency.py` → "ok:
+   released none, shipping 0.9.0, working toward 1.0.0" on the real tree;
+   `uv run ruff check .` / `ruff format --check .` clean. Net +3 tests (5
+   added: same-line above-VERSION fails, newer-line hotfix passes, the v0.9.1
+   run itself passes via the releasing exemption, dated heading without a tag
+   fails, same-line tag above VERSION fails; 2 replaced tests whose old
+   expectations contradicted the per-line contract).
+
+2. **CI repair: "Validate ADR/spec front-matter"
+   (`.github/workflows/registry.yml`) failed at `e70e1f917`.** Reproduced
+   locally: `maistro_registry.cli lint . --strict` → 1 error in
+   `docs/adr/ADR-073126-c4e1-release-and-versioning-process.md`
+   (`history.2.status: 'Amended'` is not a lifecycle status;
+   `history.2.note:` is not a permitted field — `HistoryEntry` is
+   `extra="forbid"` with `status`/`date`/`reason` only). The lifecycle machine
+   (`tools/lint_lifecycle.py`) rejects the same entry, and an `Accepted →
+   Accepted` re-entry is not a fix: the machine's own comment calls that a new
+   claim it rejects, not a correction. The amendment therefore follows the
+   corpus convention (ADR-086, ADR-082526-b36a): recorded as a body blockquote
+   (`> **Amended 2026-09-30 (#19): ...**`) and the front-matter history left
+   at Proposed → Accepted. Re-proven with the workflow's own steps: lint →
+   "413 files checked: 413 clean, 0 errors"; `tools/lint_lifecycle.py` → "All
+   documents pass"; `scripts/check-citation-status-provenance.py`
+   (RATCHET_BASE_REV=origin/develop) → 0 exceptions;
+   `scripts/check-adr-index.py` → every row agrees;
+   `scripts/check-adr-status-language.py` → 0 contradictions; workflow unit
+   tests (`pytest tests/tools/registry/ tests/tools/test_lint_lifecycle.py
+   packages/maistro-registry/tests --confcutdir=tests/tools`) → 98 passed.
+   `tests/test_release_guard.py` 23 passed at the same head.
