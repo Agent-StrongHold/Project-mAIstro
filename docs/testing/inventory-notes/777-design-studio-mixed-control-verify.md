@@ -1230,3 +1230,59 @@ written. The job directory again contained no `check-*.log` files (only
 `events.jsonl`, `manifest.json`, `prompt.txt`, `state.json`), so all
 validation above was executed directly. No closure keywords used
 (`Refs #777` only).
+
+---
+
+## Round 3 (job 64db86add1b2, repair phase, head 3227e6be1) — BLOCKED re-confirmed
+
+Previous block: worker requested attention on BLOCKED (prior job
+b66531361d18). Instruction: if it was a develop sync conflict, fetch + merge.
+
+**Develop sync check (fresh):** `git ls-remote --heads origin
+refs/heads/develop` → `c5e070d97d07800464972ee2c026a4d525ffbb21` — develop
+has **not moved** since the merge at `7de6cc42d`
+(`git rev-list --count origin/develop ^HEAD` = 0). The prior BLOCKED was **not**
+a sync conflict; nothing to merge or resolve. Working tree clean before edits.
+
+**Key absence claims independently re-executed at `3227e6be1` (not
+inherited from prior rounds):**
+- `grep -rE "class (GoalRevision|CreativeBrief|GoalStore)|goal_revision"
+  packages/*/src` — only the ontology declaration
+  `revision="goal_revision"` (`interop/contract.py`); #458 Goal store and
+  #774 CreativeBrief records still absent.
+- `grep -rEil "control_mode|mixed.control|delegat(ed|ion)"
+  packages/maistro-design/src packages/maistro-core/src` — DESIGN.md prose,
+  bundled workspace preview HTML, and Sentinel approval-*delegation*
+  (`authz_types.py`, `approver_graph.py`, `rlphd.py`); no Goal/control-mode
+  production state anywhere.
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-4` — physical
+  Attempt/NodeRun lifecycle bookkeeping "only"; not #804 Goal
+  reconciliation.
+- `ls packages/hive-conductor/tests/e2e/` — Design Studio specs remain only
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts`;
+  no Goal-lineage/mixed-control browser E2E.
+- `packages/hive-conductor/backend/services/workspace_agent.py` (#53 front
+  door) exists and is consumed by `chat_runs.py`/`routes/workspaces.py`, but
+  `routes/design.py` still has no Workspace-Agent consumption seam.
+
+**CI gate (lane brief, fresh):** `uv run python
+scripts/check-vulture-baseline.py packages/*/src --min-confidence 60
+--exclude '*/third_party/*'` — **EXIT=0, gate PASS**: `unclassified: 0`,
+`never_allowlist: 0`, ratchet base `c5e070d97d07` → candidate
+`3227e6be1d98`, `1402 reviewed identities -> 1402 findings`, no drift.
+Zero unbanked identities → no dead-code fix, **no ledger amendment** to
+`quality/vulture-baseline.json` required this round.
+
+**Executed at `3227e6be1`:** `uv run ruff check .` — All checks passed;
+`uv run ruff format --check .` — 2638 files already formatted. The job
+directory again contained **no `check-*.log` files** (only `events.jsonl`,
+`manifest.json`, `prompt.txt`, `state.json`), so all checks above were run
+directly.
+
+**Conclusion:** unchanged — all 13 acceptance criteria remain UNMET at
+`3227e6be1`; the lane stays BLOCKED on unlanded canonical dependencies
+(#458 Goal store, #804/#805/#806 Goal reconciliation, #774 CreativeBrief,
+#775 creative Graph, #776 Workspace Ladybug working graph). The stop
+condition (fitness-enforced by #990) still forbids Design-Studio-private
+substitutes, so no repair code was written. `Refs #777` only, no closure
+keywords.
