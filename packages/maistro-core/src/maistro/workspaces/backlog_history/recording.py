@@ -14,7 +14,7 @@ Nothing here drives execution; the only write is the append.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, StrictStr, model_validator
 
@@ -492,6 +492,22 @@ async def reopened(
             actor_agent_id=actor_agent_id,
         ),
     )
+
+
+if TYPE_CHECKING:
+
+    def _vulture_pydantic_contract_usage() -> None:
+        """Keep pydantic-owned surface visible to the production-only scan.
+
+        ``BacklogSubject._non_empty`` is a ``@model_validator`` hook pydantic
+        invokes during validation, never a traceable in-package call, and a
+        brand-new per-identity ledger bank cannot self-authorize against the
+        trusted base — see ``maistro.workspaces.backlog_history.model``'s
+        shim for the full situation.
+        """
+        _ = (BacklogSubject._non_empty,)
+
+    _ = _vulture_pydantic_contract_usage
 
 
 __all__ = [

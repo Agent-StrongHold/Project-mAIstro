@@ -162,4 +162,20 @@ def _iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
 
 
+if TYPE_CHECKING:
+
+    def _vulture_store_contract_usage() -> None:
+        """Keep the journal contract visible to the production-only scan.
+
+        ``SqliteBacklogHistoryStore.history_for_workspace`` implements the
+        Workspace-wide audit read of ``BacklogHistoryStore``; its consumer
+        today is the conformance suite, outside the ``packages/*/src`` scope
+        Vulture ratchets. See ``maistro.workspaces.backlog_history.store``'s
+        shim for the full situation.
+        """
+        _ = (SqliteBacklogHistoryStore.history_for_workspace,)
+
+    _ = _vulture_store_contract_usage
+
+
 __all__ = ["SqliteBacklogHistoryStore"]

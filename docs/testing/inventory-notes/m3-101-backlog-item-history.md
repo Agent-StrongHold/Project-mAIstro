@@ -1,7 +1,7 @@
 ---
 inventory-delta:
   packages/maistro-core/tests: +54
-  packages/maistro-server/tests: +5
+  packages/maistro-server/tests: +6
 ---
 # m3-101-backlog-item-history
 
@@ -28,7 +28,8 @@ New tests only; nothing was removed or moved.
   `workspaces/backlog_history/test_backlog_history_wiring.py` pins the backend selection
   (memory reference, SQLite journal, refused split, loud PostgreSQL fallback, Container wiring on
   both backends) and the shared `backend_of` helper.
-- `packages/maistro-server/tests` (+5): `api/test_backlog_history_api.py` covers member reads of
+- `packages/maistro-server/tests` (+6): `api/test_backlog_history_api.py` covers member reads of
   the full ordered history, the kind filter, outsiders and unknown items not being
-  distinguishable, mounting on the production app, the registered route handler, and JSON
+  distinguishable, a Container without a BacklogItem history store answering 503 instead of
+  crashing, mounting on the production app, the registered route handler, and JSON
   serialisation of events for the wire.

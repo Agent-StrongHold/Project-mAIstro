@@ -127,6 +127,16 @@ async def test_non_members_and_unknown_items_are_indistinguishable(api: _Api) ->
     assert missing.json() == []
 
 
+async def test_an_unconfigured_history_store_answers_503(api: _Api) -> None:
+    """A Container with no BacklogItem history store is a 503, not a crash."""
+    workspace_id, _project_id = await _workspace(api)
+    api.app.state.container = SimpleNamespace(project_scope_store=api.projects)
+    _as_user(api.app, "member")
+    response = api.client.get(f"/workspaces/{workspace_id}/backlog/item-1/history")
+    assert response.status_code == 503, response.text
+    assert "No BacklogItem history store" in response.json()["detail"]
+
+
 def test_the_history_route_is_mounted_on_the_production_app() -> None:
     paths = {route.path for route in iter_effective_routes(server_app.routes)}
     assert "/v1/workspaces/{workspace_id}/backlog/{item_id}/history" in paths

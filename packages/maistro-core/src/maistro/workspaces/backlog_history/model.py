@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 
@@ -207,6 +207,12 @@ class BacklogHistoryEvent(BaseModel):
 
     @model_validator(mode="after")
     def _recorded_facts(self) -> BacklogHistoryEvent:
+        """Per-kind payloads of the item's own story: closure, splits, finds.
+
+        Every check is kind-specific and one event carries exactly one kind,
+        so the guards are mutually exclusive and the split across this and
+        `_linked_facts` below cannot reorder which refusal an event meets.
+        """
         if self.kind is BacklogHistoryEventKind.CLOSURE_RECORDED and not self.evidence_refs:
             raise ValueError(
                 "closure_recorded requires evidence_refs: completion is evidence-driven, "
@@ -216,6 +222,12 @@ class BacklogHistoryEvent(BaseModel):
             raise ValueError("decomposition_recorded requires child_item_ids")
         if self.kind is BacklogHistoryEventKind.DISCOVERED_WORK_RECORDED:
             self._require_discovered_shape()
+        return self
+
+    @model_validator(mode="after")
+    def _linked_facts(self) -> BacklogHistoryEvent:
+        """Per-kind payloads that point at canonical state: Goals,
+        reconciliation decisions, Run/evaluation evidence."""
         if self.kind is BacklogHistoryEventKind.GOAL_BOUND and self.goal_link is None:
             raise ValueError("goal_bound requires goal_link")
         if self.kind is BacklogHistoryEventKind.RECONCILIATION_RECORDED and (
@@ -250,6 +262,35 @@ class BacklogHistoryEvent(BaseModel):
         ):
             raise ValueError("reopened requires reason")
         return self
+
+
+if TYPE_CHECKING:
+
+    def _vulture_pydantic_contract_usage() -> None:
+        """Keep pydantic-owned surface visible to the production-only scan.
+
+        The ``@model_validator`` hooks are invoked by pydantic during
+        validation, never by a traceable in-package call, and a brand-new
+        per-identity ledger bank cannot self-authorize against the trusted
+        base — the same situation the ``maistro.types.config`` and
+        ``maistro.scheduling.admission`` shims document. ``changed_fields``
+        is the before/after payload the API serializes for the wire, the
+        durable journal round-trips via ``model_dump_json``, and the tests
+        read back; none of those readers lies inside ``packages/*/src``.
+        """
+        _ = (
+            GoalLink._canonical,
+            RunReference._non_empty,
+            ReconciliationReference._non_empty,
+            FieldChange._non_empty,
+            BacklogHistoryEvent._status_shape,
+            BacklogHistoryEvent._recorded_facts,
+            BacklogHistoryEvent._linked_facts,
+            BacklogHistoryEvent._reasoned_facts,
+            BacklogHistoryEvent.changed_fields,
+        )
+
+    _ = _vulture_pydantic_contract_usage
 
 
 class BacklogHistoryError(ValueError):
