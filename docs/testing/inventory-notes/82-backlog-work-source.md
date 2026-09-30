@@ -71,3 +71,38 @@ this repair; no test was added or removed.
     in-branch: `--update` idempotent, enumerations/shipped-surface/
     dispositions-shape/lifecycle green, and the only remaining gate messages
     name the missing base grants.
+
+## CI-repair re-verification (round at 5e0233199)
+
+Independent re-execution of every gate at this head; no test added, removed,
+or changed (node counts and the `inventory-delta` block above are unchanged).
+
+- **Supply chain, fresh advisory DB:** `uv pip freeze --exclude-editable` →
+  `pip-audit --strict --format=json` → `pip_audit_gate.py` exit 0. The DB now
+  reports 2 advisories in 1 package (ecdsa PYSEC-2026-1325, pre-triaged in
+  ALLOWED); urllib3 pins 2.8.0 with no finding.
+- **Genuinely-dead re-audit:** every remaining vulture identity was checked
+  for a real fix instead of banking. The `model.py` identities are
+  `@field_validator`/`@model_validator` handlers (pydantic dispatches them at
+  runtime; the conformance suite exercises them) or declared pydantic fields;
+  the store identities are the protocol surface parametrized over by
+  `test_backlog_store_conformance.py`. Nothing further to delete.
+- **Ledger/grant exactness:** a fresh vulture scan produces 52 new findings
+  over the trusted base = exactly 41 unique stable identities; the candidate
+  `vulture-baseline.json` re-written by `--update` diffs empty (idempotent);
+  the 41 staged vulture grants match the scan identity set with 0 missing and
+  0 extra.
+- **Provenance failure-mode census:** `check-vulture-baseline.py`,
+  `check-reachability-provenance.py`, `check-reachability-dispositions-provenance.py`,
+  and `check-ratchet-provenance.py` each exit 1 at this head solely on the
+  "NEW ... not previously authorized" half for the five `maistro.backlog`
+  modules / 41 vulture identities. GitHub `develop` is still `c5e070d97`
+  (verified via `git ls-remote`), so the grants remain unlanded; per the
+  deliberate two-merge design (`load_authorizations` reads the base revision,
+  #534) no candidate-side change can clear this half. Driver steps: land the
+  staged grants from this branch's `quality/ratchet-authorizations.json`
+  (+41 vulture, +5 reachability) onto develop in a grants-only merge, then
+  re-queue — every candidate-side half is green at this head
+  (ruff/format, backlog suite 38 passed/16 skipped, mypy 732 files clean,
+  suite inventory, durable-table inventory, enumerations,
+  shipped-surface-truth, worktree reachability + dispositions).
