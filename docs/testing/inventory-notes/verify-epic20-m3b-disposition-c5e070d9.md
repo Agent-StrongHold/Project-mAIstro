@@ -1,9 +1,11 @@
----
-inventory-delta:
-  docs/testing/inventory-notes: +1  # verification record only; no tests added or removed
----
-
 # verify-epic20-m3b-disposition-c5e070d9
+
+> This note carries **no `inventory-delta:` block**: it adds and removes no
+> tests, and the gate (ADR-082526-547c) reads an absent key as zero movement.
+> An earlier draft recorded `docs/testing/inventory-notes: +1` — not a gated
+> suite name, and written with a trailing comment the ledger parser rejects —
+> which failed CI's suite-inventory step; see the second CI-repair addendum
+> below.
 
 Verification record for lane L20 (epic #20 — [EPIC M3-B] Close or explicitly
 defer current v1.1 product gaps) at head `c5e070d97d07800464972ee2c026a4d525ffbb21`
@@ -178,3 +180,34 @@ The scheduling command record above was corrected in this round: the
 `test_engine.py` path in the executed selection is now written in full, and
 the recorded count reflects the two-file run (**32 passed, 14 skipped**;
 store-only is 28).
+
+## CI-repair addendum 2 (head `29c11533d6b5`, suite-inventory ledger round)
+
+The merge-queue evaluation of this head failed exactly one step: the `test`
+job's *Suite inventory matches collected node IDs (C1/#286)*
+(`scripts/check-suite-inventory.py`, exit 2). Every pytest step in the job
+had already passed, and `security`, `npm audit`, lint/typecheck, docker,
+e2e, and the pg17/pg18 matrix were all green — the supply-chain fixes from
+addendum 1 held.
+
+Root cause (this file, fixed in place): the front matter recorded
+`docs/testing/inventory-notes: +1` under `inventory-delta:`. Two defects in
+one line — `docs/testing/inventory-notes` is not a suite in the gate's
+`RECIPES` (it would have been rejected next as "recorded suites with no
+collection recipe"), and the trailing `#` comment is outside the
+`<suite>: <±count>` grammar, so the parser raised `cannot read … as
+`<suite>: <±count>`` before either mattered. A verification note that moves
+no test count records no delta at all; the gate documents the absent key as
+the normal zero case, so the block was removed rather than rewritten.
+
+Re-executed at the repaired tree:
+
+- `uv run python scripts/check-suite-inventory.py` → collected every suite
+  and compared against baseline + unfolded deltas → **ok: 14 suite(s) match
+  the recorded inventory**, exit 0.
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` → exit 0, 1402 reviewed
+  identities matched, `unclassified: 0`, `never_allowlist: 0` — no ledger
+  amendment required and none made.
+- `uv run ruff check .` → All checks passed; `uv run ruff format --check .`
+  → all files already formatted (exit 0).
