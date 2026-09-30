@@ -1812,3 +1812,48 @@ the assigned develop base — and the issue stop condition forbids
 Design-Studio-private Agent/Goal/reconciler substitutes. Lane remains
 **BLOCKED on unlanded canonical dependencies**; no repair code was written.
 No closure keywords used (`Refs #777` only).
+
+## Re-verification at lane head 4a09e8598 (27th inspected head, 2026 addendum)
+
+Lane-declared start head `4a09e8598d3a92e6b2aa7cd6c6906e9e95ebcaf3` = the
+26th-round docs commit on top of merge `f044d75f0734`; the only tree delta
+`f044d75f0734..HEAD` is this inventory note
+(`git diff --stat` -> 1 file, docs-only).
+
+**Develop sync re-checked:** `git fetch origin develop` — origin/develop
+**unmoved** at `742e4e8fd3f7`; `git merge-base HEAD origin/develop` ==
+`742e4e8fd3f7`, i.e. develop is already an ancestor of HEAD. No merge
+needed or performed this round.
+
+**Dependency audit re-run fresh at `4a09e8598`:**
+- `git grep -l 'GoalRevision' -- '*.py'` -> **0 files** (#458 absent).
+- `git grep -lE 'GoalReconcil|goal_reconcil' -- '*.py'` -> **0 files**
+  (#804/#805/#806 absent).
+- `git grep -ilE 'owning_agent|subgoaldelegat' -- '*.py'` -> **0 files**.
+- `services/brief_store.py:5` still: "The interview is chat state, not a
+  Goal: nothing here is a Goal or CreativeBrief record" (#774 absent).
+- `grep -icE 'workspace_agent|control_mode|delegat'
+  packages/hive-conductor/backend/routes/design.py` -> **0**.
+- `git grep -il 'ladybug' -- '*.py'` -> only
+  `dags/author_examples.py` (book title; #776 absent).
+- `packages/hive-conductor/tests/e2e/` still lists only
+  `design-studio-keyboard.spec.ts` + `design-studio-truthfulness.spec.ts`
+  for Design Studio — no mixed-control/Goal-lineage spec (full e2e listing
+  re-inspected this round).
+
+**Gates executed at `4a09e8598` (fresh runs):**
+- `uv run ruff check .` — All checks passed (exit 0).
+- `uv run ruff format --check .` — 2642 files already formatted (exit 0).
+- `uv run python scripts/check-vulture-baseline.py packages/*/src
+  --min-confidence 60 --exclude '*/third_party/*'` — exit 0; base
+  `742e4e8fd3f7` -> candidate `4a09e8598d3a`, 1402/1402 banked, **0
+  unbanked**; no ledger amendment required or performed.
+- `uv run pytest packages/hive-conductor/backend/tests -x -q` — **2952
+  passed, 6 skipped** (87.20s).
+
+**Conclusion:** no change to the block. All 13 #777 acceptance criteria
+remain UNMET at this head; the driver produced no `check-*.log` files for
+this job, so every check above was executed directly. Lane stays **BLOCKED
+on unlanded canonical dependencies** (#458, #804/#805/#806, #774, #775,
+#776); no repair code written, none possible without violating the issue
+stop condition. No closure keywords used (`Refs #777` only).
