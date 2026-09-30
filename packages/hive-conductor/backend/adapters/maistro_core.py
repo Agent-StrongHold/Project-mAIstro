@@ -17,6 +17,10 @@ from maistro.http import shared_client
 if TYPE_CHECKING:
     from config import Settings
 
+#: The bundled compose stack's LiteLLM proxy: the documented default when a
+#: deployment configures no gateway, not debug code.
+_BUNDLED_GATEWAY_BASE = "http://localhost:4000/v1"  # DevSkim: ignore DS162092 until 2027-12-31
+
 
 class StubAgentPort:
     """Explicit degraded-mode port used when maistro-core is unavailable.
@@ -189,17 +193,16 @@ async def _construct_runtime(settings: Settings) -> EmbeddedRuntime:
 
     container = await create_container(config)
 
+    # The deployment's gateway base, resolved once for both the roster's
+    # model clients and this runtime's governed egress (#718) so the two
+    # doors cannot drift onto different credentials or bases.
+    gateway_base = llm_base or _BUNDLED_GATEWAY_BASE
     llm_client = _HttpOpenAILLMClient(
-        base_url=llm_base or "http://localhost:4000/v1",
+        base_url=gateway_base,
         api_key=llm_key or "sk-noop",
         model=model,
     )
-    # The deployment's gateway endpoint, built once for both the roster's
-    # model clients and this runtime's governed egress (#718) so the two
-    # doors cannot drift onto different credentials or bases.
-    model_endpoint = GatewayEndpoint(
-        base_url=llm_base or "http://localhost:4000/v1", api_key=llm_key
-    )
+    model_endpoint = GatewayEndpoint(base_url=gateway_base, api_key=llm_key)
     prompt_manager = container.prompt_manager
 
     agents_dir = settings.maistro_agents_dir
