@@ -955,6 +955,32 @@
    "deletion_path": null,
    "issue": "#82",
    "notes": "Append-only attributed history/provenance for BacklogItems (#101); rows are only ever inserted by the backlog stores. A retention bound for provenance is an owner decision on #82."
+  },
+  {
+   "table": "backlog_authority",
+   "backends": [
+    "postgres",
+    "sqlite"
+   ],
+   "owner_module": "packages/maistro-core/src/maistro/backlog/cutover.py",
+   "data_class": "event_history",
+   "retention": "undecided",
+   "deletion_path": null,
+   "issue": "#102",
+   "notes": "Append-only ledger of backlog authority revisions (markdown <-> db cutover, revert). Rows are only ever inserted; the current authority is the highest revision and reverting appends rather than deletes, so trimming history would erase the cutover's audit trail. A retention bound is an owner decision on #102."
+  },
+  {
+   "table": "backlog_documents",
+   "backends": [
+    "postgres",
+    "sqlite"
+   ],
+   "owner_module": "packages/maistro-core/src/maistro/backlog/cutover.py",
+   "data_class": "runtime_state",
+   "retention": "undecided",
+   "deletion_path": null,
+   "issue": "#102",
+   "notes": "One row per imported document (the root BACKLOG.md): the parsed token stream the deterministic export replays. Updated in place by re-import; deleting it would make the post-cutover generated file unreproducible from the database alone. A retention bound is an owner decision on #102."
   }
  ]
 }

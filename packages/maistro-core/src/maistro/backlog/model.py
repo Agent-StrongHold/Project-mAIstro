@@ -133,6 +133,52 @@ class BacklogClosure(BaseModel):
         return self
 
 
+class BacklogOrigin(BaseModel):
+    """Provenance of an item imported from the Markdown backlog (#102).
+
+    The root ``BACKLOG.md`` is the hand-maintained authority until the
+    cutover; after it, the database is authoritative and the Markdown file is
+    generated. ``BacklogOrigin`` is what makes that reversible and the export
+    deterministic: it carries the item's position in the document and the
+    Markdown-vocabulary status word verbatim, so the generated file renders
+    every imported item exactly as it was written, while ``BacklogItem.status``
+    carries the structured open/closed projection.
+
+    ``body`` lines are stored verbatim (whitespace included): they are the
+    item's acceptance criteria, evidence and prose as written, and the export
+    must not editorialize them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Which document the item was imported from (e.g. ``BACKLOG.md``).
+    document: str
+    #: The top-level ``## `` heading the item sits under.
+    section: str
+    #: The ``### `` heading, when the section has one.
+    subsection: str | None = None
+    #: Position of the item among the document's items (0-based, import order).
+    order: int = Field(ge=0)
+    #: The status legend word, verbatim ("Proposed", "Implemented", ...).
+    status_word: str
+    #: The ``gap-*`` marker from the status, when present.
+    gap_marker: str | None = None
+    #: The milestone suffix, when present.
+    milestone_text: str | None = None
+    #: Text after the closing ``**`` on the header line (e.g. a trailing
+    #: "Blocked-by" annotation). It renders back on the header line.
+    header_suffix: str | None = None
+    #: The item's non-header lines, verbatim, in document order.
+    body: tuple[str, ...] = ()
+
+    @field_validator("document", "section", "status_word")
+    @classmethod
+    def _require_non_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+
 class BacklogItem(BaseModel):
     """One unit of Workspace work: scope, risk, acceptance, and linkage.
 
@@ -157,6 +203,14 @@ class BacklogItem(BaseModel):
     risk_notes: str = ""
     goal_id: str | None = None
     goal_revision: int | None = None
+    #: Stable ids of items this item is blocked by (``blocked-by:`` in the
+    #: Markdown backlog). Order is the document's order; duplicates are
+    #: dropped. Referential integrity is enforced at the store/service layer,
+    #: not here: the model is data, the graph check is a decision.
+    dependencies: tuple[str, ...] = ()
+    #: Import provenance for items that came from the Markdown backlog (#102).
+    #: ``None`` for items created natively in the database.
+    origin: BacklogOrigin | None = None
     source: str = "human"
     version: int = Field(default=1, ge=1)
     created_by: str
@@ -178,6 +232,17 @@ class BacklogItem(BaseModel):
         cleaned: list[str] = []
         for tag in value:
             stripped = tag.strip()
+            if stripped and stripped not in cleaned:
+                cleaned.append(stripped)
+        return tuple(cleaned)
+
+    @field_validator("dependencies")
+    @classmethod
+    def _clean_dependencies(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Same hygiene as tags: strip, drop empties, dedup, keep order."""
+        cleaned: list[str] = []
+        for dep in value:
+            stripped = dep.strip()
             if stripped and stripped not in cleaned:
                 cleaned.append(stripped)
         return tuple(cleaned)
@@ -317,5 +382,6 @@ __all__ = [
     "BacklogItem",
     "BacklogItemNotFound",
     "BacklogItemStatus",
+    "BacklogOrigin",
     "BacklogVersionConflict",
 ]

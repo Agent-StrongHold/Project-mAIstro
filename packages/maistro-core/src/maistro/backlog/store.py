@@ -43,6 +43,7 @@ from maistro.backlog.model import (
     BacklogItem,
     BacklogItemNotFound,
     BacklogItemStatus,
+    BacklogOrigin,
     BacklogVersionConflict,
 )
 
@@ -78,6 +79,8 @@ class BacklogStore(Protocol):
         goal_id: str | None = None,
         goal_revision: int | None = None,
         source: str = "human",
+        dependencies: tuple[str, ...] = (),
+        origin: BacklogOrigin | None = None,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem: ...
@@ -100,6 +103,8 @@ class BacklogStore(Protocol):
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
         status: BacklogItemStatus | None = None,
+        dependencies: tuple[str, ...] | None = None,
+        origin: BacklogOrigin | None | object = UNSET,
         at: datetime | None = None,
     ) -> BacklogItem: ...
 
@@ -197,6 +202,8 @@ def _plan_changes(
     goal_id: str | None | object,
     goal_revision: int | None | object,
     status: BacklogItemStatus | None,
+    dependencies: tuple[str, ...] | None,
+    origin: BacklogOrigin | None | object,
 ) -> dict[str, object]:
     """Compute the changed fields for ``update_item``, or ``{}`` for a no-op.
 
@@ -212,6 +219,9 @@ def _plan_changes(
         "details": details,
         "risk_notes": risk_notes,
         "tags": tags,
+        # "no opinion" semantics for dependencies too: an empty tuple is a
+        # real state (no blockers), so absence of the argument cannot clear.
+        "dependencies": dependencies,
     }
     changes.update({field: value for field, value in provided.items() if value is not None})
     clearable = (
@@ -220,6 +230,7 @@ def _plan_changes(
         ("parent_id", parent_id),
         ("goal_id", goal_id),
         ("goal_revision", goal_revision),
+        ("origin", origin),
     )
     for field, value in clearable:
         if value is not UNSET and value != getattr(item, field):
@@ -300,6 +311,8 @@ class InMemoryBacklogStore:
         goal_id: str | None = None,
         goal_revision: int | None = None,
         source: str = "human",
+        dependencies: tuple[str, ...] = (),
+        origin: BacklogOrigin | None = None,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
@@ -316,6 +329,8 @@ class InMemoryBacklogStore:
             goal_id=goal_id,
             goal_revision=goal_revision,
             source=source,
+            dependencies=dependencies,
+            origin=origin,
             **({"item_id": item_id} if item_id is not None else {}),
         )
         if item.item_id in self._items:
@@ -363,6 +378,8 @@ class InMemoryBacklogStore:
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
         status: BacklogItemStatus | None = None,
+        dependencies: tuple[str, ...] | None = None,
+        origin: BacklogOrigin | None | object = UNSET,
         at: datetime | None = None,
     ) -> BacklogItem:
         item = self._require_item(item_id)
@@ -379,6 +396,8 @@ class InMemoryBacklogStore:
             goal_id=goal_id,
             goal_revision=goal_revision,
             status=status,
+            dependencies=dependencies,
+            origin=origin,
         )
         if "parent_id" in changes and changes["parent_id"] is not None:
             new_parent = str(changes["parent_id"])

@@ -42,6 +42,7 @@ from maistro.backlog.model import (
     BacklogItem,
     BacklogItemNotFound,
     BacklogItemStatus,
+    BacklogOrigin,
 )
 from maistro.backlog.store import (
     DEFAULT_LEASE_SECONDS,
@@ -161,6 +162,8 @@ class PgBacklogStore:
         goal_id: str | None = None,
         goal_revision: int | None = None,
         source: str = "human",
+        dependencies: tuple[str, ...] = (),
+        origin: BacklogOrigin | None = None,
         item_id: str | None = None,
         at: datetime | None = None,
     ) -> BacklogItem:
@@ -177,6 +180,8 @@ class PgBacklogStore:
             goal_id=goal_id,
             goal_revision=goal_revision,
             source=source,
+            dependencies=dependencies,
+            origin=origin,
             **({"item_id": item_id} if item_id is not None else {}),
         )
         async with self._pool.acquire() as conn, conn.transaction():
@@ -244,6 +249,8 @@ class PgBacklogStore:
         goal_id: str | None | object = UNSET,
         goal_revision: int | None | object = UNSET,
         status: BacklogItemStatus | None = None,
+        dependencies: tuple[str, ...] | None = None,
+        origin: BacklogOrigin | None | object = UNSET,
         at: datetime | None = None,
     ) -> BacklogItem:
         async with self._pool.acquire() as conn, conn.transaction():
@@ -261,6 +268,8 @@ class PgBacklogStore:
                 goal_id=goal_id,
                 goal_revision=goal_revision,
                 status=status,
+                dependencies=dependencies,
+                origin=origin,
             )
             if not changes:
                 return item
