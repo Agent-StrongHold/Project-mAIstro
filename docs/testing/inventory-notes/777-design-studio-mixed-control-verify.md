@@ -1037,3 +1037,108 @@ canonical dependencies (#458 Goal store, #804/#805/#806 Goal reconciliation,
 working graph); the issue stop condition still forbids a Design-Studio-private
 substitute, so no repair code was written. Next: land the dependencies
 first, then implement #777 as the consumer projection.
+
+## Re-verification at merged head 7de6cc42d (repair round, after provider 404)
+
+Round context: repair job `f08a9d070439467ebc829ba939fde096` re-running the
+lane after the prior round (job `7ffb50c1a460463585e281a330b69c4d`) died on a
+provider error before executing any check (`"checks": []`,
+`"failure_kind": "provider_error"`, 404 model-unavailable in its result
+artifact). Lane head `6a6cc665e` at start, working tree clean.
+
+**Develop sync (per lane brief):** origin/develop advanced from `04c1b9636`
+(the previous merge-base) to `c5e070d97d07800464972ee2c026a4d525ffbb21` —
+exactly the develop base this round's lane assignment declares. Delta = 6
+commits (`7b54fec38` Mac install fixes #1689, `79c6d9386` deploy stack #808,
+`ab628af0a` durable Binding revocation #1133, `98f23d965` Turing service
+credential #27, `89b4b7b26` #990 no-second-design-product, `c5e070d97` #95
+Design Studio route cutover). Merged into `auto-777` as `7de6cc42d` —
+**zero conflicts**; `uv sync --locked --extra dev` re-run (no changes). The
+previous block was a provider error, not a develop sync conflict; the merge
+is the sync resolution.
+
+**Do the two Design-Studio-adjacent commits land a #777 dependency? No:**
+- `c5e070d97` (#95 route cutover) is a product-IA slice only: the canonical
+  deep link is `/design-studio`, `/cli/canvas` survives as a compatibility
+  redirect. KNOWN-GAPS.md still says "Tracking: complete #95"; the shipped
+  Studio "supports resource discovery, artifact-mode selection, and prompt
+  entry only", visual generation is disabled, durable artifact state is
+  browser-local, and Canvas data routes return `503` in the shipped
+  `maistro-server`. No Goal lineage, no delegation, no reconciliation.
+- `89b4b7b26` (#990) adds a 13-test fitness suite
+  (`packages/maistro-core/tests/fitness/test_no_second_design_product.py`)
+  that **CI-forbids** a second design product / competing execution
+  lifecycle (`DesignRun`/`EvalRun`/`VariantStore`) / client-persisted loop
+  state — it reinforces #777's stop condition rather than advancing any
+  acceptance criterion.
+- `ab628af0a` (#1133 durable Binding revocation) extends the governed
+  Capability -> Binding effect path but lands none of the named #777
+  dependencies.
+
+**Dependency audit re-confirmed at `7de6cc42d` by fresh direct inspection**
+(all greps re-run this round, exit codes captured):
+- `git grep -E 'class GoalRevision|goal_store|class CreativeBrief' --
+  'packages/*/src/**/*.py'` — **0 matches**, exit 1 (#458 Goal store and
+  #774 CreativeBrief records absent).
+- `git grep -iE 'goal.reconcil|reconcile_goal|GoalReconciler'` — **0
+  matches**, exit 1 (#804/#805/#806 Goal reconciliation absent).
+- `git grep -il 'ladybug'` — **0 matches**, exit 1 (#776 Workspace Ladybug
+  working graph absent).
+- `git grep -nE 'control_mode|mixed.control'` — **0 matches**, exit 1 (no
+  control-continuum state anywhere in production code).
+- `grep -cE 'workspace_agent|control_mode|delegat'
+  packages/hive-conductor/backend/routes/design.py` — **0**, exit 1 (no
+  #804/#53 consumption seam in the Design Studio API).
+- `packages/maistro-core/src/maistro/runs/reconciliation.py:1-4` — "owns
+  universal lifecycle bookkeeping only" (physical Attempt bookkeeping, not
+  Goal reconciliation).
+- `packages/hive-conductor/backend/services/brief_store.py:4-6` — interview
+  "is chat state, not a Goal: nothing here is a Goal or CreativeBrief
+  record".
+- `packages/maistro-core/src/maistro/interop/contract.py:407-408` —
+  `workspace_agent`/`design_studio` still pinned as M3 *consumers*
+  (declarations only).
+- `git grep -ilE 'goal|mixed.?control|delegat|creative.?brief' --
+  'packages/hive-conductor/tests/e2e/*.spec.ts'` — **0 matches**, exit 1;
+  the two E2E tests added by #95 are `/cli/canvas` redirect and primary-nav
+  deep-link assertions only. No mixed-control browser E2E exists.
+
+**Vulture per-identity ledger gate (lane-brief CI-repair instruction,
+re-executed):** `uv run python scripts/check-vulture-baseline.py
+packages/*/src --min-confidence 60 --exclude '*/third_party/*'` — **EXIT=0,
+gate PASS**: `unclassified: 0`, `never_allowlist: 0`, ratchet base
+`c5e070d97d07` -> candidate `7de6cc42d607`, `1402 reviewed identities ->
+1402 findings` with no drift. Zero unbanked identities exist, so no
+dead-code fix and **no ledger amendment to `quality/vulture-baseline.json`
+was required**.
+
+**Executed at `7de6cc42d` (all by this verifier, fresh runs):**
+- `uv run ruff check .` — All checks passed! (exit 0)
+- `uv run ruff format --check .` — 2638 files already formatted (exit 0).
+- `uv run pytest packages/maistro-core/tests/fitness/test_no_second_design_product.py
+  -q` — **13 passed** (109.76s; the newly merged #990 boundary suite is
+  green on this branch).
+- `uv run pytest packages/maistro-design/tests -x -q` — **351 passed**
+  (78.33s).
+- `uv run pytest tests/test_shared_interop_ontology.py
+  packages/maistro-core/tests/agents/test_brief_interview.py
+  packages/maistro-core/tests/capabilities/test_binding_invocation.py -q`
+  — **46 passed** (5.52s; includes the merge-touched #1133 binding
+  revocation suite, proving the develop sync merge is green).
+- `uv run pytest
+  packages/hive-conductor/backend/tests/test_workspace_agent_identity.py
+  packages/hive-conductor/backend/tests/test_agent_materialization.py
+  packages/hive-conductor/backend/tests/test_chat_brief_interview.py -q`
+  — **53 passed** (173.88s).
+
+**Conclusion (unchanged across seventeen heads):** all 13 #777 acceptance
+criteria remain UNMET at `7de6cc42d`. The lane stays BLOCKED on unlanded
+canonical dependencies (#458 Goal store, #804/#805/#806 Goal reconciliation,
+#774 CreativeBrief records, #775 creative Graph, #776 Workspace Ladybug
+working graph; #95 itself still open per KNOWN-GAPS); the issue stop
+condition — now additionally CI-enforced by #990's fitness suite — still
+forbids a Design-Studio-private Agent runtime / Goal owner / reconciliation
+loop / artifact authority substitute, so no repair code was written. The job
+directory again contained no `check-*.log` files (only `events.jsonl`,
+`manifest.json`, `prompt.txt`, `state.json`), so all validation above was
+executed directly. No closure keywords used (`Refs #777` only).
